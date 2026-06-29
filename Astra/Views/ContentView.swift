@@ -610,7 +610,13 @@ struct ContentView: View {
         if let workspace = targetWorkspace ?? effectiveWorkspace {
             workspaceAppStudioSession.reset(for: workspace, existingManifest: existingManifest, initialPrompt: initialPrompt)
         }
-        setActiveWorkspaceCanvasItem(.appPreview, remember: false)
+        setActiveWorkspaceCanvasItem(
+            WorkspaceCanvasPolicyTransition.itemAfterAppStudioStart(
+                policy: shelfAvailabilityPolicy,
+                context: shelfAvailabilityContext
+            ),
+            remember: false
+        )
     }
 
     /// Leave the Studio without publishing: drop the composer, collapse the preview, cancel gen.
@@ -864,6 +870,9 @@ struct ContentView: View {
             if hasOpenTaskThread {
                 presentation.handleSelectionCommitted()
             }
+        }
+        .onChange(of: shelfAvailabilityPolicy) {
+            invalidateActiveWorkspaceCanvasItemIfUnavailable(remember: false)
         }
         .onChange(of: activeWorkspaceCanvasItem) {
             syncBrowserPresentation()
@@ -1210,6 +1219,16 @@ struct ContentView: View {
         isWorkspaceRightRailVisible = false
         prepareWorkspaceCanvasItemForPresentation(item, source: "remembered_shelf_restore")
         setActiveWorkspaceCanvasItem(item, remember: false)
+    }
+
+    private func invalidateActiveWorkspaceCanvasItemIfUnavailable(remember: Bool) {
+        let nextItem = WorkspaceCanvasPolicyTransition.itemAfterPolicyChange(
+            currentItem: activeWorkspaceCanvasItem,
+            policy: shelfAvailabilityPolicy,
+            context: shelfAvailabilityContext
+        )
+        guard nextItem != activeWorkspaceCanvasItem else { return }
+        setActiveWorkspaceCanvasItem(nextItem, remember: remember)
     }
 
     private func canPresentWorkspaceCanvasItem(_ item: WorkspaceCanvasItem) -> Bool {
@@ -2237,6 +2256,7 @@ struct ContentView: View {
         } else {
             isComposingTask = false
         }
+        invalidateActiveWorkspaceCanvasItemIfUnavailable(remember: false)
         persistWorkspaceSelection()
     }
 

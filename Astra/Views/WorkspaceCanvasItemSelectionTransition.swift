@@ -25,3 +25,21 @@ enum WorkspacePlanCanvasPresentationTransition {
         previousTaskID == targetTaskID ? currentCachedHasPlanContent : targetHasPlanContent
     }
 }
+
+enum WorkspaceCanvasPolicyTransition {
+    static func itemAfterAppStudioStart(
+        policy: ShelfAvailabilityPolicy,
+        context: ShelfAvailabilityPolicy.Context
+    ) -> WorkspaceCanvasItem? {
+        policy.canPresent(.appPreview, in: context) ? .appPreview : nil
+    }
+
+    static func itemAfterPolicyChange(
+        currentItem: WorkspaceCanvasItem?,
+        policy: ShelfAvailabilityPolicy,
+        context: ShelfAvailabilityPolicy.Context
+    ) -> WorkspaceCanvasItem? {
+        guard let currentItem else { return nil }
+        return policy.canPresent(currentItem.shelfID, in: context) ? currentItem : nil
+    }
+}

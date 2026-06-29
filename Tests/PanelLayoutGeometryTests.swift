@@ -254,6 +254,52 @@ struct PanelLayoutGeometryTests {
         ) == nil)
     }
 
+    @Test("App Studio startup respects app preview shelf policy")
+    func appStudioStartupRespectsAppPreviewShelfPolicy() {
+        let context = ShelfAvailabilityPolicy.Context(
+            hasOpenTaskThread: false,
+            hasWorkspaceContext: true,
+            hasPlanContent: false,
+            hasFilesShelfContent: false,
+            hasQueryShelfContent: false,
+            isComposingWorkspaceApp: true,
+            activeShelfID: nil
+        )
+
+        #expect(WorkspaceCanvasPolicyTransition.itemAfterAppStudioStart(
+            policy: ShelfAvailabilityPolicy(),
+            context: context
+        ) == .appPreview)
+        #expect(WorkspaceCanvasPolicyTransition.itemAfterAppStudioStart(
+            policy: ShelfAvailabilityPolicy(disabledShelfIDs: [.appPreview]),
+            context: context
+        ) == nil)
+    }
+
+    @Test("Active shelf clears when profile policy hides it")
+    func activeShelfClearsWhenProfilePolicyHidesIt() {
+        let context = ShelfAvailabilityPolicy.Context(
+            hasOpenTaskThread: true,
+            hasWorkspaceContext: true,
+            hasPlanContent: true,
+            hasFilesShelfContent: true,
+            hasQueryShelfContent: true,
+            isComposingWorkspaceApp: false,
+            activeShelfID: .browser
+        )
+
+        #expect(WorkspaceCanvasPolicyTransition.itemAfterPolicyChange(
+            currentItem: .browser,
+            policy: ShelfAvailabilityPolicy(),
+            context: context
+        ) == .browser)
+        #expect(WorkspaceCanvasPolicyTransition.itemAfterPolicyChange(
+            currentItem: .browser,
+            policy: ShelfAvailabilityPolicy(disabledShelfIDs: [.browser]),
+            context: context
+        ) == nil)
+    }
+
     @Test("Target plan presentation seeds cache from the validated target task")
     func targetPlanPresentationSeedsCacheFromValidatedTargetTask() {
         let previousTaskID = UUID()
