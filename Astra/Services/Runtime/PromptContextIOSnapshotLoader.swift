@@ -69,18 +69,20 @@ enum PromptContextIOSnapshotLoader {
 
         let intent = HostFileAccessIntent.astraManagedStorage(root: accessRoot)
         let transcriptSections = turnFiles.enumerated().compactMap { offset, path -> String? in
-            guard let text = try? hostFileAccess.readString(
+            let recentIndex = turnFiles.count - offset
+            let maxCharacters = recentIndex <= window.fullOutputFileLimit
+                ? window.fullOutputMaxCharacters
+                : window.olderOutputMaxCharacters
+            guard let text = try? boundedString(
                 at: URL(fileURLWithPath: path),
-                encoding: .utf8,
+                maxCharacters: maxCharacters,
+                keeping: .prefix,
+                hostFileAccess: hostFileAccess,
                 intent: intent
             ),
                   !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 return nil
             }
-            let recentIndex = turnFiles.count - offset
-            let maxCharacters = recentIndex <= window.fullOutputFileLimit
-                ? window.fullOutputMaxCharacters
-                : window.olderOutputMaxCharacters
             let excerpt = boundedText(text, maxCharacters: maxCharacters, keeping: .prefix)
             return "--- \((path as NSString).lastPathComponent) ---\n\(excerpt)"
         }
@@ -107,9 +109,11 @@ enum PromptContextIOSnapshotLoader {
         accessRoot: URL
     ) -> PromptContextSnapshotText? {
         let historyPath = SessionHistoryManager.historyPath(taskFolder: taskFolder)
-        guard let history = try? hostFileAccess.readString(
+        guard let history = try? boundedString(
             at: URL(fileURLWithPath: historyPath),
-            encoding: .utf8,
+            maxCharacters: window.fullOutputMaxCharacters,
+            keeping: .suffix,
+            hostFileAccess: hostFileAccess,
             intent: .astraManagedStorage(root: accessRoot)
         ),
               !history.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -157,9 +161,59 @@ enum PromptContextIOSnapshotLoader {
         return boundedText(summary, maxCharacters: window.fullOutputMaxCharacters, keeping: .suffix)
     }
 
+    private static func boundedString(
+        at url: URL,
+        maxCharacters: Int,
+        keeping bound: TextBound,
+        hostFileAccess: HostFileAccessBroker,
+        intent: HostFileAccessIntent
+    ) throws -> String {
+        let data = try hostFileAccess.readData(
+            at: url,
+            maxBytes: byteLimit(for: maxCharacters),
+            keeping: bound.fileReadBound,
+            intent: intent
+        )
+        guard let string = utf8String(from: data, keeping: bound) else {
+            throw CocoaError(.fileReadInapplicableStringEncoding)
+        }
+        return string
+    }
+
+    private static func byteLimit(for maxCharacters: Int) -> Int {
+        guard maxCharacters > 0 else { return 0 }
+        guard maxCharacters <= Int.max / 4 else { return Int.max }
+        return maxCharacters * 4
+    }
+
+    private static func utf8String(from data: Data, keeping bound: TextBound) -> String? {
+        var trimmed = data
+        while !trimmed.isEmpty {
+            if let string = String(data: trimmed, encoding: .utf8) {
+                return string
+            }
+            switch bound {
+            case .prefix:
+                trimmed.removeLast()
+            case .suffix:
+                trimmed.removeFirst()
+            }
+        }
+        return String(data: trimmed, encoding: .utf8)
+    }
+
     private enum TextBound {
         case prefix
         case suffix
+
+        var fileReadBound: HostFileReadBound {
+            switch self {
+            case .prefix:
+                return .prefix
+            case .suffix:
+                return .suffix
+            }
+        }
     }
 
     private static func boundedText(_ text: String, maxCharacters: Int, keeping bound: TextBound) -> String {
