@@ -131,8 +131,11 @@ enum RemoteMCPGatewayProjection {
         guard !accessByToolName.isEmpty else { return [] }
 
         let allowedToolNames = Set(server.allowedTools.map(normalized).filter { !$0.isEmpty })
+        let excludedToolNames = Set(server.excludedTools.map(normalized).filter { !$0.isEmpty })
         let selectedRules = accessByToolName.filter { toolName, _ in
-            allowedToolNames.isEmpty || allowedToolNames.contains(normalized(toolName))
+            let normalizedToolName = normalized(toolName)
+            guard !excludedToolNames.contains(normalizedToolName) else { return false }
+            return allowedToolNames.isEmpty || allowedToolNames.contains(normalizedToolName)
         }
         guard !selectedRules.isEmpty else { return ["--gateway-tool-policy-required"] }
 
@@ -158,19 +161,48 @@ enum RemoteMCPGatewayProjection {
     private static func gatewayToolAccessByToolName(for server: PluginMCPServer) -> [String: String] {
         let registryClassifications = server.remoteRegistry?.toolClassifications ?? []
         if !registryClassifications.isEmpty {
-            return Dictionary(
-                registryClassifications.map { ($0.toolName, gatewayPolicyOption(for: $0.effect)) },
-                uniquingKeysWith: { first, _ in first }
+            return mostRestrictiveGatewayOptions(
+                registryClassifications.map { ($0.toolName, gatewayPolicyOption(for: $0.effect)) }
             )
         }
 
         guard let product = GoogleWorkspaceRemoteMCPRegistry.products.first(where: { $0.serverID == server.id }) else {
             return [:]
         }
-        return Dictionary(
-            product.toolFamilies.map { toolName, family in (toolName, gatewayPolicyOption(for: family)) },
-            uniquingKeysWith: { first, _ in first }
+        return mostRestrictiveGatewayOptions(
+            product.toolFamilies.map { toolName, family in (toolName, gatewayPolicyOption(for: family)) }
         )
+    }
+
+    private static func mostRestrictiveGatewayOptions(_ entries: [(String, String)]) -> [String: String] {
+        entries.reduce(into: [:]) { result, entry in
+            let key = normalized(entry.0)
+            guard !key.isEmpty else { return }
+            guard let existing = result[key] else {
+                result[key] = entry.1
+                return
+            }
+            if gatewayPolicyOptionRank(entry.1) > gatewayPolicyOptionRank(existing) {
+                result[key] = entry.1
+            }
+        }
+    }
+
+    private static func gatewayPolicyOptionRank(_ option: String) -> Int {
+        switch option {
+        case "--gateway-read-tool":
+            return 0
+        case "--gateway-write-tool":
+            return 1
+        case "--gateway-send-tool":
+            return 2
+        case "--gateway-delete-tool":
+            return 3
+        case "--gateway-admin-tool":
+            return 4
+        default:
+            return 5
+        }
     }
 
     private static func gatewayPolicyOption(for effect: RemoteMCPToolEffect) -> String {

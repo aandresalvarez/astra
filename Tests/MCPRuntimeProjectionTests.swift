@@ -82,6 +82,21 @@ private func gatewayAuthorizationControlPlane(
     )
 }
 
+private func remoteToolClassification(
+    toolName: String,
+    effect: RemoteMCPToolEffect
+) -> RemoteMCPToolClassification {
+    RemoteMCPToolClassification(
+        toolName: toolName,
+        contractID: .googleWorkspaceDriveRead,
+        effect: effect,
+        dataAccess: [.externalService],
+        riskLevel: .medium,
+        requiresExplicitUserConsent: effect.isMutating,
+        auditEventName: "test.\(toolName)"
+    )
+}
+
 private func argumentValues(after option: String, in arguments: [String]) -> [String] {
     var values: [String] = []
     var index = 0
@@ -267,6 +282,66 @@ struct MCPRuntimeProjectionTests {
         #expect(argumentValues(after: "--gateway-read-tool", in: projected.arguments) == ["search_files"])
         #expect(argumentValues(after: "--gateway-write-tool", in: projected.arguments) == ["copy_file", "create_file"])
         #expect(!projected.arguments.contains("--gateway-native-approved-tool"))
+    }
+
+    @Test("Gateway projection subtracts excluded tools from wildcard policy")
+    func gatewayProjectionSubtractsExcludedToolsFromWildcardPolicy() throws {
+        let remote = PluginMCPServer(
+            id: "custom_remote",
+            displayName: "Custom Remote",
+            transport: .http,
+            url: URL(string: "https://mcp.example.com/custom")!,
+            connectorBindings: ["custom"],
+            allowedTools: [],
+            excludedTools: ["search_files"],
+            trustLevel: .restricted,
+            remoteRegistry: RemoteMCPServerRegistryMetadata(
+                registryID: "custom",
+                providerID: "custom",
+                providerDisplayName: "Custom",
+                toolClassifications: [
+                    remoteToolClassification(toolName: "search_files", effect: .read),
+                    remoteToolClassification(toolName: "create_file", effect: .write)
+                ]
+            ),
+            controlPlane: gatewayAuthorizationControlPlane()
+        )
+        let resolved = MCPRuntimeProjection.ResolvedServer(packageID: "custom", server: remote)
+
+        let projected = try #require(RemoteMCPGatewayProjection.providerFacingResolvedServer(for: resolved)?.server)
+
+        #expect(projected.arguments.contains("--gateway-tool-policy-required"))
+        #expect(argumentValues(after: "--gateway-read-tool", in: projected.arguments).isEmpty)
+        #expect(argumentValues(after: "--gateway-write-tool", in: projected.arguments) == ["create_file"])
+    }
+
+    @Test("Gateway projection collapses duplicate registry classifications conservatively")
+    func gatewayProjectionCollapsesDuplicateRegistryClassificationsConservatively() throws {
+        let remote = PluginMCPServer(
+            id: "custom_remote",
+            displayName: "Custom Remote",
+            transport: .http,
+            url: URL(string: "https://mcp.example.com/custom")!,
+            connectorBindings: ["custom"],
+            allowedTools: ["create_file"],
+            trustLevel: .restricted,
+            remoteRegistry: RemoteMCPServerRegistryMetadata(
+                registryID: "custom",
+                providerID: "custom",
+                providerDisplayName: "Custom",
+                toolClassifications: [
+                    remoteToolClassification(toolName: "Create_File", effect: .read),
+                    remoteToolClassification(toolName: "create_file", effect: .write)
+                ]
+            ),
+            controlPlane: gatewayAuthorizationControlPlane()
+        )
+        let resolved = MCPRuntimeProjection.ResolvedServer(packageID: "custom", server: remote)
+
+        let projected = try #require(RemoteMCPGatewayProjection.providerFacingResolvedServer(for: resolved)?.server)
+
+        #expect(argumentValues(after: "--gateway-read-tool", in: projected.arguments).isEmpty)
+        #expect(argumentValues(after: "--gateway-write-tool", in: projected.arguments) == ["create_file"])
     }
 
     @Test("Codex config routes credentialed remote MCP through ASTRA gateway")

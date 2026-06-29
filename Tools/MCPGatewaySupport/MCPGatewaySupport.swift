@@ -112,8 +112,8 @@ public struct AllowingMCPGatewayToolPolicyEnforcer: MCPGatewayToolPolicyEnforcin
     public init() {}
 
     public func decision(
-        forTool toolName: String,
-        server: RemoteMCPServerDescriptor
+        forTool _: String,
+        server _: RemoteMCPServerDescriptor
     ) -> MCPGatewayToolPolicyDecision {
         .allowed
     }
@@ -127,16 +127,13 @@ public struct ConfiguredMCPGatewayToolPolicyEnforcer: MCPGatewayToolPolicyEnforc
         rules: [MCPGatewayToolPolicyRule],
         requiresExplicitPolicy: Bool = true
     ) {
-        self.rulesByToolName = Dictionary(
-            rules.map { (Self.normalized($0.toolName), $0) },
-            uniquingKeysWith: { first, _ in first }
-        )
+        self.rulesByToolName = Self.mostRestrictiveRulesByToolName(rules)
         self.requiresExplicitPolicy = requiresExplicitPolicy
     }
 
     public func decision(
         forTool toolName: String,
-        server: RemoteMCPServerDescriptor
+        server _: RemoteMCPServerDescriptor
     ) -> MCPGatewayToolPolicyDecision {
         guard let rule = rulesByToolName[Self.normalized(toolName)] else {
             if requiresExplicitPolicy {
@@ -152,6 +149,26 @@ public struct ConfiguredMCPGatewayToolPolicyEnforcer: MCPGatewayToolPolicyEnforc
 
     private static func normalized(_ value: String) -> String {
         value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    private static func mostRestrictiveRulesByToolName(
+        _ rules: [MCPGatewayToolPolicyRule]
+    ) -> [String: MCPGatewayToolPolicyRule] {
+        rules.reduce(into: [:]) { result, rule in
+            let key = normalized(rule.toolName)
+            guard !key.isEmpty else { return }
+            guard let existing = result[key] else {
+                result[key] = rule
+                return
+            }
+            if rule.access.restrictionRank > existing.access.restrictionRank {
+                result[key] = rule
+            } else if rule.access == existing.access {
+                var merged = existing
+                merged.nativeApprovalGranted = existing.nativeApprovalGranted && rule.nativeApprovalGranted
+                result[key] = merged
+            }
+        }
     }
 }
 
@@ -366,7 +383,7 @@ public enum AstraMCPGatewayToolMain {
     }
 }
 
-private struct GatewayCommandOptions {
+struct GatewayCommandOptions {
     var packageID: String = ""
     var serverID: String = "remote"
     var endpoint: URL?
@@ -388,7 +405,7 @@ private struct GatewayCommandOptions {
         }
         return ConfiguredMCPGatewayToolPolicyEnforcer(
             rules: rules,
-            requiresExplicitPolicy: toolPolicyRequired
+            requiresExplicitPolicy: toolPolicyRequired || !rules.isEmpty
         )
     }
 
@@ -413,19 +430,19 @@ private struct GatewayCommandOptions {
                 toolPolicyRequired = true
                 index += 1
             case "--gateway-read-tool" where index + 1 < arguments.count:
-                toolAccessByName[arguments[index + 1]] = .read
+                recordToolAccess(arguments[index + 1], access: .read)
                 index += 2
             case "--gateway-write-tool" where index + 1 < arguments.count:
-                toolAccessByName[arguments[index + 1]] = .write
+                recordToolAccess(arguments[index + 1], access: .write)
                 index += 2
             case "--gateway-send-tool" where index + 1 < arguments.count:
-                toolAccessByName[arguments[index + 1]] = .send
+                recordToolAccess(arguments[index + 1], access: .send)
                 index += 2
             case "--gateway-delete-tool" where index + 1 < arguments.count:
-                toolAccessByName[arguments[index + 1]] = .delete
+                recordToolAccess(arguments[index + 1], access: .delete)
                 index += 2
             case "--gateway-admin-tool" where index + 1 < arguments.count:
-                toolAccessByName[arguments[index + 1]] = .admin
+                recordToolAccess(arguments[index + 1], access: .admin)
                 index += 2
             case "--gateway-native-approved-tool" where index + 1 < arguments.count:
                 nativeApprovedTools.insert(Self.normalized(arguments[index + 1]))
@@ -439,8 +456,37 @@ private struct GatewayCommandOptions {
     private static func normalized(_ value: String) -> String {
         value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }
+
+    private mutating func recordToolAccess(_ toolName: String, access: MCPGatewayToolAccess) {
+        let normalizedName = Self.normalized(toolName)
+        guard !normalizedName.isEmpty else { return }
+        guard let existing = toolAccessByName[normalizedName] else {
+            toolAccessByName[normalizedName] = access
+            return
+        }
+        if access.restrictionRank > existing.restrictionRank {
+            toolAccessByName[normalizedName] = access
+        }
+    }
 }
 
 private func trimmed(_ value: String) -> String {
     value.trimmingCharacters(in: .whitespacesAndNewlines)
+}
+
+private extension MCPGatewayToolAccess {
+    var restrictionRank: Int {
+        switch self {
+        case .read:
+            return 0
+        case .write:
+            return 1
+        case .send:
+            return 2
+        case .delete:
+            return 3
+        case .admin:
+            return 4
+        }
+    }
 }

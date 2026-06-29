@@ -66,6 +66,52 @@ struct RemoteMCPGatewaySupportTests {
         #expect(remote.authHeaders.isEmpty)
     }
 
+    @Test("Gateway requires explicit policy when any classification rule is configured")
+    func gatewayRequiresExplicitPolicyWhenClassificationsAreConfigured() throws {
+        let remote = RecordingRemoteMCPClient()
+        let options = GatewayCommandOptions(arguments: [
+            "--gateway-read-tool", "search_files"
+        ])
+        let gateway = LocalMCPGateway(
+            server: googleDriveDescriptor(),
+            remoteClient: remote,
+            authTokenProvider: StaticGatewayTokenProvider(token: "secret-access-token"),
+            toolPolicyEnforcer: options.toolPolicyEnforcer
+        )
+
+        let call = try parseJSON(try #require(gateway.handleLine(#"{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"create_file","arguments":{"query":"budget"}}}"#)))
+        let callResult = try #require(call["result"] as? [String: Any])
+        let content = try #require(callResult["content"] as? [[String: Any]])
+
+        #expect(callResult["isError"] as? Bool == true)
+        #expect((content.first?["text"] as? String)?.contains("no classification") == true)
+        #expect(remote.calledTools.isEmpty)
+        #expect(remote.authHeaders.isEmpty)
+    }
+
+    @Test("Gateway resolves duplicate normalized rules to the most restrictive access")
+    func gatewayDuplicateRulesUseMostRestrictiveAccess() throws {
+        let remote = RecordingRemoteMCPClient()
+        let gateway = LocalMCPGateway(
+            server: googleDriveDescriptor(),
+            remoteClient: remote,
+            authTokenProvider: StaticGatewayTokenProvider(token: "secret-access-token"),
+            toolPolicyEnforcer: ConfiguredMCPGatewayToolPolicyEnforcer(rules: [
+                MCPGatewayToolPolicyRule(toolName: "Create_File", access: .read),
+                MCPGatewayToolPolicyRule(toolName: "create_file", access: .write)
+            ])
+        )
+
+        let call = try parseJSON(try #require(gateway.handleLine(#"{"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"name":"CREATE_FILE","arguments":{"query":"budget"}}}"#)))
+        let callResult = try #require(call["result"] as? [String: Any])
+        let content = try #require(callResult["content"] as? [[String: Any]])
+
+        #expect(callResult["isError"] as? Bool == true)
+        #expect((content.first?["text"] as? String)?.contains("Native approval required") == true)
+        #expect(remote.calledTools.isEmpty)
+        #expect(remote.authHeaders.isEmpty)
+    }
+
     @Test("Gateway forwards read tools and explicitly approved write tools")
     func gatewayForwardsReadAndApprovedWriteTools() throws {
         let remote = RecordingRemoteMCPClient()
