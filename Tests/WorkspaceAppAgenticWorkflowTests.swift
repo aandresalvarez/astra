@@ -38,12 +38,12 @@ struct WorkspaceAppAgenticWorkflowTests {
 
         // Task-backed agent steps run through the normal task runtime.
         #expect(actions.contains { $0.type == "task.createAndRun" })
-        // Governed by an agent recommendation gate and a human approval gate.
+        // Governed by an agent recommendation gate and human gates before external task effects.
         #expect(actions.contains { $0.type == "gate.agentRecommendation" })
-        #expect(actions.contains { $0.type == "gate.humanApproval" })
-        // The pipeline composes the data read, AI work, agent gate, human gate, and implementation.
+        #expect(actions.filter { $0.type == "gate.humanApproval" }.count == 2)
+        // The pipeline composes the data read, pre-agent gate, AI work, agent gate, human gate, and implementation.
         let pipeline = try #require(manifest.actions.first { $0.type == "pipeline.run" })
-        #expect(pipeline.steps == ["list_review_items", "analyze", "agent_review", "human_approval", "implement"])
+        #expect(pipeline.steps == ["list_review_items", "approve_analysis", "analyze", "agent_review", "human_approval", "implement"])
 
         // The analysis answer is captured and fed into the implementation step.
         #expect(actions.contains { $0.outputBinding != nil })
