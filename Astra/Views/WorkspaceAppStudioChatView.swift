@@ -48,6 +48,9 @@ struct WorkspaceAppStudioChatView: View {
             applyInitialPromptIfNeeded()
             composerFocused = true
         }
+        .task(id: templatePackLoadSignature) {
+            await refreshTemplatePacks()
+        }
         .onChange(of: session.initialPrompt) { _, _ in applyInitialPromptIfNeeded() }
         .onChange(of: inputText) { _, _ in applyInitialPromptIfNeeded() }
         .onChange(of: session.draftAutosaveRevision) { previousRevision, currentRevision in
@@ -275,6 +278,20 @@ struct WorkspaceAppStudioChatView: View {
         } else if session.draft == nil {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 6) {
+                    let templateChoices = session.availableTemplateChoices
+                    ForEach(templateChoices) { choice in
+                        Button(action: { session.selectTemplate(choice.id) }) {
+                            Label(
+                                choice.title,
+                                systemImage: choice.isSelected ? "checkmark.circle.fill" : choice.iconSystemName
+                            )
+                            .font(Stanford.caption(12))
+                            .lineLimit(1)
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .help(choice.subtitle)
+                    }
                     ForEach(WorkspaceAppArchetype.allCases, id: \.self) { archetype in
                         Button(action: { send(archetype.exampleIntent) }) {
                             Label(archetype.displayName, systemImage: archetype.iconSystemName)
@@ -304,6 +321,26 @@ struct WorkspaceAppStudioChatView: View {
                     .padding(.vertical, 1)
                 }
             }
+        }
+    }
+
+    private var templatePackLoadSignature: String {
+        ([workspace.id.uuidString] + workspace.enabledCapabilityIDs.sorted()).joined(separator: "|")
+    }
+
+    private func refreshTemplatePacks() async {
+        let enabledPackIDs = Set(workspace.enabledCapabilityIDs)
+        guard !enabledPackIDs.isEmpty else {
+            await MainActor.run { session.configureTemplatePacks([]) }
+            return
+        }
+        let snapshot = AstraPackCatalog().load()
+        let templates = WorkspaceAppTemplatePackCatalog(
+            snapshot: snapshot,
+            enabledPackIDs: enabledPackIDs
+        ).templates
+        await MainActor.run {
+            session.configureTemplatePacks(templates)
         }
     }
 

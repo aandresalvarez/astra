@@ -45,7 +45,8 @@ typealias WorkspaceAppStudioGenerate = (
     _ existingManifest: WorkspaceAppManifest?,
     _ configuration: AgentUtilityRuntimeConfiguration,
     _ availableProviders: Set<String>,
-    _ capabilityFamilies: [WorkspaceAppContractFamily]
+    _ capabilityFamilies: [WorkspaceAppContractFamily],
+    _ templateContext: WorkspaceAppStudioTemplateContext?
 ) async -> WorkspaceAppStudioGenerationResult
 
 /// Grounded post-turn verification: run the produced app in the sandbox and report whether the
@@ -90,6 +91,12 @@ final class WorkspaceAppStudioSession: ObservableObject {
     /// provider picker so the picker reflects reality and subsequent turns skip the dead provider.
     /// Reset to nil at the start of every turn; only set when a fallback provider succeeded.
     @Published private(set) var lastResolvedRuntimeID: String?
+    /// Enabled pack templates that may seed a NEW App Studio draft. These are inert descriptors:
+    /// capability package IDs are shown as provenance/requirements only, never runtime grants.
+    @Published private(set) var availableTemplatePacks: [WorkspaceAppTemplatePackDescriptor] = []
+    /// The pre-draft pack template the user selected. Owned by the session so the provisional preview
+    /// and final generator capture the same context for the first build.
+    @Published private(set) var selectedTemplate: WorkspaceAppTemplatePackDescriptor?
 
     private(set) var workspaceID: UUID?
     private let generate: WorkspaceAppStudioGenerate
@@ -192,6 +199,41 @@ final class WorkspaceAppStudioSession: ObservableObject {
         return WorkspaceAppStudioRefinement.allCases.filter { $0.isAvailable(for: manifest) }
     }
 
+    var availableTemplateChoices: [WorkspaceAppStudioTemplateChoice] {
+        WorkspaceAppStudioTemplateChoicePresentation.choices(
+            from: availableTemplatePacks,
+            selectedTemplateID: selectedTemplate?.id
+        )
+    }
+
+    func configureTemplatePacks(_ templates: [WorkspaceAppTemplatePackDescriptor]) {
+        let choices = WorkspaceAppStudioTemplateChoicePresentation.choices(
+            from: templates,
+            selectedTemplateID: selectedTemplate?.id
+        )
+        let orderedIDs = choices.map(\.id)
+        availableTemplatePacks = orderedIDs.compactMap { id in templates.first { $0.id == id } }
+        if let selectedTemplate, !orderedIDs.contains(selectedTemplate.id) {
+            self.selectedTemplate = nil
+        }
+        if draft != nil {
+            selectedTemplate = nil
+        }
+    }
+
+    func selectTemplate(_ templateID: String?) {
+        guard draft == nil, !isGenerating else { return }
+        guard let templateID else {
+            selectedTemplate = nil
+            return
+        }
+        if selectedTemplate?.id == templateID {
+            selectedTemplate = nil
+        } else {
+            selectedTemplate = availableTemplatePacks.first { $0.id == templateID }
+        }
+    }
+
     // MARK: - Lifecycle
 
     /// Start (or restart) a conversation. With `existingManifest`, seed the draft from it so
@@ -207,6 +249,7 @@ final class WorkspaceAppStudioSession: ObservableObject {
         isBuildingFirstDraft = false
         isVerifying = false
         lastResolvedRuntimeID = nil   // a stale auto-fallback must not rewrite the picker after a reset
+        selectedTemplate = nil
         generationToken &+= 1  // invalidate any in-flight generation from a prior session
         generationEvents = []
         draftAutosaveRevision = 0
@@ -293,6 +336,9 @@ final class WorkspaceAppStudioSession: ObservableObject {
         generationToken &+= 1
         let token = generationToken
         let existing = draft?.manifest
+        let selectedTemplateContext = existing == nil
+            ? selectedTemplate.map(WorkspaceAppStudioTemplateContext.init(packTemplate:))
+            : nil
         // A first build (no existing draft) shows a "building" status in the preview until the result
         // lands, instead of the generic provisional shell.
         isBuildingFirstDraft = existing == nil
@@ -320,7 +366,16 @@ final class WorkspaceAppStudioSession: ObservableObject {
         // + source + capability.read action + astra.read. Without this the model can't author an app that
         // uses a capability the user just enabled.
         let capabilityFamilies = WorkspaceAppCapabilityContractDeriver.derived(for: workspace).families
-        let result = await generate(text, workspace.name, workspace.primaryPath, existing, configuration, availableProviders, capabilityFamilies)
+        let result = await generate(
+            text,
+            workspace.name,
+            workspace.primaryPath,
+            existing,
+            configuration,
+            availableProviders,
+            capabilityFamilies,
+            selectedTemplateContext
+        )
         // Stale-completion guard: if the user reset, cancelled, switched workspaces, or started
         // a newer turn while this was in flight, drop the result instead of clobbering newer state.
         guard token == generationToken else { return }
@@ -508,7 +563,7 @@ final class WorkspaceAppStudioSession: ObservableObject {
     /// Real generation: the existing model-backed generator, read-only tool mode. The contract catalog is
     /// the built-ins PLUS the workspace's enabled-capability contract families, so the model can declare a
     /// `capability.<x>.read` against a capability the user just enabled (and the contract vet accepts it).
-    static let defaultGenerate: WorkspaceAppStudioGenerate = { intent, name, path, existing, configuration, providers, capabilityFamilies in
+    static let defaultGenerate: WorkspaceAppStudioGenerate = { intent, name, path, existing, configuration, providers, capabilityFamilies, templateContext in
         await WorkspaceAppStudioGenerator.generate(
             intent: intent,
             workspaceName: name,
@@ -517,6 +572,7 @@ final class WorkspaceAppStudioSession: ObservableObject {
             configuration: configuration,
             contractFamilies: WorkspaceAppContractRegistry().families + capabilityFamilies,
             availableProviders: providers,
+            templateContext: templateContext,
             fallbackRuntimes: WorkspaceAppStudioSession.providerFailoverOrder
         )
     }

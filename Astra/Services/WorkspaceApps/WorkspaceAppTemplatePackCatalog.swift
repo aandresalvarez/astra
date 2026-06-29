@@ -78,3 +78,41 @@ struct WorkspaceAppTemplatePackCatalog: Equatable {
         }
     }
 }
+
+struct WorkspaceAppStudioTemplateChoice: Identifiable, Equatable, Sendable {
+    var id: String
+    var title: String
+    var subtitle: String
+    var iconSystemName: String
+    var isSelected: Bool
+}
+
+enum WorkspaceAppStudioTemplateChoicePresentation {
+    static func choices(
+        from templates: [WorkspaceAppTemplatePackDescriptor],
+        selectedTemplateID: String?
+    ) -> [WorkspaceAppStudioTemplateChoice] {
+        templates
+            .sorted(by: stableOrder)
+            .map { template in
+                WorkspaceAppStudioTemplateChoice(
+                    id: template.id,
+                    title: template.displayName,
+                    subtitle: template.packDisplayName,
+                    iconSystemName: template.branding?.iconSystemName.isEmpty == false
+                        ? template.branding?.iconSystemName ?? "square.grid.2x2"
+                        : "square.grid.2x2",
+                    isSelected: template.id == selectedTemplateID
+                )
+            }
+    }
+
+    private static func stableOrder(
+        _ lhs: WorkspaceAppTemplatePackDescriptor,
+        _ rhs: WorkspaceAppTemplatePackDescriptor
+    ) -> Bool {
+        let lhsKey = [lhs.displayName, lhs.packDisplayName, lhs.id]
+        let rhsKey = [rhs.displayName, rhs.packDisplayName, rhs.id]
+        return lhsKey.lexicographicallyPrecedes(rhsKey) { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+    }
+}
