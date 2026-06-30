@@ -781,11 +781,19 @@ private enum BigQueryHostControlPolicy {
     ]
 
     static func rejectionMessage(arguments: [String]) -> String? {
-        let actionTokens = dropLeadingOptions(arguments)
+        if isBareHelpOrVersion(arguments) {
+            return nil
+        }
+
+        let actionTokens: [String]
+        switch actionTokensAfterLeadingOptions(arguments) {
+        case .allowed(let tokens):
+            actionTokens = tokens
+        case .blocked(let token):
+            return blockedMessage(command: token)
+        }
+
         guard let command = actionTokens.first?.lowercased() else {
-            if isBareHelpOrVersion(arguments) {
-                return nil
-            }
             return blockedMessage(command: "<missing>")
         }
         guard allowedCommands.contains(command) else {
@@ -794,7 +802,12 @@ private enum BigQueryHostControlPolicy {
         return nil
     }
 
-    private static func dropLeadingOptions(_ arguments: [String]) -> [String] {
+    private enum LeadingOptionParse {
+        case allowed([String])
+        case blocked(String)
+    }
+
+    private static func actionTokensAfterLeadingOptions(_ arguments: [String]) -> LeadingOptionParse {
         var index = 0
         while index < arguments.count {
             let token = arguments[index]
@@ -803,20 +816,36 @@ private enum BigQueryHostControlPolicy {
                 break
             }
             guard token.hasPrefix("-") else { break }
+
+            let optionName = optionName(for: token)
+            if helpOptions.contains(optionName) || versionOptions.contains(optionName) {
+                index += 1
+                continue
+            }
+            guard globalOptionsWithValues.contains(optionName) else {
+                return .blocked(optionName)
+            }
+
             index += 1
-            let optionName = token.split(separator: "=", maxSplits: 1).first.map(String.init) ?? token
-            if globalOptionsWithValues.contains(optionName), !token.contains("="), index < arguments.count {
+            if !token.contains("=") {
+                guard index < arguments.count else {
+                    return .blocked(optionName)
+                }
                 index += 1
             }
         }
-        return Array(arguments.dropFirst(index))
+        return .allowed(Array(arguments.dropFirst(index)))
     }
 
     private static func isBareHelpOrVersion(_ arguments: [String]) -> Bool {
         !arguments.isEmpty && arguments.allSatisfy { token in
-            let optionName = token.split(separator: "=", maxSplits: 1).first.map(String.init) ?? token
+            let optionName = optionName(for: token)
             return helpOptions.contains(optionName) || versionOptions.contains(optionName)
         }
+    }
+
+    private static func optionName(for token: String) -> String {
+        token.split(separator: "=", maxSplits: 1).first.map(String.init) ?? token
     }
 
     private static func blockedMessage(command: String) -> String {
