@@ -301,6 +301,25 @@ struct WorkspaceAppPackageTests {
         #expect(report.canInstall)
     }
 
+    @Test("package validation scans portable JSONL assets as text")
+    func packageValidationScansPortableJSONLAssetsAsText() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let packageURL = root.appendingPathComponent("jsonl-fixture.astra-app", isDirectory: true)
+        _ = try WorkspaceAppPackageService().exportPackage(manifest: Self.groceryManifest(), to: packageURL)
+
+        let fixtureURL = packageURL.appendingPathComponent("docs/fixtures/browser-events.jsonl")
+        try FileManager.default.createDirectory(at: fixtureURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data(##"{"event":{"name":"loaded","metadata":{"selector":"#submit"}}}"##.utf8)
+            .write(to: fixtureURL, options: [.atomic])
+        try Self.rewriteChecksums(at: packageURL)
+
+        let report = WorkspaceAppPackageService().validatePackage(at: packageURL)
+
+        #expect(report.canInstall)
+        #expect(!report.blockers.contains { $0.path == "/docs/fixtures/browser-events.jsonl" })
+    }
+
     @Test("package validation rejects checksummed symlink resources before hashing")
     func packageValidationRejectsChecksummedSymlinkResourcesBeforeHashing() throws {
         let root = try Self.temporaryRoot()
@@ -337,6 +356,62 @@ struct WorkspaceAppPackageTests {
         #expect(report.blockers.contains {
             $0.path == "/checksums.json/\(linkPath)"
                 && $0.message.contains("regular files")
+        })
+    }
+
+    @Test("package validation rejects unchecksummed non-regular package entries")
+    func packageValidationRejectsUnchecksummedNonRegularPackageEntries() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let packageURL = root.appendingPathComponent("linked-resource.astra-app", isDirectory: true)
+        _ = try WorkspaceAppPackageService().exportPackage(manifest: Self.groceryManifest(), to: packageURL)
+
+        let linkURL = packageURL.appendingPathComponent("assets/manifest-link.json")
+        try FileManager.default.createDirectory(at: linkURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(
+            at: linkURL,
+            withDestinationURL: packageURL.appendingPathComponent("manifest.json")
+        )
+
+        let report = WorkspaceAppPackageService().validatePackage(at: packageURL)
+
+        #expect(!report.canInstall)
+        #expect(report.blockers.contains {
+            $0.path == "/assets/manifest-link.json"
+                && $0.message.contains("regular files")
+        })
+    }
+
+    @Test("package validation stops expensive checks after resource budget failure")
+    func packageValidationStopsExpensiveChecksAfterResourceBudgetFailure() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let packageURL = root.appendingPathComponent("over-budget.astra-app", isDirectory: true)
+        _ = try WorkspaceAppPackageService().exportPackage(manifest: Self.groceryManifest(), to: packageURL)
+
+        let assetURL = packageURL.appendingPathComponent("assets/fixture.json")
+        try FileManager.default.createDirectory(at: assetURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data(#"{"fixture":"original"}"#.utf8).write(to: assetURL, options: [.atomic])
+        try Self.rewriteChecksums(at: packageURL)
+        try Data(#"{"fixture":"changed"}"#.utf8).write(to: assetURL, options: [.atomic])
+
+        var service = WorkspaceAppPackageService()
+        service.resourceReader.budget = WorkspaceAppPackageResourceBudget(
+            maxPackageBytes: 1,
+            maxFileBytes: 8 * 1_024 * 1_024,
+            maxScannedTextFileBytes: 2 * 1_024 * 1_024,
+            maxJSONLRows: 10_000,
+            maxJSONLLineBytes: 256 * 1_024
+        )
+
+        let report = service.validatePackage(at: packageURL)
+
+        #expect(!report.canInstall)
+        #expect(report.blockers.contains {
+            $0.path == "/" && $0.message.lowercased().contains("package resource limit")
+        })
+        #expect(!report.blockers.contains {
+            $0.path.hasPrefix("/checksums.json/")
         })
     }
 

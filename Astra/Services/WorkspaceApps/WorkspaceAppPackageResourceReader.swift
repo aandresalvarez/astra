@@ -169,6 +169,19 @@ struct WorkspaceAppPackageResourceReader {
         }
     }
 
+    func scanJSONLinesText(
+        at url: URL,
+        relativePath: String,
+        handleLine: (String) throws -> Void
+    ) throws {
+        try readJSONLines(at: url, relativePath: relativePath) { line in
+            guard let text = String(data: line, encoding: .utf8) else {
+                throw WorkspaceAppPackageResourceError.invalidUTF8(path: relativePath)
+            }
+            try handleLine(text)
+        }
+    }
+
     private func readJSONLines(
         at url: URL,
         relativePath: String,

@@ -311,7 +311,7 @@ struct WorkspaceAppPackageService {
             path: "/checksums.json",
             issues: &issues
         )
-        validateResourceBudget(packageURL: packageURL, issues: &issues)
+        let resourceBudgetPassed = validateResourceBudget(packageURL: packageURL, issues: &issues)
 
         if let manifest {
             let manifestReport = WorkspaceAppManifestValidator.validate(manifest)
@@ -322,6 +322,14 @@ struct WorkspaceAppPackageService {
                     message: issue.message
                 ))
             }
+        }
+        if !resourceBudgetPassed {
+            return WorkspaceAppPackageValidationReport(
+                package: package,
+                manifest: manifest,
+                issues: issues,
+                installState: installState(package: package, manifest: manifest, issues: issues)
+            )
         }
         if let package, let manifest {
             if package.appID != manifest.app.id {
@@ -338,7 +346,11 @@ struct WorkspaceAppPackageService {
             validateAllFilesAreChecksummed(declaredChecksums, packageURL: packageURL, issues: &issues)
         }
         validateDataExports(package: package, packageURL: packageURL, issues: &issues)
-        validateNoForbiddenPortableContent(packageURL: packageURL, issues: &issues)
+        validateNoForbiddenPortableContent(
+            packageURL: packageURL,
+            dataExportPaths: declaredDataExportPaths(in: packageURL),
+            issues: &issues
+        )
 
         return WorkspaceAppPackageValidationReport(
             package: package,
@@ -802,16 +814,28 @@ struct WorkspaceAppPackageService {
 
     private func validateNoForbiddenPortableContent(
         packageURL: URL,
+        dataExportPaths: Set<String>,
         issues: inout [WorkspaceAppPackageValidationReport.Issue]
     ) {
         for path in portableFilePaths(in: packageURL) {
             let relativePath = "/\(path)"
-            if path.hasSuffix(".jsonl") {
+            if path.hasSuffix(".jsonl"), dataExportPaths.contains(path) {
                 validateNoForbiddenJSONLContent(
                     at: packageURL.appendingPathComponent(path),
                     path: relativePath,
                     issues: &issues
                 )
+            } else if path.hasSuffix(".jsonl") {
+                do {
+                    try resourceReader.scanJSONLinesText(
+                        at: packageURL.appendingPathComponent(path),
+                        relativePath: relativePath
+                    ) { line in
+                        appendForbiddenContentIssues(in: line, path: relativePath, issues: &issues)
+                    }
+                } catch {
+                    issues.append(blocker(relativePath, error.localizedDescription))
+                }
             } else if path.hasSuffix(".json") || path.hasSuffix(".md") {
                 let text: String
                 do {
@@ -868,33 +892,52 @@ struct WorkspaceAppPackageService {
     private func validateResourceBudget(
         packageURL: URL,
         issues: inout [WorkspaceAppPackageValidationReport.Issue]
-    ) {
+    ) -> Bool {
         do {
             try resourceReader.validatePackageFiles(
                 packageURL: packageURL,
-                paths: portableFilePaths(in: packageURL),
+                paths: packageEntryPaths(in: packageURL),
                 isScannedTextPath: { path in
                     path.hasSuffix(".json") || path.hasSuffix(".md")
                 }
             )
+            return true
         } catch let error as WorkspaceAppPackageResourceError {
             issues.append(blocker(error.path ?? "/", error.localizedDescription))
+            if case .packageTooLarge = error {
+                return false
+            }
+            return true
         } catch {
             issues.append(blocker("/", error.localizedDescription))
+            return false
         }
     }
 
+    private func declaredDataExportPaths(in packageURL: URL) -> Set<String> {
+        Set((decodeDataExports(at: packageURL) ?? []).map(\.path))
+    }
+
     private func portableFilePaths(in packageURL: URL) -> [String] {
+        packageEntryPaths(in: packageURL).filter { path in
+            let url = packageURL.appendingPathComponent(path)
+            return (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
+        }
+    }
+
+    private func packageEntryPaths(in packageURL: URL) -> [String] {
         guard let enumerator = fileManager.enumerator(
             at: packageURL,
-            includingPropertiesForKeys: [.isRegularFileKey],
+            includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey, .isDirectoryKey],
             options: [.skipsHiddenFiles]
         ) else {
             return []
         }
         return enumerator.compactMap { item in
-            guard let url = item as? URL,
-                  (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else {
+            guard let url = item as? URL else {
+                return nil
+            }
+            if (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true {
                 return nil
             }
             let basePath = packageURL.standardizedFileURL.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
