@@ -58,6 +58,32 @@ struct AstraExternalRoutingTests {
         #expect(runValue == "0")
     }
 
+    @Test("external create task URL duplicate query keys preserve first value")
+    func externalCreateTaskURLDuplicateQueryKeysPreserveFirstValue() throws {
+        let workspaceID = UUID()
+        let ignoredWorkspaceID = UUID()
+        var components = URLComponents()
+        components.scheme = AstraExternalRouteCodec.scheme(for: .development)
+        components.host = "create-task"
+        components.queryItems = [
+            URLQueryItem(name: "workspace", value: workspaceID.uuidString),
+            URLQueryItem(name: "workspace", value: ignoredWorkspaceID.uuidString),
+            URLQueryItem(name: "goal", value: "Keep this goal"),
+            URLQueryItem(name: "goal", value: "Ignore this duplicate goal"),
+            URLQueryItem(name: "run", value: "1"),
+            URLQueryItem(name: "run", value: "false")
+        ]
+
+        let url = try #require(components.url)
+        let decoded = try #require(AstraExternalRouteCodec.route(from: url, channel: .development))
+
+        #expect(decoded.destination == .createTask(
+            workspaceID: workspaceID,
+            goal: "Keep this goal",
+            shouldRun: false
+        ))
+    }
+
     @Test("voice task titles are compact and readable")
     func voiceTaskTitlesAreCompactAndReadable() {
         #expect(AstraTaskIntentSupport.title(for: "") == "New ASTRA Task")
