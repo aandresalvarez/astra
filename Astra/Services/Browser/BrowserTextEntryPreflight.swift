@@ -215,7 +215,7 @@ enum BrowserTextEntryPreflight {
             "role": string(targetInfo["role"]),
             "tag": string(targetInfo["tag"]),
             "type": string(targetInfo["type"]),
-            "autocomplete": string(targetInfo["autocomplete"]),
+            "autocomplete": redactText ? "[redacted]" : string(targetInfo["autocomplete"]),
             "placeholder": redactText ? "[redacted]" : string(targetInfo["placeholder"]),
             "testID": string(targetInfo["testID"]),
             "href": redactText ? sanitizedSensitiveURL(string(targetInfo["href"])) : string(targetInfo["href"]),

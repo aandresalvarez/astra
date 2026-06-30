@@ -759,6 +759,7 @@ enum BrowserAutomationScripts {
             const rect = el.getBoundingClientRect();
             return style.display !== "none" && style.visibility !== "hidden" && (rect.width > 0 || rect.height > 0);
           };
+          const editable = (el) => "value" in el || el.isContentEditable || el.tagName === "TEXTAREA";
           const esc = (value) => {
             if (window.CSS && CSS.escape) return CSS.escape(value);
             return String(value).replace(/'/g, "\\\\'");
@@ -824,7 +825,7 @@ enum BrowserAutomationScripts {
             ? Array.from(document.querySelectorAll(selector))
             : Array.from(document.querySelectorAll("input, textarea, [contenteditable]"));
           for (const el of candidates) {
-            if (!visible(el)) continue;
+            if (!visible(el) || !editable(el)) continue;
             const before = "value" in el ? String(el.value || "") : String(el.textContent || "");
             const result = replaceInString(before);
             if (result.count <= 0) continue;
@@ -1184,7 +1185,7 @@ enum BrowserAutomationScripts {
                 role: metadata.role,
                 tag: metadata.tag,
                 type: metadata.type,
-                autocomplete: metadata.autocomplete,
+                autocomplete: "[redacted]",
                 placeholder: "[redacted]",
                 testID: metadata.testID,
                 href: astraSensitiveURL(metadata.href),

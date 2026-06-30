@@ -158,6 +158,7 @@ struct BrowserControlSafetyTests {
                 "role": "textbox",
                 "tag": "input",
                 "type": "password",
+                "autocomplete": "current-password",
                 "placeholder": "enter your secret",
                 "testID": "login-password",
                 "href": "https://example.com/reset-password?token=secret-token#secret",
@@ -174,7 +175,7 @@ struct BrowserControlSafetyTests {
         #expect(target["url"] as? String == "https://example.com")
         #expect(target["selector"] as? String == "input[redacted-selector]")
         #expect(target["requestedSelector"] as? String == "input[redacted-selector]")
-        #expect(target["autocomplete"] as? String == "")
+        #expect(target["autocomplete"] as? String == "[redacted]")
         #expect(target["label"] as? String == "[redacted]")
         #expect(target["placeholder"] as? String == "[redacted]")
         #expect(target["value"] == nil)
@@ -275,6 +276,9 @@ struct BrowserControlSafetyTests {
         )
         #expect(replaceScript.contains("astraSensitiveBlock(el, \"setValue\", selector || \"\""))
         #expect(replaceScript.contains("return JSON.stringify(blocked)"))
+        #expect(replaceScript.contains("const editable = (el) => \"value\" in el || el.isContentEditable || el.tagName === \"TEXTAREA\""))
+        #expect(replaceScript.contains("if (!visible(el) || !editable(el)) continue"))
+        #expect(replaceScript.contains("autocomplete: \"[redacted]\""))
         #expect(replaceScript.contains("href: astraSensitiveURL(metadata.href)"))
         #expect(replaceScript.contains("url: astraSensitiveURL(location.href)"))
         let replacementCheck = try #require(replaceScript.range(of: "const result = replaceInString(before);"))
@@ -536,6 +540,7 @@ struct BrowserControlSafetyTests {
                 "name": "secret-frame",
                 "role": "frame",
                 "tag": "iframe",
+                "autocomplete": "one-time-code",
                 "href": "https://auth.example.com/challenge?token=secret#otp",
                 "url": "https://app.example.com/login?session=secret#frame",
                 "framePath": ["https://auth.example.com/challenge?token=secret#otp"],
@@ -548,6 +553,7 @@ struct BrowserControlSafetyTests {
         #expect(target["selector"] as? String == "iframe[redacted-selector]")
         #expect(target["label"] as? String == "[redacted]")
         #expect(target["name"] as? String == "[redacted]")
+        #expect(target["autocomplete"] as? String == "[redacted]")
         #expect(target["href"] as? String == "https://auth.example.com")
         #expect(target["url"] as? String == "https://app.example.com")
         #expect(target["framePath"] as? [String] == ["https://auth.example.com"])
