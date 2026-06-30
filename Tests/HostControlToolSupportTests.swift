@@ -422,6 +422,19 @@ struct HostControlToolSupportTests {
         #expect(!result.stdout.contains("finished"))
     }
 
+    @Test("Host control process runner uses monotonic deadlines and fail-closed pipe drain")
+    func hostControlProcessRunnerUsesMonotonicDeadlinesAndFailClosedPipeDrain() throws {
+        let source = try hostControlToolSource()
+        let wait = try sourceSnippet(startingWith: "    private func waitForProcess(", endingBefore: "    private func dispatchInterval", in: source)
+        let drain = try sourceSnippet(startingWith: "    private func drainPipe(", endingBefore: "private final class LockedFlag", in: source)
+
+        #expect(wait.contains("DispatchTime.now()"))
+        #expect(!wait.contains("Date()"))
+        #expect(drain.contains("guard flags >= 0 else"))
+        #expect(drain.contains("guard fcntl(descriptor, F_SETFL, flags | O_NONBLOCK) >= 0 else"))
+        #expect(drain.contains("stopReading(handle)"))
+    }
+
     @Test("Host control process runner force stops output limited processes promptly")
     func hostControlProcessRunnerForceStopsOutputLimitedProcessesPromptly() throws {
         let root = FileManager.default.temporaryDirectory
@@ -736,6 +749,35 @@ struct HostControlToolSupportTests {
         let start = try #require(text.range(of: "stdout:\n"))
         let end = try #require(text.range(of: "\nstderr:", range: start.upperBound..<text.endIndex))
         return String(text[start.upperBound..<end.lowerBound])
+    }
+
+    private func hostControlToolSource() throws -> String {
+        let root = try repositoryRoot()
+        return try String(
+            contentsOf: root.appendingPathComponent("Tools/HostControlToolSupport/HostControlToolSupport.swift"),
+            encoding: .utf8
+        )
+    }
+
+    private func sourceSnippet(startingWith start: String, endingBefore end: String, in source: String) throws -> String {
+        let startIndex = try #require(source.range(of: start)?.lowerBound)
+        let endIndex = try #require(source.range(of: end, range: startIndex..<source.endIndex)?.lowerBound)
+        return String(source[startIndex..<endIndex])
+    }
+
+    private func repositoryRoot() throws -> URL {
+        var candidate = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        while true {
+            if FileManager.default.fileExists(atPath: candidate.appendingPathComponent("Package.swift").path),
+               FileManager.default.fileExists(atPath: candidate.appendingPathComponent("Astra").path) {
+                return candidate
+            }
+            let parent = candidate.deletingLastPathComponent()
+            if parent.path == candidate.path {
+                throw CocoaError(.fileNoSuchFile)
+            }
+            candidate = parent
+        }
     }
 }
 

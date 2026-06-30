@@ -403,7 +403,7 @@ public final class HostControlProcessRunner: HostControlProcessRunning {
         timeoutSeconds: TimeInterval,
         outputLimitExceeded: LockedFlag
     ) -> ProcessWaitOutcome {
-        let deadline = Date().addingTimeInterval(timeoutSeconds)
+        let deadline = DispatchTime.now() + dispatchInterval(seconds: timeoutSeconds)
         while true {
             if semaphore.wait(timeout: .now() + 0.05) == .success {
                 return .exited
@@ -411,10 +411,15 @@ public final class HostControlProcessRunner: HostControlProcessRunning {
             if outputLimitExceeded.isSet {
                 return .outputLimited
             }
-            if Date() >= deadline {
+            if DispatchTime.now() >= deadline {
                 return .timedOut
             }
         }
+    }
+
+    private func dispatchInterval(seconds: TimeInterval) -> DispatchTimeInterval {
+        let milliseconds = max(1, Int((seconds * 1_000).rounded(.up)))
+        return .milliseconds(milliseconds)
     }
 
     private func stopProcess(_ process: Process, semaphore: DispatchSemaphore, graceSeconds: TimeInterval) {
@@ -445,9 +450,15 @@ public final class HostControlProcessRunner: HostControlProcessRunning {
         }
         let descriptor = handle.fileDescriptor
         let flags = fcntl(descriptor, F_GETFL)
-        if flags >= 0 {
-            _ = fcntl(descriptor, F_SETFL, flags | O_NONBLOCK)
+        guard flags >= 0 else {
+            stopReading(handle)
+            return
         }
+        guard fcntl(descriptor, F_SETFL, flags | O_NONBLOCK) >= 0 else {
+            stopReading(handle)
+            return
+        }
+
         var bytes = [UInt8](repeating: 0, count: 8192)
         defer { stopReading(handle) }
         while true {
