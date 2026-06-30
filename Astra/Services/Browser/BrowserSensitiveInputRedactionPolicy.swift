@@ -376,7 +376,7 @@ enum BrowserSensitiveInputRedactionPolicy {
             .flatMap { [$0, strippedSelectorPrefix($0)] }
         return variants
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty && isSensitiveMetadataCandidate($0) }
+            .filter { !$0.isEmpty && (isSensitiveMetadataCandidate($0) || isSecretShapedMetadataCandidate($0)) }
     }
 
     private static func isSensitiveMetadataCandidate(_ text: String) -> Bool {
@@ -388,6 +388,25 @@ enum BrowserSensitiveInputRedactionPolicy {
             || lower.contains("%")
             || lower.contains("\\")
             || lower.count > 20
+    }
+
+    private static func isSecretShapedMetadataCandidate(_ text: String) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count >= 16 else { return false }
+        guard !trimmed.unicodeScalars.contains(where: { CharacterSet.whitespacesAndNewlines.contains($0) }) else {
+            return false
+        }
+
+        let alphanumericCharacters = trimmed.filter { $0.isLetter || $0.isNumber }
+        guard alphanumericCharacters.count >= 12 else { return false }
+
+        let digitCount = alphanumericCharacters.filter(\.isNumber).count
+        let separatorCount = trimmed.filter { "-_%.+=".contains($0) }.count
+        let hasLetter = alphanumericCharacters.contains(where: \.isLetter)
+        let hasDigit = digitCount > 0
+        return digitCount >= 6
+            || separatorCount >= 2
+            || (hasLetter && hasDigit && alphanumericCharacters.count >= 20)
     }
 
     private static func textContainsSensitiveValue(_ text: String, sensitiveValue: String) -> Bool {

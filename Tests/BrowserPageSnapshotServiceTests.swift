@@ -41,6 +41,47 @@ struct BrowserPageSnapshotServiceTests {
         #expect(!compacted.contains("#password"))
     }
 
+    @Test("full mode redacts secret-shaped metadata for already-redacted sensitive snapshot values")
+    func fullModeRedactsSecretShapedMetadataForAlreadyRedactedSensitiveSnapshotValues() throws {
+        let secret = "4f9c8a7b-91d2-4e6a-ac11-772b6612c08e"
+        let json = """
+        {
+          "ok": true,
+          "url": "https://example.com",
+          "title": "Example",
+          "text": "Preview echoes 4f9c8a7b-91d2-4e6a-ac11-772b6612c08e outside the input.",
+          "controls": [
+            {
+              "selector": "#4f9c8a7b-91d2-4e6a-ac11-772b6612c08e",
+              "tag": "input",
+              "role": "textbox",
+              "type": "password",
+              "label": "4f9c8a7b-91d2-4e6a-ac11-772b6612c08e",
+              "name": "4f9c8a7b-91d2-4e6a-ac11-772b6612c08e",
+              "value": "[redacted-sensitive-input]"
+            }
+          ]
+        }
+        """
+
+        let compacted = try BrowserPageSnapshotService.compactSnapshot(
+            json: json,
+            mode: .full,
+            query: nil,
+            limit: nil
+        )
+
+        let object = try jsonObject(from: compacted)
+        let controls = try #require(object["controls"] as? [[String: Any]])
+        let control = try #require(controls.first)
+
+        #expect(object["text"] as? String == "Preview echoes [redacted-sensitive-input] outside the input.")
+        #expect(control["selector"] as? String == "[redacted-sensitive-input]")
+        #expect(control["label"] as? String == "[redacted-sensitive-input]")
+        #expect(control["name"] as? String == "[redacted-sensitive-input]")
+        #expect(!compacted.contains(secret))
+    }
+
     @Test("snapshot output redacts sensitive focused and control values")
     func snapshotOutputRedactsSensitiveFocusedAndControlValues() throws {
         let compacted = try BrowserPageSnapshotService.compactSnapshot(
