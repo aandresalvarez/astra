@@ -998,6 +998,49 @@ struct WorkspaceToolSupportTests {
         #expect(WorkspaceManagedJobPathContainment.relativeComponents(from: "/tmp/astra", to: "/tmp/astra-other/jobs").isEmpty)
     }
 
+    @Test("Managed job lookup reports missing jobs separately from unsafe files")
+    func managedJobLookupReportsMissingJobsSeparatelyFromUnsafeFiles() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-workspace-job-missing-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let jobRoot = root.appendingPathComponent("jobs", isDirectory: true)
+        let store = WorkspaceManagedJobStore(rootPath: jobRoot.path)
+
+        do {
+            _ = try store.load(jobID: "missing-job")
+            Issue.record("Expected missing job lookup to throw")
+        } catch {
+            #expect(error.localizedDescription.contains("Workspace job not found: missing-job"))
+            #expect(!error.localizedDescription.contains("unsafe or unreadable"))
+        }
+
+        let configuration = WorkspaceToolConfiguration(
+            dockerExecutable: "/bin/echo",
+            image: "astra/workspace:latest",
+            containerName: "astra-test-missing-job",
+            workdir: "/workspace",
+            network: "bridge",
+            taskID: "task-missing",
+            runID: "run-missing",
+            mounts: [],
+            jobRootHostPath: jobRoot.path,
+            jobRootContainerPath: "/workspace/jobs"
+        )
+        let manager = DockerWorkspaceJobManager(
+            configuration: configuration,
+            executor: DockerWorkspaceCommandExecutor(configuration: configuration)
+        )
+
+        let status = manager.status(jobID: "missing-job")
+        let tail = manager.tail(jobID: "missing-job", stream: "stdout", lines: 10)
+        #expect(status.status == .failed)
+        #expect(status.message?.contains("Workspace job not found: missing-job") == true)
+        #expect(tail.text.contains("Workspace job not found: missing-job"))
+        #expect(!tail.text.contains("unsafe or unreadable"))
+    }
+
     @Test("Docker workspace job manager maps host workspace path before persisting command")
     func dockerWorkspaceJobManagerMapsHostWorkspacePathBeforePersistingCommand() throws {
         let root = FileManager.default.temporaryDirectory

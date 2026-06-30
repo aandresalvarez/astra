@@ -177,8 +177,12 @@ public final class WorkspaceManagedJobStore {
 
     public func load(jobID: String) throws -> WorkspaceManagedJobRecord {
         let directory = jobDirectory(jobID: jobID)
-        guard let data = trustedFileData(at: WorkspaceManagedJobFileLayout(directory: directory).metadata, inside: directory) else {
-            throw trustedFileReadError(path: WorkspaceManagedJobFileLayout(directory: directory).metadata.path)
+        let metadataURL = WorkspaceManagedJobFileLayout(directory: directory).metadata
+        if pathExistsWithoutFollowingSymlink(at: metadataURL) == false {
+            throw jobNotFoundError(jobID: safeJobID(jobID))
+        }
+        guard let data = trustedFileData(at: metadataURL, inside: directory) else {
+            throw trustedFileReadError(path: metadataURL.path)
         }
         var record = try decoder.decode(WorkspaceManagedJobRecord.self, from: data)
         applyTrustedFileLayout(to: &record, jobID: safeJobID(jobID), directory: directory)
@@ -421,6 +425,17 @@ public final class WorkspaceManagedJobStore {
         return statInfo
     }
 
+    private func pathExistsWithoutFollowingSymlink(at url: URL) -> Bool? {
+        var statInfo = stat()
+        if lstat(url.standardizedFileURL.path, &statInfo) == 0 {
+            return true
+        }
+        if errno == ENOENT || errno == ENOTDIR {
+            return false
+        }
+        return nil
+    }
+
     private func isTrustedDirectoryChain(from root: URL, to directory: URL) -> Bool {
         let rootPath = root.standardizedFileURL.path
         var current = directory.standardizedFileURL
@@ -445,6 +460,14 @@ public final class WorkspaceManagedJobStore {
             domain: "WorkspaceManagedJobStore",
             code: 1,
             userInfo: [NSLocalizedDescriptionKey: "Workspace job file is unsafe or unreadable: \(path)"]
+        )
+    }
+
+    private func jobNotFoundError(jobID: String) -> Error {
+        NSError(
+            domain: "WorkspaceManagedJobStore",
+            code: 2,
+            userInfo: [NSLocalizedDescriptionKey: "Workspace job not found: \(jobID)"]
         )
     }
 
