@@ -171,6 +171,26 @@ struct HostControlToolSupportTests {
         #expect(!FileManager.default.fileExists(atPath: log.path))
     }
 
+    @Test("Host control gcloud allows non-BigQuery commands with bq positional arguments")
+    func hostControlGcloudAllowsNonBigQueryCommandsWithBQPositionalArguments() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-host-control-gcloud-bq-positional-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let log = root.appendingPathComponent("host.log", isDirectory: false)
+        let gcloud = try fakeExecutable(named: "gcloud", root: root, log: log, stdout: "gcloud:$*")
+        let server = HostControlMCPServer(configuration: HostControlToolConfiguration(gcloudExecutable: gcloud.path))
+
+        let result = try call(server, id: 1, tool: "gcloud", arguments: [
+            "arguments": ["compute", "ssh", "bq"]
+        ])
+
+        #expect(try resultText(result).contains("gcloud:compute ssh bq"))
+        let hostLog = try String(contentsOf: log, encoding: .utf8)
+        #expect(hostLog.contains("gcloud compute ssh bq"))
+    }
+
     @Test("Host and Docker mixed harness routes control-plane and workspace commands separately")
     func hostAndDockerMixedHarnessRoutesControlPlaneAndWorkspaceCommandsSeparately() throws {
         let root = FileManager.default.temporaryDirectory

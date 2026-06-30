@@ -771,6 +771,7 @@ public final class HostControlMCPServer {
 
 private enum GCloudHostControlPolicy {
     private static let bigQueryGroup = "bq"
+    private static let releaseTracks: Set<String> = ["alpha", "beta"]
     private static let globalOptionsWithValues: Set<String> = [
         "--account",
         "--billing-project",
@@ -784,13 +785,27 @@ private enum GCloudHostControlPolicy {
 
     static func rejectionMessage(arguments: [String]) -> String? {
         let commandPath = commandPathTokens(arguments)
-        guard commandPath.contains(where: { $0.lowercased() == bigQueryGroup }) else {
+        guard isBigQueryCommandFamily(commandPath) else {
             return nil
         }
         return [
             "gcloud command is not allowed by ASTRA host-control policy: BigQuery command group.",
             "Use the bq host-control tool for help/version metadata only, or an explicitly approved BigQuery capability for resource access."
         ].joined(separator: " ")
+    }
+
+    private static func isBigQueryCommandFamily(_ commandPath: [String]) -> Bool {
+        guard let first = commandPath.first?.lowercased() else {
+            return false
+        }
+        if first == bigQueryGroup {
+            return true
+        }
+        guard releaseTracks.contains(first),
+              let second = commandPath.dropFirst().first?.lowercased() else {
+            return false
+        }
+        return second == bigQueryGroup
     }
 
     private static func commandPathTokens(_ arguments: [String]) -> [String] {
