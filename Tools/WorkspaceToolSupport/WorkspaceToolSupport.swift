@@ -354,10 +354,15 @@ public struct WorkspaceToolConfiguration: Equatable, Sendable {
         if let command = firstExecutableHostControlPlaneCommand(in: shellTokens(in: command), commands: commands, depth: depth) {
             return command
         }
-        if let command = firstPythonSubprocessControlPlaneCommand(in: command, commands: commands) {
+        if let command = firstPythonSubprocessControlPlaneCommand(in: command, commands: commands, depth: depth) {
             return command
         }
-        for nestedCommand in shellCommandSubstitutions(in: command) {
+        for nestedCommand in shellInputScripts(in: command) {
+            if let command = firstHostControlPlaneCommand(in: nestedCommand, commands: commands, depth: depth + 1) {
+                return command
+            }
+        }
+        for nestedCommand in shellNestedCommands(in: command) {
             if let command = firstHostControlPlaneCommand(in: nestedCommand, commands: commands, depth: depth + 1) {
                 return command
             }
@@ -371,13 +376,21 @@ public struct WorkspaceToolConfiguration: Equatable, Sendable {
         depth: Int
     ) -> WorkspaceControlPlaneCommand? {
         var expectingCommand = true
+        var variables: [String: String] = [:]
         var index = tokens.startIndex
         while index < tokens.endIndex {
             switch tokens[index] {
             case .separator:
                 expectingCommand = true
-            case .word:
+            case .word(let word):
                 if expectingCommand {
+                    if let assignment = shellAssignment(from: word.value),
+                       nextNonAssignmentWordIndex(after: index, in: tokens) == nil {
+                        variables[assignment.name] = assignment.value
+                        expectingCommand = false
+                        index = tokens.index(after: index)
+                        continue
+                    }
                     let commandIndex = normalizedCommandIndex(from: index, in: tokens)
                     if commandIndex != index {
                         index = commandIndex
@@ -387,7 +400,7 @@ public struct WorkspaceToolConfiguration: Equatable, Sendable {
                        let command = firstHostControlPlaneCommand(in: shellScript, commands: commands, depth: depth + 1) {
                         return command
                     }
-                    if let command = controlPlaneCommand(at: commandIndex, in: tokens, commands: commands) {
+                    if let command = controlPlaneCommand(at: commandIndex, in: tokens, commands: commands, variables: variables) {
                         return command
                     }
                     expectingCommand = false
@@ -406,7 +419,7 @@ public struct WorkspaceToolConfiguration: Equatable, Sendable {
         switch word.value {
         case "env":
             return envCommandIndex(after: index, in: tokens) ?? index
-        case "command":
+        case "command", "exec":
             return commandBuiltinTargetIndex(after: index, in: tokens) ?? index
         default:
             return index
@@ -417,6 +430,13 @@ public struct WorkspaceToolConfiguration: Equatable, Sendable {
         var cursor = nextWordIndex(after: index, in: tokens)
         while let current = cursor {
             guard case .word(let word) = tokens[current] else { return nil }
+            if word.value == "--" {
+                return nextWordIndex(after: current, in: tokens)
+            }
+            if envOptionConsumesNextOperand(word.value) {
+                cursor = nextWordIndex(after: current, in: tokens).flatMap { nextWordIndex(after: $0, in: tokens) }
+                continue
+            }
             if word.value.hasPrefix("-") || isAssignmentWord(word.value) {
                 cursor = nextWordIndex(after: current, in: tokens)
                 continue
@@ -424,6 +444,10 @@ public struct WorkspaceToolConfiguration: Equatable, Sendable {
             return current
         }
         return nil
+    }
+
+    private func envOptionConsumesNextOperand(_ word: String) -> Bool {
+        word == "-u" || word == "--unset" || word == "-C" || word == "--chdir"
     }
 
     private func commandBuiltinTargetIndex(after index: Int, in tokens: [ShellToken]) -> Int? {
@@ -452,6 +476,19 @@ public struct WorkspaceToolConfiguration: Equatable, Sendable {
         }
     }
 
+    private func nextNonAssignmentWordIndex(after index: Int, in tokens: [ShellToken]) -> Int? {
+        var cursor = nextWordIndex(after: index, in: tokens)
+        while let current = cursor {
+            guard case .word(let word) = tokens[current] else { return nil }
+            if isAssignmentWord(word.value) {
+                cursor = nextWordIndex(after: current, in: tokens)
+                continue
+            }
+            return current
+        }
+        return nil
+    }
+
     private func shellRunnerScript(at index: Int, in tokens: [ShellToken]) -> String? {
         guard case .word(let command) = tokens[index],
               ["sh", "bash", "zsh"].contains(WorkspaceControlPlaneCommand.normalizedBasename(command.value)) else {
@@ -460,7 +497,7 @@ public struct WorkspaceToolConfiguration: Equatable, Sendable {
         var cursor = nextWordIndex(after: index, in: tokens)
         while let current = cursor {
             guard case .word(let word) = tokens[current] else { return nil }
-            if word.value == "-c" {
+            if shellOptionInvokesCommandString(word.value) {
                 guard let scriptIndex = nextWordIndex(after: current, in: tokens),
                       case .word(let script) = tokens[scriptIndex] else {
                     return nil
@@ -472,13 +509,24 @@ public struct WorkspaceToolConfiguration: Equatable, Sendable {
         return nil
     }
 
+    private func shellOptionInvokesCommandString(_ word: String) -> Bool {
+        if word == "-c" {
+            return true
+        }
+        guard word.hasPrefix("-"), !word.hasPrefix("--") else {
+            return false
+        }
+        return word.dropFirst().contains("c")
+    }
+
     private func controlPlaneCommand(
         at index: Int,
         in tokens: [ShellToken],
-        commands: [WorkspaceControlPlaneCommand]
+        commands: [WorkspaceControlPlaneCommand],
+        variables: [String: String] = [:]
     ) -> WorkspaceControlPlaneCommand? {
         guard case .word(let word) = tokens[index],
-              let candidate = commands.first(where: { $0.matches(word.value) }) else {
+              let candidate = commands.first(where: { $0.matches(resolvedShellWord(word, variables: variables)) }) else {
             return nil
         }
         guard !candidate.subcommands.isEmpty else {
@@ -509,42 +557,66 @@ public struct WorkspaceToolConfiguration: Equatable, Sendable {
 
     private func firstPythonSubprocessControlPlaneCommand(
         in command: String,
-        commands: [WorkspaceControlPlaneCommand]
+        commands: [WorkspaceControlPlaneCommand],
+        depth: Int
     ) -> WorkspaceControlPlaneCommand? {
-        let pattern = #"subprocess\s*\.\s*(?:run|Popen|call|check_call|check_output)\s*\(\s*\[\s*['"]([^'"]+)['"]"#
-        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
-        let range = NSRange(command.startIndex..<command.endIndex, in: command)
-        guard let match = regex.firstMatch(in: command, range: range),
-              match.numberOfRanges > 1,
-              let toolRange = Range(match.range(at: 1), in: command) else {
-            return nil
+        for arguments in pythonSubprocessListArguments(in: command) {
+            let tokens = arguments.map { ShellToken.word(ShellWord(value: $0)) }
+            if let command = firstExecutableHostControlPlaneCommand(in: tokens, commands: commands, depth: depth + 1) {
+                return command
+            }
         }
-        let tool = String(command[toolRange])
-        return commands.first { candidate in
-            candidate.subcommands.isEmpty && candidate.matches(tool)
+        for shellCommand in pythonShellStringCommands(in: command) {
+            if let command = firstHostControlPlaneCommand(in: shellCommand, commands: commands, depth: depth + 1) {
+                return command
+            }
         }
+        return nil
     }
 
     private func shellTokens(in command: String) -> [ShellToken] {
         var tokens: [ShellToken] = []
         var current = ""
+        var allowsVariableExpansion = true
         var quote: ShellQuote?
         func finishWord() {
             guard !current.isEmpty else { return }
-            tokens.append(.word(ShellWord(value: current)))
+            tokens.append(.word(ShellWord(value: current, allowsVariableExpansion: allowsVariableExpansion)))
             current.removeAll(keepingCapacity: true)
+            allowsVariableExpansion = true
         }
 
-        for character in command {
+        var index = command.startIndex
+        while index < command.endIndex {
+            let character = command[index]
+            let next = command.index(after: index)
             if let activeQuote = quote {
                 if activeQuote.matches(character) {
                     quote = nil
+                } else if activeQuote != .single, character == "\\", next < command.endIndex {
+                    current.append(command[next])
+                    if command[next] == "$", current.count == 1 {
+                        allowsVariableExpansion = false
+                    }
+                    index = command.index(after: next)
+                    continue
                 } else {
                     current.append(character)
                 }
+                index = next
                 continue
             }
-            if let nextQuote = ShellQuote(character) {
+            if character == "\\", next < command.endIndex {
+                current.append(command[next])
+                if command[next] == "$", current.count == 1 {
+                    allowsVariableExpansion = false
+                }
+                index = command.index(after: next)
+                continue
+            } else if let nextQuote = ShellQuote(character) {
+                if nextQuote == .single, current.isEmpty {
+                    allowsVariableExpansion = false
+                }
                 quote = nextQuote
             } else if isShellWordCharacter(character) || character == "=" {
                 current.append(character)
@@ -554,18 +626,26 @@ public struct WorkspaceToolConfiguration: Equatable, Sendable {
                     tokens.append(.separator)
                 }
             }
+            index = next
         }
         finishWord()
         return tokens
     }
 
-    private func shellCommandSubstitutions(in command: String) -> [String] {
+    private func shellNestedCommands(in command: String) -> [String] {
         var substitutions: [String] = []
         var index = command.startIndex
         while index < command.endIndex {
             let character = command[index]
             let next = command.index(after: index)
             if character == "$", next < command.endIndex, command[next] == "(" {
+                if let extracted = parenthesizedCommand(in: command, start: next) {
+                    substitutions.append(extracted.command)
+                    index = extracted.end
+                    continue
+                }
+            }
+            if (character == "<" || character == ">"), next < command.endIndex, command[next] == "(" {
                 if let extracted = parenthesizedCommand(in: command, start: next) {
                     substitutions.append(extracted.command)
                     index = extracted.end
@@ -580,6 +660,48 @@ public struct WorkspaceToolConfiguration: Equatable, Sendable {
             index = next
         }
         return substitutions
+    }
+
+    private func shellInputScripts(in command: String) -> [String] {
+        pipedShellInputScripts(in: command) + heredocShellInputScripts(in: command)
+    }
+
+    private func pipedShellInputScripts(in command: String) -> [String] {
+        let pattern = #"(?:^|[;&|]\s*)(?:printf|echo)\s+(?:--\s+)?(['"])([\s\S]*?)\1\s*\|\s*(?:[A-Za-z0-9_./-]*/)?(?:sh|bash|zsh)(?:\s|$)"#
+        return captureGroup(2, matchesOf: pattern, in: command)
+    }
+
+    private func heredocShellInputScripts(in command: String) -> [String] {
+        let pattern = #"(?:^|[;&|]\s*)(?:[A-Za-z0-9_./-]*/)?(?:sh|bash|zsh)\s+<<-?\s*['"]?([A-Za-z_][A-Za-z0-9_]*)['"]?[^\n]*\n([\s\S]*?)\n\1(?:\n|$)"#
+        return captureGroup(2, matchesOf: pattern, in: command)
+    }
+
+    private func pythonSubprocessListArguments(in command: String) -> [[String]] {
+        let pattern = #"subprocess\s*\.\s*(?:run|Popen|call|check_call|check_output)\s*\(\s*\[([^\]]+)\]"#
+        return captureGroup(1, matchesOf: pattern, in: command).map { quotedStrings(in: $0) }
+    }
+
+    private func pythonShellStringCommands(in command: String) -> [String] {
+        let subprocessPattern = #"subprocess\s*\.\s*(?:run|Popen|call|check_call|check_output)\s*\(\s*(['"])([\s\S]*?)\1[\s\S]*?shell\s*=\s*True"#
+        let osSystemPattern = #"os\s*\.\s*system\s*\(\s*(['"])([\s\S]*?)\1"#
+        return captureGroup(2, matchesOf: subprocessPattern, in: command)
+            + captureGroup(2, matchesOf: osSystemPattern, in: command)
+    }
+
+    private func quotedStrings(in text: String) -> [String] {
+        captureGroup(1, matchesOf: #"['"]([^'"]+)['"]"#, in: text)
+    }
+
+    private func captureGroup(_ group: Int, matchesOf pattern: String, in text: String) -> [String] {
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return [] }
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        return regex.matches(in: text, range: range).compactMap { match in
+            guard match.numberOfRanges > group,
+                  let range = Range(match.range(at: group), in: text) else {
+                return nil
+            }
+            return String(text[range])
+        }
     }
 
     private func parenthesizedCommand(in command: String, start: String.Index) -> (command: String, end: String.Index)? {
@@ -620,7 +742,15 @@ public struct WorkspaceToolConfiguration: Equatable, Sendable {
     }
 
     private func isShellWordCharacter(_ character: Character) -> Bool {
-        character.isLetter || character.isNumber || character == "_" || character == "-" || character == "." || character == "/"
+        character.isLetter
+            || character.isNumber
+            || character == "_"
+            || character == "-"
+            || character == "."
+            || character == "/"
+            || character == "$"
+            || character == "{"
+            || character == "}"
     }
 
     private func isShellCommandSeparator(_ character: Character) -> Bool {
@@ -628,12 +758,42 @@ public struct WorkspaceToolConfiguration: Equatable, Sendable {
     }
 
     private func isAssignmentWord(_ word: String) -> Bool {
+        shellAssignment(from: word) != nil
+    }
+
+    private func shellAssignment(from word: String) -> (name: String, value: String)? {
         guard let equals = word.firstIndex(of: "="), equals != word.startIndex else {
-            return false
+            return nil
         }
-        return word[..<equals].allSatisfy { character in
+        let name = word[..<equals]
+        guard name.allSatisfy({ character in
             character.isLetter || character.isNumber || character == "_"
+        }) else {
+            return nil
         }
+        let valueStart = word.index(after: equals)
+        return (String(name), String(word[valueStart...]))
+    }
+
+    private func resolvedShellWord(_ word: ShellWord, variables: [String: String]) -> String {
+        guard word.allowsVariableExpansion,
+              let name = shellVariableReferenceName(word.value),
+              let value = variables[name] else {
+            return word.value
+        }
+        return value
+    }
+
+    private func shellVariableReferenceName(_ value: String) -> String? {
+        if value.hasPrefix("${"), value.hasSuffix("}") {
+            let start = value.index(value.startIndex, offsetBy: 2)
+            let end = value.index(before: value.endIndex)
+            return String(value[start..<end])
+        }
+        guard value.hasPrefix("$"), value.count > 1 else {
+            return nil
+        }
+        return String(value.dropFirst())
     }
 
     private func hostControlPlaneCommandMessage(_ command: WorkspaceControlPlaneCommand) -> String {
@@ -695,6 +855,7 @@ private enum ShellToken {
 
 private struct ShellWord {
     var value: String
+    var allowsVariableExpansion = true
 }
 
 private enum ShellQuote {

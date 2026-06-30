@@ -265,12 +265,26 @@ struct WorkspaceToolSupportTests {
             "echo $(gcloud auth list --format=json)",
             "env TOKEN=$(gcloud auth application-default print-access-token)",
             "sh -c 'gcloud projects list'",
+            "bash -lc 'gcloud projects list'",
             "command gcloud projects list",
+            "exec gcloud auth list",
+            "sh -c 'exec gcloud auth list'",
+            "env -u FOO gcloud auth list",
+            "env --unset FOO --chdir /tmp gcloud auth list",
             "gh -R owner/repo api repos/owner/repo",
             "gh --repo owner/repo pr view 148",
             "gh --repo=owner/repo api repos/owner/repo",
             "$(ssh deid-jsn-workbench hostname)",
-            "python3 -c \"import subprocess; subprocess.run(['bq', 'ls'])\""
+            "bash -c 'cat <(gcloud auth list)'",
+            "g\\cloud auth list",
+            "s\\sh deid-jsn-workbench hostname",
+            "printf 'gcloud auth list\\n' | sh",
+            "sh <<'EOF'\ngcloud auth list\nEOF",
+            "cmd=gcloud; $cmd auth list",
+            "python3 -c \"import subprocess; subprocess.run(['bq', 'ls'])\"",
+            "python3 -c \"import subprocess; subprocess.run(['gh', 'api', 'repos/owner/repo'])\"",
+            "python3 -c \"import subprocess; subprocess.run('gcloud auth list', shell=True)\"",
+            "python3 -c \"import os; os.system('ssh deid-jsn-workbench hostname')\""
         ]
 
         for command in commands {
