@@ -242,7 +242,7 @@ struct HostControlToolSupportTests {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
 
         let log = root.appendingPathComponent("host.log", isDirectory: false)
-        let gcloud = try fakeExecutable(named: "gcloud", root: root, log: log, stdout: "FAKE_AMBIENT_ADC_OUTPUT")
+        let gcloud = try fakeExecutable(named: "gcloud", root: root, log: log, stdout: "gcloud:$*")
         let configuration = HostControlToolConfiguration(gcloudExecutable: gcloud.path)
         let server = HostControlMCPServer(configuration: configuration)
 
@@ -501,16 +501,62 @@ struct HostControlToolSupportTests {
 
     private func fakeExecutable(named name: String, root: URL, log: URL, stdout: String) throws -> URL {
         let executable = root.appendingPathComponent(name, isDirectory: false)
-        let quotedLog = log.path.replacingOccurrences(of: "'", with: "'\\''")
+        let quotedLog = shellSingleQuoted(log.path)
+        let stdoutCommands = fakeExecutableStdoutCommands(for: stdout)
         try """
         #!/bin/sh
-        printf '\(name) %s\\n' "$*" >> '\(quotedLog)'
-        printf '\(name):%s\\n' "$*"
-        if [ '\(name)' = 'gh' ]; then printf 'secret:%s\\n' "$JIRA_TOKEN_ENV"; fi
+        printf '\(name) %s\\n' "$*" >> \(quotedLog)
+        \(stdoutCommands)
         exit 0
         """.write(to: executable, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
         return executable
+    }
+
+    private func fakeExecutableStdoutCommands(for stdout: String) -> String {
+        stdout.split(separator: "\n", omittingEmptySubsequences: false)
+            .map { line in
+                let rendered = fakeExecutablePrintf(for: String(line))
+                return "printf \(rendered.format) \(rendered.arguments.joined(separator: " "))"
+            }
+            .joined(separator: "\n")
+    }
+
+    private func fakeExecutablePrintf(for line: String) -> (format: String, arguments: [String]) {
+        var remaining = line[...]
+        var format = ""
+        var arguments: [String] = []
+
+        while !remaining.isEmpty {
+            let nextArg = remaining.range(of: "$*")
+            let nextSecret = remaining.range(of: "$JIRA_TOKEN_ENV")
+            let next = [nextArg, nextSecret]
+                .compactMap { $0 }
+                .min { $0.lowerBound < $1.lowerBound }
+
+            guard let range = next else {
+                format += fakeExecutablePrintfLiteral(String(remaining))
+                remaining = remaining[remaining.endIndex...]
+                continue
+            }
+
+            format += fakeExecutablePrintfLiteral(String(remaining[..<range.lowerBound]))
+            format += "%s"
+            arguments.append(range == nextArg ? "\"$*\"" : "\"$JIRA_TOKEN_ENV\"")
+            remaining = remaining[range.upperBound...]
+        }
+
+        return (shellSingleQuoted(format + "\\n"), arguments)
+    }
+
+    private func fakeExecutablePrintfLiteral(_ value: String) -> String {
+        value
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "%", with: "%%")
+    }
+
+    private func shellSingleQuoted(_ value: String) -> String {
+        "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
     }
 
     private func call(_ server: HostControlMCPServer, id: Int, tool: String, arguments: [String: Any]) throws -> [String: Any] {
