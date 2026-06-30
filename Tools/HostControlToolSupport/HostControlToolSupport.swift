@@ -311,6 +311,8 @@ public final class HostControlProcessRunner: HostControlProcessRunning {
         let outputLimitExceeded = LockedFlag()
         process.standardOutput = stdout
         process.standardError = stderr
+        let stdoutReader = ProcessOutputReadHandle(stdout.fileHandleForReading)
+        let stderrReader = ProcessOutputReadHandle(stderr.fileHandleForReading)
 
         let terminateForOutputLimit: () -> Void = {
             if outputLimitExceeded.setIfUnset() {
@@ -319,25 +321,33 @@ public final class HostControlProcessRunner: HostControlProcessRunning {
                 }
             }
         }
-        stdout.fileHandleForReading.readabilityHandler = { handle in
+        stdoutReader.setReadabilityHandler { handle in
             guard !stdoutBuffer.isTruncated else {
-                self.stopReading(handle)
+                stdoutReader.stop()
                 return
             }
             let data = handle.availableData
+            guard !data.isEmpty else {
+                stdoutReader.stop()
+                return
+            }
             if stdoutBuffer.append(data) {
-                self.stopReading(handle)
+                stdoutReader.stop()
                 terminateForOutputLimit()
             }
         }
-        stderr.fileHandleForReading.readabilityHandler = { handle in
+        stderrReader.setReadabilityHandler { handle in
             guard !stderrBuffer.isTruncated else {
-                self.stopReading(handle)
+                stderrReader.stop()
                 return
             }
             let data = handle.availableData
+            guard !data.isEmpty else {
+                stderrReader.stop()
+                return
+            }
             if stderrBuffer.append(data) {
-                self.stopReading(handle)
+                stderrReader.stop()
                 terminateForOutputLimit()
             }
         }
@@ -348,8 +358,8 @@ public final class HostControlProcessRunner: HostControlProcessRunning {
         do {
             try process.run()
         } catch {
-            stdout.fileHandleForReading.readabilityHandler = nil
-            stderr.fileHandleForReading.readabilityHandler = nil
+            stdoutReader.stop()
+            stderrReader.stop()
             return HostControlCommandResult(
                 command: executablePath,
                 arguments: arguments,
@@ -374,10 +384,8 @@ public final class HostControlProcessRunner: HostControlProcessRunning {
             stopProcess(process, semaphore: semaphore, graceSeconds: timeoutGraceSeconds)
         }
 
-        stdout.fileHandleForReading.readabilityHandler = nil
-        stderr.fileHandleForReading.readabilityHandler = nil
-        drainPipe(stdout.fileHandleForReading, into: stdoutBuffer, onLimitExceeded: terminateForOutputLimit)
-        drainPipe(stderr.fileHandleForReading, into: stderrBuffer, onLimitExceeded: terminateForOutputLimit)
+        drainPipe(stdoutReader, into: stdoutBuffer, onLimitExceeded: terminateForOutputLimit)
+        drainPipe(stderrReader, into: stderrBuffer, onLimitExceeded: terminateForOutputLimit)
 
         let outputTruncated = outputLimitExceeded.isSet || stdoutBuffer.isTruncated || stderrBuffer.isTruncated
 
@@ -435,33 +443,30 @@ public final class HostControlProcessRunner: HostControlProcessRunning {
         }
     }
 
-    private func stopReading(_ handle: FileHandle) {
-        handle.readabilityHandler = nil
-        try? handle.close()
-    }
-
     private func drainPipe(
-        _ handle: FileHandle,
+        _ reader: ProcessOutputReadHandle,
         into buffer: BoundedProcessOutput,
         onLimitExceeded: () -> Void
     ) {
+        guard let handle = reader.claimForDrain() else { return }
+
         guard !buffer.isTruncated else {
-            stopReading(handle)
+            try? handle.close()
             return
         }
         let descriptor = handle.fileDescriptor
         let flags = fcntl(descriptor, F_GETFL)
         guard flags >= 0 else {
-            stopReading(handle)
+            try? handle.close()
             return
         }
         guard fcntl(descriptor, F_SETFL, flags | O_NONBLOCK) >= 0 else {
-            stopReading(handle)
+            try? handle.close()
             return
         }
 
         var bytes = [UInt8](repeating: 0, count: 8192)
-        defer { stopReading(handle) }
+        defer { try? handle.close() }
         while true {
             let count = bytes.withUnsafeMutableBytes { rawBuffer in
                 read(descriptor, rawBuffer.baseAddress, rawBuffer.count)
@@ -1282,6 +1287,43 @@ private final class LockedFlag: @unchecked Sendable {
         let snapshot = value
         lock.unlock()
         return snapshot
+    }
+}
+
+private final class ProcessOutputReadHandle: @unchecked Sendable {
+    private let lock = NSLock()
+    private let handle: FileHandle
+    private var stopped = false
+
+    init(_ handle: FileHandle) {
+        self.handle = handle
+    }
+
+    func setReadabilityHandler(_ handler: @escaping @Sendable (FileHandle) -> Void) {
+        handle.readabilityHandler = handler
+    }
+
+    func stop() {
+        guard let handle = stopAndTakeHandle() else { return }
+        try? handle.close()
+    }
+
+    func claimForDrain() -> FileHandle? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !stopped else { return nil }
+        stopped = true
+        handle.readabilityHandler = nil
+        return handle
+    }
+
+    private func stopAndTakeHandle() -> FileHandle? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !stopped else { return nil }
+        stopped = true
+        handle.readabilityHandler = nil
+        return handle
     }
 }
 

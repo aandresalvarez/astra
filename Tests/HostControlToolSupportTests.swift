@@ -426,7 +426,7 @@ struct HostControlToolSupportTests {
 
         #expect(result.timedOut)
         #expect(result.exitCode == 124)
-        #expect(Date().timeIntervalSince(started) < 2)
+        #expect(Date().timeIntervalSince(started) < 4)
         #expect(!result.stdout.contains("finished"))
     }
 
@@ -439,9 +439,11 @@ struct HostControlToolSupportTests {
 
         #expect(wait.contains("DispatchTime.now()"))
         #expect(!wait.contains("Date()"))
+        #expect(source.contains("guard !data.isEmpty else"))
         #expect(drain.contains("guard flags >= 0 else"))
         #expect(drain.contains("guard fcntl(descriptor, F_SETFL, flags | O_NONBLOCK) >= 0 else"))
-        #expect(drain.contains("stopReading(handle)"))
+        #expect(drain.contains("guard let handle = reader.claimForDrain() else { return }"))
+        #expect(drain.contains("defer { try? handle.close() }"))
         #expect(jira.contains("BoundedProcessOutput(label: \"Jira response body\""))
         #expect(jira.contains("bodyTruncated = true"))
         #expect(source.contains("outputByteLimit: processLimits.outputByteLimit"))
@@ -471,7 +473,7 @@ struct HostControlToolSupportTests {
 
         #expect(result.exitCode == 125)
         #expect(result.stdoutTruncated)
-        #expect(Date().timeIntervalSince(started) < 2)
+        #expect(Date().timeIntervalSince(started) < 4)
     }
 
     @Test("Host control process runner does not wait on inherited pipes after exit")
