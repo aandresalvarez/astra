@@ -86,12 +86,12 @@ enum ValidationCommandPolicy {
             return command == "npm test" ||
                 command.hasPrefix("npm test ") ||
                 command == "npm run test" ||
-                command.hasPrefix("npm run test")
+                command.hasPrefix("npm run test ")
         case "yarn", "pnpm":
             return command == "\(root) test" ||
                 command.hasPrefix("\(root) test ") ||
                 command == "\(root) run test" ||
-                command.hasPrefix("\(root) run test")
+                command.hasPrefix("\(root) run test ")
         case "make":
             return command == "make test" ||
                 command.hasPrefix("make test ")

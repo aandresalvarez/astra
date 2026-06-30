@@ -97,7 +97,7 @@ extension HeadlessChatScenarioTests {
                     id: "proof-command",
                     description: "Proof command passes",
                     method: .command,
-                    command: "false"
+                    command: "swift build --package-path \(harness.rootURL.path)/missing-package"
                 )
             ])
         )
@@ -146,7 +146,7 @@ extension HeadlessChatScenarioTests {
                     id: "proof-command",
                     description: "Proof command passes",
                     method: .command,
-                    command: "true"
+                    command: "swift build --help"
                 )
             ])
         )

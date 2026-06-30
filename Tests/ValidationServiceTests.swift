@@ -429,6 +429,19 @@ struct ValidationServiceTests {
         })
     }
 
+    @Test("validation command policy rejects package manager test script name smuggling")
+    func validationCommandPolicyRejectsPackageManagerTestScriptNameSmuggling() {
+        #expect(ValidationCommandPolicy.isAllowed("npm run test"))
+        #expect(ValidationCommandPolicy.isAllowed("npm run test -- --watch=false"))
+        #expect(!ValidationCommandPolicy.isAllowed("npm run test:evil"))
+        #expect(ValidationCommandPolicy.isAllowed("yarn run test"))
+        #expect(ValidationCommandPolicy.isAllowed("yarn run test --ci"))
+        #expect(!ValidationCommandPolicy.isAllowed("yarn run test:evil"))
+        #expect(ValidationCommandPolicy.isAllowed("pnpm run test"))
+        #expect(ValidationCommandPolicy.isAllowed("pnpm run test -- --runInBand"))
+        #expect(!ValidationCommandPolicy.isAllowed("pnpm run test:evil"))
+    }
+
     @Test("validation contract command allowlist blocks python before pytest module")
     func validationContractCommandAllowlistBlocksPythonBeforePytestModule() async throws {
         let root = try temporaryRoot()
@@ -1058,7 +1071,7 @@ struct ValidationServiceTests {
                     id: "must-pass",
                     description: "Command passes",
                     method: .command,
-                    command: "false"
+                    command: "swift build --package-path \(root)/missing-package"
                 )
             ])
         )
