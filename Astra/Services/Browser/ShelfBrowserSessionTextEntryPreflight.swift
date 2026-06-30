@@ -37,18 +37,40 @@ struct BrowserTextEntryLogContext {
     }
 }
 
+struct BrowserFocusedTextEntryPreflightResult {
+    let blockedResultJSON: String?
+    let targetSignature: String?
+}
+
 extension ShelfBrowserSession {
-    func blockedFocusedTextEntryResult(
+    func focusedTextEntryPreflight(
         action: String,
         logContext: BrowserTextEntryLogContext
-    ) async throws -> String? {
+    ) async throws -> BrowserFocusedTextEntryPreflightResult {
         let targetInfo = try await focusedTextEntryTargetInfo()
-        return try blockedTextEntryResult(
+        if let blocked = try blockedTextEntryResult(
             action: action,
             targetInfo: targetInfo,
             attachmentKey: "focusedTarget",
             logContext: logContext
+        ) {
+            return BrowserFocusedTextEntryPreflightResult(blockedResultJSON: blocked, targetSignature: nil)
+        }
+        return BrowserFocusedTextEntryPreflightResult(
+            blockedResultJSON: nil,
+            targetSignature: BrowserTextEntryPreflight.targetSignature(for: targetInfo)
         )
+    }
+
+    func blockedFocusedTextEntryResult(
+        action: String,
+        logContext: BrowserTextEntryLogContext
+    ) async throws -> String? {
+        let preflight = try await focusedTextEntryPreflight(
+            action: action,
+            logContext: logContext
+        )
+        return preflight.blockedResultJSON
     }
 
     func blockedTextEntryResult(

@@ -1304,6 +1304,17 @@ enum BrowserAutomationScripts {
               height: Math.round(rect.height)
             };
           };
+          const targetSignatureFor = (el, framePath, shadowDepth) => [
+            selectorFor(el),
+            el.tagName.toLowerCase(),
+            el.getAttribute("type") || "",
+            nameFor(el),
+            roleFor(el),
+            el.getAttribute("autocomplete") || "",
+            Array.isArray(framePath) ? framePath.join(" ") : String(framePath || ""),
+            String(shadowDepth || 0),
+            location.href
+          ].join("\\u001f");
           const publicTarget = (target) => {
             const el = target.el;
             if (!el) {
@@ -1339,6 +1350,7 @@ enum BrowserAutomationScripts {
               framePath: target.framePath || [],
               shadowDepth: target.shadowDepth || 0,
               frameFocusUninspectable: Boolean(target.frameFocusUninspectable),
+              targetSignature: targetSignatureFor(el, target.framePath || [], target.shadowDepth || 0),
               url: location.href
             };
           };

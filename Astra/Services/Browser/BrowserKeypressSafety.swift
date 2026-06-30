@@ -34,7 +34,7 @@ enum BrowserKeypressSafety {
         if safeNavigationKeys.contains(normalizedKey) {
             return false
         }
-        return normalizedKey.count == 1 || textEditingKeys.contains(normalizedKey)
+        return !normalizedKey.isEmpty
     }
 
     static func evaluate(

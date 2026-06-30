@@ -112,9 +112,9 @@ struct BrowserControlSafetyTests {
         #expect(nameBlock["error"] as? String == "credential_input_blocked")
     }
 
-    @Test("Uninspectable focused frames block only when frame metadata is sensitive")
-    func uninspectableFocusedFramesBlockOnlyWhenFrameMetadataIsSensitive() throws {
-        #expect(BrowserTextEntryPreflight.blockResponse(
+    @Test("Uninspectable focused frames block raw text entry")
+    func uninspectableFocusedFramesBlockRawTextEntry() throws {
+        let neutralFrameBlock = try #require(BrowserTextEntryPreflight.blockResponse(
             action: BrowserActionKind.insertText.rawValue,
             targetInfo: [
                 "ok": false,
@@ -126,7 +126,9 @@ struct BrowserControlSafetyTests {
                 "framePath": ["https://docs.example.com/editor"],
                 "frameFocusUninspectable": true
             ]
-        ) == nil)
+        ))
+        #expect(neutralFrameBlock["error"] as? String == "focused_frame_uninspectable")
+        #expect(BrowserTextEntryPreflight.isTerminalBlockResponse(neutralFrameBlock))
 
         let passwordFrameBlock = try #require(BrowserTextEntryPreflight.blockResponse(
             action: BrowserActionKind.insertText.rawValue,
@@ -141,7 +143,7 @@ struct BrowserControlSafetyTests {
                 "frameFocusUninspectable": true
             ]
         ))
-        #expect(passwordFrameBlock["error"] as? String == "credential_input_blocked")
+        #expect(passwordFrameBlock["error"] as? String == "focused_frame_uninspectable")
     }
 
     @Test("Text entry preflight redacts sensitive target attachments")
@@ -226,6 +228,7 @@ struct BrowserControlSafetyTests {
         #expect(script.contains("autocomplete"))
         #expect(script.contains("name: nameFor(el)"))
         #expect(script.contains("ownerDocument"))
+        #expect(script.contains("targetSignature: targetSignatureFor(el, target.framePath || [], target.shadowDepth || 0)"))
         #expect(script.contains("locator: target.locator || locatorSummary()"))
         #expect(script.contains(#"locator: { focused: true }"#))
     }
@@ -352,6 +355,45 @@ struct BrowserControlSafetyTests {
         #expect(!methodSource.contains("guard !selector.isEmpty"))
     }
 
+    @Test("Controlled text entry binds CDP dispatch to the preflighted focused target")
+    func controlledTextEntryBindsCDPDispatchToPreflightedFocusedTarget() throws {
+        let repoRoot = URL(filePath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let sessionPath = repoRoot
+            .appendingPathComponent("Astra")
+            .appendingPathComponent("Services")
+            .appendingPathComponent("Browser")
+            .appendingPathComponent("ShelfBrowserSession.swift")
+            .path
+        let controllerPath = repoRoot
+            .appendingPathComponent("Astra")
+            .appendingPathComponent("Services")
+            .appendingPathComponent("Browser")
+            .appendingPathComponent("ControlledBrowserController.swift")
+            .path
+        let sessionSource = try String(contentsOfFile: sessionPath, encoding: .utf8)
+        let controllerSource = try String(contentsOfFile: controllerPath, encoding: .utf8)
+
+        #expect(sessionSource.contains("controlledBrowser.keypress("))
+        #expect(sessionSource.contains("controlledBrowser.insertText("))
+        #expect(sessionSource.contains("expectedFocusedTargetSignature: preflight.targetSignature"))
+        #expect(controllerSource.contains("validateFocusedTextEntryTarget(action: \"keypress\", expectedSignature: expectedFocusedTargetSignature, client: client)"))
+        #expect(controllerSource.contains("validateFocusedTextEntryTarget(action: \"insertText\", expectedSignature: expectedFocusedTargetSignature, client: client)"))
+
+        let keypressStart = try #require(controllerSource.range(of: "func keypress(key: String, modifiers: [String], expectedFocusedTargetSignature: String?) async throws -> String {"))
+        let keypressEnd = try #require(controllerSource[keypressStart.upperBound...].range(of: "func insertText"))
+        let keypressSource = controllerSource[keypressStart.lowerBound..<keypressEnd.lowerBound]
+        let keypressValidation = try #require(keypressSource.range(of: "validateFocusedTextEntryTarget"))
+        let keypressDispatch = try #require(keypressSource.range(of: #""Input.dispatchKeyEvent""#))
+        #expect(keypressValidation.lowerBound < keypressDispatch.lowerBound)
+
+        let insertStart = try #require(controllerSource.range(of: "func insertText(_ text: String, expectedFocusedTargetSignature: String?) async throws -> String {"))
+        let insertEnd = try #require(controllerSource[insertStart.upperBound...].range(of: "func showWindow"))
+        let insertSource = controllerSource[insertStart.lowerBound..<insertEnd.lowerBound]
+        let insertValidation = try #require(insertSource.range(of: "validateFocusedTextEntryTarget"))
+        let insertDispatch = try #require(insertSource.range(of: #""Input.insertText""#))
+        #expect(insertValidation.lowerBound < insertDispatch.lowerBound)
+    }
+
     @Test("Keypress audit logs requested phase before focused text entry preflight")
     func keypressAuditLogsRequestedPhaseBeforeFocusedTextEntryPreflight() throws {
         let repoRoot = URL(filePath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
@@ -382,7 +424,7 @@ struct BrowserControlSafetyTests {
             .path
         let source = try String(contentsOfFile: controllerPath, encoding: .utf8)
         let methodStart = try #require(source.range(of: "func replaceTextTargetsInfo(selector: String, find: String, all: Bool) async throws -> String {"))
-        let methodEnd = try #require(source[methodStart.upperBound...].range(of: "func keypress(key: String, modifiers: [String]) async throws -> String {"))
+        let methodEnd = try #require(source[methodStart.upperBound...].range(of: "func keypress(key: String, modifiers: [String], expectedFocusedTargetSignature: String?) async throws -> String {"))
         let methodSource = source[methodStart.lowerBound..<methodEnd.lowerBound]
 
         #expect(methodSource.contains("try await refreshPageMetadata()"))
@@ -459,6 +501,8 @@ struct BrowserControlSafetyTests {
     @Test("Text-producing keypresses require sensitive text entry preflight")
     func textProducingKeypressesRequireSensitiveTextEntryPreflight() {
         #expect(BrowserKeypressSafety.requiresTextEntryPreflight(key: "x", modifiers: []))
+        #expect(BrowserKeypressSafety.requiresTextEntryPreflight(key: "aa", modifiers: []))
+        #expect(BrowserKeypressSafety.requiresTextEntryPreflight(key: "Shift", modifiers: []))
         #expect(BrowserKeypressSafety.requiresTextEntryPreflight(key: "Space", modifiers: []))
         #expect(BrowserKeypressSafety.requiresTextEntryPreflight(key: "Backspace", modifiers: []))
         #expect(BrowserKeypressSafety.requiresTextEntryPreflight(key: "v", modifiers: ["command"]))

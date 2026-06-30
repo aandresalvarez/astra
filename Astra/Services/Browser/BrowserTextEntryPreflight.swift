@@ -16,7 +16,9 @@ enum BrowserSensitiveControlClassifier {
         framePath: String = "",
         frameFocusUninspectable: Bool
     ) -> BrowserRisk {
-        _ = frameFocusUninspectable
+        if frameFocusUninspectable {
+            return .unknownHighImpact
+        }
         let text = [
             selector,
             requestedSelector,
@@ -106,6 +108,9 @@ enum BrowserTextEntryPreflight {
         let code: String
         let summary: String
         switch risk {
+        case .unknownHighImpact:
+            code = "focused_frame_uninspectable"
+            summary = "ASTRA will not type into a focused frame whose active element cannot be inspected. The user should confirm or enter this directly in the browser."
         case .credentialInput:
             code = "credential_input_blocked"
             summary = "ASTRA will not type passwords or secrets. The user should enter this directly in the browser."
@@ -138,11 +143,11 @@ enum BrowserTextEntryPreflight {
     static func isTerminalBlockResponse(_ response: [String: Any]) -> Bool {
         guard let ok = response["ok"] as? Bool, ok == false else { return false }
         switch string(response["error"]) {
-        case "credential_input_blocked", "mfa_input_blocked":
+        case "credential_input_blocked", "mfa_input_blocked", "focused_frame_uninspectable", "text_entry_target_changed":
             return true
         default:
             switch string(response["stopReason"]) {
-            case "credential_input_blocked", "mfa_input_blocked":
+            case "credential_input_blocked", "mfa_input_blocked", "focused_frame_uninspectable", "text_entry_target_changed":
                 return true
             default:
                 return false
@@ -164,6 +169,35 @@ enum BrowserTextEntryPreflight {
             "ok": false,
             "stopReason": stopReason,
             "results": results
+        ]
+    }
+
+    static func targetSignature(for targetInfo: [String: Any]) -> String? {
+        if let signature = targetInfo["targetSignature"] as? String, !signature.isEmpty {
+            return signature
+        }
+        guard bool(targetInfo["ok"]) else { return nil }
+        return [
+            string(targetInfo["selector"]),
+            string(targetInfo["tag"]),
+            string(targetInfo["type"]),
+            string(targetInfo["name"]),
+            string(targetInfo["role"]),
+            string(targetInfo["autocomplete"]),
+            framePathString(targetInfo["framePath"]),
+            string(targetInfo["shadowDepth"]),
+            string(targetInfo["url"])
+        ].joined(separator: "\u{1f}")
+    }
+
+    static func focusChangedBlockResponse(action: String, targetInfo: [String: Any]) -> [String: Any] {
+        [
+            "ok": false,
+            "error": "text_entry_target_changed",
+            "action": action,
+            "summary": "The focused text-entry target changed after ASTRA inspected it, so ASTRA did not send raw browser input.",
+            "risk": BrowserRisk.unknownHighImpact.rawValue,
+            "target": sanitizedTargetAttachment(for: targetInfo)
         ]
     }
 
@@ -202,7 +236,25 @@ enum BrowserTextEntryPreflight {
     private static func string(_ value: Any?) -> String {
         if let string = value as? String { return string }
         if let number = value as? NSNumber { return number.stringValue }
+        if let bool = value as? Bool { return bool ? "true" : "false" }
         return ""
+    }
+
+    private static func bool(_ value: Any?) -> Bool {
+        if let bool = value as? Bool { return bool }
+        if let number = value as? NSNumber { return number.boolValue }
+        if let string = value as? String { return ["true", "1", "yes"].contains(string.lowercased()) }
+        return false
+    }
+
+    private static func framePathString(_ value: Any?) -> String {
+        if let strings = value as? [String] {
+            return strings.joined(separator: " ")
+        }
+        if let values = value as? [Any] {
+            return values.map { string($0) }.joined(separator: " ")
+        }
+        return string(value)
     }
 
     private static func sanitizedFramePath(_ value: Any, redact: Bool) -> [String] {

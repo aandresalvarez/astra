@@ -3571,23 +3571,23 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             )
             return result
         }
-        if BrowserKeypressSafety.requiresTextEntryPreflight(key: key, modifiers: modifiers), let result = try await blockedFocusedTextEntryResult(
-            action: "keypress",
-            logContext: BrowserTextEntryLogContext(
-                started: started,
+        var preflightTargetSignature: String?
+        if BrowserKeypressSafety.requiresTextEntryPreflight(key: key, modifiers: modifiers) {
+            let preflight = try await focusedTextEntryPreflight(
                 action: "keypress",
-                fields: [
-                    "key_length": String(key.count),
-                    "modifier_count": String(modifiers.count)
-                ]
+                logContext: BrowserTextEntryLogContext(
+                    started: started,
+                    action: "keypress",
+                    fields: ["key_length": String(key.count), "modifier_count": String(modifiers.count)]
+                )
             )
-        ) {
-            return result
+            if let result = preflight.blockedResultJSON { return result }
+            preflightTargetSignature = preflight.targetSignature
         }
         do {
             let json: String
             if isUsingControlledBrowser {
-                json = try await controlledBrowser.keypress(key: key, modifiers: modifiers)
+                json = try await controlledBrowser.keypress(key: key, modifiers: modifiers, expectedFocusedTargetSignature: preflightTargetSignature)
                 syncDisplayedStateForEngine()
                 publishBridgeState()
             } else {
@@ -3645,19 +3645,18 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             fields: ["text_length": String(text.count)]
         )
         do {
-            if let result = try await blockedFocusedTextEntryResult(
+            let preflight = try await focusedTextEntryPreflight(
                 action: BrowserActionKind.insertText.rawValue,
                 logContext: BrowserTextEntryLogContext(
                     started: started,
                     action: "insertText",
                     fields: ["text_length": String(text.count)]
                 )
-            ) {
-                return result
-            }
+            )
+            if let result = preflight.blockedResultJSON { return result }
             let json: String
             if isUsingControlledBrowser {
-                json = try await controlledBrowser.insertText(text)
+                json = try await controlledBrowser.insertText(text, expectedFocusedTargetSignature: preflight.targetSignature)
                 syncDisplayedStateForEngine()
                 publishBridgeState()
             } else {
