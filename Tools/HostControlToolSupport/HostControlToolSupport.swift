@@ -454,17 +454,18 @@ public final class HostControlMCPServer {
         if HostControlSSHCommandPolicy.containsRemoteCommand(arguments) {
             return encodeError(id: id, code: -32602, message: HostControlSSHCommandPolicy.remoteCommandRejectionMessage)
         }
+        let sshArguments = HostControlSSHCommandPolicy.connectionCheckArguments(for: alias)
         let timeout = timeoutSeconds(from: arguments["timeout_seconds"]) ?? 120
         let result = processRunner.run(
             executablePath: configuration.sshExecutable,
-            arguments: [alias],
+            arguments: sshArguments,
             timeoutSeconds: timeout,
             environment: configuration.environment
         )
         let redacted = redactedResult(result)
         diagnosticsRecorder?.record(
             toolName: "ssh",
-            summary: "ssh \(alias)",
+            summary: "ssh \(sshArguments.joined(separator: " "))",
             result: redacted
         )
         return encodeCommandResult(id: id, result: redacted)
@@ -667,11 +668,11 @@ public final class HostControlMCPServer {
     private func sshSchema() -> [String: Any] {
         [
             "name": "ssh",
-            "description": "Run a configured workspace SSH alias on the host through ASTRA without provider Bash.",
+            "description": "Check a configured workspace SSH alias from the host using an ASTRA-owned non-interactive no-op. Caller-provided remote commands are not supported.",
             "inputSchema": [
                 "type": "object",
                 "properties": [
-                    "alias": ["type": "string", "description": "Configured SSH Host alias or workspace SSH connection alias."],
+                    "alias": ["type": "string", "description": "Configured SSH Host alias or workspace SSH connection alias to check."],
                     "timeout_seconds": ["type": "number", "description": "Optional command timeout. Defaults to 120 seconds."]
                 ],
                 "required": ["alias"],
@@ -763,6 +764,18 @@ private enum HostControlSSHCommandPolicy {
 
     static func containsRemoteCommand(_ arguments: [String: Any]) -> Bool {
         arguments.keys.contains("remote_command")
+    }
+
+    static func connectionCheckArguments(for alias: String) -> [String] {
+        [
+            "-o", "BatchMode=yes",
+            "-o", "RequestTTY=no",
+            "-o", "StdinNull=yes",
+            "-o", "ClearAllForwardings=yes",
+            "--",
+            alias,
+            "true"
+        ]
     }
 }
 

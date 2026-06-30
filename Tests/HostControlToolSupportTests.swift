@@ -48,6 +48,10 @@ struct HostControlToolSupportTests {
         let tools = try #require(listResult["tools"] as? [[String: Any]])
         let toolNames = Set(tools.compactMap { $0["name"] as? String })
         #expect(toolNames == ["github", "gcloud", "bq", "ssh", "jira"])
+        let sshSchema = try #require(tools.first { $0["name"] as? String == "ssh" })
+        let sshDescription = try #require(sshSchema["description"] as? String)
+        #expect(sshDescription.contains("non-interactive"))
+        #expect(sshDescription.contains("remote commands are not supported"))
 
         let github = try call(server, id: 2, tool: "github", arguments: [
             "arguments": ["pr", "view", "123", "--comments"],
@@ -71,7 +75,7 @@ struct HostControlToolSupportTests {
         let sshResult = try call(server, id: 5, tool: "ssh", arguments: [
             "alias": "deid-jsn-workbench"
         ])
-        #expect(try resultText(sshResult).contains("ssh:deid-jsn-workbench"))
+        #expect(try resultText(sshResult).contains("ssh:-o BatchMode=yes -o RequestTTY=no -o StdinNull=yes -o ClearAllForwardings=yes -- deid-jsn-workbench true"))
 
         let jira = try call(server, id: 6, tool: "jira", arguments: ["operation": "status"])
         let jiraText = try resultText(jira)
@@ -83,7 +87,7 @@ struct HostControlToolSupportTests {
         #expect(hostLog.contains("gh pr view 123 --comments"))
         #expect(hostLog.contains("gcloud compute instances list --format=json"))
         #expect(hostLog.contains("bq ls project:dataset"))
-        #expect(hostLog.contains("ssh deid-jsn-workbench"))
+        #expect(hostLog.contains("ssh -o BatchMode=yes -o RequestTTY=no -o StdinNull=yes -o ClearAllForwardings=yes -- deid-jsn-workbench true"))
         #expect(!hostLog.contains("hostname && uptime"))
 
         let diagnosticLog = diagnostics.appendingPathComponent("host_control_tool_activity.jsonl", isDirectory: false)
@@ -116,6 +120,30 @@ struct HostControlToolSupportTests {
         #expect(error["code"] as? Int == -32602)
         #expect((error["message"] as? String)?.contains("remote_command is not supported") == true)
         #expect(!FileManager.default.fileExists(atPath: log.path))
+    }
+
+    @Test("Host control SSH uses a non-interactive reachability probe")
+    func hostControlSSHUsesNonInteractiveReachabilityProbe() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-host-control-ssh-noninteractive-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let log = root.appendingPathComponent("host.log", isDirectory: false)
+        let ssh = try fakeExecutable(named: "ssh", root: root, log: log, stdout: "ssh:$*")
+        let server = HostControlMCPServer(configuration: HostControlToolConfiguration(
+            sshExecutable: ssh.path,
+            allowedSSHAliases: ["deid-jsn-workbench"]
+        ))
+
+        let response = try call(server, id: 1, tool: "ssh", arguments: [
+            "alias": "deid-jsn-workbench"
+        ])
+
+        #expect(try resultText(response).contains("ssh:-o BatchMode=yes -o RequestTTY=no -o StdinNull=yes -o ClearAllForwardings=yes -- deid-jsn-workbench true"))
+        let logText = try String(contentsOf: log, encoding: .utf8)
+        #expect(logText.contains("ssh -o BatchMode=yes -o RequestTTY=no -o StdinNull=yes -o ClearAllForwardings=yes -- deid-jsn-workbench true"))
+        #expect(!logText.contains("ssh deid-jsn-workbench\n"))
     }
 
     @Test("Host and Docker mixed harness routes control-plane and workspace commands separately")
@@ -229,7 +257,7 @@ struct HostControlToolSupportTests {
         let hostLogText = try String(contentsOf: hostLog, encoding: .utf8)
         #expect(hostLogText.contains("gh pr view 123 --comments"))
         #expect(hostLogText.contains("gcloud compute instances list"))
-        #expect(hostLogText.contains("ssh deid-jsn-workbench"))
+        #expect(hostLogText.contains("ssh -o BatchMode=yes -o RequestTTY=no -o StdinNull=yes -o ClearAllForwardings=yes -- deid-jsn-workbench true"))
         #expect(!hostLogText.contains("uptime"))
 
         let dockerLogText = try String(contentsOf: dockerLog, encoding: .utf8)
@@ -237,7 +265,7 @@ struct HostControlToolSupportTests {
         #expect(dockerLogText.contains("exec -d --workdir /workspace astra-mixed sh -c"))
         #expect(!dockerLogText.contains("gh pr"))
         #expect(!dockerLogText.contains("gcloud compute"))
-        #expect(!dockerLogText.contains("ssh deid-jsn-workbench"))
+        #expect(!dockerLogText.contains("ssh -o BatchMode=yes"))
 
         let hostActivity = try String(
             contentsOf: hostDiagnostics.appendingPathComponent("host_control_tool_activity.jsonl", isDirectory: false),
