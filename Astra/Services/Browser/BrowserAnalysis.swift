@@ -305,37 +305,31 @@ struct BrowserControl {
     }
 
     var providerVisibleValue: String {
-        BrowserSensitiveInputRedactionPolicy.redactedValue(
-            value,
-            selector: selector,
-            label: label,
-            name: name,
-            role: role,
-            tag: tag,
-            type: type,
-            placeholder: placeholder,
-            testID: testID,
-            href: href,
-            autocomplete: autocomplete,
-            risk: risk
-        )
+        providerVisibleString("value", fallback: value)
     }
 
     var redactedLabel: String {
-        redactedDisplayText(label)
+        providerVisibleString("label", fallback: label)
     }
 
     var redactedName: String {
-        redactedDisplayText(name)
+        providerVisibleString("name", fallback: name)
     }
 
     private var hasSensitiveValue: Bool {
-        providerVisibleValue == BrowserSensitiveInputRedactionPolicy.redactedInputValue
+        providerVisibleRedaction.didRedact || providerVisibleValue == BrowserSensitiveInputRedactionPolicy.redactedInputValue
     }
 
     func redactedDisplayText(_ text: String) -> String {
         guard hasSensitiveValue else { return text }
-        return BrowserSensitiveInputRedactionPolicy.redactedDisplayText(text, sensitiveValue: value)
+        let sensitiveValues = providerVisibleRedaction.sensitiveValues
+        if sensitiveValues.isEmpty {
+            return BrowserSensitiveInputRedactionPolicy.redactedSensitiveMetadataText(text)
+        }
+        let valueRedacted = BrowserSensitiveInputRedactionPolicy.redactedDisplayText(text, sensitiveValues: sensitiveValues)
+        return valueRedacted == text
+            ? BrowserSensitiveInputRedactionPolicy.redactedSensitiveMetadataText(text)
+            : valueRedacted
     }
 
     func supports(_ action: BrowserActionKind) -> Bool {
@@ -398,6 +392,7 @@ struct BrowserControl {
         }
         return value
     }
+
 }
 
 struct BrowserControlRef {
@@ -462,51 +457,6 @@ struct BrowserControlRef {
         if let accessibilityNode, debug {
             object["accessibilityNode"] = control.redactedAccessibilityNodeObject(accessibilityNode)
         }
-        return object
-    }
-}
-
-private extension BrowserControl {
-    func redactedAccessibilityText(_ text: String) -> String {
-        guard providerVisibleValue == BrowserSensitiveInputRedactionPolicy.redactedInputValue else {
-            return text
-        }
-        if value == BrowserSensitiveInputRedactionPolicy.redactedInputValue {
-            return knownSafeAccessibilityText(text)
-                ? text
-                : redactedUnknownSensitiveAccessibilityText(text)
-        }
-        return BrowserSensitiveInputRedactionPolicy.redactedDisplayText(text, sensitiveValue: value)
-    }
-
-    func knownSafeAccessibilityText(_ text: String) -> Bool {
-        let normalizedText = BrowserAnalysisBuilder.normalizedName(text)
-        guard !normalizedText.isEmpty else { return true }
-        return [label, name, placeholder]
-            .map(BrowserAnalysisBuilder.normalizedName)
-            .contains(normalizedText)
-    }
-
-    func redactedUnknownSensitiveAccessibilityText(_ text: String) -> String {
-        text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? text : BrowserSensitiveInputRedactionPolicy.redactedInputValue
-    }
-
-    func redactedAccessibilityValue(_ text: String) -> String {
-        guard providerVisibleValue == BrowserSensitiveInputRedactionPolicy.redactedInputValue else {
-            return text
-        }
-        if value == BrowserSensitiveInputRedactionPolicy.redactedInputValue {
-            return redactedUnknownSensitiveAccessibilityText(text)
-        }
-        return BrowserSensitiveInputRedactionPolicy.redactedDisplayText(text, sensitiveValue: value)
-    }
-
-    func redactedAccessibilityNodeObject(_ node: BrowserAccessibilityNode) -> [String: Any] {
-        var object = node.jsonObject
-        object["name"] = redactedAccessibilityText(node.name)
-        object["value"] = redactedAccessibilityValue(node.value)
-        object["description"] = redactedAccessibilityText(node.description)
-        object["properties"] = node.properties.mapValues(redactedAccessibilityValue)
         return object
     }
 }
@@ -893,16 +843,16 @@ enum BrowserAnalysisBuilder {
         guard let query, !query.isEmpty else { return controls }
         return controls.filter { control in
             [
-                control.label,
-                control.name,
+                control.redactedLabel,
+                control.redactedName,
                 control.role,
                 control.tag,
                 control.type,
-                control.placeholder,
-                control.testID,
-                control.value,
-                control.href,
-                control.selector
+                control.redactedDisplayText(control.placeholder),
+                control.redactedDisplayText(control.testID),
+                control.providerVisibleValue,
+                control.redactedDisplayText(control.href),
+                control.redactedDisplayText(control.selector)
             ].contains { $0.lowercased().contains(query) }
         }
     }

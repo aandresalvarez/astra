@@ -109,8 +109,8 @@ struct BrowserAnalysisTests {
         let response = analysis.responseObject(query: nil, full: true, limit: nil, version: .v2)
         let controls = try #require(response["controls"] as? [[String: Any]])
         let refs = try #require(response["controlRefs"] as? [[String: Any]])
-        let password = try #require(controls.first { $0["label"] as? String == "Password" })
-        let mfa = try #require(refs.first { $0["label"] as? String == "One-time verification code" })
+        let password = try #require(controls.first { $0["risk"] as? String == BrowserRisk.credentialInput.rawValue })
+        let mfa = try #require(refs.first { $0["risk"] as? String == BrowserRisk.mfaInput.rawValue })
         let email = try #require(controls.first { $0["label"] as? String == "Email" })
 
         #expect(password["value"] as? String == "[redacted-sensitive-input]")
@@ -168,6 +168,75 @@ struct BrowserAnalysisTests {
         #expect(evidence["accessibilityName"] as? String == "[redacted-sensitive-input]")
         #expect(accessibilityNode["name"] as? String == "[redacted-sensitive-input]")
         #expect(String(describing: response).contains(secret) == false)
+    }
+
+    @Test("Analysis response redacts empty sensitive metadata and accessibility")
+    func analysisResponseRedactsEmptySensitiveMetadataAndAccessibility() throws {
+        let analysis = BrowserAnalysisBuilder.build(
+            snapshot: Self.sampleSnapshot(controls: [
+                Self.control(
+                    selector: "#mrn",
+                    tag: "input",
+                    role: "textbox",
+                    type: "text",
+                    label: "MRN",
+                    value: "",
+                    name: "medical_record_number",
+                    placeholder: "Medical record number"
+                )
+            ]),
+            backend: "controlled Chromium profile",
+            engine: "controlled",
+            accessibilitySnapshotObject: Self.accessibilitySnapshot(role: "textbox", name: "MRN")
+        )
+
+        let response = analysis.responseObject(query: nil, full: true, limit: nil, debug: true, version: .v2)
+        let controls = try #require(response["controls"] as? [[String: Any]])
+        let control = try #require(controls.first)
+        let refs = try #require(response["controlRefs"] as? [[String: Any]])
+        let ref = try #require(refs.first)
+        let context = try #require(ref["context"] as? [String: Any])
+        let evidence = try #require(ref["evidence"] as? [String: Any])
+        let accessibilityNode = try #require(ref["accessibilityNode"] as? [String: Any])
+
+        #expect(control["selector"] as? String == "[redacted-sensitive-input]")
+        #expect(control["label"] as? String == "[redacted-sensitive-input]")
+        #expect(control["name"] as? String == "[redacted-sensitive-input]")
+        #expect(control["placeholder"] as? String == "[redacted-sensitive-input]")
+        #expect(ref["selectorFallback"] as? String == "[redacted-sensitive-input]")
+        #expect(ref["label"] as? String == "[redacted-sensitive-input]")
+        #expect(ref["name"] as? String == "[redacted-sensitive-input]")
+        #expect(context["placeholder"] as? String == "[redacted-sensitive-input]")
+        #expect(evidence["accessibilityName"] as? String == "[redacted-sensitive-input]")
+        #expect(accessibilityNode["name"] as? String == "[redacted-sensitive-input]")
+        #expect(String(describing: response).contains("medical_record_number") == false)
+    }
+
+    @Test("Analysis query filtering uses provider-visible redacted fields")
+    func analysisQueryFilteringUsesProviderVisibleRedactedFields() throws {
+        let secret = "ghp_secret_token"
+        let analysis = BrowserAnalysisBuilder.build(
+            snapshot: Self.sampleSnapshot(controls: [
+                Self.control(
+                    selector: "#api-token",
+                    tag: "input",
+                    role: "textbox",
+                    type: "text",
+                    label: "API token",
+                    value: secret,
+                    name: "api_token"
+                )
+            ]),
+            backend: "controlled Chromium profile",
+            engine: "controlled"
+        )
+
+        let response = analysis.responseObject(query: secret, full: true, limit: nil, version: .v2)
+        let controls = try #require(response["controls"] as? [[String: Any]])
+        let refs = try #require(response["controlRefs"] as? [[String: Any]])
+
+        #expect(controls.isEmpty)
+        #expect(refs.isEmpty)
     }
 
     @Test("Analysis response redacts cardholder and generic payment values")
@@ -400,9 +469,9 @@ struct BrowserAnalysisTests {
         let evidence = try #require(ref["evidence"] as? [String: Any])
         let accessibilityNode = try #require(ref["accessibilityNode"] as? [String: Any])
 
-        #expect(ref["label"] as? String == "Password")
-        #expect(evidence["accessibilityName"] as? String == "Password")
-        #expect(accessibilityNode["name"] as? String == "Password")
+        #expect(ref["label"] as? String == "[redacted-sensitive-input]")
+        #expect(evidence["accessibilityName"] as? String == "[redacted-sensitive-input]")
+        #expect(accessibilityNode["name"] as? String == "[redacted-sensitive-input]")
         #expect(accessibilityNode["value"] as? String == "[redacted-sensitive-input]")
         #expect(String(describing: response).contains(secret) == false)
     }

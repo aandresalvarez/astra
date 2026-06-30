@@ -53,7 +53,10 @@ enum BrowserSensitiveInputRedactionPolicy {
         return (redacted, didRedact)
     }
 
-    static func redactControlObject(_ control: [String: Any]) -> (object: [String: Any], didRedact: Bool, sensitiveValues: [String]) {
+    static func redactControlObject(
+        _ control: [String: Any],
+        risk: BrowserRisk? = nil
+    ) -> (object: [String: Any], didRedact: Bool, sensitiveValues: [String]) {
         let value = string(control["value"])
         let valueAlreadyRedacted = value == redactedInputValue
 
@@ -68,13 +71,12 @@ enum BrowserSensitiveInputRedactionPolicy {
             testID: string(control["testID"]),
             href: string(control["href"]),
             autocomplete: string(control["autocomplete"]),
-            risk: nil
+            risk: risk
         )
         guard shouldRedact else { return (control, false, []) }
         let sensitiveValues = uniqueSensitiveValues(
             (value.isEmpty || valueAlreadyRedacted ? [] : [value]) + sensitiveMetadataValues(from: control)
         )
-        guard !valueAlreadyRedacted || !sensitiveValues.isEmpty else { return (control, false, []) }
 
         var redacted = control
         var didRedact = false
@@ -84,7 +86,12 @@ enum BrowserSensitiveInputRedactionPolicy {
         }
         for key in ["selector", "label", "name", "placeholder", "testID", "href"] {
             let original = string(control[key])
-            let next = redactedDisplayText(original, sensitiveValues: sensitiveValues)
+            let valueRedacted = sensitiveValues.isEmpty
+                ? original
+                : redactedDisplayText(original, sensitiveValues: sensitiveValues)
+            let next = valueRedacted == original
+                ? redactedSensitiveMetadataText(original)
+                : valueRedacted
             redacted[key] = next
             didRedact = didRedact || next != original
         }
@@ -170,8 +177,24 @@ enum BrowserSensitiveInputRedactionPolicy {
         return text
     }
 
-    private static func redactedDisplayText(_ text: String, sensitiveValues: [String]) -> String {
+    static func redactedDisplayText(_ text: String, sensitiveValues: [String]) -> String {
         sensitiveValues.contains { textContainsSensitiveValue(text, sensitiveValue: $0) } ? redactedInputValue : text
+    }
+
+    static func redactedSensitiveMetadataText(_ text: String) -> String {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return text }
+        let lower = trimmed.lowercased()
+        let spaced = lower
+            .replacingOccurrences(of: "_", with: " ")
+            .replacingOccurrences(of: "-", with: " ")
+            .replacingOccurrences(of: "#", with: " ")
+        return containsAny(lower, sensitiveFieldTerms)
+            || containsAny(lower, paymentFieldTerms)
+            || containsAny(spaced, sensitiveFieldTerms)
+            || containsAny(spaced, paymentFieldTerms)
+            ? redactedInputValue
+            : text
     }
 
     static func isSensitiveControl(
@@ -217,6 +240,7 @@ enum BrowserSensitiveInputRedactionPolicy {
             lowerAutocomplete
         ].joined(separator: " ").lowercased()
         return containsAny(text, sensitiveFieldTerms)
+            || (isEditablePaymentField(tag: tag, role: role, type: lowerType) && containsAny(text, paymentFieldTerms))
     }
 
     private static func isEditablePaymentField(tag: String, role: String, type: String) -> Bool {
@@ -298,12 +322,25 @@ enum BrowserSensitiveInputRedactionPolicy {
         "medical record number",
         "patient id",
         "patient identifier",
-        "health record",
+        "health record"
+    ]
+
+    private static let paymentFieldTerms = [
         "credit card",
         "card number",
         "cardholder",
         "card holder",
         "name on card",
+        "cc-name",
+        "cc-given-name",
+        "cc-additional-name",
+        "cc-family-name",
+        "cc-number",
+        "cc-exp",
+        "cc-exp-month",
+        "cc-exp-year",
+        "cc-csc",
+        "cc-type",
         "cvv",
         "cvc",
         "payment",
@@ -368,7 +405,7 @@ enum BrowserSensitiveInputRedactionPolicy {
 
     private static func isSensitiveMetadataCandidate(_ text: String) -> Bool {
         let lower = text.lowercased()
-        guard containsAny(lower, sensitiveFieldTerms) else { return false }
+        guard containsAny(lower, sensitiveFieldTerms) || containsAny(lower, paymentFieldTerms) else { return false }
         return lower.contains { $0.isNumber }
             || lower.contains("-")
             || lower.contains("_")

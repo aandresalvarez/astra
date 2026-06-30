@@ -18,8 +18,8 @@ struct BrowserPageSnapshotServiceTests {
         #expect(compacted == json)
     }
 
-    @Test("full mode preserves already-redacted snapshot JSON")
-    func fullModePreservesAlreadyRedactedSnapshotJSON() throws {
+    @Test("full mode redacts metadata for already-redacted sensitive snapshot values")
+    func fullModeRedactsMetadataForAlreadyRedactedSensitiveSnapshotValues() throws {
         let json = """
         {"ok":true,"url":"https://example.com","title":"Example","text":"Sign in","controls":[{"selector":"#password","tag":"input","role":"textbox","type":"password","label":"Password","value":"[redacted-sensitive-input]"}]}
         """
@@ -31,7 +31,14 @@ struct BrowserPageSnapshotServiceTests {
             limit: nil
         )
 
-        #expect(compacted == json)
+        let object = try jsonObject(from: compacted)
+        let controls = try #require(object["controls"] as? [[String: Any]])
+        let control = try #require(controls.first)
+
+        #expect(control["value"] as? String == "[redacted-sensitive-input]")
+        #expect(control["selector"] as? String == "[redacted-sensitive-input]")
+        #expect(control["label"] as? String == "[redacted-sensitive-input]")
+        #expect(!compacted.contains("#password"))
     }
 
     @Test("snapshot output redacts sensitive focused and control values")
@@ -48,12 +55,10 @@ struct BrowserPageSnapshotServiceTests {
         #expect(focused["value"] as? String == "[redacted-sensitive-input]")
 
         let controls = try #require(object["controls"] as? [[String: Any]])
-        let password = try #require(controls.first { $0["label"] as? String == "Password" })
-        let token = try #require(controls.first { $0["label"] as? String == "API token" })
+        let redactedControls = controls.filter { $0["value"] as? String == "[redacted-sensitive-input]" }
         let email = try #require(controls.first { $0["label"] as? String == "Email" })
 
-        #expect(password["value"] as? String == "[redacted-sensitive-input]")
-        #expect(token["value"] as? String == "[redacted-sensitive-input]")
+        #expect(redactedControls.count == 2)
         #expect(email["value"] as? String == "alvaro@example.com")
         #expect(!compacted.contains("correct-horse-battery-staple"))
         #expect(!compacted.contains("ghp_secret_token"))
@@ -276,14 +281,16 @@ struct BrowserPageSnapshotServiceTests {
         )
         let object = try jsonObject(from: compacted)
         let controls = try #require(object["controls"] as? [[String: Any]])
-        let token = try #require(controls.first { $0["label"] as? String == "API token" })
-        let card = try #require(controls.first { $0["label"] as? String == "Card number" })
+        let redactedControls = controls.filter { $0["value"] as? String == "[redacted-sensitive-input]" }
 
         #expect(object["text"] as? String == "Saved card [redacted-sensitive-input] and [redacted-sensitive-input] are visible.")
-        #expect(token["selector"] as? String == "[redacted-sensitive-input]")
-        #expect(token["name"] as? String == "[redacted-sensitive-input]")
-        #expect(token["value"] as? String == "[redacted-sensitive-input]")
-        #expect(card["value"] as? String == "[redacted-sensitive-input]")
+        #expect(redactedControls.count == 2)
+        #expect(redactedControls.allSatisfy { control in
+            (control["selector"] as? String)?.contains("api_token_sk_live_123") != true
+                && (control["selector"] as? String)?.contains("cc-number") != true
+        })
+        let namedControls = redactedControls.filter { ($0["name"] as? String)?.isEmpty == false }
+        #expect(namedControls.allSatisfy { $0["name"] as? String == "[redacted-sensitive-input]" })
         #expect(!compacted.contains("api_token_sk_live_123"))
         #expect(!compacted.contains("4111 1111 1111 1111"))
     }
@@ -335,6 +342,9 @@ struct BrowserPageSnapshotServiceTests {
         #expect(script.contains("if (node === document.body) break"))
         #expect(script.contains("const redactedMetadataForSnapshot = (el, value) =>"))
         #expect(script.contains("const metadataValueForSnapshot = (el, rawValue, value) =>"))
+        #expect(script.contains("const valueContainsMetadata = normalizedValue.length >= prefixLength"))
+        #expect(script.contains("normalizedValue.includes(normalizedMetadata)"))
+        #expect(script.contains("const isEditablePaymentField = (el) =>"))
         #expect(script.contains("return metadataValueForSnapshot(el, editableValueFor(el), label)"))
         #expect(script.contains("name: metadataValueForSnapshot(el, rawValue, el.getAttribute(\"name\") || \"\")"))
         #expect(script.contains("if (sensitiveControlForTextNode(parent)) continue"))
@@ -434,7 +444,9 @@ struct BrowserPageSnapshotServiceTests {
         #expect(script.contains("return JSON.stringify(redactSensitiveResultTarget(result, el, currentValueFor(el)))"))
         #expect(script.contains(#"for (const key of ["selector", "requestedSelector", "label", "name", "placeholder", "testID", "href"])"#))
         #expect(script.contains("redactSensitiveResultMetadata(result[key], value)"))
+        #expect(script.contains("normalizedValue.includes(normalizedRaw)"))
         #expect(script.contains("sensitiveMetadataCandidate(raw) ? redactedInputValue : raw"))
+        #expect(!script.contains("redactSensitiveResultTarget(result, el, next);\n          result.cleared = clear;"))
     }
 
     private var snapshotJSON: String {

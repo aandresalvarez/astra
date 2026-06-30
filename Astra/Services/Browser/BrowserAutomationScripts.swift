@@ -453,11 +453,16 @@ enum BrowserAutomationScripts {
         "access token", "refresh token", "auth token", "bearer token",
         "oauth", "client secret", "private key", "mfa", "2fa", "two factor",
         "two-factor", "verification code", "security code", "one-time",
-        "one time", "otp", "totp", "ssn", "social security", "credit card",
+        "one time", "otp", "totp", "ssn", "social security",
         "dob", "date of birth", "birth date", "birthdate", "mrn",
         "medical record", "medical record number", "patient id", "patient identifier",
-        "health record", "card number", "cardholder", "card holder",
-        "name on card", "cvv", "cvc", "payment", "billing"
+        "health record"
+      ];
+      const paymentFieldTerms = [
+        "credit card", "card number", "cardholder", "card holder",
+        "name on card", "cc-name", "cc-given-name", "cc-additional-name",
+        "cc-family-name", "cc-number", "cc-exp", "cc-exp-month",
+        "cc-exp-year", "cc-csc", "cc-type", "cvv", "cvc", "payment", "billing"
       ];
       const sensitiveAutocompleteTerms = [
         "current-password", "new-password", "one-time-code",
@@ -465,6 +470,15 @@ enum BrowserAutomationScripts {
         "cc-number", "cc-exp", "cc-exp-month", "cc-exp-year",
         "cc-csc", "cc-type"
       ];
+      const isEditablePaymentField = (el) => {
+        const tag = String(el.tagName || "").toLowerCase();
+        const role = String(el.getAttribute("role") || "").toLowerCase();
+        const type = String(el.getAttribute("type") || "").toLowerCase();
+        if (tag === "textarea" || tag === "select") return true;
+        if (role === "textbox" || role === "combobox") return true;
+        if (tag !== "input") return false;
+        return !new Set(["button", "checkbox", "color", "file", "image", "radio", "range", "reset", "submit"]).has(type);
+      };
       const isSensitiveValueControl = (el) => {
         const type = String(el.getAttribute("type") || "").toLowerCase();
         if (type === "password" || type === "hidden") return true;
@@ -482,7 +496,8 @@ enum BrowserAutomationScripts {
           el.href || "",
           autocomplete
         ].join(" ").toLowerCase();
-        return containsAny(text, sensitiveFieldTerms);
+        return containsAny(text, sensitiveFieldTerms)
+          || (isEditablePaymentField(el) && containsAny(text, paymentFieldTerms));
       };
       const editableValueFor = (el) => {
         if (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT") {
@@ -503,7 +518,23 @@ enum BrowserAutomationScripts {
         const normalizedMetadata = metadata.replace(/\\s+/g, " ").trim().toLowerCase();
         const normalizedCSSMetadata = cssUnescaped(metadata).replace(/\\s+/g, " ").trim().toLowerCase();
         const normalizedValue = sensitiveValue.toLowerCase();
-        return normalizedMetadata.includes(normalizedValue) || normalizedCSSMetadata.includes(normalizedValue)
+        const metadataLooksSensitive = containsAny(normalizedMetadata, sensitiveFieldTerms)
+          || containsAny(normalizedCSSMetadata, sensitiveFieldTerms)
+          || (isEditablePaymentField(el)
+            && (containsAny(normalizedMetadata, paymentFieldTerms)
+              || containsAny(normalizedCSSMetadata, paymentFieldTerms)));
+        const prefixLength = 8;
+        const valueContainsMetadata = normalizedValue.length >= prefixLength
+          && normalizedMetadata.length >= prefixLength
+          && normalizedValue.includes(normalizedMetadata);
+        const valueContainsCSSMetadata = normalizedValue.length >= prefixLength
+          && normalizedCSSMetadata.length >= prefixLength
+          && normalizedValue.includes(normalizedCSSMetadata);
+        return metadataLooksSensitive
+          || normalizedMetadata.includes(normalizedValue)
+          || normalizedCSSMetadata.includes(normalizedValue)
+          || valueContainsMetadata
+          || valueContainsCSSMetadata
           ? redactedInputValue
           : metadata;
       };
@@ -755,10 +786,13 @@ enum BrowserAutomationScripts {
             "access token", "refresh token", "auth token", "bearer token",
             "oauth", "client secret", "private key", "mfa", "2fa", "two factor",
             "two-factor", "verification code", "security code", "one-time",
-            "one time", "otp", "totp", "ssn", "social security", "credit card",
+            "one time", "otp", "totp", "ssn", "social security",
             "dob", "date of birth", "birth date", "birthdate", "mrn",
             "medical record", "medical record number", "patient id", "patient identifier",
-            "health record", "card number", "cardholder", "card holder",
+            "health record"
+          ];
+          const paymentResultTerms = [
+            "credit card", "card number", "cardholder", "card holder",
             "name on card", "cvv", "cvc", "payment", "billing"
           ];
           const sensitiveAutocompleteTerms = [
@@ -774,6 +808,15 @@ enum BrowserAutomationScripts {
             if ("value" in target) return String(target.value || "");
             if (target.isContentEditable) return String(target.textContent || "");
             return "";
+          };
+          const isEditablePaymentField = (target) => {
+            const tag = String(target.tagName || "").toLowerCase();
+            const role = roleFor(target).toLowerCase();
+            const type = String(target.getAttribute("type") || "").toLowerCase();
+            if (tag === "textarea" || tag === "select") return true;
+            if (role === "textbox" || role === "combobox") return true;
+            if (tag !== "input") return false;
+            return !new Set(["button", "checkbox", "color", "file", "image", "radio", "range", "reset", "submit"]).has(type);
           };
           const sensitiveResultTarget = (target) => {
             if (!target) return false;
@@ -792,7 +835,8 @@ enum BrowserAutomationScripts {
               target.getAttribute("data-testid") || target.getAttribute("data-test") || "",
               autocomplete
             ].join(" ").toLowerCase();
-            return includesAny(text, sensitiveResultTerms);
+            return includesAny(text, sensitiveResultTerms)
+              || (isEditablePaymentField(target) && includesAny(text, paymentResultTerms));
           };
           const sensitiveResultObject = (result) => {
             const text = [
@@ -808,7 +852,9 @@ enum BrowserAutomationScripts {
               result.href || "",
               result.autocomplete || ""
             ].join(" ").toLowerCase();
-            return includesAny(text, sensitiveResultTerms) || sensitiveMetadataCandidate(text);
+            return includesAny(text, sensitiveResultTerms)
+              || includesAny(text, paymentResultTerms)
+              || sensitiveMetadataCandidate(text);
           };
           const cssUnescaped = (value) => String(value || "")
             .replace(/\\\\([0-9a-fA-F]{1,6})\\s?/g, (_, hex) => String.fromCodePoint(parseInt(hex, 16)))
@@ -816,13 +862,17 @@ enum BrowserAutomationScripts {
           const sensitiveMetadataCandidate = (value) => {
             const text = norm(cssUnescaped(value));
             return text
-              && includesAny(text, sensitiveResultTerms)
+              && (includesAny(text, sensitiveResultTerms) || includesAny(text, paymentResultTerms))
               && (/[0-9]/.test(text) || text.includes("-") || text.includes("_") || text.includes("%") || value.length > 20);
           };
           const redactSensitiveResultMetadata = (value, sensitiveValue) => {
             const raw = String(value || "");
             const normalizedValue = norm(sensitiveValue);
-            if (normalizedValue && norm(raw).includes(normalizedValue)) return redactedInputValue;
+            const normalizedRaw = norm(raw);
+            if (normalizedValue && (
+              normalizedRaw.includes(normalizedValue)
+              || (normalizedValue.length >= 8 && normalizedRaw.length >= 8 && normalizedValue.includes(normalizedRaw))
+            )) return redactedInputValue;
             return sensitiveMetadataCandidate(raw) ? redactedInputValue : raw;
           };
           const redactSensitiveResultTarget = (result, target, value) => {
@@ -877,7 +927,6 @@ enum BrowserAutomationScripts {
           result.ok = true;
           result.url = location.href;
           result.value = next.slice(0, 300);
-          redactSensitiveResultTarget(result, el, next);
           result.cleared = clear;
           return JSON.stringify(redactSensitiveResultTarget(result, el, currentValueFor(el)));
         })()
