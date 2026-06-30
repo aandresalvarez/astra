@@ -312,7 +312,7 @@ struct BrowserControlSafetyTests {
             .path
         let source = try String(contentsOfFile: controllerPath, encoding: .utf8)
         let methodStart = try #require(source.range(of: "func replaceTextTargetsInfo(selector: String, find: String, all: Bool) async throws -> String {"))
-        let methodEnd = try #require(source[methodStart.upperBound...].range(of: "\n    }\n\n    func keypress"))
+        let methodEnd = try #require(source[methodStart.upperBound...].range(of: "func keypress(key: String, modifiers: [String]) async throws -> String {"))
         let methodSource = source[methodStart.lowerBound..<methodEnd.lowerBound]
 
         #expect(methodSource.contains("try await refreshPageMetadata()"))

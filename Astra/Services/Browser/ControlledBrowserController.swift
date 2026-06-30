@@ -659,7 +659,6 @@ final class ControlledBrowserController: ObservableObject {
         try await refreshPageMetadata()
         return value
     }
-
     func type(
         selector: String?,
         text: String,
@@ -712,9 +711,10 @@ final class ControlledBrowserController: ObservableObject {
 
     func replaceTextTargetsInfo(selector: String, find: String, all: Bool) async throws -> String {
         try await ensureLaunched(initialURL: URL(string: "about:blank"))
-        let value = try await evaluate(script: BrowserAutomationScripts.replaceTextTargetsInfoScript(selector: selector, find: find, all: all)); try await refreshPageMetadata(); return value
+        let value = try await evaluate(script: BrowserAutomationScripts.replaceTextTargetsInfoScript(selector: selector, find: find, all: all))
+        try await refreshPageMetadata()
+        return value
     }
-
     func keypress(key: String, modifiers: [String]) async throws -> String {
         try await ensureLaunched(initialURL: URL(string: "about:blank"))
         let definition = Self.keyDefinition(for: key, modifiers: modifiers)
