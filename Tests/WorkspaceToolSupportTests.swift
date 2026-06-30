@@ -277,6 +277,7 @@ struct WorkspaceToolSupportTests {
             "env -u FOO gcloud auth list",
             "env --unset FOO --chdir /tmp gcloud auth list",
             "env -S'gcloud auth list'",
+            "cmd='--split-string=gcloud auth list'; env \"$cmd\"",
             "gh -R owner/repo api repos/owner/repo",
             "gh --repo owner/repo pr view 148",
             "gh --repo=owner/repo api repos/owner/repo",

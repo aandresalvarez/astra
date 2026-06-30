@@ -1061,9 +1061,11 @@ public struct WorkspaceToolConfiguration: Equatable, Sendable {
             return nil
         }
         let name = word[..<equals]
-        guard name.allSatisfy({ character in
-            character.isLetter || character.isNumber || character == "_"
-        }) else {
+        guard let first = name.first,
+              first.isLetter || first == "_",
+              name.dropFirst().allSatisfy({ character in
+                  character.isLetter || character.isNumber || character == "_"
+              }) else {
             return nil
         }
         let valueStart = word.index(after: equals)
@@ -1081,7 +1083,7 @@ public struct WorkspaceToolConfiguration: Equatable, Sendable {
 
     private func resolvedShellWords(_ word: ShellWord, variables: [String: String]) -> [String] {
         let resolved = resolvedShellWord(word, variables: variables)
-        if resolved == word.value, let splitString = splitEnvString(from: resolved) {
+        if let splitString = splitEnvString(from: resolved) {
             let fields = shellTokens(in: splitString).compactMap(\.wordValue)
             return fields.isEmpty ? [resolved] : fields
         }
