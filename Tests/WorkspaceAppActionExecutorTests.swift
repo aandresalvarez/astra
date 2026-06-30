@@ -196,6 +196,7 @@ struct WorkspaceAppActionExecutorTests {
             ("item-minus", "-10", "@NOW()"),
             ("item-tab", "\t=2+3", "  =2+3"),
             ("item-cr", "\r=2+3", "Plain"),
+            ("item-nbsp", "\u{00A0}=2+3", "Plain"),
             ("item-tab-text", "\tPlain", "Plain"),
             ("item-cr-text", "\rPlain", "Plain")
         ]
@@ -235,6 +236,8 @@ struct WorkspaceAppActionExecutorTests {
         #expect(!csv.contains("\nitem-tab,\t=2+3,  =2+3\n"))
         #expect(csv.contains("\nitem-cr,\"'\r=2+3\",Plain\n"))
         #expect(!csv.contains("\nitem-cr,\"\r=2+3\",Plain\n"))
+        #expect(csv.contains("\nitem-nbsp,'\u{00A0}=2+3,Plain\n"))
+        #expect(!csv.contains("\nitem-nbsp,\u{00A0}=2+3,Plain\n"))
         #expect(csv.contains("\nitem-tab-text,\tPlain,Plain\n"))
         #expect(!csv.contains("\nitem-tab-text,'\tPlain,Plain\n"))
         #expect(csv.contains("\nitem-cr-text,\"\rPlain\",Plain\n"))
@@ -1720,14 +1723,14 @@ struct WorkspaceAppActionExecutorTests {
         let workspace = Workspace(name: "Actions", primaryPath: root.path)
         context.insert(workspace)
 
-        let manifest = manifest ?? groceryManifest(permissionMode: permissionMode)
+        let resolvedManifest = manifest ?? groceryManifest(permissionMode: permissionMode)
         let result = try WorkspaceAppService().createApp(
-            manifest: manifest,
+            manifest: resolvedManifest,
             in: workspace,
             modelContext: context
         )
 
-        return (root, container, context, workspace, result.app, manifest)
+        return (root, container, context, workspace, result.app, resolvedManifest)
     }
 
     static func metricExportManifest(permissionMode: WorkspaceAppPermissionMode) -> WorkspaceAppManifest {

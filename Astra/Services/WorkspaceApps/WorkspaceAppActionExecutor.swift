@@ -2314,7 +2314,7 @@ private struct WorkspaceAppCSVExportFormatter {
 
     private static func firstSpreadsheetToken(in value: String) -> Character? {
         for character in value {
-            if character == " " || character == "\n" || character == "\t" || character == "\r" {
+            if character.isWhitespace {
                 continue
             }
             return character
