@@ -2240,8 +2240,8 @@ struct TaskCapabilityResolverTests {
         #expect(explicitlyBlocked.isEmpty)
     }
 
-    @Test("Pack capability filters load approval store when any runtime exposure policy is active")
-    func packCapabilityFiltersLoadApprovalStoreWhenAnyRuntimeExposurePolicyIsActive() throws {
+    @Test("Pack capability filters load approval store when package governance can be approval-overridden")
+    func packCapabilityFiltersLoadApprovalStoreWhenPackageGovernanceCanBeApprovalOverridden() throws {
         let workspace = Workspace(name: "Approved Draft Workspace", primaryPath: "/tmp/approved-draft-workspace")
         workspace.enabledCapabilityIDs = ["draft-approved-tool"]
         let draftPackage = PluginPackage(

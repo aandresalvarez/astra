@@ -842,6 +842,35 @@ struct WorkspaceCapabilitiesTests {
         #expect(packages.map(\.name) == ["Jira Workflow"])
     }
 
+    @Test("preloaded package definitions honor supplied pack policy")
+    @MainActor
+    func preloadedPackageDefinitionsHonorSuppliedPackPolicy() {
+        let workspace = Workspace(name: "Pack Policy", primaryPath: "/tmp/pack-policy")
+        let skill = Skill(name: "Pack Analyst", allowedTools: ["Read"])
+        skill.isGlobal = true
+        let package = makeCapabilityPackage(id: "local.test/pack-analyst", skillName: "Pack Analyst")
+        workspace.enabledCapabilityIDs = [package.id]
+        workspace.enabledPackIDs = ["astra.pack.policy-test"]
+        let packPolicy = makeCapabilityPackPolicy(restrictions: [
+            AstraPackPolicyRestriction(
+                id: "disable-pack-analyst",
+                contributionKind: "capabilityPackage",
+                action: "disableCapability",
+                effect: "restrict",
+                targetID: package.id
+            )
+        ])
+
+        let capabilities = WorkspaceCapabilities(
+            workspace: workspace,
+            globalSkills: [skill],
+            packageDefinitions: [package],
+            packPolicy: packPolicy
+        )
+
+        #expect(capabilities.activeSkills.isEmpty)
+    }
+
     @Test("promoting a workspace connector to shared keeps it enabled here")
     @MainActor
     func promotingConnectorKeepsCurrentWorkspaceEnabled() {
@@ -1197,5 +1226,21 @@ private func makeCapabilityPackage(id: String, skillName: String) -> PluginPacka
         connectors: [],
         localTools: [],
         templates: []
+    )
+}
+
+private func makeCapabilityPackPolicy(restrictions: [AstraPackPolicyRestriction]) -> PackResolvedPolicy {
+    AstraPackPolicyResolver.resolve(
+        composition: AstraPackComposition.resolve(packs: [
+            AstraPackManifest(
+                formatVersion: 1,
+                id: "astra.pack.policy-test",
+                name: "Policy Test",
+                version: "1.0.0",
+                coreAPIVersion: "1.0",
+                description: "Policy test pack.",
+                policyRestrictions: restrictions
+            )
+        ])
     )
 }

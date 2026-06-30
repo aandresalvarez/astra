@@ -252,6 +252,7 @@ struct WorkspaceRightRailView: View {
     @State private var pendingRailDeletion: PendingRailDeletion?
     @State private var approvedCapabilityPackages: [PluginPackage] = PluginCatalog.builtInPackages
     @State private var approvedCapabilityRecords: [CapabilityApprovalRecord] = []
+    @State private var approvedCapabilityPackPolicy = PackResolvedPolicy.empty
     @State private var capabilityRailSnapshotCache = CapabilityRailSnapshotCache()
     @State private var capabilityError: String?
     @State private var capabilityPrerequisiteStatuses: [String: HealthStatus] = [:]
@@ -276,7 +277,8 @@ struct WorkspaceRightRailView: View {
             globalSkills: globalSkills,
             globalConnectors: globalConnectors,
             globalTools: globalTools,
-            packageDefinitions: approvedCapabilityPackages
+            packageDefinitions: approvedCapabilityPackages,
+            packPolicy: approvedCapabilityPackPolicy
         )
     }
 
@@ -286,7 +288,8 @@ struct WorkspaceRightRailView: View {
         // CapabilityApprovals directory on every body re-evaluation.
         CapabilityCatalogPolicyContext.currentUser(
             workspace: workspace,
-            approvalRecords: approvedCapabilityRecords
+            approvalRecords: approvedCapabilityRecords,
+            packPolicy: approvedCapabilityPackPolicy
         )
     }
 
@@ -520,6 +523,10 @@ struct WorkspaceRightRailView: View {
         .onChange(of: workspace.additionalPaths) {
             checkGitRepositories()
             checkDockerEnvironments()
+        }
+        .onChange(of: workspace.enabledPackIDs) {
+            refreshApprovedCapabilities()
+            rebuildCapabilityRailSnapshot(for: capabilityRailSnapshotSignature)
         }
         .onChange(of: workspace.activeExecutionEnvironmentJSON) {
             checkDockerEnvironments()
@@ -1190,11 +1197,13 @@ struct WorkspaceRightRailView: View {
         ) {
             (
                 packages: CapabilityLibrary().installedPackages(),
-                records: CapabilityApprovalStore().records()
+                records: CapabilityApprovalStore().records(),
+                packPolicy: PackWorkspacePolicyProvider.resolvedPolicy(for: workspace)
             )
         }
         approvedCapabilityPackages = snapshot.packages.isEmpty ? PluginCatalog.builtInPackages : snapshot.packages
         approvedCapabilityRecords = snapshot.records
+        approvedCapabilityPackPolicy = snapshot.packPolicy
     }
 
     private func refreshCapabilityPrerequisiteStatuses() {

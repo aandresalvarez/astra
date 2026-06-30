@@ -22,6 +22,15 @@ struct ShelfAvailabilityPolicy: Equatable {
         self.disabledShelfIDs = disabledShelfIDs
     }
 
+    static func loadingForPackEnabledWorkspace(
+        descriptors: [ShelfDescriptor] = CoreShelfRegistry.allDescriptors
+    ) -> ShelfAvailabilityPolicy {
+        ShelfAvailabilityPolicy(
+            descriptors: descriptors,
+            disabledShelfIDs: Set(descriptors.map(\.id))
+        )
+    }
+
     func isToolbarAvailable(_ shelfID: ShelfID, in context: Context) -> Bool {
         guard isRegisteredAndEnabled(shelfID) else { return false }
 

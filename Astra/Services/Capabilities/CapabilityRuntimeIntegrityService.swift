@@ -44,7 +44,16 @@ enum CapabilityRuntimeIntegrityService {
         guard let workspace = task.workspace else { return [] }
 
         let packages = suppliedPackages ?? CapabilityRuntimeResourceMatcher.packageDefinitions()
-        let enabledPackageIDs = Set(workspace.enabledCapabilityIDs)
+        let rawEnabledPackageIDs = Set(workspace.enabledCapabilityIDs)
+        let runtimePackPolicy = policyContext?.packPolicy ?? PackWorkspacePolicyProvider.resolvedPolicy(for: workspace)
+        let runtimeEnabledPackageIDs = Set(
+            CapabilityRuntimeResourceMatcher.enabledPackages(
+                for: workspace,
+                in: packages,
+                approvalRecords: policyContext?.approvalRecords,
+                packPolicy: runtimePackPolicy
+            ).map(\.id)
+        )
         let resolver = TaskCapabilityResolver(task: task)
         let resolvedScope = resolver.resolvedScope(requestedScope)
         let resolvedSkills = resolvedScope.behaviorSkills
@@ -72,7 +81,7 @@ enum CapabilityRuntimeIntegrityService {
         let availableConnectors = availableConnectors(for: task)
 
         var checks: [(PluginPackage, CapabilityRuntimeIntegrityIssue.Source)] = []
-        for package in packages where enabledPackageIDs.contains(package.id) {
+        for package in packages where runtimeEnabledPackageIDs.contains(package.id) {
             guard shouldCheckEnabledPackage(
                 package,
                 task: task,
@@ -86,7 +95,7 @@ enum CapabilityRuntimeIntegrityService {
             checks.append((package, .enabledPackage))
         }
 
-        for package in packages where !enabledPackageIDs.contains(package.id) && hasRuntimeCompanionResources(package) {
+        for package in packages where !rawEnabledPackageIDs.contains(package.id) && hasRuntimeCompanionResources(package) {
             let packageSkillNames = Set(package.skills.map { CapabilityRuntimeResourceMatcher.normalizedName($0.name) })
             guard !packageSkillNames.isDisjoint(with: selectedSkillNames) else { continue }
             checks.append((package, .selectedPackageSkill))

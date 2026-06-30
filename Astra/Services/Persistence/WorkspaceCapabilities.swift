@@ -13,19 +13,25 @@ struct WorkspaceCapabilities {
     /// `nil` falls back to the filesystem-backed matcher cache for callers
     /// (runtime launch, tests) that have no preloaded list.
     let packageDefinitions: [PluginPackage]?
+    /// Optional pre-resolved pack policy paired with `packageDefinitions`.
+    /// Body-path callers pass their cached policy here so capability resolution
+    /// can apply pack visibility without triggering catalog I/O.
+    let packPolicy: PackResolvedPolicy?
 
     init(
         workspace: Workspace,
         globalSkills: [Skill] = [],
         globalConnectors: [Connector] = [],
         globalTools: [LocalTool] = [],
-        packageDefinitions: [PluginPackage]? = nil
+        packageDefinitions: [PluginPackage]? = nil,
+        packPolicy: PackResolvedPolicy? = nil
     ) {
         self.workspace = workspace
         self.globalSkills = globalSkills
         self.globalConnectors = globalConnectors
         self.globalTools = globalTools
         self.packageDefinitions = packageDefinitions
+        self.packPolicy = packPolicy
     }
 
     var workspaceSkills: [Skill] {
@@ -107,7 +113,8 @@ struct WorkspaceCapabilities {
         if let packageDefinitions {
             return CapabilityRuntimeResourceMatcher.enabledPackages(
                 for: workspace,
-                in: packageDefinitions
+                in: packageDefinitions,
+                packPolicy: packPolicy
             )
         }
         return CapabilityRuntimeResourceMatcher.enabledPackages(for: workspace)

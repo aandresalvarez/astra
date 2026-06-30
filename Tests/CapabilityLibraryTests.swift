@@ -343,6 +343,36 @@ struct CapabilityLibraryTests {
         #expect(!ids.contains(disabled.id))
     }
 
+    @Test("in-memory enabled packages applies only supplied pack policy")
+    func inMemoryEnabledPackagesAppliesOnlySuppliedPackPolicy() {
+        let disabled = makeTestPackage(id: "local.test/disabled", name: "Disabled")
+        let workspace = Workspace(name: "Policy", primaryPath: "/tmp/policy")
+        workspace.enabledCapabilityIDs = [disabled.id]
+        workspace.enabledPackIDs = ["astra.pack.policy-test"]
+        let packPolicy = Self.policy(restrictions: [
+            AstraPackPolicyRestriction(
+                id: "disable-local",
+                contributionKind: "capabilityPackage",
+                action: "disableCapability",
+                effect: "restrict",
+                targetID: disabled.id
+            )
+        ])
+
+        let withoutSuppliedPolicy = CapabilityRuntimeResourceMatcher.enabledPackages(
+            for: workspace,
+            in: [disabled]
+        )
+        let withSuppliedPolicy = CapabilityRuntimeResourceMatcher.enabledPackages(
+            for: workspace,
+            in: [disabled],
+            packPolicy: packPolicy
+        )
+
+        #expect(withoutSuppliedPolicy.map(\.id) == [disabled.id])
+        #expect(withSuppliedPolicy.isEmpty)
+    }
+
     @Test("enabled packages avoids approval store reads without pack review gates")
     func enabledPackagesAvoidsApprovalStoreReadsWithoutPackReviewGates() {
         let disabled = makeTestPackage(id: "local.test/disabled", name: "Disabled")

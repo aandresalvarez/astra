@@ -145,6 +145,7 @@ struct ContentView: View {
     @State private var selectedTaskHasQueryShelfContent = false
     @State private var selectedTaskPreferredQueryPath = ""
     @State private var cachedShelfAvailabilityPolicy = ShelfAvailabilityPolicy()
+    @State private var cachedShelfAvailabilityPolicySignature = ""
     @State private var rememberedWorkspaceCanvasItemsRaw = WorkspaceCanvasItemPreferenceStore.load()
     /// First-run flag. Flips to true once the user finishes the
     /// onboarding wizard. Exposed via Settings → "Show Onboarding Again"
@@ -318,7 +319,16 @@ struct ContentView: View {
     }
 
     private var shelfAvailabilityPolicy: ShelfAvailabilityPolicy {
-        cachedShelfAvailabilityPolicy
+        guard cachedShelfAvailabilityPolicySignature == shelfAvailabilityPolicyRefreshSignature else {
+            return loadingShelfAvailabilityPolicy
+        }
+        return cachedShelfAvailabilityPolicy
+    }
+
+    private var loadingShelfAvailabilityPolicy: ShelfAvailabilityPolicy {
+        shelfAvailabilityPolicyWorkspaceHasEnabledPacks
+            ? .loadingForPackEnabledWorkspace()
+            : ShelfAvailabilityPolicy()
     }
 
     private var shelfAvailabilityPolicyRefreshSignature: String {
@@ -337,6 +347,12 @@ struct ContentView: View {
             enabledPacks,
             overrides
         ].joined(separator: "|")
+    }
+
+    private var shelfAvailabilityPolicyWorkspaceHasEnabledPacks: Bool {
+        effectiveWorkspace?.enabledPackIDs.contains {
+            !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        } ?? false
     }
 
     private var shelfAvailabilityContext: ShelfAvailabilityPolicy.Context {
@@ -1660,18 +1676,18 @@ struct ContentView: View {
 
     @MainActor
     private func refreshShelfAvailabilityPolicy() async {
+        let signature = shelfAvailabilityPolicyRefreshSignature
         let workspace = effectiveWorkspace
-        let hasEnabledPacks = workspace?.enabledPackIDs.contains {
-            !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        } ?? false
+        let hasEnabledPacks = shelfAvailabilityPolicyWorkspaceHasEnabledPacks
         let catalogSnapshot = hasEnabledPacks
             ? await Task.detached { AstraPackCatalog().load() }.value
             : nil
-        guard !Task.isCancelled else { return }
+        guard !Task.isCancelled, signature == shelfAvailabilityPolicyRefreshSignature else { return }
         cachedShelfAvailabilityPolicy = AstraPackWorkspaceProfileProvider.shelfAvailabilityPolicy(
             for: workspace,
             catalogSnapshot: catalogSnapshot
         )
+        cachedShelfAvailabilityPolicySignature = signature
     }
 
     private func openGeneratedFile(_ path: String) {

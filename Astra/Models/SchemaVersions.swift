@@ -1822,6 +1822,17 @@ enum ASTRASchemaV6: VersionedSchema {
 enum ASTRASchemaV7: VersionedSchema {
     static var versionIdentifier = Schema.Version(7, 0, 0)
 
+    typealias Workspace = ASTRASchemaV9.Workspace
+    typealias AgentTask = ASTRASchemaV9.AgentTask
+    typealias TaskRun = ASTRASchemaV9.TaskRun
+    typealias TaskEvent = ASTRASchemaV9.TaskEvent
+    typealias Artifact = ASTRASchemaV9.Artifact
+    typealias Skill = ASTRASchemaV9.Skill
+    typealias Connector = ASTRASchemaV9.Connector
+    typealias LocalTool = ASTRASchemaV9.LocalTool
+    typealias TaskTemplate = ASTRASchemaV9.TaskTemplate
+    typealias TaskSchedule = ASTRASchemaV9.TaskSchedule
+
     static var models: [any PersistentModel.Type] {
         [
             Workspace.self,
@@ -1843,6 +1854,17 @@ enum ASTRASchemaV7: VersionedSchema {
 /// entities, so V7 -> V8 is a lightweight migration that only creates the new tables.
 enum ASTRASchemaV8: VersionedSchema {
     static var versionIdentifier = Schema.Version(8, 0, 0)
+
+    typealias Workspace = ASTRASchemaV9.Workspace
+    typealias AgentTask = ASTRASchemaV9.AgentTask
+    typealias TaskRun = ASTRASchemaV9.TaskRun
+    typealias TaskEvent = ASTRASchemaV9.TaskEvent
+    typealias Artifact = ASTRASchemaV9.Artifact
+    typealias Skill = ASTRASchemaV9.Skill
+    typealias Connector = ASTRASchemaV9.Connector
+    typealias LocalTool = ASTRASchemaV9.LocalTool
+    typealias TaskTemplate = ASTRASchemaV9.TaskTemplate
+    typealias TaskSchedule = ASTRASchemaV9.TaskSchedule
 
     static var models: [any PersistentModel.Type] {
         [

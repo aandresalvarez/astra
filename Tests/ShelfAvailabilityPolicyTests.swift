@@ -98,6 +98,25 @@ struct ShelfAvailabilityPolicyTests {
         #expect(policy.canRestoreRemembered(.appPreview, in: studio))
     }
 
+    @Test("Loading policy gates every shelf for pack-enabled workspaces")
+    func loadingPolicyGatesEveryShelfForPackEnabledWorkspaces() {
+        let policy = ShelfAvailabilityPolicy.loadingForPackEnabledWorkspace()
+        let permissiveContext = context(
+            hasOpenTaskThread: true,
+            hasWorkspaceContext: true,
+            hasPlanContent: true,
+            hasFilesShelfContent: true,
+            hasQueryShelfContent: true,
+            isComposingWorkspaceApp: true
+        )
+
+        for shelfID in ShelfID.allCases {
+            #expect(!policy.isToolbarAvailable(shelfID, in: permissiveContext))
+            #expect(!policy.canPresent(shelfID, in: permissiveContext))
+            #expect(!policy.canRestoreRemembered(shelfID, in: permissiveContext))
+        }
+    }
+
     private func context(
         hasOpenTaskThread: Bool = false,
         hasWorkspaceContext: Bool = false,
