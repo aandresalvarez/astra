@@ -257,12 +257,277 @@ struct HostControlToolSupportTests {
         let server = HostControlMCPServer(configuration: HostControlToolConfiguration(gcloudExecutable: gcloud.path))
 
         let result = try call(server, id: 1, tool: "gcloud", arguments: [
-            "arguments": ["compute", "ssh", "bq"]
+            "arguments": ["compute", "instances", "describe", "bq"]
         ])
 
-        #expect(try resultText(result).contains("gcloud:compute ssh bq"))
+        #expect(try resultText(result).contains("gcloud:compute instances describe bq"))
         let hostLog = try String(contentsOf: log, encoding: .utf8)
-        #expect(hostLog.contains("gcloud compute ssh bq"))
+        #expect(hostLog.contains("gcloud compute instances describe bq"))
+    }
+
+    @Test("Host control gcloud denies credential printing and mutations before process execution")
+    func hostControlGCloudDeniesCredentialPrintingAndMutationsBeforeProcessExecution() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-host-gcloud-policy-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let log = root.appendingPathComponent("host.log", isDirectory: false)
+        let gcloud = try fakeExecutable(named: "gcloud", root: root, log: log, stdout: "gcloud:$*")
+        let configuration = HostControlToolConfiguration(gcloudExecutable: gcloud.path)
+        let server = HostControlMCPServer(configuration: configuration)
+
+        let tokenResult = try call(server, id: 1, tool: "gcloud", arguments: [
+            "arguments": ["auth", "print-access-token"]
+        ])
+        let tokenError = try #require(tokenResult["error"] as? [String: Any])
+        #expect((tokenError["message"] as? String)?.contains("gcloud does not allow credential or mutating operations") == true)
+
+        let mutationResult = try call(server, id: 2, tool: "gcloud", arguments: [
+            "arguments": ["run", "deploy", "prod-service", "--image", "gcr.io/example/app"]
+        ])
+        let mutationError = try #require(mutationResult["error"] as? [String: Any])
+        #expect((mutationError["message"] as? String)?.contains("gcloud does not allow credential or mutating operations") == true)
+
+        let disguisedMutationResult = try call(server, id: 3, tool: "gcloud", arguments: [
+            "arguments": ["compute", "instances", "reset", "list", "--zone=us-central1-a"]
+        ])
+        let disguisedMutationError = try #require(disguisedMutationResult["error"] as? [String: Any])
+        #expect((disguisedMutationError["message"] as? String)?.contains("gcloud does not allow credential or mutating operations") == true)
+
+        let readResult = try call(server, id: 4, tool: "gcloud", arguments: [
+            "arguments": ["compute", "instances", "list", "--format=json"]
+        ])
+        #expect(try resultText(readResult).contains("gcloud:compute instances list --format=json"))
+
+        let filteredReadResult = try call(server, id: 5, tool: "gcloud", arguments: [
+            "arguments": [
+                "--project", "clinical-project",
+                "--filter", "name~worker",
+                "compute", "instances", "list",
+                "--format=json"
+            ]
+        ])
+        #expect(try resultText(filteredReadResult).contains("gcloud:--project clinical-project --filter name~worker compute instances list --format=json"))
+
+        let workflowRunResult = try call(server, id: 6, tool: "gcloud", arguments: [
+            "arguments": ["workflows", "run", "list", "--location=us-central1"]
+        ])
+        let workflowRunError = try #require(workflowRunResult["error"] as? [String: Any])
+        #expect((workflowRunError["message"] as? String)?.contains("gcloud does not allow credential or mutating operations") == true)
+
+        let schedulerRunResult = try call(server, id: 17, tool: "gcloud", arguments: [
+            "arguments": ["scheduler", "jobs", "run", "list", "--location", "us-central1"]
+        ])
+        let schedulerRunError = try #require(schedulerRunResult["error"] as? [String: Any])
+        #expect((schedulerRunError["message"] as? String)?.contains("gcloud does not allow credential or mutating operations") == true)
+
+        let flagsFileResult = try call(server, id: 7, tool: "gcloud", arguments: [
+            "arguments": ["compute", "instances", "list", "--flags-file=/tmp/hidden-credentials.yaml"]
+        ])
+        let flagsFileError = try #require(flagsFileResult["error"] as? [String: Any])
+        #expect((flagsFileError["message"] as? String)?.contains("gcloud does not allow credential or mutating operations") == true)
+
+        let passthroughSeparatorResult = try call(server, id: 18, tool: "gcloud", arguments: [
+            "arguments": ["compute", "instances", "list", "--", "--access-token-file=/tmp/hidden-token"]
+        ])
+        let passthroughSeparatorError = try #require(passthroughSeparatorResult["error"] as? [String: Any])
+        #expect((passthroughSeparatorError["message"] as? String)?.contains("gcloud does not allow credential or mutating operations") == true)
+
+        let iamPolicyReadResult = try call(server, id: 8, tool: "gcloud", arguments: [
+            "arguments": ["projects", "get-iam-policy", "clinical-project"]
+        ])
+        let iamPolicyReadError = try #require(iamPolicyReadResult["error"] as? [String: Any])
+        #expect((iamPolicyReadError["message"] as? String)?.contains("gcloud does not allow credential or mutating operations") == true)
+
+        let httpLoggingReadResult = try call(server, id: 9, tool: "gcloud", arguments: [
+            "arguments": ["compute", "instances", "list", "--log-http"]
+        ])
+        let httpLoggingReadError = try #require(httpLoggingReadResult["error"] as? [String: Any])
+        #expect((httpLoggingReadError["message"] as? String)?.contains("gcloud does not allow credential or mutating operations") == true)
+
+        let uriHTTPLoggingReadResult = try call(server, id: 19, tool: "gcloud", arguments: [
+            "arguments": ["compute", "instances", "list", "--uri", "--log-http"]
+        ])
+        let uriHTTPLoggingReadError = try #require(uriHTTPLoggingReadResult["error"] as? [String: Any])
+        #expect((uriHTTPLoggingReadError["message"] as? String)?.contains("gcloud does not allow credential or mutating operations") == true)
+
+        let debugVerbosityReadResult = try call(server, id: 10, tool: "gcloud", arguments: [
+            "arguments": ["--verbosity", "debug", "compute", "instances", "list"]
+        ])
+        let debugVerbosityReadError = try #require(debugVerbosityReadResult["error"] as? [String: Any])
+        #expect((debugVerbosityReadError["message"] as? String)?.contains("gcloud does not allow credential or mutating operations") == true)
+
+        let inlineDebugVerbosityReadResult = try call(server, id: 11, tool: "gcloud", arguments: [
+            "arguments": ["compute", "instances", "list", "--verbosity=debug"]
+        ])
+        let inlineDebugVerbosityReadError = try #require(inlineDebugVerbosityReadResult["error"] as? [String: Any])
+        #expect((inlineDebugVerbosityReadError["message"] as? String)?.contains("gcloud does not allow credential or mutating operations") == true)
+
+        let traceTokenReadResult = try call(server, id: 12, tool: "gcloud", arguments: [
+            "arguments": [
+                "--trace-token", "task-token-for-log-correlation",
+                "--filter", "labels.audit=tokenized-read",
+                "compute", "instances", "list"
+            ]
+        ])
+        #expect(try resultText(traceTokenReadResult).contains("gcloud:--trace-token task-token-for-log-correlation --filter labels.audit=tokenized-read compute instances list"))
+
+        let sensitiveWordFilterReadResult = try call(server, id: 13, tool: "gcloud", arguments: [
+            "arguments": [
+                "compute", "instances", "list",
+                "--filter", "labels.purpose=secret-rotation-check",
+                "--format=json"
+            ]
+        ])
+        #expect(try resultText(sensitiveWordFilterReadResult).contains("gcloud:compute instances list --filter labels.purpose=secret-rotation-check --format=json"))
+
+        let sensitiveWordResourceReadResult = try call(server, id: 14, tool: "gcloud", arguments: [
+            "arguments": [
+                "compute", "instances", "describe", "secret-rotation-checker",
+                "--zone=us-central1-a"
+            ]
+        ])
+        #expect(try resultText(sensitiveWordResourceReadResult).contains("gcloud:compute instances describe secret-rotation-checker --zone=us-central1-a"))
+
+        let locationReadResult = try call(server, id: 15, tool: "gcloud", arguments: [
+            "arguments": [
+                "--location", "us-central1",
+                "functions", "list"
+            ]
+        ])
+        #expect(try resultText(locationReadResult).contains("gcloud:--location us-central1 functions list"))
+
+        let impersonationReadResult = try call(server, id: 16, tool: "gcloud", arguments: [
+            "arguments": [
+                "compute", "instances", "list",
+                "--impersonate-service-account=reader@example.iam.gserviceaccount.com"
+            ]
+        ])
+        let impersonationReadError = try #require(impersonationReadResult["error"] as? [String: Any])
+        #expect((impersonationReadError["message"] as? String)?.contains("gcloud does not allow credential or mutating operations") == true)
+
+        let hostLog = try String(contentsOf: log, encoding: .utf8)
+        #expect(!hostLog.contains("auth print-access-token"))
+        #expect(!hostLog.contains("run deploy"))
+        #expect(!hostLog.contains("compute instances reset list"))
+        #expect(!hostLog.contains("workflows run list"))
+        #expect(!hostLog.contains("scheduler jobs run list"))
+        #expect(!hostLog.contains("--flags-file"))
+        #expect(!hostLog.contains("--access-token-file"))
+        #expect(!hostLog.contains("get-iam-policy"))
+        #expect(!hostLog.contains("--log-http"))
+        #expect(!hostLog.contains("--uri --log-http"))
+        #expect(!hostLog.contains("--verbosity debug"))
+        #expect(!hostLog.contains("--verbosity=debug"))
+        #expect(!hostLog.contains("--impersonate-service-account"))
+        #expect(hostLog.contains("gcloud compute instances list --format=json"))
+        #expect(hostLog.contains("gcloud --project clinical-project --filter name~worker compute instances list --format=json"))
+        #expect(hostLog.contains("gcloud --trace-token task-token-for-log-correlation --filter labels.audit=tokenized-read compute instances list"))
+        #expect(hostLog.contains("gcloud compute instances list --filter labels.purpose=secret-rotation-check --format=json"))
+        #expect(hostLog.contains("gcloud compute instances describe secret-rotation-checker --zone=us-central1-a"))
+        #expect(hostLog.contains("gcloud --location us-central1 functions list"))
+    }
+
+    @Test("Host control gcloud denies credential selecting flags before process execution")
+    func hostControlGCloudDeniesCredentialSelectingFlagsBeforeProcessExecution() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-host-gcloud-credential-flags-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let log = root.appendingPathComponent("host.log", isDirectory: false)
+        let gcloud = try fakeExecutable(named: "gcloud", root: root, log: log, stdout: "gcloud:$*")
+        let server = HostControlMCPServer(
+            configuration: HostControlToolConfiguration(gcloudExecutable: gcloud.path)
+        )
+        let deniedFlagCases: [[String]] = [
+            ["--account", "privileged@example.com", "compute", "instances", "list"],
+            ["--account=privileged@example.com", "compute", "instances", "list"],
+            ["--configuration", "debug-config", "compute", "instances", "list"],
+            ["--configuration=debug-config", "compute", "instances", "list"],
+            ["auth", "activate-service-account", "--key-file", "/tmp/private-key.json"],
+            ["auth", "activate-service-account", "--key-file=/tmp/private-key.json"]
+        ]
+
+        for (offset, arguments) in deniedFlagCases.enumerated() {
+            let result = try call(server, id: 20 + offset, tool: "gcloud", arguments: [
+                "arguments": arguments
+            ])
+            let error = try #require(result["error"] as? [String: Any])
+            #expect((error["message"] as? String)?.contains("gcloud does not allow credential or mutating operations") == true)
+        }
+
+        let hostLog = (try? String(contentsOf: log, encoding: .utf8)) ?? ""
+        #expect(!hostLog.contains("--account"))
+        #expect(!hostLog.contains("--configuration"))
+        #expect(!hostLog.contains("/tmp/private-key.json"))
+    }
+
+    @Test("Host control records denied gcloud policy attempts")
+    func hostControlRecordsDeniedGCloudPolicyAttempts() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-host-gcloud-denied-diagnostics-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let log = root.appendingPathComponent("host.log", isDirectory: false)
+        let diagnostics = root.appendingPathComponent("diagnostics", isDirectory: true)
+        let gcloud = try fakeExecutable(named: "gcloud", root: root, log: log, stdout: "gcloud:$*")
+        let configuration = HostControlToolConfiguration(
+            gcloudExecutable: gcloud.path,
+            diagnosticsHostPath: diagnostics.path,
+            taskID: "task-denied-gcloud",
+            runID: "run-denied-gcloud"
+        )
+        let server = HostControlMCPServer(
+            configuration: configuration,
+            diagnosticsRecorder: HostControlToolDiagnosticsRecorder(configuration: configuration)
+        )
+
+        let result = try call(server, id: 30, tool: "gcloud", arguments: [
+            "arguments": ["auth", "print-access-token"]
+        ])
+        let error = try #require(result["error"] as? [String: Any])
+        #expect((error["message"] as? String)?.contains("gcloud does not allow credential or mutating operations") == true)
+
+        let sensitiveFlagResult = try call(server, id: 31, tool: "gcloud", arguments: [
+            "arguments": [
+                "--account", "privileged@example.com",
+                "compute", "instances", "list",
+                "--access-token=synthetic-access-token-value",
+                "--key-file", "/tmp/private-key.json",
+                "--key-file=/tmp/inline-private-key.json",
+                "--impersonate-service-account=reader@example.iam.gserviceaccount.com"
+            ]
+        ])
+        let sensitiveFlagError = try #require(sensitiveFlagResult["error"] as? [String: Any])
+        #expect((sensitiveFlagError["message"] as? String)?.contains("gcloud does not allow credential or mutating operations") == true)
+
+        let hostLog = (try? String(contentsOf: log, encoding: .utf8)) ?? ""
+        #expect(!hostLog.contains("auth print-access-token"))
+        #expect(!hostLog.contains("privileged@example.com"))
+        #expect(!hostLog.contains("synthetic-access-token-value"))
+        #expect(!hostLog.contains("/tmp/private-key.json"))
+        #expect(!hostLog.contains("/tmp/inline-private-key.json"))
+        #expect(!hostLog.contains("reader@example.iam.gserviceaccount.com"))
+
+        let diagnosticLog = diagnostics.appendingPathComponent("host_control_tool_activity.jsonl", isDirectory: false)
+        let diagnosticsText = try String(contentsOf: diagnosticLog, encoding: .utf8)
+        #expect(diagnosticsText.contains(#""toolName":"gcloud""#))
+        #expect(diagnosticsText.contains(#""taskID":"task-denied-gcloud""#))
+        #expect(diagnosticsText.contains(#""runID":"run-denied-gcloud""#))
+        #expect(diagnosticsText.contains(#""summary":"gcloud auth print-access-token""#))
+        #expect(diagnosticsText.contains(#"--account <redacted>"#))
+        #expect(diagnosticsText.contains(#"--access-token=<redacted>"#))
+        #expect(diagnosticsText.contains(#"--key-file <redacted>"#))
+        #expect(diagnosticsText.contains(#"--key-file=<redacted>"#))
+        #expect(diagnosticsText.contains(#"--impersonate-service-account=<redacted>"#))
+        #expect(!diagnosticsText.contains("privileged@example.com"))
+        #expect(!diagnosticsText.contains("synthetic-access-token-value"))
+        #expect(!diagnosticsText.contains("/tmp/private-key.json"))
+        #expect(!diagnosticsText.contains("/tmp/inline-private-key.json"))
+        #expect(!diagnosticsText.contains("reader@example.iam.gserviceaccount.com"))
     }
 
     @Test("Jira host control rejects raw REST request passthrough")
@@ -1318,17 +1583,64 @@ struct HostControlToolSupportTests {
 
     private func fakeExecutable(named name: String, root: URL, log: URL, stdout: String) throws -> URL {
         let executable = root.appendingPathComponent(name, isDirectory: false)
-        let quotedLog = log.path.replacingOccurrences(of: "'", with: "'\\''")
+        let quotedLog = shellSingleQuoted(log.path)
+        let stdoutCommands = fakeExecutableStdoutCommands(for: stdout)
         try """
         #!/bin/sh
-        printf '\(name) %s\\n' "$*" >> '\(quotedLog)'
-        printf '\(name):%s\\n' "$*"
-        if [ '\(name)' = 'gh' ]; then printf 'secret:%s\\n' "$JIRA_TOKEN_ENV"; fi
+        printf '\(name) %s\\n' "$*" >> \(quotedLog)
+        \(stdoutCommands)
         exit 0
         """.write(to: executable, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
         return executable
     }
+
+    private func fakeExecutableStdoutCommands(for stdout: String) -> String {
+        stdout.split(separator: "\n", omittingEmptySubsequences: false)
+            .map { line in
+                let rendered = fakeExecutablePrintf(for: String(line))
+                return "printf \(rendered.format) \(rendered.arguments.joined(separator: " "))"
+            }
+            .joined(separator: "\n")
+    }
+
+    private func fakeExecutablePrintf(for line: String) -> (format: String, arguments: [String]) {
+        var remaining = line[...]
+        var format = ""
+        var arguments: [String] = []
+
+        while !remaining.isEmpty {
+            let nextArg = remaining.range(of: "$*")
+            let nextSecret = remaining.range(of: "$JIRA_TOKEN_ENV")
+            let next = [nextArg, nextSecret]
+                .compactMap { $0 }
+                .min { $0.lowerBound < $1.lowerBound }
+
+            guard let range = next else {
+                format += fakeExecutablePrintfLiteral(String(remaining))
+                remaining = remaining[remaining.endIndex...]
+                continue
+            }
+
+            format += fakeExecutablePrintfLiteral(String(remaining[..<range.lowerBound]))
+            format += "%s"
+            arguments.append(range == nextArg ? "\"$*\"" : "\"$JIRA_TOKEN_ENV\"")
+            remaining = remaining[range.upperBound...]
+        }
+
+        return (shellSingleQuoted(format + "\\n"), arguments)
+    }
+
+    private func fakeExecutablePrintfLiteral(_ value: String) -> String {
+        value
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "%", with: "%%")
+    }
+
+    private func shellSingleQuoted(_ value: String) -> String {
+        "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
+    }
+
 
     private func customExecutable(named name: String, root: URL, body: String) throws -> URL {
         let executable = root.appendingPathComponent(name, isDirectory: false)

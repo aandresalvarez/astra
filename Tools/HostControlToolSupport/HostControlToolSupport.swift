@@ -913,7 +913,17 @@ public final class HostControlMCPServer {
                 executable: configuration.gcloudExecutable,
                 arguments: arguments,
                 allowedFirstArguments: nil,
-                argumentPolicy: GCloudHostControlPolicy.rejectionMessage
+                argumentPolicy: { arguments in
+                    if let rejection = GCloudHostControlPolicy.rejectionMessage(arguments: arguments) {
+                        return rejection
+                    }
+                    switch HostControlCloudCommandPolicy.gcloud.evaluate(arguments: arguments) {
+                    case .allowed:
+                        return nil
+                    case .denied(let message):
+                        return message
+                    }
+                }
             )
         case "bq":
             return handleProcessTool(
@@ -953,6 +963,19 @@ public final class HostControlMCPServer {
             return encodeError(id: id, code: -32602, message: "\(toolName) does not allow subcommand '\(first)'")
         }
         if let rejection = argumentPolicy?(argv) {
+            let diagnosticArguments = redactedDiagnosticArguments(argv)
+            diagnosticsRecorder?.record(
+                toolName: toolName,
+                summary: "\(toolName) \(diagnosticArguments.joined(separator: " "))",
+                result: HostControlCommandResult(
+                    command: executable,
+                    arguments: diagnosticArguments,
+                    exitCode: 126,
+                    stdout: "",
+                    stderr: rejection,
+                    timedOut: false
+                )
+            )
             return encodeError(id: id, code: -32602, message: rejection)
         }
         let timeout = timeoutSeconds(from: arguments["timeout_seconds"])
@@ -1167,6 +1190,51 @@ public final class HostControlMCPServer {
         return HostControlCappedOutput(value: finalCap.value, truncated: capped.truncated || recapped.truncated || finalCap.truncated)
     }
 
+    private func redactedDiagnosticArguments(_ arguments: [String]) -> [String] {
+        var redacted: [String] = []
+        var redactsNextValue = false
+        for argument in arguments {
+            if redactsNextValue {
+                redacted.append("<redacted>")
+                redactsNextValue = false
+                continue
+            }
+
+            guard argument.hasPrefix("-") else {
+                redacted.append(argument)
+                continue
+            }
+
+            let parts = argument.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+            let optionName = String(parts.first ?? "")
+            guard isSensitiveDiagnosticOption(optionName) else {
+                redacted.append(argument)
+                continue
+            }
+
+            if parts.count > 1 {
+                redacted.append("\(optionName)=<redacted>")
+            } else {
+                redacted.append(optionName)
+                redactsNextValue = true
+            }
+        }
+        return redacted
+    }
+
+    private func isSensitiveDiagnosticOption(_ optionName: String) -> Bool {
+        optionName == "--account" ||
+            optionName == "--configuration" ||
+            optionName == "--flags-file" ||
+            optionName == "--key-file" ||
+            optionName == "--impersonate-service-account" ||
+            optionName.contains("access-token") ||
+            optionName.contains("identity-token") ||
+            optionName.contains("credential") ||
+            optionName.contains("password") ||
+            optionName.contains("secret")
+    }
+
     private func encodeCommandResult(id: Any?, result: HostControlCommandResult) -> String? {
         encodeResult(id: id, result: [
             "content": [[
@@ -1213,8 +1281,8 @@ public final class HostControlMCPServer {
             ),
             processSchema(
                 name: "gcloud",
-                description: "Run Google Cloud CLI control-plane commands on the host through ASTRA without provider Bash.",
-                argumentDescription: "Arguments for gcloud, for example [\"compute\", \"instances\", \"list\", \"--format=json\"]. BigQuery command groups such as [\"bq\", ...], [\"alpha\", \"bq\", ...], and [\"beta\", \"bq\", ...] are denied."
+                description: "Run read-only Google Cloud CLI control-plane commands on the host through ASTRA without provider Bash.",
+                argumentDescription: "Arguments for gcloud, for example [\"compute\", \"instances\", \"list\", \"--format=json\"]. Credential, mutating, debug, and BigQuery command groups are denied."
             ),
             processSchema(
                 name: "bq",
