@@ -161,7 +161,7 @@ enum BrowserTextEntryPreflight {
     }
 
     static func isTerminalBlockResponse(_ response: [String: Any]) -> Bool {
-        guard let ok = response["ok"] as? Bool, ok == false else { return false }
+        guard isExplicitFalse(response["ok"]) else { return false }
         switch string(response["error"]) {
         case "credential_input_blocked", "mfa_input_blocked", "focused_frame_uninspectable", "text_entry_target_changed", "text_entry_target_not_bound":
             return true
@@ -258,6 +258,15 @@ enum BrowserTextEntryPreflight {
         if let number = value as? NSNumber { return number.stringValue }
         if let bool = value as? Bool { return bool ? "true" : "false" }
         return ""
+    }
+
+    private static func isExplicitFalse(_ value: Any?) -> Bool {
+        if let bool = value as? Bool { return !bool }
+        if let number = value as? NSNumber { return !number.boolValue }
+        if let string = value as? String {
+            return ["false", "0", "no"].contains(string.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+        }
+        return false
     }
 
     private static func bool(_ value: Any?) -> Bool {

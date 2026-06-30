@@ -219,6 +219,23 @@ struct BrowserControlSafetyTests {
         ]))
     }
 
+    @Test("JSON decoded text entry block responses are terminal for browser batches")
+    func jsonDecodedTextEntryBlockResponsesAreTerminalForBrowserBatches() throws {
+        let data = try JSONSerialization.data(withJSONObject: [
+            "ok": false,
+            "stopReason": "text_entry_target_changed",
+            "results": []
+        ])
+        let response = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+
+        #expect(BrowserTextEntryPreflight.isTerminalBlockResponse(response))
+        #expect(BrowserTextEntryPreflight.terminalStopReason(for: response) == "text_entry_target_changed")
+        #expect(!BrowserTextEntryPreflight.isTerminalBlockResponse([
+            "stopReason": "text_entry_target_changed",
+            "results": []
+        ]))
+    }
+
     @Test("Focused text entry target script inspects shadow roots and frames")
     func focusedTextEntryTargetScriptInspectsShadowRootsAndFrames() throws {
         let script = BrowserAutomationScripts.focusedTargetInfoScript()
