@@ -1889,6 +1889,9 @@ enum WorkspaceConfigManager {
 
     private static func isPath(_ path: String, insideOrEqualTo root: String) -> Bool {
         guard !path.isEmpty, !root.isEmpty else { return false }
+        if root == "/" {
+            return path.hasPrefix("/")
+        }
         return path == root || path.hasPrefix(root + "/")
     }
 }

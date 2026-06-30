@@ -325,6 +325,24 @@ struct WorkspacePersistenceTests {
         #expect(imported.isUsingWorktree == true)
     }
 
+    @Test("active working path import treats filesystem root as containing descendants")
+    @MainActor
+    func activeWorkingPathImportHandlesFilesystemRootContainment() throws {
+        let activeDirectory = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("astra-root-contained-active-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: activeDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: activeDirectory) }
+
+        var config = minimalWorkspaceConfig(name: "Root", path: "/", skillID: UUID().uuidString)
+        config.activeWorkingPath = activeDirectory.path
+
+        let container = try makeWorkspacePersistenceContainer()
+        let imported = WorkspaceConfigManager.importWorkspace(from: config, modelContext: container.mainContext)
+
+        #expect(imported.activeWorkingPath == WorkspacePathPresentation.standardizedPath(activeDirectory.path))
+        #expect(imported.isUsingWorktree == true)
+    }
+
     @Test("active working path import rejects unrelated external git repositories")
     @MainActor
     func activeWorkingPathImportRejectsUnrelatedExternalGitRepositories() throws {
