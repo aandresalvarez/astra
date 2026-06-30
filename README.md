@@ -180,8 +180,9 @@ open "astra-dev://create-task?workspace=$WORKSPACE_ID&goal=Test%20draft%20task%2
 open "astra-dev://continue?workspace=$WORKSPACE_ID"
 ```
 
-Public `create-task` URLs always create drafts. A `run=1` query value is ignored
-unless a route-local authorization mechanism is added later.
+Public `create-task` URLs always create drafts. Recognized immediate-run query
+values such as `run=1` and `run=true` are ignored unless a route-local
+authorization mechanism is added later.
 
 To test Shortcuts or voice, open the macOS Shortcuts app, create a new
 shortcut, and search for `ASTRA` or `ASTRA Dev`. The expected actions are:
