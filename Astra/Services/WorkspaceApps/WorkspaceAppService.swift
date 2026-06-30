@@ -86,10 +86,16 @@ struct WorkspaceAppService {
         if appID != manifest.app.id {
             manifest.app.id = appID
         }
-        let dataDirectory = WorkspaceFileLayout.appDataDirectory(workspacePath: workspace.primaryPath, appID: appID)
-        let manifestPath = WorkspaceFileLayout.appManifestFile(workspacePath: workspace.primaryPath, appID: appID)
-        let databasePath = WorkspaceFileLayout.appDatabaseFile(workspacePath: workspace.primaryPath, appID: appID)
-        try fileManager.createDirectory(atPath: dataDirectory, withIntermediateDirectories: true)
+        guard let appDirectoryURL = WorkspaceFileLayout.appDirectoryURL(
+            workspacePath: workspace.primaryPath,
+            appID: appID
+        ) else {
+            throw WorkspaceAppServiceError.fileOperationFailed("Could not resolve safe storage path for app '\(appID)'.")
+        }
+        let dataDirectoryURL = appDirectoryURL.appendingPathComponent("data", isDirectory: true)
+        let manifestURL = appDirectoryURL.appendingPathComponent("manifest.json")
+        let databaseURL = dataDirectoryURL.appendingPathComponent("app.sqlite")
+        try fileManager.createDirectory(at: dataDirectoryURL, withIntermediateDirectories: true)
 
         let manifestData: Data
         do {
@@ -97,10 +103,10 @@ struct WorkspaceAppService {
         } catch {
             throw WorkspaceAppServiceError.encodeFailed(String(describing: error))
         }
-        try manifestData.write(to: URL(fileURLWithPath: manifestPath), options: [.atomic])
+        try manifestData.write(to: manifestURL, options: [.atomic])
         if let storage = manifest.storage {
             do {
-                try storageService.applySchema(storage, databaseURL: URL(fileURLWithPath: databasePath))
+                try storageService.applySchema(storage, databaseURL: databaseURL)
             } catch {
                 throw WorkspaceAppServiceError.storageFailed(String(describing: error))
             }
@@ -156,10 +162,10 @@ struct WorkspaceAppService {
             "result": "created",
             "workspace_id": workspace.id.uuidString,
             "app_id": appID,
-            "manifest": URL(fileURLWithPath: manifestPath).lastPathComponent
+            "manifest": manifestURL.lastPathComponent
         ])
 
-        return WorkspaceAppCreationResult(app: app, manifestURL: URL(fileURLWithPath: manifestPath), manifest: manifest)
+        return WorkspaceAppCreationResult(app: app, manifestURL: manifestURL, manifest: manifest)
     }
 
     /// Version-in-place: rewrite an EXISTING app's manifest + storage, keeping the SAME logicalID and

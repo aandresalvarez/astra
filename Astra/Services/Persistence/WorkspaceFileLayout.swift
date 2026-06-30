@@ -87,6 +87,15 @@ enum WorkspaceFileLayout {
         return (root as NSString).appendingPathComponent("exports")
     }
 
+    static func appPackageExportRootURL(workspacePath: String) -> URL? {
+        let root = appRoot(for: workspacePath)
+        guard !root.isEmpty else { return nil }
+        let rootURL = URL(fileURLWithPath: root, isDirectory: true).standardizedFileURL
+        let exportURL = rootURL.appendingPathComponent("exports", isDirectory: true).standardizedFileURL
+        guard isContainedAppDirectory(exportURL, inAppRoot: rootURL) else { return nil }
+        return exportURL
+    }
+
     static func relativeAppDirectory(appID: String) -> String {
         guard WorkspaceAppIDPolicy.isPortableIdentifier(appID) else { return "" }
         return "\(supportDirectoryName)/apps/\(appID)"
@@ -159,9 +168,16 @@ enum WorkspaceFileLayout {
     }
 
     private static func isContainedAppDirectory(_ url: URL, inAppRoot rootURL: URL) -> Bool {
-        let standardized = url.standardizedFileURL
-        return standardized.deletingLastPathComponent().path == rootURL.path
-            && standardized.path != rootURL.path
+        let root = resolvedStandardizedFileURL(rootURL)
+        let candidate = resolvedStandardizedFileURL(url)
+        return candidate.deletingLastPathComponent().path == root.path
+            && candidate.path != root.path
+    }
+
+    private static func resolvedStandardizedFileURL(_ url: URL) -> URL {
+        url.standardizedFileURL
+            .resolvingSymlinksInPath()
+            .standardizedFileURL
     }
 
     // App Studio conversation journal: the build conversation + per-turn event log live under the

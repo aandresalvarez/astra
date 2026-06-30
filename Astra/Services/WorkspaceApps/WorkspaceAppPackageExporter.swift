@@ -5,6 +5,7 @@ enum WorkspaceAppPackageExportError: LocalizedError, Equatable {
     case missingManifest(String)
     case decodeManifestFailed(String)
     case invalidExport(WorkspaceAppPackageValidationReport)
+    case unsafeExportPath(String)
 
     var errorDescription: String? {
         switch self {
@@ -17,6 +18,8 @@ enum WorkspaceAppPackageExportError: LocalizedError, Equatable {
         case .invalidExport(let report):
             let messages = report.blockers.map { "\($0.path): \($0.message)" }.joined(separator: "\n")
             return "Exported workspace app package did not validate.\n\(messages)"
+        case .unsafeExportPath(let path):
+            return "Workspace app package export path is outside the managed app root: \(path)"
         }
     }
 }
@@ -75,13 +78,15 @@ struct WorkspaceAppPackageExporter {
     }
 
     private func nextPackageURL(appID: String, workspacePath: String) throws -> URL {
-        let exportRoot = WorkspaceFileLayout.appPackageExportRoot(workspacePath: workspacePath)
-        guard !exportRoot.isEmpty else {
+        let displayExportRoot = WorkspaceFileLayout.appPackageExportRoot(workspacePath: workspacePath)
+        guard !displayExportRoot.isEmpty else {
             throw WorkspaceAppPackageExportError.missingWorkspacePath
         }
-        try fileManager.createDirectory(atPath: exportRoot, withIntermediateDirectories: true)
+        guard let rootURL = WorkspaceFileLayout.appPackageExportRootURL(workspacePath: workspacePath) else {
+            throw WorkspaceAppPackageExportError.unsafeExportPath(displayExportRoot)
+        }
+        try fileManager.createDirectory(at: rootURL, withIntermediateDirectories: true)
 
-        let rootURL = URL(fileURLWithPath: exportRoot, isDirectory: true)
         let baseName = "\(appID).astra-app"
         let first = rootURL.appendingPathComponent(baseName, isDirectory: true)
         guard fileManager.fileExists(atPath: first.path) else { return first }

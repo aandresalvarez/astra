@@ -476,6 +476,46 @@ struct WorkspaceAppPackageTests {
     }
 
     @MainActor
+    @Test("package import rejects app directory symlink escapes")
+    func packageImportRejectsAppDirectorySymlinkEscapes() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let outside = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: outside) }
+        let packageURL = root.appendingPathComponent("grocery.astra-app", isDirectory: true)
+        _ = try WorkspaceAppPackageService().exportPackage(
+            manifest: Self.groceryManifest(),
+            to: packageURL,
+            packageID: "grocery-template"
+        )
+
+        let container = try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+        )
+        let workspaceURL = root.appendingPathComponent("workspace", isDirectory: true)
+        let appRoot = workspaceURL.appendingPathComponent(".astra/apps", isDirectory: true)
+        try FileManager.default.createDirectory(at: appRoot, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(
+            at: appRoot.appendingPathComponent("grocery-tracker", isDirectory: true),
+            withDestinationURL: outside
+        )
+        let workspace = Workspace(name: "Package Import", primaryPath: workspaceURL.path)
+        container.mainContext.insert(workspace)
+
+        #expect(throws: WorkspaceAppServiceError.self) {
+            _ = try WorkspaceAppPackageService().importPackage(
+                at: packageURL,
+                into: workspace,
+                modelContext: container.mainContext
+            )
+        }
+        #expect(!FileManager.default.fileExists(atPath: outside.appendingPathComponent("manifest.json").path))
+        #expect(!FileManager.default.fileExists(atPath: outside.appendingPathComponent("data/app.sqlite").path))
+    }
+
+    @MainActor
     @Test("package import restores portable seed data into app storage")
     func packageImportRestoresPortableSeedDataIntoAppStorage() throws {
         let root = try Self.temporaryRoot()
@@ -693,6 +733,39 @@ struct WorkspaceAppPackageTests {
 
         #expect(export.validationReport.canInstall)
         #expect(export.validationReport.package?.appID == created.app.logicalID)
+    }
+
+    @MainActor
+    @Test("package exporter rejects export root symlink escapes")
+    func packageExporterRejectsExportRootSymlinkEscapes() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let outside = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: outside) }
+        let container = try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+        )
+        let workspace = Workspace(name: "Package Export", primaryPath: root.path)
+        container.mainContext.insert(workspace)
+        let created = try WorkspaceAppService().createApp(
+            manifest: Self.groceryManifest(),
+            in: workspace,
+            modelContext: container.mainContext,
+            status: .published
+        )
+        let exportRoot = URL(fileURLWithPath: WorkspaceFileLayout.appPackageExportRoot(workspacePath: workspace.primaryPath), isDirectory: true)
+        try FileManager.default.createSymbolicLink(at: exportRoot, withDestinationURL: outside)
+
+        #expect(throws: WorkspaceAppPackageExportError.unsafeExportPath(exportRoot.path)) {
+            _ = try WorkspaceAppPackageExporter().exportTemplatePackage(
+                app: created.app,
+                workspace: workspace,
+                createdAt: Date(timeIntervalSince1970: 1_800_000_000)
+            )
+        }
+        #expect(!FileManager.default.fileExists(atPath: outside.appendingPathComponent("grocery-tracker.astra-app").path))
     }
 
     @Test("package library discovers shared folder app bundles with validation state")
