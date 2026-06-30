@@ -107,8 +107,9 @@ public struct HostControlToolConfiguration: Equatable, Sendable {
 
     private func mergedSecretPrefixRanges(in value: [UInt8], secrets: [[UInt8]]) -> [Range<Int>] {
         var ranges: [Range<Int>] = []
+        let boundaries = truncatedOutputBoundaries(in: value)
         for secret in secrets where secret.count >= 4 {
-            appendShortTruncatedSecretPrefixRanges(in: value, secret: secret, to: &ranges)
+            appendShortTruncatedSecretPrefixRanges(in: value, secret: secret, boundaries: boundaries, to: &ranges)
 
             var index = 0
             while index + 4 <= value.count {
@@ -149,11 +150,12 @@ public struct HostControlToolConfiguration: Equatable, Sendable {
     private func appendShortTruncatedSecretPrefixRanges(
         in value: [UInt8],
         secret: [UInt8],
+        boundaries: [Int],
         to ranges: inout [Range<Int>]
     ) {
         guard !value.isEmpty else { return }
         let maximumShortPrefixLength = min(3, secret.count)
-        for boundary in truncatedOutputBoundaries(in: value) {
+        for boundary in boundaries {
             let candidateMaximumLength = min(maximumShortPrefixLength, boundary)
             for length in stride(from: candidateMaximumLength, through: 1, by: -1) {
                 let start = boundary - length
@@ -166,13 +168,36 @@ public struct HostControlToolConfiguration: Equatable, Sendable {
     }
 
     private func truncatedOutputBoundaries(in value: [UInt8]) -> [Int] {
-        let marker = Array("\n[ASTRA truncated ".utf8)
         var boundaries = [value.count]
-        guard value.count >= marker.count else { return boundaries }
-        for index in 0...(value.count - marker.count) where bytes(in: value, at: index, match: marker) {
+        let markerPrefix = Array("\n[ASTRA ".utf8)
+        guard value.count >= markerPrefix.count else { return boundaries }
+        for index in 0...(value.count - markerPrefix.count) where isTruncatedOutputMarker(in: value, at: index) {
             boundaries.append(index)
         }
         return boundaries
+    }
+
+    private func isTruncatedOutputMarker(in value: [UInt8], at index: Int) -> Bool {
+        let truncatedMarker = Array("\n[ASTRA truncated ".utf8)
+        if bytes(in: value, at: index, match: truncatedMarker) {
+            return true
+        }
+
+        let cappedMarkerPrefix = Array("\n[ASTRA ".utf8)
+        guard bytes(in: value, at: index, match: cappedMarkerPrefix) else { return false }
+
+        let cappedNeedle = Array(" output capped after ".utf8)
+        var cursor = index + cappedMarkerPrefix.count
+        while cursor + cappedNeedle.count <= value.count {
+            if value[cursor] == 10 {
+                return false
+            }
+            if bytes(in: value, at: cursor, match: cappedNeedle) {
+                return true
+            }
+            cursor += 1
+        }
+        return false
     }
 
     private func bytes(in value: [UInt8], at index: Int, match marker: [UInt8]) -> Bool {

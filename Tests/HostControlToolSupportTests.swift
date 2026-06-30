@@ -763,16 +763,52 @@ struct HostControlToolSupportTests {
         #expect(!text.contains("super-secret-token"))
     }
 
+    @Test("Host control redacts short secret prefixes at capped output markers")
+    func hostControlRedactsShortSecretPrefixesAtCappedOutputMarkers() throws {
+        let connectors = """
+        {"connectors":[{"id":"jira-1","alias":"jira","envPrefix":"JIRA_JIRA","name":"Jira","serviceType":"jira","baseURL":"https://example.atlassian.net","authMethod":"basic","env":{"JIRA_API_TOKEN":"JIRA_TOKEN_ENV"},"credentials":{"JIRA_API_TOKEN":"JIRA_TOKEN_ENV"},"config":{}}]}
+        """
+        let runner = CapturingHostControlProcessRunner(result: HostControlCommandResult(
+            command: "/usr/bin/gh",
+            arguments: ["pr", "view", "123"],
+            exitCode: 125,
+            stdout: "visible-prefix:su\n[ASTRA redacted stdout output capped after 96 bytes]\n",
+            stderr: "",
+            stdoutTruncated: true
+        ))
+        let server = HostControlMCPServer(
+            configuration: HostControlToolConfiguration(
+                githubExecutable: "/usr/bin/gh",
+                connectorsJSON: connectors,
+                environment: [
+                    "ASTRA_CONNECTORS": connectors,
+                    "JIRA_TOKEN_ENV": "super-secret-token"
+                ]
+            ),
+            processRunner: runner
+        )
+
+        let response = try call(server, id: 1, tool: "github", arguments: ["arguments": ["pr", "view", "123"]])
+        let text = try resultText(response)
+
+        #expect(text.contains("visible-prefix:[redacted]"))
+        #expect(!text.contains("visible-prefix:su"))
+        #expect(!text.contains("super-secret-token"))
+    }
+
     @Test("Host control short secret prefix scan only checks truncation boundaries")
     func hostControlShortSecretPrefixScanOnlyChecksTruncationBoundaries() throws {
         let source = try hostControlToolSource()
         let prefixScan = try sourceSnippet(
-            startingWith: "    private func appendShortTruncatedSecretPrefixRanges(",
+            startingWith: "    private func mergedSecretPrefixRanges(",
             endingBefore: "    private static func splitList",
             in: source
         )
 
-        #expect(prefixScan.contains("truncatedOutputBoundaries(in: value)"))
+        let boundaryScanCount = prefixScan.components(separatedBy: "truncatedOutputBoundaries(in: value)").count - 1
+        #expect(boundaryScanCount == 1)
+        #expect(prefixScan.contains("boundaries: boundaries"))
+        #expect(prefixScan.contains("output capped after"))
         #expect(!prefixScan.contains("for index in value.indices"))
         #expect(!prefixScan.contains("Array(value[range])"))
         #expect(!prefixScan.contains("secret.prefix(length)"))
