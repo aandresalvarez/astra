@@ -376,7 +376,11 @@ public final class DockerWorkspaceJobManager: WorkspaceJobManaging {
                 pid_matches_managed_command() {
                   safe_pid "$1" || return 1
                   [ -r "/proc/$1/cmdline" ] || return 1
-                  tr '\\0' ' ' < "/proc/$1/cmdline" 2>/dev/null | grep -F -- "$command_script" >/dev/null 2>&1
+                  cmdline="$(tr '\\0' ' ' < "/proc/$1/cmdline" 2>/dev/null || cat "/proc/$1/cmdline" 2>/dev/null || true)"
+                  case "$cmdline" in
+                    *"$command_script"*) return 0 ;;
+                    *) return 1 ;;
+                  esac
                 }
                 process_group_exists() {
                   group_pid="$1"
@@ -398,18 +402,20 @@ public final class DockerWorkspaceJobManager: WorkspaceJobManaging {
                 terminate_pid_or_group() {
                   target_pid="$1"
                   safe_pid "$target_pid" || return 0
-                  if process_group_exists "$target_pid"; then
-                    signal_process_group TERM "$target_pid"
-                    sleep 5
-                    signal_process_group KILL "$target_pid"
-                  elif pid_matches_managed_command "$target_pid" && kill -0 "$target_pid" 2>/dev/null; then
-                    kill -TERM "$target_pid" 2>/dev/null || true
-                    sleep 5
-                    kill -KILL "$target_pid" 2>/dev/null || true
+                  if pid_matches_managed_command "$target_pid"; then
+                    if process_group_exists "$target_pid"; then
+                      signal_process_group TERM "$target_pid"
+                      sleep 5
+                      signal_process_group KILL "$target_pid"
+                    elif kill -0 "$target_pid" 2>/dev/null; then
+                      kill -TERM "$target_pid" 2>/dev/null || true
+                      sleep 5
+                      kill -KILL "$target_pid" 2>/dev/null || true
+                    fi
                   fi
                 }
                 if [ -r "$pidfile" ]; then
-                  command_pid="$(cat "$pidfile")"
+                  IFS= read -r command_pid < "$pidfile" || command_pid=""
                   terminate_pid_or_group "$command_pid"
                   rm -f "$pidfile"
                 fi
