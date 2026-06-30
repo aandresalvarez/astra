@@ -480,6 +480,7 @@ enum BrowserAutomationScripts {
           tag: el.tagName.toLowerCase(),
           role: roleFor(el),
           type: el.getAttribute("type") || "",
+          autocomplete: el.getAttribute("autocomplete") || "",
           label: labelFor(el),
           name: labelFor(el),
           placeholder: el.getAttribute("placeholder") || "",
@@ -509,6 +510,7 @@ enum BrowserAutomationScripts {
           tag: active.tagName.toLowerCase(),
           role: active.getAttribute("role") || "",
           type: active.getAttribute("type") || "",
+          autocomplete: active.getAttribute("autocomplete") || "",
           label: labelFor(active),
           value: (active.tagName === "INPUT" || active.tagName === "TEXTAREA" || active.tagName === "SELECT") ? String(active.value || "").slice(0, 160) : "",
           bounds: boundsFor(active)
@@ -542,11 +544,40 @@ enum BrowserAutomationScripts {
         """
         (() => {
           \(targetResolutionPrelude(selector: nil, x: nil, y: nil, allowDangerous: true, label: nil, role: nil, text: nil, placeholder: nil, testID: nil))
-          const active = document.activeElement && document.activeElement !== document.body ? document.activeElement : null;
-          if (!active) return JSON.stringify({ ok: false, error: "no_focused_element", locator: { focused: true } });
-          if (!visible(active)) return JSON.stringify(publicTarget({ ok: false, error: "target_not_visible", el: active }));
-          if (disabled(active)) return JSON.stringify(publicTarget({ ok: false, error: "target_disabled", el: active }));
-          return JSON.stringify(publicTarget({ ok: true, el: active, point: null }));
+          const deepActiveElement = (doc, framePath, shadowDepth) => {
+            let active = doc.activeElement && doc.activeElement !== doc.body ? doc.activeElement : null;
+            if (!active) return { ok: false, error: "no_focused_element", locator: { focused: true }, framePath, shadowDepth };
+            while (active.shadowRoot && active.shadowRoot.activeElement) {
+              active = active.shadowRoot.activeElement;
+              shadowDepth += 1;
+            }
+            const tag = String(active.tagName || "").toLowerCase();
+            if (tag === "iframe" || tag === "frame") {
+              const nextFramePath = framePath.concat(frameLabelFor(active));
+              try {
+                if (!active.contentDocument) throw new Error("uninspectable frame");
+                const nested = deepActiveElement(active.contentDocument, nextFramePath, shadowDepth);
+                if (nested.el) return nested;
+                return { ok: false, error: nested.error || "no_focused_element", el: active, point: null, framePath: nextFramePath, shadowDepth };
+              } catch (_) {
+                return {
+                  ok: false,
+                  error: "focused_frame_uninspectable",
+                  el: active,
+                  point: null,
+                  framePath: nextFramePath,
+                  shadowDepth,
+                  frameFocusUninspectable: true
+                };
+              }
+            }
+            return { ok: true, el: active, point: null, framePath, shadowDepth };
+          };
+          const target = deepActiveElement(document, [], 0);
+          if (!target.el) return JSON.stringify(publicTarget(target));
+          if (!visible(target.el)) return JSON.stringify(publicTarget(Object.assign({}, target, { ok: false, error: "target_not_visible" })));
+          if (disabled(target.el)) return JSON.stringify(publicTarget(Object.assign({}, target, { ok: false, error: "target_disabled" })));
+          return JSON.stringify(publicTarget(Object.assign({}, target, { ok: true })));
         })()
         """
     }
@@ -915,6 +946,10 @@ enum BrowserAutomationScripts {
             const text = aria || el.innerText || el.value || el.id || el.tagName.toLowerCase();
             return String(text).replace(/\\s+/g, " ").trim().slice(0, 160);
           };
+          const frameLabelFor = (frame) => {
+            const title = frame.getAttribute("title") || frame.getAttribute("name") || frame.getAttribute("aria-label") || frame.src || selectorFor(frame);
+            return String(title || "").replace(/\\s+/g, " ").trim().slice(0, 160);
+          };
           const controlSelector = "a, button, input, textarea, select, [role], [contenteditable=true], [tabindex]";
           const allControls = () => {
             const out = [];
@@ -1013,9 +1048,11 @@ enum BrowserAutomationScripts {
               selector: selectorFor(el),
               requestedSelector: selector || "",
               label: labelFor(el),
+              name: labelFor(el),
               role: roleFor(el),
               tag: el.tagName.toLowerCase(),
               type: el.getAttribute("type") || "",
+              autocomplete: el.getAttribute("autocomplete") || "",
               placeholder: el.getAttribute("placeholder") || "",
               testID: el.getAttribute("data-testid") || el.getAttribute("data-test") || "",
               href: el.getAttribute("href") || "",
@@ -1028,6 +1065,9 @@ enum BrowserAutomationScripts {
               bounds: boundsForTarget(el),
               normalized: Boolean(target.point?.normalized),
               coveredBy: target.coveredBy || "",
+              framePath: target.framePath || [],
+              shadowDepth: target.shadowDepth || 0,
+              frameFocusUninspectable: Boolean(target.frameFocusUninspectable),
               url: location.href
             };
           };

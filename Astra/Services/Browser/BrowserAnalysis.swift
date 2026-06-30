@@ -1361,13 +1361,17 @@ enum BrowserAnalysisBuilder {
     ) -> BrowserRisk {
         let sharedRisk = BrowserSensitiveControlClassifier.classify(
             selector: selector,
+            requestedSelector: "",
             label: label,
+            name: label,
             role: role,
             tag: tag,
             type: type,
+            autocomplete: "",
             placeholder: placeholder,
             testID: testID,
-            href: href
+            href: href,
+            frameFocusUninspectable: false
         )
         if sharedRisk != .normal {
             return sharedRisk

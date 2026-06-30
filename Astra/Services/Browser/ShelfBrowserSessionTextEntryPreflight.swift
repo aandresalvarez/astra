@@ -60,7 +60,7 @@ extension ShelfBrowserSession {
         guard var blocked = BrowserTextEntryPreflight.blockResponse(action: action, targetInfo: targetInfo) else {
             return nil
         }
-        blocked[attachmentKey] = targetInfo
+        blocked[attachmentKey] = BrowserTextEntryPreflight.redactedTargetAttachment(for: blocked)
         let result = try Self.jsonString(blocked)
         logBrowserAction(
             phase: "completed",
@@ -76,6 +76,41 @@ extension ShelfBrowserSession {
             started: logContext.started
         )
         return result
+    }
+
+    func blockedReplacementTextEntryResult(find: String, selector: String) async throws -> [String: Any]? {
+        guard !selector.isEmpty else {
+            return [
+                "ok": false,
+                "error": "text_entry_target_required",
+                "summary": "Text replacement requires a concrete editable target selector before ASTRA can safely mutate page text.",
+                "find": find,
+                "url": currentURL
+            ]
+        }
+
+        let targetInfo = try await waitForActionableTarget(
+            selector: selector,
+            x: nil,
+            y: nil,
+            allowDangerous: true,
+            label: nil,
+            role: nil,
+            text: nil,
+            placeholder: nil,
+            testID: nil
+        )
+        if let blocked = BrowserTextEntryPreflight.blockResponse(
+            action: BrowserActionKind.setValue.rawValue,
+            targetInfo: targetInfo
+        ) {
+            return blocked
+        }
+        let ok = (targetInfo["ok"] as? Bool) ?? (targetInfo["ok"] as? NSNumber)?.boolValue ?? false
+        guard ok else {
+            return targetInfo
+        }
+        return nil
     }
 
     func focusedTextEntryTargetInfo() async throws -> [String: Any] {

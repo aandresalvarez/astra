@@ -66,6 +66,93 @@ struct BrowserControlSafetyTests {
         ) == nil)
     }
 
+    @Test("Text entry preflight classifies requested selectors and autocomplete metadata")
+    func textEntryPreflightClassifiesRequestedSelectorsAndAutocompleteMetadata() throws {
+        let requestedSelectorBlock = try #require(BrowserTextEntryPreflight.blockResponse(
+            action: BrowserActionKind.insertText.rawValue,
+            targetInfo: [
+                "ok": true,
+                "selector": "input",
+                "requestedSelector": "input[autocomplete='one-time-code']",
+                "label": "Code",
+                "role": "textbox",
+                "tag": "input",
+                "type": "text",
+                "autocomplete": "one-time-code"
+            ]
+        ))
+        #expect(requestedSelectorBlock["error"] as? String == "mfa_input_blocked")
+
+        let autocompleteBlock = try #require(BrowserTextEntryPreflight.blockResponse(
+            action: BrowserActionKind.fill.rawValue,
+            targetInfo: [
+                "ok": true,
+                "selector": "input",
+                "label": "Account",
+                "role": "textbox",
+                "tag": "input",
+                "type": "text",
+                "autocomplete": "current-password"
+            ]
+        ))
+        #expect(autocompleteBlock["error"] as? String == "credential_input_blocked")
+    }
+
+    @Test("Text entry preflight redacts sensitive target attachments")
+    func textEntryPreflightRedactsSensitiveTargetAttachments() throws {
+        let block = try #require(BrowserTextEntryPreflight.blockResponse(
+            action: BrowserActionKind.fill.rawValue,
+            targetInfo: [
+                "ok": true,
+                "selector": "#password",
+                "requestedSelector": "input[type=password]",
+                "label": "correct horse battery staple",
+                "role": "textbox",
+                "tag": "input",
+                "type": "password",
+                "placeholder": "enter your secret",
+                "testID": "login-password",
+                "href": "https://example.com/reset-password",
+                "url": "https://example.com/login",
+                "value": "raw-secret"
+            ]
+        ))
+        let target = try #require(block["target"] as? [String: Any])
+        #expect(target["href"] as? String == "https://example.com/reset-password")
+        #expect(target["requestedSelector"] as? String == "input[type=password]")
+        #expect(target["autocomplete"] as? String == "")
+        #expect(target["label"] as? String == "[redacted]")
+        #expect(target["placeholder"] as? String == "[redacted]")
+        #expect(target["value"] == nil)
+        #expect(BrowserTextEntryPreflight.redactedTargetAttachment(for: block)["value"] == nil)
+    }
+
+    @Test("Text entry block responses are terminal for browser batches")
+    func textEntryBlockResponsesAreTerminalForBrowserBatches() {
+        #expect(BrowserTextEntryPreflight.isTerminalBlockResponse([
+            "ok": false,
+            "error": "credential_input_blocked"
+        ]))
+        #expect(BrowserTextEntryPreflight.isTerminalBlockResponse([
+            "ok": false,
+            "error": "mfa_input_blocked"
+        ]))
+        #expect(!BrowserTextEntryPreflight.isTerminalBlockResponse([
+            "ok": false,
+            "error": "target_not_visible"
+        ]))
+    }
+
+    @Test("Focused text entry target script inspects shadow roots and frames")
+    func focusedTextEntryTargetScriptInspectsShadowRootsAndFrames() {
+        let script = BrowserAutomationScripts.focusedTargetInfoScript()
+        #expect(script.contains("shadowRoot"))
+        #expect(script.contains("activeElement"))
+        #expect(script.contains("contentDocument"))
+        #expect(script.contains("focused_frame_uninspectable"))
+        #expect(script.contains("autocomplete"))
+    }
+
     @Test("Drive open default timeout covers slow Google Drive search results")
     func driveOpenDefaultTimeoutCoversSlowGoogleDriveSearchResults() {
         #expect(GoogleWorkspaceBrowserService.googleDriveOpenDefaultTimeoutSeconds >= 20)

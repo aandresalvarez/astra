@@ -3201,7 +3201,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         }
     }
 
-    private func waitForActionableTarget(
+    func waitForActionableTarget(
         selector: String?,
         x: Double?,
         y: Double?,
@@ -3500,19 +3500,23 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
     }
 
     private func replaceText(find: String, replacement: String, selector: String?, all: Bool) async throws -> String {
+        let resolvedSelector = selector?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if let blocked = try await blockedReplacementTextEntryResult(find: find, selector: resolvedSelector) {
+            return try Self.jsonString(blocked)
+        }
         if isUsingControlledBrowser {
-            let json = try await controlledBrowser.replaceText(find: find, replacement: replacement, selector: selector, all: all)
+            let json = try await controlledBrowser.replaceText(find: find, replacement: replacement, selector: resolvedSelector, all: all)
             syncDisplayedStateForEngine()
             publishBridgeState()
-            return try annotateBrowserLoopHint(json: json, action: "replaceText", target: selector ?? find)
+            return try annotateBrowserLoopHint(json: json, action: "replaceText", target: resolvedSelector)
         }
         let json = try await evaluateJavaScriptString(BrowserAutomationScripts.replaceTextScript(
             find: find,
             replacement: replacement,
-            selector: selector,
+            selector: resolvedSelector,
             all: all
         ))
-        return try annotateBrowserLoopHint(json: json, action: "replaceText", target: selector ?? find)
+        return try annotateBrowserLoopHint(json: json, action: "replaceText", target: resolvedSelector)
     }
 
     private func keypress(key: String, modifiers: [String]) async throws -> String {
@@ -5110,6 +5114,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
     private func runBatch(_ command: BatchCommand) async throws -> [String: Any] {
         var results: [[String: Any]] = []
         var stopReason: String?
+        func appendBatchResult(_ result: [String: Any]) -> Bool { results.append(result); stopReason = BrowserTextEntryPreflight.terminalStopReason(for: result); return stopReason != nil }
         batchLoop: for action in command.actions.prefix(20) {
             switch action.normalizedAction {
             case "analyze":
@@ -5309,7 +5314,8 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                     let after = await snapshotAfterActionDelay()
                     addOutcomeFields(to: &object, action: .fill, control: control, before: before, after: after)
                     object["preflight"] = resolved.response
-                    results.append(object.merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
+                    let result = object.merging(["action": action.action], uniquingKeysWith: { current, _ in current })
+                    if appendBatchResult(result) { break batchLoop }
                 } else {
                     let json = try await type(
                         selector: action.normalizedSelector,
@@ -5320,7 +5326,8 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                         placeholder: action.normalizedPlaceholder,
                         testID: action.normalizedTestID
                     )
-                    results.append(try Self.jsonObject(from: json).merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
+                    let result = try Self.jsonObject(from: json).merging(["action": action.action], uniquingKeysWith: { current, _ in current })
+                    if appendBatchResult(result) { break batchLoop }
                 }
             case "setvalue", "set-value", "fill":
                 guard let text = action.text else {
@@ -5355,7 +5362,8 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                     let after = await snapshotAfterActionDelay()
                     addOutcomeFields(to: &object, action: browserAction, control: control, before: before, after: after)
                     object["preflight"] = resolved.response
-                    results.append(object.merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
+                    let result = object.merging(["action": action.action], uniquingKeysWith: { current, _ in current })
+                    if appendBatchResult(result) { break batchLoop }
                 } else {
                     let json = try await type(
                         selector: action.normalizedSelector,
@@ -5366,7 +5374,8 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                         placeholder: action.normalizedPlaceholder,
                         testID: action.normalizedTestID
                     )
-                    results.append(try Self.jsonObject(from: json).merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
+                    let result = try Self.jsonObject(from: json).merging(["action": action.action], uniquingKeysWith: { current, _ in current })
+                    if appendBatchResult(result) { break batchLoop }
                 }
             case "replacetext", "replace-text":
                 guard let find = action.find,
@@ -5407,7 +5416,8 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                     addOutcomeFields(to: &object, action: .setValue, control: matchedControl, before: before, after: after)
                     object["preflight"] = preflight
                 }
-                results.append(object.merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
+                let result = object.merging(["action": action.action], uniquingKeysWith: { current, _ in current })
+                if appendBatchResult(result) { break batchLoop }
             case "findcontrol", "find-control":
                 let result = try await findControl(
                     query: action.query ?? action.label ?? "",
@@ -5562,7 +5572,8 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                     continue
                 }
                 let json = try await insertText(text)
-                results.append(try Self.jsonObject(from: json).merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
+                let result = try Self.jsonObject(from: json).merging(["action": action.action], uniquingKeysWith: { current, _ in current })
+                if appendBatchResult(result) { break batchLoop }
             case "waitfortext", "wait-text":
                 guard let text = action.text else {
                     results.append(["ok": false, "action": action.action, "error": "missing_text"])
