@@ -84,8 +84,8 @@ struct RemoteMCPGatewaySupportTests {
         #expect(remote.authHeaders == ["Bearer secret-access-token"])
     }
 
-    @Test("Gateway forwards the same canonical tool name evaluated by policy")
-    func gatewayForwardsCanonicalToolName() throws {
+    @Test("Gateway rejects case variants before authenticated forwarding")
+    func gatewayRejectsCaseVariantsBeforeAuthenticatedForwarding() throws {
         let descriptor = RemoteMCPServerDescriptor(
             id: "google_drive",
             displayName: "Google Drive",
@@ -102,10 +102,62 @@ struct RemoteMCPGatewaySupportTests {
         )
 
         let call = try parseJSON(try #require(gateway.handleLine(#"{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":" Drive.Search ","arguments":{"query":"budget"}}}"#)))
-        let callResult = try #require(call["result"] as? [String: Any])
-        #expect(callResult["isError"] as? Bool == false)
-        #expect(remote.calledTools == ["drive.search"])
-        #expect(remote.calledArguments.first?["query"] as? String == "budget")
+        let error = try #require(call["error"] as? [String: Any])
+        #expect(error["code"] as? Int == -32602)
+        #expect(remote.calledTools.isEmpty)
+    }
+
+    @Test("Gateway preserves case-sensitive tool names after exact policy match")
+    func gatewayPreservesCaseSensitiveToolNamesAfterExactPolicyMatch() throws {
+        let descriptor = RemoteMCPServerDescriptor(
+            id: "custom_export",
+            displayName: "Custom Export",
+            transport: .http,
+            endpoint: URL(string: "https://mcp.example.test/custom")!,
+            connectorBindings: ["custom"],
+            allowedTools: [" DATA_EXPORT_v2 "],
+            excludedTools: ["data_export_v2"]
+        )
+        let remote = RecordingRemoteMCPClient(tools: [
+            ["name": "DATA_EXPORT_v2", "description": "Export data."],
+            ["name": "data_export_v2", "description": "Different case-sensitive tool."],
+            ["name": "Data_Export_v2", "description": "Another different case-sensitive tool."]
+        ])
+        let gateway = LocalMCPGateway(
+            server: descriptor,
+            remoteClient: remote,
+            authTokenProvider: StaticGatewayTokenProvider(token: "secret-access-token")
+        )
+
+        let list = try parseJSON(try #require(gateway.handleLine(#"{"jsonrpc":"2.0","id":9,"method":"tools/list"}"#)))
+        let listResult = try #require(list["result"] as? [String: Any])
+        let tools = try #require(listResult["tools"] as? [[String: Any]])
+        #expect(tools.map { $0["name"] as? String } == ["DATA_EXPORT_v2"])
+
+        let allowed = try parseJSON(try #require(gateway.handleLine(#"{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":" DATA_EXPORT_v2 ","arguments":{"query":"budget"}}}"#)))
+        let allowedResult = try #require(allowed["result"] as? [String: Any])
+        #expect(allowedResult["isError"] as? Bool == false)
+        #expect(remote.calledTools == ["DATA_EXPORT_v2"])
+
+        let excluded = try parseJSON(try #require(gateway.handleLine(#"{"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"name":"data_export_v2","arguments":{"query":"budget"}}}"#)))
+        let excludedError = try #require(excluded["error"] as? [String: Any])
+        #expect(excludedError["code"] as? Int == -32602)
+        #expect(remote.calledTools == ["DATA_EXPORT_v2"])
+    }
+
+    @Test("Tool policy normalizes whitespace without changing case")
+    func toolPolicyNormalizesWhitespaceWithoutChangingCase() {
+        let policy = RemoteMCPGatewayToolPolicy(
+            allowedTools: [" DATA_EXPORT_v2 ", "DATA_EXPORT_v2", "data_export_v2"],
+            excludedTools: [" Admin.Delete "]
+        )
+
+        #expect(policy.allowedTools == ["DATA_EXPORT_v2", "data_export_v2"])
+        #expect(policy.excludedTools == ["Admin.Delete"])
+        #expect(policy.canonicalToolName(for: " DATA_EXPORT_v2 ") == "DATA_EXPORT_v2")
+        #expect(policy.canonicalToolName(for: "data_export_v2") == "data_export_v2")
+        #expect(policy.canonicalToolName(for: "Data_Export_v2") == nil)
+        #expect(policy.canonicalToolName(for: " Admin.Delete ") == nil)
     }
 
     @Test("Environment token provider reads the gateway process token")

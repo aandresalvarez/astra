@@ -34,12 +34,12 @@ public struct RemoteMCPServerDescriptor: Equatable {
 }
 
 public struct RemoteMCPGatewayToolPolicy: Equatable {
-    public var allowedTools: [String]
-    public var excludedTools: [String]
+    public let allowedTools: [String]
+    public let excludedTools: [String]
 
     public init(allowedTools: [String] = [], excludedTools: [String] = []) {
-        self.allowedTools = Self.normalizedUnique(allowedTools)
-        self.excludedTools = Self.normalizedUnique(excludedTools)
+        self.allowedTools = Self.trimmedUnique(allowedTools)
+        self.excludedTools = Self.trimmedUnique(excludedTools)
     }
 
     public func allows(_ toolName: String) -> Bool {
@@ -50,7 +50,7 @@ public struct RemoteMCPGatewayToolPolicy: Equatable {
     }
 
     public func canonicalToolName(for toolName: String) -> String? {
-        let tool = Self.normalized(toolName)
+        let tool = Self.toolKey(toolName)
         guard !tool.isEmpty else { return nil }
         if excludedTools.contains(tool) {
             return nil
@@ -75,19 +75,19 @@ public struct RemoteMCPGatewayToolPolicy: Equatable {
         }
     }
 
-    private static func normalizedUnique(_ tools: [String]) -> [String] {
+    private static func trimmedUnique(_ tools: [String]) -> [String] {
         var result: [String] = []
         for tool in tools {
-            let normalizedTool = normalized(tool)
-            if !normalizedTool.isEmpty && !result.contains(normalizedTool) {
-                result.append(normalizedTool)
+            let toolKey = toolKey(tool)
+            if !toolKey.isEmpty && !result.contains(toolKey) {
+                result.append(toolKey)
             }
         }
         return result
     }
 
-    private static func normalized(_ value: String) -> String {
-        value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    private static func toolKey(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
 
