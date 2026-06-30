@@ -980,6 +980,24 @@ struct WorkspaceToolSupportTests {
         #expect(try store.load(jobID: record.jobID).jobID == record.jobID)
     }
 
+    @Test("Managed job path containment handles filesystem root anchors")
+    func managedJobPathContainmentHandlesFilesystemRootAnchors() {
+        #expect(WorkspaceManagedJobPathContainment.isDescendant("/tmp/astra/jobs", of: "/"))
+        #expect(!WorkspaceManagedJobPathContainment.isDescendant("/", of: "/"))
+        #expect(WorkspaceManagedJobPathContainment.relativeComponents(from: "/", to: "/tmp/astra/jobs") == [
+            "tmp",
+            "astra",
+            "jobs"
+        ])
+
+        #expect(WorkspaceManagedJobPathContainment.isDescendant("/tmp/astra/jobs", of: "/tmp/astra"))
+        #expect(!WorkspaceManagedJobPathContainment.isDescendant("/tmp/astra-other/jobs", of: "/tmp/astra"))
+        #expect(WorkspaceManagedJobPathContainment.relativeComponents(from: "/tmp/astra", to: "/tmp/astra/jobs") == [
+            "jobs"
+        ])
+        #expect(WorkspaceManagedJobPathContainment.relativeComponents(from: "/tmp/astra", to: "/tmp/astra-other/jobs").isEmpty)
+    }
+
     @Test("Docker workspace job manager maps host workspace path before persisting command")
     func dockerWorkspaceJobManagerMapsHostWorkspacePathBeforePersistingCommand() throws {
         let root = FileManager.default.temporaryDirectory

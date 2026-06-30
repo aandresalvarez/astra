@@ -282,7 +282,7 @@ public final class WorkspaceManagedJobStore {
         let rootPath = rootURL.standardizedFileURL.path
         let directoryPath = directory.standardizedFileURL.path
         let parentPath = url.deletingLastPathComponent().standardizedFileURL.path
-        guard directoryPath.hasPrefix(rootPath + "/"),
+        guard WorkspaceManagedJobPathContainment.isDescendant(directoryPath, of: rootPath),
               parentPath == directoryPath,
               isTrustedDirectoryChain(from: rootURL, to: directory) else {
             return nil
@@ -382,15 +382,7 @@ public final class WorkspaceManagedJobStore {
     private func relativePathComponents(from anchor: URL, to directory: URL) -> [String] {
         let anchorPath = anchor.standardizedFileURL.path
         let directoryPath = directory.standardizedFileURL.path
-        guard directoryPath != anchorPath,
-              directoryPath.hasPrefix(anchorPath + "/") else {
-            return []
-        }
-
-        let relativePath = String(directoryPath.dropFirst(anchorPath.count + 1))
-        return relativePath
-            .split(separator: "/")
-            .map(String.init)
+        return WorkspaceManagedJobPathContainment.relativeComponents(from: anchorPath, to: directoryPath)
     }
 
     private func isTrustedDirectory(_ url: URL) -> Bool {
@@ -434,7 +426,7 @@ public final class WorkspaceManagedJobStore {
         var current = directory.standardizedFileURL
 
         while current.path != rootPath {
-            guard current.path.hasPrefix(rootPath + "/"),
+            guard WorkspaceManagedJobPathContainment.isDescendant(current.path, of: rootPath),
                   isTrustedDirectory(current) else {
                 return false
             }
@@ -565,6 +557,27 @@ public final class WorkspaceManagedJobStore {
         var result: URL {
             directory.appendingPathComponent("result.json", isDirectory: false)
         }
+    }
+}
+
+enum WorkspaceManagedJobPathContainment {
+    static func isDescendant(_ candidatePath: String, of ancestorPath: String) -> Bool {
+        guard candidatePath != ancestorPath else { return false }
+        if ancestorPath == "/" {
+            return candidatePath.hasPrefix("/")
+        }
+        return candidatePath.hasPrefix(ancestorPath + "/")
+    }
+
+    static func relativeComponents(from ancestorPath: String, to candidatePath: String) -> [String] {
+        guard isDescendant(candidatePath, of: ancestorPath) else {
+            return []
+        }
+
+        let dropCount = ancestorPath == "/" ? 1 : ancestorPath.count + 1
+        return String(candidatePath.dropFirst(dropCount))
+            .split(separator: "/")
+            .map(String.init)
     }
 }
 
