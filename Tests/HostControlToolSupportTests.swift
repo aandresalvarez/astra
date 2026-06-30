@@ -398,6 +398,76 @@ struct HostControlToolSupportTests {
         #expect(hostLog.contains("gcloud --location us-central1 functions list"))
     }
 
+    @Test("Host control gcloud denies credential selecting flags before process execution")
+    func hostControlGCloudDeniesCredentialSelectingFlagsBeforeProcessExecution() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-host-gcloud-credential-flags-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let log = root.appendingPathComponent("host.log", isDirectory: false)
+        let gcloud = try fakeExecutable(named: "gcloud", root: root, log: log, stdout: "gcloud:$*")
+        let server = HostControlMCPServer(
+            configuration: HostControlToolConfiguration(gcloudExecutable: gcloud.path)
+        )
+        let deniedFlagCases: [[String]] = [
+            ["--account", "privileged@example.com", "compute", "instances", "list"],
+            ["--account=privileged@example.com", "compute", "instances", "list"],
+            ["--configuration", "debug-config", "compute", "instances", "list"],
+            ["--configuration=debug-config", "compute", "instances", "list"]
+        ]
+
+        for (offset, arguments) in deniedFlagCases.enumerated() {
+            let result = try call(server, id: 20 + offset, tool: "gcloud", arguments: [
+                "arguments": arguments
+            ])
+            let error = try #require(result["error"] as? [String: Any])
+            #expect((error["message"] as? String)?.contains("gcloud does not allow credential or mutating operations") == true)
+        }
+
+        let hostLog = (try? String(contentsOf: log, encoding: .utf8)) ?? ""
+        #expect(!hostLog.contains("--account"))
+        #expect(!hostLog.contains("--configuration"))
+    }
+
+    @Test("Host control records denied gcloud policy attempts")
+    func hostControlRecordsDeniedGCloudPolicyAttempts() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-host-gcloud-denied-diagnostics-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let log = root.appendingPathComponent("host.log", isDirectory: false)
+        let diagnostics = root.appendingPathComponent("diagnostics", isDirectory: true)
+        let gcloud = try fakeExecutable(named: "gcloud", root: root, log: log, stdout: "gcloud:$*")
+        let configuration = HostControlToolConfiguration(
+            gcloudExecutable: gcloud.path,
+            diagnosticsHostPath: diagnostics.path,
+            taskID: "task-denied-gcloud",
+            runID: "run-denied-gcloud"
+        )
+        let server = HostControlMCPServer(
+            configuration: configuration,
+            diagnosticsRecorder: HostControlToolDiagnosticsRecorder(configuration: configuration)
+        )
+
+        let result = try call(server, id: 30, tool: "gcloud", arguments: [
+            "arguments": ["auth", "print-access-token"]
+        ])
+        let error = try #require(result["error"] as? [String: Any])
+        #expect((error["message"] as? String)?.contains("gcloud does not allow credential or mutating operations") == true)
+
+        let hostLog = (try? String(contentsOf: log, encoding: .utf8)) ?? ""
+        #expect(!hostLog.contains("auth print-access-token"))
+
+        let diagnosticLog = diagnostics.appendingPathComponent("host_control_tool_activity.jsonl", isDirectory: false)
+        let diagnosticsText = try String(contentsOf: diagnosticLog, encoding: .utf8)
+        #expect(diagnosticsText.contains(#""toolName":"gcloud""#))
+        #expect(diagnosticsText.contains(#""taskID":"task-denied-gcloud""#))
+        #expect(diagnosticsText.contains(#""runID":"run-denied-gcloud""#))
+        #expect(diagnosticsText.contains(#""summary":"gcloud auth print-access-token""#))
+    }
+
     private func fakeExecutable(named name: String, root: URL, log: URL, stdout: String) throws -> URL {
         let executable = root.appendingPathComponent(name, isDirectory: false)
         let quotedLog = log.path.replacingOccurrences(of: "'", with: "'\\''")

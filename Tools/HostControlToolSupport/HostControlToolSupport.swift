@@ -428,6 +428,18 @@ public final class HostControlMCPServer {
             case .allowed:
                 break
             case .denied(let message):
+                diagnosticsRecorder?.record(
+                    toolName: toolName,
+                    summary: "\(toolName) \(argv.joined(separator: " "))",
+                    result: HostControlCommandResult(
+                        command: executable,
+                        arguments: argv,
+                        exitCode: 126,
+                        stdout: "",
+                        stderr: message,
+                        timedOut: false
+                    )
+                )
                 return encodeError(id: id, code: -32602, message: message)
             }
         }

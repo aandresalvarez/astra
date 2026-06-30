@@ -20,7 +20,7 @@ struct HostControlCloudCommandPolicy: Sendable {
             "describe", "get", "info", "list", "ls", "read", "show", "status", "version", "view"
         ],
         optionsWithValues: [
-            "--account", "--billing-project", "--configuration", "--filter", "--flatten",
+            "--billing-project", "--filter", "--flatten",
             "--format", "--limit", "--location", "--page-size", "--project", "--project-id",
             "--region", "--sort-by", "--trace-token", "--verbosity", "--zone"
         ],
@@ -192,7 +192,9 @@ struct HostControlCloudCommandPolicy: Sendable {
 
     private static func containsCredentialDisclosureFlag(_ token: String) -> Bool {
         let flagName = optionName(for: token)
-        return flagName == "--flags-file" ||
+        return flagName == "--account" ||
+            flagName == "--configuration" ||
+            flagName == "--flags-file" ||
             flagName == "--impersonate-service-account" ||
             flagName.contains("access-token") ||
             flagName.contains("identity-token") ||
