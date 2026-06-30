@@ -378,6 +378,63 @@ struct BrowserPageSnapshotServiceTests {
         #expect(!compacted.contains("2001-02-03"))
     }
 
+    @Test("snapshot output redacts compact sensitive identifiers")
+    func snapshotOutputRedactsCompactSensitiveIdentifiers() throws {
+        let compacted = try BrowserPageSnapshotService.compactSnapshot(
+            json: """
+            {
+              "ok": true,
+              "url": "https://example.com/form",
+              "title": "Form",
+              "text": "Payment and profile form",
+              "controls": [
+                {
+                  "selector": "#cardNumber",
+                  "tag": "input",
+                  "role": "textbox",
+                  "type": "text",
+                  "label": "",
+                  "name": "cardNumber",
+                  "value": "4111111111111111"
+                },
+                {
+                  "selector": "#fieldTwo",
+                  "tag": "input",
+                  "role": "textbox",
+                  "type": "text",
+                  "label": "",
+                  "testID": "dateOfBirth",
+                  "value": "1970-01-02"
+                },
+                {
+                  "selector": "#fieldThree",
+                  "tag": "input",
+                  "role": "textbox",
+                  "type": "text",
+                  "label": "",
+                  "name": "medicalRecordNumber",
+                  "value": "MRN-424242"
+                }
+              ]
+            }
+            """,
+            mode: .full,
+            query: nil,
+            limit: nil
+        )
+        let object = try jsonObject(from: compacted)
+        let controls = try #require(object["controls"] as? [[String: Any]])
+
+        #expect(controls.compactMap { $0["value"] as? String } == [
+            "[redacted-sensitive-input]",
+            "[redacted-sensitive-input]",
+            "[redacted-sensitive-input]"
+        ])
+        #expect(!compacted.contains("4111111111111111"))
+        #expect(!compacted.contains("1970-01-02"))
+        #expect(!compacted.contains("MRN-424242"))
+    }
+
     @Test("snapshot output redacts empty sensitive metadata")
     func snapshotOutputRedactsEmptySensitiveMetadata() throws {
         let compacted = try BrowserPageSnapshotService.compactSnapshot(
@@ -621,7 +678,9 @@ struct BrowserPageSnapshotServiceTests {
         #expect(script.contains(#"for (const key of ["selector", "requestedSelector", "label", "name", "placeholder", "testID", "href"])"#))
         #expect(script.contains("redactSensitiveResultMetadata(result[key], value)"))
         #expect(script.contains("normalizedValue.includes(normalizedRaw)"))
-        #expect(script.contains("&& (includesAny(text, sensitiveResultTerms) || includesAny(text, paymentResultTerms));"))
+        #expect(script.contains("const containsSensitiveTerm = (text, terms, compactTerms) =>"))
+        #expect(script.contains("containsSensitiveTerm(text, sensitiveResultTerms, sensitiveResultCompactTerms)"))
+        #expect(script.contains("containsSensitiveTerm(text, paymentResultTerms, paymentResultCompactTerms)"))
         #expect(script.contains("sensitiveMetadataCandidate(raw) ? redactedInputValue : raw"))
         #expect(!script.contains("&& (/[0-9]/.test(text) || text.includes(\"-\") || text.includes(\"_\") || text.includes(\"%\") || value.length > 20)"))
         #expect(!script.contains("redactSensitiveResultTarget(result, el, next);\n          result.cleared = clear;"))
@@ -637,10 +696,13 @@ struct BrowserPageSnapshotServiceTests {
         #expect(script.contains("rawSensitiveValues.push(rawValue)"))
         #expect(script.contains("const snapshotSensitiveValues = rawSensitiveValues.concat"))
         #expect(script.contains("text: redactedVisibleText(visibleText(), snapshotSensitiveValues)"))
+        #expect(script.contains("url: redactedVisibleText(location.href, snapshotSensitiveValues)"))
+        #expect(script.contains("title: redactedVisibleText(document.title, snapshotSensitiveValues)"))
         #expect(script.contains("role: roleFor(active)"))
         #expect(script.contains("encodeURIComponent"))
         #expect(script.contains("const formattedDigitPattern = (value) =>"))
         #expect(script.contains("redacted = redacted.replace(pattern,"))
+        #expect(script.contains("const containsSensitiveTerm = (text, terms, compactTerms) =>"))
         #expect(script.contains("\"bday\""))
     }
 

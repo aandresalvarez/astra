@@ -451,6 +451,22 @@ enum BrowserAutomationScripts {
       const sensitiveFieldTerms = \(BrowserSensitiveInputRedactionPolicy.javaScriptArrayLiteral(BrowserSensitiveInputRedactionPolicy.sensitiveFieldTerms, indentation: "      "));
       const paymentFieldTerms = \(BrowserSensitiveInputRedactionPolicy.javaScriptArrayLiteral(BrowserSensitiveInputRedactionPolicy.paymentFieldTerms, indentation: "      "));
       const sensitiveAutocompleteTerms = \(BrowserSensitiveInputRedactionPolicy.javaScriptArrayLiteral(BrowserSensitiveInputRedactionPolicy.sensitiveAutocompleteTokens, indentation: "      "));
+      const compactTermsFor = (terms) => terms.map((term) => term.replace(/[^a-z0-9]/g, "")).filter(Boolean);
+      const searchableFieldText = (text) => {
+        const spaced = String(text || "")
+          .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, " ")
+          .trim();
+        return { spaced, compact: spaced.replace(/\\s+/g, "") };
+      };
+      const sensitiveFieldCompactTerms = compactTermsFor(sensitiveFieldTerms);
+      const paymentFieldCompactTerms = compactTermsFor(paymentFieldTerms);
+      const containsSensitiveTerm = (text, terms, compactTerms) => {
+        const searchable = searchableFieldText(text);
+        return containsAny(searchable.spaced, terms)
+          || compactTerms.some((term) => searchable.compact.includes(term));
+      };
       const isEditablePaymentField = (el) => {
         const tag = String(el.tagName || "").toLowerCase();
         const role = String(el.getAttribute("role") || "").toLowerCase();
@@ -476,9 +492,9 @@ enum BrowserAutomationScripts {
           el.getAttribute("data-testid") || el.getAttribute("data-test") || "",
           el.href || "",
           autocomplete
-        ].join(" ").toLowerCase();
-        return containsAny(text, sensitiveFieldTerms)
-          || (isEditablePaymentField(el) && containsAny(text, paymentFieldTerms));
+        ].join(" ");
+        return containsSensitiveTerm(text, sensitiveFieldTerms, sensitiveFieldCompactTerms)
+          || (isEditablePaymentField(el) && containsSensitiveTerm(text, paymentFieldTerms, paymentFieldCompactTerms));
       };
       const editableValueFor = (el) => {
         if (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT") {
@@ -559,11 +575,11 @@ enum BrowserAutomationScripts {
         const normalizedMetadata = metadata.replace(/\\s+/g, " ").trim().toLowerCase();
         const normalizedCSSMetadata = cssUnescaped(metadata).replace(/\\s+/g, " ").trim().toLowerCase();
         const normalizedValue = sensitiveValue.toLowerCase();
-        const metadataLooksSensitive = containsAny(normalizedMetadata, sensitiveFieldTerms)
-          || containsAny(normalizedCSSMetadata, sensitiveFieldTerms)
+        const metadataLooksSensitive = containsSensitiveTerm(normalizedMetadata, sensitiveFieldTerms, sensitiveFieldCompactTerms)
+          || containsSensitiveTerm(normalizedCSSMetadata, sensitiveFieldTerms, sensitiveFieldCompactTerms)
           || (isEditablePaymentField(el)
-            && (containsAny(normalizedMetadata, paymentFieldTerms)
-              || containsAny(normalizedCSSMetadata, paymentFieldTerms)));
+            && (containsSensitiveTerm(normalizedMetadata, paymentFieldTerms, paymentFieldCompactTerms)
+              || containsSensitiveTerm(normalizedCSSMetadata, paymentFieldTerms, paymentFieldCompactTerms)));
         const prefixLength = 8;
         const valueContainsMetadata = normalizedValue.length >= prefixLength
           && normalizedMetadata.length >= prefixLength
@@ -678,8 +694,8 @@ enum BrowserAutomationScripts {
       const snapshotSensitiveValues = rawSensitiveValues.concat(activeRawValue && isSensitiveValueControl(active) ? [activeRawValue] : []);
       return JSON.stringify({
         ok: true,
-        url: location.href,
-        title: document.title,
+        url: redactedVisibleText(location.href, snapshotSensitiveValues),
+        title: redactedVisibleText(document.title, snapshotSensitiveValues),
         viewport: {
           width: window.innerWidth,
           height: window.innerHeight,
@@ -835,6 +851,22 @@ enum BrowserAutomationScripts {
           const sensitiveAutocompleteTerms = \(BrowserSensitiveInputRedactionPolicy.javaScriptArrayLiteral(BrowserSensitiveInputRedactionPolicy.sensitiveAutocompleteTokens, indentation: "          "));
           const redactedInputValue = "[redacted-sensitive-input]";
           const includesAny = (value, terms) => terms.some((term) => value.includes(term));
+          const compactTermsFor = (terms) => terms.map((term) => term.replace(/[^a-z0-9]/g, "")).filter(Boolean);
+          const searchableFieldText = (value) => {
+            const spaced = String(value || "")
+              .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+              .toLowerCase()
+              .replace(/[^a-z0-9]+/g, " ")
+              .trim();
+            return { spaced, compact: spaced.replace(/\\s+/g, "") };
+          };
+          const sensitiveResultCompactTerms = compactTermsFor(sensitiveResultTerms);
+          const paymentResultCompactTerms = compactTermsFor(paymentResultTerms);
+          const containsSensitiveTerm = (text, terms, compactTerms) => {
+            const searchable = searchableFieldText(text);
+            return includesAny(searchable.spaced, terms)
+              || compactTerms.some((term) => searchable.compact.includes(term));
+          };
           const currentValueFor = (target) => {
             if (!target) return "";
             if ("value" in target) return String(target.value || "");
@@ -866,9 +898,9 @@ enum BrowserAutomationScripts {
               target.getAttribute("placeholder") || "",
               target.getAttribute("data-testid") || target.getAttribute("data-test") || "",
               autocomplete
-            ].join(" ").toLowerCase();
-            return includesAny(text, sensitiveResultTerms)
-              || (isEditablePaymentField(target) && includesAny(text, paymentResultTerms));
+            ].join(" ");
+            return containsSensitiveTerm(text, sensitiveResultTerms, sensitiveResultCompactTerms)
+              || (isEditablePaymentField(target) && containsSensitiveTerm(text, paymentResultTerms, paymentResultCompactTerms));
           };
           const sensitiveResultObject = (result) => {
             const text = [
@@ -883,9 +915,9 @@ enum BrowserAutomationScripts {
               result.testID || "",
               result.href || "",
               result.autocomplete || ""
-            ].join(" ").toLowerCase();
-            return includesAny(text, sensitiveResultTerms)
-              || includesAny(text, paymentResultTerms)
+            ].join(" ");
+            return containsSensitiveTerm(text, sensitiveResultTerms, sensitiveResultCompactTerms)
+              || containsSensitiveTerm(text, paymentResultTerms, paymentResultCompactTerms)
               || sensitiveMetadataCandidate(text);
           };
           const cssUnescaped = (value) => String(value || "")
@@ -894,7 +926,8 @@ enum BrowserAutomationScripts {
           const sensitiveMetadataCandidate = (value) => {
             const text = norm(cssUnescaped(value));
             return text
-              && (includesAny(text, sensitiveResultTerms) || includesAny(text, paymentResultTerms));
+              && (containsSensitiveTerm(text, sensitiveResultTerms, sensitiveResultCompactTerms)
+                || containsSensitiveTerm(text, paymentResultTerms, paymentResultCompactTerms));
           };
           const redactSensitiveResultMetadata = (value, sensitiveValue) => {
             const raw = String(value || "");

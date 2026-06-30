@@ -178,15 +178,8 @@ enum BrowserSensitiveInputRedactionPolicy {
     static func redactedSensitiveMetadataText(_ text: String) -> String {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return text }
-        let lower = trimmed.lowercased()
-        let spaced = lower
-            .replacingOccurrences(of: "_", with: " ")
-            .replacingOccurrences(of: "-", with: " ")
-            .replacingOccurrences(of: "#", with: " ")
-        return containsAny(lower, sensitiveFieldTerms)
-            || containsAny(lower, paymentFieldTerms)
-            || containsAny(spaced, sensitiveFieldTerms)
-            || containsAny(spaced, paymentFieldTerms)
+        return containsSensitiveTerm(trimmed, terms: sensitiveFieldTerms, compactTerms: sensitiveFieldCompactTerms)
+            || containsSensitiveTerm(trimmed, terms: paymentFieldTerms, compactTerms: paymentFieldCompactTerms)
             ? redactedInputValue
             : text
     }
@@ -232,9 +225,10 @@ enum BrowserSensitiveInputRedactionPolicy {
             testID,
             href,
             lowerAutocomplete
-        ].joined(separator: " ").lowercased()
-        return containsAny(text, sensitiveFieldTerms)
-            || (isEditablePaymentField(tag: tag, role: role, type: lowerType) && containsAny(text, paymentFieldTerms))
+        ].joined(separator: " ")
+        return containsSensitiveTerm(text, terms: sensitiveFieldTerms, compactTerms: sensitiveFieldCompactTerms)
+            || (isEditablePaymentField(tag: tag, role: role, type: lowerType)
+                && containsSensitiveTerm(text, terms: paymentFieldTerms, compactTerms: paymentFieldCompactTerms))
     }
 
     private static func isEditablePaymentField(tag: String, role: String, type: String) -> Bool {
@@ -365,6 +359,9 @@ enum BrowserSensitiveInputRedactionPolicy {
         "cc-type"
     ]
 
+    private static let sensitiveFieldCompactTerms = compactTerms(sensitiveFieldTerms)
+    private static let paymentFieldCompactTerms = compactTerms(paymentFieldTerms)
+
     static func javaScriptArrayLiteral(_ values: [String], indentation: String) -> String {
         let encodedValues = values.map { value in
             let data = try! JSONEncoder().encode(value)
@@ -373,6 +370,32 @@ enum BrowserSensitiveInputRedactionPolicy {
         return "[\n"
             + encodedValues.map { "\(indentation)  \($0)" }.joined(separator: ",\n")
             + "\n\(indentation)]"
+    }
+
+    private static func containsSensitiveTerm(_ text: String, terms: [String], compactTerms: [String]) -> Bool {
+        let searchable = searchableFieldText(text)
+        return containsAny(searchable.spaced, terms)
+            || compactTerms.contains { !searchable.compact.isEmpty && searchable.compact.contains($0) }
+    }
+
+    private static func searchableFieldText(_ text: String) -> (spaced: String, compact: String) {
+        let camelSpaced = text.replacingOccurrences(
+            of: #"([a-z0-9])([A-Z])"#,
+            with: "$1 $2",
+            options: .regularExpression
+        )
+        let spaced = camelSpaced.lowercased()
+            .replacingOccurrences(of: #"[^a-z0-9]+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return (spaced, spaced.replacingOccurrences(of: " ", with: ""))
+    }
+
+    private static func compactTerms(_ terms: [String]) -> [String] {
+        uniqueSensitiveValues(
+            terms.map {
+                $0.lowercased().replacingOccurrences(of: #"[^a-z0-9]+"#, with: "", options: .regularExpression)
+            }
+        )
     }
 
     private static func redactedText(_ text: String, sensitiveValues: [String]) -> String {
@@ -419,8 +442,10 @@ enum BrowserSensitiveInputRedactionPolicy {
     }
 
     private static func isSensitiveMetadataCandidate(_ text: String) -> Bool {
+        guard containsSensitiveTerm(text, terms: sensitiveFieldTerms, compactTerms: sensitiveFieldCompactTerms)
+            || containsSensitiveTerm(text, terms: paymentFieldTerms, compactTerms: paymentFieldCompactTerms)
+        else { return false }
         let lower = text.lowercased()
-        guard containsAny(lower, sensitiveFieldTerms) || containsAny(lower, paymentFieldTerms) else { return false }
         return lower.contains { $0.isNumber }
             || lower.contains("-")
             || lower.contains("_")
