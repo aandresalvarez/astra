@@ -683,6 +683,42 @@ struct BrowserControlSafetyTests {
         #expect(target["url"] as? String == "https://app.example.com")
     }
 
+    @Test("Focused target bind distinguishes missing focus from changed target")
+    func focusedTargetBindDistinguishesMissingFocusFromChangedTarget() throws {
+        let missingFocus = try #require(BrowserTextEntryPreflight.focusedTargetBindBlockResponse(
+            action: "keypress",
+            targetInfo: [
+                "ok": false,
+                "error": "no_focused_element",
+                "selector": "body",
+                "label": "Document",
+                "role": "document",
+                "tag": "body",
+                "url": "https://app.example.com/editor?token=secret#draft"
+            ],
+            expectedSignature: "input\u{1f}input\u{1f}text"
+        ))
+        #expect(missingFocus["error"] as? String == "text_entry_target_not_bound")
+        #expect(BrowserTextEntryPreflight.terminalStopReason(for: missingFocus) == "text_entry_target_not_bound")
+
+        let changedTarget = try #require(BrowserTextEntryPreflight.focusedTargetBindBlockResponse(
+            action: "keypress",
+            targetInfo: [
+                "ok": true,
+                "selector": "textarea[name='comment']",
+                "tag": "textarea",
+                "type": "text",
+                "name": "comment",
+                "role": "textbox",
+                "autocomplete": "off",
+                "url": "https://app.example.com/editor"
+            ],
+            expectedSignature: "previous-target-signature"
+        ))
+        #expect(changedTarget["error"] as? String == "text_entry_target_changed")
+        #expect(BrowserTextEntryPreflight.terminalStopReason(for: changedTarget) == "text_entry_target_changed")
+    }
+
     @Test("Modified editing keypresses require sensitive text entry preflight")
     func modifiedEditingKeypressesRequireSensitiveTextEntryPreflight() {
         #expect(BrowserKeypressSafety.requiresTextEntryPreflight(key: "Backspace", modifiers: ["command"]))

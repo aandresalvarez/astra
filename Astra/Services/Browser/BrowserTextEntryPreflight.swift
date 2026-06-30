@@ -210,6 +210,20 @@ enum BrowserTextEntryPreflight {
         ].joined(separator: "\u{1f}")
     }
 
+    static func focusedTargetBindBlockResponse(
+        action: String,
+        targetInfo: [String: Any],
+        expectedSignature: String
+    ) -> [String: Any]? {
+        guard let targetSignature = targetSignature(for: targetInfo) else {
+            return missingFocusedTargetBlockResponse(action: action, targetInfo: targetInfo)
+        }
+        guard targetSignature == expectedSignature else {
+            return focusChangedBlockResponse(action: action, targetInfo: targetInfo)
+        }
+        return nil
+    }
+
     static func focusChangedBlockResponse(action: String, targetInfo: [String: Any]) -> [String: Any] {
         [
             "ok": false,

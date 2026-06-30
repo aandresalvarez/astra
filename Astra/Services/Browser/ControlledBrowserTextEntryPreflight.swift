@@ -14,8 +14,11 @@ extension ControlledBrowserController {
             blocked["focusedTarget"] = BrowserTextEntryPreflight.redactedTargetAttachment(for: blocked)
             return blocked
         }
-        guard BrowserTextEntryPreflight.targetSignature(for: targetInfo) == expectedSignature else {
-            var blocked = BrowserTextEntryPreflight.focusChangedBlockResponse(action: action, targetInfo: targetInfo)
+        if var blocked = BrowserTextEntryPreflight.focusedTargetBindBlockResponse(
+            action: action,
+            targetInfo: targetInfo,
+            expectedSignature: expectedSignature
+        ) {
             blocked["focusedTarget"] = BrowserTextEntryPreflight.redactedTargetAttachment(for: blocked)
             return blocked
         }
