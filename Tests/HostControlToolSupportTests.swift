@@ -461,7 +461,7 @@ struct HostControlToolSupportTests {
             "arguments": [
                 "--account", "privileged@example.com",
                 "compute", "instances", "list",
-                "--access-token=ya29.secret-token",
+                "--access-token=synthetic-access-token-value",
                 "--impersonate-service-account=reader@example.iam.gserviceaccount.com"
             ]
         ])
@@ -471,7 +471,7 @@ struct HostControlToolSupportTests {
         let hostLog = (try? String(contentsOf: log, encoding: .utf8)) ?? ""
         #expect(!hostLog.contains("auth print-access-token"))
         #expect(!hostLog.contains("privileged@example.com"))
-        #expect(!hostLog.contains("ya29.secret-token"))
+        #expect(!hostLog.contains("synthetic-access-token-value"))
         #expect(!hostLog.contains("reader@example.iam.gserviceaccount.com"))
 
         let diagnosticLog = diagnostics.appendingPathComponent("host_control_tool_activity.jsonl", isDirectory: false)
