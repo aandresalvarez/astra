@@ -279,12 +279,36 @@ struct HostControlToolSupportTests {
         ])
         #expect(try resultText(filteredReadResult).contains("gcloud:--project clinical-project --filter name~worker compute instances list --format=json"))
 
+        let workflowRunResult = try call(server, id: 6, tool: "gcloud", arguments: [
+            "arguments": ["workflows", "run", "list", "--location=us-central1"]
+        ])
+        let workflowRunError = try #require(workflowRunResult["error"] as? [String: Any])
+        #expect((workflowRunError["message"] as? String)?.contains("gcloud does not allow credential or mutating operations") == true)
+
+        let flagsFileResult = try call(server, id: 7, tool: "gcloud", arguments: [
+            "arguments": ["compute", "instances", "list", "--flags-file=/tmp/hidden-credentials.yaml"]
+        ])
+        let flagsFileError = try #require(flagsFileResult["error"] as? [String: Any])
+        #expect((flagsFileError["message"] as? String)?.contains("gcloud does not allow credential or mutating operations") == true)
+
+        let traceTokenReadResult = try call(server, id: 8, tool: "gcloud", arguments: [
+            "arguments": [
+                "--trace-token", "task-token-for-log-correlation",
+                "--filter", "labels.audit=tokenized-read",
+                "compute", "instances", "list"
+            ]
+        ])
+        #expect(try resultText(traceTokenReadResult).contains("gcloud:--trace-token task-token-for-log-correlation --filter labels.audit=tokenized-read compute instances list"))
+
         let hostLog = try String(contentsOf: log, encoding: .utf8)
         #expect(!hostLog.contains("auth print-access-token"))
         #expect(!hostLog.contains("run deploy"))
         #expect(!hostLog.contains("compute instances reset list"))
+        #expect(!hostLog.contains("workflows run list"))
+        #expect(!hostLog.contains("--flags-file"))
         #expect(hostLog.contains("gcloud compute instances list --format=json"))
         #expect(hostLog.contains("gcloud --project clinical-project --filter name~worker compute instances list --format=json"))
+        #expect(hostLog.contains("gcloud --trace-token task-token-for-log-correlation --filter labels.audit=tokenized-read compute instances list"))
     }
 
     private func fakeExecutable(named name: String, root: URL, log: URL, stdout: String) throws -> URL {

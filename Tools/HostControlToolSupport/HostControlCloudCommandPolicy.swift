@@ -13,7 +13,7 @@ struct HostControlCloudCommandPolicy: Sendable {
         ],
         deniedVerbs: [
             "add-iam-policy-binding", "attach", "call", "create", "delete", "deploy", "detach",
-            "disable", "enable", "modify", "put", "remove", "remove-iam-policy-binding",
+            "disable", "enable", "execute", "modify", "put", "remove", "remove-iam-policy-binding",
             "reset", "restart", "rm", "set", "set-iam-policy", "start", "stop", "update", "write"
         ],
         readVerbs: [
@@ -42,6 +42,9 @@ struct HostControlCloudCommandPolicy: Sendable {
     private let readVerbs: Set<String>
     private let optionsWithValues: Set<String>
     private let readCommandGroups: Set<String>
+    private let deniedCommandPrefixes: Set<[String]> = [
+        ["workflows", "run"]
+    ]
 
     init(
         toolName: String,
@@ -64,13 +67,19 @@ struct HostControlCloudCommandPolicy: Sendable {
         guard !arguments.isEmpty else {
             return .denied("\(toolName) requires an operation")
         }
-        if arguments.contains(where: Self.containsCredentialDisclosureMarker) {
+        if arguments.contains(where: Self.containsDeniedFlag) {
             return .denied(deniedOperationMessage)
         }
 
         let actionTokens = commandTokens(from: arguments)
         guard !actionTokens.isEmpty else {
             return .denied("\(toolName) requires an operation")
+        }
+        if containsDeniedCommandPrefix(in: actionTokens) {
+            return .denied(deniedOperationMessage)
+        }
+        if actionTokens.contains(where: Self.containsCredentialDisclosureMarker) {
+            return .denied(deniedOperationMessage)
         }
 
         guard let operation = operationToken(in: actionTokens) else {
@@ -127,6 +136,12 @@ struct HostControlCloudCommandPolicy: Sendable {
         return nil
     }
 
+    private func containsDeniedCommandPrefix(in tokens: [String]) -> Bool {
+        deniedCommandPrefixes.contains { prefix in
+            tokens.starts(with: prefix)
+        }
+    }
+
     private static func comparableToken(_ value: String) -> String {
         value
             .trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
@@ -136,11 +151,20 @@ struct HostControlCloudCommandPolicy: Sendable {
 
     private static func containsCredentialDisclosureMarker(_ token: String) -> Bool {
         token.contains("access-token") ||
+            token.contains("identity-token") ||
             token.contains("credential") ||
             token.contains("password") ||
-            token.contains("secret") ||
-            token.contains("token") ||
-            token == "--impersonate-service-account" ||
-            token.hasPrefix("--impersonate-service-account=")
+            token.contains("secret")
+    }
+
+    private static func containsDeniedFlag(_ token: String) -> Bool {
+        let flagName = token.split(separator: "=", maxSplits: 1).first.map(String.init) ?? token
+        return flagName == "--flags-file" ||
+            flagName == "--impersonate-service-account" ||
+            flagName.contains("access-token") ||
+            flagName.contains("identity-token") ||
+            flagName.contains("credential") ||
+            flagName.contains("password") ||
+            flagName.contains("secret")
     }
 }
