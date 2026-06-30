@@ -924,6 +924,20 @@ struct ArchitectureFitnessTests {
         )
     }
 
+    @Test("Remote MCP gateway trust uses canonical built-in source metadata")
+    func remoteMCPGatewayTrustUsesCanonicalBuiltInSourceMetadata() throws {
+        let root = try repositoryRoot()
+        let policy = try String(
+            contentsOf: root.appendingPathComponent("Astra/Services/Runtime/RemoteMCPGatewayEndpointTrustPolicy.swift"),
+            encoding: .utf8
+        )
+
+        #expect(policy.contains("CapabilitySourceMetadata.builtIn()"))
+        #expect(!policy.contains(#"packageSourceMetadata?.id == "built-in""#))
+        #expect(!policy.contains(#"packageSourceMetadata?.kind == "built-in""#))
+        #expect(!policy.contains(#"packageSourceMetadata?.trustLevel == "built-in""#))
+    }
+
     @Test("Plugin catalog import presentation lives with catalog presentation contracts")
     func pluginCatalogImportPresentationLivesWithCatalogPresentationContracts() throws {
         let root = try repositoryRoot()

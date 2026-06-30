@@ -102,9 +102,7 @@ enum RemoteMCPGatewayEndpointTrustPolicy {
         server: PluginMCPServer
     ) -> Bool {
         guard packageID == GoogleWorkspaceCapability.packageID,
-              packageSourceMetadata?.id == "built-in",
-              packageSourceMetadata?.kind == "built-in",
-              packageSourceMetadata?.trustLevel == "built-in",
+              hasBuiltInSourceTrust(packageSourceMetadata),
               server.connectorBindings.contains(GoogleWorkspaceCapability.connectorBinding),
               let endpoint = server.url else {
             return false
@@ -115,6 +113,13 @@ enum RemoteMCPGatewayEndpointTrustPolicy {
             return false
         }
         return endpointsMatch(endpoint, product.endpoint)
+    }
+
+    private static func hasBuiltInSourceTrust(_ sourceMetadata: CapabilitySourceMetadata?) -> Bool {
+        let builtInSource = CapabilitySourceMetadata.builtIn()
+        return sourceMetadata?.id == builtInSource.id
+            && sourceMetadata?.kind == builtInSource.kind
+            && sourceMetadata?.trustLevel == builtInSource.trustLevel
     }
 
     private static func endpointsMatch(_ lhs: URL, _ rhs: URL) -> Bool {
