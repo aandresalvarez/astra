@@ -18,6 +18,21 @@ public struct ProcessResult {
     public let exitCode: Int32
 }
 
+public enum AppleScriptSource {
+    public static func stringLiteral(_ value: String) -> String {
+        let safe = value
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+            .replacingOccurrences(of: "\r", with: " ")
+            .replacingOccurrences(of: "\n", with: " ")
+        return "\"\(safe)\""
+    }
+
+    public static func errorStatement(_ message: String) -> String {
+        "error \(stringLiteral(message))"
+    }
+}
+
 private final class LockedDataBuffer {
     private let lock = NSLock()
     private var data = Data()

@@ -110,7 +110,13 @@ let package = Package(
         .testTarget(
             name: "ASTRATests",
             dependencies: ["ASTRA", "ASTRACore", "ASTRAGitContracts", "HostControlToolSupport", "MCPGatewaySupport", "WorkspaceToolSupport"],
-            path: "Tests"
+            path: "Tests",
+            exclude: ["MailToolSupportTests"]
+        ),
+        .testTarget(
+            name: "MailToolSupportTests",
+            dependencies: ["MailToolSupport"],
+            path: "Tests/MailToolSupportTests"
         )
     ]
 )
