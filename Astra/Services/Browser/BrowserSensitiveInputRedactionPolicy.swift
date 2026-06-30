@@ -86,6 +86,43 @@ enum BrowserSensitiveInputRedactionPolicy {
         return (redacted, true, sensitiveValues)
     }
 
+    static func controlIDSlugSource(
+        label: String,
+        role: String,
+        tag: String,
+        value: String,
+        selector: String,
+        name: String,
+        type: String,
+        placeholder: String,
+        testID: String,
+        href: String,
+        autocomplete: String,
+        risk: BrowserRisk
+    ) -> String {
+        let fallback = role.isEmpty ? tag : role
+        let source = label.isEmpty ? fallback : label
+        let visibleValue = redactedValue(
+            value,
+            selector: selector,
+            label: label,
+            name: name,
+            role: role,
+            tag: tag,
+            type: type,
+            placeholder: placeholder,
+            testID: testID,
+            href: href,
+            autocomplete: autocomplete,
+            risk: risk
+        )
+        guard visibleValue == redactedInputValue,
+              redactedDisplayText(source, sensitiveValue: value) == redactedInputValue else {
+            return source
+        }
+        return fallback
+    }
+
     static func redactedValue(
         _ value: String,
         selector: String,
@@ -324,18 +361,43 @@ enum BrowserSensitiveInputRedactionPolicy {
 
     private static func cssUnescaped(_ value: String) -> String {
         var result = ""
-        var isEscaped = false
-        for character in value {
-            if isEscaped {
+        var index = value.startIndex
+        while index < value.endIndex {
+            let character = value[index]
+            guard character == "\\" else {
                 result.append(character)
-                isEscaped = false
-            } else if character == "\\" {
-                isEscaped = true
+                index = value.index(after: index)
+                continue
+            }
+
+            var next = value.index(after: index)
+            var hex = ""
+            while next < value.endIndex,
+                  hex.count < 6,
+                  value[next].isHexDigit {
+                hex.append(value[next])
+                next = value.index(after: next)
+            }
+
+            if !hex.isEmpty,
+               let scalarValue = UInt32(hex, radix: 16),
+               let scalar = UnicodeScalar(scalarValue) {
+                result.append(Character(scalar))
+                if next < value.endIndex, value[next].isWhitespace {
+                    next = value.index(after: next)
+                }
+                index = next
+                continue
+            }
+
+            if next < value.endIndex {
+                result.append(value[next])
+                index = value.index(after: next)
             } else {
-                result.append(character)
+                result.append("\\")
+                index = next
             }
         }
-        if isEscaped { result.append("\\") }
         return result
     }
 

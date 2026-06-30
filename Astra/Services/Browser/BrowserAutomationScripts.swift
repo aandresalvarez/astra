@@ -381,9 +381,10 @@ enum BrowserAutomationScripts {
       };
       const valueControlForTextNode = (el) => {
         let node = el;
-        while (node && node !== document.body) {
+        while (node) {
           const tag = node.tagName ? node.tagName.toLowerCase() : "";
           if (tag === "input" || tag === "textarea" || tag === "select" || isContentEditableElement(node)) return node;
+          if (node === document.body) break;
           node = node.parentElement;
         }
         return null;
@@ -431,6 +432,7 @@ enum BrowserAutomationScripts {
         return String(text).replace(/\\s+/g, " ").trim().slice(0, 160);
       };
       const containsAny = (text, needles) => needles.some((needle) => text.includes(needle));
+      const redactedInputValue = "[redacted-sensitive-input]";
       const sensitiveFieldTerms = [
         "password", "passcode", "secret", "token", "api key", "api-key", "api_token", "apikey",
         "access token", "refresh token", "auth token", "bearer token",
@@ -476,10 +478,25 @@ enum BrowserAutomationScripts {
         }
         return "";
       };
+      const cssUnescaped = (value) => String(value || "")
+        .replace(/\\\\([0-9a-fA-F]{1,6})\\s?/g, (_, hex) => String.fromCodePoint(parseInt(hex, 16)))
+        .replace(/\\\\(.)/g, "$1");
+      const metadataValueForSnapshot = (el, rawValue, value) => {
+        const metadata = String(value || "");
+        const sensitiveValue = String(rawValue || "").replace(/\\s+/g, " ").trim();
+        if (!metadata || !sensitiveValue || !isSensitiveValueControl(el)) return metadata;
+        const normalizedMetadata = metadata.replace(/\\s+/g, " ").trim().toLowerCase();
+        const normalizedCSSMetadata = cssUnescaped(metadata).replace(/\\s+/g, " ").trim().toLowerCase();
+        const normalizedValue = sensitiveValue.toLowerCase();
+        return normalizedMetadata.includes(normalizedValue) || normalizedCSSMetadata.includes(normalizedValue)
+          ? redactedInputValue
+          : metadata;
+      };
+      const redactedMetadataForSnapshot = (el, value) => metadataValueForSnapshot(el, editableValueFor(el), value);
       const valueForSnapshot = (el) => {
         const value = editableValueFor(el).slice(0, 160);
         if (!value) return "";
-        return isSensitiveValueControl(el) ? "[redacted-sensitive-input]" : value;
+        return isSensitiveValueControl(el) ? redactedInputValue : value;
       };
       const labelForSnapshot = (el) => {
         const label = labelFor(el);
@@ -546,20 +563,21 @@ enum BrowserAutomationScripts {
         .slice(0, 300)
         .map((entry) => {
           const el = entry.el;
+          const rawValue = editableValueFor(el);
           return ({
-          selector: selectorFor(el),
+          selector: metadataValueForSnapshot(el, rawValue, selectorFor(el)),
           tag: el.tagName.toLowerCase(),
           role: roleFor(el),
           type: el.getAttribute("type") || "",
           label: labelForSnapshot(el),
-          name: el.getAttribute("name") || "",
-          placeholder: el.getAttribute("placeholder") || "",
+          name: metadataValueForSnapshot(el, rawValue, el.getAttribute("name") || ""),
+          placeholder: metadataValueForSnapshot(el, rawValue, el.getAttribute("placeholder") || ""),
           autocomplete: el.getAttribute("autocomplete") || "",
-          testID: el.getAttribute("data-testid") || el.getAttribute("data-test") || "",
+          testID: metadataValueForSnapshot(el, rawValue, el.getAttribute("data-testid") || el.getAttribute("data-test") || ""),
           disabled: disabled(el),
           actionable: !disabled(el) && visible(el),
-          value: valueForSnapshot(el),
-          href: el.href || "",
+          value: rawValue ? (isSensitiveValueControl(el) ? redactedInputValue : rawValue.slice(0, 160)) : "",
+          href: metadataValueForSnapshot(el, rawValue, el.href || ""),
           framePath: entry.framePath,
           shadowDepth: entry.shadowDepth,
           inViewport: entry.viewportInfo.inViewport,
@@ -577,12 +595,12 @@ enum BrowserAutomationScripts {
           deviceScaleFactor: window.devicePixelRatio || 1
         },
         focusedElement: active ? {
-          selector: selectorFor(active),
+          selector: redactedMetadataForSnapshot(active, selectorFor(active)),
           tag: active.tagName.toLowerCase(),
           role: active.getAttribute("role") || "",
           type: active.getAttribute("type") || "",
           label: labelForSnapshot(active),
-          name: active.getAttribute("name") || "",
+          name: redactedMetadataForSnapshot(active, active.getAttribute("name") || ""),
           autocomplete: active.getAttribute("autocomplete") || "",
           value: valueForSnapshot(active),
           bounds: boundsFor(active)
@@ -721,30 +739,6 @@ enum BrowserAutomationScripts {
           \(targetResolutionPrelude(selector: selector, x: nil, y: nil, allowDangerous: true, label: label, role: role, text: nil, placeholder: placeholder, testID: testID))
           const text = \(jsonLiteral(text));
           const clear = \(clear ? "true" : "false");
-          const target = resolveTarget();
-          if (!target.ok) return JSON.stringify(publicTarget(target));
-          const el = target.el;
-          if (!("value" in el) && !el.isContentEditable && el.tagName !== "SELECT") {
-            const result = publicTarget(target);
-            result.ok = false;
-            result.error = "target_not_editable";
-            return JSON.stringify(result);
-          }
-          el.scrollIntoView({ block: "center", inline: "center" });
-          el.focus();
-          const setNativeValue = (target, value) => {
-            const proto = Object.getPrototypeOf(target);
-            const descriptor = proto ? Object.getOwnPropertyDescriptor(proto, "value") : null;
-            if (descriptor && descriptor.set) descriptor.set.call(target, value);
-            else target.value = value;
-          };
-          const dispatchInput = (target, inputType, data) => {
-            try {
-              target.dispatchEvent(new InputEvent("input", { bubbles: true, inputType, data }));
-            } catch (_) {
-              target.dispatchEvent(new Event("input", { bubbles: true }));
-            }
-          };
           const sensitiveResultTerms = [
             "password", "passcode", "secret", "token", "api key", "api-key", "api_token", "apikey",
             "access token", "refresh token", "auth token", "bearer token",
@@ -764,7 +758,14 @@ enum BrowserAutomationScripts {
           ];
           const redactedInputValue = "[redacted-sensitive-input]";
           const includesAny = (value, terms) => terms.some((term) => value.includes(term));
+          const currentValueFor = (target) => {
+            if (!target) return "";
+            if ("value" in target) return String(target.value || "");
+            if (target.isContentEditable) return String(target.textContent || "");
+            return "";
+          };
           const sensitiveResultTarget = (target) => {
+            if (!target) return false;
             const type = String(target.getAttribute("type") || "").toLowerCase();
             if (type === "password" || type === "hidden") return true;
             const autocomplete = String(target.getAttribute("autocomplete") || "").toLowerCase();
@@ -791,6 +792,30 @@ enum BrowserAutomationScripts {
             }
             return result;
           };
+          const target = resolveTarget();
+          if (!target.ok) return JSON.stringify(redactSensitiveResultTarget(publicTarget(target), target.el, currentValueFor(target.el)));
+          const el = target.el;
+          if (!("value" in el) && !el.isContentEditable && el.tagName !== "SELECT") {
+            const result = publicTarget(target);
+            result.ok = false;
+            result.error = "target_not_editable";
+            return JSON.stringify(redactSensitiveResultTarget(result, el, currentValueFor(el)));
+          }
+          el.scrollIntoView({ block: "center", inline: "center" });
+          el.focus();
+          const setNativeValue = (target, value) => {
+            const proto = Object.getPrototypeOf(target);
+            const descriptor = proto ? Object.getOwnPropertyDescriptor(proto, "value") : null;
+            if (descriptor && descriptor.set) descriptor.set.call(target, value);
+            else target.value = value;
+          };
+          const dispatchInput = (target, inputType, data) => {
+            try {
+              target.dispatchEvent(new InputEvent("input", { bubbles: true, inputType, data }));
+            } catch (_) {
+              target.dispatchEvent(new Event("input", { bubbles: true }));
+            }
+          };
           const before = "value" in el ? String(el.value || "") : String(el.textContent || "");
           const next = clear ? text : before + text;
           if ("value" in el) {
@@ -809,7 +834,7 @@ enum BrowserAutomationScripts {
           result.value = next.slice(0, 300);
           redactSensitiveResultTarget(result, el, next);
           result.cleared = clear;
-          return JSON.stringify(result);
+          return JSON.stringify(redactSensitiveResultTarget(result, el, currentValueFor(el)));
         })()
         """
     }

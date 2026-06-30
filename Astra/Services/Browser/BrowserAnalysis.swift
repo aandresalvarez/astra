@@ -1186,7 +1186,7 @@ enum BrowserAnalysisBuilder {
             boundsBucket(bounds)
         ].joined(separator: "\u{1f}")
         let identityHash = stableHash(identitySeed)
-        let slugSource = label.isEmpty ? (role.isEmpty ? tag : role) : label
+        let slugSource = BrowserSensitiveInputRedactionPolicy.controlIDSlugSource(label: label, role: role, tag: tag, value: rawValue, selector: selector, name: name, type: type, placeholder: placeholder, testID: testID, href: href, autocomplete: autocomplete, risk: risk)
         let rank = rankControl(
             label: label,
             role: role,

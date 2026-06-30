@@ -149,6 +149,7 @@ struct BrowserPageSnapshotServiceTests {
     func displayRedactionCatchesCaseEscapedAndPercentEncodedSensitiveValues() {
         #expect(BrowserSensitiveInputRedactionPolicy.redactedDisplayText("token-abc", sensitiveValue: "TOKEN-ABC") == "[redacted-sensitive-input]")
         #expect(BrowserSensitiveInputRedactionPolicy.redactedDisplayText(#"#MRN\ 424242"#, sensitiveValue: "MRN 424242") == "[redacted-sensitive-input]")
+        #expect(BrowserSensitiveInputRedactionPolicy.redactedDisplayText(#"#\31 23456"#, sensitiveValue: "123456") == "[redacted-sensitive-input]")
         #expect(BrowserSensitiveInputRedactionPolicy.redactedDisplayText("https://example.com/MRN%20424242", sensitiveValue: "MRN 424242") == "[redacted-sensitive-input]")
     }
 
@@ -209,7 +210,10 @@ struct BrowserPageSnapshotServiceTests {
         #expect(script.contains("const editableValueFor = (el) =>"))
         #expect(script.contains("const valueControlForTextNode = (el) =>"))
         #expect(script.contains("el.isContentEditable"))
-        #expect(script.contains("name: el.getAttribute(\"name\") || \"\""))
+        #expect(script.contains("if (node === document.body) break"))
+        #expect(script.contains("const redactedMetadataForSnapshot = (el, value) =>"))
+        #expect(script.contains("const metadataValueForSnapshot = (el, rawValue, value) =>"))
+        #expect(script.contains("name: metadataValueForSnapshot(el, rawValue, el.getAttribute(\"name\") || \"\")"))
         #expect(script.contains("valueControl && isSensitiveValueControl(valueControl)"))
         #expect(script.contains("\"cc-name\""))
         #expect(script.contains("\"payment\""))
@@ -289,6 +293,20 @@ struct BrowserPageSnapshotServiceTests {
         #expect(matches.first?["index"] as? Int == 10)
         let snippet = try #require(matches.first?["snippet"] as? String)
         #expect(snippet.contains("draft"))
+    }
+
+    @Test("fill script redacts sensitive failed and successful target results")
+    func fillScriptRedactsSensitiveFailedAndSuccessfulTargetResults() {
+        let script = BrowserAutomationScripts.typeScript(
+            selector: "#secret",
+            text: "new",
+            clear: true
+        )
+
+        #expect(script.contains("const currentValueFor = (target) =>"))
+        #expect(script.contains("const redactSensitiveResultTarget = (result, target, value) =>"))
+        #expect(script.contains("if (!target.ok) return JSON.stringify(redactSensitiveResultTarget(publicTarget(target), target.el, currentValueFor(target.el)))"))
+        #expect(script.contains("return JSON.stringify(redactSensitiveResultTarget(result, el, currentValueFor(el)))"))
     }
 
     private var snapshotJSON: String {
