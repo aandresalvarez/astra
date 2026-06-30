@@ -349,10 +349,207 @@ public protocol HostControlProcessRunning: AnyObject {
     ) -> HostControlCommandResult
 }
 
+private struct HostControlScopedProcessError: LocalizedError {
+    let operation: String
+    let code: Int32
+
+    var errorDescription: String? {
+        "\(operation) failed: \(String(cString: strerror(code)))"
+    }
+}
+
+private final class HostControlScopedProcess: @unchecked Sendable {
+    private let executablePath: String
+    private let arguments: [String]
+    private let environment: [String: String]
+    private let lock = NSLock()
+
+    private var processID: pid_t = 0
+    private var processGroupID: pid_t = 0
+    private var running = false
+    private var status: Int32 = 0
+
+    let stdoutPipe = Pipe()
+    let stderrPipe = Pipe()
+    var terminationHandler: ((HostControlScopedProcess) -> Void)?
+
+    var stdoutFileHandle: FileHandle { stdoutPipe.fileHandleForReading }
+    var stderrFileHandle: FileHandle { stderrPipe.fileHandleForReading }
+
+    var isRunning: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return running
+    }
+
+    var terminationStatus: Int32 {
+        lock.lock()
+        defer { lock.unlock() }
+        return status
+    }
+
+    init(executablePath: String, arguments: [String], environment: [String: String]) {
+        self.executablePath = executablePath
+        self.arguments = arguments
+        self.environment = environment
+    }
+
+    func run() throws {
+        var actions: posix_spawn_file_actions_t? = nil
+        var attr: posix_spawnattr_t? = nil
+        var childPID = pid_t(0)
+
+        try check(posix_spawn_file_actions_init(&actions), operation: "posix_spawn_file_actions_init")
+        defer { posix_spawn_file_actions_destroy(&actions) }
+
+        try check(posix_spawnattr_init(&attr), operation: "posix_spawnattr_init")
+        defer { posix_spawnattr_destroy(&attr) }
+
+        try addPipe(stdoutPipe, targetDescriptor: STDOUT_FILENO, actions: &actions, operation: "stdout")
+        try addPipe(stderrPipe, targetDescriptor: STDERR_FILENO, actions: &actions, operation: "stderr")
+
+        try check(posix_spawnattr_setflags(&attr, Int16(POSIX_SPAWN_SETPGROUP)), operation: "posix_spawnattr_setflags")
+        try check(posix_spawnattr_setpgroup(&attr, 0), operation: "posix_spawnattr_setpgroup")
+
+        var argv = makeCStringArray([executablePath] + arguments)
+        var envp = makeCStringArray(environment.map { "\($0.key)=\($0.value)" }.sorted())
+        defer {
+            freeCStringArray(argv)
+            freeCStringArray(envp)
+        }
+
+        let spawnResult = executablePath.withCString { executable in
+            argv.withUnsafeMutableBufferPointer { argvBuffer in
+                envp.withUnsafeMutableBufferPointer { envBuffer in
+                    posix_spawn(
+                        &childPID,
+                        executable,
+                        &actions,
+                        &attr,
+                        argvBuffer.baseAddress,
+                        envBuffer.baseAddress
+                    )
+                }
+            }
+        }
+        try check(spawnResult, operation: "posix_spawn")
+
+        stdoutPipe.fileHandleForWriting.closeFile()
+        stderrPipe.fileHandleForWriting.closeFile()
+
+        lock.lock()
+        processID = childPID
+        processGroupID = childPID
+        running = true
+        lock.unlock()
+
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            self?.reapProcess(pid: childPID)
+        }
+    }
+
+    func terminate() {
+        signal(signal: SIGTERM)
+    }
+
+    func kill() {
+        signal(signal: SIGKILL)
+    }
+
+    private func addPipe(
+        _ pipe: Pipe,
+        targetDescriptor: Int32,
+        actions: inout posix_spawn_file_actions_t?,
+        operation: String
+    ) throws {
+        let readDescriptor = pipe.fileHandleForReading.fileDescriptor
+        let writeDescriptor = pipe.fileHandleForWriting.fileDescriptor
+        try check(posix_spawn_file_actions_adddup2(&actions, writeDescriptor, targetDescriptor),
+                  operation: "posix_spawn_file_actions_adddup2(\(operation))")
+        try check(posix_spawn_file_actions_addclose(&actions, readDescriptor),
+                  operation: "posix_spawn_file_actions_addclose(\(operation)_read)")
+        if writeDescriptor != targetDescriptor {
+            try check(posix_spawn_file_actions_addclose(&actions, writeDescriptor),
+                      operation: "posix_spawn_file_actions_addclose(\(operation)_write)")
+        }
+    }
+
+    private func reapProcess(pid: pid_t) {
+        var waitStatus: Int32 = 0
+        var result: pid_t
+        repeat {
+            result = waitpid(pid, &waitStatus, 0)
+        } while result == -1 && errno == EINTR
+
+        let exitStatus: Int32 = result == pid ? Self.exitCode(from: waitStatus) : -1
+        cleanupResidualProcessGroup()
+
+        lock.lock()
+        status = exitStatus
+        running = false
+        lock.unlock()
+
+        terminationHandler?(self)
+    }
+
+    private func cleanupResidualProcessGroup() {
+        let ids = currentIDs()
+        guard ids.processGroupID > 0, ids.processGroupID != getpgrp() else { return }
+
+        if Darwin.kill(-ids.processGroupID, SIGTERM) == 0 {
+            usleep(200_000)
+        }
+        Darwin.kill(-ids.processGroupID, SIGKILL)
+    }
+
+    private func signal(signal: Int32) {
+        let ids = currentIDs()
+        guard ids.isRunning else { return }
+        if ids.processGroupID > 0, ids.processGroupID != getpgrp() {
+            Darwin.kill(-ids.processGroupID, signal)
+        }
+        if ids.processID > 0 {
+            Darwin.kill(ids.processID, signal)
+        }
+    }
+
+    private func currentIDs() -> (processID: pid_t, processGroupID: pid_t, isRunning: Bool) {
+        lock.lock()
+        defer { lock.unlock() }
+        return (processID, processGroupID, running)
+    }
+
+    private func check(_ result: Int32, operation: String) throws {
+        guard result == 0 else {
+            throw HostControlScopedProcessError(operation: operation, code: result)
+        }
+    }
+
+    private static func exitCode(from waitStatus: Int32) -> Int32 {
+        let signal = waitStatus & 0x7f
+        if signal == 0 {
+            return (waitStatus >> 8) & 0xff
+        }
+        return 128 + signal
+    }
+
+    private func makeCStringArray(_ strings: [String]) -> [UnsafeMutablePointer<CChar>?] {
+        strings.map { strdup($0) } + [nil]
+    }
+
+    private func freeCStringArray(_ array: [UnsafeMutablePointer<CChar>?]) {
+        for pointer in array {
+            if let pointer {
+                free(pointer)
+            }
+        }
+    }
+}
+
 public final class HostControlProcessRunner: HostControlProcessRunning {
     private let limits: HostControlProcessLimits
     private let outputLimitGraceSeconds: TimeInterval = 0.5
-    private let timeoutGraceSeconds: TimeInterval = 2
+    private let timeoutGraceSeconds: TimeInterval = 0.5
 
     public init(limits: HostControlProcessLimits = .standard) {
         self.limits = limits
@@ -365,25 +562,22 @@ public final class HostControlProcessRunner: HostControlProcessRunning {
         environment: [String: String]
     ) -> HostControlCommandResult {
         let invocation = commandInvocation(executablePath: executablePath, arguments: arguments)
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: invocation.executablePath)
-        process.arguments = invocation.arguments
 
         var processEnvironment = ProcessInfo.processInfo.environment
         for (key, value) in environment {
             processEnvironment[key] = value
         }
-        process.environment = processEnvironment
 
-        let stdout = Pipe()
-        let stderr = Pipe()
+        let process = HostControlScopedProcess(
+            executablePath: invocation.executablePath,
+            arguments: invocation.arguments,
+            environment: processEnvironment
+        )
         let stdoutBuffer = BoundedProcessOutput(label: "stdout", byteLimit: limits.outputByteLimit)
         let stderrBuffer = BoundedProcessOutput(label: "stderr", byteLimit: limits.outputByteLimit)
         let outputLimitExceeded = LockedFlag()
-        process.standardOutput = stdout
-        process.standardError = stderr
-        let stdoutReader = ProcessOutputReadHandle(stdout.fileHandleForReading)
-        let stderrReader = ProcessOutputReadHandle(stderr.fileHandleForReading)
+        let stdoutReader = ProcessOutputReadHandle(process.stdoutFileHandle)
+        let stderrReader = ProcessOutputReadHandle(process.stderrFileHandle)
 
         let terminateForOutputLimit: () -> Void = {
             if outputLimitExceeded.setIfUnset() {
@@ -506,14 +700,14 @@ public final class HostControlProcessRunner: HostControlProcessRunning {
         return .milliseconds(milliseconds)
     }
 
-    private func stopProcess(_ process: Process, semaphore: DispatchSemaphore, graceSeconds: TimeInterval) {
+    private func stopProcess(_ process: HostControlScopedProcess, semaphore: DispatchSemaphore, graceSeconds: TimeInterval) {
         guard process.isRunning else { return }
         process.terminate()
         if semaphore.wait(timeout: .now() + graceSeconds) == .success {
             return
         }
         if process.isRunning {
-            _ = kill(process.processIdentifier, SIGKILL)
+            process.kill()
             _ = semaphore.wait(timeout: .now() + 1)
         }
     }
@@ -929,8 +1123,8 @@ public final class HostControlMCPServer {
         let includeSecretFragments = result.stdoutTruncated || result.stderrTruncated || result.timedOut
         let stdout = configuration.redacted(result.stdout, includingSecretFragments: includeSecretFragments)
         let stderr = configuration.redacted(result.stderr, includingSecretFragments: includeSecretFragments)
-        let cappedStdout = cappedRedactedOutput(stdout, label: "stdout")
-        let cappedStderr = cappedRedactedOutput(stderr, label: "stderr")
+        let cappedStdout = cappedRedactedOutput(stdout, label: "stdout", includeSecretFragments: includeSecretFragments)
+        let cappedStderr = cappedRedactedOutput(stderr, label: "stderr", includeSecretFragments: includeSecretFragments)
         return HostControlCommandResult(
             command: result.command,
             arguments: result.arguments,
@@ -943,8 +1137,31 @@ public final class HostControlMCPServer {
         )
     }
 
-    private func cappedRedactedOutput(_ value: String, label: String) -> HostControlCappedOutput {
-        HostControlOutputCap.capped(value, label: "redacted \(label)", byteLimit: processLimits.outputByteLimit)
+    private func cappedRedactedOutput(
+        _ value: String,
+        label: String,
+        includeSecretFragments: Bool
+    ) -> HostControlCappedOutput {
+        let capped = HostControlOutputCap.capped(value, label: "redacted \(label)", byteLimit: processLimits.outputByteLimit)
+        guard includeSecretFragments || capped.truncated else { return capped }
+
+        let redactedAfterCap = configuration.redacted(capped.value, includingSecretFragments: true)
+        let recapped = HostControlOutputCap.capped(
+            redactedAfterCap,
+            label: "redacted \(label)",
+            byteLimit: processLimits.outputByteLimit
+        )
+        let finalValue = configuration.redacted(recapped.value, includingSecretFragments: true)
+        if finalValue == recapped.value {
+            return HostControlCappedOutput(value: recapped.value, truncated: capped.truncated || recapped.truncated)
+        }
+
+        let finalCap = HostControlOutputCap.capped(
+            finalValue,
+            label: "redacted \(label)",
+            byteLimit: processLimits.outputByteLimit
+        )
+        return HostControlCappedOutput(value: finalCap.value, truncated: capped.truncated || recapped.truncated || finalCap.truncated)
     }
 
     private func encodeCommandResult(id: Any?, result: HostControlCommandResult) -> String? {
@@ -1182,7 +1399,9 @@ struct JiraHTTPResponse {
         let formattedBody = Self.cappedRedactedOutput(
             redactedBody,
             label: "Jira response body",
-            byteLimit: outputByteLimit
+            byteLimit: outputByteLimit,
+            configuration: configuration,
+            includeSecretFragments: bodyTruncated
         )
         var lines = [
             "status_code: \(statusCode)",
@@ -1200,8 +1419,26 @@ struct JiraHTTPResponse {
         )
     }
 
-    private static func cappedRedactedOutput(_ value: String, label: String, byteLimit: Int) -> HostControlCappedOutput {
-        HostControlOutputCap.capped(value, label: "redacted \(label)", byteLimit: max(1, byteLimit))
+    private static func cappedRedactedOutput(
+        _ value: String,
+        label: String,
+        byteLimit: Int,
+        configuration: HostControlToolConfiguration,
+        includeSecretFragments: Bool
+    ) -> HostControlCappedOutput {
+        let limit = max(1, byteLimit)
+        let capped = HostControlOutputCap.capped(value, label: "redacted \(label)", byteLimit: limit)
+        guard includeSecretFragments || capped.truncated else { return capped }
+
+        let redactedAfterCap = configuration.redacted(capped.value, includingSecretFragments: true)
+        let recapped = HostControlOutputCap.capped(redactedAfterCap, label: "redacted \(label)", byteLimit: limit)
+        let finalValue = configuration.redacted(recapped.value, includingSecretFragments: true)
+        if finalValue == recapped.value {
+            return HostControlCappedOutput(value: recapped.value, truncated: capped.truncated || recapped.truncated)
+        }
+
+        let finalCap = HostControlOutputCap.capped(finalValue, label: "redacted \(label)", byteLimit: limit)
+        return HostControlCappedOutput(value: finalCap.value, truncated: capped.truncated || recapped.truncated || finalCap.truncated)
     }
 }
 

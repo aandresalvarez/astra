@@ -557,15 +557,16 @@ struct HostControlToolSupportTests {
         #expect(Date().timeIntervalSince(started) < 4)
     }
 
-    @Test("Host control process runner marks inherited pipe drains truncated without waiting")
-    func hostControlProcessRunnerMarksInheritedPipeDrainsTruncatedWithoutWaiting() throws {
+    @Test("Host control process runner reaps inherited child processes before returning")
+    func hostControlProcessRunnerReapsInheritedChildProcessesBeforeReturning() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("astra-host-runner-inherited-pipe-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
 
+        let marker = root.appendingPathComponent("child-survived", isDirectory: false)
         let executable = try customExecutable(named: "detached-noisy-child", root: root, body: """
-        (sleep 0.1; printf 'BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB'; sleep 2) &
+        (sleep 1; touch "\(marker.path)") &
         exit 0
         """)
         let started = Date()
@@ -577,8 +578,12 @@ struct HostControlToolSupportTests {
             environment: [:]
         )
 
-        #expect(result.exitCode == 125)
-        #expect(result.stdoutTruncated)
+        Thread.sleep(forTimeInterval: 1.2)
+        #expect(result.exitCode == 0 || result.exitCode == 125)
+        if result.exitCode == 125 {
+            #expect(result.stdoutTruncated || result.stderrTruncated)
+        }
+        #expect(!FileManager.default.fileExists(atPath: marker.path))
         #expect(Date().timeIntervalSince(started) < 2)
     }
 
@@ -836,6 +841,44 @@ struct HostControlToolSupportTests {
         #expect(text.contains("visible-prefix:[redacted]"))
         #expect(!text.contains("visible-prefix:su"))
         #expect(!text.contains("super-secret-token"))
+    }
+
+    @Test("Host control redacts short secret prefixes after final caps create markers")
+    func hostControlRedactsShortSecretPrefixesAfterFinalCapsCreateMarkers() throws {
+        let connectors = """
+        {"connectors":[{"id":"jira-1","alias":"jira","envPrefix":"JIRA_JIRA","name":"Jira","serviceType":"jira","baseURL":"https://example.atlassian.net","authMethod":"basic","env":{"JIRA_API_TOKEN":"JIRA_TOKEN_ENV"},"credentials":{"JIRA_API_TOKEN":"JIRA_TOKEN_ENV"},"config":{}}]}
+        """
+        let outputLimit = 96
+        let marker = "\n[ASTRA redacted stdout output capped after \(outputLimit) bytes]\n"
+        let leakedPrefix = "visible-prefix:su"
+        let filler = String(repeating: "x", count: max(0, outputLimit - marker.utf8.count - leakedPrefix.utf8.count))
+        let runner = CapturingHostControlProcessRunner(result: HostControlCommandResult(
+            command: "/usr/bin/gh",
+            arguments: ["pr", "view", "123"],
+            exitCode: 0,
+            stdout: filler + leakedPrefix + String(repeating: "z", count: 200),
+            stderr: ""
+        ))
+        let server = HostControlMCPServer(
+            configuration: HostControlToolConfiguration(
+                githubExecutable: "/usr/bin/gh",
+                connectorsJSON: connectors,
+                environment: [
+                    "ASTRA_CONNECTORS": connectors,
+                    "JIRA_TOKEN_ENV": "super-secret-token"
+                ]
+            ),
+            processRunner: runner,
+            processLimits: HostControlProcessLimits(maximumTimeoutSeconds: 5, outputByteLimit: outputLimit)
+        )
+
+        let response = try call(server, id: 1, tool: "github", arguments: ["arguments": ["pr", "view", "123"]])
+        let stdout = try stdoutSection(in: resultText(response))
+
+        #expect(stdout.utf8.count <= outputLimit)
+        #expect(!stdout.contains("visible-prefix:su"))
+        #expect(!stdout.contains("super-secret-token"))
+        #expect(try #require(response["result"] as? [String: Any])["isError"] as? Bool == true)
     }
 
     @Test("Host control short secret prefix scan only checks truncation boundaries")
