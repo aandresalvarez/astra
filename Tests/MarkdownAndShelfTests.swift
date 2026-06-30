@@ -204,6 +204,16 @@ struct MarkdownTextViewTests {
         #expect(joined.contains("```swift\n    let value = 1\n```"))
     }
 
+    @Test("Joined response payloads drop protocol marker chunks without dropping answer")
+    func joinedResponsePayloadsDropProtocolMarkerChunksWithoutDroppingAnswer() {
+        let joined = TaskRunAnswerPresentationPolicy.joinedResponsePayloads([
+            "ASTRA_EVENT {\"type\":\"agent.response\"}",
+            "Final answer is visible."
+        ])
+
+        #expect(joined == "Final answer is visible.")
+    }
+
     @Test("Display preparation preserves fenced table-looking text")
     func displayPreparationPreservesFencedTableLookingText() {
         let source = """

@@ -34,7 +34,8 @@ enum RuntimePathResolver {
         guard !executableName.isEmpty else { return fallback }
 
         if executableName.contains("/") {
-            return fileManager.isExecutableFile(atPath: executableName) ? executableName : fallback
+            let explicitPath = (executableName as NSString).expandingTildeInPath
+            return fileManager.isExecutableFile(atPath: explicitPath) ? explicitPath : fallback
         }
 
         let searchCandidates = candidates.isEmpty

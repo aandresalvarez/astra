@@ -201,6 +201,55 @@ extension TaskThreadSnapshotTests {
         #expect(items.map(\.path) == [report.path])
     }
 
+    @Test("Task file header keeps explicit inputs in workspace-private folders")
+    func taskFileHeaderKeepsExplicitInputsInWorkspacePrivateFolders() throws {
+        let workspace = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-workspace-private-input-\(UUID().uuidString)")
+        let taskFolder = workspace
+            .appendingPathComponent(".astra", isDirectory: true)
+            .appendingPathComponent("tasks", isDirectory: true)
+            .appendingPathComponent("task-1", isDirectory: true)
+        let privateCommand = workspace
+            .appendingPathComponent(".claude", isDirectory: true)
+            .appendingPathComponent("commands", isDirectory: true)
+            .appendingPathComponent("deploy.md")
+        let generatedPrivateState = workspace
+            .appendingPathComponent(".astra", isDirectory: true)
+            .appendingPathComponent("state.json")
+
+        try FileManager.default.createDirectory(at: taskFolder, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: privateCommand.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: generatedPrivateState.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try "# Deploy".write(to: privateCommand, atomically: true, encoding: .utf8)
+        try "{}".write(to: generatedPrivateState, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: workspace) }
+
+        let run = TaskRunSnapshot(input: TaskRunSnapshotInput(run: {
+            let task = makeTask()
+            let run = TaskRun(task: task)
+            run.appendFileChange(StoredFileChange(from: FileChange(
+                path: generatedPrivateState.path,
+                changeType: .write,
+                content: nil,
+                oldString: nil,
+                newString: nil,
+                timestamp: Date()
+            )))
+            return run
+        }()))
+
+        let items = TaskFileIndex.headerItems(
+            runs: [run],
+            generatedFilePaths: [],
+            inputs: [privateCommand.path],
+            taskFolder: taskFolder.path,
+            workspacePath: workspace.path
+        )
+
+        #expect(items.map(\.path) == [privateCommand.path])
+        #expect(items.map(\.source) == ["input"])
+    }
+
     @Test("Task artifact relative path accepts resolved paths under symlinked roots")
     func taskArtifactRelativePathAcceptsResolvedPathsUnderSymlinkedRoots() throws {
         let realRoot = URL(fileURLWithPath: NSTemporaryDirectory())

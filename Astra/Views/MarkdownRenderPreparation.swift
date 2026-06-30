@@ -7,7 +7,7 @@ enum MarkdownRenderPreparation {
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    static func joinChunks(_ chunks: [String]) -> String {
+    static func joinChunks(_ chunks: [String], prepareForDisplay: Bool = true) -> String {
         var joined = ""
         var currentLastNonEmptyLine: String?
         var hasUnclosedFence = false
@@ -30,7 +30,7 @@ enum MarkdownRenderPreparation {
             hasUnclosedFence.toggle(ifOdd: fenceLineCount(in: chunk))
         }
 
-        return prepareForDisplay(joined)
+        return prepareForDisplay ? self.prepareForDisplay(joined) : joined
     }
 
     private static func repairBlockBoundaries(in text: String) -> String {

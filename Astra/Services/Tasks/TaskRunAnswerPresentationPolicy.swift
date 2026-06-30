@@ -42,7 +42,9 @@ enum TaskRunAnswerPresentationPolicy {
     }
 
     static func joinedResponsePayloads(_ payloads: [String]) -> String {
-        normalizedVisibleText(MarkdownRenderPreparation.joinChunks(payloads))
+        let visiblePayloads = payloads.map(strippingProtocolMarkerLines)
+        let joined = MarkdownRenderPreparation.joinChunks(visiblePayloads, prepareForDisplay: false)
+        return normalizedVisibleText(joined)
     }
 
     static func dedupedProgressTexts(_ texts: [String]) -> [String] {
@@ -92,6 +94,13 @@ enum TaskRunAnswerPresentationPolicy {
         result = replace(pattern: #"([.!?])(\*\*[A-Za-z])"#, in: result, template: "$1\n\n$2")
         result = replace(pattern: #"\n{3,}"#, in: result, template: "\n\n")
         return MarkdownRenderPreparation.prepareForDisplay(result)
+    }
+
+    private static func strippingProtocolMarkerLines(from text: String) -> String {
+        text
+            .components(separatedBy: .newlines)
+            .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("ASTRA_EVENT ") }
+            .joined(separator: "\n")
     }
 
     private static func explicitAnswerSection(in text: String) -> String? {

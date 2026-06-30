@@ -51,7 +51,7 @@ enum TaskFileIndex {
         func append(path rawPath: String, source: String, change: StoredFileChange? = nil) {
             let path = normalizedPath(rawPath)
             guard !path.isEmpty,
-                  shouldIncludeUserFacingPath(path, taskFolder: taskFolder, workspacePath: workspacePath),
+                  shouldIncludeUserFacingPath(path, source: source, taskFolder: taskFolder, workspacePath: workspacePath),
                   seen.insert(path).inserted else { return }
 
             var isDirectory = ObjCBool(false)
@@ -253,9 +253,14 @@ enum TaskFileIndex {
 
     private static func shouldIncludeUserFacingPath(
         _ path: String,
+        source: String = "",
         taskFolder: String,
         workspacePath: String = ""
     ) -> Bool {
+        if source == "input" {
+            return true
+        }
+
         if !taskFolder.isEmpty,
            let relative = TaskOutputArtifactPathPolicy.relativePath(path, under: taskFolder) {
             return TaskOutputArtifactPathPolicy.displayableUserArtifactRelativePath(

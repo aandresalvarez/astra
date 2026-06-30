@@ -58,6 +58,19 @@ struct RuntimePathResolverTests {
         #expect(resolved == executablePath)
     }
 
+    @Test("Generic resolver expands tilde in explicit executable paths")
+    func genericResolverExpandsTildeInExplicitExecutablePaths() {
+        let expandedPath = "\(NSHomeDirectory())/google-cloud-sdk/bin/bq"
+        let fileManager = RuntimePathResolverExecutableFileManager(executablePaths: Set([expandedPath]))
+
+        let resolved = RuntimePathResolver.detectExecutablePath(
+            named: "~/google-cloud-sdk/bin/bq",
+            fileManager: fileManager
+        )
+
+        #expect(resolved == expandedPath)
+    }
+
     @Test("Generic resolver returns fallback for unknown tools")
     func genericResolverReturnsFallbackForUnknownTools() {
         let missing = "astra-missing-\(UUID().uuidString)"
