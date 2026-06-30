@@ -13,11 +13,11 @@ struct HostControlCloudCommandPolicy: Sendable {
         ],
         deniedVerbs: [
             "add-iam-policy-binding", "attach", "call", "create", "delete", "deploy", "detach",
-            "disable", "enable", "execute", "modify", "put", "remove", "remove-iam-policy-binding",
+            "disable", "enable", "execute", "get-iam-policy", "modify", "put", "remove", "remove-iam-policy-binding",
             "reset", "restart", "rm", "set", "set-iam-policy", "start", "stop", "update", "write"
         ],
         readVerbs: [
-            "describe", "get", "get-iam-policy", "info", "list", "ls", "read", "show", "status", "version", "view"
+            "describe", "get", "info", "list", "ls", "read", "show", "status", "version", "view"
         ],
         optionsWithValues: [
             "--account", "--billing-project", "--configuration", "--filter", "--flatten",
@@ -67,7 +67,7 @@ struct HostControlCloudCommandPolicy: Sendable {
         guard !arguments.isEmpty else {
             return .denied("\(toolName) requires an operation")
         }
-        if arguments.contains(where: Self.containsDeniedFlag) {
+        if Self.containsDeniedFlag(in: arguments) {
             return .denied(deniedOperationMessage)
         }
 
@@ -157,7 +157,20 @@ struct HostControlCloudCommandPolicy: Sendable {
             token.contains("secret")
     }
 
-    private static func containsDeniedFlag(_ token: String) -> Bool {
+    private static func containsDeniedFlag(in arguments: [String]) -> Bool {
+        for (index, token) in arguments.enumerated() {
+            if containsCredentialDisclosureFlag(token) || containsHTTPLoggingFlag(token) {
+                return true
+            }
+            let nextToken = index + 1 < arguments.count ? arguments[index + 1] : nil
+            if usesDebugVerbosity(token, nextToken: nextToken) {
+                return true
+            }
+        }
+        return false
+    }
+
+    private static func containsCredentialDisclosureFlag(_ token: String) -> Bool {
         let flagName = token.split(separator: "=", maxSplits: 1).first.map(String.init) ?? token
         return flagName == "--flags-file" ||
             flagName == "--impersonate-service-account" ||
@@ -166,5 +179,20 @@ struct HostControlCloudCommandPolicy: Sendable {
             flagName.contains("credential") ||
             flagName.contains("password") ||
             flagName.contains("secret")
+    }
+
+    private static func containsHTTPLoggingFlag(_ token: String) -> Bool {
+        let flagName = token.split(separator: "=", maxSplits: 1).first.map(String.init) ?? token
+        return flagName == "--log-http" || flagName == "--httplib2-debuglevel"
+    }
+
+    private static func usesDebugVerbosity(_ token: String, nextToken: String?) -> Bool {
+        if token == "--verbosity" {
+            return nextToken == "debug"
+        }
+        guard token.hasPrefix("--verbosity=") else {
+            return false
+        }
+        return token.split(separator: "=", maxSplits: 1).dropFirst().first == "debug"
     }
 }

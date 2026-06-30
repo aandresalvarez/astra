@@ -242,7 +242,7 @@ struct HostControlToolSupportTests {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
 
         let log = root.appendingPathComponent("host.log", isDirectory: false)
-        let gcloud = try fakeExecutable(named: "gcloud", root: root, log: log, stdout: "ya29.FAKE_ACCESS_TOKEN_FROM_AMBIENT_ADC")
+        let gcloud = try fakeExecutable(named: "gcloud", root: root, log: log, stdout: "FAKE_AMBIENT_ADC_OUTPUT")
         let configuration = HostControlToolConfiguration(gcloudExecutable: gcloud.path)
         let server = HostControlMCPServer(configuration: configuration)
 
@@ -291,7 +291,31 @@ struct HostControlToolSupportTests {
         let flagsFileError = try #require(flagsFileResult["error"] as? [String: Any])
         #expect((flagsFileError["message"] as? String)?.contains("gcloud does not allow credential or mutating operations") == true)
 
-        let traceTokenReadResult = try call(server, id: 8, tool: "gcloud", arguments: [
+        let iamPolicyReadResult = try call(server, id: 8, tool: "gcloud", arguments: [
+            "arguments": ["projects", "get-iam-policy", "clinical-project"]
+        ])
+        let iamPolicyReadError = try #require(iamPolicyReadResult["error"] as? [String: Any])
+        #expect((iamPolicyReadError["message"] as? String)?.contains("gcloud does not allow credential or mutating operations") == true)
+
+        let httpLoggingReadResult = try call(server, id: 9, tool: "gcloud", arguments: [
+            "arguments": ["compute", "instances", "list", "--log-http"]
+        ])
+        let httpLoggingReadError = try #require(httpLoggingReadResult["error"] as? [String: Any])
+        #expect((httpLoggingReadError["message"] as? String)?.contains("gcloud does not allow credential or mutating operations") == true)
+
+        let debugVerbosityReadResult = try call(server, id: 10, tool: "gcloud", arguments: [
+            "arguments": ["--verbosity", "debug", "compute", "instances", "list"]
+        ])
+        let debugVerbosityReadError = try #require(debugVerbosityReadResult["error"] as? [String: Any])
+        #expect((debugVerbosityReadError["message"] as? String)?.contains("gcloud does not allow credential or mutating operations") == true)
+
+        let inlineDebugVerbosityReadResult = try call(server, id: 11, tool: "gcloud", arguments: [
+            "arguments": ["compute", "instances", "list", "--verbosity=debug"]
+        ])
+        let inlineDebugVerbosityReadError = try #require(inlineDebugVerbosityReadResult["error"] as? [String: Any])
+        #expect((inlineDebugVerbosityReadError["message"] as? String)?.contains("gcloud does not allow credential or mutating operations") == true)
+
+        let traceTokenReadResult = try call(server, id: 12, tool: "gcloud", arguments: [
             "arguments": [
                 "--trace-token", "task-token-for-log-correlation",
                 "--filter", "labels.audit=tokenized-read",
@@ -306,6 +330,10 @@ struct HostControlToolSupportTests {
         #expect(!hostLog.contains("compute instances reset list"))
         #expect(!hostLog.contains("workflows run list"))
         #expect(!hostLog.contains("--flags-file"))
+        #expect(!hostLog.contains("get-iam-policy"))
+        #expect(!hostLog.contains("--log-http"))
+        #expect(!hostLog.contains("--verbosity debug"))
+        #expect(!hostLog.contains("--verbosity=debug"))
         #expect(hostLog.contains("gcloud compute instances list --format=json"))
         #expect(hostLog.contains("gcloud --project clinical-project --filter name~worker compute instances list --format=json"))
         #expect(hostLog.contains("gcloud --trace-token task-token-for-log-correlation --filter labels.audit=tokenized-read compute instances list"))
