@@ -610,6 +610,35 @@ struct WorkspacePersistenceTests {
         #expect(importedTask.testCommand == "swift test --filter WorkspacePersistenceTests")
     }
 
+    @Test("imported task validation clears package paths outside workspace")
+    @MainActor
+    func importedTaskValidationClearsPackagePathsOutsideWorkspace() throws {
+        let container = try makeWorkspacePersistenceContainer()
+        let context = container.mainContext
+        let workspace = try makeRichWorkspace(
+            in: context,
+            root: "/tmp/astra_import_path_validation_\(UUID().uuidString)"
+        )
+        let sourceTask = try #require(workspace.tasks.first)
+        sourceTask.validationStrategy = .runTests
+        sourceTask.testCommand = "swift test --filter WorkspacePersistenceTests"
+        try context.save()
+
+        var config = try #require(WorkspaceConfigManager.export(workspace: workspace, modelContext: context))
+        var tasks = try #require(config.tasks)
+        tasks[0].testCommand = "swift test --package-path /tmp/astra_import_outside_\(UUID().uuidString)"
+        config.tasks = tasks
+        let importedContainer = try makeWorkspacePersistenceContainer()
+        let imported = WorkspaceConfigManager.importWorkspace(
+            from: config,
+            modelContext: importedContainer.mainContext
+        )
+        let importedTask = try #require(imported.tasks.first)
+
+        #expect(importedTask.validationStrategy == .runTests)
+        #expect(importedTask.testCommand.isEmpty)
+    }
+
     @Test("legacy v4 configs use name fallback only when IDs are absent")
     @MainActor
     func legacyV4NameFallback() throws {

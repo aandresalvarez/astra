@@ -24,6 +24,22 @@ protocol ValidationCommandRunning: Sendable {
 
 enum ValidationCommandPolicy {
     static func isAllowed(_ command: String) -> Bool {
+        isAssertionCommandAllowed(command, workspacePath: nil)
+    }
+
+    static func isRunTestsCommandAllowed(_ command: String, workspacePath: String?) -> Bool {
+        isAllowed(command, workspacePath: workspacePath, allowsFileAssertions: false)
+    }
+
+    static func isAssertionCommandAllowed(_ command: String, workspacePath: String?) -> Bool {
+        isAllowed(command, workspacePath: workspacePath, allowsFileAssertions: true)
+    }
+
+    private static func isAllowed(
+        _ command: String,
+        workspacePath: String?,
+        allowsFileAssertions: Bool
+    ) -> Bool {
         let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let parsedCommand = parseShellCommand(trimmed) else {
             return false
@@ -42,15 +58,16 @@ enum ValidationCommandPolicy {
             "pnpm",
             "swift",
             "xcodebuild",
-            "make",
-            "test",
-            "["
+            "make"
         ]
         if allowedExactRoots.contains(root) {
-            return commandArgumentsAreValidationOrBuildOnly(root: root, tokens: tokens)
+            return commandArgumentsAreValidationOrBuildOnly(root: root, tokens: tokens, workspacePath: workspacePath)
+        }
+        if allowsFileAssertions, root == "test" || root == "[" {
+            return fileTestCommandIsAllowed(root: root, tokens: tokens)
         }
         if root == "python" || root == "python3" {
-            return pythonCommandRunsPytest(root: root, tokens: tokens)
+            return pythonCommandRunsPytest(root: root, tokens: tokens, workspacePath: workspacePath)
         }
         return false
     }
@@ -77,6 +94,9 @@ enum ValidationCommandPolicy {
 
         for character in command {
             if isEscaped {
+                if character == "\n" || character == "\r" {
+                    containsUnsafeShellSyntax = true
+                }
                 current.append(character)
                 isEscaped = false
                 previousDoubleQuotedDollar = false
@@ -134,36 +154,49 @@ enum ValidationCommandPolicy {
         }
     }
 
-    private static func pythonCommandRunsPytest(root: String, tokens: [String]) -> Bool {
+    private static func pythonCommandRunsPytest(root: String, tokens: [String], workspacePath: String?) -> Bool {
         guard tokens.count >= 3 else { return false }
         return tokens[0].lowercased() == root &&
             tokens[1] == "-m" &&
             tokens[2] == "pytest" &&
-            !containsDisplayOnlyFlag(tokens.dropFirst(3))
+            !containsDisplayOnlyFlag(tokens.dropFirst(3)) &&
+            absolutePathTokensAreScoped(tokens.dropFirst(3), workspacePath: workspacePath)
     }
 
-    private static func commandArgumentsAreValidationOrBuildOnly(root: String, tokens: [String]) -> Bool {
+    private static func commandArgumentsAreValidationOrBuildOnly(
+        root: String,
+        tokens: [String],
+        workspacePath: String?
+    ) -> Bool {
         switch root {
         case "swift":
             guard tokens.count >= 2,
                   ["test", "build"].contains(tokens[1]),
                   !containsDisplayOnlyFlag(tokens.dropFirst(2)),
-                  !(tokens[1] == "test" && swiftTestHasListSubcommand(tokens.dropFirst(2))) else {
+                  !(tokens[1] == "test" && swiftTestHasListSubcommand(tokens.dropFirst(2))),
+                  swiftPathOptionsAreScoped(tokens: tokens, workspacePath: workspacePath) else {
                 return false
             }
             return true
         case "xcodebuild":
-            return xcodebuildHasBuildOrTestAction(tokens)
+            return xcodebuildHasBuildOrTestAction(tokens, workspacePath: workspacePath)
         case "pytest":
-            return !containsDisplayOnlyFlag(tokens.dropFirst())
+            return !containsDisplayOnlyFlag(tokens.dropFirst()) &&
+                absolutePathTokensAreScoped(tokens.dropFirst(), workspacePath: workspacePath)
         case "npm":
-            return packageManagerRunsOnlyTestScript(tokens: tokens, supportsBareForwardedArgs: false)
+            return packageManagerRunsOnlyTestScript(
+                tokens: tokens,
+                supportsBareForwardedArgs: false,
+                workspacePath: workspacePath
+            )
         case "yarn", "pnpm":
-            return packageManagerRunsOnlyTestScript(tokens: tokens, supportsBareForwardedArgs: true)
+            return packageManagerRunsOnlyTestScript(
+                tokens: tokens,
+                supportsBareForwardedArgs: true,
+                workspacePath: workspacePath
+            )
         case "make":
             return makeRunsOnlyTestTarget(tokens)
-        case "test", "[":
-            return fileTestCommandIsAllowed(root: root, tokens: tokens)
         default:
             return false
         }
@@ -176,6 +209,7 @@ enum ValidationCommandPolicy {
             "--list-tests",
             "--collect-only", "--co",
             "--show-bin-path",
+            "--print-manifest-job-graph",
             "--setup-plan", "--fixtures", "--fixtures-per-test", "--markers"
         ])
         return tokens.contains { displayOnly.contains($0) }
@@ -203,7 +237,42 @@ enum ValidationCommandPolicy {
         return false
     }
 
-    private static func packageManagerRunsOnlyTestScript(tokens: [String], supportsBareForwardedArgs: Bool) -> Bool {
+    private static func swiftPathOptionsAreScoped(tokens: [String], workspacePath: String?) -> Bool {
+        let pathOptions: Set<String> = [
+            "--package-path",
+            "--build-path",
+            "--scratch-path",
+            "--cache-path",
+            "--config-path"
+        ]
+        var index = 2
+        while index < tokens.count {
+            let token = tokens[index]
+            if let separator = token.firstIndex(of: "=") {
+                let option = String(token[..<separator])
+                if pathOptions.contains(option) {
+                    let value = String(token[token.index(after: separator)...])
+                    guard pathTokenIsScoped(value, workspacePath: workspacePath) else {
+                        return false
+                    }
+                }
+            } else if pathOptions.contains(token) {
+                guard index + 1 < tokens.count,
+                      pathTokenIsScoped(tokens[index + 1], workspacePath: workspacePath) else {
+                    return false
+                }
+                index += 1
+            }
+            index += 1
+        }
+        return true
+    }
+
+    private static func packageManagerRunsOnlyTestScript(
+        tokens: [String],
+        supportsBareForwardedArgs: Bool,
+        workspacePath: String?
+    ) -> Bool {
         guard tokens.count >= 2 else { return false }
         let argumentStart: Int
         if tokens[1] == "test" {
@@ -216,13 +285,15 @@ enum ValidationCommandPolicy {
         let trailing = tokens.dropFirst(argumentStart)
         guard !trailing.isEmpty else { return true }
         if supportsBareForwardedArgs {
-            return !containsDisplayOnlyFlag(trailing)
+            return !containsDisplayOnlyFlag(trailing) &&
+                absolutePathTokensAreScoped(trailing, workspacePath: workspacePath)
         }
         guard trailing.first == "--" else { return false }
-        return !containsDisplayOnlyFlag(trailing.dropFirst())
+        return !containsDisplayOnlyFlag(trailing.dropFirst()) &&
+            absolutePathTokensAreScoped(trailing.dropFirst(), workspacePath: workspacePath)
     }
 
-    private static func xcodebuildHasBuildOrTestAction(_ tokens: [String]) -> Bool {
+    private static func xcodebuildHasBuildOrTestAction(_ tokens: [String], workspacePath: String?) -> Bool {
         guard !xcodebuildHasInfoOnlyMode(tokens.dropFirst()) else { return false }
         let optionsWithValues: Set<String> = [
             "-project", "-workspace", "-scheme", "-destination", "-configuration", "-sdk",
@@ -231,20 +302,34 @@ enum ValidationCommandPolicy {
             "-skip-testing", "-testPlan", "-testProductsPath", "-xctestrun", "-toolchain"
         ]
         var skipNext = false
-        for token in tokens.dropFirst() {
+        var hasBuildOrTestAction = false
+        for (offset, token) in tokens.dropFirst().enumerated() {
             if skipNext {
                 skipNext = false
                 continue
             }
             if optionsWithValues.contains(token) {
+                let valueIndex = offset + 2
+                guard valueIndex < tokens.count else { return false }
+                if xcodebuildPathOptions.contains(token),
+                   !pathTokenIsScoped(tokens[valueIndex], workspacePath: workspacePath) {
+                    return false
+                }
                 skipNext = true
                 continue
             }
             if ["test", "build", "build-for-testing", "test-without-building"].contains(token) {
-                return true
+                hasBuildOrTestAction = true
             }
         }
-        return false
+        return hasBuildOrTestAction
+    }
+
+    private static var xcodebuildPathOptions: Set<String> {
+        [
+            "-project", "-workspace", "-derivedDataPath", "-resultBundlePath",
+            "-clonedSourcePackagesDirPath", "-archivePath", "-testProductsPath", "-xctestrun"
+        ]
     }
 
     private static func xcodebuildHasInfoOnlyMode(_ tokens: ArraySlice<String>) -> Bool {
@@ -339,6 +424,39 @@ enum ValidationCommandPolicy {
               !path.hasPrefix("=") else {
             return false
         }
+        let components = path.split(separator: "/", omittingEmptySubsequences: false)
+        return !components.contains("..")
+    }
+
+    private static func absolutePathTokensAreScoped<T: Sequence>(
+        _ tokens: T,
+        workspacePath: String?
+    ) -> Bool where T.Element == String {
+        tokens.allSatisfy { token in
+            guard token.hasPrefix("/") || token.hasPrefix("~") else {
+                return true
+            }
+            return pathTokenIsScoped(token, workspacePath: workspacePath)
+        }
+    }
+
+    private static func pathTokenIsScoped(_ path: String, workspacePath: String?) -> Bool {
+        guard !path.isEmpty,
+              !path.hasPrefix("~"),
+              !path.hasPrefix("-"),
+              !path.hasPrefix("=") else {
+            return false
+        }
+
+        if path.hasPrefix("/") {
+            guard let workspacePath else {
+                return false
+            }
+            let workspace = URL(fileURLWithPath: workspacePath).standardizedFileURL.path
+            let candidate = URL(fileURLWithPath: path).standardizedFileURL.path
+            return candidate == workspace || candidate.hasPrefix(workspace + "/")
+        }
+
         let components = path.split(separator: "/", omittingEmptySubsequences: false)
         return !components.contains("..")
     }
@@ -446,7 +564,8 @@ enum ValidationService {
         guard !command.isEmpty else {
             return .error("No test command configured")
         }
-        guard ValidationCommandPolicy.isAllowed(command) else {
+        let workingDirectory = TaskWorkspaceAccess(task: task).effectiveWorkspacePath
+        guard ValidationCommandPolicy.isRunTestsCommandAllowed(command, workspacePath: workingDirectory) else {
             AppLogger.audit(.validationFailed, category: "Validation", taskID: task.id, fields: [
                 "reason": "command_not_allowed",
                 "command_length": String(command.count),
@@ -462,7 +581,7 @@ enum ValidationService {
 
         let result = await commandRunner.run(
             command: command,
-            workingDirectory: TaskWorkspaceAccess(task: task).effectiveWorkspacePath,
+            workingDirectory: workingDirectory,
             environment: validationCommandEnvironment()
         )
         let output = [result.stdout, result.stderr].filter { !$0.isEmpty }.joined(separator: "\n")
@@ -833,7 +952,8 @@ enum ValidationService {
                 reason: "missing_command"
             )
         }
-        guard ValidationCommandPolicy.isAllowed(command) else {
+        let workingDirectory = TaskWorkspaceAccess(task: task).effectiveWorkspacePath
+        guard ValidationCommandPolicy.isAssertionCommandAllowed(command, workspacePath: workingDirectory) else {
             return assertionPayload(
                 assertion: assertion,
                 planID: planID,
@@ -846,7 +966,7 @@ enum ValidationService {
 
         let result = await commandRunner.run(
             command: command,
-            workingDirectory: TaskWorkspaceAccess(task: task).effectiveWorkspacePath,
+            workingDirectory: workingDirectory,
             environment: validationCommandEnvironment()
         )
         let output = [result.stdout, result.stderr]

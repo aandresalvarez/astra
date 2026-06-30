@@ -1511,7 +1511,8 @@ enum WorkspaceConfigManager {
         }
         let validation = importedValidationConfiguration(
             strategy: config.validationStrategy,
-            testCommand: config.testCommand
+            testCommand: config.testCommand,
+            workspacePath: workspace.primaryPath
         )
         task.validationStrategy = validation.strategy
         task.testCommand = validation.testCommand
@@ -1619,7 +1620,8 @@ enum WorkspaceConfigManager {
 
     private static func importedValidationConfiguration(
         strategy rawStrategy: String?,
-        testCommand rawCommand: String?
+        testCommand rawCommand: String?,
+        workspacePath: String?
     ) -> (strategy: ValidationStrategy, testCommand: String) {
         let strategy = rawStrategy.flatMap(ValidationStrategy.init(rawValue:)) ?? .manual
         let command = rawCommand?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -1627,7 +1629,7 @@ enum WorkspaceConfigManager {
         guard strategy == .runTests else {
             return (strategy, command)
         }
-        guard ValidationCommandPolicy.isAllowed(command) else {
+        guard ValidationCommandPolicy.isRunTestsCommandAllowed(command, workspacePath: workspacePath) else {
             return (.runTests, "")
         }
         return (.runTests, command)
