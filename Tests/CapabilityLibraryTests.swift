@@ -319,6 +319,87 @@ struct CapabilityLibraryTests {
         #expect(CapabilityRuntimeResourceMatcher.enabledPackages(for: nil, in: PluginCatalog.builtInPackages).isEmpty)
     }
 
+    @Test("enabled packages excludes pack-disabled runtime packages")
+    func enabledPackagesExcludesPackDisabledRuntimePackages() {
+        let allowed = makeTestPackage(id: "local.test/allowed", name: "Allowed")
+        let disabled = makeTestPackage(id: "local.test/disabled", name: "Disabled")
+        let workspace = Workspace(name: "Policy", primaryPath: "/tmp/policy")
+        workspace.enabledCapabilityIDs = [allowed.id, disabled.id]
+        let packPolicy = Self.policy(restrictions: [
+            AstraPackPolicyRestriction(
+                id: "disable-local",
+                contributionKind: "capabilityPackage",
+                action: "disableCapability",
+                effect: "restrict",
+                targetID: disabled.id
+            )
+        ])
+
+        let ids = CapabilityRuntimeResourceMatcher
+            .enabledPackages(for: workspace, in: [allowed, disabled], packPolicy: packPolicy)
+            .map(\.id)
+
+        #expect(ids.contains(allowed.id))
+        #expect(!ids.contains(disabled.id))
+    }
+
+    @Test("enabled packages honors pack review gate approvals")
+    func enabledPackagesHonorsPackReviewGateApprovals() throws {
+        let gated = makeTestPackage(id: "local.test/gated", name: "Gated")
+        let workspace = Workspace(name: "Review Gate", primaryPath: "/tmp/review-gate")
+        workspace.enabledCapabilityIDs = [gated.id]
+        let packPolicy = Self.policy(restrictions: [
+            AstraPackPolicyRestriction(
+                id: "review-gated",
+                contributionKind: "capabilityPackage",
+                action: "requireReviewGate",
+                effect: "restrict",
+                targetID: gated.id
+            )
+        ])
+        let approved = CapabilityApprovalRecord(
+            packageID: gated.id,
+            packageVersion: gated.version,
+            status: .approved,
+            approvedBy: "Vertical Owner",
+            approvedAt: Date(),
+            reviewNotes: "Approved.",
+            sourceDigest: try CapabilityApprovalDigest.digest(for: gated)
+        )
+
+        let blocked = CapabilityRuntimeResourceMatcher.enabledPackages(
+            for: workspace,
+            in: [gated],
+            approvalRecords: [],
+            packPolicy: packPolicy
+        )
+        let allowed = CapabilityRuntimeResourceMatcher.enabledPackages(
+            for: workspace,
+            in: [gated],
+            approvalRecords: [approved],
+            packPolicy: packPolicy
+        )
+
+        #expect(blocked.isEmpty)
+        #expect(allowed.map(\.id) == [gated.id])
+    }
+
+    private static func policy(restrictions: [AstraPackPolicyRestriction]) -> PackResolvedPolicy {
+        AstraPackPolicyResolver.resolve(
+            composition: AstraPackComposition.resolve(packs: [
+                AstraPackManifest(
+                    formatVersion: 1,
+                    id: "astra.pack.policy-test",
+                    name: "Policy Test",
+                    version: "1.0.0",
+                    coreAPIVersion: "1.0",
+                    description: "Policy test pack.",
+                    policyRestrictions: restrictions
+                )
+            ])
+        )
+    }
+
     private func makeTestPackage(id: String, name: String) -> PluginPackage {
         PluginPackage(
             id: id,
@@ -332,7 +413,8 @@ struct CapabilityLibraryTests {
             skills: [],
             connectors: [],
             localTools: [],
-            templates: []
+            templates: [],
+            governance: CapabilityGovernance(approvalStatus: .approved)
         )
     }
 

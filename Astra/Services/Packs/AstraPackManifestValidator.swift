@@ -20,6 +20,8 @@ struct AstraPackManifestValidationReport: Sendable, Equatable {
             case invalidShelfID
             case unknownTrustedShelfID
             case unaddressableTrustedShelfID
+            case unknownPolicyShelfID
+            case unaddressablePolicyShelfID
             case emptyAppTemplateID
             case invalidAppTemplateID
             case emptyTemplateID
@@ -278,6 +280,8 @@ enum AstraPackManifestValidator {
                     path: "/policyRestrictions/\(index)/targetID",
                     message: "Shelf policy restrictions require targetID."
                 ))
+            } else if let targetID = restriction.targetID {
+                validatePolicyShelfReference(targetID, index: index, issues: &issues)
             }
         case ("workspaceapp", "requireexplicitconsent"):
             if isBlank(restriction.targetMCPServerID) || isBlank(restriction.targetMCPToolName) {
@@ -289,6 +293,30 @@ enum AstraPackManifestValidator {
             }
         default:
             break
+        }
+    }
+
+    private static func validatePolicyShelfReference(
+        _ rawShelfID: String,
+        index: Int,
+        issues: inout [AstraPackManifestValidationReport.Issue]
+    ) {
+        let trimmedShelfID = rawShelfID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let descriptor = CoreShelfRegistry.descriptor(forStableID: trimmedShelfID) else {
+            issues.append(blocker(
+                .unknownPolicyShelfID,
+                path: "/policyRestrictions/\(index)/targetID",
+                message: "Shelf policy restriction target '\(rawShelfID)' does not reference a Core-registered shelf."
+            ))
+            return
+        }
+        guard descriptor.isPackAddressable else {
+            issues.append(blocker(
+                .unaddressablePolicyShelfID,
+                path: "/policyRestrictions/\(index)/targetID",
+                message: "Core shelf '\(rawShelfID)' is not pack-addressable."
+            ))
+            return
         }
     }
 

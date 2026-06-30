@@ -43,7 +43,7 @@ struct AstraPackCatalogTests {
         let profile = AstraPackProfileResolver.resolve(enabledPacks: [manifest])
 
         #expect(profile.visibleShelfIDs == Set([.plan, .files]))
-        #expect(profile.hiddenShelfIDs == Set([.browser, .query, .appPreview]))
+        #expect(profile.hiddenShelfIDs == Set([.browser, .query]))
         #expect(profile.capabilityPackageIDsByShelfID[.plan] == ["github-workflow"])
         #expect(profile.capabilityPackageIDsByShelfID[.files] == ["github-workflow"])
         #expect(profile.vocabularyValue(for: "prQueue") == "PR Queue")

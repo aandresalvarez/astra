@@ -8,12 +8,19 @@ enum CapabilityRuntimeResourceMatcher {
 
     static func enabledPackages(
         for workspace: Workspace?,
-        library: CapabilityLibrary = CapabilityLibrary()
+        library: CapabilityLibrary = CapabilityLibrary(),
+        approvalRecords: [CapabilityApprovalRecord]? = nil,
+        packPolicy: PackResolvedPolicy? = nil
     ) -> [PluginPackage] {
         guard let workspace else { return [] }
         let enabledIDs = Set(workspace.enabledCapabilityIDs)
         guard !enabledIDs.isEmpty else { return [] }
-        return packageDefinitions(library: library).filter { enabledIDs.contains($0.id) }
+        return packPolicyAllowedPackages(
+            packageDefinitions(library: library).filter { enabledIDs.contains($0.id) },
+            workspace: workspace,
+            approvalRecords: approvalRecords,
+            packPolicy: packPolicy
+        )
     }
 
     /// Resolves enabled packages from an already-loaded definition list, without
@@ -25,13 +32,20 @@ enum CapabilityRuntimeResourceMatcher {
     /// Built-ins are merged in so the result matches `packageDefinitions()`.
     static func enabledPackages(
         for workspace: Workspace?,
-        in definitions: [PluginPackage]
+        in definitions: [PluginPackage],
+        approvalRecords: [CapabilityApprovalRecord]? = nil,
+        packPolicy: PackResolvedPolicy? = nil
     ) -> [PluginPackage] {
         guard let workspace else { return [] }
         let enabledIDs = Set(workspace.enabledCapabilityIDs)
         guard !enabledIDs.isEmpty else { return [] }
-        return uniquePackages(definitions + PluginCatalog.builtInPackages)
-            .filter { enabledIDs.contains($0.id) }
+        return packPolicyAllowedPackages(
+            uniquePackages(definitions + PluginCatalog.builtInPackages)
+                .filter { enabledIDs.contains($0.id) },
+            workspace: workspace,
+            approvalRecords: approvalRecords,
+            packPolicy: packPolicy
+        )
     }
 
     static func skillMatches(_ pluginSkill: PluginSkill, skill: Skill) -> Bool {
@@ -99,6 +113,25 @@ enum CapabilityRuntimeResourceMatcher {
         cacheLock.unlock()
 
         return packages
+    }
+
+    private static func packPolicyAllowedPackages(
+        _ packages: [PluginPackage],
+        workspace: Workspace,
+        approvalRecords: [CapabilityApprovalRecord]?,
+        packPolicy suppliedPackPolicy: PackResolvedPolicy?
+    ) -> [PluginPackage] {
+        guard !packages.isEmpty else { return [] }
+        let packPolicy = suppliedPackPolicy ?? PackWorkspacePolicyProvider.resolvedPolicy(for: workspace)
+        guard packPolicy.affectsCapabilityRuntimeExposure else { return packages }
+        let context = CapabilityCatalogPolicyContext.currentUser(
+            workspace: workspace,
+            approvalRecords: approvalRecords ?? CapabilityApprovalStore().records(),
+            packPolicy: packPolicy
+        )
+        return packages.filter {
+            CapabilityCatalogPolicy.decision(for: $0, context: context).canRun
+        }
     }
 
     private static func directoryFingerprint(for directory: URL) -> DirectoryFingerprint {

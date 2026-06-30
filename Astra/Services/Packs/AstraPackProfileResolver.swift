@@ -139,9 +139,13 @@ enum AstraPackProfileResolver {
         }
 
         let branding = composition.orderedPacks.compactMap(\.branding).last
+        let profileHiddenShelfIDs = packHiddenShelfIDs(
+            visibleShelfIDs: visibleShelfIDs,
+            descriptorsByID: coreDescriptorsByID
+        )
         return AstraPackResolvedProfile(
             visibleShelfIDs: visibleShelfIDs,
-            hiddenShelfIDs: coreShelfIDs.subtracting(visibleShelfIDs),
+            hiddenShelfIDs: profileHiddenShelfIDs,
             vocabulary: resolvedVocabulary,
             branding: branding,
             capabilityPackageIDsByShelfID: capabilityPackageIDsByShelfID,
@@ -195,6 +199,18 @@ enum AstraPackProfileResolver {
         }
     }
 
+    private static func packHiddenShelfIDs(
+        visibleShelfIDs: Set<ShelfID>,
+        descriptorsByID: [ShelfID: ShelfDescriptor]
+    ) -> Set<ShelfID> {
+        let packAddressableIDs = Set(
+            descriptorsByID.values
+                .filter(\.isPackAddressable)
+                .map(\.id)
+        )
+        return packAddressableIDs.subtracting(visibleShelfIDs)
+    }
+
     private static func shelfID(forProfileIdentifier identifier: String) -> ShelfID? {
         CoreShelfRegistry.shelfID(forStableID: identifier)
     }
@@ -209,13 +225,13 @@ enum AstraPackProfileResolver {
 enum AstraPackWorkspaceProfileProvider {
     static func resolvedProfile(
         for workspace: Workspace?,
-        catalogSnapshot: AstraPackCatalogSnapshot = AstraPackCatalog().load(),
+        catalogSnapshot: AstraPackCatalogSnapshot? = nil,
         managedShelfVisibilityOverrides: [String: Bool] = AstraPackManagedProfileOverrides.shelfVisibilityOverrides(),
         coreDescriptors: [ShelfDescriptor] = CoreShelfRegistry.allDescriptors
     ) -> AstraPackResolvedProfile {
         AstraPackProfileResolver.resolve(
             coreDescriptors: coreDescriptors,
-            enabledPackEntries: enabledPackEntries(for: workspace, in: catalogSnapshot),
+            enabledPackEntries: enabledPackEntries(for: workspace, catalogSnapshot: catalogSnapshot),
             workspaceShelfVisibilityOverrides: workspace?.shelfVisibilityOverrides ?? [:],
             adminShelfVisibilityOverrides: managedShelfVisibilityOverrides
         )
@@ -223,7 +239,7 @@ enum AstraPackWorkspaceProfileProvider {
 
     static func shelfAvailabilityPolicy(
         for workspace: Workspace?,
-        catalogSnapshot: AstraPackCatalogSnapshot = AstraPackCatalog().load(),
+        catalogSnapshot: AstraPackCatalogSnapshot? = nil,
         managedShelfVisibilityOverrides: [String: Bool] = AstraPackManagedProfileOverrides.shelfVisibilityOverrides(),
         coreDescriptors: [ShelfDescriptor] = CoreShelfRegistry.allDescriptors
     ) -> ShelfAvailabilityPolicy {
@@ -241,7 +257,7 @@ enum AstraPackWorkspaceProfileProvider {
 
     private static func enabledPackEntries(
         for workspace: Workspace?,
-        in catalogSnapshot: AstraPackCatalogSnapshot
+        catalogSnapshot: AstraPackCatalogSnapshot?
     ) -> [AstraPackCatalogEntry] {
         guard let workspace else { return [] }
         let enabledPackIDs = Set(
@@ -250,7 +266,8 @@ enum AstraPackWorkspaceProfileProvider {
                 .filter { !$0.isEmpty }
         )
         guard !enabledPackIDs.isEmpty else { return [] }
-        return catalogSnapshot.entries.filter { enabledPackIDs.contains($0.manifest.id) }
+        let snapshot = catalogSnapshot ?? AstraPackCatalog().load()
+        return snapshot.entries.filter { enabledPackIDs.contains($0.manifest.id) }
     }
 }
 

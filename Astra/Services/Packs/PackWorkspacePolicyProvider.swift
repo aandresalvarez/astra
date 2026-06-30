@@ -3,7 +3,7 @@ import Foundation
 enum PackWorkspacePolicyProvider {
     static func resolvedPolicy(
         for workspace: Workspace?,
-        catalogSnapshot: AstraPackCatalogSnapshot = AstraPackCatalog().load()
+        catalogSnapshot: AstraPackCatalogSnapshot? = nil
     ) -> PackResolvedPolicy {
         guard let workspace else { return .empty }
         let enabledPackIDs = Set(
@@ -13,7 +13,8 @@ enum PackWorkspacePolicyProvider {
         )
         guard !enabledPackIDs.isEmpty else { return .empty }
 
-        let enabledEntries = catalogSnapshot.entries.filter { enabledPackIDs.contains($0.manifest.id) }
+        let snapshot = catalogSnapshot ?? AstraPackCatalog().load()
+        let enabledEntries = snapshot.entries.filter { enabledPackIDs.contains($0.manifest.id) }
         guard !enabledEntries.isEmpty else { return .empty }
 
         return AstraPackPolicyResolver.resolve(

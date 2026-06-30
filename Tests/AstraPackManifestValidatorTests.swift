@@ -45,6 +45,50 @@ struct AstraPackManifestValidatorTests {
         #expect(report.blockers.map(\.code).contains(.policyWidening))
     }
 
+    @Test("validator rejects unknown shelf policy target")
+    func validatorRejectsUnknownShelfPolicyTarget() {
+        var manifest = Self.validManifest()
+        manifest.policyRestrictions = [
+            AstraPackPolicyRestriction(
+                id: "hide-brower",
+                contributionKind: "shelf",
+                action: "hideShelf",
+                effect: "restrict",
+                targetID: "brower"
+            )
+        ]
+
+        let report = AstraPackManifestValidator.validate(manifest)
+
+        #expect(!report.isValid)
+        #expect(report.blockers.contains {
+            $0.code == .unknownPolicyShelfID
+                && $0.path == "/policyRestrictions/0/targetID"
+        })
+    }
+
+    @Test("validator rejects unaddressable shelf policy target")
+    func validatorRejectsUnaddressableShelfPolicyTarget() {
+        var manifest = Self.validManifest()
+        manifest.policyRestrictions = [
+            AstraPackPolicyRestriction(
+                id: "hide-preview",
+                contributionKind: "shelf",
+                action: "hideShelf",
+                effect: "restrict",
+                targetID: "app-preview"
+            )
+        ]
+
+        let report = AstraPackManifestValidator.validate(manifest)
+
+        #expect(!report.isValid)
+        #expect(report.blockers.contains {
+            $0.code == .unaddressablePolicyShelfID
+                && $0.path == "/policyRestrictions/0/targetID"
+        })
+    }
+
     @Test("validator rejects duplicate shelf defaults")
     func validatorRejectsDuplicateShelfDefaults() {
         var manifest = Self.validManifest()

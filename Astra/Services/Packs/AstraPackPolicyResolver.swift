@@ -98,6 +98,12 @@ struct PackResolvedPolicy: Equatable, Sendable {
     var evidence: [PackPolicyEvidence]
     var diagnostics: [PackPolicyDiagnostic]
 
+    var affectsCapabilityRuntimeExposure: Bool {
+        !hiddenCapabilityRules.isEmpty
+            || !disabledCapabilityRules.isEmpty
+            || !reviewGateRules.isEmpty
+    }
+
     func hiddenEvidence(for package: PluginPackage) -> [PackPolicyEvidence] {
         matchingEvidence(hiddenCapabilityRules, package: package)
     }

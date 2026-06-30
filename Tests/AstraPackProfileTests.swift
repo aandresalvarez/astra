@@ -21,6 +21,7 @@ struct AstraPackProfileTests {
         #expect(profile.isShelfVisible(.query))
         #expect(!profile.isShelfVisible(.browser))
         #expect(!profile.isShelfVisible(.appPreview))
+        #expect(!profile.hiddenShelfIDs.contains(.appPreview))
     }
 
     @Test("workspace override can enable allowed hidden shelf")
@@ -81,7 +82,7 @@ struct AstraPackProfileTests {
         )
 
         #expect(profile.visibleShelfIDs == Set([.plan, .files, .query]))
-        #expect(profile.hiddenShelfIDs == Set([.browser, .appPreview]))
+        #expect(profile.hiddenShelfIDs == Set([.browser]))
     }
 
     @Test("admin overrides win over workspace overrides")
@@ -141,7 +142,7 @@ struct AstraPackProfileTests {
         #expect(!policy.canPresent(.browser, in: openTask))
         #expect(!policy.canPresent(.query, in: openTask))
         #expect(!policy.canPresent(.files, in: openTask))
-        #expect(!policy.canPresent(.appPreview, in: openTask))
+        #expect(policy.canPresent(.appPreview, in: openTask))
     }
 
     @Test("workspace profile provider preserves catalog source ordering")
@@ -234,7 +235,7 @@ struct AstraPackProfileTests {
         #expect(!policy.canPresent(.browser, in: openTaskWithPlan))
         #expect(!policy.canPresent(.query, in: openTaskWithPlan))
         #expect(!policy.canPresent(.files, in: openTaskWithPlan))
-        #expect(!policy.canPresent(.appPreview, in: openTaskWithPlan))
+        #expect(policy.canPresent(.appPreview, in: openTaskWithPlan))
         #expect(profile.diagnostics.contains { $0.code == .unknownShelfDefaultID })
         #expect(profile.diagnostics.contains { $0.code == .unknownShelfOverrideID })
     }
