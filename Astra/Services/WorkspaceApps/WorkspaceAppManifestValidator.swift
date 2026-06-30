@@ -1347,7 +1347,7 @@ enum WorkspaceAppManifestValidator {
             issues.append(blocker(path, "\(label) may contain only letters, numbers, dot, underscore, or hyphen."))
         }
         if rejectReservedPathComponent && WorkspaceAppIDPolicy.isReservedPathComponent(trimmed) {
-            issues.append(blocker(path, "\(label) may not be a reserved path component ('.' or '..')."))
+            issues.append(blocker(path, "\(label) may not be a reserved path component."))
         }
     }
 

@@ -804,6 +804,49 @@ struct WorkspaceAppPackageTests {
     }
 
     @MainActor
+    @Test("package exporter rejects symlinked app storage before exporting rows")
+    func packageExporterRejectsSymlinkedAppStorageBeforeExportingRows() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let outside = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: outside) }
+        let container = try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+        )
+        let workspace = Workspace(name: "Package Export", primaryPath: root.path)
+        container.mainContext.insert(workspace)
+        let created = try WorkspaceAppService().createApp(
+            manifest: Self.groceryManifest(),
+            in: workspace,
+            modelContext: container.mainContext,
+            status: .published
+        )
+        let appDirectory = try #require(WorkspaceFileLayout.appDirectoryURL(
+            workspacePath: workspace.primaryPath,
+            appID: created.app.logicalID
+        ))
+        let dataDirectory = appDirectory.appendingPathComponent("data", isDirectory: true)
+        try FileManager.default.removeItem(at: dataDirectory)
+        _ = try Self.groceryDatabase(in: outside)
+        try FileManager.default.createSymbolicLink(at: dataDirectory, withDestinationURL: outside)
+        let packageURL = appDirectory
+            .deletingLastPathComponent()
+            .appendingPathComponent("exports/grocery-tracker.astra-app", isDirectory: true)
+
+        #expect(throws: WorkspaceAppPackageExportError.unsafeExportPath(dataDirectory.appendingPathComponent("app.sqlite").path)) {
+            _ = try WorkspaceAppPackageExporter().exportTemplatePackage(
+                app: created.app,
+                workspace: workspace,
+                mode: .fullAppExport,
+                createdAt: Date(timeIntervalSince1970: 1_800_000_000)
+            )
+        }
+        #expect(!FileManager.default.fileExists(atPath: packageURL.appendingPathComponent("storage/data/full/items.jsonl").path))
+    }
+
+    @MainActor
     @Test("package exporter rejects export directories that alias another app")
     func packageExporterRejectsExportDirectoriesThatAliasAnotherApp() throws {
         let root = try Self.temporaryRoot()

@@ -46,6 +46,7 @@ struct WorkspaceAppPackageExporter {
         try validateExportRoot(workspacePath: workspace.primaryPath)
 
         let loaded = try loadManifest(app: app, workspace: workspace)
+        let databaseURL = try exportDatabaseURL(for: loaded.location, workspacePath: workspace.primaryPath, mode: mode)
         let packageURL = try nextPackageURL(appID: app.logicalID, workspacePath: workspace.primaryPath)
         _ = try packageService.exportPackage(
             manifest: loaded.manifest,
@@ -53,7 +54,7 @@ struct WorkspaceAppPackageExporter {
             packageID: "\(Self.packageDirectoryStem(for: app.logicalID)).astra-app",
             version: version,
             mode: mode,
-            appStorageDatabaseURL: loaded.location.databaseURL,
+            appStorageDatabaseURL: databaseURL,
             createdAt: createdAt
         )
         let report = packageService.validatePackage(at: packageURL)
@@ -61,6 +62,21 @@ struct WorkspaceAppPackageExporter {
             throw WorkspaceAppPackageExportError.invalidExport(report)
         }
         return WorkspaceAppPackageExportResult(packageURL: packageURL, validationReport: report)
+    }
+
+    private func exportDatabaseURL(
+        for location: WorkspaceAppManifestLocation,
+        workspacePath: String,
+        mode: WorkspaceAppPackageExportMode
+    ) throws -> URL? {
+        guard mode != .templateOnly else { return nil }
+        guard let databaseURL = WorkspaceFileLayout.appDatabaseFileURL(
+            appDirectoryURL: location.appDirectoryURL,
+            workspacePath: workspacePath
+        ) else {
+            throw WorkspaceAppPackageExportError.unsafeExportPath(location.databaseURL.path)
+        }
+        return databaseURL
     }
 
     private func validateExportRoot(workspacePath: String) throws {

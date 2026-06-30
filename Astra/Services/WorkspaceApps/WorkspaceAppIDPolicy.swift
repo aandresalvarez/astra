@@ -12,6 +12,6 @@ enum WorkspaceAppIDPolicy {
     }
 
     static func isReservedPathComponent(_ value: String) -> Bool {
-        value == "." || value == ".."
+        value == "." || value == ".." || value == "exports"
     }
 }

@@ -78,7 +78,17 @@ enum WorkspaceFileLayout {
         guard let directory = appDataDirectoryURL(workspacePath: workspacePath, appID: appID) else { return nil }
         let url = directory.appendingPathComponent("app.sqlite")
         let workspaceURL = URL(fileURLWithPath: workspacePath, isDirectory: true).standardizedFileURL
-        guard !existingPathContainsSymbolicLink(url, below: workspaceURL) else { return nil }
+        guard !existingSQLiteDatabasePathContainsSymbolicLink(url, below: workspaceURL) else { return nil }
+        return url
+    }
+
+    static func appDatabaseFileURL(appDirectoryURL: URL, workspacePath: String) -> URL? {
+        guard isContainedStoredAppDirectory(appDirectoryURL, workspacePath: workspacePath) else { return nil }
+        let url = appDirectoryURL
+            .appendingPathComponent("data", isDirectory: true)
+            .appendingPathComponent("app.sqlite")
+        let workspaceURL = URL(fileURLWithPath: workspacePath, isDirectory: true).standardizedFileURL
+        guard !existingSQLiteDatabasePathContainsSymbolicLink(url, below: workspaceURL) else { return nil }
         return url
     }
 
@@ -194,13 +204,17 @@ enum WorkspaceFileLayout {
     }
 
     static func isContainedAppManifestFile(_ url: URL, workspacePath: String) -> Bool {
-        url.lastPathComponent == "manifest.json"
+        let workspaceURL = URL(fileURLWithPath: workspacePath, isDirectory: true).standardizedFileURL
+        return url.lastPathComponent == "manifest.json"
             && isContainedAppDirectory(url.deletingLastPathComponent(), workspacePath: workspacePath)
+            && !existingPathContainsSymbolicLink(url, below: workspaceURL)
     }
 
     static func isContainedStoredAppManifestFile(_ url: URL, workspacePath: String) -> Bool {
-        url.lastPathComponent == "manifest.json"
+        let workspaceURL = URL(fileURLWithPath: workspacePath, isDirectory: true).standardizedFileURL
+        return url.lastPathComponent == "manifest.json"
             && isContainedStoredAppDirectory(url.deletingLastPathComponent(), workspacePath: workspacePath)
+            && !existingPathContainsSymbolicLink(url, below: workspaceURL)
     }
 
     private static func isContainedLegacyAppDirectory(_ url: URL, workspacePath: String) -> Bool {
@@ -245,8 +259,14 @@ enum WorkspaceFileLayout {
         return false
     }
 
+    private static func existingSQLiteDatabasePathContainsSymbolicLink(_ url: URL, below workspaceRoot: URL) -> Bool {
+        existingPathContainsSymbolicLink(url, below: workspaceRoot)
+            || existingPathContainsSymbolicLink(URL(fileURLWithPath: "\(url.path)-wal"), below: workspaceRoot)
+            || existingPathContainsSymbolicLink(URL(fileURLWithPath: "\(url.path)-shm"), below: workspaceRoot)
+    }
+
     private static func isSymbolicLink(_ url: URL) -> Bool {
-        (try? url.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) == true
+        (try? FileManager.default.destinationOfSymbolicLink(atPath: url.path)) != nil
     }
 
     // App Studio conversation journal: the build conversation + per-turn event log live under the

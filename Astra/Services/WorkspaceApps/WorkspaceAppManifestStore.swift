@@ -31,8 +31,10 @@ struct WorkspaceAppManifestStore {
     }
 
     func canonicalManifestURL(app: WorkspaceApp, workspace: Workspace) -> URL? {
-        canonicalAppDirectoryURL(app: app, workspace: workspace)?
-            .appendingPathComponent("manifest.json")
+        WorkspaceFileLayout.appManifestFileURL(
+            workspacePath: workspace.primaryPath,
+            appID: app.logicalID
+        )
     }
 
     func readableManifestURL(app: WorkspaceApp, workspace: Workspace) -> URL? {

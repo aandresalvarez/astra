@@ -724,6 +724,62 @@ struct WorkspaceAppServiceTests {
         #expect(!FileManager.default.fileExists(atPath: outside.appendingPathComponent("app.sqlite").path))
     }
 
+    @Test("layout rejects SQLite sidecar symlinks before opening app storage")
+    func layoutRejectsSQLiteSidecarSymlinksBeforeOpeningAppStorage() throws {
+        let root = try Self.temporaryRoot(prefix: "workspace-app-sqlite-sidecar-symlink")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let outside = try Self.temporaryRoot(prefix: "workspace-app-sqlite-sidecar-outside")
+        defer { try? FileManager.default.removeItem(at: outside) }
+
+        let dataDirectory = root.appendingPathComponent(".astra/apps/enrollment-reconciliation/data", isDirectory: true)
+        try FileManager.default.createDirectory(at: dataDirectory, withIntermediateDirectories: true)
+        for sidecar in ["app.sqlite-wal", "app.sqlite-shm"] {
+            let sidecarURL = dataDirectory.appendingPathComponent(sidecar)
+            try FileManager.default.createSymbolicLink(
+                at: sidecarURL,
+                withDestinationURL: outside.appendingPathComponent(sidecar)
+            )
+
+            #expect(WorkspaceFileLayout.appDatabaseFileURL(
+                workspacePath: root.path,
+                appID: "enrollment-reconciliation"
+            ) == nil)
+
+            try FileManager.default.removeItem(at: sidecarURL)
+        }
+    }
+
+    @MainActor
+    @Test("manifest store rejects symlinked manifest leaves")
+    func manifestStoreRejectsSymlinkedManifestLeaves() throws {
+        let root = try Self.temporaryRoot(prefix: "workspace-app-manifest-leaf-symlink")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let outside = try Self.temporaryRoot(prefix: "workspace-app-manifest-leaf-outside")
+        defer { try? FileManager.default.removeItem(at: outside) }
+
+        let appDirectory = root.appendingPathComponent(".astra/apps/enrollment-reconciliation", isDirectory: true)
+        let outsideManifest = outside.appendingPathComponent("manifest.json")
+        try FileManager.default.createDirectory(at: appDirectory, withIntermediateDirectories: true)
+        try WorkspaceAppService.encodeManifest(Self.reconciliationManifest()).write(to: outsideManifest)
+        try FileManager.default.createSymbolicLink(
+            at: appDirectory.appendingPathComponent("manifest.json"),
+            withDestinationURL: outsideManifest
+        )
+        let workspace = Workspace(name: "Apps", primaryPath: root.path)
+        let app = WorkspaceApp(
+            workspaceID: workspace.id,
+            logicalID: "enrollment-reconciliation",
+            name: "Enrollment Reconciliation",
+            manifestRelativePath: ".astra/apps/enrollment-reconciliation/manifest.json",
+            appDirectoryRelativePath: ".astra/apps/enrollment-reconciliation",
+            manifestDigest: "digest"
+        )
+
+        #expect(throws: WorkspaceAppManifestStoreError.noSafeManifestPath("enrollment-reconciliation")) {
+            _ = try WorkspaceAppManifestStore().loadManifest(app: app, workspace: workspace)
+        }
+    }
+
     @MainActor
     @Test("duplicateApp fails before copying when the destination app ID cannot resolve safely")
     func duplicateAppFailsBeforeCopyingWhenDestinationAppIDCannotResolveSafely() throws {
@@ -841,9 +897,9 @@ struct WorkspaceAppServiceTests {
     }
 
     @MainActor
-    @Test("createApp rejects reserved path component IDs before writing app files")
+    @Test("createApp rejects reserved app storage IDs before writing app files")
     func createAppRejectsReservedPathComponentIDsBeforeWritingAppFiles() throws {
-        for reservedID in [".", ".."] {
+        for reservedID in [".", "..", "exports"] {
             let root = URL(fileURLWithPath: NSTemporaryDirectory())
                 .appendingPathComponent("workspace-app-reserved-id-\(UUID().uuidString)", isDirectory: true)
             try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -878,6 +934,7 @@ struct WorkspaceAppServiceTests {
             #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent(".astra/apps/manifest.json").path))
             #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent(".astra/data/app.sqlite").path))
             #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent(".astra/apps/data/app.sqlite").path))
+            #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent(".astra/apps/exports/manifest.json").path))
         }
     }
 
