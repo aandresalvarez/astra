@@ -266,6 +266,9 @@ struct WorkspaceToolSupportTests {
             "env TOKEN=$(gcloud auth application-default print-access-token)",
             "sh -c 'gcloud projects list'",
             "command gcloud projects list",
+            "gh -R owner/repo api repos/owner/repo",
+            "gh --repo owner/repo pr view 148",
+            "gh --repo=owner/repo api repos/owner/repo",
             "$(ssh deid-jsn-workbench hostname)",
             "python3 -c \"import subprocess; subprocess.run(['bq', 'ls'])\""
         ]
@@ -273,6 +276,35 @@ struct WorkspaceToolSupportTests {
         for command in commands {
             let resolution = configuration.containerCommand(for: command)
             #expect(resolution.errorMessage?.contains("host control-plane CLI") == true)
+        }
+    }
+
+    @Test("Workspace command path mapper allows control-plane tool names as data")
+    func workspaceCommandPathMapperAllowsHostControlPlaneToolNamesAsData() throws {
+        let configuration = WorkspaceToolConfiguration(
+            dockerExecutable: "docker",
+            image: "astra/workspace:latest",
+            containerName: "astra-test",
+            workdir: "/workspace",
+            network: "bridge",
+            taskID: "task-1",
+            runID: "run-1",
+            mounts: [
+                WorkspaceDockerMount(hostPath: "/tmp/workspace", containerPath: "/workspace", access: "rw", role: "workspace")
+            ],
+            containerEnvironment: [:]
+        )
+
+        let commands = [
+            "grep -R gcloud docs",
+            "printf 'ssh\\n'",
+            "echo gh api repo data",
+            "awk '/bq/ { print }' README.md"
+        ]
+
+        for command in commands {
+            let resolution = configuration.containerCommand(for: command)
+            #expect(resolution.errorMessage == nil)
         }
     }
 
