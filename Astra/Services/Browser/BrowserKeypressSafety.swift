@@ -87,7 +87,8 @@ enum BrowserKeypressSafety {
 
     private static let safeNavigationKeys: Set<String> = [
         "arrowdown", "arrowleft", "arrowright", "arrowup",
-        "escape", "home", "end", "pagedown", "pageup", "tab"
+        "down", "esc", "escape", "home", "end", "left",
+        "pagedown", "pageup", "right", "tab", "up"
     ]
 
     private static let textEditingKeys: Set<String> = [

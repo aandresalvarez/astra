@@ -3591,7 +3591,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 syncDisplayedStateForEngine()
                 publishBridgeState()
             } else {
-                json = try await evaluateJavaScriptString(BrowserAutomationScripts.keypressScript(key: key, modifiers: modifiers))
+                json = try await evaluateJavaScriptString(BrowserAutomationScripts.keypressScript(key: key, modifiers: modifiers, expectedFocusedTargetSignature: preflightTargetSignature))
             }
             logBrowserAction(
                 phase: "completed",

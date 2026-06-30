@@ -202,7 +202,7 @@ enum BrowserTextEntryPreflight {
     }
 
     private static func sanitizedTarget(_ targetInfo: [String: Any], risk: BrowserRisk) -> [String: Any] {
-        let redactText = risk == .credentialInput || risk == .mfaInput
+        let redactText = risk == .credentialInput || risk == .mfaInput || risk == .unknownHighImpact
         var target: [String: Any] = [
             "selector": redactText
                 ? sanitizedSensitiveSelector(string(targetInfo["selector"]), tag: string(targetInfo["tag"]))

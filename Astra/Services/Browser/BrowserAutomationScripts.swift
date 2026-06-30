@@ -949,12 +949,80 @@ enum BrowserAutomationScripts {
         """
     }
 
-    static func keypressScript(key: String, modifiers: [String]) -> String {
+    static func keypressScript(key: String, modifiers: [String], expectedFocusedTargetSignature: String?) -> String {
         """
         (() => {
+          \(targetResolutionPrelude(selector: nil, x: nil, y: nil, allowDangerous: true, label: nil, role: nil, text: nil, placeholder: nil, testID: nil))
+          \(sensitiveTextEntryPrelude)
           const key = \(jsonLiteral(key));
           const modifiers = new Set(\(stringArrayLiteral(modifiers)));
-          const target = document.activeElement && document.activeElement !== document.body ? document.activeElement : document.body;
+          const expectedFocusedTargetSignature = \(optionalJSONLiteral(expectedFocusedTargetSignature));
+          const deepActiveElement = (doc, framePath, shadowDepth) => {
+            let active = doc.activeElement && doc.activeElement !== doc.body ? doc.activeElement : null;
+            if (!active) return { ok: false, error: "no_focused_element", locator: { focused: true }, framePath, shadowDepth };
+            while (active.shadowRoot && active.shadowRoot.activeElement) {
+              active = active.shadowRoot.activeElement;
+              shadowDepth += 1;
+            }
+            const tag = String(active.tagName || "").toLowerCase();
+            if (tag === "iframe" || tag === "frame") {
+              const nextFramePath = framePath.concat(frameLabelFor(active));
+              try {
+                if (!active.contentDocument) throw new Error("uninspectable frame");
+                const nested = deepActiveElement(active.contentDocument, nextFramePath, shadowDepth);
+                if (nested.el) return nested;
+                return { ok: false, error: nested.error || "no_focused_element", el: active, point: null, framePath: nextFramePath, shadowDepth };
+              } catch (_) {
+                return {
+                  ok: false,
+                  error: "focused_frame_uninspectable",
+                  el: active,
+                  point: null,
+                  framePath: nextFramePath,
+                  shadowDepth,
+                  frameFocusUninspectable: true
+                };
+              }
+            }
+            return { ok: true, el: active, point: null, framePath, shadowDepth };
+          };
+          const redactedTargetChangedResponse = (targetInfo) => {
+            const tag = String(targetInfo.tag || "").toLowerCase();
+            return {
+              ok: false,
+              error: "text_entry_target_changed",
+              action: "keypress",
+              summary: "The focused text-entry target changed after ASTRA inspected it, so ASTRA did not send raw browser input.",
+              risk: "unknownHighImpact",
+              target: {
+                selector: tag ? tag + "[redacted-selector]" : "",
+                requestedSelector: "",
+                label: "[redacted]",
+                name: "[redacted]",
+                role: targetInfo.role || "",
+                tag,
+                type: targetInfo.type || "",
+                autocomplete: targetInfo.autocomplete || "",
+                placeholder: "[redacted]",
+                testID: targetInfo.testID || "",
+                href: astraSensitiveURL(targetInfo.href || ""),
+                url: astraSensitiveURL(location.href),
+                framePath: Array.isArray(targetInfo.framePath) ? targetInfo.framePath.map(() => "[redacted frame]") : [],
+                shadowDepth: targetInfo.shadowDepth || 0,
+                frameFocusUninspectable: Boolean(targetInfo.frameFocusUninspectable)
+              }
+            };
+          };
+          const activeTarget = deepActiveElement(document, [], 0);
+          const targetInfo = publicTarget(activeTarget);
+          if (expectedFocusedTargetSignature) {
+            if (!activeTarget.el || targetInfo.targetSignature !== expectedFocusedTargetSignature) {
+              return JSON.stringify(redactedTargetChangedResponse(targetInfo));
+            }
+            const blocked = astraSensitiveBlock(activeTarget.el, "keypress", "", { selectorFor, labelFor, nameFor, roleFor });
+            if (blocked) return JSON.stringify(blocked);
+          }
+          const target = activeTarget.el || document.body;
           const lower = new Set(Array.from(modifiers).map((m) => String(m).toLowerCase()));
           const init = {
             key,

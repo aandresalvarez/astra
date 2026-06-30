@@ -379,6 +379,16 @@ struct BrowserControlSafetyTests {
         #expect(sessionSource.contains("controlledBrowser.keypress("))
         #expect(sessionSource.contains("controlledBrowser.insertText("))
         #expect(sessionSource.contains("expectedFocusedTargetSignature: preflight.targetSignature"))
+        #expect(sessionSource.contains("BrowserAutomationScripts.keypressScript("))
+        #expect(sessionSource.contains("expectedFocusedTargetSignature: preflightTargetSignature"))
+        let embeddedScript = BrowserAutomationScripts.keypressScript(
+            key: "x",
+            modifiers: [],
+            expectedFocusedTargetSignature: "expected-signature"
+        )
+        #expect(embeddedScript.contains("if (expectedFocusedTargetSignature)"))
+        #expect(embeddedScript.contains("text_entry_target_changed"))
+        #expect(embeddedScript.contains("const target = activeTarget.el || document.body"))
         #expect(controllerSource.contains("validateFocusedTextEntryTarget(action: \"keypress\", expectedSignature: expectedFocusedTargetSignature, client: client)"))
         #expect(controllerSource.contains("validateFocusedTextEntryTarget(action: \"insertText\", expectedSignature: expectedFocusedTargetSignature, client: client)"))
 
@@ -492,8 +502,13 @@ struct BrowserControlSafetyTests {
     @Test("Navigation keypresses do not require sensitive text entry preflight")
     func navigationKeypressesDoNotRequireSensitiveTextEntryPreflight() {
         #expect(!BrowserKeypressSafety.requiresTextEntryPreflight(key: "Escape", modifiers: []))
+        #expect(!BrowserKeypressSafety.requiresTextEntryPreflight(key: "esc", modifiers: []))
         #expect(!BrowserKeypressSafety.requiresTextEntryPreflight(key: "Tab", modifiers: []))
         #expect(!BrowserKeypressSafety.requiresTextEntryPreflight(key: "ArrowLeft", modifiers: []))
+        #expect(!BrowserKeypressSafety.requiresTextEntryPreflight(key: "left", modifiers: []))
+        #expect(!BrowserKeypressSafety.requiresTextEntryPreflight(key: "right", modifiers: []))
+        #expect(!BrowserKeypressSafety.requiresTextEntryPreflight(key: "up", modifiers: []))
+        #expect(!BrowserKeypressSafety.requiresTextEntryPreflight(key: "down", modifiers: []))
         #expect(!BrowserKeypressSafety.requiresTextEntryPreflight(key: "Home", modifiers: []))
         #expect(!BrowserKeypressSafety.requiresTextEntryPreflight(key: "End", modifiers: []))
         #expect(!BrowserKeypressSafety.requiresTextEntryPreflight(key: "PageDown", modifiers: []))
@@ -509,6 +524,33 @@ struct BrowserControlSafetyTests {
         #expect(BrowserKeypressSafety.requiresTextEntryPreflight(key: "Space", modifiers: []))
         #expect(BrowserKeypressSafety.requiresTextEntryPreflight(key: "Backspace", modifiers: []))
         #expect(BrowserKeypressSafety.requiresTextEntryPreflight(key: "v", modifiers: ["command"]))
+    }
+
+    @Test("Uninspectable frame block redacts target metadata")
+    func uninspectableFrameBlockRedactsTargetMetadata() throws {
+        let blocked = try #require(BrowserTextEntryPreflight.blockResponse(
+            action: "keypress",
+            targetInfo: [
+                "selector": "iframe[src='https://auth.example.com/challenge?token=secret']",
+                "label": "https://auth.example.com/challenge?token=secret",
+                "name": "secret-frame",
+                "role": "frame",
+                "tag": "iframe",
+                "href": "https://auth.example.com/challenge?token=secret#otp",
+                "url": "https://app.example.com/login?session=secret#frame",
+                "framePath": ["https://auth.example.com/challenge?token=secret#otp"],
+                "frameFocusUninspectable": true
+            ]
+        ))
+        let target = try #require(blocked["target"] as? [String: Any])
+
+        #expect(blocked["error"] as? String == "focused_frame_uninspectable")
+        #expect(target["selector"] as? String == "iframe[redacted-selector]")
+        #expect(target["label"] as? String == "[redacted]")
+        #expect(target["name"] as? String == "[redacted]")
+        #expect(target["href"] as? String == "https://auth.example.com")
+        #expect(target["url"] as? String == "https://app.example.com")
+        #expect(target["framePath"] as? [String] == ["https://auth.example.com"])
     }
 
     @Test("Modified editing keypresses require sensitive text entry preflight")
