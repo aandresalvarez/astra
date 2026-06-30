@@ -141,6 +141,104 @@ struct WorkspaceAppPackageTests {
         })
     }
 
+    @Test("package validation rejects NUL bytes in data export paths before opening files")
+    func packageValidationRejectsNULBytesInDataExportPathsBeforeOpeningFiles() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let packageURL = root.appendingPathComponent("grocery-nul-export.astra-app", isDirectory: true)
+        let databaseURL = try Self.groceryDatabase(in: root)
+        _ = try WorkspaceAppPackageService().exportPackage(
+            manifest: Self.groceryManifest(),
+            to: packageURL,
+            packageID: "grocery-nul-export",
+            mode: .templatePlusSeedData,
+            appStorageDatabaseURL: databaseURL
+        )
+        let truncatedTargetURL = packageURL.appendingPathComponent("storage/data/seed/items")
+        try FileManager.default.copyItem(
+            at: packageURL.appendingPathComponent("storage/data/seed/items.jsonl"),
+            to: truncatedTargetURL
+        )
+        try Self.writeDataExports(
+            [
+                WorkspaceAppPackageDataExport(
+                    table: "items",
+                    policy: .seed,
+                    path: "storage/data/seed/items\u{0}.jsonl",
+                    rowCount: 2
+                )
+            ],
+            to: packageURL
+        )
+
+        let report = WorkspaceAppPackageService().validatePackage(at: packageURL)
+
+        #expect(!report.canInstall)
+        #expect(report.blockers.contains {
+            $0.path == "/storage/data/exports.json"
+                && $0.message.contains("path")
+                && $0.message.contains("storage data folder")
+        })
+    }
+
+    @Test("package validation reports invalid UTF-8 data exports as encoding errors")
+    func packageValidationReportsInvalidUTF8DataExportsAsEncodingErrors() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let packageURL = root.appendingPathComponent("grocery-invalid-utf8.astra-app", isDirectory: true)
+        let databaseURL = try Self.groceryDatabase(in: root)
+        _ = try WorkspaceAppPackageService().exportPackage(
+            manifest: Self.groceryManifest(),
+            to: packageURL,
+            packageID: "grocery-invalid-utf8",
+            mode: .templatePlusSeedData,
+            appStorageDatabaseURL: databaseURL
+        )
+        let dataURL = packageURL.appendingPathComponent("storage/data/seed/items.jsonl")
+        try Data([0xff, 0xfe, 0xfd]).write(to: dataURL, options: [.atomic])
+        try Self.rewriteChecksums(at: packageURL)
+
+        let report = WorkspaceAppPackageService().validatePackage(at: packageURL)
+
+        #expect(!report.canInstall)
+        #expect(report.blockers.contains {
+            $0.path == "/storage/data/seed/items.jsonl"
+                && $0.message.contains("UTF-8")
+        })
+        #expect(!report.blockers.contains {
+            $0.path == "/storage/data/seed/items.jsonl"
+                && $0.message.contains("regular file inside the package")
+        })
+    }
+
+    @Test("package validation distinguishes invalid exports manifest from missing exports manifest")
+    func packageValidationDistinguishesInvalidExportsManifestFromMissingExportsManifest() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let packageURL = root.appendingPathComponent("grocery-invalid-exports.astra-app", isDirectory: true)
+        let databaseURL = try Self.groceryDatabase(in: root)
+        _ = try WorkspaceAppPackageService().exportPackage(
+            manifest: Self.groceryManifest(),
+            to: packageURL,
+            packageID: "grocery-invalid-exports",
+            mode: .templatePlusSeedData,
+            appStorageDatabaseURL: databaseURL
+        )
+        let exportsURL = packageURL.appendingPathComponent("storage/data/exports.json")
+        let outsideURL = root.appendingPathComponent("outside-exports.json")
+        try Data("[]".utf8).write(to: outsideURL)
+        try FileManager.default.removeItem(at: exportsURL)
+        try FileManager.default.createSymbolicLink(atPath: exportsURL.path, withDestinationPath: outsideURL.path)
+
+        let report = WorkspaceAppPackageService().validatePackage(at: packageURL)
+
+        #expect(!report.canInstall)
+        #expect(report.blockers.contains {
+            $0.path == "/storage/data/exports.json"
+                && $0.message.contains("regular file inside the package")
+        })
+    }
+
     @Test("full app export writes records and surfaces a sensitive data warning")
     func fullAppExportWritesRecordsAndSurfacesSensitiveDataWarning() throws {
         let root = try Self.temporaryRoot()
@@ -862,6 +960,17 @@ struct WorkspaceAppPackageTests {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
         try encoder.encode(package).write(to: packageJSONURL, options: [.atomic])
+        try rewriteChecksums(at: packageURL)
+    }
+
+    static func writeDataExports(
+        _ exports: [WorkspaceAppPackageDataExport],
+        to packageURL: URL
+    ) throws {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        try encoder.encode(exports)
+            .write(to: packageURL.appendingPathComponent("storage/data/exports.json"), options: [.atomic])
         try rewriteChecksums(at: packageURL)
     }
 
