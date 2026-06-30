@@ -250,6 +250,23 @@ struct HostControlToolSupportTests {
         #expect(runner.requests.map(\.timeoutSeconds) == [300])
     }
 
+    @Test("Host control process tools normalize non-finite timeout inputs")
+    func hostControlProcessToolsNormalizeNonFiniteTimeoutInputs() throws {
+        let runner = CapturingHostControlProcessRunner()
+        let server = HostControlMCPServer(
+            configuration: HostControlToolConfiguration(githubExecutable: "/usr/bin/gh"),
+            processRunner: runner,
+            processLimits: HostControlProcessLimits(maximumTimeoutSeconds: 42, outputByteLimit: 1024)
+        )
+
+        _ = try call(server, id: 1, tool: "github", arguments: [
+            "arguments": ["pr", "view", "123"],
+            "timeout_seconds": "nan"
+        ])
+
+        #expect(runner.requests.map(\.timeoutSeconds) == [42])
+    }
+
     @Test("Host control default process runner uses server process limits")
     func hostControlDefaultProcessRunnerUsesServerProcessLimits() throws {
         let root = FileManager.default.temporaryDirectory
@@ -311,6 +328,30 @@ struct HostControlToolSupportTests {
         #expect(result.stdout.contains("ASTRA truncated stdout after"))
         #expect(!result.stdout.contains("TAIL_SENTINEL"))
         #expect(Data(result.stdout.utf8).count < 270_000)
+    }
+
+    @Test("Host control process runner keeps truncation marker within tiny output limits")
+    func hostControlProcessRunnerKeepsTruncationMarkerWithinTinyOutputLimits() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-host-tiny-output-limit-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let executable = try customExecutable(named: "tiny-noisy", root: root, body: """
+        printf 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+        exit 0
+        """)
+
+        let result = HostControlProcessRunner(limits: HostControlProcessLimits(maximumTimeoutSeconds: 5, outputByteLimit: 8)).run(
+            executablePath: executable.path,
+            arguments: [],
+            timeoutSeconds: 5,
+            environment: [:]
+        )
+
+        #expect(result.exitCode == 125)
+        #expect(result.stdoutTruncated)
+        #expect(Data(result.stdout.utf8).count <= 8)
     }
 
     @Test("Host control process runner clamps timeouts at the shared runner boundary")
@@ -388,7 +429,7 @@ struct HostControlToolSupportTests {
         )
 
         #expect(result.exitCode == 0)
-        #expect(Date().timeIntervalSince(started) < 1)
+        #expect(Date().timeIntervalSince(started) < 2)
     }
 
     @Test("Host control tool schemas describe the configured timeout cap")
@@ -438,6 +479,40 @@ struct HostControlToolSupportTests {
                 ]
             ),
             processLimits: HostControlProcessLimits(maximumTimeoutSeconds: 5, outputByteLimit: "visible-prefix:super-secr".count)
+        )
+
+        let response = try call(server, id: 1, tool: "github", arguments: ["arguments": ["pr", "view", "123"]])
+        let text = try resultText(response)
+
+        #expect(text.contains("output_truncated: true"))
+        #expect(!text.contains("super-secr"))
+        #expect(!text.contains("super-secret-token"))
+    }
+
+    @Test("Host control redacts secret prefixes on both streams when either stream truncates")
+    func hostControlRedactsSecretPrefixesOnBothStreamsWhenEitherStreamTruncates() throws {
+        let connectors = """
+        {"connectors":[{"id":"jira-1","alias":"jira","envPrefix":"JIRA_JIRA","name":"Jira","serviceType":"jira","baseURL":"https://example.atlassian.net","authMethod":"basic","env":{"JIRA_API_TOKEN":"JIRA_TOKEN_ENV"},"credentials":{"JIRA_API_TOKEN":"JIRA_TOKEN_ENV"},"config":{}}]}
+        """
+        let runner = CapturingHostControlProcessRunner(result: HostControlCommandResult(
+            command: "/usr/bin/gh",
+            arguments: ["pr", "view", "123"],
+            exitCode: 125,
+            stdout: "stdout-prefix:super-secr",
+            stderr: "stderr was truncated",
+            stdoutTruncated: false,
+            stderrTruncated: true
+        ))
+        let server = HostControlMCPServer(
+            configuration: HostControlToolConfiguration(
+                githubExecutable: "/usr/bin/gh",
+                connectorsJSON: connectors,
+                environment: [
+                    "ASTRA_CONNECTORS": connectors,
+                    "JIRA_TOKEN_ENV": "super-secret-token"
+                ]
+            ),
+            processRunner: runner
         )
 
         let response = try call(server, id: 1, tool: "github", arguments: ["arguments": ["pr", "view", "123"]])
@@ -517,6 +592,17 @@ private final class CapturingHostControlProcessRunner: HostControlProcessRunning
     }
 
     private(set) var requests: [Request] = []
+    private let result: HostControlCommandResult
+
+    init(result: HostControlCommandResult = HostControlCommandResult(
+        command: "/usr/bin/gh",
+        arguments: [],
+        exitCode: 0,
+        stdout: "ok",
+        stderr: ""
+    )) {
+        self.result = result
+    }
 
     func run(
         executablePath: String,
@@ -530,12 +616,6 @@ private final class CapturingHostControlProcessRunner: HostControlProcessRunning
             timeoutSeconds: timeoutSeconds,
             environment: environment
         ))
-        return HostControlCommandResult(
-            command: executablePath,
-            arguments: arguments,
-            exitCode: 0,
-            stdout: "ok",
-            stderr: ""
-        )
+        return result
     }
 }

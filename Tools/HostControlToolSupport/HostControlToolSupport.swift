@@ -746,12 +746,13 @@ public final class HostControlMCPServer {
     }
 
     private func redactedResult(_ result: HostControlCommandResult) -> HostControlCommandResult {
-        HostControlCommandResult(
+        let includeSecretFragments = result.stdoutTruncated || result.stderrTruncated
+        return HostControlCommandResult(
             command: result.command,
             arguments: result.arguments,
             exitCode: result.exitCode,
-            stdout: configuration.redacted(result.stdout, includingSecretFragments: result.stdoutTruncated),
-            stderr: configuration.redacted(result.stderr, includingSecretFragments: result.stderrTruncated),
+            stdout: configuration.redacted(result.stdout, includingSecretFragments: includeSecretFragments),
+            stderr: configuration.redacted(result.stderr, includingSecretFragments: includeSecretFragments),
             timedOut: result.timedOut,
             stdoutTruncated: result.stdoutTruncated,
             stderrTruncated: result.stderrTruncated
@@ -908,7 +909,8 @@ public final class HostControlMCPServer {
         default:
             nil
         }
-        return processLimits.clampedTimeout(requested ?? 120)
+        let finiteRequest = requested.flatMap { $0.isFinite ? $0 : nil }
+        return processLimits.clampedTimeout(finiteRequest ?? 120)
     }
 
     private func clean(_ value: String?) -> String? {
@@ -1116,7 +1118,13 @@ private final class BoundedProcessOutput: @unchecked Sendable {
         let discarded = min(data.count, Self.truncationBoundarySafetyBytes)
         if discarded > 0 { data.removeLast(discarded) }
         let marker = "\n[ASTRA truncated \(label) after \(byteLimit) bytes]\n"
-        data.append(Data(marker.utf8))
+        let markerData = Data(marker.utf8)
+        let markerBytesToKeep = min(byteLimit, markerData.count)
+        let outputBytesToKeep = max(0, byteLimit - markerBytesToKeep)
+        if data.count > outputBytesToKeep {
+            data.removeLast(data.count - outputBytesToKeep)
+        }
+        data.append(markerData.prefix(byteLimit - data.count))
         truncated = true
         return true
     }
