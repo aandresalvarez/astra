@@ -59,14 +59,11 @@ public struct HostControlToolConfiguration: Equatable, Sendable {
 
     func redacted(_ value: String, includingSecretFragments: Bool = false) -> String {
         let secrets = secretValues
-        var redacted = secrets.reduce(value) { current, secret in
+        let redacted = secrets.reduce(value) { current, secret in
             current.replacingOccurrences(of: secret, with: "[redacted]")
         }
         guard includingSecretFragments else { return redacted }
-        for fragment in secretPrefixFragments(from: secrets) {
-            redacted = redacted.replacingOccurrences(of: fragment, with: "[redacted]")
-        }
-        return redacted
+        return redactedSecretPrefixes(redacted, secrets: secrets)
     }
 
     private var secretValues: [String] {
@@ -89,14 +86,62 @@ public struct HostControlToolConfiguration: Equatable, Sendable {
             || upper.contains("CREDENTIAL")
     }
 
-    private func secretPrefixFragments(from secrets: [String]) -> [String] {
-        Array(Set(secrets.flatMap { secret in
-            guard secret.count > 4 else { return [secret] }
-            return (4..<secret.count).map { length in
-                String(secret.prefix(length))
+    private func redactedSecretPrefixes(_ value: String, secrets: [String]) -> String {
+        let redaction = Array("[redacted]".utf8)
+        let source = Array(value.utf8)
+        let ranges = mergedSecretPrefixRanges(in: source, secrets: secrets.map { Array($0.utf8) })
+        guard !ranges.isEmpty else { return value }
+
+        var output: [UInt8] = []
+        output.reserveCapacity(source.count)
+        var cursor = 0
+        for range in ranges {
+            guard range.lowerBound >= cursor else { continue }
+            output.append(contentsOf: source[cursor..<range.lowerBound])
+            output.append(contentsOf: redaction)
+            cursor = range.upperBound
+        }
+        output.append(contentsOf: source[cursor..<source.count])
+        return String(decoding: output, as: UTF8.self)
+    }
+
+    private func mergedSecretPrefixRanges(in value: [UInt8], secrets: [[UInt8]]) -> [Range<Int>] {
+        var ranges: [Range<Int>] = []
+        for secret in secrets where secret.count >= 4 {
+            var index = 0
+            while index + 4 <= value.count {
+                guard value[index] == secret[0],
+                      value[index + 1] == secret[1],
+                      value[index + 2] == secret[2],
+                      value[index + 3] == secret[3] else {
+                    index += 1
+                    continue
+                }
+
+                let maximumLength = min(secret.count, value.count - index)
+                var length = 4
+                while length < maximumLength, value[index + length] == secret[length] {
+                    length += 1
+                }
+                ranges.append(index..<index + length)
+                index += length
             }
-        }))
-        .sorted { $0.count > $1.count }
+        }
+
+        guard !ranges.isEmpty else { return [] }
+        return ranges.sorted { lhs, rhs in
+            lhs.lowerBound == rhs.lowerBound ? lhs.upperBound < rhs.upperBound : lhs.lowerBound < rhs.lowerBound
+        }.reduce(into: []) { merged, range in
+            guard let last = merged.last else {
+                merged.append(range)
+                return
+            }
+            if range.lowerBound <= last.upperBound {
+                merged[merged.count - 1] = last.lowerBound..<max(last.upperBound, range.upperBound)
+            } else {
+                merged.append(range)
+            }
+        }
     }
 
     private static func splitList(_ value: String?) -> [String] {
@@ -1115,12 +1160,13 @@ private final class BoundedProcessOutput: @unchecked Sendable {
             data.append(chunk)
             return false
         }
-        let discarded = min(data.count, Self.truncationBoundarySafetyBytes)
-        if discarded > 0 { data.removeLast(discarded) }
         let marker = "\n[ASTRA truncated \(label) after \(byteLimit) bytes]\n"
         let markerData = Data(marker.utf8)
         let markerBytesToKeep = min(byteLimit, markerData.count)
-        let outputBytesToKeep = max(0, byteLimit - markerBytesToKeep)
+        let outputBytesToKeep = max(0, byteLimit - markerBytesToKeep - Self.truncationBoundarySafetyBytes)
+        if data.count < outputBytesToKeep {
+            data.append(chunk.prefix(outputBytesToKeep - data.count))
+        }
         if data.count > outputBytesToKeep {
             data.removeLast(data.count - outputBytesToKeep)
         }

@@ -354,6 +354,39 @@ struct HostControlToolSupportTests {
         #expect(Data(result.stdout.utf8).count <= 8)
     }
 
+    @Test("Host control process runner preserves safe output prefix before truncation marker")
+    func hostControlProcessRunnerPreservesSafeOutputPrefixBeforeTruncationMarker() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-host-safe-output-prefix-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let executable = try customExecutable(named: "prefix-noisy", root: root, body: """
+        printf 'SAFE-PREFIX-0123456789'
+        printf 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+        printf 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+        printf 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+        printf 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+        printf 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+        printf 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+        exit 0
+        """)
+
+        let outputLimit = 640
+        let result = HostControlProcessRunner(limits: HostControlProcessLimits(maximumTimeoutSeconds: 5, outputByteLimit: outputLimit)).run(
+            executablePath: executable.path,
+            arguments: [],
+            timeoutSeconds: 5,
+            environment: [:]
+        )
+
+        #expect(result.exitCode == 125)
+        #expect(result.stdoutTruncated)
+        #expect(result.stdout.contains("SAFE-PREFIX-0123456789"))
+        #expect(result.stdout.contains("ASTRA truncated stdout after \(outputLimit) bytes"))
+        #expect(Data(result.stdout.utf8).count <= outputLimit)
+    }
+
     @Test("Host control process runner clamps timeouts at the shared runner boundary")
     func hostControlProcessRunnerClampsTimeoutsAtSharedRunnerBoundary() throws {
         let root = FileManager.default.temporaryDirectory
@@ -521,6 +554,27 @@ struct HostControlToolSupportTests {
         #expect(text.contains("output_truncated: true"))
         #expect(!text.contains("super-secr"))
         #expect(!text.contains("super-secret-token"))
+    }
+
+    @Test("Host control redacts long secret fragments without prefix enumeration")
+    func hostControlRedactsLongSecretFragmentsWithoutPrefixEnumeration() throws {
+        let longSecret = String(repeating: "s", count: 12_000) + "-tail"
+        let leakedPrefix = String(longSecret.prefix(8_000))
+        let connectors = """
+        {"connectors":[{"id":"jira-1","alias":"jira","envPrefix":"JIRA_JIRA","name":"Jira","serviceType":"jira","baseURL":"https://example.atlassian.net","authMethod":"basic","env":{"JIRA_API_TOKEN":"JIRA_TOKEN_ENV"},"credentials":{"JIRA_API_TOKEN":"JIRA_TOKEN_ENV"},"config":{}}]}
+        """
+        let configuration = HostControlToolConfiguration(
+            connectorsJSON: connectors,
+            environment: [
+                "ASTRA_CONNECTORS": connectors,
+                "JIRA_TOKEN_ENV": longSecret
+            ]
+        )
+
+        let redacted = configuration.redacted("prefix:\(leakedPrefix):suffix", includingSecretFragments: true)
+
+        #expect(redacted.contains("prefix:[redacted]:suffix"))
+        #expect(!redacted.contains(String(repeating: "s", count: 64)))
     }
 
     private func fakeExecutable(named name: String, root: URL, log: URL, stdout: String) throws -> URL {
