@@ -725,6 +725,94 @@ struct HostControlToolSupportTests {
         #expect(!stdout.contains("supe"))
     }
 
+    @Test("Host control caps redacted output even when runner did not truncate")
+    func hostControlCapsRedactedOutputEvenWhenRunnerDidNotTruncate() throws {
+        let connectors = """
+        {"connectors":[{"id":"jira-1","alias":"jira","envPrefix":"JIRA_JIRA","name":"Jira","serviceType":"jira","baseURL":"https://example.atlassian.net","authMethod":"basic","env":{"JIRA_API_TOKEN":"JIRA_TOKEN_ENV"},"credentials":{"JIRA_API_TOKEN":"JIRA_TOKEN_ENV"},"config":{}}]}
+        """
+        let runner = CapturingHostControlProcessRunner(result: HostControlCommandResult(
+            command: "/usr/bin/gh",
+            arguments: ["pr", "view", "123"],
+            exitCode: 0,
+            stdout: String(repeating: "pass", count: 40),
+            stderr: "",
+            stdoutTruncated: false
+        ))
+        let server = HostControlMCPServer(
+            configuration: HostControlToolConfiguration(
+                githubExecutable: "/usr/bin/gh",
+                connectorsJSON: connectors,
+                environment: [
+                    "ASTRA_CONNECTORS": connectors,
+                    "JIRA_TOKEN_ENV": "pass"
+                ]
+            ),
+            processRunner: runner,
+            processLimits: HostControlProcessLimits(maximumTimeoutSeconds: 5, outputByteLimit: 96)
+        )
+
+        let response = try call(server, id: 1, tool: "github", arguments: ["arguments": ["pr", "view", "123"]])
+        let stdout = try stdoutSection(in: resultText(response))
+
+        #expect(stdout.utf8.count <= 96)
+        #expect(stdout.contains("redacted"))
+        #expect(!stdout.contains("pass"))
+    }
+
+    @Test("Jira truncated response bodies redact secret prefixes and become errors")
+    func jiraTruncatedResponseBodiesRedactSecretPrefixesAndBecomeErrors() throws {
+        let connectors = """
+        {"connectors":[{"id":"jira-1","alias":"jira","envPrefix":"JIRA_JIRA","name":"Jira","serviceType":"jira","baseURL":"https://example.atlassian.net","authMethod":"basic","env":{"JIRA_API_TOKEN":"JIRA_TOKEN_ENV"},"credentials":{"JIRA_API_TOKEN":"JIRA_TOKEN_ENV"},"config":{}}]}
+        """
+        let configuration = HostControlToolConfiguration(
+            connectorsJSON: connectors,
+            environment: [
+                "ASTRA_CONNECTORS": connectors,
+                "JIRA_TOKEN_ENV": "super-secret-token"
+            ]
+        )
+        let response = JiraHTTPResponse(
+            statusCode: 200,
+            body: "visible-prefix:super-secr\n[ASTRA truncated Jira response body after 25 bytes]\n",
+            errorMessage: nil,
+            bodyTruncated: true
+        )
+
+        let formatted = response.formatted(configuration: configuration, outputByteLimit: 256)
+
+        #expect(response.isError)
+        #expect(formatted.contains("body_truncated: true"))
+        #expect(formatted.contains("visible-prefix:[redacted]"))
+        #expect(!formatted.contains("super-secr"))
+        #expect(!formatted.contains("super-secret-token"))
+    }
+
+    @Test("Jira response formatter reapplies caps after redaction")
+    func jiraResponseFormatterReappliesCapsAfterRedaction() throws {
+        let connectors = """
+        {"connectors":[{"id":"jira-1","alias":"jira","envPrefix":"JIRA_JIRA","name":"Jira","serviceType":"jira","baseURL":"https://example.atlassian.net","authMethod":"basic","env":{"JIRA_API_TOKEN":"JIRA_TOKEN_ENV"},"credentials":{"JIRA_API_TOKEN":"JIRA_TOKEN_ENV"},"config":{}}]}
+        """
+        let configuration = HostControlToolConfiguration(
+            connectorsJSON: connectors,
+            environment: [
+                "ASTRA_CONNECTORS": connectors,
+                "JIRA_TOKEN_ENV": "super-secret-token"
+            ]
+        )
+        let response = JiraHTTPResponse(
+            statusCode: 200,
+            body: String(repeating: "supe", count: 40),
+            errorMessage: nil,
+            bodyTruncated: true
+        )
+
+        let body = try bodySection(in: response.formatted(configuration: configuration, outputByteLimit: 96))
+
+        #expect(body.utf8.count <= 96)
+        #expect(body.contains("redacted"))
+        #expect(!body.contains("supe"))
+    }
+
     private func fakeExecutable(named name: String, root: URL, log: URL, stdout: String) throws -> URL {
         let executable = root.appendingPathComponent(name, isDirectory: false)
         let quotedLog = log.path.replacingOccurrences(of: "'", with: "'\\''")
@@ -787,6 +875,12 @@ struct HostControlToolSupportTests {
     private func stdoutSection(in text: String) throws -> String {
         let start = try #require(text.range(of: "stdout:\n"))
         let end = try #require(text.range(of: "\nstderr:", range: start.upperBound..<text.endIndex))
+        return String(text[start.upperBound..<end.lowerBound])
+    }
+
+    private func bodySection(in text: String) throws -> String {
+        let start = try #require(text.range(of: "body:\n"))
+        let end = try #require(text.range(of: "\nerror:", range: start.upperBound..<text.endIndex))
         return String(text[start.upperBound..<end.lowerBound])
     }
 

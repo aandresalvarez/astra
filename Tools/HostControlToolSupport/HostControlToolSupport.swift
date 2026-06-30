@@ -783,7 +783,10 @@ public final class HostControlMCPServer {
         return encodeResult(id: id, result: [
             "content": [[
                 "type": "text",
-                "text": response.formatted(configuration: configuration)
+                "text": response.formatted(
+                    configuration: configuration,
+                    outputByteLimit: processLimits.outputByteLimit
+                )
             ]],
             "isError": response.isError
         ])
@@ -854,9 +857,9 @@ public final class HostControlMCPServer {
     }
 
     private func cappedRedactedOutput(_ value: String, label: String, wasTruncated: Bool) -> String {
-        guard wasTruncated else { return value }
         let bytes = Array(value.utf8)
         let byteLimit = processLimits.outputByteLimit
+        guard wasTruncated || bytes.count > byteLimit else { return value }
         guard bytes.count > byteLimit else { return value }
 
         let marker = Array("\n[ASTRA redacted \(label) output capped after \(byteLimit) bytes]\n".utf8)
@@ -1071,14 +1074,14 @@ private struct JiraConnectorStatus {
     }
 }
 
-private struct JiraHTTPResponse {
+struct JiraHTTPResponse {
     var statusCode: Int
     var body: String
     var errorMessage: String?
     var bodyTruncated: Bool = false
 
     var isError: Bool {
-        if errorMessage != nil { return true }
+        if errorMessage != nil || bodyTruncated { return true }
         return statusCode < 200 || statusCode >= 300
     }
 
@@ -1093,18 +1096,37 @@ private struct JiraHTTPResponse {
         )
     }
 
-    func formatted(configuration: HostControlToolConfiguration) -> String {
+    func formatted(configuration: HostControlToolConfiguration, outputByteLimit: Int) -> String {
+        let redactedBody = configuration.redacted(body, includingSecretFragments: bodyTruncated)
+        let formattedBody = Self.cappedRedactedOutput(
+            redactedBody,
+            label: "Jira response body",
+            byteLimit: outputByteLimit
+        )
         var lines = [
             "status_code: \(statusCode)",
             "body:",
-            body.isEmpty ? "<empty>" : configuration.redacted(body),
+            formattedBody.isEmpty ? "<empty>" : formattedBody,
             "error:",
-            errorMessage.map { configuration.redacted($0) } ?? "<empty>"
+            errorMessage.map { configuration.redacted($0, includingSecretFragments: bodyTruncated) } ?? "<empty>"
         ]
         if bodyTruncated {
             lines.insert("body_truncated: true", at: 1)
         }
         return lines.joined(separator: "\n")
+    }
+
+    private static func cappedRedactedOutput(_ value: String, label: String, byteLimit: Int) -> String {
+        let byteLimit = max(1, byteLimit)
+        let bytes = Array(value.utf8)
+        guard bytes.count > byteLimit else { return value }
+
+        let marker = Array("\n[ASTRA redacted \(label) capped after \(byteLimit) bytes]\n".utf8)
+        let markerCount = min(byteLimit, marker.count)
+        let prefixCount = max(0, byteLimit - markerCount)
+        var capped = Array(bytes.prefix(prefixCount))
+        capped.append(contentsOf: marker.prefix(byteLimit - capped.count))
+        return String(decoding: capped, as: UTF8.self)
     }
 }
 
