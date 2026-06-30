@@ -2,25 +2,51 @@ import Foundation
 import ASTRACore
 
 enum RemoteMCPGatewayEndpointTrustPolicy {
+    static let missingCredentialEndpointReason = "credentialed remote MCP endpoint URL is missing or invalid"
     static let untrustedCredentialEndpointReason = "credentialed remote MCP endpoint must match a trusted ASTRA registry entry before ASTRA will forward connector bearer tokens"
 
     static func credentialForwardingEndpointViolation(
-        packageID: String,
-        server: PluginMCPServer
+        package: PluginPackage,
+        server: PluginMCPServer,
+        controlPlane: MCPControlPlaneMetadata? = nil
     ) -> String? {
-        guard isCredentialForwardingGatewayCandidate(server) else {
+        credentialForwardingEndpointViolation(
+            packageID: package.id,
+            packageSourceMetadata: package.sourceMetadata,
+            server: server,
+            controlPlane: controlPlane
+        )
+    }
+
+    static func credentialForwardingEndpointViolation(
+        packageID: String,
+        packageSourceMetadata: CapabilitySourceMetadata?,
+        server: PluginMCPServer,
+        controlPlane: MCPControlPlaneMetadata? = nil
+    ) -> String? {
+        guard isCredentialForwardingGatewayCandidate(server, controlPlane: controlPlane) else {
             return nil
         }
-        guard trustedCredentialEndpoint(packageID: packageID, server: server) else {
+        guard server.url != nil else {
+            return missingCredentialEndpointReason
+        }
+        guard trustedCredentialEndpoint(
+            packageID: packageID,
+            packageSourceMetadata: packageSourceMetadata,
+            server: server
+        ) else {
             return untrustedCredentialEndpointReason
         }
         return nil
     }
 
-    static func isCredentialForwardingGatewayCandidate(_ server: PluginMCPServer) -> Bool {
+    static func isCredentialForwardingGatewayCandidate(
+        _ server: PluginMCPServer,
+        controlPlane: MCPControlPlaneMetadata? = nil
+    ) -> Bool {
         server.transport != .stdio
             && !server.connectorBindings.isEmpty
-            && gatewayAccessTokenBinding(in: server.controlPlane) != nil
+            && gatewayAccessTokenBinding(in: controlPlane ?? server.controlPlane) != nil
     }
 
     static func gatewayAccessTokenBinding(
@@ -60,16 +86,25 @@ enum RemoteMCPGatewayEndpointTrustPolicy {
 
     private static func trustedCredentialEndpoint(
         packageID: String,
+        packageSourceMetadata: CapabilitySourceMetadata?,
         server: PluginMCPServer
     ) -> Bool {
-        trustedGoogleWorkspaceEndpoint(packageID: packageID, server: server)
+        trustedGoogleWorkspaceEndpoint(
+            packageID: packageID,
+            packageSourceMetadata: packageSourceMetadata,
+            server: server
+        )
     }
 
     private static func trustedGoogleWorkspaceEndpoint(
         packageID: String,
+        packageSourceMetadata: CapabilitySourceMetadata?,
         server: PluginMCPServer
     ) -> Bool {
         guard packageID == GoogleWorkspaceCapability.packageID,
+              packageSourceMetadata?.id == "built-in",
+              packageSourceMetadata?.kind == "built-in",
+              packageSourceMetadata?.trustLevel == "built-in",
               server.connectorBindings.contains(GoogleWorkspaceCapability.connectorBinding),
               let endpoint = server.url else {
             return false

@@ -200,7 +200,11 @@ struct MCPRuntimeProjectionTests {
             trustLevel: .high,
             controlPlane: gatewayAuthorizationControlPlane()
         )
-        let resolved = MCPRuntimeProjection.ResolvedServer(packageID: "google-workspace", server: remote)
+        let resolved = MCPRuntimeProjection.ResolvedServer(
+            packageID: "google-workspace",
+            packageSourceMetadata: .builtIn(),
+            server: remote
+        )
 
         #expect(MCPRuntimeProjection.claudeConfigJSON(servers: [resolved]) == nil)
         #expect(MCPRuntimeProjection.allowedToolPermissions(servers: [resolved]).isEmpty)
@@ -287,7 +291,11 @@ struct MCPRuntimeProjectionTests {
             trustLevel: .high,
             controlPlane: gatewayAuthorizationControlPlane()
         )
-        let resolved = MCPRuntimeProjection.ResolvedServer(packageID: "google-workspace", server: remote)
+        let resolved = MCPRuntimeProjection.ResolvedServer(
+            packageID: "google-workspace",
+            packageSourceMetadata: .builtIn(),
+            server: remote
+        )
 
         #expect(CodexMCPConfigRenderer.configArguments(servers: [resolved]).isEmpty)
 
@@ -316,7 +324,11 @@ struct MCPRuntimeProjectionTests {
             url: URL(string: "https://mcp.example.com/google")!,
             connectorBindings: ["google-workspace"]
         )
-        let resolved = MCPRuntimeProjection.ResolvedServer(packageID: "google-workspace", server: remote)
+        let resolved = MCPRuntimeProjection.ResolvedServer(
+            packageID: "google-workspace",
+            packageSourceMetadata: .builtIn(),
+            server: remote
+        )
 
         #expect(MCPRuntimeProjection.claudeConfigJSON(servers: [resolved]) == nil)
         #expect(CodexMCPConfigRenderer.configArguments(servers: [resolved]).isEmpty)
@@ -340,6 +352,44 @@ struct MCPRuntimeProjectionTests {
             controlPlane: gatewayAuthorizationControlPlane()
         )
         let resolved = MCPRuntimeProjection.ResolvedServer(packageID: "google-workspace", server: remote)
+
+        #expect(RemoteMCPGatewayProjection.providerFacingResolvedServer(for: resolved) == nil)
+        #expect(MCPRuntimeProjection.claudeConfigJSON(
+            servers: [resolved],
+            availableEnvironment: [accessTokenEnv: "secret-token"]
+        ) == nil)
+        #expect(CodexMCPConfigRenderer.configArguments(
+            servers: [resolved],
+            availableEnvironment: [accessTokenEnv: "secret-token"]
+        ).isEmpty)
+        #expect(MCPRuntimeProjection.allowedToolPermissions(
+            servers: [resolved],
+            availableEnvironment: [accessTokenEnv: "secret-token"]
+        ).isEmpty)
+    }
+
+    @Test("Credentialed remote MCP with copied Google Workspace identity is not projected")
+    func credentialedRemoteMCPWithCopiedGoogleWorkspaceIdentityIsNotProjected() {
+        let accessTokenEnv = RemoteMCPGatewayProjection.gatewayAccessTokenEnvironmentKey(
+            packageID: "google-workspace",
+            serverID: "google_workspace_drive",
+            bindingID: "auth-header"
+        )
+        let remote = PluginMCPServer(
+            id: "google_workspace_drive",
+            displayName: "Google Drive",
+            transport: .http,
+            url: URL(string: "https://drivemcp.googleapis.com/mcp/v1")!,
+            connectorBindings: ["google-workspace"],
+            allowedTools: ["drive.search"],
+            trustLevel: .high,
+            controlPlane: gatewayAuthorizationControlPlane()
+        )
+        let resolved = MCPRuntimeProjection.ResolvedServer(
+            packageID: "google-workspace",
+            packageSourceMetadata: .localLibrary(),
+            server: remote
+        )
 
         #expect(RemoteMCPGatewayProjection.providerFacingResolvedServer(for: resolved) == nil)
         #expect(MCPRuntimeProjection.claudeConfigJSON(

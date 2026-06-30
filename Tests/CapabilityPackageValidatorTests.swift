@@ -322,9 +322,10 @@ struct CapabilityPackageValidatorTests {
         })
     }
 
-    @Test("trusted Google Workspace gateway endpoint is allowed")
-    func trustedGoogleWorkspaceGatewayEndpointIsAllowed() {
+    @Test("declared built-in Google Workspace gateway endpoint is still blocked on local import")
+    func declaredBuiltInGoogleWorkspaceGatewayEndpointIsStillBlockedOnLocalImport() {
         var package = makePackage(id: "google-workspace", governance: .localDraft())
+        package.sourceMetadata = .builtIn()
         package.mcpServers = [
             PluginMCPServer(
                 id: "google_workspace_drive",
@@ -338,19 +339,25 @@ struct CapabilityPackageValidatorTests {
 
         let report = CapabilityPackageValidator.validate(package: package, checkPrerequisites: false)
 
-        #expect(report.canInstall)
-        #expect(!report.blockers.map(\.code).contains(.unsafeMCPServer))
+        #expect(!report.canInstall)
+        #expect(report.package?.sourceMetadata == .localLibrary())
+        #expect(report.warnings.map(\.code).contains(.localSourceNormalized))
+        #expect(report.blockers.map(\.code).contains(.unsafeMCPServer))
+        #expect(report.blockers.contains {
+            $0.message.contains("trusted ASTRA registry")
+        })
     }
 
-    @Test("trusted Google Workspace gateway endpoint accepts default HTTPS port spelling")
-    func trustedGoogleWorkspaceGatewayEndpointAcceptsDefaultHTTPSPortSpelling() {
+    @Test("local package cannot spoof trusted Google Workspace gateway endpoint")
+    func localPackageCannotSpoofTrustedGoogleWorkspaceGatewayEndpoint() {
         var package = makePackage(id: "google-workspace", governance: .localDraft())
+        package.sourceMetadata = .localLibrary()
         package.mcpServers = [
             PluginMCPServer(
                 id: "google_workspace_drive",
                 displayName: "Google Workspace Drive",
                 transport: .http,
-                url: URL(string: "https://drivemcp.googleapis.com:443/mcp/v1#ignored"),
+                url: URL(string: "https://drivemcp.googleapis.com/mcp/v1"),
                 connectorBindings: ["google-workspace"],
                 controlPlane: gatewayAuthorizationControlPlane()
             )
@@ -358,8 +365,29 @@ struct CapabilityPackageValidatorTests {
 
         let report = CapabilityPackageValidator.validate(package: package, checkPrerequisites: false)
 
-        #expect(report.canInstall)
-        #expect(!report.blockers.map(\.code).contains(.unsafeMCPServer))
+        #expect(!report.canInstall)
+        #expect(report.blockers.map(\.code).contains(.unsafeMCPServer))
+        #expect(report.blockers.contains {
+            $0.message.contains("trusted ASTRA registry")
+        })
+    }
+
+    @Test("trusted Google Workspace gateway endpoint accepts default HTTPS port spelling")
+    func trustedGoogleWorkspaceGatewayEndpointAcceptsDefaultHTTPSPortSpelling() {
+        let server = PluginMCPServer(
+            id: "google_workspace_drive",
+            displayName: "Google Workspace Drive",
+            transport: .http,
+            url: URL(string: "https://drivemcp.googleapis.com:443/mcp/v1#ignored"),
+            connectorBindings: ["google-workspace"],
+            controlPlane: gatewayAuthorizationControlPlane()
+        )
+
+        #expect(RemoteMCPGatewayEndpointTrustPolicy.credentialForwardingEndpointViolation(
+            packageID: "google-workspace",
+            packageSourceMetadata: .builtIn(),
+            server: server
+        ) == nil)
     }
 
     @Test("mutable MCP install source is surfaced as a warning")

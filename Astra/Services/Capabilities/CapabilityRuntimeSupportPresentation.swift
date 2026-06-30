@@ -40,10 +40,21 @@ enum CapabilityRuntimeSupportPresentation {
         for package: PluginPackage,
         descriptors: [AgentRuntimeDescriptor] = allRuntimeDescriptors()
     ) -> String {
-        mcpSupportSubtitle(
-            for: package.mcpServers,
-            descriptors: descriptors
-        )
+        guard !package.mcpServers.isEmpty else {
+            return "No MCP servers declared"
+        }
+        let profiles = MCPRuntimeSupportMatrix.profiles(for: descriptors)
+        let support = profiles.reduce(into: (full: [AgentRuntimeID](), partial: [AgentRuntimeID]())) { result, profile in
+            let deliveredCount = package.mcpServers.filter { server in
+                MCPRuntimeDeliveryPlanner.plan(package: package, server: server, profiles: [profile]).first?.compatibility == .compatible
+            }.count
+            if deliveredCount == package.mcpServers.count {
+                result.full.append(profile.runtimeID)
+            } else if deliveredCount > 0 {
+                result.partial.append(profile.runtimeID)
+            }
+        }
+        return supportSubtitle(full: support.full, partial: support.partial, descriptors: descriptors)
     }
 
     static func mcpSupportSubtitle(
@@ -64,8 +75,16 @@ enum CapabilityRuntimeSupportPresentation {
                 result.partial.append(profile.runtimeID)
             }
         }
-        let full = descriptors.filter { support.full.contains($0.id) }
-        let partial = descriptors.filter { support.partial.contains($0.id) }
+        return supportSubtitle(full: support.full, partial: support.partial, descriptors: descriptors)
+    }
+
+    private static func supportSubtitle(
+        full fullIDs: [AgentRuntimeID],
+        partial partialIDs: [AgentRuntimeID],
+        descriptors: [AgentRuntimeDescriptor]
+    ) -> String {
+        let full = descriptors.filter { fullIDs.contains($0.id) }
+        let partial = descriptors.filter { partialIDs.contains($0.id) }
         guard !full.isEmpty || !partial.isEmpty else {
             return "Not delivered to any installed runtime yet"
         }
