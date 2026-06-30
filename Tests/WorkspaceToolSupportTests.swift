@@ -748,6 +748,121 @@ struct WorkspaceToolSupportTests {
         #expect(manager.tail(jobID: job.jobID, stream: "stdout", lines: 10).text.contains("ok"))
     }
 
+    @Test("Docker workspace job cancel rejects non-canonical job ids before Docker exec")
+    func dockerWorkspaceJobCancelRejectsNonCanonicalJobIDsBeforeDockerExec() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-workspace-job-cancel-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let docker = root.appendingPathComponent("docker")
+        let log = root.appendingPathComponent("docker.log")
+        let quotedLogPath = log.path.replacingOccurrences(of: "'", with: "'\\''")
+        try """
+        #!/bin/sh
+        LOG='\(quotedLogPath)'
+        printf '%s\\n' "$*" >> "$LOG"
+        case "$1" in
+          inspect) exit 1 ;;
+          rm) exit 0 ;;
+          run) echo container-id; exit 0 ;;
+          exec) exit 0 ;;
+          stop) exit 0 ;;
+          *) exit 99 ;;
+        esac
+        """.write(to: docker, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: docker.path)
+
+        let jobRoot = root.appendingPathComponent("jobs", isDirectory: true)
+        let configuration = WorkspaceToolConfiguration(
+            dockerExecutable: docker.path,
+            image: "astra/workspace:latest",
+            containerName: "astra-test-job-cancel",
+            workdir: "/workspace",
+            network: "bridge",
+            taskID: "task-cancel",
+            runID: "run-cancel",
+            mounts: [
+                WorkspaceDockerMount(hostPath: root.path, containerPath: "/workspace", access: "rw", role: "workspace")
+            ],
+            jobRootHostPath: jobRoot.path,
+            jobRootContainerPath: "/workspace/jobs"
+        )
+        let executor = DockerWorkspaceCommandExecutor(configuration: configuration)
+        let manager = DockerWorkspaceJobManager(configuration: configuration, executor: executor)
+
+        let job = manager.start(
+            command: "printf started && sleep 60",
+            timeoutSeconds: 7200,
+            label: "long validation",
+            progressProbe: "generic-log"
+        )
+        let logBeforeCancel = try String(contentsOf: log, encoding: .utf8)
+
+        let cancelled = manager.cancel(jobID: "../\(job.jobID)")
+        executor.cleanup()
+
+        #expect(cancelled.status == .failed)
+        #expect(cancelled.message?.contains("Invalid workspace job id") == true)
+        let logAfterCancel = try String(contentsOf: log, encoding: .utf8)
+        let cancelLog = String(logAfterCancel.dropFirst(logBeforeCancel.count))
+        #expect(!cancelLog.contains("exec astra-test-job-cancel sh -c"))
+        #expect(!cancelLog.contains("/workspace/jobs/../\(job.jobID)/pid"))
+        #expect(manager.status(jobID: job.jobID).status == .running)
+    }
+
+    @Test("Workspace managed job store canonicalizes uppercase job ids")
+    func workspaceManagedJobStoreCanonicalizesUppercaseJobIDs() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-workspace-job-case-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let store = WorkspaceManagedJobStore(rootPath: root.path)
+        let job = try store.create(
+            command: "echo ok",
+            timeoutSeconds: nil,
+            label: nil,
+            progressProbe: nil,
+            runtime: "docker"
+        )
+
+        let loaded = try store.load(jobID: job.jobID.uppercased())
+        #expect(loaded.jobID == job.jobID)
+
+        let cancelled = try store.mark(jobID: job.jobID.uppercased(), status: .cancelled)
+        #expect(cancelled.jobID == job.jobID)
+        #expect(cancelled.status == .cancelled)
+    }
+
+    @Test("Workspace managed job store persists canonical job ids")
+    func workspaceManagedJobStorePersistsCanonicalJobIDs() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-workspace-job-save-case-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let store = WorkspaceManagedJobStore(rootPath: root.path)
+        let now = Date(timeIntervalSince1970: 1_782_300_000)
+        let record = WorkspaceManagedJobRecord(
+            jobID: "JOB_ABC-123",
+            command: "echo ok",
+            runtime: "docker",
+            status: .queued,
+            createdAt: now,
+            updatedAt: now,
+            stdoutLogPath: "/tmp/job/stdout.log",
+            stderrLogPath: "/tmp/job/stderr.log",
+            heartbeatPath: "/tmp/job/heartbeat.json",
+            resultPath: "/tmp/job/result.json"
+        )
+
+        try store.save(record)
+
+        let loaded = try store.load(jobID: "JOB_ABC-123")
+        #expect(loaded.jobID == "job_abc-123")
+        #expect(loaded.command == "echo ok")
+        #expect(loaded.status == .queued)
+    }
+
     @Test("Managed job tail derives log paths from trusted job directory")
     func managedJobTailDerivesLogPathsFromTrustedJobDirectory() throws {
         let root = FileManager.default.temporaryDirectory
