@@ -143,13 +143,24 @@ enum TaskOutputArtifactPathPolicy {
         let standardizedRoot = rootURL.standardizedFileURL.path
         let resolvedPath = url.resolvingSymlinksInPath().standardizedFileURL.path
         let resolvedRoot = rootURL.resolvingSymlinksInPath().standardizedFileURL.path
-        guard (standardizedPath == standardizedRoot || standardizedPath.hasPrefix(standardizedRoot + "/")),
-              (resolvedPath == resolvedRoot || resolvedPath.hasPrefix(resolvedRoot + "/")) else {
+
+        if let relative = relativePath(path: standardizedPath, root: standardizedRoot),
+           relativePath(path: resolvedPath, root: resolvedRoot) != nil {
+            return relative
+        }
+        if let relative = relativePath(path: resolvedPath, root: resolvedRoot) {
+            return relative
+        }
+        return nil
+    }
+
+    private static func relativePath(path: String, root: String) -> String? {
+        guard path == root || path.hasPrefix(root + "/") else {
             return nil
         }
-        if standardizedPath == standardizedRoot {
+        if path == root {
             return ""
         }
-        return String(standardizedPath.dropFirst(standardizedRoot.count + 1))
+        return String(path.dropFirst(root.count + 1))
     }
 }

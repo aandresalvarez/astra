@@ -594,7 +594,8 @@ struct WorkspaceToolSupportTests {
         let quotedLogPath = log.path.replacingOccurrences(of: "'", with: "'\\''")
         try """
         #!/bin/sh
-        printf '%s\\n' "$*" >> '\(quotedLogPath)'
+        LOG='\(quotedLogPath)'
+        printf '%s\\n' "$*" >> "$LOG"
         exit 99
         """.write(to: docker, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: docker.path)
@@ -683,7 +684,8 @@ struct WorkspaceToolSupportTests {
         let quotedLogPath = log.path.replacingOccurrences(of: "'", with: "'\\''")
         try """
         #!/bin/sh
-        printf '%s\\n' "$*" >> '\(quotedLogPath)'
+        LOG='\(quotedLogPath)'
+        printf '%s\\n' "$*" >> "$LOG"
         case "$1" in
           inspect) exit 1 ;;
           rm) exit 0 ;;
@@ -755,7 +757,8 @@ struct WorkspaceToolSupportTests {
         let quotedLogPath = log.path.replacingOccurrences(of: "'", with: "'\\''")
         try """
         #!/bin/sh
-        printf '%s\\n' "$*" >> '\(quotedLogPath)'
+        LOG='\(quotedLogPath)'
+        printf '%s\\n' "$*" >> "$LOG"
         case "$1" in
           inspect) exit 1 ;;
           rm) exit 0 ;;
@@ -816,7 +819,8 @@ struct WorkspaceToolSupportTests {
         let quotedLogPath = log.path.replacingOccurrences(of: "'", with: "'\\''")
         try """
         #!/bin/sh
-        printf '%s\\n' "$*" >> '\(quotedLogPath)'
+        LOG='\(quotedLogPath)'
+        printf '%s\\n' "$*" >> "$LOG"
         case "$1" in
           inspect) exit 1 ;;
           rm) exit 0 ;;

@@ -1838,9 +1838,66 @@ enum ASTRASchemaV7: VersionedSchema {
     }
 }
 
+/// V8 adds the Workspace App Studio runtime models on top of V7's execution-environment
+/// fields. They are additive, flat, UUID-keyed models with no relationships to existing
+/// entities, so V7 -> V8 is a lightweight migration that only creates the new tables.
+enum ASTRASchemaV8: VersionedSchema {
+    static var versionIdentifier = Schema.Version(8, 0, 0)
+
+    static var models: [any PersistentModel.Type] {
+        [
+            Workspace.self,
+            AgentTask.self,
+            TaskRun.self,
+            TaskEvent.self,
+            Artifact.self,
+            Skill.self,
+            Connector.self,
+            LocalTool.self,
+            TaskTemplate.self,
+            TaskSchedule.self,
+            // Workspace App Studio runtime (F1 re-land): additive, flat
+            // UUID-keyed models with no relationships to existing entities,
+            // so V7 -> V8 is a lightweight migration.
+            WorkspaceApp.self,
+            WorkspaceAppRun.self,
+            WorkspaceAppRunEvent.self,
+            WorkspaceAppDependencyBinding.self,
+            WorkspaceAppAutomationState.self
+        ]
+    }
+}
+
+/// V9 adds Google OAuth account profiles. Token values are intentionally not
+/// model fields; they live only in the dedicated Keychain-backed vault.
+enum ASTRASchemaV9: VersionedSchema {
+    static var versionIdentifier = Schema.Version(9, 0, 0)
+
+    static var models: [any PersistentModel.Type] {
+        [
+            Workspace.self,
+            AgentTask.self,
+            TaskRun.self,
+            TaskEvent.self,
+            Artifact.self,
+            Skill.self,
+            Connector.self,
+            LocalTool.self,
+            TaskTemplate.self,
+            TaskSchedule.self,
+            WorkspaceApp.self,
+            WorkspaceAppRun.self,
+            WorkspaceAppRunEvent.self,
+            WorkspaceAppDependencyBinding.self,
+            WorkspaceAppAutomationState.self,
+            GoogleOAuthAccountProfile.self
+        ]
+    }
+}
+
 enum ASTRASchema {
     static var current: Schema {
-        Schema(versionedSchema: ASTRASchemaV7.self)
+        Schema(versionedSchema: ASTRASchemaV9.self)
     }
 }
 
@@ -1853,7 +1910,9 @@ enum ASTRAMigrationPlan: SchemaMigrationPlan {
             ASTRASchemaV4.self,
             ASTRASchemaV5.self,
             ASTRASchemaV6.self,
-            ASTRASchemaV7.self
+            ASTRASchemaV7.self,
+            ASTRASchemaV8.self,
+            ASTRASchemaV9.self
         ]
     }
 
@@ -1864,7 +1923,9 @@ enum ASTRAMigrationPlan: SchemaMigrationPlan {
             .lightweight(fromVersion: ASTRASchemaV3.self, toVersion: ASTRASchemaV4.self),
             .lightweight(fromVersion: ASTRASchemaV4.self, toVersion: ASTRASchemaV5.self),
             .lightweight(fromVersion: ASTRASchemaV5.self, toVersion: ASTRASchemaV6.self),
-            .lightweight(fromVersion: ASTRASchemaV6.self, toVersion: ASTRASchemaV7.self)
+            .lightweight(fromVersion: ASTRASchemaV6.self, toVersion: ASTRASchemaV7.self),
+            .lightweight(fromVersion: ASTRASchemaV7.self, toVersion: ASTRASchemaV8.self),
+            .lightweight(fromVersion: ASTRASchemaV8.self, toVersion: ASTRASchemaV9.self)
         ]
     }
 }

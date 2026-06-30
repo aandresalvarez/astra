@@ -165,6 +165,34 @@ struct CapabilityCatalogPolicyTests {
         #expect(adminDecision.blockers.contains(.blockedApprovalStatus))
     }
 
+    @Test("Hidden package is hidden from admins and users")
+    func hiddenPackageIsHiddenFromAdminsAndUsers() {
+        let package = makePolicyPackage(governance: CapabilityGovernance(
+            approvalStatus: .approved,
+            riskLevel: .low,
+            visibility: .hidden,
+            requiresAdminApproval: false,
+            requiresExplicitUserConsent: false
+        ))
+
+        let userDecision = CapabilityCatalogPolicy.decision(
+            for: package,
+            context: CapabilityCatalogPolicyContext(currentAppVersion: SemanticVersion(1, 0, 0))
+        )
+        let adminDecision = CapabilityCatalogPolicy.decision(
+            for: package,
+            context: CapabilityCatalogPolicyContext(
+                isAdmin: true,
+                currentAppVersion: SemanticVersion(1, 0, 0)
+            )
+        )
+
+        #expect(!userDecision.isVisible)
+        #expect(!adminDecision.isVisible)
+        #expect(userDecision.blockers.contains(.hiddenFromUser))
+        #expect(adminDecision.blockers.contains(.hiddenFromUser))
+    }
+
     @Test("Role scoped package requires matching role")
     func roleScopedPackageRequiresMatchingRole() {
         let package = makePolicyPackage(governance: .builtInApproved(
@@ -350,6 +378,44 @@ struct CapabilityCatalogPolicyTests {
             name: "Unsafe MCP",
             reason: "interpreter execution flag -c is not allowed in package defaults"
         )))
+    }
+
+    @Test("Unsafe MCP control-plane metadata blocks package")
+    func unsafeMCPControlPlaneMetadataBlocksPackage() {
+        var package = makePolicyPackage(governance: .builtInApproved(riskLevel: .medium))
+        package.mcpServers = [
+            PluginMCPServer(
+                id: "google-workspace",
+                displayName: "Google Workspace",
+                transport: .http,
+                url: URL(string: "https://mcp.example.com/google"),
+                controlPlane: MCPControlPlaneMetadata(
+                    runtimeBindings: [
+                        MCPRuntimeBindingTemplate(
+                            id: "authorization-header",
+                            destination: .httpHeader,
+                            name: "Authorization",
+                            template: [
+                                .literal("Bearer ya29.raw-access-token-that-must-not-serialize")
+                            ]
+                        )
+                    ]
+                )
+            )
+        ]
+
+        let decision = CapabilityCatalogPolicy.decision(
+            for: package,
+            context: CapabilityCatalogPolicyContext(currentAppVersion: SemanticVersion(1, 0, 0))
+        )
+
+        #expect(!decision.canEnable)
+        #expect(!decision.canRun)
+        #expect(decision.blockerMessages.contains { $0.contains("control-plane") })
+        #expect(decision.blockerMessages.contains {
+            $0.contains("runtime binding authorization-header is invalid: literal value must not contain a raw secret")
+        })
+        #expect(!decision.blockerMessages.contains { $0.contains("literalValueMustNotContainRawSecret") })
     }
 
     @Test("Remote MCP servers require HTTPS unless loopback")

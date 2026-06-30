@@ -9,8 +9,8 @@ enum MarkdownRenderPreparation {
 
     static func joinChunks(_ chunks: [String]) -> String {
         let joined = chunks
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
+            .map(normalizedLineEndings)
+            .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
             .reduce(into: "") { result, chunk in
                 guard !result.isEmpty else {
                     result = chunk
@@ -109,6 +109,10 @@ enum MarkdownRenderPreparation {
         let lhsLastLine = lastNonEmptyLine(in: lhs)
         let rhsFirstLine = firstNonEmptyLine(in: rhs)
 
+        if hasUnclosedFence(lhs) {
+            return lhs.hasSuffix("\n") ? "" : "\n"
+        }
+
         if let rhsFirstLine, isTableRow(rhsFirstLine) || isTableSeparator(rhsFirstLine) {
             if let lhsLastLine, isTableRow(lhsLastLine) || isTableSeparator(lhsLastLine) {
                 return lhs.hasSuffix("\n") ? "" : "\n"
@@ -131,13 +135,20 @@ enum MarkdownRenderPreparation {
         return " "
     }
 
+    private static func hasUnclosedFence(_ text: String) -> Bool {
+        let fenceCount = text
+            .components(separatedBy: "\n")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter(isFenceLine)
+            .count
+        return !fenceCount.isMultiple(of: 2)
+    }
+
     private static func splitHeadingAndTableHeader(
         _ line: String,
         nextLine: String?
     ) -> (heading: String, tableHeader: String)? {
-        let trimmed = line.trimmingCharacters(in: .whitespaces)
-        guard isHeading(trimmed),
-              let nextLine,
+        guard let nextLine,
               isTableSeparator(nextLine.trimmingCharacters(in: .whitespaces)),
               let pipeIndex = line.firstIndex(of: "|") else {
             return nil
@@ -145,7 +156,7 @@ enum MarkdownRenderPreparation {
 
         let heading = String(line[..<pipeIndex]).trimmingCharacters(in: .whitespaces)
         let tableHeader = String(line[pipeIndex...]).trimmingCharacters(in: .whitespaces)
-        guard !heading.isEmpty, isTableRow(tableHeader) else { return nil }
+        guard isSpacedHeading(heading), isTableRow(tableHeader) else { return nil }
         return (heading, tableHeader)
     }
 
@@ -166,6 +177,15 @@ enum MarkdownRenderPreparation {
         if count == trimmed.count { return false }
         let contentStart = trimmed.index(trimmed.startIndex, offsetBy: count)
         return trimmed[contentStart].isWhitespace || trimmed[contentStart] != "#"
+    }
+
+    private static func isSpacedHeading(_ line: String) -> Bool {
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        guard trimmed.first == "#" else { return false }
+        let count = trimmed.prefix(while: { $0 == "#" }).count
+        guard (1...6).contains(count), count < trimmed.count else { return false }
+        let contentStart = trimmed.index(trimmed.startIndex, offsetBy: count)
+        return trimmed[contentStart].isWhitespace
     }
 
     private static func isTableRow(_ line: String) -> Bool {

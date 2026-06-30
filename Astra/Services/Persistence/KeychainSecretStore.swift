@@ -82,6 +82,10 @@ struct KeychainSecretStore: SecretStore {
         "\(AppChannel.current.keychainSkillPrefix)-\(skillID.uuidString)"
     }
 
+    static func googleOAuthEntityID(for accountID: UUID) -> String {
+        "\(AppChannel.current.keychainConnectorPrefix)-google-oauth-\(accountID.uuidString)"
+    }
+
     private static func normalizedBaseURLIdentity(_ value: String) -> String? {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }

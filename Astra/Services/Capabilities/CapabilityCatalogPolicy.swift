@@ -197,9 +197,7 @@ enum CapabilityCatalogPolicy {
         case .everyone:
             break
         case .hidden:
-            if !context.isAdmin {
-                visibilityBlockers.append(.hiddenFromUser)
-            }
+            visibilityBlockers.append(.hiddenFromUser)
         case .adminOnly:
             if !context.isAdmin {
                 visibilityBlockers.append(.adminOnly)
@@ -271,6 +269,12 @@ enum CapabilityCatalogPolicy {
         for server in package.mcpServers {
             if let reason = unsafeMCPServerReason(server) {
                 operationalBlockers.append(.unsafeMCPServer(name: displayName(server.displayName, fallback: server.id), reason: reason))
+            }
+            if let reason = unsafeMCPControlPlaneReason(server) {
+                operationalBlockers.append(.unsafeMCPServer(
+                    name: displayName(server.displayName, fallback: server.id),
+                    reason: "unsafe MCP control-plane metadata: \(reason)"
+                ))
             }
             if let nameReason = MCPEnvironmentKeyPolicy.invalidNameReason(server: server) {
                 operationalBlockers.append(.unsafeMCPServer(
@@ -401,6 +405,13 @@ enum CapabilityCatalogPolicy {
             return "remote MCP URL must use HTTPS, except loopback HTTP for local development"
         }
         return nil
+    }
+
+    private static func unsafeMCPControlPlaneReason(_ server: PluginMCPServer) -> String? {
+        guard let controlPlane = server.controlPlane else { return nil }
+        let violations = controlPlane.invariantViolations()
+        guard !violations.isEmpty else { return nil }
+        return violations.map(\.shortDescription).joined(separator: "; ")
     }
 
     private static func isLoopbackHost(_ host: String?) -> Bool {

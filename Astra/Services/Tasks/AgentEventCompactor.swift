@@ -203,7 +203,6 @@ enum AgentEventCompactor {
             let finalResponses = sorted
                 .dropFirst(latestBoundaryIndex + 1)
                 .filter { $0.type == "agent.response" }
-                .suffix(3)
             for event in finalResponses {
                 output.insert(event.id)
             }

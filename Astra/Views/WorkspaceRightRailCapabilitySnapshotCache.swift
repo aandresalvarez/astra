@@ -156,14 +156,7 @@ struct CapabilityRailPackageSignature: Hashable, Comparable {
         category = package.category
         sourceKind = package.sourceMetadata?.kind
         governanceStatus = package.governance.approvalStatus.rawValue
-        resourceCounts = [
-            package.skills.count,
-            package.connectors.count,
-            package.localTools.count,
-            package.templates.count,
-            package.browserAdapters.count,
-            package.prerequisites.count
-        ]
+        resourceCounts = CapabilityPackageResourceSummary(package: package).resourceCountsForCacheSignature
         requirementNames = package.prerequisites.map(\.displayName).sorted()
     }
 

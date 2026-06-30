@@ -1137,6 +1137,52 @@ extension TaskThreadSnapshotTests {
         #expect(output.progressMessages.map(\.text) == ["Reading the file before answering."])
     }
 
+    @Test("Progress messages dedupe adjacent normalized events while preserving source IDs")
+    func progressMessagesDedupeAdjacentNormalizedEventsWhilePreservingSourceIDs() {
+        let task = makeTask(goal: "Original goal", status: .running)
+        let run = TaskRun(task: task)
+        run.status = .running
+        run.output = "Reading the file before answering."
+
+        let first = makeEvent(
+            task: task,
+            type: "agent.response",
+            payload: "Reading the file before answering.",
+            timestamp: Date(timeIntervalSince1970: 115),
+            run: run
+        )
+        let duplicate = makeEvent(
+            task: task,
+            type: "agent.response",
+            payload: "\nReading the file before answering.\n",
+            timestamp: Date(timeIntervalSince1970: 116),
+            run: run
+        )
+        let next = makeEvent(
+            task: task,
+            type: "agent.response",
+            payload: "Now checking the generated report.",
+            timestamp: Date(timeIntervalSince1970: 117),
+            run: run
+        )
+
+        let snapshot = TaskThreadSnapshot(
+            goal: task.goal,
+            createdAt: task.createdAt,
+            events: [first, duplicate, next],
+            runs: [run]
+        )
+
+        let output = snapshot.outputPresentation(for: TaskRunSnapshot(input: TaskRunSnapshotInput(run: run)))
+        #expect(output.displayText.isEmpty)
+        #expect(output.progressMessages.map(\.text) == [
+            "Reading the file before answering.",
+            "Now checking the generated report."
+        ])
+        #expect(output.progressMessages.map(\.id) == [first.id, next.id])
+        #expect(output.progressMessages.map(\.timestamp) == [first.timestamp, next.timestamp])
+    }
+
     @Test("Latest agent plan derives from newest ARP todo.replace event")
     func latestAgentPlanDerivesFromProtocolEvents() {
         let task = makeTask()

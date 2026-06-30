@@ -29,13 +29,62 @@ struct ArchitectureFitnessTests {
             "Capabilities",
             "Diagnostics",
             "Git",
+            "GoogleWorkspace",
             "Persistence",
             "Runtime",
             "Security",
             "Settings",
             "Tasks",
-            "Validation"
+            "Validation",
+            "WorkspaceApps"
         ])
+    }
+
+    @Test("Workspace App Studio stays on the direct session architecture")
+    func workspaceAppStudioStaysOnDirectSessionArchitecture() throws {
+        let root = try repositoryRoot()
+        let retiredFiles = [
+            "Astra/Services/WorkspaceApps/WorkspaceAppStudioBuildTaskBuilder.swift",
+            "Astra/Services/WorkspaceApps/WorkspaceAppStudioBuilderContractFactory.swift",
+            "Astra/Services/WorkspaceApps/WorkspaceAppStudioContext.swift",
+            "Astra/Services/WorkspaceApps/WorkspaceAppStudioContextBuilder.swift",
+            "Astra/Services/WorkspaceApps/WorkspaceAppStudioContextRedactor.swift",
+            "Astra/Services/WorkspaceApps/WorkspaceAppStudioDraftSupport.swift",
+            "Astra/Services/WorkspaceApps/WorkspaceAppStudioGenerationTaskBuilder.swift",
+            "Astra/Views/ChatPanelDraftPresentation.swift"
+        ]
+
+        let existingRetiredFiles = retiredFiles.filter {
+            FileManager.default.fileExists(atPath: root.appendingPathComponent($0).path)
+        }
+        #expect(existingRetiredFiles.isEmpty, "Retired task-draft App Studio files should stay removed: \(existingRetiredFiles)")
+
+        let retiredSymbols = [
+            "ChatPanelDraftPresentation",
+            "WorkspaceAppStudioBuildConversationMessage",
+            "WorkspaceAppStudioBuilderContract",
+            "WorkspaceAppStudioBuilderContractFactory",
+            "WorkspaceAppStudioBuildTaskBuilder",
+            "WorkspaceAppStudioBuildTaskDraft",
+            "WorkspaceAppStudioContext",
+            "WorkspaceAppStudioContextBuilder",
+            "WorkspaceAppStudioContextRedactor",
+            "WorkspaceAppStudioContextRequest",
+            "WorkspaceAppStudioDraftSupport",
+            "WorkspaceAppStudioGenerationTaskBuilder",
+            "WorkspaceAppStudioGenerationTaskDraft"
+        ]
+
+        let symbolMatches = try swiftFiles(under: root.appendingPathComponent("Astra"))
+            .flatMap { file -> [String] in
+                let relativePath = relativePath(for: file, root: root)
+                let text = try String(contentsOf: file, encoding: .utf8)
+                return retiredSymbols
+                    .filter { text.contains($0) }
+                    .map { "\(relativePath): \($0)" }
+            }
+
+        #expect(symbolMatches.isEmpty, "Workspace App Studio should be owned by WorkspaceAppStudioSession and generator, not task drafts: \(symbolMatches)")
     }
 
     @Test("Prompt section provider identifiers are unique and used by known prompt modes")
@@ -833,6 +882,21 @@ struct ArchitectureFitnessTests {
         #expect(view.contains("CapabilityCatalogActionService("))
     }
 
+    @Test("Plugin catalog approval refresh cancels stale loads")
+    func pluginCatalogApprovalRefreshCancelsStaleLoads() throws {
+        let root = try repositoryRoot()
+        let view = try String(
+            contentsOf: root.appendingPathComponent("Astra/Views/PluginCatalogView.swift"),
+            encoding: .utf8
+        )
+
+        #expect(view.contains("@State private var approvalRecordsRefreshTask: Task<Void, Never>?"))
+        #expect(view.contains("@State private var approvalRecordsRefreshGeneration = 0"))
+        #expect(view.contains("approvalRecordsRefreshTask?.cancel()"))
+        #expect(view.contains("approvalRecordsRefreshGeneration == refreshGeneration"))
+        #expect(view.contains("cancelApprovalRecordsRefresh()"))
+    }
+
     @Test("Admin policy contexts come only from the currentUser factory")
     func adminPolicyContextsComeOnlyFromCurrentUserFactory() throws {
         // Single-user admin semantics live in exactly one place:
@@ -935,14 +999,14 @@ struct ArchitectureFitnessTests {
             "Astra/Services/Browser/ShelfBrowserSession.swift": 5_900,
             "Astra/Views/ContentView.swift": 5_000,
             "Astra/Views/WorkspaceRightRailView.swift": 3_500,
-            "Astra/Views/ChatPanelView.swift": 3_200,
+            "Astra/Views/ChatPanelView.swift": 3_215,
             "Astra/Services/Runtime/AgentRuntimeAdapter.swift": 2_940,
             "Astra/Views/PluginCatalogView.swift": 2_900,
             "Astra/Views/ShelfMarkdownPanelView.swift": 2_850,
             "Astra/Views/WorkspaceGitSectionView.swift": 2_650,
             "Astra/Views/ConfigureView.swift": 2_550,
             "Astra/Services/Diagnostics/LogDiagnosticsService.swift": 2_550,
-            "Astra/Views/TaskSidebarView.swift": 2_450,
+            "Astra/Views/TaskSidebarView.swift": 2_465,
             "Astra/Views/ShelfQueryPanelView.swift": 2_350,
             "Astra/Services/Persistence/TaskContextStateManager.swift": 2_250,
             "Astra/Services/Runtime/AgentPromptBuilder.swift": 2_250,

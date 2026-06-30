@@ -97,7 +97,7 @@ struct NewTaskView: View {
 
                     Picker("Token Budget", selection: $tokenBudget) {
                         ForEach(budgetPresets, id: \.self) { b in
-                            Text(b == 0 ? "Unlimited" : "\(b / 1000)k tokens").tag(b)
+                            Text(RuntimeBudgetPresentation.settingsLabel(for: b)).tag(b)
                         }
                     }
 

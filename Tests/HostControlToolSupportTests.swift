@@ -148,7 +148,8 @@ struct HostControlToolSupportTests {
         let quotedDockerLogPath = dockerLog.path.replacingOccurrences(of: "'", with: "'\\''")
         try """
         #!/bin/sh
-        printf '%s\\n' "$*" >> '\(quotedDockerLogPath)'
+        LOG='\(quotedDockerLogPath)'
+        printf '%s\\n' "$*" >> "$LOG"
         case "$1" in
           inspect) exit 1 ;;
           rm) exit 0 ;;

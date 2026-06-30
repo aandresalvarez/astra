@@ -1,0 +1,92 @@
+{
+  "author" : "ASTRA",
+  "category" : "MCP",
+  "connectors" : [
+
+  ],
+  "description" : "Local MCP smoke package for validating ASTRA's governed MCP capability lifecycle",
+  "formatVersion" : 2,
+  "governance" : {
+    "allowedRoles" : [
+
+    ],
+    "allowedWorkspaceTags" : [
+
+    ],
+    "approvalStatus" : "approved",
+    "approvedBy" : "ASTRA",
+    "dataAccess" : [
+
+    ],
+    "externalEffects" : [
+      "readOnly"
+    ],
+    "policyNotes" : "This package is a setup-gated local smoke capability. It only runs a user-installed local MCP stub command and declares no credentials or network access.",
+    "requiresAdminApproval" : false,
+    "requiresExplicitUserConsent" : false,
+    "riskLevel" : "low",
+    "visibility" : "hidden"
+  },
+  "icon" : "server.rack",
+  "id" : "mcp-smoke-test",
+  "localTools" : [
+
+  ],
+  "mcpServers" : [
+    {
+      "allowedTools" : [
+        "smoke.ping"
+      ],
+      "arguments" : [
+        "serve"
+      ],
+      "command" : "astra-mcp-smoke-server",
+      "connectorBindings" : [
+
+      ],
+      "displayName" : "MCP Smoke Server",
+      "environmentKeys" : [
+
+      ],
+      "excludedTools" : [
+
+      ],
+      "id" : "smoke",
+      "promptsEnabled" : false,
+      "resourcesEnabled" : false,
+      "transport" : "stdio",
+      "trustLevel" : "low"
+    }
+  ],
+  "name" : "MCP Smoke Test",
+  "prerequisites" : [
+    {
+      "binary" : "astra-mcp-smoke-server",
+      "displayName" : "MCP Smoke Server",
+      "installHint" : "Install or build a local `astra-mcp-smoke-server` that supports `--version` and `serve`.",
+      "livenessArgs" : [
+        "--version"
+      ],
+      "purpose" : "Provides a deterministic local MCP server for validating MCP package visibility, readiness, and launch preflight."
+    }
+  ],
+  "setupGuide" : "Enable this package when validating ASTRA's MCP capability lifecycle.\n\nCommand contract:\n- `astra-mcp-smoke-server --version` exits 0 quickly for readiness checks\n- `astra-mcp-smoke-server serve` starts a stdio MCP server\n- the server exposes a read-only `smoke.ping` tool\n\nASTRA should show this package as an MCP capability, surface setup readiness before launch, and block launch if the command is missing.",
+  "skills" : [
+
+  ],
+  "sourceMetadata" : {
+    "displayName" : "Built-in Capabilities",
+    "id" : "built-in",
+    "kind" : "built-in",
+    "trustLevel" : "built-in"
+  },
+  "tags" : [
+    "mcp",
+    "smoke-test",
+    "local"
+  ],
+  "templates" : [
+
+  ],
+  "version" : "1.0.0"
+}

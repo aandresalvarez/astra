@@ -103,7 +103,10 @@ struct CopilotMCPLaunchProjection {
         return CopilotMCPLaunchProjection(
             servers: servers,
             configURL: configURL,
-            allowedTools: configURL == nil ? [] : MCPRuntimeProjection.allowedToolPermissions(servers: servers),
+            allowedTools: configURL == nil ? [] : MCPRuntimeProjection.allowedToolPermissions(
+                servers: servers,
+                availableEnvironment: explicitMCPEnvironment
+            ),
             workspaceExecutorEnvironment: workspaceExecutorEnvironment,
             hostControlEnvironment: hostControlEnvironment,
             dockerWorkspaceExecutorSupported: dockerWorkspaceExecutorSupported,

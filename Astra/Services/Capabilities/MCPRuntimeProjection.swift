@@ -151,8 +151,17 @@ enum MCPRuntimeProjection {
     ) -> Data? {
         guard !servers.isEmpty else { return nil }
         var entries: [String: [String: Any]] = [:]
-        for resolved in servers {
+        for original in servers {
+            guard let resolved = RemoteMCPGatewayProjection.providerFacingResolvedServer(for: original) else {
+                continue
+            }
             let server = resolved.server
+            guard RemoteMCPGatewayProjection.missingRequiredEnvironmentKeys(
+                for: server,
+                availableEnvironment: availableEnvironment
+            ).isEmpty else {
+                continue
+            }
             var entry: [String: Any] = ["type": server.transport.rawValue]
             switch server.transport {
             case .stdio:
@@ -277,9 +286,21 @@ enum MCPRuntimeProjection {
     /// explicit `allowedTools` list grants only those tools
     /// (`mcp__<server>__<tool>`); an empty list grants the whole server
     /// (`mcp__<server>`).
-    static func allowedToolPermissions(servers: [ResolvedServer]) -> [String] {
-        servers.flatMap { resolved -> [String] in
+    static func allowedToolPermissions(
+        servers: [ResolvedServer],
+        availableEnvironment: [String: String] = [:]
+    ) -> [String] {
+        servers.flatMap { original -> [String] in
+            guard let resolved = RemoteMCPGatewayProjection.providerFacingResolvedServer(for: original) else {
+                return []
+            }
             let server = resolved.server
+            guard RemoteMCPGatewayProjection.missingRequiredEnvironmentKeys(
+                for: server,
+                availableEnvironment: availableEnvironment
+            ).isEmpty else {
+                return []
+            }
             if server.allowedTools.isEmpty {
                 return ["mcp__\(server.id)"]
             }
@@ -288,9 +309,21 @@ enum MCPRuntimeProjection {
     }
 
     /// Permission entries for the runtime deny list from `excludedTools`.
-    static func deniedToolPermissions(servers: [ResolvedServer]) -> [String] {
-        servers.flatMap { resolved in
-            resolved.server.excludedTools.map { "mcp__\(resolved.server.id)__\($0)" }
+    static func deniedToolPermissions(
+        servers: [ResolvedServer],
+        availableEnvironment: [String: String] = [:]
+    ) -> [String] {
+        servers.flatMap { original -> [String] in
+            guard let resolved = RemoteMCPGatewayProjection.providerFacingResolvedServer(for: original) else {
+                return []
+            }
+            guard RemoteMCPGatewayProjection.missingRequiredEnvironmentKeys(
+                for: resolved.server,
+                availableEnvironment: availableEnvironment
+            ).isEmpty else {
+                return []
+            }
+            return resolved.server.excludedTools.map { "mcp__\(resolved.server.id)__\($0)" }
         }
     }
 
@@ -298,11 +331,14 @@ enum MCPRuntimeProjection {
 
     enum PreflightIssue: Equatable {
         case missingExecutable(serverID: String, command: String)
+        case missingExecutableWithInstallSource(serverID: String, command: String, source: PluginMCPInstallSource)
 
         var message: String {
             switch self {
             case .missingExecutable(let serverID, let command):
                 return "MCP server \(serverID) needs \(command), which was not found. Install it or disable the capability that provides this server."
+            case .missingExecutableWithInstallSource(let serverID, let command, let source):
+                return "MCP server \(serverID) needs \(command), which was not found. Install \(MCPInstallSourceFormatter.installDescription(for: source)) or disable the capability that provides this server."
             }
         }
     }
@@ -315,7 +351,10 @@ enum MCPRuntimeProjection {
         detectExecutable: (String) -> String = { RuntimePathResolver.detectExecutablePath(named: $0) },
         isExecutableFile: (String) -> Bool = { FileManager.default.isExecutableFile(atPath: $0) }
     ) -> [PreflightIssue] {
-        servers.compactMap { resolved in
+        servers.compactMap { original in
+            guard let resolved = RemoteMCPGatewayProjection.providerFacingResolvedServer(for: original) else {
+                return nil
+            }
             let server = resolved.server
             guard server.transport == .stdio, let command = server.command, !command.isEmpty else {
                 return nil
@@ -323,11 +362,22 @@ enum MCPRuntimeProjection {
             if command.hasPrefix("/") {
                 return isExecutableFile(command)
                     ? nil
-                    : .missingExecutable(serverID: server.id, command: command)
+                    : missingExecutableIssue(for: server, command: command)
             }
             return detectExecutable(command).isEmpty
-                ? .missingExecutable(serverID: server.id, command: command)
+                ? missingExecutableIssue(for: server, command: command)
                 : nil
         }
     }
+
+    private static func missingExecutableIssue(
+        for server: PluginMCPServer,
+        command: String
+    ) -> PreflightIssue {
+        if let source = server.installSource {
+            return .missingExecutableWithInstallSource(serverID: server.id, command: command, source: source)
+        }
+        return .missingExecutable(serverID: server.id, command: command)
+    }
+
 }

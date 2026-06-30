@@ -71,11 +71,16 @@ struct PluginCatalogView: View {
     @State private var disableCandidate: PluginPackage?
     @State private var removalError: String?
     @State private var approvalError: String?
-    @State private var approvalRevision = 0
+    @State private var approvalRecords: [CapabilityApprovalRecord] = []
     @State private var showCreateWizard = false
     @State private var importReview: CapabilityImportReview?
     @State private var importError: String?
     @State private var selectedPackageID: String?
+    @State private var showMCPInstallTargetSheet = false
+    @State private var pastedMCPInstallTarget = ""
+    @State private var mcpInstallRequest: MCPInstallChatRequest?
+    @State private var approvalRecordsRefreshTask: Task<Void, Never>?
+    @State private var approvalRecordsRefreshGeneration = 0
 
     private var capabilities: WorkspaceCapabilities {
         WorkspaceCapabilities(
@@ -87,10 +92,9 @@ struct PluginCatalogView: View {
     }
 
     private var catalogPolicyContext: CapabilityCatalogPolicyContext {
-        _ = approvalRevision
-        return CapabilityCatalogPolicyContext.currentUser(
+        PluginCatalogApprovalState.policyContext(
             workspace: workspace,
-            approvalRecords: CapabilityApprovalStore().records()
+            approvalRecords: approvalRecords
         )
     }
 
@@ -203,11 +207,18 @@ struct PluginCatalogView: View {
             alignment: .topLeading
         )
         .onAppear {
+            refreshApprovalRecords()
             selectedPackageID = focusedPackageID
             if catalog.packages.isEmpty {
                 catalog.loadApprovedCapabilities()
                 onCatalogChanged?()
             }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .capabilityApprovalsChanged)) { _ in
+            refreshApprovalRecords()
+        }
+        .onDisappear {
+            cancelApprovalRecordsRefresh()
         }
         .onChange(of: focusedPackageID) { _, newValue in
             selectedPackageID = newValue
@@ -226,8 +237,29 @@ struct PluginCatalogView: View {
                 }
             )
         }
+        .sheet(isPresented: $showMCPInstallTargetSheet) {
+            MCPInstallTargetPasteSheet(
+                targetText: $pastedMCPInstallTarget,
+                onCancel: { showMCPInstallTargetSheet = false },
+                onReview: { reviewPastedMCPInstallTarget() }
+            )
+        }
+        .sheet(item: $mcpInstallRequest) { request in
+            CapabilityMCPInstallReviewSheet(
+                request: request,
+                workspace: workspace,
+                onCancel: { mcpInstallRequest = nil },
+                onInstalled: { package in
+                    mcpInstallRequest = nil
+                    selectedPackageID = package.id
+                    onPackageFocusChanged?(package.id)
+                    catalog.loadApprovedCapabilities()
+                    onCatalogChanged?()
+                }
+            )
+        }
         .sheet(item: $installingPackage) { package in
-            PluginInstallSheet(
+            CapabilityInstallSheetRouter(
                 package: package,
                 workspace: workspace,
                 policyContext: catalogPolicyContext,
@@ -410,7 +442,7 @@ struct PluginCatalogView: View {
             Spacer()
 
             importCapabilityButton
-            newCapabilityButton
+            newCapabilityMenu
 
             if !isEmbedded {
                 Button("Done") { dismiss() }
@@ -430,7 +462,7 @@ struct PluginCatalogView: View {
 
             if isEmbedded {
                 importCapabilityButton
-                newCapabilityButton
+                newCapabilityMenu
             }
         }
         .padding(.horizontal, 18)
@@ -468,22 +500,33 @@ struct PluginCatalogView: View {
         .frame(maxWidth: .infinity)
     }
 
-    private var newCapabilityButton: some View {
-        Button {
-            showCreateWizard = true
+    private var newCapabilityMenu: some View {
+        Menu {
+            Button {
+                showCreateWizard = true
+            } label: {
+                Label(CapabilityCreationPresentation.blankCapabilityTitle, systemImage: "plus")
+            }
+
+            Button {
+                showMCPInstallTargetSheet = true
+            } label: {
+                Label(CapabilityCreationPresentation.mcpCapabilityTitle, systemImage: "server.rack")
+            }
         } label: {
-            Label("New Capability", systemImage: "plus")
+            Label(CapabilityCreationPresentation.menuTitle, systemImage: "plus")
                 .font(Stanford.body(13))
         }
-        .buttonStyle(.bordered)
+        .menuStyle(.button)
         .fixedSize()
+        .help(CapabilityCreationPresentation.menuHelp)
     }
 
     private var importCapabilityButton: some View {
         Button {
             openCapabilityImportPanel()
         } label: {
-            Label("Import Capability", systemImage: "square.and.arrow.down")
+            Label(CapabilityImportPresentation.actionTitle, systemImage: "square.and.arrow.down")
                 .font(Stanford.body(13))
         }
         .buttonStyle(.bordered)
@@ -633,36 +676,38 @@ struct PluginCatalogView: View {
 
     private func capabilityGroupedList(_ state: PluginCatalogPresentationState) -> some View {
         VStack(alignment: .leading, spacing: 16) {
-            ForEach(state.groupedPackages, id: \.kind.rawValue) { group in
-                capabilityGroupSection(group)
+            ForEach(state.categorySections, id: \.category) { section in
+                capabilityCategorySection(section)
             }
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
     }
 
-    private func capabilityGroupSection(_ group: CapabilityCatalogPackageGroup) -> some View {
+    private func capabilityCategorySection(_ section: CapabilityCatalogCategorySection) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             // `.top` (not `.firstTextBaseline`): a baseline-aligned HStack that can hold selectable
             // `Text` live-locks SwiftUI's layout engine. Keep `.top`. See MarkdownTextView in TaskMainView.
             HStack(alignment: .top, spacing: 6) {
-                Text(group.kind.title)
+                Text(section.category)
                     .font(Stanford.caption(12).weight(.semibold))
                     .foregroundStyle(.secondary)
-                Text("\(group.packages.count)")
+                Text("\(section.packages.count)")
                     .font(Stanford.caption(10).weight(.medium))
                     .foregroundStyle(.tertiary)
                 Spacer(minLength: 0)
-                Text(group.kind.subtitle)
+                Text(capabilityCategoryStatusSummary(section))
                     .font(Stanford.caption(10))
                     .foregroundStyle(.tertiary)
             }
 
             VStack(spacing: 0) {
-                ForEach(Array(group.packages.enumerated()), id: \.element.id) { index, package in
-                    capabilityCatalogRow(package)
-                    if index < group.packages.count - 1 {
+                ForEach(Array(section.statusGroups.enumerated()), id: \.element.kind.rawValue) { statusIndex, group in
+                    if section.statusGroups.count > 1 {
+                        capabilityStatusSubheading(group)
+                    }
+                    capabilityPackageRows(group.packages)
+                    if statusIndex < section.statusGroups.count - 1 {
                         Divider()
-                            .padding(.leading, 42)
                     }
                 }
             }
@@ -673,6 +718,39 @@ struct PluginCatalogView: View {
                     .stroke(Color.primary.opacity(0.055), lineWidth: 1)
             }
         }
+    }
+
+    private func capabilityStatusSubheading(_ group: CapabilityCatalogPackageGroup) -> some View {
+        HStack(spacing: 5) {
+            Text(group.kind.title)
+                .font(Stanford.caption(10).weight(.semibold))
+                .foregroundStyle(.tertiary)
+            Text("\(group.packages.count)")
+                .font(Stanford.caption(10).weight(.medium))
+                .foregroundStyle(.quaternary)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12)
+        .padding(.top, 8)
+        .padding(.bottom, 3)
+    }
+
+    private func capabilityPackageRows(_ packages: [PluginPackage]) -> some View {
+        VStack(spacing: 0) {
+            ForEach(Array(packages.enumerated()), id: \.element.id) { index, package in
+                capabilityCatalogRow(package)
+                if index < packages.count - 1 {
+                    Divider()
+                        .padding(.leading, 42)
+                }
+            }
+        }
+    }
+
+    private func capabilityCategoryStatusSummary(_ section: CapabilityCatalogCategorySection) -> String {
+        section.statusGroups
+            .map { "\($0.packages.count) \($0.kind.title.lowercased())" }
+            .joined(separator: " · ")
     }
 
     private func capabilityCatalogRow(_ package: PluginPackage) -> some View {
@@ -926,6 +1004,23 @@ struct PluginCatalogView: View {
         importReview = CapabilityImportReview(report: report)
     }
 
+    private func reviewPastedMCPInstallTarget() {
+        guard let result = MCPInstallChatCommand.installResult(input: "/mcp \(pastedMCPInstallTarget)") else {
+            importError = "Paste an MCP npm, uvx, Docker, JSON, or HTTPS target to review."
+            return
+        }
+        guard case .request(let request) = result else {
+            if case .failure(let failure) = result {
+                importError = failure.message
+            }
+            return
+        }
+        showMCPInstallTargetSheet = false
+        DispatchQueue.main.async {
+            mcpInstallRequest = request
+        }
+    }
+
     private func importCapability(_ report: CapabilityPackageValidationReport) {
         let traceID = AuditTrace.make("capability-import")
         guard report.canInstall else {
@@ -994,7 +1089,7 @@ struct PluginCatalogView: View {
                 traceID: traceID
             )
             if result.approvalRecordChanged {
-                approvalRevision += 1
+                refreshApprovalRecords()
             }
             if let installedPackage = result.installedPackage {
                 onInstall?(installedPackage)
@@ -1035,10 +1130,7 @@ struct PluginCatalogView: View {
                 package,
                 workspace: workspace,
                 modelContext: modelContext,
-                policyContext: CapabilityCatalogPolicyContext.currentUser(
-                    workspace: workspace,
-                    approvalRecords: CapabilityApprovalStore().records()
-                ),
+                policyContext: catalogPolicyContext,
                 source: "approval_definition_refresh",
                 traceID: traceID
             )
@@ -1056,7 +1148,7 @@ struct PluginCatalogView: View {
                 approvedBy: "ASTRA local admin",
                 reviewNotes: "Updated from the local catalog review controls."
             )
-            approvalRevision += 1
+            refreshApprovalRecords()
             catalog.loadApprovedCapabilities()
             refreshEnabledDefinitionsAfterApproval(package, status: status, traceID: traceID)
             onCatalogChanged?()
@@ -1084,6 +1176,33 @@ struct PluginCatalogView: View {
                 "error_type": String(describing: type(of: error))
             ], level: .error)
         }
+    }
+
+    private func refreshApprovalRecords() {
+        approvalRecordsRefreshTask?.cancel()
+        approvalRecordsRefreshGeneration += 1
+        let refreshGeneration = approvalRecordsRefreshGeneration
+        approvalRecordsRefreshTask = Task {
+            let records = await Self.loadApprovalRecords()
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                guard approvalRecordsRefreshGeneration == refreshGeneration else { return }
+                approvalRecords = records
+                approvalRecordsRefreshTask = nil
+            }
+        }
+    }
+
+    private func cancelApprovalRecordsRefresh() {
+        approvalRecordsRefreshGeneration += 1
+        approvalRecordsRefreshTask?.cancel()
+        approvalRecordsRefreshTask = nil
+    }
+
+    private static func loadApprovalRecords() async -> [CapabilityApprovalRecord] {
+        await Task.detached(priority: .utility) {
+            CapabilityApprovalStore().records()
+        }.value
     }
 
     // MARK: - Prerequisite Section
@@ -1233,16 +1352,7 @@ struct PluginCatalogView: View {
     }
 
     private func capabilityContentsSummary(_ package: PluginPackage) -> String {
-        let parts: [String] = [
-            countPhrase(package.skills.count, singular: "instruction", plural: "instructions"),
-            countPhrase(package.connectors.count, singular: "connector", plural: "connectors"),
-            countPhrase(package.localTools.count, singular: "tool", plural: "tools"),
-            countPhrase(package.mcpServers.count, singular: "MCP server", plural: "MCP servers"),
-            countPhrase(package.browserAdapters.count, singular: "browser adapter", plural: "browser adapters"),
-            countPhrase(package.templates.count, singular: "template", plural: "templates")
-        ].filter { !$0.hasPrefix("0 ") }
-
-        return parts.isEmpty ? "No declared resources" : parts.joined(separator: " · ")
+        CapabilityPackageResourceSummary(package: package).contentSummary(separator: " · ")
     }
 
     private func countPhrase(_ count: Int, singular: String, plural: String) -> String {
@@ -1328,7 +1438,7 @@ struct PluginCatalogView: View {
             sections.append(CapabilityDetailSection(
                 id: "mcp",
                 title: "MCP Servers",
-                subtitle: CapabilityRuntimeSupportPresentation.mcpSupportSubtitle(),
+                subtitle: CapabilityRuntimeSupportPresentation.mcpSupportSubtitle(for: package),
                 icon: "server.rack",
                 color: Stanford.plum,
                 items: package.mcpServers.enumerated().map { index, server in
@@ -1386,26 +1496,15 @@ struct PluginCatalogView: View {
     }
 
     private func capabilityAdminReviewSection(_ package: PluginPackage) -> some View {
-        let decision = CapabilityCatalogPolicy.decision(for: package, context: catalogPolicyContext)
-        let approvalStore = CapabilityApprovalStore()
-        let records = approvalStore.records()
-        let digest = try? CapabilityApprovalDigest.digest(for: package)
-        let record = digest.flatMap { digest in
-            records.last {
-                $0.packageID == package.id &&
-                $0.packageVersion == package.version &&
-                $0.sourceDigest == digest
-            }
-        }
-        let hasVersionRecord = records.contains {
-            $0.packageID == package.id && $0.packageVersion == package.version
-        }
-        let digestLabel = record != nil ? "Digest current" : (hasVersionRecord ? "Changed since approval" : "No local record")
-        let shouldShow = catalogPolicyContext.isAdmin
-            && (record != nil || decision.requiresApproval || decision.governance.approvalStatus != .approved)
+        let reviewState = PluginCatalogApprovalState.adminReviewState(
+            for: package,
+            policyContext: catalogPolicyContext,
+            approvalRecords: approvalRecords
+        )
 
         return Group {
-            if shouldShow {
+            if let reviewState {
+                let record = reviewState.record
                 VStack(alignment: .leading, spacing: 8) {
                     HStack(spacing: 6) {
                         Image(systemName: "checkmark.seal")
@@ -1415,9 +1514,9 @@ struct PluginCatalogView: View {
                             .font(Stanford.caption(11).weight(.semibold))
                             .foregroundStyle(Stanford.lagunita)
                         Spacer()
-                        Text(digestLabel)
+                        Text(reviewState.digestLabel)
                             .font(Stanford.caption(10))
-                            .foregroundStyle(hasVersionRecord && record == nil ? Stanford.poppy : Stanford.coolGrey)
+                            .foregroundStyle(reviewState.hasVersionRecord && record == nil ? Stanford.poppy : Stanford.coolGrey)
                     }
 
                     HStack(spacing: 8) {

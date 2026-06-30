@@ -979,6 +979,19 @@ struct AgentRuntimeBudgetPolicyTests {
         ))
     }
 
+    @Test("Disabled budgets ignore budget result flags")
+    func disabledBudgetsIgnoreBudgetResultFlags() {
+        let disabledBudget = AgentRuntimeBudgetSnapshot(effectiveTokenBudget: Int.max, tokensUsed: 1_000_000)
+        let result = AgentProcessResult(exitCode: 1, budgetExceeded: true)
+
+        #expect(!disabledBudget.hasReportedTokensAboveBudget)
+        #expect(!AgentRuntimeBudgetPolicy.shouldTreatAsBudgetExceeded(
+            result: result,
+            budget: disabledBudget,
+            budgetEnforcementMode: .hardStop
+        ))
+    }
+
     @Test("Final warning records budget warning event")
     func finalWarningRecordsBudgetWarningEvent() throws {
         let container = try makeRuntimeComponentContainer()
@@ -998,6 +1011,28 @@ struct AgentRuntimeBudgetPolicyTests {
         )
 
         #expect(task.events.contains { $0.type == "budget.warning" && $0.run?.id == run.id })
+    }
+
+    @Test("Disabled budgets suppress final budget warnings")
+    func disabledBudgetsSuppressFinalBudgetWarnings() throws {
+        let container = try makeRuntimeComponentContainer()
+        let context = container.mainContext
+        let task = AgentTask(title: "Budget", goal: "Goal", tokenBudget: 0)
+        task.tokensUsed = 1_000_000
+        let run = TaskRun(task: task)
+        context.insert(task)
+        context.insert(run)
+
+        AgentRuntimeBudgetPolicy.recordFinalBudgetWarningIfNeeded(
+            result: AgentProcessResult(exitCode: 0, budgetWarning: true),
+            task: task,
+            run: run,
+            modelContext: context,
+            phase: "run",
+            budgetEnforcementMode: .warning
+        )
+
+        #expect(!task.events.contains { $0.type == "budget.warning" })
     }
 }
 

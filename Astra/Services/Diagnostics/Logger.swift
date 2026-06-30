@@ -182,6 +182,8 @@ enum AuditEvent: String, CaseIterable {
     case capabilityChatContext = "capability.chat_context"
     case capabilityResolved = "capability.resolved"
     case capabilityRuntimeIntegrity = "capability.runtime_integrity"
+    case mcpToolPolicyAllowed = "mcp.tool_policy.allowed"
+    case mcpToolPolicyDenied = "mcp.tool_policy.denied"
     case workspaceImported = "workspace.imported"
     case workspaceExported = "workspace.exported"
     case workspaceRecovered = "workspace.recovered"
@@ -253,7 +255,7 @@ enum AppLogCategory {
         "App", "Audit", "Worker", "Queue", "UI", "Isolation", "Validation",
         "Reflection", "SSH", "Persistence", "PluginCatalog", "Scheduler",
         "Keychain", "Updater", "Performance", "Capabilities", "Browser",
-        "Diagnostics", "Plan", "Git", "General"
+        "Diagnostics", "Plan", "Git", "WorkspaceApps", "General"
     ]
 }
 

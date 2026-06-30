@@ -42,20 +42,28 @@ enum TaskRunAnswerPresentationPolicy {
     }
 
     static func joinedResponsePayloads(_ payloads: [String]) -> String {
-        MarkdownRenderPreparation.joinChunks(payloads.map { normalizedVisibleText($0) })
+        normalizedVisibleText(MarkdownRenderPreparation.joinChunks(payloads))
     }
 
     static func dedupedProgressTexts(_ texts: [String]) -> [String] {
         var output: [String] = []
         var previousKey: String?
         for text in texts {
-            let normalized = normalizedVisibleText(text)
-            let key = comparisonKey(normalized)
+            guard let progress = normalizedProgressText(text) else { continue }
+            let normalized = progress.text
+            let key = progress.comparisonKey
             guard !normalized.isEmpty, key != previousKey else { continue }
             output.append(normalized)
             previousKey = key
         }
         return output
+    }
+
+    static func normalizedProgressText(_ text: String) -> (text: String, comparisonKey: String)? {
+        let normalized = normalizedVisibleText(text)
+        let key = comparisonKey(normalized)
+        guard !normalized.isEmpty, !key.isEmpty else { return nil }
+        return (normalized, key)
     }
 
     static func summaryText(rawText: String, fallback: String = "", maxLength: Int) -> String {

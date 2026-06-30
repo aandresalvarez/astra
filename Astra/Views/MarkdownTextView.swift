@@ -352,7 +352,7 @@ struct MarkdownTextView: View, Equatable {
         if let cached = parseCache.object(forKey: key) {
             return cached.blocks
         }
-        let blocks = parse(prepared)
+        let blocks = parsePrepared(prepared)
         parseCache.setObject(MarkdownBlockCacheEntry(blocks: blocks), forKey: key)
         return blocks
     }
@@ -681,6 +681,10 @@ struct MarkdownTextView: View, Equatable {
 
     static func parse(_ text: String) -> [MarkdownBlock] {
         let prepared = MarkdownRenderPreparation.prepareForDisplay(text)
+        return parsePrepared(prepared)
+    }
+
+    private static func parsePrepared(_ prepared: String) -> [MarkdownBlock] {
         if let astBlocks = MarkdownASTBlockParser.parse(prepared), !astBlocks.isEmpty {
             return astBlocks
         }
