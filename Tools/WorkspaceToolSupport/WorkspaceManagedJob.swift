@@ -158,7 +158,7 @@ public final class WorkspaceManagedJobStore {
 
     public func jobDirectory(jobID: String) throws -> URL {
         let canonicalID = try canonicalJobID(jobID)
-        return rootURL.appendingPathComponent(canonicalID, isDirectory: true)
+        return jobDirectory(forCanonicalID: canonicalID)
     }
 
     public func create(command: String, timeoutSeconds: TimeInterval?, label: String?, progressProbe: String?, runtime: String) throws -> WorkspaceManagedJobRecord {
@@ -190,15 +190,18 @@ public final class WorkspaceManagedJobStore {
     }
 
     public func save(_ record: WorkspaceManagedJobRecord) throws {
-        let directory = try jobDirectory(jobID: record.jobID)
+        let canonicalID = try canonicalJobID(record.jobID)
+        let directory = jobDirectory(forCanonicalID: canonicalID)
         try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
-        let data = try encoder.encode(record)
+        var canonicalRecord = record
+        canonicalRecord.jobID = canonicalID
+        let data = try encoder.encode(canonicalRecord)
         try data.write(to: directory.appendingPathComponent("job.json", isDirectory: false), options: [.atomic])
     }
 
     public func load(jobID: String) throws -> WorkspaceManagedJobRecord {
         let canonicalID = try canonicalJobID(jobID)
-        let directory = try jobDirectory(jobID: canonicalID)
+        let directory = jobDirectory(forCanonicalID: canonicalID)
         let data = try Data(contentsOf: directory.appendingPathComponent("job.json", isDirectory: false))
         var record = try decoder.decode(WorkspaceManagedJobRecord.self, from: data)
         guard record.jobID == canonicalID else {
@@ -206,6 +209,10 @@ public final class WorkspaceManagedJobStore {
         }
         applyRuntimeFiles(to: &record, directory: directory)
         return record
+    }
+
+    private func jobDirectory(forCanonicalID canonicalID: String) -> URL {
+        rootURL.appendingPathComponent(canonicalID, isDirectory: true)
     }
 
     public func tail(jobID: String, stream: String, lines: Int) throws -> WorkspaceManagedJobTail {

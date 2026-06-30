@@ -829,6 +829,35 @@ struct WorkspaceToolSupportTests {
         #expect(cancelled.status == .cancelled)
     }
 
+    @Test("Workspace managed job store persists canonical job ids")
+    func workspaceManagedJobStorePersistsCanonicalJobIDs() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-workspace-job-save-case-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let store = WorkspaceManagedJobStore(rootPath: root.path)
+        let now = Date(timeIntervalSince1970: 1_782_300_000)
+        let record = WorkspaceManagedJobRecord(
+            jobID: "JOB_ABC-123",
+            command: "echo ok",
+            runtime: "docker",
+            status: .queued,
+            createdAt: now,
+            updatedAt: now,
+            stdoutLogPath: "/tmp/job/stdout.log",
+            stderrLogPath: "/tmp/job/stderr.log",
+            heartbeatPath: "/tmp/job/heartbeat.json",
+            resultPath: "/tmp/job/result.json"
+        )
+
+        try store.save(record)
+
+        let loaded = try store.load(jobID: "JOB_ABC-123")
+        #expect(loaded.jobID == "job_abc-123")
+        #expect(loaded.command == "echo ok")
+        #expect(loaded.status == .queued)
+    }
+
     @Test("Docker workspace job manager maps host workspace path before persisting command")
     func dockerWorkspaceJobManagerMapsHostWorkspacePathBeforePersistingCommand() throws {
         let root = FileManager.default.temporaryDirectory
