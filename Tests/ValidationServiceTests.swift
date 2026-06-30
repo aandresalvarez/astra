@@ -300,6 +300,7 @@ struct ValidationServiceTests {
         }
         #expect(await runner.recordedCalls().isEmpty)
         #expect(!ValidationCommandPolicy.isAllowed("swift build --help"))
+        #expect(!ValidationCommandPolicy.isAllowed("swift build --show-bin-path"))
     }
 
     @Test("validation command policy allows help and version as argument values")
@@ -571,6 +572,10 @@ struct ValidationServiceTests {
     func validationCommandPolicyRejectsPackageManagerTestScriptNameSmuggling() {
         #expect(ValidationCommandPolicy.isAllowed("npm run test"))
         #expect(ValidationCommandPolicy.isAllowed("npm run test -- --watch=false"))
+        #expect(ValidationCommandPolicy.isAllowed("npm test -- --watch=false"))
+        #expect(!ValidationCommandPolicy.isAllowed("npm test --help"))
+        #expect(!ValidationCommandPolicy.isAllowed("npm run test --if-present"))
+        #expect(!ValidationCommandPolicy.isAllowed("npm test --script-shell=/bin/true"))
         #expect(!ValidationCommandPolicy.isAllowed("npm run test:evil"))
         #expect(ValidationCommandPolicy.isAllowed("yarn run test"))
         #expect(ValidationCommandPolicy.isAllowed("yarn run test --ci"))
@@ -584,6 +589,8 @@ struct ValidationServiceTests {
     func validationCommandPolicyMatchesXcodebuildActionsByToken() {
         #expect(ValidationCommandPolicy.isAllowed("xcodebuild -project App.xcodeproj build"))
         #expect(ValidationCommandPolicy.isAllowed("xcodebuild -scheme App test"))
+        #expect(ValidationCommandPolicy.isAllowed("xcodebuild build-for-testing -workspace App.xcworkspace -scheme App"))
+        #expect(ValidationCommandPolicy.isAllowed("xcodebuild test-without-building -workspace App.xcworkspace -scheme App"))
         #expect(!ValidationCommandPolicy.isAllowed("xcodebuild archive -project test.xcodeproj"))
         #expect(!ValidationCommandPolicy.isAllowed("xcodebuild -list -project build.xcodeproj"))
         #expect(!ValidationCommandPolicy.isAllowed("xcodebuild -scheme test"))
@@ -592,10 +599,16 @@ struct ValidationServiceTests {
     @Test("validation command policy keeps make to the single test target")
     func validationCommandPolicyKeepsMakeToSingleTestTarget() {
         #expect(ValidationCommandPolicy.isAllowed("make test"))
-        #expect(ValidationCommandPolicy.isAllowed("make test -j2 CI=1"))
+        #expect(ValidationCommandPolicy.isAllowed("make test -j2"))
         #expect(ValidationCommandPolicy.isAllowed("make test --jobs=2 --keep-going"))
+        #expect(ValidationCommandPolicy.isAllowed("make test -j 2"))
+        #expect(ValidationCommandPolicy.isAllowed("make test --jobs 2"))
+        #expect(!ValidationCommandPolicy.isAllowed("make test -j"))
+        #expect(!ValidationCommandPolicy.isAllowed("make test --jobs"))
         #expect(!ValidationCommandPolicy.isAllowed("make test clean"))
         #expect(!ValidationCommandPolicy.isAllowed("make build"))
+        #expect(!ValidationCommandPolicy.isAllowed("make test CI=1"))
+        #expect(!ValidationCommandPolicy.isAllowed("make test SHELL=/bin/true"))
         #expect(!ValidationCommandPolicy.isAllowed("make test '--eval=$(shell touch should-not-run)'"))
         #expect(!ValidationCommandPolicy.isAllowed("make test '-E$(shell touch should-not-run)'"))
         #expect(!ValidationCommandPolicy.isAllowed("make test 'CI=$(shell touch should-not-run)'"))
@@ -606,7 +619,11 @@ struct ValidationServiceTests {
     @Test("validation command policy preserves file test assertions without allowing no-ops")
     func validationCommandPolicyPreservesFileTestAssertionsWithoutAllowingNoOps() {
         #expect(ValidationCommandPolicy.isAllowed("test -f proof.txt"))
+        #expect(ValidationCommandPolicy.isAllowed("test -d artifacts/report"))
         #expect(ValidationCommandPolicy.isAllowed("[ -f proof.txt ]"))
+        #expect(!ValidationCommandPolicy.isAllowed("test -d /"))
+        #expect(!ValidationCommandPolicy.isAllowed("[ -e / ]"))
+        #expect(!ValidationCommandPolicy.isAllowed("test -f ../outside"))
         #expect(!ValidationCommandPolicy.isAllowed("test"))
         #expect(!ValidationCommandPolicy.isAllowed("[ ]"))
         #expect(!ValidationCommandPolicy.isAllowed("test -f proof.txt; touch should-not-run"))
@@ -616,6 +633,8 @@ struct ValidationServiceTests {
     func validationCommandPolicyRejectsPythonPytestDisplayOnlyCommands() {
         #expect(!ValidationCommandPolicy.isAllowed("python -m pytest --help"))
         #expect(!ValidationCommandPolicy.isAllowed("python3 -m pytest --version"))
+        #expect(!ValidationCommandPolicy.isAllowed("python3 -m pytest --collect-only"))
+        #expect(!ValidationCommandPolicy.isAllowed("pytest --collect-only"))
         #expect(ValidationCommandPolicy.isAllowed("python -m pytest -k help"))
     }
 

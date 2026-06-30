@@ -156,9 +156,7 @@ enum ValidationCommandPolicy {
         case "pytest":
             return !containsDisplayOnlyFlag(tokens.dropFirst())
         case "npm":
-            return tokens.count >= 2 &&
-                ((tokens[1] == "test") ||
-                 (tokens.count >= 3 && tokens[1] == "run" && tokens[2] == "test"))
+            return packageManagerRunsOnlyTestScript(tokens: tokens, supportsBareForwardedArgs: false)
         case "yarn", "pnpm":
             return tokens.count >= 2 &&
                 ((tokens[1] == "test") ||
@@ -173,8 +171,33 @@ enum ValidationCommandPolicy {
     }
 
     private static func containsDisplayOnlyFlag<T: Sequence>(_ tokens: T) -> Bool where T.Element == String {
-        let displayOnly = Set(["--help", "-h", "-help", "--version", "-version", "--list-tests"])
+        let displayOnly = Set([
+            "--help", "-h", "-help",
+            "--version", "-version",
+            "--list-tests",
+            "--collect-only", "--co",
+            "--show-bin-path"
+        ])
         return tokens.contains { displayOnly.contains($0) }
+    }
+
+    private static func packageManagerRunsOnlyTestScript(tokens: [String], supportsBareForwardedArgs: Bool) -> Bool {
+        guard tokens.count >= 2 else { return false }
+        let argumentStart: Int
+        if tokens[1] == "test" {
+            argumentStart = 2
+        } else if tokens.count >= 3, tokens[1] == "run", tokens[2] == "test" {
+            argumentStart = 3
+        } else {
+            return false
+        }
+        let trailing = tokens.dropFirst(argumentStart)
+        guard !trailing.isEmpty else { return true }
+        if supportsBareForwardedArgs {
+            return true
+        }
+        guard trailing.first == "--" else { return false }
+        return !containsDisplayOnlyFlag(trailing.dropFirst())
     }
 
     private static func xcodebuildHasBuildOrTestAction(_ tokens: [String]) -> Bool {
@@ -194,7 +217,7 @@ enum ValidationCommandPolicy {
                 skipNext = true
                 continue
             }
-            if token == "test" || token == "build" {
+            if ["test", "build", "build-for-testing", "test-without-building"].contains(token) {
                 return true
             }
         }
@@ -205,29 +228,46 @@ enum ValidationCommandPolicy {
         guard tokens.count >= 2, tokens[1] == "test" else {
             return false
         }
-        return tokens.dropFirst(2).allSatisfy { token in
-            isSafeMakePostTargetOption(token) || isMakeVariableAssignment(token)
+        var index = 2
+        while index < tokens.count {
+            let token = tokens[index]
+            if isMakeVariableAssignment(token) {
+                return false
+            }
+            switch safeMakePostTargetOptionTokenStride(tokens, index: index) {
+            case let stride where stride > 0:
+                index += stride
+            default:
+                return false
+            }
         }
+        return true
     }
 
-    private static func isSafeMakePostTargetOption(_ token: String) -> Bool {
+    private static func safeMakePostTargetOptionTokenStride(_ tokens: [String], index: Int) -> Int {
+        let token = tokens[index]
         let safeStandaloneOptions: Set<String> = [
-            "-j", "--jobs",
             "-k", "--keep-going",
             "-s", "--silent", "--quiet",
             "--no-print-directory"
         ]
         if safeStandaloneOptions.contains(token) {
-            return true
+            return 1
+        }
+        if ["-j", "--jobs"].contains(token),
+           index + 1 < tokens.count,
+           tokens[index + 1].allSatisfy(\.isNumber) {
+            return 2
         }
         if token.hasPrefix("-j") {
-            return token.dropFirst(2).allSatisfy(\.isNumber)
+            let value = token.dropFirst(2)
+            return !value.isEmpty && value.allSatisfy(\.isNumber) ? 1 : 0
         }
         if token.hasPrefix("--jobs=") {
             let value = token.dropFirst("--jobs=".count)
-            return !value.isEmpty && value.allSatisfy(\.isNumber)
+            return !value.isEmpty && value.allSatisfy(\.isNumber) ? 1 : 0
         }
-        return false
+        return 0
     }
 
     private static func isMakeVariableAssignment(_ token: String) -> Bool {
@@ -240,12 +280,7 @@ enum ValidationCommandPolicy {
         }) else {
             return false
         }
-        let value = token[token.index(after: separator)...]
-        return !containsMakeExpansion(value)
-    }
-
-    private static func containsMakeExpansion(_ value: Substring) -> Bool {
-        value.contains("$(") || value.contains("${")
+        return true
     }
 
     private static func fileTestCommandIsAllowed(root: String, tokens: [String]) -> Bool {
@@ -263,7 +298,18 @@ enum ValidationCommandPolicy {
               !pathToken.isEmpty else {
             return false
         }
-        return true
+        return fileTestPathIsWorkspaceRelative(pathToken)
+    }
+
+    private static func fileTestPathIsWorkspaceRelative(_ path: String) -> Bool {
+        guard !path.isEmpty,
+              !path.hasPrefix("/"),
+              !path.hasPrefix("~"),
+              !path.hasPrefix("-") else {
+            return false
+        }
+        let components = path.split(separator: "/", omittingEmptySubsequences: false)
+        return !components.contains("..")
     }
 }
 
