@@ -776,7 +776,8 @@ public final class HostControlMCPServer {
             method: method,
             path: path,
             body: body,
-            timeoutSeconds: timeout
+            timeoutSeconds: timeout,
+            outputByteLimit: processLimits.outputByteLimit
         )
         diagnosticsRecorder?.record(toolName: "jira", summary: "jira \(method) \(path)", result: response.diagnosticResult)
         return encodeResult(id: id, result: [
@@ -837,7 +838,7 @@ public final class HostControlMCPServer {
     }
 
     private func redactedResult(_ result: HostControlCommandResult) -> HostControlCommandResult {
-        let includeSecretFragments = result.stdoutTruncated || result.stderrTruncated
+        let includeSecretFragments = result.stdoutTruncated || result.stderrTruncated || result.timedOut
         let stdout = configuration.redacted(result.stdout, includingSecretFragments: includeSecretFragments)
         let stderr = configuration.redacted(result.stderr, includingSecretFragments: includeSecretFragments)
         return HostControlCommandResult(
@@ -985,7 +986,8 @@ public final class HostControlMCPServer {
     }
 
     private func timeoutDescription(kind: String) -> String {
-        "Optional \(kind) timeout. Defaults to 120 seconds and is capped at \(formattedSeconds(processLimits.maximumTimeoutSeconds)) seconds."
+        let defaultTimeout = min(120, processLimits.maximumTimeoutSeconds)
+        return "Optional \(kind) timeout. Defaults to \(formattedSeconds(defaultTimeout)) seconds and is capped at \(formattedSeconds(processLimits.maximumTimeoutSeconds)) seconds."
     }
 
     private func formattedSeconds(_ value: TimeInterval) -> String {
@@ -1073,6 +1075,7 @@ private struct JiraHTTPResponse {
     var statusCode: Int
     var body: String
     var errorMessage: String?
+    var bodyTruncated: Bool = false
 
     var isError: Bool {
         if errorMessage != nil { return true }
@@ -1085,18 +1088,81 @@ private struct JiraHTTPResponse {
             arguments: ["request"],
             exitCode: isError ? 1 : 0,
             stdout: body,
-            stderr: errorMessage ?? ""
+            stderr: errorMessage ?? "",
+            stdoutTruncated: bodyTruncated
         )
     }
 
     func formatted(configuration: HostControlToolConfiguration) -> String {
-        [
+        var lines = [
             "status_code: \(statusCode)",
             "body:",
             body.isEmpty ? "<empty>" : configuration.redacted(body),
             "error:",
             errorMessage.map { configuration.redacted($0) } ?? "<empty>"
-        ].joined(separator: "\n")
+        ]
+        if bodyTruncated {
+            lines.insert("body_truncated: true", at: 1)
+        }
+        return lines.joined(separator: "\n")
+    }
+}
+
+private final class BoundedJiraHTTPDelegate: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+    private let semaphore: DispatchSemaphore
+    private let buffer: BoundedProcessOutput
+    private let lock = NSLock()
+    private var statusCode = 0
+    private var errorMessage: String?
+    private var bodyTruncated = false
+
+    init(semaphore: DispatchSemaphore, outputByteLimit: Int) {
+        self.semaphore = semaphore
+        self.buffer = BoundedProcessOutput(label: "Jira response body", byteLimit: outputByteLimit)
+    }
+
+    var response: JiraHTTPResponse {
+        lock.lock()
+        let snapshot = JiraHTTPResponse(
+            statusCode: statusCode,
+            body: buffer.stringValue,
+            errorMessage: errorMessage,
+            bodyTruncated: bodyTruncated
+        )
+        lock.unlock()
+        return snapshot
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        dataTask: URLSessionDataTask,
+        didReceive response: URLResponse,
+        completionHandler: @escaping (URLSession.ResponseDisposition) -> Void
+    ) {
+        lock.lock()
+        statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
+        lock.unlock()
+        completionHandler(.allow)
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        if buffer.append(data) {
+            lock.lock()
+            bodyTruncated = true
+            lock.unlock()
+            dataTask.cancel()
+        }
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        if let error {
+            lock.lock()
+            if !bodyTruncated {
+                errorMessage = error.localizedDescription
+            }
+            lock.unlock()
+        }
+        semaphore.signal()
     }
 }
 
@@ -1112,7 +1178,8 @@ private final class JiraHTTPClient {
         method: String,
         path: String,
         body: String?,
-        timeoutSeconds: TimeInterval
+        timeoutSeconds: TimeInterval,
+        outputByteLimit: Int
     ) -> JiraHTTPResponse {
         guard let url = URL(string: connector.baseURL)?.appendingPathComponent(path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))) else {
             return JiraHTTPResponse(statusCode: 0, body: "", errorMessage: "Invalid Jira base URL or path")
@@ -1133,19 +1200,17 @@ private final class JiraHTTPClient {
         request.setValue("Basic \(tokenData)", forHTTPHeaderField: "Authorization")
 
         let semaphore = DispatchSemaphore(value: 0)
-        var result = JiraHTTPResponse(statusCode: 0, body: "", errorMessage: "Request did not complete")
-        let task = URLSession.shared.dataTask(with: request) { data, response, error in
-            defer { semaphore.signal() }
-            let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
-            let body = data.flatMap { String(data: $0, encoding: .utf8) } ?? ""
-            result = JiraHTTPResponse(statusCode: statusCode, body: body, errorMessage: error?.localizedDescription)
-        }
+        let delegate = BoundedJiraHTTPDelegate(semaphore: semaphore, outputByteLimit: outputByteLimit)
+        let session = URLSession(configuration: .ephemeral, delegate: delegate, delegateQueue: nil)
+        let task = session.dataTask(with: request)
         task.resume()
         if semaphore.wait(timeout: .now() + timeoutSeconds) == .timedOut {
             task.cancel()
+            session.invalidateAndCancel()
             return JiraHTTPResponse(statusCode: 0, body: "", errorMessage: "Timed out after \(Int(timeoutSeconds))s")
         }
-        return result
+        session.finishTasksAndInvalidate()
+        return delegate.response
     }
 
     private func credential(named logicalName: String, connector: HostControlConnector) -> String? {

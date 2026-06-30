@@ -427,12 +427,16 @@ struct HostControlToolSupportTests {
         let source = try hostControlToolSource()
         let wait = try sourceSnippet(startingWith: "    private func waitForProcess(", endingBefore: "    private func dispatchInterval", in: source)
         let drain = try sourceSnippet(startingWith: "    private func drainPipe(", endingBefore: "private final class LockedFlag", in: source)
+        let jira = try sourceSnippet(startingWith: "private final class BoundedJiraHTTPDelegate", endingBefore: "private final class JiraHTTPClient", in: source)
 
         #expect(wait.contains("DispatchTime.now()"))
         #expect(!wait.contains("Date()"))
         #expect(drain.contains("guard flags >= 0 else"))
         #expect(drain.contains("guard fcntl(descriptor, F_SETFL, flags | O_NONBLOCK) >= 0 else"))
         #expect(drain.contains("stopReading(handle)"))
+        #expect(jira.contains("BoundedProcessOutput(label: \"Jira response body\""))
+        #expect(jira.contains("bodyTruncated = true"))
+        #expect(source.contains("outputByteLimit: processLimits.outputByteLimit"))
     }
 
     @Test("Host control process runner force stops output limited processes promptly")
@@ -502,7 +506,9 @@ struct HostControlToolSupportTests {
             let properties = try #require(inputSchema["properties"] as? [String: Any])
             let timeout = try #require(properties["timeout_seconds"] as? [String: Any])
             let description = try #require(timeout["description"] as? String)
+            #expect(description.contains("Defaults to 42 seconds"))
             #expect(description.contains("capped at 42 seconds"))
+            #expect(!description.contains("Defaults to 120 seconds"))
             #expect(!description.contains("300 seconds"))
         }
     }
@@ -594,6 +600,39 @@ struct HostControlToolSupportTests {
         let text = try resultText(response)
 
         #expect(text.contains("output_truncated: true"))
+        #expect(!text.contains("super-secr"))
+        #expect(!text.contains("super-secret-token"))
+    }
+
+    @Test("Host control redacts secret prefixes from timed-out output")
+    func hostControlRedactsSecretPrefixesFromTimedOutOutput() throws {
+        let connectors = """
+        {"connectors":[{"id":"jira-1","alias":"jira","envPrefix":"JIRA_JIRA","name":"Jira","serviceType":"jira","baseURL":"https://example.atlassian.net","authMethod":"basic","env":{"JIRA_API_TOKEN":"JIRA_TOKEN_ENV"},"credentials":{"JIRA_API_TOKEN":"JIRA_TOKEN_ENV"},"config":{}}]}
+        """
+        let runner = CapturingHostControlProcessRunner(result: HostControlCommandResult(
+            command: "/usr/bin/gh",
+            arguments: ["pr", "view", "123"],
+            exitCode: 124,
+            stdout: "timed-out-prefix:super-secr",
+            stderr: "",
+            timedOut: true
+        ))
+        let server = HostControlMCPServer(
+            configuration: HostControlToolConfiguration(
+                githubExecutable: "/usr/bin/gh",
+                connectorsJSON: connectors,
+                environment: [
+                    "ASTRA_CONNECTORS": connectors,
+                    "JIRA_TOKEN_ENV": "super-secret-token"
+                ]
+            ),
+            processRunner: runner
+        )
+
+        let response = try call(server, id: 1, tool: "github", arguments: ["arguments": ["pr", "view", "123"]])
+        let text = try resultText(response)
+
+        #expect(text.contains("timed_out: true"))
         #expect(!text.contains("super-secr"))
         #expect(!text.contains("super-secret-token"))
     }
