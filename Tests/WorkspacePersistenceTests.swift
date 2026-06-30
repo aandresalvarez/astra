@@ -464,6 +464,181 @@ struct WorkspacePersistenceTests {
         #expect(importedTask.resolvedRuntimeID == .copilotCLI)
     }
 
+    @Test("imported task shell validation commands keep run-tests intent before durable storage")
+    @MainActor
+    func importedTaskShellValidationCommandsKeepRunTestsIntent() throws {
+        let container = try makeWorkspacePersistenceContainer()
+        let context = container.mainContext
+        var config = minimalWorkspaceConfig(
+            name: "Imported Unsafe Validation",
+            path: "/tmp/astra_import_unsafe_validation_\(UUID().uuidString)",
+            skillID: UUID().uuidString
+        )
+        let now = Date(timeIntervalSince1970: 1_777_001_500)
+        config.tasks = [
+            WorkspaceConfigManager.TaskConfig(
+                id: UUID().uuidString,
+                title: "Imported Unsafe Tests",
+                goal: "Do not persist untrusted shell composition",
+                status: TaskStatus.queued.rawValue,
+                isPinned: nil,
+                isDone: nil,
+                inputs: [],
+                constraints: [],
+                acceptanceCriteria: [],
+                tokenBudget: 25_000,
+                tokensUsed: 0,
+                model: AgentRuntimeAdapterRegistry.defaultModel(for: .claudeCode),
+                runtimeID: AgentRuntimeID.claudeCode.rawValue,
+                costUSD: 0,
+                sessionId: nil,
+                maxTurns: 25,
+                createdAt: now,
+                updatedAt: now,
+                completedAt: nil,
+                unreadAt: nil,
+                isolationStrategy: nil,
+                validationStrategy: ValidationStrategy.runTests.rawValue,
+                testCommand: "swift test; touch should-not-run",
+                draftMessages: nil,
+                chainedGoal: nil,
+                chainedFromID: nil,
+                useAgentTeam: nil,
+                teamSize: nil,
+                teamInstructions: nil,
+                templateID: nil,
+                templateHooksJSON: nil,
+                runs: [],
+                events: [],
+                artifacts: nil,
+                skillIDs: nil,
+                skillNames: [],
+                skillSnapshots: nil
+            )
+        ]
+
+        let imported = WorkspaceConfigManager.importWorkspace(from: config, modelContext: context)
+        let importedTask = try #require(imported.tasks.first)
+
+        #expect(importedTask.validationStrategy == .runTests)
+        #expect(importedTask.testCommand.isEmpty)
+    }
+
+    @Test("imported task empty run-tests commands keep run-tests intent before durable storage")
+    @MainActor
+    func importedTaskEmptyRunTestsCommandsKeepRunTestsIntent() throws {
+        let container = try makeWorkspacePersistenceContainer()
+        let context = container.mainContext
+        var config = minimalWorkspaceConfig(
+            name: "Imported Empty Validation",
+            path: "/tmp/astra_import_empty_validation_\(UUID().uuidString)",
+            skillID: UUID().uuidString
+        )
+        let now = Date(timeIntervalSince1970: 1_777_001_600)
+        config.tasks = [
+            WorkspaceConfigManager.TaskConfig(
+                id: UUID().uuidString,
+                title: "Imported Empty Tests",
+                goal: "Keep the explicit run-tests requirement",
+                status: TaskStatus.queued.rawValue,
+                isPinned: nil,
+                isDone: nil,
+                inputs: [],
+                constraints: [],
+                acceptanceCriteria: [],
+                tokenBudget: 25_000,
+                tokensUsed: 0,
+                model: AgentRuntimeAdapterRegistry.defaultModel(for: .claudeCode),
+                runtimeID: AgentRuntimeID.claudeCode.rawValue,
+                costUSD: 0,
+                sessionId: nil,
+                maxTurns: 25,
+                createdAt: now,
+                updatedAt: now,
+                completedAt: nil,
+                unreadAt: nil,
+                isolationStrategy: nil,
+                validationStrategy: ValidationStrategy.runTests.rawValue,
+                testCommand: "   ",
+                draftMessages: nil,
+                chainedGoal: nil,
+                chainedFromID: nil,
+                useAgentTeam: nil,
+                teamSize: nil,
+                teamInstructions: nil,
+                templateID: nil,
+                templateHooksJSON: nil,
+                runs: [],
+                events: [],
+                artifacts: nil,
+                skillIDs: nil,
+                skillNames: [],
+                skillSnapshots: nil
+            )
+        ]
+
+        let imported = WorkspaceConfigManager.importWorkspace(from: config, modelContext: context)
+        let importedTask = try #require(imported.tasks.first)
+
+        #expect(importedTask.validationStrategy == .runTests)
+        #expect(importedTask.testCommand.isEmpty)
+    }
+
+    @Test("imported task validation preserves allowed test commands")
+    @MainActor
+    func importedTaskValidationPreservesAllowedTestCommands() throws {
+        let container = try makeWorkspacePersistenceContainer()
+        let context = container.mainContext
+        let workspace = try makeRichWorkspace(
+            in: context,
+            root: "/tmp/astra_import_allowed_validation_\(UUID().uuidString)"
+        )
+        let sourceTask = try #require(workspace.tasks.first)
+        sourceTask.validationStrategy = .runTests
+        sourceTask.testCommand = "swift test --filter WorkspacePersistenceTests"
+        try context.save()
+
+        let config = try #require(WorkspaceConfigManager.export(workspace: workspace, modelContext: context))
+        let importedContainer = try makeWorkspacePersistenceContainer()
+        let imported = WorkspaceConfigManager.importWorkspace(
+            from: config,
+            modelContext: importedContainer.mainContext
+        )
+        let importedTask = try #require(imported.tasks.first)
+
+        #expect(importedTask.validationStrategy == .runTests)
+        #expect(importedTask.testCommand == "swift test --filter WorkspacePersistenceTests")
+    }
+
+    @Test("imported task validation clears package paths outside workspace")
+    @MainActor
+    func importedTaskValidationClearsPackagePathsOutsideWorkspace() throws {
+        let container = try makeWorkspacePersistenceContainer()
+        let context = container.mainContext
+        let workspace = try makeRichWorkspace(
+            in: context,
+            root: "/tmp/astra_import_path_validation_\(UUID().uuidString)"
+        )
+        let sourceTask = try #require(workspace.tasks.first)
+        sourceTask.validationStrategy = .runTests
+        sourceTask.testCommand = "swift test --filter WorkspacePersistenceTests"
+        try context.save()
+
+        var config = try #require(WorkspaceConfigManager.export(workspace: workspace, modelContext: context))
+        var tasks = try #require(config.tasks)
+        tasks[0].testCommand = "swift test --package-path /tmp/astra_import_outside_\(UUID().uuidString)"
+        config.tasks = tasks
+        let importedContainer = try makeWorkspacePersistenceContainer()
+        let imported = WorkspaceConfigManager.importWorkspace(
+            from: config,
+            modelContext: importedContainer.mainContext
+        )
+        let importedTask = try #require(imported.tasks.first)
+
+        #expect(importedTask.validationStrategy == .runTests)
+        #expect(importedTask.testCommand.isEmpty)
+    }
+
     @Test("legacy v4 configs use name fallback only when IDs are absent")
     @MainActor
     func legacyV4NameFallback() throws {

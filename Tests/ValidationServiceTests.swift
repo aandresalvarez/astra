@@ -113,6 +113,299 @@ struct ValidationServiceTests {
         ])
     }
 
+    @Test("runTests rejects shell composition before executing imported task commands")
+    func runTestsRejectsShellCompositionBeforeExecution() async throws {
+        let root = "/tmp/astra-validation-imported-\(UUID().uuidString.prefix(8))"
+        let workspace = Workspace(name: "Imported Validation Guard", primaryPath: root)
+        let task = AgentTask(title: "Validate", goal: "Reject imported shell composition", workspace: workspace)
+        task.testCommand = "true; touch should-not-run"
+        let runner = StubValidationCommandRunner(results: [
+            ValidationCommandResult(exitCode: 0, stdout: "unsafe pass", stderr: "")
+        ])
+
+        let result = await ValidationService.runTests(task: task, commandRunner: runner)
+
+        if case .error(let message) = result {
+            #expect(message.contains("not allowed"))
+        } else {
+            Issue.record("Expected unsafe test command to be rejected before execution")
+        }
+        #expect(await runner.recordedCalls().isEmpty)
+    }
+
+    @Test("runTests rejects background shell operator before execution")
+    func runTestsRejectsBackgroundShellOperatorBeforeExecution() async throws {
+        let root = "/tmp/astra-validation-background-\(UUID().uuidString.prefix(8))"
+        let workspace = Workspace(name: "Imported Validation Background Guard", primaryPath: root)
+        let task = AgentTask(title: "Validate", goal: "Reject imported background shell composition", workspace: workspace)
+        task.testCommand = "swift test & touch should-not-run"
+        let runner = StubValidationCommandRunner(results: [
+            ValidationCommandResult(exitCode: 0, stdout: "unsafe pass", stderr: "")
+        ])
+
+        let result = await ValidationService.runTests(task: task, commandRunner: runner)
+
+        if case .error(let message) = result {
+            #expect(message.contains("not allowed"))
+        } else {
+            Issue.record("Expected background shell operator to be rejected before execution")
+        }
+        #expect(await runner.recordedCalls().isEmpty)
+    }
+
+    @Test("runTests allows quoted ampersands in arguments")
+    func runTestsAllowsQuotedAmpersandsInArguments() async throws {
+        let root = "/tmp/astra-validation-quoted-ampersand-\(UUID().uuidString.prefix(8))"
+        let workspace = Workspace(name: "Imported Validation Quoted Path", primaryPath: root)
+        let task = AgentTask(title: "Validate", goal: "Allow quoted ampersand in validation path", workspace: workspace)
+        task.testCommand = "swift test --package-path \"Foo & Bar\""
+        let runner = StubValidationCommandRunner(results: [
+            ValidationCommandResult(exitCode: 0, stdout: "ok", stderr: "")
+        ])
+
+        let result = await ValidationService.runTests(task: task, commandRunner: runner)
+
+        if case .passed(let details) = result {
+            #expect(details == "ok")
+        } else {
+            Issue.record("Expected quoted ampersand command to be allowed")
+        }
+        let calls = await runner.recordedCalls()
+        #expect(calls.map(\.command) == ["swift test --package-path \"Foo & Bar\""])
+    }
+
+    @Test("runTests rejects zsh process substitution before execution")
+    func runTestsRejectsZshProcessSubstitutionBeforeExecution() async throws {
+        let root = "/tmp/astra-validation-process-substitution-\(UUID().uuidString.prefix(8))"
+        let workspace = Workspace(name: "Imported Validation Process Substitution Guard", primaryPath: root)
+        let task = AgentTask(title: "Validate", goal: "Reject imported zsh process substitution", workspace: workspace)
+        task.testCommand = "swift test =(touch should-not-run)"
+        let runner = StubValidationCommandRunner(results: [
+            ValidationCommandResult(exitCode: 0, stdout: "unsafe pass", stderr: "")
+        ])
+
+        let result = await ValidationService.runTests(task: task, commandRunner: runner)
+
+        if case .error(let message) = result {
+            #expect(message.contains("not allowed"))
+        } else {
+            Issue.record("Expected zsh process substitution to be rejected before execution")
+        }
+        #expect(await runner.recordedCalls().isEmpty)
+    }
+
+    @Test("runTests rejects zsh glob execution before execution")
+    func runTestsRejectsZshGlobExecutionBeforeExecution() async throws {
+        let root = "/tmp/astra-validation-glob-qualifier-\(UUID().uuidString.prefix(8))"
+        let workspace = Workspace(name: "Imported Validation Glob Guard", primaryPath: root)
+        let task = AgentTask(title: "Validate", goal: "Reject imported zsh glob execution", workspace: workspace)
+        task.testCommand = "swift test *(e:touch${IFS}/tmp/should-not-run:)"
+        let runner = StubValidationCommandRunner(results: [
+            ValidationCommandResult(exitCode: 0, stdout: "unsafe pass", stderr: "")
+        ])
+
+        let result = await ValidationService.runTests(task: task, commandRunner: runner)
+
+        if case .error(let message) = result {
+            #expect(message.contains("not allowed"))
+        } else {
+            Issue.record("Expected zsh glob execution to be rejected before execution")
+        }
+        #expect(await runner.recordedCalls().isEmpty)
+    }
+
+    @Test("runTests rejects double-quoted command substitution before execution")
+    func runTestsRejectsDoubleQuotedCommandSubstitutionBeforeExecution() async throws {
+        let commands = [
+            #"swift test --filter "$(touch should-not-run)""#,
+            #"swift test --filter "`touch should-not-run`""#
+        ]
+
+        for command in commands {
+            let root = "/tmp/astra-validation-command-substitution-\(UUID().uuidString.prefix(8))"
+            let workspace = Workspace(name: "Imported Validation Command Substitution Guard", primaryPath: root)
+            let task = AgentTask(title: "Validate", goal: "Reject imported command substitution", workspace: workspace)
+            task.testCommand = command
+            let runner = StubValidationCommandRunner(results: [
+                ValidationCommandResult(exitCode: 0, stdout: "unsafe pass", stderr: "")
+            ])
+
+            let result = await ValidationService.runTests(task: task, commandRunner: runner)
+
+            if case .error(let message) = result {
+                #expect(message.contains("not allowed"))
+            } else {
+                Issue.record("Expected command substitution to be rejected before execution")
+            }
+            #expect(await runner.recordedCalls().isEmpty)
+        }
+    }
+
+    @Test("runTests rejects newline command separators before execution")
+    func runTestsRejectsNewlineCommandSeparatorsBeforeExecution() async throws {
+        let root = "/tmp/astra-validation-newline-\(UUID().uuidString.prefix(8))"
+        let workspace = Workspace(name: "Imported Validation Newline Guard", primaryPath: root)
+        let task = AgentTask(title: "Validate", goal: "Reject imported newline command separator", workspace: workspace)
+        task.testCommand = "swift test\ntouch should-not-run"
+        let runner = StubValidationCommandRunner(results: [
+            ValidationCommandResult(exitCode: 0, stdout: "unsafe pass", stderr: "")
+        ])
+
+        let result = await ValidationService.runTests(task: task, commandRunner: runner)
+
+        if case .error(let message) = result {
+            #expect(message.contains("not allowed"))
+        } else {
+            Issue.record("Expected newline command separator to be rejected before execution")
+        }
+        #expect(await runner.recordedCalls().isEmpty)
+    }
+
+    @Test("runTests rejects no-op commands as validation bypasses")
+    func runTestsRejectsNoOpCommandsAsValidationBypasses() async throws {
+        let root = "/tmp/astra-validation-noop-\(UUID().uuidString.prefix(8))"
+        let workspace = Workspace(name: "Imported Validation No-op Guard", primaryPath: root)
+        let task = AgentTask(title: "Validate", goal: "Reject imported no-op validation", workspace: workspace)
+        task.testCommand = "true"
+        let runner = StubValidationCommandRunner(results: [
+            ValidationCommandResult(exitCode: 0, stdout: "noop", stderr: "")
+        ])
+
+        let result = await ValidationService.runTests(task: task, commandRunner: runner)
+
+        if case .error(let message) = result {
+            #expect(message.contains("not allowed"))
+        } else {
+            Issue.record("Expected no-op test command to be rejected before execution")
+        }
+        #expect(await runner.recordedCalls().isEmpty)
+    }
+
+    @Test("runTests rejects swift display-only commands as validation bypasses")
+    func runTestsRejectsSwiftDisplayOnlyCommandsAsValidationBypasses() async throws {
+        let root = "/tmp/astra-validation-swift-help-\(UUID().uuidString.prefix(8))"
+        let workspace = Workspace(name: "Imported Validation Help Guard", primaryPath: root)
+        let task = AgentTask(title: "Validate", goal: "Reject imported help-only validation", workspace: workspace)
+        task.testCommand = "swift test --help"
+        let runner = StubValidationCommandRunner(results: [
+            ValidationCommandResult(exitCode: 0, stdout: "USAGE: swift test", stderr: "")
+        ])
+
+        let result = await ValidationService.runTests(task: task, commandRunner: runner)
+
+        if case .error(let message) = result {
+            #expect(message.contains("not allowed"))
+        } else {
+            Issue.record("Expected swift help command to be rejected before execution")
+        }
+        #expect(await runner.recordedCalls().isEmpty)
+        #expect(!ValidationCommandPolicy.isAllowed("swift build --help"))
+        #expect(!ValidationCommandPolicy.isAllowed("swift build --show-bin-path"))
+        #expect(!ValidationCommandPolicy.isAllowed("swift test list"))
+        #expect(!ValidationCommandPolicy.isAllowed(#"swift test "${UNSET:---help}""#))
+        #expect(ValidationCommandPolicy.isAllowed("swift test --filter list"))
+    }
+
+    @Test("runTests rejects escaped newline display-only bypasses before execution")
+    func runTestsRejectsEscapedNewlineDisplayOnlyBypassesBeforeExecution() async throws {
+        let root = "/tmp/astra-validation-escaped-newline-\(UUID().uuidString.prefix(8))"
+        let workspace = Workspace(name: "Imported Validation Escaped Newline Guard", primaryPath: root)
+        let task = AgentTask(title: "Validate", goal: "Reject escaped newline display-only validation", workspace: workspace)
+        task.testCommand = "swift test \\\n--help"
+        let runner = StubValidationCommandRunner(results: [
+            ValidationCommandResult(exitCode: 0, stdout: "USAGE: swift test", stderr: "")
+        ])
+
+        let result = await ValidationService.runTests(task: task, commandRunner: runner)
+
+        if case .error(let message) = result {
+            #expect(message.contains("not allowed"))
+        } else {
+            Issue.record("Expected escaped newline display-only command to be rejected before execution")
+        }
+        #expect(await runner.recordedCalls().isEmpty)
+    }
+
+    @Test("runTests rejects Swift graph-only build commands before execution")
+    func runTestsRejectsSwiftGraphOnlyBuildCommandsBeforeExecution() async throws {
+        let root = "/tmp/astra-validation-swift-graph-\(UUID().uuidString.prefix(8))"
+        let workspace = Workspace(name: "Imported Validation Swift Graph Guard", primaryPath: root)
+        let task = AgentTask(title: "Validate", goal: "Reject Swift graph-only build validation", workspace: workspace)
+        task.testCommand = "swift build --print-manifest-job-graph"
+        let runner = StubValidationCommandRunner(results: [
+            ValidationCommandResult(exitCode: 0, stdout: "{ \"commands\": [] }", stderr: "")
+        ])
+
+        let result = await ValidationService.runTests(task: task, commandRunner: runner)
+
+        if case .error(let message) = result {
+            #expect(message.contains("not allowed"))
+        } else {
+            Issue.record("Expected Swift graph-only build command to be rejected before execution")
+        }
+        #expect(await runner.recordedCalls().isEmpty)
+    }
+
+    @Test("runTests rejects file assertions as test commands")
+    func runTestsRejectsFileAssertionsAsTestCommands() async throws {
+        let commands = [
+            "test -f Package.swift",
+            "[ -f Package.swift ]"
+        ]
+
+        for command in commands {
+            let root = "/tmp/astra-validation-file-assertion-\(UUID().uuidString.prefix(8))"
+            let workspace = Workspace(name: "Imported Validation File Assertion Guard", primaryPath: root)
+            let task = AgentTask(title: "Validate", goal: "Reject file assertion as run-tests validation", workspace: workspace)
+            task.testCommand = command
+            let runner = StubValidationCommandRunner(results: [
+                ValidationCommandResult(exitCode: 0, stdout: "", stderr: "")
+            ])
+
+            let result = await ValidationService.runTests(task: task, commandRunner: runner)
+
+            if case .error(let message) = result {
+                #expect(message.contains("not allowed"))
+            } else {
+                Issue.record("Expected file assertion command to be rejected before execution")
+            }
+            #expect(await runner.recordedCalls().isEmpty)
+        }
+    }
+
+    @Test("runTests rejects Swift package paths outside the task workspace")
+    func runTestsRejectsSwiftPackagePathsOutsideTaskWorkspace() async throws {
+        let root = try temporaryRoot()
+        let outsideRoot = try temporaryRoot()
+        defer {
+            try? FileManager.default.removeItem(atPath: root)
+            try? FileManager.default.removeItem(atPath: outsideRoot)
+        }
+        let workspace = Workspace(name: "Imported Validation Path Guard", primaryPath: root)
+        let task = AgentTask(title: "Validate", goal: "Reject test package path outside workspace", workspace: workspace)
+        task.testCommand = "swift test --package-path \(outsideRoot)"
+        let runner = StubValidationCommandRunner(results: [
+            ValidationCommandResult(exitCode: 0, stdout: "outside pass", stderr: "")
+        ])
+
+        let result = await ValidationService.runTests(task: task, commandRunner: runner)
+
+        if case .error(let message) = result {
+            #expect(message.contains("not allowed"))
+        } else {
+            Issue.record("Expected package path outside the task workspace to be rejected before execution")
+        }
+        #expect(await runner.recordedCalls().isEmpty)
+    }
+
+    @Test("validation command policy allows help and version as argument values")
+    func validationCommandPolicyAllowsHelpAndVersionAsArgumentValues() {
+        #expect(ValidationCommandPolicy.isAllowed("swift test --filter help"))
+        #expect(ValidationCommandPolicy.isAllowed("swift test --filter version"))
+        #expect(ValidationCommandPolicy.isAllowed("pytest -k help"))
+        #expect(ValidationCommandPolicy.isAllowed("pytest -k version"))
+    }
+
     @Test("validation contract command assertions use injected runner")
     func validationContractCommandAssertionsUseInjectedRunner() async throws {
         let root = try temporaryRoot()
@@ -181,6 +474,7 @@ struct ValidationServiceTests {
     func validationContractCommandPasses() async throws {
         let root = try temporaryRoot()
         defer { try? FileManager.default.removeItem(atPath: root) }
+        try writeMinimalSwiftPackage(at: root)
         let container = try makeValidationServiceContainer()
         let context = ModelContext(container)
         let workspace = Workspace(name: "Validation", primaryPath: root)
@@ -198,7 +492,7 @@ struct ValidationServiceTests {
                     id: "command-pass",
                     description: "Command exits zero",
                     method: .command,
-                    command: "true"
+                    command: "swift build --package-path \(root)"
                 )
             ])
         )
@@ -237,9 +531,9 @@ struct ValidationServiceTests {
             validationContract: TaskValidationContract(assertions: [
                 TaskValidationAssertion(
                     id: "command-fails",
-                    description: "Command exits zero",
+                    description: "Command exits non-zero",
                     method: .command,
-                    command: "false"
+                    command: "swift build --package-path \(root)/missing-package"
                 )
             ])
         )
@@ -367,6 +661,99 @@ struct ValidationServiceTests {
             $0.type == TaskValidationEventTypes.assertionFailed &&
                 $0.payload.contains("command_not_allowed")
         })
+    }
+
+    @Test("validation command policy rejects package manager test script name smuggling")
+    func validationCommandPolicyRejectsPackageManagerTestScriptNameSmuggling() {
+        #expect(ValidationCommandPolicy.isAllowed("npm run test"))
+        #expect(ValidationCommandPolicy.isAllowed("npm run test -- --watch=false"))
+        #expect(ValidationCommandPolicy.isAllowed("npm test -- --watch=false"))
+        #expect(!ValidationCommandPolicy.isAllowed("npm test --help"))
+        #expect(!ValidationCommandPolicy.isAllowed("npm run test --if-present"))
+        #expect(!ValidationCommandPolicy.isAllowed("npm test --script-shell=/bin/true"))
+        #expect(!ValidationCommandPolicy.isAllowed("npm run test:evil"))
+        #expect(ValidationCommandPolicy.isAllowed("yarn run test"))
+        #expect(ValidationCommandPolicy.isAllowed("yarn run test --ci"))
+        #expect(!ValidationCommandPolicy.isAllowed("yarn test --help"))
+        #expect(!ValidationCommandPolicy.isAllowed("yarn run test --version"))
+        #expect(!ValidationCommandPolicy.isAllowed("yarn run test:evil"))
+        #expect(ValidationCommandPolicy.isAllowed("pnpm run test"))
+        #expect(ValidationCommandPolicy.isAllowed("pnpm run test -- --runInBand"))
+        #expect(!ValidationCommandPolicy.isAllowed("pnpm test --help"))
+        #expect(!ValidationCommandPolicy.isAllowed("pnpm run test --markers"))
+        #expect(!ValidationCommandPolicy.isAllowed("pnpm run test:evil"))
+    }
+
+    @Test("validation command policy matches xcodebuild actions by token")
+    func validationCommandPolicyMatchesXcodebuildActionsByToken() {
+        let workspaceRoot = "/tmp/astra-validation-xcode-root-\(UUID().uuidString)"
+        let outsideRoot = "/tmp/astra-validation-xcode-outside-\(UUID().uuidString)"
+        #expect(ValidationCommandPolicy.isAllowed("xcodebuild -project App.xcodeproj build"))
+        #expect(ValidationCommandPolicy.isAllowed("xcodebuild -scheme App test"))
+        #expect(ValidationCommandPolicy.isAllowed("xcodebuild build-for-testing -workspace App.xcworkspace -scheme App"))
+        #expect(ValidationCommandPolicy.isAllowed("xcodebuild test-without-building -workspace App.xcworkspace -scheme App"))
+        #expect(ValidationCommandPolicy.isAssertionCommandAllowed(
+            "xcodebuild build -project \(workspaceRoot)/App.xcodeproj",
+            workspacePath: workspaceRoot
+        ))
+        #expect(!ValidationCommandPolicy.isAssertionCommandAllowed(
+            "xcodebuild build -project \(outsideRoot)/App.xcodeproj",
+            workspacePath: workspaceRoot
+        ))
+        #expect(!ValidationCommandPolicy.isAllowed("xcodebuild archive -project test.xcodeproj"))
+        #expect(!ValidationCommandPolicy.isAllowed("xcodebuild -list -project build.xcodeproj"))
+        #expect(!ValidationCommandPolicy.isAllowed("xcodebuild -showBuildSettings build"))
+        #expect(!ValidationCommandPolicy.isAllowed("xcodebuild -version test"))
+        #expect(!ValidationCommandPolicy.isAllowed("xcodebuild -scheme test"))
+    }
+
+    @Test("validation command policy keeps make to the single test target")
+    func validationCommandPolicyKeepsMakeToSingleTestTarget() {
+        #expect(ValidationCommandPolicy.isAllowed("make test"))
+        #expect(ValidationCommandPolicy.isAllowed("make test -j2"))
+        #expect(ValidationCommandPolicy.isAllowed("make test --jobs=2 --keep-going"))
+        #expect(ValidationCommandPolicy.isAllowed("make test -j 2"))
+        #expect(ValidationCommandPolicy.isAllowed("make test --jobs 2"))
+        #expect(!ValidationCommandPolicy.isAllowed("make test -j"))
+        #expect(!ValidationCommandPolicy.isAllowed("make test --jobs"))
+        #expect(!ValidationCommandPolicy.isAllowed("make test clean"))
+        #expect(!ValidationCommandPolicy.isAllowed("make build"))
+        #expect(!ValidationCommandPolicy.isAllowed("make test CI=1"))
+        #expect(!ValidationCommandPolicy.isAllowed("make test SHELL=/bin/true"))
+        #expect(!ValidationCommandPolicy.isAllowed("make test '--eval=$(shell touch should-not-run)'"))
+        #expect(!ValidationCommandPolicy.isAllowed("make test '-E$(shell touch should-not-run)'"))
+        #expect(!ValidationCommandPolicy.isAllowed("make test 'CI=$(shell touch should-not-run)'"))
+        #expect(!ValidationCommandPolicy.isAllowed("make test 'CI=${shell touch should-not-run}'"))
+        #expect(!ValidationCommandPolicy.isAllowed("make test --file=Injected.mk"))
+    }
+
+    @Test("validation command policy preserves file test assertions without allowing no-ops")
+    func validationCommandPolicyPreservesFileTestAssertionsWithoutAllowingNoOps() {
+        let workspaceRoot = "/tmp/astra-validation-file-test-root-\(UUID().uuidString)"
+        #expect(ValidationCommandPolicy.isAllowed("test -f proof.txt"))
+        #expect(ValidationCommandPolicy.isAllowed("test -d artifacts/report"))
+        #expect(ValidationCommandPolicy.isAllowed("[ -f proof.txt ]"))
+        #expect(!ValidationCommandPolicy.isRunTestsCommandAllowed("test -f proof.txt", workspacePath: workspaceRoot))
+        #expect(ValidationCommandPolicy.isAssertionCommandAllowed("test -f proof.txt", workspacePath: workspaceRoot))
+        #expect(!ValidationCommandPolicy.isAllowed("test -d /"))
+        #expect(!ValidationCommandPolicy.isAllowed("[ -e / ]"))
+        #expect(!ValidationCommandPolicy.isAllowed("test -f ../outside"))
+        #expect(!ValidationCommandPolicy.isAllowed("test -f =zsh"))
+        #expect(!ValidationCommandPolicy.isAllowed("test"))
+        #expect(!ValidationCommandPolicy.isAllowed("[ ]"))
+        #expect(!ValidationCommandPolicy.isAllowed("test -f proof.txt; touch should-not-run"))
+    }
+
+    @Test("validation command policy rejects python pytest display-only commands")
+    func validationCommandPolicyRejectsPythonPytestDisplayOnlyCommands() {
+        #expect(!ValidationCommandPolicy.isAllowed("python -m pytest --help"))
+        #expect(!ValidationCommandPolicy.isAllowed("python3 -m pytest --version"))
+        #expect(!ValidationCommandPolicy.isAllowed("python3 -m pytest --collect-only"))
+        #expect(!ValidationCommandPolicy.isAllowed("pytest --collect-only"))
+        #expect(!ValidationCommandPolicy.isAllowed("pytest --setup-plan"))
+        #expect(!ValidationCommandPolicy.isAllowed("pytest --fixtures"))
+        #expect(!ValidationCommandPolicy.isAllowed("pytest --markers"))
+        #expect(ValidationCommandPolicy.isAllowed("python -m pytest -k help"))
     }
 
     @Test("validation contract command allowlist blocks python before pytest module")
@@ -998,7 +1385,7 @@ struct ValidationServiceTests {
                     id: "must-pass",
                     description: "Command passes",
                     method: .command,
-                    command: "false"
+                    command: "swift build --package-path \(root)/missing-package"
                 )
             ])
         )
@@ -1261,6 +1648,33 @@ struct ValidationServiceTests {
             .appendingPathComponent("astra-validation-service-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         return url.path
+    }
+
+    private func writeMinimalSwiftPackage(at root: String) throws {
+        let package = """
+        // swift-tools-version: 5.9
+        import PackageDescription
+
+        let package = Package(
+            name: "ValidationFixture",
+            targets: [
+                .executableTarget(name: "ValidationFixture")
+            ]
+        )
+        """
+        let sources = URL(fileURLWithPath: root)
+            .appendingPathComponent("Sources/ValidationFixture", isDirectory: true)
+        try FileManager.default.createDirectory(at: sources, withIntermediateDirectories: true)
+        try package.write(
+            to: URL(fileURLWithPath: root).appendingPathComponent("Package.swift"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try #"@main struct ValidationFixture { static func main() {} }"#.write(
+            to: sources.appendingPathComponent("main.swift"),
+            atomically: true,
+            encoding: .utf8
+        )
     }
 
     private func fakeCopilotUtility(in root: String, output: String) throws -> URL {

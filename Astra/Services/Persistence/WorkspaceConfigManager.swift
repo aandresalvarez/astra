@@ -1509,10 +1509,13 @@ enum WorkspaceConfigManager {
         if let value = config.isolationStrategy {
             task.isolationStrategy = IsolationStrategy(rawValue: value) ?? .sameDirectory
         }
-        if let value = config.validationStrategy {
-            task.validationStrategy = ValidationStrategy(rawValue: value) ?? .manual
-        }
-        task.testCommand = config.testCommand ?? ""
+        let validation = importedValidationConfiguration(
+            strategy: config.validationStrategy,
+            testCommand: config.testCommand,
+            workspacePath: workspace.primaryPath
+        )
+        task.validationStrategy = validation.strategy
+        task.testCommand = validation.testCommand
         task.draftMessages = config.draftMessages ?? ""
         task.chainedGoal = config.chainedGoal ?? ""
         if let id = config.chainedFromID {
@@ -1613,6 +1616,23 @@ enum WorkspaceConfigManager {
             artifact.createdAt = ac.createdAt
             modelContext.insert(artifact)
         }
+    }
+
+    private static func importedValidationConfiguration(
+        strategy rawStrategy: String?,
+        testCommand rawCommand: String?,
+        workspacePath: String?
+    ) -> (strategy: ValidationStrategy, testCommand: String) {
+        let strategy = rawStrategy.flatMap(ValidationStrategy.init(rawValue:)) ?? .manual
+        let command = rawCommand?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+        guard strategy == .runTests else {
+            return (strategy, command)
+        }
+        guard ValidationCommandPolicy.isRunTestsCommandAllowed(command, workspacePath: workspacePath) else {
+            return (.runTests, "")
+        }
+        return (.runTests, command)
     }
 
     private static func linkSkills(
