@@ -202,6 +202,125 @@ struct BrowserPageSnapshotServiceTests {
         #expect(!compacted.contains(cardNumber))
     }
 
+    @Test("snapshot output redacts empty sensitive metadata")
+    func snapshotOutputRedactsEmptySensitiveMetadata() throws {
+        let compacted = try BrowserPageSnapshotService.compactSnapshot(
+            json: """
+            {
+              "ok": true,
+              "url": "https://example.com/settings",
+              "title": "Settings",
+              "text": "Rotate api_token_sk_live_123 before publishing.",
+              "controls": [
+                {
+                  "selector": "#api_token_sk_live_123",
+                  "tag": "input",
+                  "role": "textbox",
+                  "type": "text",
+                  "label": "API token",
+                  "name": "api_token_sk_live_123",
+                  "value": ""
+                }
+              ]
+            }
+            """,
+            mode: .full,
+            query: nil,
+            limit: nil
+        )
+        let object = try jsonObject(from: compacted)
+        let controls = try #require(object["controls"] as? [[String: Any]])
+        let control = try #require(controls.first)
+
+        #expect(object["text"] as? String == "Rotate [redacted-sensitive-input] before publishing.")
+        #expect(control["selector"] as? String == "[redacted-sensitive-input]")
+        #expect(control["name"] as? String == "[redacted-sensitive-input]")
+        #expect(control["value"] as? String == "")
+        #expect(!compacted.contains("api_token_sk_live_123"))
+    }
+
+    @Test("snapshot output redacts independent sensitive metadata and formatted values")
+    func snapshotOutputRedactsIndependentSensitiveMetadataAndFormattedValues() throws {
+        let compacted = try BrowserPageSnapshotService.compactSnapshot(
+            json: """
+            {
+              "ok": true,
+              "url": "https://example.com/checkout",
+              "title": "Checkout",
+              "text": "Saved card 4111 1111 1111 1111 and api_token_sk_live_123 are visible.",
+              "controls": [
+                {
+                  "selector": "#api_token_sk_live_123",
+                  "tag": "input",
+                  "role": "textbox",
+                  "type": "text",
+                  "label": "API token",
+                  "name": "api_token_sk_live_123",
+                  "value": "rotated"
+                },
+                {
+                  "selector": "#cc-number",
+                  "tag": "input",
+                  "role": "textbox",
+                  "type": "text",
+                  "label": "Card number",
+                  "autocomplete": "cc-number",
+                  "value": "4111111111111111"
+                }
+              ]
+            }
+            """,
+            mode: .full,
+            query: nil,
+            limit: nil
+        )
+        let object = try jsonObject(from: compacted)
+        let controls = try #require(object["controls"] as? [[String: Any]])
+        let token = try #require(controls.first { $0["label"] as? String == "API token" })
+        let card = try #require(controls.first { $0["label"] as? String == "Card number" })
+
+        #expect(object["text"] as? String == "Saved card [redacted-sensitive-input] and [redacted-sensitive-input] are visible.")
+        #expect(token["selector"] as? String == "[redacted-sensitive-input]")
+        #expect(token["name"] as? String == "[redacted-sensitive-input]")
+        #expect(token["value"] as? String == "[redacted-sensitive-input]")
+        #expect(card["value"] as? String == "[redacted-sensitive-input]")
+        #expect(!compacted.contains("api_token_sk_live_123"))
+        #expect(!compacted.contains("4111 1111 1111 1111"))
+    }
+
+    @Test("snapshot text redaction skips very short sensitive values")
+    func snapshotTextRedactionSkipsVeryShortSensitiveValues() throws {
+        let compacted = try BrowserPageSnapshotService.compactSnapshot(
+            json: """
+            {
+              "ok": true,
+              "url": "https://example.com/login",
+              "title": "Login",
+              "text": "Step 1 asks a normal question.",
+              "controls": [
+                {
+                  "selector": "#password",
+                  "tag": "input",
+                  "role": "textbox",
+                  "type": "password",
+                  "label": "Password",
+                  "value": "1"
+                }
+              ]
+            }
+            """,
+            mode: .full,
+            query: nil,
+            limit: nil
+        )
+        let object = try jsonObject(from: compacted)
+        let controls = try #require(object["controls"] as? [[String: Any]])
+        let password = try #require(controls.first)
+
+        #expect(object["text"] as? String == "Step 1 asks a normal question.")
+        #expect(password["value"] as? String == "[redacted-sensitive-input]")
+    }
+
     @Test("snapshot script avoids sensitive value-derived metadata")
     func snapshotScriptAvoidsSensitiveValueDerivedMetadata() {
         let script = BrowserAutomationScripts.snapshotScript
@@ -310,6 +429,7 @@ struct BrowserPageSnapshotServiceTests {
 
         #expect(script.contains("const currentValueFor = (target) =>"))
         #expect(script.contains("const redactSensitiveResultTarget = (result, target, value) =>"))
+        #expect(script.contains("const sensitiveResultObject = (result) =>"))
         #expect(script.contains("if (!target.ok) return JSON.stringify(redactSensitiveResultTarget(publicTarget(target), target.el, currentValueFor(target.el)))"))
         #expect(script.contains("return JSON.stringify(redactSensitiveResultTarget(result, el, currentValueFor(el)))"))
         #expect(script.contains(#"for (const key of ["selector", "requestedSelector", "label", "name", "placeholder", "testID", "href"])"#))

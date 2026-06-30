@@ -55,7 +55,6 @@ enum BrowserSensitiveInputRedactionPolicy {
 
     static func redactControlObject(_ control: [String: Any]) -> (object: [String: Any], didRedact: Bool, sensitiveValues: [String]) {
         let value = string(control["value"])
-        guard !value.isEmpty else { return (control, false, []) }
         let valueAlreadyRedacted = value == redactedInputValue
 
         let shouldRedact = isSensitiveControl(
@@ -72,18 +71,24 @@ enum BrowserSensitiveInputRedactionPolicy {
             risk: nil
         )
         guard shouldRedact else { return (control, false, []) }
-        let sensitiveValues = valueAlreadyRedacted ? sensitiveMetadataValues(from: control) : [value]
+        let sensitiveValues = uniqueSensitiveValues(
+            (value.isEmpty || valueAlreadyRedacted ? [] : [value]) + sensitiveMetadataValues(from: control)
+        )
         guard !valueAlreadyRedacted || !sensitiveValues.isEmpty else { return (control, false, []) }
 
         var redacted = control
-        redacted["value"] = redactedInputValue
-        redacted["selector"] = redactedDisplayText(string(control["selector"]), sensitiveValues: sensitiveValues)
-        redacted["label"] = redactedDisplayText(string(control["label"]), sensitiveValues: sensitiveValues)
-        redacted["name"] = redactedDisplayText(string(control["name"]), sensitiveValues: sensitiveValues)
-        redacted["placeholder"] = redactedDisplayText(string(control["placeholder"]), sensitiveValues: sensitiveValues)
-        redacted["testID"] = redactedDisplayText(string(control["testID"]), sensitiveValues: sensitiveValues)
-        redacted["href"] = redactedDisplayText(string(control["href"]), sensitiveValues: sensitiveValues)
-        return (redacted, true, sensitiveValues)
+        var didRedact = false
+        if !value.isEmpty, !valueAlreadyRedacted {
+            redacted["value"] = redactedInputValue
+            didRedact = true
+        }
+        for key in ["selector", "label", "name", "placeholder", "testID", "href"] {
+            let original = string(control[key])
+            let next = redactedDisplayText(original, sensitiveValues: sensitiveValues)
+            redacted[key] = next
+            didRedact = didRedact || next != original
+        }
+        return (redacted, didRedact, sensitiveValues)
     }
 
     static func controlIDSlugSource(
@@ -195,8 +200,8 @@ enum BrowserSensitiveInputRedactionPolicy {
         if containsAny(lowerAutocomplete, sensitiveAutocompleteTokens) {
             return true
         }
-        if risk == .payment, !isEditablePaymentField(tag: tag, role: role, type: lowerType) {
-            return false
+        if risk == .payment {
+            return isEditablePaymentField(tag: tag, role: role, type: lowerType)
         }
 
         let text = [
@@ -321,11 +326,22 @@ enum BrowserSensitiveInputRedactionPolicy {
     private static func redactedText(_ text: String, sensitiveValues: [String]) -> String {
         var redacted = text
         for value in sensitiveValues {
-            for candidate in sensitiveComparisonValues(for: value) {
+            guard shouldRedactFreeText(for: value) else { continue }
+            for candidate in sensitiveComparisonValues(for: value).sorted(by: { $0.count > $1.count }) {
                 redacted = redacted.replacingOccurrences(of: candidate, with: redactedInputValue, options: [.caseInsensitive])
+            }
+            if let digitPattern = formattedDigitPattern(for: value) {
+                redacted = replacingMatches(in: redacted, pattern: digitPattern, with: redactedInputValue)
             }
         }
         return redacted
+    }
+
+    private static func uniqueSensitiveValues(_ values: [String]) -> [String] {
+        var seen: Set<String> = []
+        return values
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty && seen.insert($0.lowercased()).inserted }
     }
 
     private static func sensitiveMetadataValues(from control: [String: Any]) -> [String] {
@@ -382,10 +398,42 @@ enum BrowserSensitiveInputRedactionPolicy {
         if let percentDecoded = trimmed.removingPercentEncoding {
             variants.append(cssUnescaped(percentDecoded))
         }
+        variants.append(contentsOf: variants.map(compactedSensitiveComparisonValue))
         var seen: Set<String> = []
         return variants
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
             .filter { !$0.isEmpty && seen.insert($0).inserted }
+    }
+
+    private static func shouldRedactFreeText(for value: String) -> Bool {
+        sensitiveComparisonValues(for: value).contains { candidate in
+            candidate.count >= 4 || candidate.filter(\.isNumber).count >= 6
+        }
+    }
+
+    private static func formattedDigitPattern(for value: String) -> String? {
+        let digits = value.filter(\.isNumber)
+        guard digits.count >= 6 else { return nil }
+        let allowedSeparators = CharacterSet(charactersIn: " -")
+        let nonDigitScalars = value.unicodeScalars.filter { !CharacterSet.decimalDigits.contains($0) }
+        guard nonDigitScalars.allSatisfy({ allowedSeparators.contains($0) }) else { return nil }
+        let body = digits.map { NSRegularExpression.escapedPattern(for: String($0)) }
+            .joined(separator: "[\\s-]*")
+        return "(?<!\\d)\(body)(?!\\d)"
+    }
+
+    private static func replacingMatches(in text: String, pattern: String, with replacement: String) -> String {
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
+            return text
+        }
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        return regex.stringByReplacingMatches(in: text, range: range, withTemplate: replacement)
+    }
+
+    private static func compactedSensitiveComparisonValue(_ value: String) -> String {
+        let compacted = String(value.filter { $0.isLetter || $0.isNumber })
+        guard value.contains(where: \.isNumber) || compacted.count > 20 else { return "" }
+        return compacted
     }
 
     private static func cssUnescaped(_ value: String) -> String {

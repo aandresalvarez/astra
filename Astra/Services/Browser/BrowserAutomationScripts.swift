@@ -794,6 +794,22 @@ enum BrowserAutomationScripts {
             ].join(" ").toLowerCase();
             return includesAny(text, sensitiveResultTerms);
           };
+          const sensitiveResultObject = (result) => {
+            const text = [
+              result.selector || "",
+              result.requestedSelector || "",
+              result.label || "",
+              result.name || "",
+              result.role || "",
+              result.tag || "",
+              result.type || "",
+              result.placeholder || "",
+              result.testID || "",
+              result.href || "",
+              result.autocomplete || ""
+            ].join(" ").toLowerCase();
+            return includesAny(text, sensitiveResultTerms) || sensitiveMetadataCandidate(text);
+          };
           const cssUnescaped = (value) => String(value || "")
             .replace(/\\\\([0-9a-fA-F]{1,6})\\s?/g, (_, hex) => String.fromCodePoint(parseInt(hex, 16)))
             .replace(/\\\\(.)/g, "$1");
@@ -810,7 +826,7 @@ enum BrowserAutomationScripts {
             return sensitiveMetadataCandidate(raw) ? redactedInputValue : raw;
           };
           const redactSensitiveResultTarget = (result, target, value) => {
-            if (!sensitiveResultTarget(target)) return result;
+            if (!sensitiveResultTarget(target) && !sensitiveResultObject(result)) return result;
             result.value = redactedInputValue;
             const normalizedValue = norm(value);
             if (normalizedValue && norm(result.label).includes(normalizedValue)) {

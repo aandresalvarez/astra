@@ -247,6 +247,32 @@ struct BrowserAnalysisTests {
         #expect(control["risk"] as? String == BrowserRisk.payment.rawValue)
     }
 
+    @Test("Analysis redacts editable payment risk values")
+    func analysisRedactsEditablePaymentRiskValues() throws {
+        let analysis = BrowserAnalysisBuilder.build(
+            snapshot: Self.sampleSnapshot(controls: [
+                Self.control(
+                    selector: "#payeeAccount",
+                    tag: "input",
+                    role: "textbox",
+                    type: "text",
+                    label: "Pay",
+                    value: "acct-12345",
+                    name: "payeeAccount"
+                )
+            ]),
+            backend: "controlled Chromium profile",
+            engine: "controlled"
+        )
+
+        let response = analysis.responseObject(query: nil, full: true, limit: nil, version: .v2)
+        let controls = try #require(response["controls"] as? [[String: Any]])
+        let control = try #require(controls.first)
+
+        #expect(control["risk"] as? String == BrowserRisk.payment.rawValue)
+        #expect(control["value"] as? String == "[redacted-sensitive-input]")
+    }
+
     @Test("Analysis ambiguity labels use redacted control text")
     func analysisAmbiguityLabelsUseRedactedControlText() throws {
         let secret = "MRN-424242"
