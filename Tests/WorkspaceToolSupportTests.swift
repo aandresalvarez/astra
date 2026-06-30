@@ -264,6 +264,10 @@ struct WorkspaceToolSupportTests {
         let commands = [
             "echo $(gcloud auth list --format=json)",
             "echo \"$(gcloud auth list --format=json)\"",
+            "echo $(printf \"\\\" )\"; gcloud auth list)",
+            "echo \"$(printf \"\\\" )\"; gcloud auth list)\"",
+            "echo `printf \\`; gcloud auth list`",
+            "echo \"`printf \\`; gcloud auth list`\"",
             "env TOKEN=$(gcloud auth application-default print-access-token)",
             "sh -c 'gcloud projects list'",
             "cmd='gcloud auth list'; sh -c \"$cmd\"",

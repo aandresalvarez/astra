@@ -1070,6 +1070,11 @@ public struct WorkspaceToolConfiguration: Equatable, Sendable {
         while cursor < command.endIndex {
             let character = command[cursor]
             if let activeQuote = quote {
+                let next = command.index(after: cursor)
+                if character == "\\", activeQuote != .single, next < command.endIndex {
+                    cursor = command.index(after: next)
+                    continue
+                }
                 if activeQuote.matches(character) {
                     quote = nil
                 }
@@ -1091,6 +1096,13 @@ public struct WorkspaceToolConfiguration: Equatable, Sendable {
     private func backtickCommand(in command: String, start: String.Index) -> (command: String, end: String.Index)? {
         var cursor = start
         while cursor < command.endIndex {
+            if command[cursor] == "\\" {
+                let next = command.index(after: cursor)
+                if next < command.endIndex {
+                    cursor = command.index(after: next)
+                    continue
+                }
+            }
             if command[cursor] == "`" {
                 return (String(command[start..<cursor]), command.index(after: cursor))
             }
