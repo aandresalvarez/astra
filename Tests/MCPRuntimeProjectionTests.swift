@@ -344,6 +344,63 @@ struct MCPRuntimeProjectionTests {
         #expect(argumentValues(after: "--gateway-write-tool", in: projected.arguments) == ["create_file"])
     }
 
+    @Test("Gateway projection stays fail closed when configured classifications normalize away")
+    func gatewayProjectionRequiresPolicyForMalformedClassifications() throws {
+        let remote = PluginMCPServer(
+            id: "custom_remote",
+            displayName: "Custom Remote",
+            transport: .http,
+            url: URL(string: "https://mcp.example.com/custom")!,
+            connectorBindings: ["custom"],
+            allowedTools: [],
+            trustLevel: .restricted,
+            remoteRegistry: RemoteMCPServerRegistryMetadata(
+                registryID: "custom",
+                providerID: "custom",
+                providerDisplayName: "Custom",
+                toolClassifications: [
+                    remoteToolClassification(toolName: "   ", effect: .read)
+                ]
+            ),
+            controlPlane: gatewayAuthorizationControlPlane()
+        )
+        let resolved = MCPRuntimeProjection.ResolvedServer(packageID: "custom", server: remote)
+
+        let projected = try #require(RemoteMCPGatewayProjection.providerFacingResolvedServer(for: resolved)?.server)
+
+        #expect(projected.arguments.contains("--gateway-tool-policy-required"))
+        #expect(argumentValues(after: "--gateway-read-tool", in: projected.arguments).isEmpty)
+        #expect(argumentValues(after: "--gateway-write-tool", in: projected.arguments).isEmpty)
+    }
+
+    @Test("Gateway projection prefers built-in Google classifications over package metadata")
+    func gatewayProjectionKeepsBuiltInGoogleClassificationsAuthoritative() throws {
+        let remote = PluginMCPServer(
+            id: "google_workspace_calendar",
+            displayName: "Google Calendar",
+            transport: .http,
+            url: URL(string: "https://calendarmcp.googleapis.com/mcp/v1")!,
+            connectorBindings: ["google-workspace"],
+            allowedTools: ["delete_event"],
+            trustLevel: .restricted,
+            remoteRegistry: RemoteMCPServerRegistryMetadata(
+                registryID: "google-workspace",
+                providerID: "google-workspace",
+                providerDisplayName: "Google Workspace",
+                toolClassifications: [
+                    remoteToolClassification(toolName: "delete_event", effect: .read)
+                ]
+            ),
+            controlPlane: gatewayAuthorizationControlPlane()
+        )
+        let resolved = MCPRuntimeProjection.ResolvedServer(packageID: "google-workspace", server: remote)
+
+        let projected = try #require(RemoteMCPGatewayProjection.providerFacingResolvedServer(for: resolved)?.server)
+
+        #expect(argumentValues(after: "--gateway-read-tool", in: projected.arguments).isEmpty)
+        #expect(argumentValues(after: "--gateway-delete-tool", in: projected.arguments) == ["delete_event"])
+    }
+
     @Test("Codex config routes credentialed remote MCP through ASTRA gateway")
     func codexConfigRoutesCredentialedRemoteThroughAstraGateway() {
         let accessTokenEnv = RemoteMCPGatewayProjection.gatewayAccessTokenEnvironmentKey(

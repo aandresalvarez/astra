@@ -135,11 +135,15 @@ public struct ConfiguredMCPGatewayToolPolicyEnforcer: MCPGatewayToolPolicyEnforc
         forTool toolName: String,
         server _: RemoteMCPServerDescriptor
     ) -> MCPGatewayToolPolicyDecision {
-        guard let rule = rulesByToolName[Self.normalized(toolName)] else {
+        let normalizedToolName = Self.normalized(toolName)
+        guard let rule = rulesByToolName[normalizedToolName] else {
             if requiresExplicitPolicy {
                 return .denied("Gateway policy has no classification for tool \(trimmed(toolName)).")
             }
             return .allowed
+        }
+        guard toolName == normalizedToolName else {
+            return .denied("Gateway policy tool \(trimmed(toolName)) does not exactly match classified tool \(normalizedToolName).")
         }
         guard !rule.access.requiresNativeApproval || rule.nativeApprovalGranted else {
             return .denied("Native approval required for \(rule.access.rawValue) tool \(trimmed(toolName)).")
@@ -157,12 +161,17 @@ public struct ConfiguredMCPGatewayToolPolicyEnforcer: MCPGatewayToolPolicyEnforc
         rules.reduce(into: [:]) { result, rule in
             let key = normalized(rule.toolName)
             guard !key.isEmpty else { return }
+            let canonicalRule = MCPGatewayToolPolicyRule(
+                toolName: key,
+                access: rule.access,
+                nativeApprovalGranted: rule.nativeApprovalGranted
+            )
             guard let existing = result[key] else {
-                result[key] = rule
+                result[key] = canonicalRule
                 return
             }
             if rule.access.restrictionRank > existing.access.restrictionRank {
-                result[key] = rule
+                result[key] = canonicalRule
             } else if rule.access == existing.access {
                 var merged = existing
                 merged.nativeApprovalGranted = existing.nativeApprovalGranted && rule.nativeApprovalGranted

@@ -102,12 +102,34 @@ struct RemoteMCPGatewaySupportTests {
             ])
         )
 
-        let call = try parseJSON(try #require(gateway.handleLine(#"{"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"name":"CREATE_FILE","arguments":{"query":"budget"}}}"#)))
+        let call = try parseJSON(try #require(gateway.handleLine(#"{"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"name":"create_file","arguments":{"query":"budget"}}}"#)))
         let callResult = try #require(call["result"] as? [String: Any])
         let content = try #require(callResult["content"] as? [[String: Any]])
 
         #expect(callResult["isError"] as? Bool == true)
         #expect((content.first?["text"] as? String)?.contains("Native approval required") == true)
+        #expect(remote.calledTools.isEmpty)
+        #expect(remote.authHeaders.isEmpty)
+    }
+
+    @Test("Gateway rejects aliases before forwarding classified tools")
+    func gatewayRejectsAliasedToolNamesBeforeForwarding() throws {
+        let remote = RecordingRemoteMCPClient()
+        let gateway = LocalMCPGateway(
+            server: googleDriveDescriptor(),
+            remoteClient: remote,
+            authTokenProvider: StaticGatewayTokenProvider(token: "secret-access-token"),
+            toolPolicyEnforcer: ConfiguredMCPGatewayToolPolicyEnforcer(rules: [
+                MCPGatewayToolPolicyRule(toolName: "search_files", access: .read)
+            ])
+        )
+
+        let call = try parseJSON(try #require(gateway.handleLine(#"{"jsonrpc":"2.0","id":12,"method":"tools/call","params":{"name":" Search_Files ","arguments":{"query":"budget"}}}"#)))
+        let callResult = try #require(call["result"] as? [String: Any])
+        let content = try #require(callResult["content"] as? [[String: Any]])
+
+        #expect(callResult["isError"] as? Bool == true)
+        #expect((content.first?["text"] as? String)?.contains("does not exactly match") == true)
         #expect(remote.calledTools.isEmpty)
         #expect(remote.authHeaders.isEmpty)
     }

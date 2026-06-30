@@ -127,12 +127,14 @@ enum RemoteMCPGatewayProjection {
     }
 
     private static func gatewayPolicyArguments(for server: PluginMCPServer) -> [String] {
-        let accessByToolName = gatewayToolAccessByToolName(for: server)
-        guard !accessByToolName.isEmpty else { return [] }
+        let policy = gatewayToolPolicy(for: server)
+        guard !policy.accessByToolName.isEmpty else {
+            return policy.requiresExplicitPolicy ? ["--gateway-tool-policy-required"] : []
+        }
 
         let allowedToolNames = Set(server.allowedTools.map(normalized).filter { !$0.isEmpty })
         let excludedToolNames = Set(server.excludedTools.map(normalized).filter { !$0.isEmpty })
-        let selectedRules = accessByToolName.filter { toolName, _ in
+        let selectedRules = policy.accessByToolName.filter { toolName, _ in
             let normalizedToolName = normalized(toolName)
             guard !excludedToolNames.contains(normalizedToolName) else { return false }
             return allowedToolNames.isEmpty || allowedToolNames.contains(normalizedToolName)
@@ -158,19 +160,30 @@ enum RemoteMCPGatewayProjection {
         return arguments
     }
 
-    private static func gatewayToolAccessByToolName(for server: PluginMCPServer) -> [String: String] {
-        let registryClassifications = server.remoteRegistry?.toolClassifications ?? []
-        if !registryClassifications.isEmpty {
-            return mostRestrictiveGatewayOptions(
-                registryClassifications.map { ($0.toolName, gatewayPolicyOption(for: $0.effect)) }
+    private struct GatewayToolPolicy {
+        var accessByToolName: [String: String]
+        var requiresExplicitPolicy: Bool
+    }
+
+    private static func gatewayToolPolicy(for server: PluginMCPServer) -> GatewayToolPolicy {
+        if let product = GoogleWorkspaceRemoteMCPRegistry.products.first(where: { $0.serverID == server.id }) {
+            return GatewayToolPolicy(
+                accessByToolName: mostRestrictiveGatewayOptions(
+                    product.toolFamilies.map { toolName, family in (toolName, gatewayPolicyOption(for: family)) }
+                ),
+                requiresExplicitPolicy: true
             )
         }
 
-        guard let product = GoogleWorkspaceRemoteMCPRegistry.products.first(where: { $0.serverID == server.id }) else {
-            return [:]
+        let registryClassifications = server.remoteRegistry?.toolClassifications ?? []
+        guard !registryClassifications.isEmpty else {
+            return GatewayToolPolicy(accessByToolName: [:], requiresExplicitPolicy: false)
         }
-        return mostRestrictiveGatewayOptions(
-            product.toolFamilies.map { toolName, family in (toolName, gatewayPolicyOption(for: family)) }
+        return GatewayToolPolicy(
+            accessByToolName: mostRestrictiveGatewayOptions(
+                registryClassifications.map { ($0.toolName, gatewayPolicyOption(for: $0.effect)) }
+            ),
+            requiresExplicitPolicy: true
         )
     }
 
