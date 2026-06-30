@@ -96,6 +96,17 @@ extension ShelfBrowserSession {
         let targetCount = Self.textEntryPreflightIntValue(targetInfo["targetCount"]) ?? 0
         let targets = targetInfo["targets"] as? [[String: Any]] ?? []
         guard targetCount > 0 else {
+            if GoogleWorkspaceBrowserService.isGoogleWorkspaceEditorURL(currentURL) {
+                return [
+                    "ok": false,
+                    "error": "editor_surface_requires_find_replace",
+                    "summary": "Google editor canvas text is not directly editable through DOM replacement.",
+                    "find": find,
+                    "selector": selector,
+                    "url": currentURL,
+                    "hint": "Google editor canvas text is not directly editable through DOM replacement. Open Find and replace, then use astra-browser set-value on the Find and Replace fields by selector."
+                ]
+            }
             return [
                 "ok": false,
                 "error": "text_entry_target_not_found",

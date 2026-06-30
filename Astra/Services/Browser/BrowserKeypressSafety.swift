@@ -28,11 +28,8 @@ enum BrowserKeypressSafety {
             || normalizedModifiers.contains("meta")
         let isControl = normalizedModifiers.contains("control") || normalizedModifiers.contains("ctrl")
 
-        if (isMeta || isControl) && normalizedKey == "v" {
-            return true
-        }
         if isMeta || isControl {
-            return false
+            return modifiedEditingKeys.contains(normalizedKey)
         }
         if safeNavigationKeys.contains(normalizedKey) {
             return false
@@ -96,4 +93,8 @@ enum BrowserKeypressSafety {
     private static let textEditingKeys: Set<String> = [
         "backspace", "delete", "del", "enter", "return", "space"
     ]
+
+    private static let modifiedEditingKeys: Set<String> = textEditingKeys.union([
+        "v", "x"
+    ])
 }

@@ -1774,14 +1774,14 @@ final class ControlledBrowserController: ObservableObject {
             return CDPKeyDefinition(key: "Backspace", code: "Backspace", virtualKeyCode: 8, text: nil)
         case "delete":
             return CDPKeyDefinition(key: "Delete", code: "Delete", virtualKeyCode: 46, text: nil)
-        case "arrowleft", "left":
-            return CDPKeyDefinition(key: "ArrowLeft", code: "ArrowLeft", virtualKeyCode: 37, text: nil)
-        case "arrowup", "up":
-            return CDPKeyDefinition(key: "ArrowUp", code: "ArrowUp", virtualKeyCode: 38, text: nil)
-        case "arrowright", "right":
-            return CDPKeyDefinition(key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39, text: nil)
-        case "arrowdown", "down":
-            return CDPKeyDefinition(key: "ArrowDown", code: "ArrowDown", virtualKeyCode: 40, text: nil)
+        case "arrowleft", "left": return CDPKeyDefinition(key: "ArrowLeft", code: "ArrowLeft", virtualKeyCode: 37, text: nil)
+        case "arrowup", "up": return CDPKeyDefinition(key: "ArrowUp", code: "ArrowUp", virtualKeyCode: 38, text: nil)
+        case "arrowright", "right": return CDPKeyDefinition(key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39, text: nil)
+        case "arrowdown", "down": return CDPKeyDefinition(key: "ArrowDown", code: "ArrowDown", virtualKeyCode: 40, text: nil)
+        case "home": return CDPKeyDefinition(key: "Home", code: "Home", virtualKeyCode: 36, text: nil)
+        case "end": return CDPKeyDefinition(key: "End", code: "End", virtualKeyCode: 35, text: nil)
+        case "pageup": return CDPKeyDefinition(key: "PageUp", code: "PageUp", virtualKeyCode: 33, text: nil)
+        case "pagedown": return CDPKeyDefinition(key: "PageDown", code: "PageDown", virtualKeyCode: 34, text: nil)
         default:
             break
         }

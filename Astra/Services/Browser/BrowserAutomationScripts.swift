@@ -1307,7 +1307,7 @@ enum BrowserAutomationScripts {
           const publicTarget = (target) => {
             const el = target.el;
             if (!el) {
-              const out = { ok: false, error: target.error || "target_not_found", locator: locatorSummary() };
+              const out = { ok: false, error: target.error || "target_not_found", locator: target.locator || locatorSummary() };
               if (target.selector) out.selector = target.selector;
               if (target.point) out.point = target.point;
               if (target.coveredBy) out.coveredBy = target.coveredBy;

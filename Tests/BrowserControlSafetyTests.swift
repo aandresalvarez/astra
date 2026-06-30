@@ -226,6 +226,8 @@ struct BrowserControlSafetyTests {
         #expect(script.contains("autocomplete"))
         #expect(script.contains("name: nameFor(el)"))
         #expect(script.contains("ownerDocument"))
+        #expect(script.contains("locator: target.locator || locatorSummary()"))
+        #expect(script.contains(#"locator: { focused: true }"#))
     }
 
     @Test("Text mutation scripts revalidate sensitive focused and replacement targets")
@@ -284,6 +286,22 @@ struct BrowserControlSafetyTests {
         )
         #expect(selectorlessReplaceScript.contains("const selector = null"))
         #expect(selectorlessReplaceScript.contains("querySelectorAll(\"input, textarea, [contenteditable=true]\")"))
+    }
+
+    @Test("Google editor replacement preflight preserves find-replace hint")
+    func googleEditorReplacementPreflightPreservesFindReplaceHint() throws {
+        let repoRoot = URL(filePath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let preflightPath = repoRoot
+            .appendingPathComponent("Astra")
+            .appendingPathComponent("Services")
+            .appendingPathComponent("Browser")
+            .appendingPathComponent("ShelfBrowserSessionTextEntryPreflight.swift")
+            .path
+        let source = try String(contentsOfFile: preflightPath, encoding: .utf8)
+
+        #expect(source.contains("GoogleWorkspaceBrowserService.isGoogleWorkspaceEditorURL(currentURL)"))
+        #expect(source.contains(#""editor_surface_requires_find_replace""#))
+        #expect(source.contains("Google editor canvas text is not directly editable through DOM replacement."))
     }
 
     @Test("Selectorless replace loop hints use the searched text as fallback target")
@@ -394,6 +412,10 @@ struct BrowserControlSafetyTests {
         #expect(!BrowserKeypressSafety.requiresTextEntryPreflight(key: "Escape", modifiers: []))
         #expect(!BrowserKeypressSafety.requiresTextEntryPreflight(key: "Tab", modifiers: []))
         #expect(!BrowserKeypressSafety.requiresTextEntryPreflight(key: "ArrowLeft", modifiers: []))
+        #expect(!BrowserKeypressSafety.requiresTextEntryPreflight(key: "Home", modifiers: []))
+        #expect(!BrowserKeypressSafety.requiresTextEntryPreflight(key: "End", modifiers: []))
+        #expect(!BrowserKeypressSafety.requiresTextEntryPreflight(key: "PageDown", modifiers: []))
+        #expect(!BrowserKeypressSafety.requiresTextEntryPreflight(key: "PageUp", modifiers: []))
         #expect(!BrowserKeypressSafety.requiresTextEntryPreflight(key: "l", modifiers: ["command"]))
     }
 
@@ -403,6 +425,36 @@ struct BrowserControlSafetyTests {
         #expect(BrowserKeypressSafety.requiresTextEntryPreflight(key: "Space", modifiers: []))
         #expect(BrowserKeypressSafety.requiresTextEntryPreflight(key: "Backspace", modifiers: []))
         #expect(BrowserKeypressSafety.requiresTextEntryPreflight(key: "v", modifiers: ["command"]))
+    }
+
+    @Test("Modified editing keypresses require sensitive text entry preflight")
+    func modifiedEditingKeypressesRequireSensitiveTextEntryPreflight() {
+        #expect(BrowserKeypressSafety.requiresTextEntryPreflight(key: "Backspace", modifiers: ["command"]))
+        #expect(BrowserKeypressSafety.requiresTextEntryPreflight(key: "Delete", modifiers: ["control"]))
+        #expect(BrowserKeypressSafety.requiresTextEntryPreflight(key: "x", modifiers: ["command"]))
+        #expect(!BrowserKeypressSafety.requiresTextEntryPreflight(key: "l", modifiers: ["command"]))
+        #expect(!BrowserKeypressSafety.requiresTextEntryPreflight(key: "f", modifiers: ["command"]))
+    }
+
+    @Test("Controlled browser defines all navigation keys exempted from preflight")
+    func controlledBrowserDefinesAllNavigationKeysExemptedFromPreflight() throws {
+        let repoRoot = URL(filePath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let controllerPath = repoRoot
+            .appendingPathComponent("Astra")
+            .appendingPathComponent("Services")
+            .appendingPathComponent("Browser")
+            .appendingPathComponent("ControlledBrowserController.swift")
+            .path
+        let source = try String(contentsOfFile: controllerPath, encoding: .utf8)
+
+        #expect(source.contains(#"case "home":"#))
+        #expect(source.contains(#"CDPKeyDefinition(key: "Home", code: "Home", virtualKeyCode: 36, text: nil)"#))
+        #expect(source.contains(#"case "end":"#))
+        #expect(source.contains(#"CDPKeyDefinition(key: "End", code: "End", virtualKeyCode: 35, text: nil)"#))
+        #expect(source.contains(#"case "pageup":"#))
+        #expect(source.contains(#"CDPKeyDefinition(key: "PageUp", code: "PageUp", virtualKeyCode: 33, text: nil)"#))
+        #expect(source.contains(#"case "pagedown":"#))
+        #expect(source.contains(#"CDPKeyDefinition(key: "PageDown", code: "PageDown", virtualKeyCode: 34, text: nil)"#))
     }
 
     @Test("Google Docs full-document clipboard requires controlled when auto-promote is disabled")
