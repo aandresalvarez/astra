@@ -695,6 +695,7 @@ enum BrowserAutomationScripts {
           \(targetResolutionPrelude(selector: selector, x: nil, y: nil, allowDangerous: true, label: label, role: role, text: nil, placeholder: placeholder, testID: testID))
           const text = \(jsonLiteral(text));
           const clear = \(clear ? "true" : "false");
+          const action = clear ? "setValue" : "type";
           const target = resolveTarget();
           if (!target.ok) return JSON.stringify(publicTarget(target));
           const el = target.el;
@@ -704,6 +705,61 @@ enum BrowserAutomationScripts {
             result.error = "target_not_editable";
             return JSON.stringify(result);
           }
+          const sensitiveRisk = (el) => {
+            const text = [
+              selectorFor(el),
+              labelFor(el),
+              nameFor(el),
+              roleFor(el),
+              el.tagName.toLowerCase(),
+              el.getAttribute("type") || "",
+              el.getAttribute("autocomplete") || "",
+              el.getAttribute("placeholder") || "",
+              el.getAttribute("data-testid") || el.getAttribute("data-test") || "",
+              el.getAttribute("href") || ""
+            ].join(" ").toLowerCase();
+            if (String(el.getAttribute("type") || "").toLowerCase() === "password" || /password|passcode|secret|current-password|new-password/.test(text)) return "credential_input_blocked";
+            if (/mfa|2fa|two factor|two-factor|verification code|security code|otp|one-time/.test(text)) return "mfa_input_blocked";
+            return "";
+          };
+          const redactedURL = (value) => {
+            try {
+              const parsed = new URL(String(value || ""), location.href);
+              return parsed.origin;
+            } catch (_) {
+              return value ? "[redacted url]" : "";
+            }
+          };
+          const sensitiveBlock = (el, action) => {
+            const error = sensitiveRisk(el);
+            if (!error) return null;
+            const risk = error === "mfa_input_blocked" ? "mfaInput" : "credentialInput";
+            return {
+              ok: false,
+              error,
+              action,
+              summary: error === "mfa_input_blocked"
+                ? "ASTRA will not type MFA or verification codes. The user should enter this directly in the browser."
+                : "ASTRA will not type passwords or secrets. The user should enter this directly in the browser.",
+              risk,
+              target: {
+                selector: selectorFor(el),
+                requestedSelector: selector || "",
+                label: "[redacted]",
+                name: "[redacted]",
+                role: roleFor(el),
+                tag: el.tagName.toLowerCase(),
+                type: el.getAttribute("type") || "",
+                autocomplete: el.getAttribute("autocomplete") || "",
+                placeholder: "[redacted]",
+                testID: el.getAttribute("data-testid") || el.getAttribute("data-test") || "",
+                href: redactedURL(el.getAttribute("href") || ""),
+                url: redactedURL(location.href)
+              }
+            };
+          };
+          const blocked = sensitiveBlock(el, action);
+          if (blocked) return JSON.stringify(blocked);
           el.scrollIntoView({ block: "center", inline: "center" });
           el.focus();
           const setNativeValue = (target, value) => {
@@ -872,14 +928,11 @@ enum BrowserAutomationScripts {
             : Array.from(document.querySelectorAll("input, textarea, [contenteditable=true]"));
           for (const el of candidates) {
             if (!visible(el)) continue;
-            const blocked = sensitiveBlock(el, "setValue");
-            if (blocked) return JSON.stringify(blocked);
-          }
-          for (const el of candidates) {
-            if (!visible(el)) continue;
             const before = "value" in el ? String(el.value || "") : String(el.textContent || "");
             const result = replaceInString(before);
             if (result.count <= 0) continue;
+            const blocked = sensitiveBlock(el, "setValue");
+            if (blocked) return JSON.stringify(blocked);
             el.focus();
             if ("value" in el) {
               setNativeValue(el, result.value);

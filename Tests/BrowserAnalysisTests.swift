@@ -95,6 +95,31 @@ struct BrowserAnalysisTests {
         #expect(script.contains("ownerDocument"))
     }
 
+    @Test("Accessibility matching uses the visible label instead of DOM name")
+    func accessibilityMatchingUsesVisibleLabelInsteadOfDOMName() throws {
+        let analysis = BrowserAnalysisBuilder.build(
+            snapshot: Self.sampleSnapshot(controls: [
+                Self.control(
+                    selector: "input[name=credential-slot]",
+                    tag: "input",
+                    role: "textbox",
+                    label: "Password",
+                    name: "credential-slot"
+                )
+            ]),
+            backend: "controlled Chromium profile",
+            engine: "controlled",
+            accessibilitySnapshotObject: Self.accessibilitySnapshot(role: "textbox", name: "Password")
+        )
+
+        let response = analysis.responseObject(query: nil, full: false, limit: nil, version: .v2)
+        let refs = try #require(response["controlRefs"] as? [[String: Any]])
+        let ref = try #require(refs.first)
+        #expect(ref["source"] as? String == BrowserControlSource.accessibility.rawValue)
+        let evidence = try #require(ref["evidence"] as? [String: Any])
+        #expect(evidence["accessibilityName"] as? String == "Password")
+    }
+
     @Test("Analyze response is compact by default and full when requested")
     func analyzeResponseCompactAndFull() {
         let controls = (0..<25).map { index in

@@ -253,7 +253,7 @@ struct BrowserAccessibilitySnapshot {
     }
 
     func matchingNode(for control: BrowserControl) -> BrowserAccessibilityNode? {
-        let controlName = BrowserAnalysisBuilder.normalizedName(control.name.isEmpty ? control.label : control.name)
+        let controlName = BrowserAnalysisBuilder.normalizedName(control.label.isEmpty ? control.name : control.label)
         let controlRole = BrowserAnalysisBuilder.normalizedName(control.role)
         guard !controlName.isEmpty || !controlRole.isEmpty else { return nil }
 

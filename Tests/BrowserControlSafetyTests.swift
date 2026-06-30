@@ -189,7 +189,17 @@ struct BrowserControlSafetyTests {
     }
 
     @Test("Text mutation scripts revalidate sensitive focused and replacement targets")
-    func textMutationScriptsRevalidateSensitiveTargets() {
+    func textMutationScriptsRevalidateSensitiveTargets() throws {
+        let typeScript = BrowserAutomationScripts.typeScript(
+            selector: "input[name=email]",
+            text: "secret",
+            clear: true
+        )
+        #expect(typeScript.contains("credential_input_blocked"))
+        #expect(typeScript.contains("mfa_input_blocked"))
+        #expect(typeScript.contains("const blocked = sensitiveBlock(el, action)"))
+        #expect(typeScript.contains("if (blocked) return JSON.stringify(blocked)"))
+
         let insertScript = BrowserAutomationScripts.insertTextScript("secret")
         #expect(insertScript.contains("credential_input_blocked"))
         #expect(insertScript.contains("mfa_input_blocked"))
@@ -213,6 +223,9 @@ struct BrowserControlSafetyTests {
         #expect(replaceScript.contains("return JSON.stringify(blocked)"))
         #expect(replaceScript.contains("href: redactedURL(el.getAttribute(\"href\") || \"\")"))
         #expect(replaceScript.contains("url: redactedURL(location.href)"))
+        let replacementCheck = try #require(replaceScript.range(of: "const result = replaceInString(before);"))
+        let sensitiveCheck = try #require(replaceScript.range(of: "const blocked = sensitiveBlock(el, \"setValue\");"))
+        #expect(replacementCheck.lowerBound < sensitiveCheck.lowerBound)
 
         let selectorlessReplaceScript = BrowserAutomationScripts.replaceTextScript(
             find: "old",
@@ -222,6 +235,21 @@ struct BrowserControlSafetyTests {
         )
         #expect(selectorlessReplaceScript.contains("const selector = null"))
         #expect(selectorlessReplaceScript.contains("querySelectorAll(\"input, textarea, [contenteditable=true]\")"))
+    }
+
+    @Test("Selectorless replace loop hints use the searched text as fallback target")
+    func selectorlessReplaceLoopHintsUseFindFallbackTarget() throws {
+        let repoRoot = URL(filePath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let sessionPath = repoRoot
+            .appendingPathComponent("Astra")
+            .appendingPathComponent("Services")
+            .appendingPathComponent("Browser")
+            .appendingPathComponent("ShelfBrowserSession.swift")
+            .path
+        let source = try String(contentsOfFile: sessionPath, encoding: .utf8)
+
+        #expect(source.contains(#"annotateBrowserLoopHint(json: json, action: "replaceText", target: resolvedSelector ?? find)"#))
+        #expect(!source.contains(#"annotateBrowserLoopHint(json: json, action: "replaceText", target: resolvedSelector ?? "")"#))
     }
 
     @Test("Drive open default timeout covers slow Google Drive search results")

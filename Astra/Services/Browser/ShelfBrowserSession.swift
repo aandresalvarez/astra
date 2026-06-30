@@ -3508,7 +3508,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             let json = try await controlledBrowser.replaceText(find: find, replacement: replacement, selector: resolvedSelector, all: all)
             syncDisplayedStateForEngine()
             publishBridgeState()
-            return try annotateBrowserLoopHint(json: json, action: "replaceText", target: resolvedSelector ?? "")
+            return try annotateBrowserLoopHint(json: json, action: "replaceText", target: resolvedSelector ?? find)
         }
         let json = try await evaluateJavaScriptString(BrowserAutomationScripts.replaceTextScript(
             find: find,
@@ -3516,7 +3516,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             selector: resolvedSelector,
             all: all
         ))
-        return try annotateBrowserLoopHint(json: json, action: "replaceText", target: resolvedSelector ?? "")
+        return try annotateBrowserLoopHint(json: json, action: "replaceText", target: resolvedSelector ?? find)
     }
 
     private func keypress(key: String, modifiers: [String]) async throws -> String {
