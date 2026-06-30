@@ -131,7 +131,7 @@ extension ShelfBrowserSession {
         guard !targets.isEmpty else { return nil }
         for target in targets {
             if let blocked = BrowserTextEntryPreflight.blockResponse(
-                action: BrowserActionKind.setValue.rawValue,
+                action: "replaceText",
                 targetInfo: target
             ) {
                 return blocked

@@ -353,6 +353,8 @@ struct BrowserControlSafetyTests {
 
         #expect(!methodSource.contains(#""text_entry_target_required""#))
         #expect(!methodSource.contains("guard !selector.isEmpty"))
+        #expect(methodSource.contains(#"action: "replaceText""#))
+        #expect(!methodSource.contains("action: BrowserActionKind.setValue.rawValue"))
     }
 
     @Test("Controlled text entry binds CDP dispatch to the preflighted focused target")
