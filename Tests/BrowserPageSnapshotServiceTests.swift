@@ -706,6 +706,21 @@ struct BrowserPageSnapshotServiceTests {
         #expect(script.contains("\"bday\""))
     }
 
+    @Test("sensitive term JavaScript literals escape without force unwraps")
+    func sensitiveTermJavaScriptLiteralsEscapeWithoutForceUnwraps() {
+        let literal = BrowserSensitiveInputRedactionPolicy.javaScriptArrayLiteral(
+            ["api \"key", "line\nbreak"],
+            indentation: "  "
+        )
+
+        #expect(literal == """
+        [
+            "api \\"key",
+            "line\\nbreak"
+          ]
+        """)
+    }
+
     private var snapshotJSON: String {
         """
         {

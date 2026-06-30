@@ -363,13 +363,35 @@ enum BrowserSensitiveInputRedactionPolicy {
     private static let paymentFieldCompactTerms = compactTerms(paymentFieldTerms)
 
     static func javaScriptArrayLiteral(_ values: [String], indentation: String) -> String {
-        let encodedValues = values.map { value in
-            let data = try! JSONEncoder().encode(value)
-            return String(data: data, encoding: .utf8)!
-        }
+        let encodedValues = values.map(javaScriptStringLiteral)
         return "[\n"
             + encodedValues.map { "\(indentation)  \($0)" }.joined(separator: ",\n")
             + "\n\(indentation)]"
+    }
+
+    private static func javaScriptStringLiteral(_ value: String) -> String {
+        if let data = try? JSONEncoder().encode(value),
+           let encoded = String(data: data, encoding: .utf8)
+        {
+            return encoded
+        }
+        return "\"\(escapedJavaScriptString(value))\""
+    }
+
+    private static func escapedJavaScriptString(_ value: String) -> String {
+        value.unicodeScalars.map { scalar in
+            switch scalar {
+            case "\"": "\\\""
+            case "\\": "\\\\"
+            case "\n": "\\n"
+            case "\r": "\\r"
+            case "\t": "\\t"
+            default:
+                scalar.value < 0x20
+                    ? String(format: "\\u%04X", scalar.value)
+                    : String(scalar)
+            }
+        }.joined()
     }
 
     private static func containsSensitiveTerm(_ text: String, terms: [String], compactTerms: [String]) -> Bool {
