@@ -1681,24 +1681,46 @@ final class LocalAgentOrchestrator {
 
     private static func workspaceWriteDiffPreview(path: String, content: String?, task: AgentTask) -> String {
         let proposed = content ?? ""
-        let workspacePath = TaskWorkspaceAccess(task: task).effectiveWorkspacePath
-        let candidate = URL(fileURLWithPath: workspacePath, isDirectory: true)
-            .appendingPathComponent(path)
-            .standardizedFileURL
-            .path
-        let existingData = FileManager.default.contents(atPath: candidate)
+        guard let resolved = resolvedWorkspaceWritePreviewPath(path, task: task) else {
+            return "Diff preview unavailable for disallowed workspace path `\(path)`."
+        }
+        let existingData = FileManager.default.contents(atPath: resolved.path)
         let existing = existingData.flatMap { String(data: $0, encoding: .utf8) } ?? ""
         let existingPreview = String(existing.prefix(2_000))
         let proposedPreview = String(proposed.prefix(2_000))
         let existingSuffix = existing.count > existingPreview.count ? "\n... (current truncated)" : ""
         let proposedSuffix = proposed.count > proposedPreview.count ? "\n... (proposed truncated)" : ""
         return """
-        Diff preview for \(path)
+        Diff preview for \(resolved.relativeDisplayPath)
         --- current
         \(existingPreview)\(existingSuffix)
         +++ proposed
         \(proposedPreview)\(proposedSuffix)
         """
+    }
+
+    private static func resolvedWorkspaceWritePreviewPath(
+        _ rawPath: String,
+        task: AgentTask
+    ) -> (path: String, relativeDisplayPath: String)? {
+        let trimmed = rawPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, !trimmed.contains("\0"), !trimmed.hasPrefix("/") else { return nil }
+        let workspacePath = TaskWorkspaceAccess(task: task).effectiveWorkspacePath
+        let root = URL(fileURLWithPath: workspacePath, isDirectory: true)
+            .standardizedFileURL
+            .resolvingSymlinksInPath()
+            .path
+        guard !root.isEmpty else { return nil }
+        let candidate = URL(fileURLWithPath: root, isDirectory: true)
+            .appendingPathComponent(trimmed)
+            .standardizedFileURL
+            .path
+        guard candidate != root, candidate.hasPrefix(root + "/") else { return nil }
+        let relative = localAgentRelativePath(candidate, root: root)
+        guard localAgentWorkspaceWriteRelativePathIsAllowed(relative) else { return nil }
+        guard localAgentWorkspaceWriteParentPathStillScoped(candidate, root: root) else { return nil }
+        guard !localAgentWorkspaceWriteExistingDestinationIsSymlink(candidate) else { return nil }
+        return (candidate, relative)
     }
 
     private static func approvalProviderDetail(
@@ -2799,10 +2821,14 @@ struct LocalAgentToolExecutor {
             return .init(status: "error", content: "`\(path)` is not a readable file.")
         }
         let maxBytes = min(max(arguments["max_bytes"]?.intValue ?? 12_000, 1), 50_000)
-        guard let data = fileManager.contents(atPath: resolved.path) else {
+        guard let handle = try? FileHandle(forReadingFrom: URL(fileURLWithPath: resolved.path)) else {
             return .init(status: "error", content: "Could not read `\(path)`.")
         }
-        let clipped = data.prefix(maxBytes)
+        defer { try? handle.close() }
+        guard let data = try? handle.read(upToCount: maxBytes + 1) else {
+            return .init(status: "error", content: "Could not read `\(path)`.")
+        }
+        let clipped = Data(data.prefix(maxBytes))
         let text = String(data: clipped, encoding: .utf8) ?? clipped.map { String(format: "%02x", $0) }.joined()
         let suffix = data.count > maxBytes ? "\n... (truncated to \(maxBytes) bytes)" : ""
         return .init(status: "ok", content: "File: \(resolved.relativeDisplayPath)\n\(text)\(suffix)")
@@ -2830,7 +2856,7 @@ struct LocalAgentToolExecutor {
         for case let url as URL in enumerator {
             let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .isDirectoryKey])
             let kind = values?.isDirectory == true ? "dir" : "file"
-            let relative = relativePath(url.path, root: resolved.path)
+            let relative = localAgentRelativePath(url.path, root: resolved.path)
             rows.append("- [\(kind)] \(relative)")
             if rows.count >= maxResults { break }
         }
@@ -3656,7 +3682,7 @@ struct LocalAgentToolExecutor {
 
         var files: [TaskOutputFile] = []
         for case let url as URL in enumerator {
-            let relative = relativePath(url.standardizedFileURL.path, root: taskFolder)
+            let relative = localAgentRelativePath(url.standardizedFileURL.path, root: taskFolder)
             if shouldSkipTaskOutputRelativePath(relative) {
                 if (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true {
                     enumerator.skipDescendants()
@@ -3691,7 +3717,7 @@ struct LocalAgentToolExecutor {
             .resolvingSymlinksInPath()
             .path
         guard candidate == root || candidate.hasPrefix(root + "/") else { return nil }
-        let relative = relativePath(candidate, root: root)
+        let relative = localAgentRelativePath(candidate, root: root)
         guard !shouldSkipTaskOutputRelativePath(relative) else { return nil }
         return ResolvedPath(path: candidate, relativeDisplayPath: relative)
     }
@@ -3707,7 +3733,7 @@ struct LocalAgentToolExecutor {
         guard candidate != root, candidate.hasPrefix(root + "/") else { return nil }
         guard taskOutputParentPathStillScoped(candidate, root: root) else { return nil }
         guard !taskOutputExistingDestinationIsSymlink(candidate) else { return nil }
-        let relative = relativePath(candidate, root: root)
+        let relative = localAgentRelativePath(candidate, root: root)
         guard !shouldSkipTaskOutputRelativePath(relative) else { return nil }
         return ResolvedPath(path: candidate, relativeDisplayPath: relative)
     }
@@ -3800,10 +3826,10 @@ struct LocalAgentToolExecutor {
             .standardizedFileURL
             .path
         guard candidate != root, candidate.hasPrefix(root + "/") else { return nil }
-        let relative = relativePath(candidate, root: root)
-        guard workspaceWriteRelativePathIsAllowed(relative) else { return nil }
-        guard workspaceWriteParentPathStillScoped(candidate, root: root) else { return nil }
-        guard !workspaceWriteExistingDestinationIsSymlink(candidate) else { return nil }
+        let relative = localAgentRelativePath(candidate, root: root)
+        guard localAgentWorkspaceWriteRelativePathIsAllowed(relative) else { return nil }
+        guard localAgentWorkspaceWriteParentPathStillScoped(candidate, root: root) else { return nil }
+        guard !localAgentWorkspaceWriteExistingDestinationIsSymlink(candidate) else { return nil }
         return ResolvedPath(path: candidate, relativeDisplayPath: relative)
     }
 
@@ -3814,35 +3840,10 @@ struct LocalAgentToolExecutor {
             .path
         let candidate = URL(fileURLWithPath: path).standardizedFileURL.path
         guard candidate != root, candidate.hasPrefix(root + "/") else { return false }
-        let relative = relativePath(candidate, root: root)
-        guard workspaceWriteRelativePathIsAllowed(relative) else { return false }
-        guard workspaceWriteParentPathStillScoped(candidate, root: root) else { return false }
-        return !workspaceWriteExistingDestinationIsSymlink(candidate)
-    }
-
-    private func workspaceWriteParentPathStillScoped(_ path: String, root: String) -> Bool {
-        let parent = URL(fileURLWithPath: path)
-            .deletingLastPathComponent()
-            .standardizedFileURL
-            .resolvingSymlinksInPath()
-            .path
-        return parent == root || parent.hasPrefix(root + "/")
-    }
-
-    private func workspaceWriteExistingDestinationIsSymlink(_ path: String) -> Bool {
-        let url = URL(fileURLWithPath: path)
-        return (try? url.resourceValues(forKeys: [.isSymbolicLinkKey]))?.isSymbolicLink == true
-    }
-
-    private func workspaceWriteRelativePathIsAllowed(_ relativePath: String) -> Bool {
-        let normalized = relativePath.replacingOccurrences(of: "\\", with: "/")
-        guard normalized != ".", !normalized.isEmpty else { return false }
-        let components = normalized.split(separator: "/", omittingEmptySubsequences: true).map(String.init)
-        guard let first = components.first else { return false }
-        if first == ".git" || first == ".astra" || first == ".agentflow" || first == ".runtime-bin" || first == ".local-agent" {
-            return false
-        }
-        return components.allSatisfy { !$0.hasPrefix(".") }
+        let relative = localAgentRelativePath(candidate, root: root)
+        guard localAgentWorkspaceWriteRelativePathIsAllowed(relative) else { return false }
+        guard localAgentWorkspaceWriteParentPathStillScoped(candidate, root: root) else { return false }
+        return !localAgentWorkspaceWriteExistingDestinationIsSymlink(candidate)
     }
 
     private func writeWorkspaceRollbackEvidence(
@@ -3887,7 +3888,7 @@ struct LocalAgentToolExecutor {
             .resolvingSymlinksInPath()
             .path
         let path = rollbackURL.standardizedFileURL.path
-        return ResolvedPath(path: path, relativeDisplayPath: relativePath(path, root: root))
+        return ResolvedPath(path: path, relativeDisplayPath: localAgentRelativePath(path, root: root))
     }
 
     private func allowedRootsForDisplay() -> [String] {
@@ -3918,13 +3919,39 @@ struct LocalAgentToolExecutor {
         return path
     }
 
-    private func relativePath(_ path: String, root: String) -> String {
-        if path == root { return "." }
-        if path.hasPrefix(root + "/") {
-            return String(path.dropFirst(root.count + 1))
-        }
-        return path
+}
+
+private func localAgentRelativePath(_ path: String, root: String) -> String {
+    if path == root { return "." }
+    if path.hasPrefix(root + "/") {
+        return String(path.dropFirst(root.count + 1))
     }
+    return path
+}
+
+private func localAgentWorkspaceWriteParentPathStillScoped(_ path: String, root: String) -> Bool {
+    let parent = URL(fileURLWithPath: path)
+        .deletingLastPathComponent()
+        .standardizedFileURL
+        .resolvingSymlinksInPath()
+        .path
+    return parent == root || parent.hasPrefix(root + "/")
+}
+
+private func localAgentWorkspaceWriteExistingDestinationIsSymlink(_ path: String) -> Bool {
+    let url = URL(fileURLWithPath: path)
+    return (try? url.resourceValues(forKeys: [.isSymbolicLinkKey]))?.isSymbolicLink == true
+}
+
+private func localAgentWorkspaceWriteRelativePathIsAllowed(_ relativePath: String) -> Bool {
+    let normalized = relativePath.replacingOccurrences(of: "\\", with: "/")
+    guard normalized != ".", !normalized.isEmpty else { return false }
+    let components = normalized.split(separator: "/", omittingEmptySubsequences: true).map(String.init)
+    guard let first = components.first else { return false }
+    if first == ".git" || first == ".astra" || first == ".agentflow" || first == ".runtime-bin" || first == ".local-agent" {
+        return false
+    }
+    return components.allSatisfy { !$0.hasPrefix(".") }
 }
 
 @MainActor
@@ -3972,8 +3999,8 @@ final class LocalAgentInferenceClient {
             experimentalToolsEnabled: false,
             maxContextTokens: LocalModelSettingsStore.maxContextTokens(),
             maxOutputTokens: LocalModelSettingsStore.maxOutputTokens(),
-            memoryBudgetBytes: nil,
-            cacheLimitBytes: nil,
+            memoryBudgetBytes: LocalModelRunBudgetResolver.memoryBudgetBytes(modelDirectory: modelDirectory),
+            cacheLimitBytes: LocalModelRunBudgetResolver.cacheLimitBytes(modelDirectory: modelDirectory),
             keepWarmTTLSeconds: LocalModelSettingsStore.keepWarmTTLSeconds()
         )
         if let data = try? JSONEncoder().encode(request) {

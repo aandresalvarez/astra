@@ -3,11 +3,30 @@ import Foundation
 protocol ConnectorHTTPTransport {
     func data(for request: URLRequest) async throws -> (Data, URLResponse)
     func data(for request: URLRequest, cancellationToken: LocalAgentCancellationToken?) async throws -> (Data, URLResponse)
+    func boundedData(
+        for request: URLRequest,
+        maxBytes: Int,
+        cancellationToken: LocalAgentCancellationToken?
+    ) async throws -> LocalAgentBoundedDataLoadResult
 }
 
 extension ConnectorHTTPTransport {
     func data(for request: URLRequest, cancellationToken _: LocalAgentCancellationToken?) async throws -> (Data, URLResponse) {
         try await data(for: request)
+    }
+
+    func boundedData(
+        for request: URLRequest,
+        maxBytes: Int,
+        cancellationToken: LocalAgentCancellationToken?
+    ) async throws -> LocalAgentBoundedDataLoadResult {
+        let (data, response) = try await data(for: request, cancellationToken: cancellationToken)
+        let cappedBytes = max(1, maxBytes)
+        return LocalAgentBoundedDataLoadResult(
+            data: Data(data.prefix(cappedBytes)),
+            response: response,
+            truncated: data.count > cappedBytes
+        )
     }
 }
 
@@ -18,6 +37,18 @@ struct URLSessionConnectorHTTPTransport: ConnectorHTTPTransport {
 
     func data(for request: URLRequest, cancellationToken: LocalAgentCancellationToken?) async throws -> (Data, URLResponse) {
         try await LocalAgentCancellableDataLoader.data(for: request, cancellationToken: cancellationToken)
+    }
+
+    func boundedData(
+        for request: URLRequest,
+        maxBytes: Int,
+        cancellationToken: LocalAgentCancellationToken?
+    ) async throws -> LocalAgentBoundedDataLoadResult {
+        try await LocalAgentCancellableDataLoader.boundedData(
+            for: request,
+            maxBytes: maxBytes,
+            cancellationToken: cancellationToken
+        )
     }
 }
 

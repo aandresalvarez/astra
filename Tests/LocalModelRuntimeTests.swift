@@ -600,6 +600,7 @@ struct LocalModelRuntimeTests {
 
         let exportRequest = try #require(transport.requests.first { $0.url?.path.contains("/export") == true })
         #expect(exportRequest.url?.query?.contains("mimeType=text/plain") == true)
+        #expect(transport.boundedRequests.first?.maxBytes == 100)
 
         let searchObservation = GoogleDriveConnectorSearchService.searchObservation(from: searchResult)
         #expect(searchObservation.status == "ok")
@@ -656,6 +657,85 @@ struct LocalModelRuntimeTests {
         }
         #expect(summary.text.contains("Slash id content"))
         #expect(transport.requests.allSatisfy { $0.url?.absoluteString.contains("drive%2Ffile-1") == true })
+    }
+
+    @MainActor
+    @Test("Local Google Drive read uses bounded content download")
+    func localGoogleDriveReadUsesBoundedContentDownload() async throws {
+        let connector = Connector(
+            name: "Team Drive",
+            serviceType: "google_drive",
+            baseURL: "https://www.googleapis.com",
+            authMethod: "bearer"
+        )
+        connector.credentialKeys = ["GOOGLE_DRIVE_TOKEN"]
+
+        let store = MockSecretStore()
+        let entityID = KeychainSecretStore.connectorEntityID(for: connector.id)
+        store.save(key: "GOOGLE_DRIVE_TOKEN", value: "secret-drive-token", entityID: entityID, label: nil)
+
+        let transport = LocalConnectorRouteMockTransport(routes: [
+            .init(pathContains: "/drive/v3/files/drive-file-1/export", body: String(repeating: "x", count: 1_024)),
+            .init(pathContains: "/drive/v3/files/drive-file-1", body: """
+            {
+              "id": "drive-file-1",
+              "name": "Large Notes",
+              "mimeType": "application/vnd.google-apps.document"
+            }
+            """)
+        ])
+        let service = GoogleDriveConnectorSearchService(
+            connectors: [connector],
+            contextText: "",
+            store: store,
+            transport: transport
+        )
+
+        let result = await service.read(arguments: [
+            "file_id": .string("drive-file-1"),
+            "max_bytes": .number(64)
+        ])
+
+        guard case .success(let summary) = result else {
+            Issue.record("Expected Google Drive read success")
+            return
+        }
+        #expect(summary.text == String(repeating: "x", count: 64))
+        #expect(summary.truncated)
+        #expect(transport.boundedRequests.first?.maxBytes == 64)
+    }
+
+    @MainActor
+    @Test("Local Agent workspace read streams capped file prefix")
+    func localAgentWorkspaceReadStreamsCappedFilePrefix() async throws {
+        let workspaceURL = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: workspaceURL) }
+        let fileURL = workspaceURL.appendingPathComponent("large.log")
+        try String(repeating: "a", count: 80_000).write(to: fileURL, atomically: true, encoding: .utf8)
+
+        let workspace = Workspace(name: "Local", primaryPath: workspaceURL.path)
+        let task = AgentTask(title: "Read", goal: "Read a log", workspace: workspace, runtime: .localMLX)
+        let executor = LocalAgentToolExecutor(
+            task: task,
+            workspacePath: workspaceURL.path,
+            secretStore: MockSecretStore(),
+            connectorTransport: LocalConnectorRouteMockTransport(routes: []),
+            capabilities: .none
+        )
+
+        let observation = await executor.execute(
+            callID: "read-1",
+            tool: "workspace.read_file",
+            arguments: [
+                "path": .string("large.log"),
+                "max_bytes": .number(128)
+            ]
+        )
+
+        #expect(observation.status == "ok")
+        #expect(observation.content.contains(String(repeating: "a", count: 128)))
+        #expect(observation.content.contains("truncated to 128 bytes"))
+        #expect(!observation.content.contains(String(repeating: "a", count: 129)))
     }
 
     @MainActor
@@ -4456,6 +4536,10 @@ struct LocalModelRuntimeTests {
             contentsOf: repoRoot.appendingPathComponent("script/build_and_run.sh"),
             encoding: .utf8
         )
+        let orchestratorSource = try String(
+            contentsOf: repoRoot.appendingPathComponent("Astra/Services/Runtime/LocalAgentOrchestrator.swift"),
+            encoding: .utf8
+        )
 
         #expect(!package.contains("mlx-swift-lm"))
         #expect(!package.contains("swift-transformers"))
@@ -4493,6 +4577,8 @@ struct LocalModelRuntimeTests {
         #expect(scaffoldEntrypoint.contains(#"argumentValue("--models-root", in: arguments) ?? argumentValue("--models-dir", in: arguments)"#))
         #expect(scaffoldEntrypoint.contains(#"argumentValue("--request-file", in: arguments) != nil"#))
         #expect(buildScript.contains(#"LOCAL_MODEL_BACKEND="${ASTRA_LOCAL_MODEL_BACKEND:-mlx}""#))
+        #expect(!buildScript.contains("swift build \"${native_args[@]}\"\n  native_build_dir="))
+        #expect(buildScript.contains(#"native_build_dir="$(swift build "${native_args[@]}" --show-bin-path)""#))
         #expect(buildScript.contains("scaffold|mlx)"))
         #expect(buildScript.contains(#""$LOCAL_MODEL_BACKEND" == "scaffold""#))
         #expect(buildScript.contains("Production and beta ASTRA bundles must include the native MLX local model helper."))
@@ -4508,6 +4594,14 @@ struct LocalModelRuntimeTests {
         #expect(nativeReadme.contains("Manual"))
         #expect(nativeReadme.contains("advanced import path"))
         #expect(!nativeReadme.contains("does not download model weights"))
+        let workspacePreview = sourceSlice(
+            orchestratorSource,
+            from: "private static func workspaceWriteDiffPreview",
+            to: "private static func approvalProviderDetail"
+        )
+        #expect(workspacePreview.contains("resolvedWorkspaceWritePreviewPath"))
+        #expect(workspacePreview.contains("localAgentWorkspaceWriteRelativePathIsAllowed"))
+        #expect(!workspacePreview.contains("appendingPathComponent(path)"))
     }
 
     @Test("Local model chat messages round trip image attachments")
@@ -4569,6 +4663,13 @@ struct LocalModelRuntimeTests {
 
         let workspaceURL = temporaryDirectory()
         let modelURL = temporaryDirectory()
+        try modelConfig(modelType: "qwen3").write(
+            to: modelURL.appendingPathComponent("config.json"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try "{}".write(to: modelURL.appendingPathComponent("tokenizer.json"), atomically: true, encoding: .utf8)
+        try Data([0]).write(to: modelURL.appendingPathComponent("model.safetensors"))
         let workspace = Workspace(name: "Local", primaryPath: workspaceURL.path)
         let task = AgentTask(
             title: "Local",
@@ -4616,11 +4717,11 @@ struct LocalModelRuntimeTests {
         #expect(plan.commandPlannedFields["local_agent_max_turns"] == "5")
         #expect(plan.commandPlannedFields["local_agent_max_tool_calls"] == "4")
         #expect(plan.commandPlannedFields["local_agent_tool_timeout_seconds"] == "20")
-        if let memoryBudgetBytes = request.memoryBudgetBytes {
-            #expect(memoryBudgetBytes > 0)
-            #expect((request.cacheLimitBytes ?? 0) > 0)
-            #expect((request.cacheLimitBytes ?? Int.max) <= memoryBudgetBytes)
-        }
+        let memoryBudgetBytes = try #require(request.memoryBudgetBytes)
+        let cacheLimitBytes = try #require(request.cacheLimitBytes)
+        #expect(memoryBudgetBytes > 0)
+        #expect(cacheLimitBytes > 0)
+        #expect(cacheLimitBytes <= memoryBudgetBytes)
     }
 
     @Test("Adapter writes image attachments from task inputs into local model request")
@@ -5869,6 +5970,7 @@ private final class LocalConnectorRouteMockTransport: ConnectorHTTPTransport {
 
     let routes: [Route]
     private(set) var requests: [URLRequest] = []
+    private(set) var boundedRequests: [(request: URLRequest, maxBytes: Int)] = []
 
     init(routes: [Route]) {
         self.routes = routes
@@ -5886,5 +5988,20 @@ private final class LocalConnectorRouteMockTransport: ConnectorHTTPTransport {
             headerFields: ["Content-Type": "application/json"]
         ))
         return (Data(route.body.utf8), response)
+    }
+
+    func boundedData(
+        for request: URLRequest,
+        maxBytes: Int,
+        cancellationToken: LocalAgentCancellationToken?
+    ) async throws -> LocalAgentBoundedDataLoadResult {
+        boundedRequests.append((request, maxBytes))
+        let (data, response) = try await self.data(for: request, cancellationToken: cancellationToken)
+        let cappedBytes = max(1, maxBytes)
+        return LocalAgentBoundedDataLoadResult(
+            data: Data(data.prefix(cappedBytes)),
+            response: response,
+            truncated: data.count > cappedBytes
+        )
     }
 }

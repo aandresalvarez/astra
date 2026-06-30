@@ -361,7 +361,42 @@ enum PermissionBroker {
             return nil
         }
         components.fragment = nil
+        if queryContainsLikelySecretParameter(components.queryItems ?? []) {
+            components.queryItems = nil
+            components.percentEncodedQuery = nil
+        }
         return components.url?.absoluteString
+    }
+
+    private static func queryContainsLikelySecretParameter(_ items: [URLQueryItem]) -> Bool {
+        let exactSecretNames: Set<String> = [
+            "access_token",
+            "apikey",
+            "api_key",
+            "auth",
+            "authorization",
+            "bearer",
+            "client_secret",
+            "credential",
+            "id_token",
+            "jwt",
+            "key",
+            "password",
+            "refresh_token",
+            "secret",
+            "sig",
+            "signature",
+            "token"
+        ]
+        return items.contains { item in
+            let normalized = item.name
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased()
+                .replacingOccurrences(of: "-", with: "_")
+            return exactSecretNames.contains(normalized)
+                || normalized.hasSuffix("_token")
+                || normalized.hasSuffix("_secret")
+        }
     }
 
     private static func shellApprovalGrants(command: String?) -> [PermissionGrant] {

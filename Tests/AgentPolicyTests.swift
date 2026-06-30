@@ -406,6 +406,17 @@ struct AgentPolicyTests {
         #expect(!grants.contains(.networkPattern(pattern: "https://example.com/*")))
     }
 
+    @Test("Broker strips secret query parameters from network approval grants")
+    func brokerStripsSecretQueryParametersFromNetworkApprovalGrants() {
+        let grants = PermissionBroker.approvalGrants(for: .network(
+            url: "https://example.com/data.json?access_token=secret&limit=1#fragment",
+            toolName: "network.fetch"
+        ))
+
+        #expect(grants.contains(.networkPattern(pattern: "https://example.com/data.json")))
+        #expect(!grants.contains(.networkPattern(pattern: "https://example.com/data.json?access_token=secret&limit=1")))
+    }
+
     @Test("Broker scopes browser click approvals to the requested target")
     func brokerScopesBrowserClickApprovalsToRequestedTarget() {
         let grants = PermissionBroker.approvalGrants(for: .tool(

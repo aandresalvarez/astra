@@ -162,7 +162,14 @@ struct GoogleDriveConnectorSearchService {
 
             var contentRequest = URLRequest(url: contentURL(baseURL: baseURL, fileID: fileID, mimeType: metadata.mimeType))
             prepare(&contentRequest, connector: connector)
-            let (contentData, contentResponse) = try await transport.data(for: contentRequest, cancellationToken: cancellationToken)
+            let maxBytes = min(max(arguments["max_bytes"]?.intValue ?? 4_000, 1), 12_000)
+            let contentResult = try await transport.boundedData(
+                for: contentRequest,
+                maxBytes: maxBytes,
+                cancellationToken: cancellationToken
+            )
+            let contentData = contentResult.data
+            let contentResponse = contentResult.response
             guard cancellationToken?.isCancelled != true else {
                 return .failure(.requestFailed("cancelled"))
             }
@@ -170,14 +177,12 @@ struct GoogleDriveConnectorSearchService {
                 return .failure(.httpError(http.statusCode, errorMessage(from: contentData)))
             }
 
-            let maxBytes = min(max(arguments["max_bytes"]?.intValue ?? 4_000, 1), 12_000)
-            let clipped = contentData.prefix(maxBytes)
             // Clipping to maxBytes can sever a multi-byte UTF-8 scalar at the boundary; step
             // back up to 3 bytes to a valid boundary so truncated text still renders instead of
             // being misreported as non-UTF-8.
             var text = "File content is not UTF-8 text; metadata only."
-            for trailingDrop in 0...min(3, clipped.count) {
-                if let decoded = String(data: clipped.dropLast(trailingDrop), encoding: .utf8) {
+            for trailingDrop in 0...min(3, contentData.count) {
+                if let decoded = String(data: contentData.dropLast(trailingDrop), encoding: .utf8) {
                     text = decoded
                     break
                 }
@@ -189,7 +194,7 @@ struct GoogleDriveConnectorSearchService {
                 webViewLink: metadata.webViewLink,
                 modifiedTime: metadata.modifiedTime,
                 text: text,
-                truncated: contentData.count > maxBytes
+                truncated: contentResult.truncated
             ))
         } catch {
             return .failure(.requestFailed(error.localizedDescription))

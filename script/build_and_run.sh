@@ -228,7 +228,6 @@ build_native_local_model_helper() {
     native_args=(-c release "${native_args[@]}")
   fi
 
-  swift build "${native_args[@]}"
   native_build_dir="$(swift build "${native_args[@]}" --show-bin-path)"
   NATIVE_LOCAL_MODEL_BUILD_DIR="$native_build_dir"
   NATIVE_LOCAL_MODEL_BINARY="$native_build_dir/astra-local-model-native"

@@ -3720,6 +3720,31 @@ struct LocalMLXRuntimeAdapterProvider: AgentRuntimeAdapterProvider {
     }
 }
 
+enum LocalModelRunBudgetResolver {
+    static func memoryBudgetBytes(modelDirectory: String) -> Int? {
+        guard !modelDirectory.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        let report = LocalModelCatalog.validate(directory: modelDirectory)
+        guard report.metadata != nil else { return nil }
+        let hardware = LocalHardwareProfile.current()
+        let budget = LocalModelMemoryBudget.effectiveBudgetBytes(
+            for: hardware,
+            configuredBudgetBytes: LocalModelSettingsStore.memoryBudgetOverrideBytes()
+        )
+        guard budget > 0 else { return nil }
+        return intClamped(budget)
+    }
+
+    static func cacheLimitBytes(modelDirectory: String) -> Int? {
+        guard let budget = memoryBudgetBytes(modelDirectory: modelDirectory), budget > 0 else { return nil }
+        return intClamped(LocalModelMemoryBudget.cacheLimitBytes(forBudget: UInt64(budget)))
+    }
+
+    private static func intClamped(_ value: UInt64) -> Int {
+        let maxValue = UInt64(Int.max)
+        return Int(min(value, maxValue))
+    }
+}
+
 enum LocalModelInputMedia {
     private static let imageExtensions: Set<String> = [
         "png", "jpg", "jpeg", "gif", "webp", "tiff", "tif", "bmp", "heic"
@@ -4383,25 +4408,10 @@ struct LocalMLXRuntimeAdapter: AgentRuntimeAdapter {
     }
 
     private func memoryBudgetBytes(modelDirectory: String) -> Int? {
-        guard !modelDirectory.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
-        let report = LocalModelCatalog.validate(directory: modelDirectory)
-        guard report.metadata != nil else { return nil }
-        let hardware = LocalHardwareProfile.current()
-        let budget = LocalModelMemoryBudget.effectiveBudgetBytes(
-            for: hardware,
-            configuredBudgetBytes: LocalModelSettingsStore.memoryBudgetOverrideBytes()
-        )
-        guard budget > 0 else { return nil }
-        return intClamped(budget)
+        LocalModelRunBudgetResolver.memoryBudgetBytes(modelDirectory: modelDirectory)
     }
 
     private func cacheLimitBytes(modelDirectory: String) -> Int? {
-        guard let budget = memoryBudgetBytes(modelDirectory: modelDirectory), budget > 0 else { return nil }
-        return intClamped(LocalModelMemoryBudget.cacheLimitBytes(forBudget: UInt64(budget)))
-    }
-
-    private func intClamped(_ value: UInt64) -> Int {
-        let maxValue = UInt64(Int.max)
-        return Int(min(value, maxValue))
+        LocalModelRunBudgetResolver.cacheLimitBytes(modelDirectory: modelDirectory)
     }
 }
