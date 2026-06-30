@@ -532,10 +532,12 @@ public final class HostControlProcessRunner: HostControlProcessRunning {
         let descriptor = handle.fileDescriptor
         let flags = fcntl(descriptor, F_GETFL)
         guard flags >= 0 else {
+            buffer.markTruncated()
             try? handle.close()
             return
         }
         guard fcntl(descriptor, F_SETFL, flags | O_NONBLOCK) >= 0 else {
+            buffer.markTruncated()
             try? handle.close()
             return
         }
@@ -551,6 +553,7 @@ public final class HostControlProcessRunner: HostControlProcessRunning {
             }
             if count < 0 {
                 if errno == EINTR { continue }
+                buffer.markTruncated()
                 return
             }
             let data = Data(bytes.prefix(count))
@@ -860,16 +863,17 @@ public final class HostControlMCPServer {
             timeoutSeconds: timeout,
             outputByteLimit: processLimits.outputByteLimit
         )
+        let formattedResponse = response.formattedPayload(
+            configuration: configuration,
+            outputByteLimit: processLimits.outputByteLimit
+        )
         diagnosticsRecorder?.record(toolName: "jira", summary: "jira \(method) \(path)", result: response.diagnosticResult)
         return encodeResult(id: id, result: [
             "content": [[
                 "type": "text",
-                "text": response.formatted(
-                    configuration: configuration,
-                    outputByteLimit: processLimits.outputByteLimit
-                )
+                "text": formattedResponse.text
             ]],
-            "isError": response.isError
+            "isError": response.isError || formattedResponse.bodyTruncated
         ])
     }
 
@@ -1170,6 +1174,10 @@ struct JiraHTTPResponse {
     }
 
     func formatted(configuration: HostControlToolConfiguration, outputByteLimit: Int) -> String {
+        formattedPayload(configuration: configuration, outputByteLimit: outputByteLimit).text
+    }
+
+    func formattedPayload(configuration: HostControlToolConfiguration, outputByteLimit: Int) -> FormattedJiraHTTPResponse {
         let redactedBody = configuration.redacted(body, includingSecretFragments: bodyTruncated)
         let formattedBody = Self.cappedRedactedOutput(
             redactedBody,
@@ -1186,12 +1194,20 @@ struct JiraHTTPResponse {
         if bodyTruncated || formattedBody.truncated {
             lines.insert("body_truncated: true", at: 1)
         }
-        return lines.joined(separator: "\n")
+        return FormattedJiraHTTPResponse(
+            text: lines.joined(separator: "\n"),
+            bodyTruncated: bodyTruncated || formattedBody.truncated
+        )
     }
 
     private static func cappedRedactedOutput(_ value: String, label: String, byteLimit: Int) -> HostControlCappedOutput {
         HostControlOutputCap.capped(value, label: "redacted \(label)", byteLimit: max(1, byteLimit))
     }
+}
+
+struct FormattedJiraHTTPResponse {
+    var text: String
+    var bodyTruncated: Bool
 }
 
 private final class BoundedJiraHTTPDelegate: NSObject, URLSessionDataDelegate, @unchecked Sendable {
@@ -1411,11 +1427,24 @@ private final class BoundedProcessOutput: @unchecked Sendable {
             data.append(chunk)
             return false
         }
+        appendTruncationMarkerLocked(afterAppendingPrefixFrom: chunk)
+        return true
+    }
+
+    func markTruncated() {
+        lock.lock()
+        defer { lock.unlock() }
+
+        guard !truncated else { return }
+        appendTruncationMarkerLocked()
+    }
+
+    private func appendTruncationMarkerLocked(afterAppendingPrefixFrom chunk: Data? = nil) {
         let marker = "\n[ASTRA truncated \(label) after \(byteLimit) bytes]\n"
         let markerData = Data(marker.utf8)
         let markerBytesToKeep = min(byteLimit, markerData.count)
         let outputBytesToKeep = max(0, byteLimit - markerBytesToKeep - Self.truncationBoundarySafetyBytes)
-        if data.count < outputBytesToKeep {
+        if let chunk, data.count < outputBytesToKeep {
             data.append(chunk.prefix(outputBytesToKeep - data.count))
         }
         if data.count > outputBytesToKeep {
@@ -1423,7 +1452,6 @@ private final class BoundedProcessOutput: @unchecked Sendable {
         }
         data.append(markerData.prefix(byteLimit - data.count))
         truncated = true
-        return true
     }
 
     var isTruncated: Bool {

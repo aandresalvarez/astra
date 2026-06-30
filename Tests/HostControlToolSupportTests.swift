@@ -331,6 +331,46 @@ struct HostControlToolSupportTests {
         #expect(!text.contains("TAIL_SENTINEL"))
     }
 
+    @Test("Host control process runner treats abandoned pipe reads as truncated")
+    func hostControlProcessRunnerTreatsAbandonedPipeReadsAsTruncated() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-host-abandoned-pipe-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let gh = try customExecutable(named: "gh", root: root, body: """
+        ( sleep 2; printf 'et-token' ) &
+        printf 'visible-prefix:super-secr'
+        exit 0
+        """)
+        let connectors = """
+        {"connectors":[{"id":"jira-1","alias":"jira","envPrefix":"JIRA_JIRA","name":"Jira","serviceType":"jira","baseURL":"https://example.atlassian.net","authMethod":"basic","env":{"JIRA_API_TOKEN":"JIRA_TOKEN_ENV"},"credentials":{"JIRA_API_TOKEN":"JIRA_TOKEN_ENV"},"config":{}}]}
+        """
+        let server = HostControlMCPServer(
+            configuration: HostControlToolConfiguration(
+                githubExecutable: gh.path,
+                connectorsJSON: connectors,
+                environment: [
+                    "ASTRA_CONNECTORS": connectors,
+                    "JIRA_TOKEN_ENV": "super-secret-token"
+                ]
+            ),
+            processLimits: HostControlProcessLimits(maximumTimeoutSeconds: 5, outputByteLimit: 256)
+        )
+
+        let response = try call(server, id: 1, tool: "github", arguments: ["arguments": ["pr", "view", "123"]])
+        let text = try resultText(response)
+
+        #expect(text.contains("exit_code: 125"))
+        #expect(text.contains("output_truncated: true"))
+        #expect(text.contains("stdout_truncated: true"))
+        #expect(text.contains("ASTRA truncated stdout after"))
+        #expect(!text.contains("super-secr"))
+        #expect(!text.contains("super-secret-token"))
+        #expect(!text.contains("et-token"))
+        #expect(try #require(response["result"] as? [String: Any])["isError"] as? Bool == true)
+    }
+
     @Test("Host control process runner truncates excessive stdout before returning results")
     func hostControlProcessRunnerTruncatesExcessiveStdoutBeforeReturningResults() throws {
         let root = FileManager.default.temporaryDirectory
@@ -483,6 +523,7 @@ struct HostControlToolSupportTests {
         #expect(drain.contains("guard flags >= 0 else"))
         #expect(drain.contains("guard fcntl(descriptor, F_SETFL, flags | O_NONBLOCK) >= 0 else"))
         #expect(drain.contains("guard let handle = reader.claimForDrain() else { return }"))
+        #expect(drain.contains("buffer.markTruncated()"))
         #expect(drain.contains("defer { try? handle.close() }"))
         #expect(jira.contains("BoundedProcessOutput(label: \"Jira response body\""))
         #expect(jira.contains("bodyTruncated = true"))
@@ -516,8 +557,8 @@ struct HostControlToolSupportTests {
         #expect(Date().timeIntervalSince(started) < 4)
     }
 
-    @Test("Host control process runner does not wait on inherited pipes after exit")
-    func hostControlProcessRunnerDoesNotWaitOnInheritedPipesAfterExit() throws {
+    @Test("Host control process runner marks inherited pipe drains truncated without waiting")
+    func hostControlProcessRunnerMarksInheritedPipeDrainsTruncatedWithoutWaiting() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("astra-host-runner-inherited-pipe-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -536,7 +577,8 @@ struct HostControlToolSupportTests {
             environment: [:]
         )
 
-        #expect(result.exitCode == 0)
+        #expect(result.exitCode == 125)
+        #expect(result.stdoutTruncated)
         #expect(Date().timeIntervalSince(started) < 2)
     }
 
@@ -936,6 +978,33 @@ struct HostControlToolSupportTests {
         #expect(body.utf8.count <= 96)
         #expect(body.contains("redacted"))
         #expect(!body.contains("supe"))
+    }
+
+    @Test("Jira formatted caps mark otherwise successful responses as errors")
+    func jiraFormattedCapsMarkOtherwiseSuccessfulResponsesAsErrors() throws {
+        let connectors = """
+        {"connectors":[{"id":"jira-1","alias":"jira","envPrefix":"JIRA_JIRA","name":"Jira","serviceType":"jira","baseURL":"https://example.atlassian.net","authMethod":"basic","env":{"JIRA_API_TOKEN":"JIRA_TOKEN_ENV"},"credentials":{"JIRA_API_TOKEN":"JIRA_TOKEN_ENV"},"config":{}}]}
+        """
+        let configuration = HostControlToolConfiguration(
+            connectorsJSON: connectors,
+            environment: [
+                "ASTRA_CONNECTORS": connectors,
+                "JIRA_TOKEN_ENV": "supe"
+            ]
+        )
+        let response = JiraHTTPResponse(
+            statusCode: 200,
+            body: String(repeating: "supe", count: 12),
+            errorMessage: nil,
+            bodyTruncated: false
+        )
+
+        let formatted = response.formattedPayload(configuration: configuration, outputByteLimit: 64)
+
+        #expect(!response.isError)
+        #expect(formatted.bodyTruncated)
+        #expect(formatted.text.contains("body_truncated: true"))
+        #expect(!formatted.text.contains("supe"))
     }
 
     private func fakeExecutable(named name: String, root: URL, log: URL, stdout: String) throws -> URL {
