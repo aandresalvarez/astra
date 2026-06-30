@@ -355,6 +355,7 @@ enum BrowserAutomationScripts {
           && (rect.width > 0 || rect.height > 0);
       };
       const disabled = (el) => Boolean(el.disabled) || el.getAttribute("aria-disabled") === "true" || el.getAttribute("disabled") !== null;
+      const isContentEditableElement = (el) => Boolean(el) && (el.isContentEditable || String(el.getAttribute("contenteditable") || "").toLowerCase() === "true");
       const roleFor = (el) => {
         const explicit = el.getAttribute("role");
         if (explicit) return explicit;
@@ -362,7 +363,7 @@ enum BrowserAutomationScripts {
         const type = String(el.getAttribute("type") || "").toLowerCase();
         if (tag === "button" || type === "button" || type === "submit") return "button";
         if (tag === "a" && el.href) return "link";
-        if (tag === "input" || tag === "textarea" || el.isContentEditable) return "textbox";
+        if (tag === "input" || tag === "textarea" || isContentEditableElement(el)) return "textbox";
         if (tag === "select") return "combobox";
         return "";
       };
@@ -378,6 +379,15 @@ enum BrowserAutomationScripts {
         if (parentLabel?.innerText) return parentLabel.innerText;
         return "";
       };
+      const valueControlForTextNode = (el) => {
+        let node = el;
+        while (node && node !== document.body) {
+          const tag = node.tagName ? node.tagName.toLowerCase() : "";
+          if (tag === "input" || tag === "textarea" || tag === "select" || isContentEditableElement(node)) return node;
+          node = node.parentElement;
+        }
+        return null;
+      };
       const visibleText = () => {
         if (!document.body) return "";
         const pieces = [];
@@ -390,8 +400,8 @@ enum BrowserAutomationScripts {
           if (!text) continue;
           const parent = node.parentElement;
           if (!parent || !visible(parent)) continue;
-          const formControl = parent.closest ? parent.closest("input, textarea, select") : null;
-          if (formControl && isSensitiveValueControl(formControl)) continue;
+          const valueControl = valueControlForTextNode(parent);
+          if (valueControl && isSensitiveValueControl(valueControl)) continue;
           pieces.push(text);
           total += text.length + 1;
         }
@@ -458,7 +468,7 @@ enum BrowserAutomationScripts {
         if (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT") {
           return String(el.value || "");
         }
-        if (el.isContentEditable || String(el.getAttribute("contenteditable") || "").toLowerCase() === "true") {
+        if (isContentEditableElement(el)) {
           return String(el.textContent || "");
         }
         return "";
@@ -746,6 +756,7 @@ enum BrowserAutomationScripts {
             "current-password", "new-password", "one-time-code",
             "cc-number", "cc-csc", "cc-exp", "webauthn"
           ];
+          const redactedInputValue = "[redacted-sensitive-input]";
           const includesAny = (value, terms) => terms.some((term) => value.includes(term));
           const sensitiveResultTarget = (target) => {
             const type = String(target.getAttribute("type") || "").toLowerCase();
@@ -765,6 +776,15 @@ enum BrowserAutomationScripts {
             ].join(" ").toLowerCase();
             return includesAny(text, sensitiveResultTerms);
           };
+          const redactSensitiveResultTarget = (result, target, value) => {
+            if (!sensitiveResultTarget(target)) return result;
+            result.value = redactedInputValue;
+            const normalizedValue = norm(value);
+            if (normalizedValue && norm(result.label).includes(normalizedValue)) {
+              result.label = redactedInputValue;
+            }
+            return result;
+          };
           const before = "value" in el ? String(el.value || "") : String(el.textContent || "");
           const next = clear ? text : before + text;
           if ("value" in el) {
@@ -780,7 +800,8 @@ enum BrowserAutomationScripts {
           const result = publicTarget(target);
           result.ok = true;
           result.url = location.href;
-          result.value = sensitiveResultTarget(el) ? "[redacted-sensitive-input]" : next.slice(0, 300);
+          result.value = next.slice(0, 300);
+          redactSensitiveResultTarget(result, el, next);
           result.cleared = clear;
           return JSON.stringify(result);
         })()

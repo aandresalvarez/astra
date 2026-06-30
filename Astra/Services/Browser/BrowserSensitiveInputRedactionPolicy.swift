@@ -3,6 +3,21 @@ import Foundation
 enum BrowserSensitiveInputRedactionPolicy {
     static let redactedInputValue = "[redacted-sensitive-input]"
 
+    static func riskForAutocomplete(_ autocomplete: String) -> BrowserRisk? {
+        let lowerAutocomplete = autocomplete.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !lowerAutocomplete.isEmpty else { return nil }
+        if containsAny(lowerAutocomplete, ["current-password", "new-password", "webauthn"]) {
+            return .credentialInput
+        }
+        if containsAny(lowerAutocomplete, ["one-time-code"]) {
+            return .mfaInput
+        }
+        if containsAny(lowerAutocomplete, ["cc-number", "cc-csc", "cc-exp"]) {
+            return .payment
+        }
+        return nil
+    }
+
     static func redactSnapshotObject(_ object: [String: Any]) -> (object: [String: Any], didRedact: Bool) {
         var redacted = object
         var didRedact = false
@@ -41,6 +56,7 @@ enum BrowserSensitiveInputRedactionPolicy {
     static func redactControlObject(_ control: [String: Any]) -> (object: [String: Any], didRedact: Bool, sensitiveValues: [String]) {
         let value = string(control["value"])
         guard !value.isEmpty else { return (control, false, []) }
+        guard value != redactedInputValue else { return (control, false, []) }
 
         let shouldRedact = isSensitiveControl(
             selector: string(control["selector"]),

@@ -253,16 +253,20 @@ struct BrowserAccessibilitySnapshot {
     }
 
     func matchingNode(for control: BrowserControl) -> BrowserAccessibilityNode? {
-        let controlName = BrowserAnalysisBuilder.normalizedName(control.name.isEmpty ? control.label : control.name)
+        let controlNames = [control.name, control.label]
+            .map(BrowserAnalysisBuilder.normalizedName)
+            .filter { !$0.isEmpty }
         let controlRole = BrowserAnalysisBuilder.normalizedName(control.role)
-        guard !controlName.isEmpty || !controlRole.isEmpty else { return nil }
+        guard !controlNames.isEmpty || !controlRole.isEmpty else { return nil }
 
         return nodes.first { node in
             guard !node.ignored else { return false }
             let nodeName = BrowserAnalysisBuilder.normalizedName(node.name)
             let nodeRole = BrowserAnalysisBuilder.normalizedName(node.role)
             let roleMatches = controlRole.isEmpty || nodeRole.isEmpty || nodeRole.contains(controlRole) || controlRole.contains(nodeRole)
-            let nameMatches = controlName.isEmpty || nodeName == controlName || nodeName.contains(controlName) || controlName.contains(nodeName)
+            let nameMatches = controlNames.isEmpty || controlNames.contains { controlName in
+                nodeName == controlName || nodeName.contains(controlName) || controlName.contains(nodeName)
+            }
             return roleMatches && nameMatches && (!nodeName.isEmpty || !nodeRole.isEmpty)
         }
     }
@@ -467,7 +471,24 @@ private extension BrowserControl {
         guard providerVisibleValue == BrowserSensitiveInputRedactionPolicy.redactedInputValue else {
             return text
         }
+        if value == BrowserSensitiveInputRedactionPolicy.redactedInputValue {
+            return knownSafeAccessibilityText(text)
+                ? text
+                : redactedUnknownSensitiveAccessibilityText(text)
+        }
         return BrowserSensitiveInputRedactionPolicy.redactedDisplayText(text, sensitiveValue: value)
+    }
+
+    func knownSafeAccessibilityText(_ text: String) -> Bool {
+        let normalizedText = BrowserAnalysisBuilder.normalizedName(text)
+        guard !normalizedText.isEmpty else { return true }
+        return [label, name, placeholder]
+            .map(BrowserAnalysisBuilder.normalizedName)
+            .contains(normalizedText)
+    }
+
+    func redactedUnknownSensitiveAccessibilityText(_ text: String) -> String {
+        text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? text : BrowserSensitiveInputRedactionPolicy.redactedInputValue
     }
 
     func redactedAccessibilityValue(_ text: String) -> String {
@@ -475,9 +496,7 @@ private extension BrowserControl {
             return text
         }
         if value == BrowserSensitiveInputRedactionPolicy.redactedInputValue {
-            return text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                ? text
-                : BrowserSensitiveInputRedactionPolicy.redactedInputValue
+            return redactedUnknownSensitiveAccessibilityText(text)
         }
         return BrowserSensitiveInputRedactionPolicy.redactedDisplayText(text, sensitiveValue: value)
     }
@@ -1113,7 +1132,8 @@ enum BrowserAnalysisBuilder {
             type: type,
             placeholder: placeholder,
             testID: testID,
-            href: href
+            href: href,
+            autocomplete: autocomplete
         )
         let actions = validActions(
             pageURL: pageURL,
@@ -1443,8 +1463,13 @@ enum BrowserAnalysisBuilder {
         type: String,
         placeholder: String,
         testID: String,
-        href: String
+        href: String,
+        autocomplete: String
     ) -> BrowserRisk {
+        if let autocompleteRisk = BrowserSensitiveInputRedactionPolicy.riskForAutocomplete(autocomplete) {
+            return autocompleteRisk
+        }
+
         let text = [
             selector,
             label,
@@ -1454,7 +1479,8 @@ enum BrowserAnalysisBuilder {
             type,
             placeholder,
             testID,
-            href
+            href,
+            autocomplete
         ].joined(separator: " ").lowercased()
 
         if type.lowercased() == "password" || containsAny(text, ["password", "passcode", "secret"]) {

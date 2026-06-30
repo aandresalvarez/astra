@@ -9,7 +9,12 @@ enum BrowserSnapshotMode: String {
 
 enum BrowserPageSnapshotService {
     static func compactSnapshot(json: String, mode: BrowserSnapshotMode, query: String?, limit: Int?) throws -> String {
-        let snapshot = BrowserSensitiveInputRedactionPolicy.redactSnapshotObject(try jsonObject(from: json))
+        let rawObject = try jsonObject(from: json)
+        let snapshot = BrowserSensitiveInputRedactionPolicy.redactSnapshotObject(rawObject)
+        if mode == .full {
+            return snapshot.didRedact ? try jsonString(snapshot.object) : json
+        }
+
         let object = snapshot.object
         let queryText = query?.trimmingCharacters(in: .whitespacesAndNewlines)
         let controls = object["controls"] as? [[String: Any]] ?? []
@@ -30,7 +35,7 @@ enum BrowserPageSnapshotService {
 
         switch mode {
         case .full:
-            return snapshot.didRedact ? try jsonString(object) : json
+            return json
         case .text:
             let text = object["text"] as? String ?? ""
             compact["text"] = String(text.prefix(max(0, limit ?? 1_500)))

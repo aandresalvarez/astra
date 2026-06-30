@@ -161,13 +161,14 @@ struct BrowserAnalysisTests {
         let analysis = BrowserAnalysisBuilder.build(
             snapshot: Self.sampleSnapshot(controls: [
                 Self.control(
-                    selector: "#password",
+                    selector: "#login",
                     tag: "input",
                     role: "textbox",
                     type: "text",
-                    label: "Password",
+                    label: "Login",
                     value: secret,
-                    autocomplete: "current-password"
+                    autocomplete: "current-password",
+                    name: "login"
                 )
             ]),
             backend: "controlled Chromium profile",
@@ -182,6 +183,8 @@ struct BrowserAnalysisTests {
 
         #expect(control["value"] as? String == "[redacted-sensitive-input]")
         #expect(control["autocomplete"] as? String == "current-password")
+        #expect(control["risk"] as? String == BrowserRisk.credentialInput.rawValue)
+        #expect(control["requiresUserConfirmation"] as? Bool == true)
         #expect(ref["value"] as? String == "[redacted-sensitive-input]")
         #expect(((ref["context"] as? [String: Any])?["autocomplete"] as? String) == "current-password")
         #expect(String(describing: response).contains(secret) == false)
@@ -215,6 +218,40 @@ struct BrowserAnalysisTests {
         #expect(ref["label"] as? String == "Password")
         #expect(evidence["accessibilityName"] as? String == "Password")
         #expect(accessibilityNode["name"] as? String == "Password")
+        #expect(accessibilityNode["value"] as? String == "[redacted-sensitive-input]")
+        #expect(String(describing: response).contains(secret) == false)
+    }
+
+    @Test("Analysis debug response redacts accessibility text when DOM value is already redacted")
+    func analysisDebugResponseRedactsAccessibilityTextWhenDOMValueIsAlreadyRedacted() throws {
+        let secret = "still-in-ax-name-secret"
+        let accessibilityName = "Password \(secret)"
+        let analysis = BrowserAnalysisBuilder.build(
+            snapshot: Self.sampleSnapshot(controls: [
+                Self.control(
+                    selector: "#password",
+                    tag: "input",
+                    role: "textbox",
+                    type: "password",
+                    label: "Password",
+                    value: "[redacted-sensitive-input]",
+                    name: "password"
+                )
+            ]),
+            backend: "controlled Chromium profile",
+            engine: "controlled",
+            accessibilitySnapshotObject: Self.accessibilitySnapshot(role: "textbox", name: accessibilityName, value: secret)
+        )
+
+        let response = analysis.responseObject(query: nil, full: true, limit: nil, debug: true, version: .v2)
+        let refs = try #require(response["controlRefs"] as? [[String: Any]])
+        let ref = try #require(refs.first)
+        let evidence = try #require(ref["evidence"] as? [String: Any])
+        let accessibilityNode = try #require(ref["accessibilityNode"] as? [String: Any])
+
+        #expect(evidence["accessibilityName"] as? String == "[redacted-sensitive-input]")
+        #expect(accessibilityNode["name"] as? String == "[redacted-sensitive-input]")
+        #expect(accessibilityNode["description"] as? String != secret)
         #expect(accessibilityNode["value"] as? String == "[redacted-sensitive-input]")
         #expect(String(describing: response).contains(secret) == false)
     }
@@ -291,6 +328,30 @@ struct BrowserAnalysisTests {
         #expect(match.usedSelectorFallback == false)
         #expect(match.control.selector == "#new-save")
         #expect(match.controlRef.source == .accessibility)
+    }
+
+    @Test("Accessibility matching considers label when name is technical")
+    func accessibilityMatchingConsidersLabelWhenNameIsTechnical() throws {
+        let analysis = BrowserAnalysisBuilder.build(
+            snapshot: Self.sampleSnapshot(controls: [
+                Self.control(
+                    selector: "input[name=q]",
+                    tag: "input",
+                    role: "textbox",
+                    label: "Search",
+                    name: "q"
+                )
+            ]),
+            backend: "controlled Chromium profile",
+            engine: "controlled",
+            accessibilitySnapshotObject: Self.accessibilitySnapshot(role: "textbox", name: "Search")
+        )
+
+        let response = analysis.responseObject(query: nil, full: false, limit: nil, version: .v2)
+        let refs = try #require(response["controlRefs"] as? [[String: Any]])
+        let firstRef = try #require(refs.first)
+
+        #expect(firstRef["source"] as? String == BrowserControlSource.accessibility.rawValue)
     }
 
     @Test("Control IDs stay stable across state-only changes")
@@ -696,6 +757,7 @@ struct BrowserAnalysisTests {
         label: String,
         value: String = "",
         autocomplete: String = "",
+        name: String? = nil,
         disabled: Bool = false,
         href: String = "",
         y: Int = 20
@@ -706,7 +768,7 @@ struct BrowserAnalysisTests {
             "role": role,
             "type": type,
             "label": label,
-            "name": label,
+            "name": name ?? label,
             "placeholder": "",
             "autocomplete": autocomplete,
             "testID": "",

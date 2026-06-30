@@ -2227,6 +2227,8 @@ struct ControlledBrowserTests {
         #expect(script.contains("target_not_editable"))
         #expect(script.contains("insertReplacementText"))
         #expect(script.contains("sensitiveResultTarget"))
+        #expect(script.contains("redactSensitiveResultTarget(result, el, next)"))
+        #expect(script.contains("result.label = redactedInputValue"))
         #expect(script.contains("[redacted-sensitive-input]"))
     }
 

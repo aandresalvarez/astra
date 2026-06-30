@@ -18,6 +18,22 @@ struct BrowserPageSnapshotServiceTests {
         #expect(compacted == json)
     }
 
+    @Test("full mode preserves already-redacted snapshot JSON")
+    func fullModePreservesAlreadyRedactedSnapshotJSON() throws {
+        let json = """
+        {"ok":true,"url":"https://example.com","title":"Example","text":"Sign in","controls":[{"selector":"#password","tag":"input","role":"textbox","type":"password","label":"Password","value":"[redacted-sensitive-input]"}]}
+        """
+
+        let compacted = try BrowserPageSnapshotService.compactSnapshot(
+            json: json,
+            mode: .full,
+            query: nil,
+            limit: nil
+        )
+
+        #expect(compacted == json)
+    }
+
     @Test("snapshot output redacts sensitive focused and control values")
     func snapshotOutputRedactsSensitiveFocusedAndControlValues() throws {
         let compacted = try BrowserPageSnapshotService.compactSnapshot(
@@ -87,9 +103,10 @@ struct BrowserPageSnapshotServiceTests {
 
         #expect(script.contains("const labelForSnapshot = (el) =>"))
         #expect(script.contains("const editableValueFor = (el) =>"))
+        #expect(script.contains("const valueControlForTextNode = (el) =>"))
         #expect(script.contains("el.isContentEditable"))
         #expect(script.contains("name: el.getAttribute(\"name\") || \"\""))
-        #expect(script.contains("formControl && isSensitiveValueControl(formControl)"))
+        #expect(script.contains("valueControl && isSensitiveValueControl(valueControl)"))
         #expect(script.contains("\"mrn\""))
         #expect(!script.contains("name: labelFor(el)"))
     }
