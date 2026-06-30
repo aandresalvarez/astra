@@ -309,8 +309,8 @@ public final class WorkspaceManagedJobStore {
         let anchor = trustedCreationAnchor(for: directory)
         try validateTrustedCreationPath(from: anchor, to: directory)
 
-        var current = anchor.standardizedFileURL
-        for component in relativePathComponents(from: anchor, to: directory) {
+        var current = anchor.url.standardizedFileURL
+        for component in relativePathComponents(from: anchor.url, to: directory) {
             current.appendPathComponent(component, isDirectory: true)
             if fileManager.fileExists(atPath: current.path) {
                 guard isTrustedDirectory(current) else {
@@ -330,13 +330,13 @@ public final class WorkspaceManagedJobStore {
         try validateTrustedCreationPath(from: trustedCreationAnchor(for: directory), to: directory)
     }
 
-    private func validateTrustedCreationPath(from anchor: URL, to directory: URL) throws {
-        guard isTrustedDirectory(anchor) else {
-            throw trustedFileReadError(path: anchor.path)
+    private func validateTrustedCreationPath(from anchor: TrustedCreationAnchor, to directory: URL) throws {
+        guard isTrustedCreationAnchor(anchor) else {
+            throw trustedFileReadError(path: anchor.url.path)
         }
 
-        var current = anchor.standardizedFileURL
-        for component in relativePathComponents(from: anchor, to: directory) {
+        var current = anchor.url.standardizedFileURL
+        for component in relativePathComponents(from: anchor.url, to: directory) {
             current.appendPathComponent(component, isDirectory: true)
             guard fileManager.fileExists(atPath: current.path) else {
                 continue
@@ -347,20 +347,25 @@ public final class WorkspaceManagedJobStore {
         }
     }
 
-    private func trustedCreationAnchor(for directory: URL) -> URL {
+    private struct TrustedCreationAnchor {
+        var url: URL
+        var allowsSymlinkedDirectory: Bool
+    }
+
+    private func trustedCreationAnchor(for directory: URL) -> TrustedCreationAnchor {
         if let astraAnchor = astraTasksAnchor(for: directory) {
-            return astraAnchor
+            return TrustedCreationAnchor(url: astraAnchor, allowsSymlinkedDirectory: true)
         }
 
         var current = directory.standardizedFileURL
         while !fileManager.fileExists(atPath: current.path) {
             let parent = current.deletingLastPathComponent()
             guard parent.path != current.path else {
-                return current
+                return TrustedCreationAnchor(url: current, allowsSymlinkedDirectory: false)
             }
             current = parent
         }
-        return current
+        return TrustedCreationAnchor(url: current, allowsSymlinkedDirectory: false)
     }
 
     private func astraTasksAnchor(for directory: URL) -> URL? {
@@ -392,9 +397,30 @@ public final class WorkspaceManagedJobStore {
         trustedDirectoryStat(at: url) != nil
     }
 
+    private func isTrustedCreationAnchor(_ anchor: TrustedCreationAnchor) -> Bool {
+        if isTrustedDirectory(anchor.url) {
+            return true
+        }
+        guard anchor.allowsSymlinkedDirectory else {
+            return false
+        }
+        return resolvedDirectoryStat(at: anchor.url) != nil
+    }
+
     private func trustedDirectoryStat(at url: URL) -> stat? {
         var statInfo = stat()
         guard lstat(url.standardizedFileURL.path, &statInfo) == 0 else {
+            return nil
+        }
+        guard (statInfo.st_mode & S_IFMT) == S_IFDIR else {
+            return nil
+        }
+        return statInfo
+    }
+
+    private func resolvedDirectoryStat(at url: URL) -> stat? {
+        var statInfo = stat()
+        guard stat(url.standardizedFileURL.path, &statInfo) == 0 else {
             return nil
         }
         guard (statInfo.st_mode & S_IFMT) == S_IFDIR else {
