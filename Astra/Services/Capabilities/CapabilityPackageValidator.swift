@@ -531,6 +531,20 @@ enum CapabilityPackageValidator {
                     component: name
                 ))
             }
+            if server.url != nil,
+               let reason = RemoteMCPGatewayEndpointTrustPolicy.credentialForwardingEndpointViolation(
+                   package: package,
+                   server: server
+               ) {
+                let name = displayName(server.displayName, fallback: server.id)
+                issues.append(issue(
+                    .blocker,
+                    .unsafeMCPServer,
+                    "Unsafe MCP credential endpoint",
+                    "\(name) is unsafe: \(reason).",
+                    component: name
+                ))
+            }
             if let reason = unsafeMCPControlPlaneReason(server) {
                 let name = displayName(server.displayName, fallback: server.id)
                 issues.append(issue(

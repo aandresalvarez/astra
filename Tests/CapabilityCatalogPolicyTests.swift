@@ -445,6 +445,76 @@ struct CapabilityCatalogPolicyTests {
         #expect(!remoteDecision.canEnable)
         #expect(loopbackDecision.canEnable)
     }
+
+    @Test("Credentialed remote MCP gateway requires trusted package provenance at runtime")
+    func credentialedRemoteMCPGatewayRequiresTrustedPackageProvenanceAtRuntime() {
+        var package = makePolicyPackage(governance: .builtInApproved(riskLevel: .high))
+        package.id = GoogleWorkspaceCapability.packageID
+        package.sourceMetadata = .localLibrary()
+        package.mcpServers = [
+            PluginMCPServer(
+                id: "google_workspace_drive",
+                displayName: "Google Workspace Drive",
+                transport: .http,
+                url: URL(string: "https://drivemcp.googleapis.com/mcp/v1"),
+                connectorBindings: [GoogleWorkspaceCapability.connectorBinding],
+                controlPlane: policyGatewayAuthorizationControlPlane()
+            )
+        ]
+
+        let decision = CapabilityCatalogPolicy.decision(
+            for: package,
+            context: CapabilityCatalogPolicyContext(
+                currentAppVersion: SemanticVersion(1, 0, 0),
+                enabledPackageIDs: [package.id]
+            )
+        )
+
+        #expect(!decision.canEnable)
+        #expect(!decision.canRun)
+        #expect(decision.blockers.contains(.unsafeMCPServer(
+            name: "Google Workspace Drive",
+            reason: RemoteMCPGatewayEndpointTrustPolicy.untrustedCredentialEndpointReason
+        )))
+    }
+
+    @Test("Credential forwarding remote MCP with missing URL keeps single URL blocker")
+    func credentialForwardingRemoteMCPWithMissingURLKeepsSingleURLBlocker() {
+        var package = makePolicyPackage(governance: .builtInApproved(riskLevel: .high))
+        package.id = GoogleWorkspaceCapability.packageID
+        package.sourceMetadata = .builtIn()
+        package.mcpServers = [
+            PluginMCPServer(
+                id: "google_workspace_drive",
+                displayName: "Google Workspace Drive",
+                transport: .http,
+                connectorBindings: [GoogleWorkspaceCapability.connectorBinding],
+                controlPlane: policyGatewayAuthorizationControlPlane()
+            )
+        ]
+
+        let decision = CapabilityCatalogPolicy.decision(
+            for: package,
+            context: CapabilityCatalogPolicyContext(
+                currentAppVersion: SemanticVersion(1, 0, 0),
+                enabledPackageIDs: [package.id]
+            )
+        )
+
+        let unsafeServerBlockers = decision.blockers.compactMap { blocker -> String? in
+            guard case .unsafeMCPServer(name: "Google Workspace Drive", let reason) = blocker else {
+                return nil
+            }
+            return reason
+        }
+
+        #expect(unsafeServerBlockers == ["remote MCP URL is missing or invalid"])
+        #expect(!unsafeServerBlockers.contains {
+            $0.contains(RemoteMCPGatewayEndpointTrustPolicy.missingCredentialEndpointReason)
+        })
+        #expect(!decision.canEnable)
+        #expect(!decision.canRun)
+    }
 }
 
 private func makePolicyPackage(governance: CapabilityGovernance) -> PluginPackage {
@@ -462,5 +532,24 @@ private func makePolicyPackage(governance: CapabilityGovernance) -> PluginPackag
         localTools: [],
         templates: [],
         governance: governance
+    )
+}
+
+private func policyGatewayAuthorizationControlPlane() -> MCPControlPlaneMetadata {
+    MCPControlPlaneMetadata(
+        secretRefs: [
+            MCPSecretRef(id: "google-access-token", purpose: "Short-lived gateway access token.")
+        ],
+        runtimeBindings: [
+            MCPRuntimeBindingTemplate(
+                id: "auth-header",
+                destination: .httpHeader,
+                name: "Authorization",
+                template: [
+                    .literal("Bearer "),
+                    .reference(.secret("google-access-token"))
+                ]
+            )
+        ]
     )
 }

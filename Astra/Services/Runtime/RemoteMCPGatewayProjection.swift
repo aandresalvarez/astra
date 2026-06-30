@@ -27,14 +27,12 @@ enum RemoteMCPGatewayProjection {
         controlPlane: MCPControlPlaneMetadata?
     ) -> [MCPRuntimeBindingDestination] {
         orderedUnique((controlPlane?.runtimeBindings ?? []).compactMap { binding in
-            gatewayAccessTokenBinding(binding) == nil ? nil : binding.destination
+            RemoteMCPGatewayEndpointTrustPolicy.gatewayAccessTokenBinding(binding) == nil ? nil : binding.destination
         })
     }
 
     static func shouldRouteThroughGateway(_ server: PluginMCPServer) -> Bool {
-        server.transport != .stdio
-            && !server.connectorBindings.isEmpty
-            && gatewayAccessTokenBinding(server.controlPlane?.runtimeBindings ?? []) != nil
+        RemoteMCPGatewayEndpointTrustPolicy.isCredentialForwardingGatewayCandidate(server)
     }
 
     static func providerFacingResolvedServer(
@@ -47,7 +45,16 @@ enum RemoteMCPGatewayProjection {
             }
             return resolved
         }
-        guard let binding = gatewayAccessTokenBinding(server.controlPlane?.runtimeBindings ?? []) else {
+        guard RemoteMCPGatewayEndpointTrustPolicy.credentialForwardingEndpointViolation(
+            packageID: resolved.packageID,
+            packageSourceMetadata: resolved.packageSourceMetadata,
+            server: server
+        ) == nil else {
+            return nil
+        }
+        guard let binding = RemoteMCPGatewayEndpointTrustPolicy.gatewayAccessTokenBinding(
+            in: server.controlPlane
+        ) else {
             return nil
         }
         guard let endpoint = server.url?.absoluteString,
@@ -87,6 +94,7 @@ enum RemoteMCPGatewayProjection {
         )
         return MCPRuntimeProjection.ResolvedServer(
             packageID: resolved.packageID,
+            packageSourceMetadata: resolved.packageSourceMetadata,
             server: gatewayServer,
             permittedEnvironmentKeys: [accessTokenEnvironmentKey]
         )
@@ -99,35 +107,6 @@ enum RemoteMCPGatewayProjection {
         gatewayAccessTokenEnvironmentKeys(in: server.arguments).filter { key in
             availableEnvironment[key]?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false
         }
-    }
-
-    private static func gatewayAccessTokenBinding(
-        _ bindings: [MCPRuntimeBindingTemplate]
-    ) -> MCPRuntimeBindingTemplate? {
-        bindings.first { gatewayAccessTokenBinding($0) != nil }
-    }
-
-    private static func gatewayAccessTokenBinding(
-        _ binding: MCPRuntimeBindingTemplate
-    ) -> MCPRuntimeBindingTemplate? {
-        guard binding.destination == .httpHeader,
-              binding.name.trimmingCharacters(in: .whitespacesAndNewlines)
-            .caseInsensitiveCompare("Authorization") == .orderedSame,
-              binding.template.count == 2 else {
-            return nil
-        }
-        guard binding.template[0].kind == .literal,
-              binding.template[0].literal == "Bearer ",
-              binding.template[0].reference == nil else {
-            return nil
-        }
-        guard binding.template[1].kind == .reference,
-              binding.template[1].literal == nil,
-              binding.template[1].reference?.kind == .secretRef,
-              binding.template[1].reference?.id.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false else {
-            return nil
-        }
-        return binding
     }
 
     private static func environmentKeyComponent(_ value: String) -> String {

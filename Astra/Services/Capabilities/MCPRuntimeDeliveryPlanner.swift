@@ -17,6 +17,7 @@ enum MCPRuntimeDeliveryIncompatibility: Equatable, Sendable {
     case unsupportedTransport(PluginMCPServer.Transport)
     case unsupportedBindingDestination(MCPRuntimeBindingDestination)
     case runtimeBindingProjectionUnsupported(MCPRuntimeBindingDestination)
+    case untrustedCredentialEndpoint(String)
     case missingControlPlaneBindings
     case missingRemoteEndpoint
     case missingStdioCommand
@@ -37,7 +38,24 @@ struct MCPRuntimeDeliveryPlanRow: Equatable, Sendable {
 
 enum MCPRuntimeDeliveryPlanner {
     static func plan(
+        package: PluginPackage,
         server: PluginMCPServer,
+        controlPlane explicitControlPlane: MCPControlPlaneMetadata? = nil,
+        profiles: [MCPRuntimeSupportProfile] = MCPRuntimeSupportMatrix.defaultProfiles()
+    ) -> [MCPRuntimeDeliveryPlanRow] {
+        plan(
+            server: server,
+            packageID: package.id,
+            packageSourceMetadata: package.sourceMetadata,
+            controlPlane: explicitControlPlane,
+            profiles: profiles
+        )
+    }
+
+    static func plan(
+        server: PluginMCPServer,
+        packageID: String? = nil,
+        packageSourceMetadata: CapabilitySourceMetadata? = nil,
         controlPlane explicitControlPlane: MCPControlPlaneMetadata? = nil,
         profiles: [MCPRuntimeSupportProfile] = MCPRuntimeSupportMatrix.defaultProfiles()
     ) -> [MCPRuntimeDeliveryPlanRow] {
@@ -52,6 +70,9 @@ enum MCPRuntimeDeliveryPlanner {
             row(
                 for: profile,
                 server: server,
+                packageID: packageID,
+                packageSourceMetadata: packageSourceMetadata,
+                controlPlane: controlPlane,
                 declaredControlPlaneBindingDestinations: declaredControlPlaneBindingDestinations,
                 projectableGatewayBindingDestinations: projectableGatewayBindingDestinations,
                 requiresGateway: requiresGateway
@@ -62,6 +83,9 @@ enum MCPRuntimeDeliveryPlanner {
     private static func row(
         for profile: MCPRuntimeSupportProfile,
         server: PluginMCPServer,
+        packageID: String?,
+        packageSourceMetadata: CapabilitySourceMetadata?,
+        controlPlane: MCPControlPlaneMetadata,
         declaredControlPlaneBindingDestinations: [MCPRuntimeBindingDestination],
         projectableGatewayBindingDestinations: [MCPRuntimeBindingDestination],
         requiresGateway: Bool
@@ -69,6 +93,9 @@ enum MCPRuntimeDeliveryPlanner {
         let incompatibilities = incompatibilities(
             for: profile,
             server: server,
+            packageID: packageID,
+            packageSourceMetadata: packageSourceMetadata,
+            controlPlane: controlPlane,
             declaredControlPlaneBindingDestinations: declaredControlPlaneBindingDestinations,
             projectableGatewayBindingDestinations: projectableGatewayBindingDestinations,
             requiresGateway: requiresGateway
@@ -109,6 +136,9 @@ enum MCPRuntimeDeliveryPlanner {
     private static func incompatibilities(
         for profile: MCPRuntimeSupportProfile,
         server: PluginMCPServer,
+        packageID: String?,
+        packageSourceMetadata: CapabilitySourceMetadata?,
+        controlPlane: MCPControlPlaneMetadata,
         declaredControlPlaneBindingDestinations: [MCPRuntimeBindingDestination],
         projectableGatewayBindingDestinations: [MCPRuntimeBindingDestination],
         requiresGateway: Bool
@@ -123,6 +153,14 @@ enum MCPRuntimeDeliveryPlanner {
 
         var issues: [MCPRuntimeDeliveryIncompatibility] = []
         if requiresGateway {
+            if let reason = RemoteMCPGatewayEndpointTrustPolicy.credentialForwardingEndpointViolation(
+                packageID: packageID ?? "",
+                packageSourceMetadata: packageSourceMetadata,
+                server: server,
+                controlPlane: controlPlane
+            ) {
+                issues.append(.untrustedCredentialEndpoint(reason))
+            }
             if declaredControlPlaneBindingDestinations.isEmpty {
                 issues.append(.missingControlPlaneBindings)
             }
@@ -229,6 +267,7 @@ enum MCPRuntimeDeliveryPlanner {
         if incompatibilities.contains(where: { issue in
             if case .unsupportedBindingDestination = issue { return true }
             if case .runtimeBindingProjectionUnsupported = issue { return true }
+            if case .untrustedCredentialEndpoint = issue { return true }
             return false
         }) {
             return [.runtimeBindingMismatch]

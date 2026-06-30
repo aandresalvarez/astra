@@ -276,6 +276,16 @@ enum CapabilityCatalogPolicy {
                     reason: "unsafe MCP control-plane metadata: \(reason)"
                 ))
             }
+            if server.url != nil,
+               let reason = RemoteMCPGatewayEndpointTrustPolicy.credentialForwardingEndpointViolation(
+                   package: package,
+                   server: server
+               ) {
+                operationalBlockers.append(.unsafeMCPServer(
+                    name: displayName(server.displayName, fallback: server.id),
+                    reason: reason
+                ))
+            }
             if let nameReason = MCPEnvironmentKeyPolicy.invalidNameReason(server: server) {
                 operationalBlockers.append(.unsafeMCPServer(
                     name: displayName(server.displayName, fallback: server.id),
