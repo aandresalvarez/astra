@@ -153,6 +153,27 @@ struct ValidationServiceTests {
         #expect(await runner.recordedCalls().isEmpty)
     }
 
+    @Test("runTests allows quoted ampersands in arguments")
+    func runTestsAllowsQuotedAmpersandsInArguments() async throws {
+        let root = "/tmp/astra-validation-quoted-ampersand-\(UUID().uuidString.prefix(8))"
+        let workspace = Workspace(name: "Imported Validation Quoted Path", primaryPath: root)
+        let task = AgentTask(title: "Validate", goal: "Allow quoted ampersand in validation path", workspace: workspace)
+        task.testCommand = "swift test --package-path \"Foo & Bar\""
+        let runner = StubValidationCommandRunner(results: [
+            ValidationCommandResult(exitCode: 0, stdout: "ok", stderr: "")
+        ])
+
+        let result = await ValidationService.runTests(task: task, commandRunner: runner)
+
+        if case .passed(let details) = result {
+            #expect(details == "ok")
+        } else {
+            Issue.record("Expected quoted ampersand command to be allowed")
+        }
+        let calls = await runner.recordedCalls()
+        #expect(calls.map(\.command) == ["swift test --package-path \"Foo & Bar\""])
+    }
+
     @Test("runTests rejects zsh process substitution before execution")
     func runTestsRejectsZshProcessSubstitutionBeforeExecution() async throws {
         let root = "/tmp/astra-validation-process-substitution-\(UUID().uuidString.prefix(8))"
@@ -317,7 +338,7 @@ struct ValidationServiceTests {
             validationContract: TaskValidationContract(assertions: [
                 TaskValidationAssertion(
                     id: "command-fails",
-                    description: "Command exits zero",
+                    description: "Command exits non-zero",
                     method: .command,
                     command: "swift build --package-path \(root)/missing-package"
                 )

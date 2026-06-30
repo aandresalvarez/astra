@@ -52,7 +52,36 @@ enum ValidationCommandPolicy {
     private static func containsShellComposition(_ command: String) -> Bool {
         let disallowedFragments = ["&&", "||", ";", "|", "`", "$(", "=(", ">", "<", "\n", "\r"]
         return disallowedFragments.contains { command.contains($0) }
-            || command.contains("&")
+            || containsUnquotedAmpersand(command)
+    }
+
+    private static func containsUnquotedAmpersand(_ command: String) -> Bool {
+        var isEscaped = false
+        var isInSingleQuote = false
+        var isInDoubleQuote = false
+
+        for character in command {
+            if isEscaped {
+                isEscaped = false
+                continue
+            }
+            if character == "\\" && !isInSingleQuote {
+                isEscaped = true
+                continue
+            }
+            if character == "'" && !isInDoubleQuote {
+                isInSingleQuote.toggle()
+                continue
+            }
+            if character == "\"" && !isInSingleQuote {
+                isInDoubleQuote.toggle()
+                continue
+            }
+            if character == "&" && !isInSingleQuote && !isInDoubleQuote {
+                return true
+            }
+        }
+        return false
     }
 
     private static func shellRoot(_ command: String) -> String? {
