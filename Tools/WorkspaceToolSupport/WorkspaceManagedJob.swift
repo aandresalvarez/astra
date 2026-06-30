@@ -372,11 +372,16 @@ public final class DockerWorkspaceJobManager: WorkspaceJobManaging {
                     kill -TERM -"$target_pid" 2>/dev/null || true
                     sleep 5
                     kill -KILL -"$target_pid" 2>/dev/null || true
+                  elif kill -0 "$target_pid" 2>/dev/null; then
+                    kill -TERM "$target_pid" 2>/dev/null || true
+                    sleep 5
+                    kill -KILL "$target_pid" 2>/dev/null || true
                   fi
                 }
                 if [ -r "$pidfile" ]; then
                   command_pid="$(cat "$pidfile")"
                   terminate_pid_or_group "$command_pid"
+                  rm -f "$pidfile"
                 fi
                 """
             ],
@@ -417,14 +422,19 @@ public final class DockerWorkspaceJobManager: WorkspaceJobManaging {
         pidfile="$job_dir/pid"
         timeout_marker="$job_dir/timeout"
         mkdir -p "$job_dir"
-        rm -f "$timeout_marker"
+        rm -f "$timeout_marker" "$pidfile"
         setsid_bin=""
-        for candidate in /usr/bin/setsid /bin/setsid /usr/local/bin/setsid /usr/sbin/setsid /sbin/setsid; do
-          if [ -x "$candidate" ]; then
-            setsid_bin="$candidate"
-            break
-          fi
-        done
+        if command -v setsid >/dev/null 2>&1; then
+          setsid_bin="$(command -v setsid)"
+        fi
+        if [ -z "$setsid_bin" ]; then
+          for candidate in /usr/bin/setsid /bin/setsid /usr/local/bin/setsid /usr/sbin/setsid /sbin/setsid; do
+            if [ -x "$candidate" ]; then
+              setsid_bin="$candidate"
+              break
+            fi
+          done
+        fi
         (
           while :; do
             printf '{"status":"running","timestamp":"%s"}\\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$heartbeat"
@@ -476,6 +486,7 @@ public final class DockerWorkspaceJobManager: WorkspaceJobManaging {
           wait "$timeout_pid" 2>/dev/null || true
         fi
         terminate_command_group 1
+        rm -f "$pidfile"
         kill "$heartbeat_pid" 2>/dev/null || true
         wait "$heartbeat_pid" 2>/dev/null || true
         status=failed
