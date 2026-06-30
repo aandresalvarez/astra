@@ -411,11 +411,27 @@ enum BrowserSensitiveInputRedactionPolicy {
         if let percentDecoded = trimmed.removingPercentEncoding {
             variants.append(cssUnescaped(percentDecoded))
         }
+        for variant in variants {
+            appendPercentEncodedVariants(for: variant, to: &variants)
+        }
         variants.append(contentsOf: variants.map(compactedSensitiveComparisonValue))
         var seen: Set<String> = []
         return variants
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
             .filter { !$0.isEmpty && seen.insert($0).inserted }
+    }
+
+    private static func appendPercentEncodedVariants(for value: String, to variants: inout [String]) {
+        let encoded = percentEncodedSensitiveComparisonValue(value)
+        guard encoded != value else { return }
+        variants.append(encoded)
+        variants.append(encoded.replacingOccurrences(of: "%20", with: "+"))
+    }
+
+    private static func percentEncodedSensitiveComparisonValue(_ value: String) -> String {
+        var allowed = CharacterSet.alphanumerics
+        allowed.insert(charactersIn: "-._~")
+        return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
     }
 
     private static func shouldRedactFreeText(for value: String) -> Bool {

@@ -108,6 +108,38 @@ struct BrowserPageSnapshotServiceTests {
         #expect(!compacted.contains("MRN-424242"))
     }
 
+    @Test("snapshot output redacts encoded sensitive values from text")
+    func snapshotOutputRedactsEncodedSensitiveValuesFromText() throws {
+        let compacted = try BrowserPageSnapshotService.compactSnapshot(
+            json: """
+            {
+              "ok": true,
+              "url": "https://example.com/login",
+              "title": "Login",
+              "text": "Preview echoed correct%20horse outside the password field.",
+              "controls": [
+                {
+                  "selector": "#password",
+                  "tag": "input",
+                  "role": "textbox",
+                  "type": "password",
+                  "label": "Password",
+                  "value": "correct horse"
+                }
+              ]
+            }
+            """,
+            mode: .full,
+            query: nil,
+            limit: nil
+        )
+        let object = try jsonObject(from: compacted)
+
+        #expect(object["text"] as? String == "Preview echoed [redacted-sensitive-input] outside the password field.")
+        #expect(!compacted.contains("correct%20horse"))
+        #expect(!compacted.contains("correct horse"))
+    }
+
     @Test("snapshot output still redacts metadata when sensitive value is already redacted")
     func snapshotOutputStillRedactsMetadataWhenSensitiveValueIsAlreadyRedacted() throws {
         let compacted = try BrowserPageSnapshotService.compactSnapshot(
@@ -451,6 +483,17 @@ struct BrowserPageSnapshotServiceTests {
         #expect(script.contains("sensitiveMetadataCandidate(raw) ? redactedInputValue : raw"))
         #expect(!script.contains("&& (/[0-9]/.test(text) || text.includes(\"-\") || text.includes(\"_\") || text.includes(\"%\") || value.length > 20)"))
         #expect(!script.contains("redactSensitiveResultTarget(result, el, next);\n          result.cleared = clear;"))
+    }
+
+    @Test("snapshot script redacts visible text from raw sensitive values before returning")
+    func snapshotScriptRedactsVisibleTextFromRawSensitiveValuesBeforeReturning() {
+        let script = BrowserAutomationScripts.snapshotScript
+
+        #expect(script.contains("const rawSensitiveValues = []"))
+        #expect(script.contains("rawSensitiveValues.push(rawValue)"))
+        #expect(script.contains("const snapshotSensitiveValues = rawSensitiveValues.concat"))
+        #expect(script.contains("text: redactedVisibleText(visibleText(), snapshotSensitiveValues)"))
+        #expect(script.contains("encodeURIComponent"))
     }
 
     private var snapshotJSON: String {

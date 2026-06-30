@@ -511,6 +511,55 @@ enum BrowserAutomationScripts {
       const cssUnescaped = (value) => String(value || "")
         .replace(/\\\\([0-9a-fA-F]{1,6})\\s?/g, (_, hex) => String.fromCodePoint(parseInt(hex, 16)))
         .replace(/\\\\(.)/g, "$1");
+      const escapedRegex = (value) => String(value || "").replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&");
+      const compactedSensitiveComparisonValue = (value) => {
+        const compacted = String(value || "").replace(/[^a-zA-Z0-9]/g, "");
+        return /\\d/.test(value) || compacted.length > 20 ? compacted : "";
+      };
+      const percentEncodedVariants = (value) => {
+        const text = String(value || "");
+        if (!text) return [];
+        try {
+          const encoded = encodeURIComponent(text);
+          return encoded === text ? [] : [encoded, encoded.replace(/%20/g, "+")];
+        } catch (_) {
+          return [];
+        }
+      };
+      const sensitiveTextCandidates = (value) => {
+        const trimmed = String(value || "").replace(/\\s+/g, " ").trim();
+        if (!trimmed) return [];
+        const variants = [trimmed];
+        try {
+          const decoded = decodeURIComponent(trimmed);
+          variants.push(decoded);
+        } catch (_) {}
+        variants.push(cssUnescaped(trimmed));
+        try {
+          variants.push(cssUnescaped(decodeURIComponent(trimmed)));
+        } catch (_) {}
+        const encodedVariants = variants.flatMap(percentEncodedVariants);
+        variants.push(...encodedVariants);
+        variants.push(...variants.map(compactedSensitiveComparisonValue));
+        const seen = new Set();
+        return variants
+          .map((candidate) => String(candidate || "").replace(/\\s+/g, " ").trim())
+          .filter((candidate) => candidate && !seen.has(candidate.toLowerCase()) && seen.add(candidate.toLowerCase()));
+      };
+      const shouldRedactVisibleTextValue = (value) => sensitiveTextCandidates(value).some((candidate) => {
+        const digitCount = (candidate.match(/\\d/g) || []).length;
+        return candidate.length >= 4 || digitCount >= 6;
+      });
+      const redactedVisibleText = (text, sensitiveValues) => {
+        let redacted = String(text || "");
+        for (const value of sensitiveValues) {
+          if (!shouldRedactVisibleTextValue(value)) continue;
+          for (const candidate of sensitiveTextCandidates(value).sort((a, b) => b.length - a.length)) {
+            redacted = redacted.replace(new RegExp(escapedRegex(candidate), "gi"), redactedInputValue);
+          }
+        }
+        return redacted;
+      };
       const metadataValueForSnapshot = (el, rawValue, value) => {
         const metadata = String(value || "");
         const sensitiveValue = String(rawValue || "").replace(/\\s+/g, " ").trim();
@@ -598,6 +647,7 @@ enum BrowserAutomationScripts {
         if (av.x !== bv.x) return av.x - bv.x;
         return bv.area - av.area;
       };
+      const rawSensitiveValues = [];
       const controls = allControls()
         .filter((entry) => visible(entry.el))
         .map((entry) => Object.assign(entry, { viewportInfo: viewportInfoFor(entry.el) }))
@@ -606,6 +656,7 @@ enum BrowserAutomationScripts {
         .map((entry) => {
           const el = entry.el;
           const rawValue = editableValueFor(el);
+          if (rawValue && isSensitiveValueControl(el)) rawSensitiveValues.push(rawValue);
           return ({
           selector: selectorFor(el),
           tag: el.tagName.toLowerCase(),
@@ -627,6 +678,8 @@ enum BrowserAutomationScripts {
         });
         });
       const active = document.activeElement && document.activeElement !== document.body ? document.activeElement : null;
+      const activeRawValue = active ? editableValueFor(active) : "";
+      const snapshotSensitiveValues = rawSensitiveValues.concat(activeRawValue && isSensitiveValueControl(active) ? [activeRawValue] : []);
       return JSON.stringify({
         ok: true,
         url: location.href,
@@ -647,7 +700,7 @@ enum BrowserAutomationScripts {
           value: valueForSnapshot(active),
           bounds: boundsFor(active)
         } : null,
-        text: visibleText(),
+        text: redactedVisibleText(visibleText(), snapshotSensitiveValues),
         controls
       });
     })()
@@ -793,7 +846,9 @@ enum BrowserAutomationScripts {
           ];
           const paymentResultTerms = [
             "credit card", "card number", "cardholder", "card holder",
-            "name on card", "cvv", "cvc", "payment", "billing"
+            "name on card", "cc-name", "cc-given-name", "cc-additional-name",
+            "cc-family-name", "cc-number", "cc-exp", "cc-exp-month",
+            "cc-exp-year", "cc-csc", "cc-type", "cvv", "cvc", "payment", "billing"
           ];
           const sensitiveAutocompleteTerms = [
             "current-password", "new-password", "one-time-code",
