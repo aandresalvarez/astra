@@ -732,7 +732,7 @@ struct WorkspaceToolSupportTests {
         #expect(logLines.contains("exec -d --workdir /workspace astra-test-job sh -c"))
         #expect(logLines.contains("/workspace/jobs/\(job.jobID)"))
         #expect(logLines.contains("timeout_seconds=7200"))
-        #expect(logLines.contains("for candidate in /usr/bin/setsid /bin/setsid; do"))
+        #expect(logLines.contains("for candidate in /usr/bin/setsid /bin/setsid /usr/local/bin/setsid /usr/sbin/setsid /sbin/setsid; do"))
         #expect(logLines.contains("if [ -z \"$setsid_bin\" ]; then"))
         #expect(logLines.contains(#""exitCode":127"#))
         #expect(logLines.contains("process group isolation unavailable"))
@@ -741,8 +741,8 @@ struct WorkspaceToolSupportTests {
         #expect(logLines.contains("kill -TERM -\"$command_pid\" 2>/dev/null || true"))
         #expect(logLines.contains("kill -KILL -\"$command_pid\" 2>/dev/null || true"))
         #expect(logLines.contains("safe_pid \"$command_pid\" || return 0"))
-        #expect(logLines.contains("kill -TERM \"$command_pid\" 2>/dev/null || true"))
-        #expect(logLines.contains("kill -KILL \"$command_pid\" 2>/dev/null || true"))
+        #expect(!logLines.contains("kill -TERM \"$command_pid\" 2>/dev/null || true"))
+        #expect(!logLines.contains("kill -KILL \"$command_pid\" 2>/dev/null || true"))
         #expect(logLines.contains("status=timed_out; code=124"))
 
         try #"{"status":"succeeded","exitCode":0,"completedAt":"2026-06-24T12:00:00Z"}"#
@@ -808,11 +808,11 @@ struct WorkspaceToolSupportTests {
         #expect(logLines.contains("''|*[!0-9]*) return 1"))
         #expect(logLines.contains("[ \"$1\" -gt 1 ] 2>/dev/null"))
         #expect(logLines.contains("safe_pid \"$target_pid\" || return 0"))
-        #expect(logLines.contains("kill -0 -\"$command_pid\" 2>/dev/null"))
-        #expect(logLines.contains("kill -TERM -\"$command_pid\" 2>/dev/null || true"))
-        #expect(logLines.contains("kill -KILL -\"$command_pid\" 2>/dev/null || true"))
-        #expect(logLines.contains("kill -TERM \"$target_pid\" 2>/dev/null || true"))
-        #expect(logLines.contains("kill -KILL \"$target_pid\" 2>/dev/null || true"))
+        #expect(logLines.contains("kill -0 -\"$target_pid\" 2>/dev/null"))
+        #expect(logLines.contains("kill -TERM -\"$target_pid\" 2>/dev/null || true"))
+        #expect(logLines.contains("kill -KILL -\"$target_pid\" 2>/dev/null || true"))
+        #expect(!logLines.contains("kill -TERM \"$target_pid\" 2>/dev/null || true"))
+        #expect(!logLines.contains("kill -KILL \"$target_pid\" 2>/dev/null || true"))
     }
 
     @Test("Docker workspace job manager maps host workspace path before persisting command")

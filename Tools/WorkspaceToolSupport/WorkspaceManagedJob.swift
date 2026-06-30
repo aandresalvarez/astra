@@ -372,10 +372,6 @@ public final class DockerWorkspaceJobManager: WorkspaceJobManaging {
                     kill -TERM -"$target_pid" 2>/dev/null || true
                     sleep 5
                     kill -KILL -"$target_pid" 2>/dev/null || true
-                  elif kill -0 "$target_pid" 2>/dev/null; then
-                    kill -TERM "$target_pid" 2>/dev/null || true
-                    sleep 5
-                    kill -KILL "$target_pid" 2>/dev/null || true
                   fi
                 }
                 if [ -r "$pidfile" ]; then
@@ -423,7 +419,7 @@ public final class DockerWorkspaceJobManager: WorkspaceJobManaging {
         mkdir -p "$job_dir"
         rm -f "$timeout_marker"
         setsid_bin=""
-        for candidate in /usr/bin/setsid /bin/setsid; do
+        for candidate in /usr/bin/setsid /bin/setsid /usr/local/bin/setsid /usr/sbin/setsid /sbin/setsid; do
           if [ -x "$candidate" ]; then
             setsid_bin="$candidate"
             break
@@ -460,10 +456,6 @@ public final class DockerWorkspaceJobManager: WorkspaceJobManaging {
             kill -TERM -"$command_pid" 2>/dev/null || true
             sleep "$grace_seconds"
             kill -KILL -"$command_pid" 2>/dev/null || true
-          elif kill -0 "$command_pid" 2>/dev/null; then
-            kill -TERM "$command_pid" 2>/dev/null || true
-            sleep "$grace_seconds"
-            kill -KILL "$command_pid" 2>/dev/null || true
           fi
         }
         timeout_pid=""
