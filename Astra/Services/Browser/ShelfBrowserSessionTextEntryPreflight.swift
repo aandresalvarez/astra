@@ -78,7 +78,7 @@ extension ShelfBrowserSession {
         return result
     }
 
-    func blockedReplacementTextEntryResult(find: String, selector: String) async throws -> [String: Any]? {
+    func blockedReplacementTextEntryResult(find: String, selector: String, all: Bool) async throws -> [String: Any]? {
         guard !selector.isEmpty else {
             return [
                 "ok": false,
@@ -89,7 +89,7 @@ extension ShelfBrowserSession {
             ]
         }
 
-        let targetInfo = try await replacementTextEntryTargets(selector: selector, find: find)
+        let targetInfo = try await replacementTextEntryTargets(selector: selector, find: find, all: all)
         let ok = (targetInfo["ok"] as? Bool) ?? (targetInfo["ok"] as? NSNumber)?.boolValue ?? false
         guard ok else { return targetInfo }
 
@@ -117,14 +117,14 @@ extension ShelfBrowserSession {
         return nil
     }
 
-    func replacementTextEntryTargets(selector: String, find: String) async throws -> [String: Any] {
+    func replacementTextEntryTargets(selector: String, find: String, all: Bool) async throws -> [String: Any] {
         let json: String
         if isUsingControlledBrowser {
-            json = try await controlledBrowser.replaceTextTargetsInfo(selector: selector, find: find)
+            json = try await controlledBrowser.replaceTextTargetsInfo(selector: selector, find: find, all: all)
             syncDisplayedStateForEngine()
             publishBridgeState()
         } else {
-            json = try await evaluateJavaScriptString(BrowserAutomationScripts.replaceTextTargetsInfoScript(selector: selector, find: find))
+            json = try await evaluateJavaScriptString(BrowserAutomationScripts.replaceTextTargetsInfoScript(selector: selector, find: find, all: all))
         }
         return try Self.jsonObject(from: json)
     }

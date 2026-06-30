@@ -858,11 +858,12 @@ enum BrowserAutomationScripts {
         """
     }
 
-    static func replaceTextTargetsInfoScript(selector: String, find: String) -> String {
+    static func replaceTextTargetsInfoScript(selector: String, find: String, all: Bool) -> String {
         """
         (() => {
           const selector = \(jsonLiteral(selector));
           const find = \(jsonLiteral(find));
+          const replaceAll = \(all ? "true" : "false");
           const visible = (el) => {
             const style = window.getComputedStyle(el);
             const rect = el.getBoundingClientRect();
@@ -923,7 +924,8 @@ enum BrowserAutomationScripts {
             return JSON.stringify({ ok: false, error: "invalid_selector", selector });
           }
           const mutationTargets = candidates.filter(replaceWouldMutate);
-          const targets = mutationTargets.map((el) => ({
+          const scopedMutationTargets = replaceAll ? mutationTargets : mutationTargets.slice(0, 1);
+          const targets = scopedMutationTargets.map((el) => ({
             ok: true,
             selector: selectorFor(el),
             requestedSelector: selector,

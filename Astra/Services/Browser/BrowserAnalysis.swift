@@ -629,8 +629,8 @@ enum BrowserControlResolver {
         liveControl: BrowserControl,
         liveRef: BrowserControlRef
     ) -> Double {
-        let cachedName = normalized(cachedRef.control.name.isEmpty ? cachedRef.control.label : cachedRef.control.name)
-        let liveName = normalized(liveRef.control.name.isEmpty ? liveRef.control.label : liveRef.control.name)
+        let cachedName = normalized(cachedRef.control.label.isEmpty ? cachedRef.control.name : cachedRef.control.label)
+        let liveName = normalized(liveRef.control.label.isEmpty ? liveRef.control.name : liveRef.control.label)
         let cachedRole = normalized(cachedRef.control.role)
         let liveRole = normalized(liveRef.control.role)
 

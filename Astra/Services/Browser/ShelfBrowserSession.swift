@@ -3501,7 +3501,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
 
     private func replaceText(find: String, replacement: String, selector: String?, all: Bool) async throws -> String {
         let resolvedSelector = ShelfBrowserCommandNormalization.normalized(selector)
-        if let resolvedSelector, let blocked = try await blockedReplacementTextEntryResult(find: find, selector: resolvedSelector) {
+        if let resolvedSelector, let blocked = try await blockedReplacementTextEntryResult(find: find, selector: resolvedSelector, all: all) {
             return try Self.jsonString(blocked)
         }
         if isUsingControlledBrowser {

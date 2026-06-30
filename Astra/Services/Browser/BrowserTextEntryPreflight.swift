@@ -13,11 +13,9 @@ enum BrowserSensitiveControlClassifier {
         placeholder: String,
         testID: String,
         href: String,
+        framePath: String = "",
         frameFocusUninspectable: Bool
     ) -> BrowserRisk {
-        if frameFocusUninspectable {
-            return .credentialInput
-        }
         let text = [
             selector,
             requestedSelector,
@@ -29,7 +27,8 @@ enum BrowserSensitiveControlClassifier {
             autocomplete,
             placeholder,
             testID,
-            href
+            href,
+            framePath
         ].joined(separator: " ").lowercased()
 
         if type.lowercased() == "password"
@@ -67,6 +66,7 @@ enum BrowserSensitiveControlClassifier {
             placeholder: string(targetInfo["placeholder"]),
             testID: string(targetInfo["testID"]),
             href: string(targetInfo["href"]),
+            framePath: framePathString(targetInfo["framePath"]),
             frameFocusUninspectable: bool(targetInfo["frameFocusUninspectable"])
         )
     }
@@ -86,6 +86,16 @@ enum BrowserSensitiveControlClassifier {
         if let number = value as? NSNumber { return number.boolValue }
         if let string = value as? String { return ["true", "1", "yes"].contains(string.lowercased()) }
         return false
+    }
+
+    private static func framePathString(_ value: Any?) -> String {
+        if let strings = value as? [String] {
+            return strings.joined(separator: " ")
+        }
+        if let values = value as? [Any] {
+            return values.map { string($0) }.joined(separator: " ")
+        }
+        return string(value)
     }
 }
 

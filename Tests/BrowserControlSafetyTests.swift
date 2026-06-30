@@ -112,6 +112,38 @@ struct BrowserControlSafetyTests {
         #expect(nameBlock["error"] as? String == "credential_input_blocked")
     }
 
+    @Test("Uninspectable focused frames block only when frame metadata is sensitive")
+    func uninspectableFocusedFramesBlockOnlyWhenFrameMetadataIsSensitive() throws {
+        #expect(BrowserTextEntryPreflight.blockResponse(
+            action: BrowserActionKind.insertText.rawValue,
+            targetInfo: [
+                "ok": false,
+                "error": "focused_frame_uninspectable",
+                "selector": "iframe",
+                "label": "Comments editor",
+                "role": "",
+                "tag": "iframe",
+                "framePath": ["https://docs.example.com/editor"],
+                "frameFocusUninspectable": true
+            ]
+        ) == nil)
+
+        let passwordFrameBlock = try #require(BrowserTextEntryPreflight.blockResponse(
+            action: BrowserActionKind.insertText.rawValue,
+            targetInfo: [
+                "ok": false,
+                "error": "focused_frame_uninspectable",
+                "selector": "iframe",
+                "label": "Password challenge",
+                "role": "",
+                "tag": "iframe",
+                "framePath": ["https://auth.example.com/current-password"],
+                "frameFocusUninspectable": true
+            ]
+        ))
+        #expect(passwordFrameBlock["error"] as? String == "credential_input_blocked")
+    }
+
     @Test("Text entry preflight redacts sensitive target attachments")
     func textEntryPreflightRedactsSensitiveTargetAttachments() throws {
         let block = try #require(BrowserTextEntryPreflight.blockResponse(
@@ -213,11 +245,13 @@ struct BrowserControlSafetyTests {
         #expect(insertScript.contains("href: astraSensitiveURL(metadata.href)"))
         #expect(insertScript.contains("url: astraSensitiveURL(location.href)"))
 
-        let replaceTargetsScript = BrowserAutomationScripts.replaceTextTargetsInfoScript(selector: "input", find: "old")
+        let replaceTargetsScript = BrowserAutomationScripts.replaceTextTargetsInfoScript(selector: "input", find: "old", all: false)
         #expect(replaceTargetsScript.contains("querySelectorAll(selector)"))
         #expect(replaceTargetsScript.contains("const find = \"old\""))
+        #expect(replaceTargetsScript.contains("const replaceAll = false"))
         #expect(replaceTargetsScript.contains("replaceWouldMutate"))
         #expect(replaceTargetsScript.contains("mutationTargetCount"))
+        #expect(replaceTargetsScript.contains("const scopedMutationTargets = replaceAll ? mutationTargets : mutationTargets.slice(0, 1)"))
         #expect(replaceTargetsScript.contains("targets"))
         #expect(replaceTargetsScript.contains("name: nameFor(el)"))
 
