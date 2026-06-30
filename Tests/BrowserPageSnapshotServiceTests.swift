@@ -181,6 +181,37 @@ struct BrowserPageSnapshotServiceTests {
         #expect(!compacted.contains("correct horse"))
     }
 
+    @Test("snapshot output redacts sensitive values from title")
+    func snapshotOutputRedactsSensitiveValuesFromTitle() throws {
+        let compacted = try BrowserPageSnapshotService.compactSnapshot(
+            json: """
+            {
+              "ok": true,
+              "url": "https://example.com/patient",
+              "title": "Patient MRN-424242",
+              "text": "Patient chart",
+              "controls": [
+                {
+                  "selector": "#mrn",
+                  "tag": "input",
+                  "role": "textbox",
+                  "type": "text",
+                  "label": "MRN",
+                  "value": "MRN-424242"
+                }
+              ]
+            }
+            """,
+            mode: .full,
+            query: nil,
+            limit: nil
+        )
+        let object = try jsonObject(from: compacted)
+
+        #expect(object["title"] as? String == "Patient [redacted-sensitive-input]")
+        #expect(!compacted.contains("MRN-424242"))
+    }
+
     @Test("snapshot output still redacts metadata when sensitive value is already redacted")
     func snapshotOutputStillRedactsMetadataWhenSensitiveValueIsAlreadyRedacted() throws {
         let compacted = try BrowserPageSnapshotService.compactSnapshot(
@@ -278,6 +309,41 @@ struct BrowserPageSnapshotServiceTests {
         ])
         #expect(!compacted.contains(cardholder))
         #expect(!compacted.contains(cardNumber))
+    }
+
+    @Test("snapshot output redacts birthday autocomplete values")
+    func snapshotOutputRedactsBirthdayAutocompleteValues() throws {
+        let compacted = try BrowserPageSnapshotService.compactSnapshot(
+            json: """
+            {
+              "ok": true,
+              "url": "https://example.com/profile",
+              "title": "Profile",
+              "text": "Birthday preview 2001-02-03",
+              "controls": [
+                {
+                  "selector": "#field",
+                  "tag": "input",
+                  "role": "textbox",
+                  "type": "text",
+                  "label": "Value",
+                  "autocomplete": "bday",
+                  "value": "2001-02-03"
+                }
+              ]
+            }
+            """,
+            mode: .full,
+            query: nil,
+            limit: nil
+        )
+        let object = try jsonObject(from: compacted)
+        let controls = try #require(object["controls"] as? [[String: Any]])
+        let control = try #require(controls.first)
+
+        #expect(control["value"] as? String == "[redacted-sensitive-input]")
+        #expect(object["text"] as? String == "Birthday preview [redacted-sensitive-input]")
+        #expect(!compacted.contains("2001-02-03"))
     }
 
     @Test("snapshot output redacts empty sensitive metadata")
@@ -531,10 +597,15 @@ struct BrowserPageSnapshotServiceTests {
         let script = BrowserAutomationScripts.snapshotScript
 
         #expect(script.contains("const rawSensitiveValues = []"))
+        #expect(script.contains("const visibleControls = allControls()"))
+        #expect(script.contains("for (const entry of visibleControls)"))
         #expect(script.contains("rawSensitiveValues.push(rawValue)"))
         #expect(script.contains("const snapshotSensitiveValues = rawSensitiveValues.concat"))
         #expect(script.contains("text: redactedVisibleText(visibleText(), snapshotSensitiveValues)"))
         #expect(script.contains("encodeURIComponent"))
+        #expect(script.contains("const formattedDigitPattern = (value) =>"))
+        #expect(script.contains("redacted = redacted.replace(pattern,"))
+        #expect(script.contains("\"bday\""))
     }
 
     private var snapshotJSON: String {

@@ -170,6 +170,39 @@ struct BrowserAnalysisTests {
         #expect(String(describing: response).contains(secret) == false)
     }
 
+    @Test("Analysis response redacts sensitive action outcome URLs")
+    func analysisResponseRedactsSensitiveActionOutcomeURLs() throws {
+        let href = "https://example.com/reset?token=abc123"
+        let analysis = BrowserAnalysisBuilder.build(
+            snapshot: Self.sampleSnapshot(controls: [
+                Self.control(
+                    selector: "a[href*='token']",
+                    tag: "a",
+                    role: "link",
+                    label: "Reset token",
+                    href: href
+                )
+            ]),
+            backend: "controlled Chromium profile",
+            engine: "controlled"
+        )
+
+        let response = analysis.responseObject(query: nil, full: true, limit: nil, version: .v2)
+        let controls = try #require(response["controls"] as? [[String: Any]])
+        let control = try #require(controls.first)
+        let controlOutcomes = try #require(control["actionOutcomes"] as? [[String: Any]])
+        let controlOutcome = try #require(controlOutcomes.first)
+        let refs = try #require(response["controlRefs"] as? [[String: Any]])
+        let ref = try #require(refs.first)
+        let refOutcomes = try #require(ref["actionOutcomes"] as? [[String: Any]])
+        let refOutcome = try #require(refOutcomes.first)
+
+        #expect(control["href"] as? String == "[redacted-sensitive-input]")
+        #expect(controlOutcome["href"] as? String == "[redacted-sensitive-input]")
+        #expect(refOutcome["href"] as? String == "[redacted-sensitive-input]")
+        #expect(String(describing: response).contains(href) == false)
+    }
+
     @Test("Analysis response redacts empty sensitive metadata and accessibility")
     func analysisResponseRedactsEmptySensitiveMetadataAndAccessibility() throws {
         let analysis = BrowserAnalysisBuilder.build(

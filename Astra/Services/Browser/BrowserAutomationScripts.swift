@@ -466,6 +466,7 @@ enum BrowserAutomationScripts {
       ];
       const sensitiveAutocompleteTerms = [
         "current-password", "new-password", "one-time-code",
+        "bday", "bday-day", "bday-month", "bday-year",
         "cc-name", "cc-given-name", "cc-additional-name", "cc-family-name",
         "cc-number", "cc-exp", "cc-exp-month", "cc-exp-year",
         "cc-csc", "cc-type"
@@ -550,12 +551,23 @@ enum BrowserAutomationScripts {
         const digitCount = (candidate.match(/\\d/g) || []).length;
         return candidate.length >= 4 || digitCount >= 6;
       });
+      const formattedDigitPattern = (value) => {
+        const raw = String(value || "");
+        const digits = raw.replace(/\\D/g, "");
+        if (digits.length < 6 || /[^0-9\\s-]/.test(raw)) return null;
+        const body = digits.split("").map(escapedRegex).join("[\\\\s-]*");
+        return new RegExp("(^|\\\\D)(" + body + ")(?=\\\\D|$)", "g");
+      };
       const redactedVisibleText = (text, sensitiveValues) => {
         let redacted = String(text || "");
         for (const value of sensitiveValues) {
           if (!shouldRedactVisibleTextValue(value)) continue;
           for (const candidate of sensitiveTextCandidates(value).sort((a, b) => b.length - a.length)) {
             redacted = redacted.replace(new RegExp(escapedRegex(candidate), "gi"), redactedInputValue);
+          }
+          const pattern = formattedDigitPattern(value);
+          if (pattern) {
+            redacted = redacted.replace(pattern, (_, prefix) => prefix + redactedInputValue);
           }
         }
         return redacted;
@@ -648,15 +660,19 @@ enum BrowserAutomationScripts {
         return bv.area - av.area;
       };
       const rawSensitiveValues = [];
-      const controls = allControls()
+      const visibleControls = allControls()
         .filter((entry) => visible(entry.el))
-        .map((entry) => Object.assign(entry, { viewportInfo: viewportInfoFor(entry.el) }))
+        .map((entry) => Object.assign(entry, { viewportInfo: viewportInfoFor(entry.el) }));
+      for (const entry of visibleControls) {
+        const rawValue = editableValueFor(entry.el);
+        if (rawValue && isSensitiveValueControl(entry.el)) rawSensitiveValues.push(rawValue);
+      }
+      const controls = visibleControls
         .sort(compareViewportOrder)
         .slice(0, 300)
         .map((entry) => {
           const el = entry.el;
           const rawValue = editableValueFor(el);
-          if (rawValue && isSensitiveValueControl(el)) rawSensitiveValues.push(rawValue);
           return ({
           selector: selectorFor(el),
           tag: el.tagName.toLowerCase(),
@@ -852,6 +868,7 @@ enum BrowserAutomationScripts {
           ];
           const sensitiveAutocompleteTerms = [
             "current-password", "new-password", "one-time-code",
+            "bday", "bday-day", "bday-month", "bday-year",
             "cc-name", "cc-given-name", "cc-additional-name", "cc-family-name",
             "cc-number", "cc-exp", "cc-exp-month", "cc-exp-year",
             "cc-csc", "cc-type"

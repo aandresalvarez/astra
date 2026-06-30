@@ -12,6 +12,9 @@ enum BrowserSensitiveInputRedactionPolicy {
         if containsAny(lowerAutocomplete, ["one-time-code"]) {
             return .mfaInput
         }
+        if containsAny(lowerAutocomplete, privacyAutocompleteTokens) {
+            return .privacySensitive
+        }
         if containsAny(lowerAutocomplete, paymentAutocompleteTokens) {
             return .payment
         }
@@ -46,6 +49,13 @@ enum BrowserSensitiveInputRedactionPolicy {
             let nextText = redactedText(text, sensitiveValues: sensitiveValues)
             if nextText != text {
                 redacted["text"] = nextText
+                didRedact = true
+            }
+        }
+        if let title = object["title"] as? String {
+            let nextTitle = redactedText(title, sensitiveValues: sensitiveValues)
+            if nextTitle != title {
+                redacted["title"] = nextTitle
                 didRedact = true
             }
         }
@@ -249,6 +259,10 @@ enum BrowserSensitiveInputRedactionPolicy {
         "current-password",
         "new-password",
         "one-time-code",
+        "bday",
+        "bday-day",
+        "bday-month",
+        "bday-year",
         "cc-name",
         "cc-given-name",
         "cc-additional-name",
@@ -299,6 +313,13 @@ enum BrowserSensitiveInputRedactionPolicy {
         "patient id",
         "patient identifier",
         "health record"
+    ]
+
+    private static let privacyAutocompleteTokens = [
+        "bday",
+        "bday-day",
+        "bday-month",
+        "bday-year"
     ]
 
     private static let paymentFieldTerms = [

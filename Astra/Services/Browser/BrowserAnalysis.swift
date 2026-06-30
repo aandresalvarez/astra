@@ -333,6 +333,13 @@ struct BrowserControl {
             : valueRedacted
     }
 
+    var redactedActionOutcomes: [[String: Any]] {
+        guard hasSensitiveValue else { return actionOutcomes }
+        return actionOutcomes.map { outcome in
+            redactedProviderVisibleValue(outcome) as? [String: Any] ?? outcome
+        }
+    }
+
     func supports(_ action: BrowserActionKind) -> Bool {
         validActions.contains(action)
     }
@@ -360,7 +367,7 @@ struct BrowserControl {
             "bounds": bounds,
             "validActions": validActions.map(\.rawValue),
             "primaryAction": primaryAction?.rawValue ?? "",
-            "actionOutcomes": actionOutcomes,
+            "actionOutcomes": redactedActionOutcomes,
             "risk": risk.rawValue,
             "requiresUserConfirmation": requiresUserConfirmation,
             "confidence": confidence
@@ -381,15 +388,19 @@ struct BrowserControl {
     }
 
     private func redactedEvidence(_ value: Any) -> Any {
+        redactedProviderVisibleValue(value)
+    }
+
+    private func redactedProviderVisibleValue(_ value: Any) -> Any {
         guard hasSensitiveValue else { return value }
         if let string = value as? String {
             return redactedDisplayText(string)
         }
         if let object = value as? [String: Any] {
-            return object.mapValues(redactedEvidence)
+            return object.mapValues(redactedProviderVisibleValue)
         }
         if let array = value as? [Any] {
-            return array.map(redactedEvidence)
+            return array.map(redactedProviderVisibleValue)
         }
         return value
     }
@@ -449,7 +460,7 @@ struct BrowserControlRef {
             ],
             "validActions": control.validActions.map(\.rawValue),
             "primaryAction": control.primaryAction?.rawValue ?? "",
-            "actionOutcomes": control.actionOutcomes,
+            "actionOutcomes": control.redactedActionOutcomes,
             "risk": control.risk.rawValue,
             "requiresUserConfirmation": control.requiresUserConfirmation,
             "confidence": control.confidence,
