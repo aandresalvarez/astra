@@ -59,6 +59,32 @@ struct WorkspaceAppManifestTests {
         })
     }
 
+    @Test("manifest validation treats default tabular query reads as BigQuery")
+    func validationTreatsDefaultTabularQueryReadsAsBigQuery() {
+        var manifest = Self.reconciliationManifest()
+        manifest.requirements[0] = WorkspaceAppRequirement(
+            id: "sourceWarehouse",
+            contract: "tabularQuery.read",
+            operations: ["describeTable", "runReadOnlyQuery"]
+        )
+        manifest.sources[0] = WorkspaceAppSource(
+            id: "latest_candidates",
+            requirementRef: "sourceWarehouse",
+            operation: "runReadOnlyQuery",
+            query: "SELECT * FROM clinical.enrollment_candidates LIMIT 100"
+        )
+
+        let report = WorkspaceAppManifestValidator.validate(manifest)
+
+        #expect(!report.isValid)
+        #expect(report.blockers.contains {
+            $0.path == "/sources/0/query" && $0.message.contains("must not embed SQL")
+        })
+        #expect(report.blockers.contains {
+            $0.path == "/sources/0/tableRef" && $0.message.contains("structured tableRef")
+        })
+    }
+
     @Test("manifest validation allows package tabular query providers without BigQuery table refs")
     func validationAllowsPackageTabularQueryProvidersWithoutBigQueryTableRefs() {
         var manifest = Self.reconciliationManifest()

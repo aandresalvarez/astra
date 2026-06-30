@@ -560,9 +560,10 @@ enum WorkspaceAppManifestValidator {
     }
 
     private static func isBigQueryRequirement(_ requirement: WorkspaceAppRequirement) -> Bool {
-        [requirement.providerHint, requirement.providerRequired]
+        let providers = [requirement.providerHint, requirement.providerRequired]
             .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
-            .contains("bigquery")
+            .filter { !$0.isEmpty }
+        return providers.isEmpty || providers.contains("bigquery")
     }
 
     private static func validateViews(
