@@ -137,11 +137,10 @@ public final class WorkspaceManagedJobStore {
     }
 
     public func create(command: String, timeoutSeconds: TimeInterval?, label: String?, progressProbe: String?, runtime: String) throws -> WorkspaceManagedJobRecord {
-        try validateJobRootForCreation()
         let jobID = makeJobID()
         let directory = jobDirectory(jobID: jobID)
         let layout = WorkspaceManagedJobFileLayout(directory: directory)
-        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+        try createTrustedDirectoryChain(to: directory)
         let commandURL = layout.command
         try ("#!/bin/sh\n" + command + "\n").write(to: commandURL, atomically: true, encoding: .utf8)
         try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: commandURL.path)
@@ -167,11 +166,10 @@ public final class WorkspaceManagedJobStore {
     }
 
     public func save(_ record: WorkspaceManagedJobRecord) throws {
-        try validateJobRootForCreation()
         let directory = jobDirectory(jobID: record.jobID)
         var trustedRecord = record
         applyTrustedFileLayout(to: &trustedRecord, jobID: safeJobID(record.jobID), directory: directory)
-        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+        try createTrustedDirectoryChain(to: directory)
         let data = try encoder.encode(trustedRecord)
         try data.write(to: WorkspaceManagedJobFileLayout(directory: directory).metadata, options: [.atomic])
     }
@@ -297,17 +295,94 @@ public final class WorkspaceManagedJobStore {
     }
 
     public func validateJobRootForCreation() throws {
-        let parent = rootURL.deletingLastPathComponent()
-        if fileManager.fileExists(atPath: parent.path),
-           !isTrustedDirectoryChain(from: parent, to: parent) {
-            throw trustedFileReadError(path: parent.path)
-        }
-        guard fileManager.fileExists(atPath: rootURL.path) else { return }
-        guard let rootStat = trustedDirectoryStat(at: rootURL),
-              isTrustedDirectoryChain(from: parent, to: rootURL),
-              rootStat.st_nlink >= 1 else {
+        try validateTrustedCreationPath(to: rootURL)
+        if fileManager.fileExists(atPath: rootURL.path),
+           trustedDirectoryStat(at: rootURL)?.st_nlink ?? 0 < 1 {
             throw trustedFileReadError(path: rootURL.path)
         }
+    }
+
+    private func createTrustedDirectoryChain(to directory: URL) throws {
+        let anchor = trustedCreationAnchor(for: directory)
+        try validateTrustedCreationPath(from: anchor, to: directory)
+
+        var current = anchor.standardizedFileURL
+        for component in relativePathComponents(from: anchor, to: directory) {
+            current.appendPathComponent(component, isDirectory: true)
+            if fileManager.fileExists(atPath: current.path) {
+                guard isTrustedDirectory(current) else {
+                    throw trustedFileReadError(path: current.path)
+                }
+                continue
+            }
+
+            try fileManager.createDirectory(at: current, withIntermediateDirectories: false)
+            guard isTrustedDirectory(current) else {
+                throw trustedFileReadError(path: current.path)
+            }
+        }
+    }
+
+    private func validateTrustedCreationPath(to directory: URL) throws {
+        try validateTrustedCreationPath(from: trustedCreationAnchor(for: directory), to: directory)
+    }
+
+    private func validateTrustedCreationPath(from anchor: URL, to directory: URL) throws {
+        guard isTrustedDirectory(anchor) else {
+            throw trustedFileReadError(path: anchor.path)
+        }
+
+        var current = anchor.standardizedFileURL
+        for component in relativePathComponents(from: anchor, to: directory) {
+            current.appendPathComponent(component, isDirectory: true)
+            guard fileManager.fileExists(atPath: current.path) else {
+                continue
+            }
+            guard isTrustedDirectory(current) else {
+                throw trustedFileReadError(path: current.path)
+            }
+        }
+    }
+
+    private func trustedCreationAnchor(for directory: URL) -> URL {
+        if let astraAnchor = astraTasksAnchor(for: directory) {
+            return astraAnchor
+        }
+
+        var current = directory.standardizedFileURL
+        while !fileManager.fileExists(atPath: current.path) {
+            let parent = current.deletingLastPathComponent()
+            guard parent.path != current.path else {
+                return current
+            }
+            current = parent
+        }
+        return current
+    }
+
+    private func astraTasksAnchor(for directory: URL) -> URL? {
+        let components = directory.standardizedFileURL.pathComponents
+        guard components.count > 2 else { return nil }
+
+        for index in components.indices.dropLast() where components[index] == ".astra" && components[index + 1] == "tasks" {
+            guard index > 0 else { return nil }
+            return URL(fileURLWithPath: NSString.path(withComponents: Array(components.prefix(index))), isDirectory: true)
+        }
+        return nil
+    }
+
+    private func relativePathComponents(from anchor: URL, to directory: URL) -> [String] {
+        let anchorPath = anchor.standardizedFileURL.path
+        let directoryPath = directory.standardizedFileURL.path
+        guard directoryPath != anchorPath,
+              directoryPath.hasPrefix(anchorPath + "/") else {
+            return []
+        }
+
+        let relativePath = String(directoryPath.dropFirst(anchorPath.count + 1))
+        return relativePath
+            .split(separator: "/")
+            .map(String.init)
     }
 
     private func isTrustedDirectory(_ url: URL) -> Bool {

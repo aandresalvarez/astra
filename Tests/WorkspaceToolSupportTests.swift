@@ -897,6 +897,37 @@ struct WorkspaceToolSupportTests {
         #expect(!FileManager.default.fileExists(atPath: log.path))
     }
 
+    @Test("Managed job creation rejects symlinked Astra ancestors")
+    func managedJobCreationRejectsSymlinkedAstraAncestors() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-workspace-job-ancestor-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let workspace = root.appendingPathComponent("repo", isDirectory: true)
+        try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
+        let outsideAstra = root.appendingPathComponent("outside-astra", isDirectory: true)
+        try FileManager.default.createDirectory(at: outsideAstra, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(
+            at: workspace.appendingPathComponent(".astra", isDirectory: true),
+            withDestinationURL: outsideAstra
+        )
+
+        let jobRoot = workspace.appendingPathComponent(".astra/tasks/task-ancestor/jobs", isDirectory: true)
+        let store = WorkspaceManagedJobStore(rootPath: jobRoot.path)
+
+        #expect(throws: (any Error).self) {
+            _ = try store.create(
+                command: "printf should-not-write",
+                timeoutSeconds: nil,
+                label: nil,
+                progressProbe: nil,
+                runtime: "codex"
+            )
+        }
+        #expect(!FileManager.default.fileExists(atPath: outsideAstra.appendingPathComponent("tasks").path))
+    }
+
     @Test("Docker workspace job manager maps host workspace path before persisting command")
     func dockerWorkspaceJobManagerMapsHostWorkspacePathBeforePersistingCommand() throws {
         let root = FileManager.default.temporaryDirectory
