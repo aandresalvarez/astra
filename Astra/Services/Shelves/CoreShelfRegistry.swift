@@ -88,7 +88,7 @@ enum CoreShelfRegistry {
         if let normalized = ShelfID(rawValue: value) {
             return normalized
         }
-        if value == "app-preview" {
+        if value == "app-preview" || value == "apppreview" {
             return .appPreview
         }
         return nil

@@ -62,7 +62,9 @@ struct ShelfRegistryTests {
             ("BROWSER", .browser),
             ("query", .query),
             ("app-preview", .appPreview),
-            ("appPreview", .appPreview)
+            ("appPreview", .appPreview),
+            ("AppPreview", .appPreview),
+            ("APPPREVIEW", .appPreview)
         ]
 
         for (stableID, shelfID) in expectations {
