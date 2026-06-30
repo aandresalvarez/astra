@@ -2267,25 +2267,38 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
     }
 
     private func extractCopilotUtilityText(from output: String) -> String {
-        var pieces: [String] = []
+        var textPieces: [String] = []
+        var failurePieces: [String] = []
+        var completionSummary: String?
+        var terminalSummary: String?
         for line in output.split(whereSeparator: \.isNewline).map(String.init) {
             for event in CopilotStreamEventParser.parseAgentEvents(line: line) {
                 switch event {
                 case .text(let text):
-                    pieces.append(text)
+                    textPieces.append(text)
                 case .completed(let summary):
-                    if let summary, !summary.isEmpty {
-                        pieces.append(summary)
+                    if let summary = CopilotUtilityOutputRendering.nonEmptyText(summary),
+                       CopilotUtilityOutputRendering.isFinalAssistantMessageLine(line) {
+                        completionSummary = summary
+                    } else if let summary = CopilotUtilityOutputRendering.nonEmptyText(summary) {
+                        terminalSummary = summary
                     }
                 case .failed(let message):
-                    pieces.append(message)
+                    if let message = CopilotUtilityOutputRendering.nonEmptyText(message) {
+                        failurePieces.append(message)
+                    }
                 default:
                     continue
                 }
             }
         }
-        let joined = pieces.joined()
-        return joined.isEmpty ? output : joined.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let completionSummary {
+            return completionSummary
+        }
+        if let joined = CopilotUtilityOutputRendering.nonEmptyText((textPieces + failurePieces).joined()) {
+            return joined
+        }
+        return terminalSummary ?? output
     }
 }
 
@@ -2294,6 +2307,8 @@ private final class CopilotUtilityStreamRunState: @unchecked Sendable {
     private var completed = false
     private var rawOutput = ""
     private var outputPieces: [String] = []
+    private var completionSummary: String?
+    private var terminalSummary: String?
     private var stderrOutput = ""
 
     func appendStdoutLineAndCompleteIfReady(_ line: String) -> AgentUtilityRunResult? {
@@ -2311,8 +2326,11 @@ private final class CopilotUtilityStreamRunState: @unchecked Sendable {
                 outputPieces.append(text)
             case .completed(let summary):
                 completedLine = true
-                if let summary, !summary.isEmpty {
-                    outputPieces.append(summary)
+                if let summary = CopilotUtilityOutputRendering.nonEmptyText(summary),
+                   CopilotUtilityOutputRendering.isFinalAssistantMessageLine(line) {
+                    completionSummary = summary
+                } else if let summary = CopilotUtilityOutputRendering.nonEmptyText(summary) {
+                    terminalSummary = summary
                 }
             default:
                 continue
@@ -2371,49 +2389,21 @@ private final class CopilotUtilityStreamRunState: @unchecked Sendable {
     }
 
     private func renderedOutputLocked() -> String {
+        if let completionSummary {
+            return completionSummary
+        }
         let parsed = outputPieces.joined().trimmingCharacters(in: .whitespacesAndNewlines)
         if !parsed.isEmpty {
             return parsed
+        }
+        if let terminalSummary {
+            return terminalSummary
         }
         return rawOutput.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private static func isTerminalLine(_ line: String) -> Bool {
-        let terminalTypes: Set<String> = [
-            "assistant.turn_end",
-            "session.shutdown",
-            "result",
-            "completed",
-            "complete"
-        ]
-        guard let object = jsonObject(from: line),
-              let type = eventType(in: object)?.lowercased() else {
-            return false
-        }
-        return terminalTypes.contains(type)
-    }
-
-    private static func eventType(in object: [String: Any]) -> String? {
-        for key in ["type", "event", "kind", "sessionUpdate", "name"] {
-            if let value = object[key] as? String {
-                return value
-            }
-        }
-        for key in ["data", "payload", "message"] {
-            if let nested = object[key] as? [String: Any],
-               let value = eventType(in: nested) {
-                return value
-            }
-        }
-        return nil
-    }
-
-    private static func jsonObject(from line: String) -> [String: Any]? {
-        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let data = trimmed.data(using: .utf8) else {
-            return nil
-        }
-        return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        CopilotUtilityOutputRendering.isTerminalLine(line)
     }
 }
 
