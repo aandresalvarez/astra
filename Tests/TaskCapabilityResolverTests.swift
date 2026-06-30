@@ -1501,7 +1501,9 @@ struct TaskCapabilityResolverTests {
 
         let roster = try #require(CapabilityRosterBuilder.roster(for: workspace))
         #expect(roster.contains("GitHub"))
-        #expect(roster.contains("`gh`"))
+        // GitHub capability now routes through the GitHub Agent skill (host-control MCP),
+        // not a direct `gh` Bash command, so the invocation hint reflects the skill path.
+        #expect(roster.contains("GitHub Agent"))
         // Awareness must instruct the agent to surface, not silently skip, gaps.
         #expect(roster.lowercased().contains("do not silently skip"))
     }
