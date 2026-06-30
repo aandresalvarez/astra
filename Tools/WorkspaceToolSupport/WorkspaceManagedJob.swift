@@ -440,6 +440,12 @@ public final class DockerWorkspaceJobManager: WorkspaceJobManaging {
                   fi
                   kill -"$signal" -"$group_pid" 2>/dev/null || true
                 }
+                signal_direct_pid() {
+                  signal="$1"
+                  target_pid="$2"
+                  safe_pid "$target_pid" || return 0
+                  kill -"$signal" "$target_pid" 2>/dev/null || true
+                }
                 terminate_pid_or_group() {
                   target_pid="$1"
                   safe_pid "$target_pid" || return 0
@@ -449,9 +455,9 @@ public final class DockerWorkspaceJobManager: WorkspaceJobManaging {
                       sleep 5
                       signal_process_group KILL "$target_pid"
                     elif kill -0 "$target_pid" 2>/dev/null; then
-                      kill -TERM "$target_pid" 2>/dev/null || true
+                      signal_direct_pid TERM "$target_pid"
                       sleep 5
-                      kill -KILL "$target_pid" 2>/dev/null || true
+                      signal_direct_pid KILL "$target_pid"
                     fi
                   elif pid_matches_managed_command "$target_pid"; then
                     if process_group_exists "$target_pid"; then
@@ -459,9 +465,15 @@ public final class DockerWorkspaceJobManager: WorkspaceJobManaging {
                       sleep 5
                       signal_process_group KILL "$target_pid"
                     elif kill -0 "$target_pid" 2>/dev/null; then
-                      kill -TERM "$target_pid" 2>/dev/null || true
+                      signal_direct_pid TERM "$target_pid"
                       sleep 5
-                      kill -KILL "$target_pid" 2>/dev/null || true
+                      signal_direct_pid KILL "$target_pid"
+                    fi
+                  elif [ ! -e "$pid_metadata" ] && kill -0 "$target_pid" 2>/dev/null; then
+                    signal_direct_pid TERM "$target_pid"
+                    sleep 5
+                    if kill -0 "$target_pid" 2>/dev/null; then
+                      signal_direct_pid KILL "$target_pid"
                     fi
                   fi
                 }
@@ -519,21 +531,12 @@ public final class DockerWorkspaceJobManager: WorkspaceJobManaging {
           fi
         done
         setsid_bin=""
-        if command -v setsid >/dev/null 2>&1; then
-          setsid_bin="$(command -v setsid)"
-          case "$setsid_bin" in
-            /*) [ -x "$setsid_bin" ] || setsid_bin="" ;;
-            *) setsid_bin="" ;;
-          esac
-        fi
-        if [ -z "$setsid_bin" ]; then
-          for candidate in /usr/bin/setsid /bin/setsid /usr/local/bin/setsid /usr/sbin/setsid /sbin/setsid; do
-            if [ -x "$candidate" ]; then
-              setsid_bin="$candidate"
-              break
-            fi
-          done
-        fi
+        for candidate in /usr/bin/setsid /bin/setsid /usr/sbin/setsid /sbin/setsid; do
+          if [ -x "$candidate" ]; then
+            setsid_bin="$candidate"
+            break
+          fi
+        done
         (
           while :; do
             printf '{"status":"running","timestamp":"%s"}\\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$heartbeat"
