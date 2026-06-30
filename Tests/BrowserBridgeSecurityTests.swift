@@ -159,6 +159,45 @@ struct BrowserBridgeSecurityTests {
         #expect(batch.snapshotLimit == 12)
     }
 
+    @Test("Bridge navigation policy rejects local file targets")
+    func bridgeNavigationPolicyRejectsLocalFileTargets() {
+        #expect(BrowserBridgeNavigationPolicy.normalizedProviderURL(from: "file:///etc/passwd") == nil)
+        #expect(BrowserBridgeNavigationPolicy.normalizedProviderURL(from: "/etc/passwd") == nil)
+        #expect(BrowserBridgeNavigationPolicy.normalizedProviderURL(from: "~/Library/Keychains/login.keychain-db") == nil)
+    }
+
+    @Test("Bridge navigation policy rejects malformed web targets without hosts")
+    func bridgeNavigationPolicyRejectsMalformedWebTargets() {
+        #expect(BrowserBridgeNavigationPolicy.normalizedProviderURL(from: "https:") == nil)
+        #expect(BrowserBridgeNavigationPolicy.normalizedProviderURL(from: "https:///missing-host") == nil)
+    }
+
+    @Test("Bridge navigation policy allows web targets")
+    func bridgeNavigationPolicyAllowsWebTargets() throws {
+        let explicit = try #require(BrowserBridgeNavigationPolicy.normalizedProviderURL(
+            from: "https://docs.google.com/document/d/example/edit"
+        ))
+        let hostname = try #require(BrowserBridgeNavigationPolicy.normalizedProviderURL(from: "outlook.office.com"))
+
+        #expect(explicit.absoluteString == "https://docs.google.com/document/d/example/edit")
+        #expect(hostname.absoluteString == "https://outlook.office.com")
+    }
+
+    @Test("Bridge open control navigation rejects unsafe hrefs before activation fallback")
+    func bridgeOpenControlNavigationRejectsUnsafeHrefsBeforeFallback() throws {
+        #expect(BrowserBridgeNavigationPolicy.openControlNavigation(forHref: "") == .fallbackToActivation)
+        #expect(BrowserBridgeNavigationPolicy.openControlNavigation(forHref: " \n\t ") == .fallbackToActivation)
+        #expect(BrowserBridgeNavigationPolicy.openControlNavigation(forHref: "file:///etc/passwd") == .reject)
+        #expect(BrowserBridgeNavigationPolicy.openControlNavigation(forHref: " file:///etc/passwd ") == .reject)
+
+        let decision = BrowserBridgeNavigationPolicy.openControlNavigation(forHref: "https://docs.google.com/document/d/example/edit")
+        guard case let .navigate(url) = decision else {
+            Issue.record("Expected web href to navigate, got \(decision)")
+            return
+        }
+        #expect(url.absoluteString == "https://docs.google.com/document/d/example/edit")
+    }
+
     @Test("Bridge command router recognizes every published action")
     func bridgeCommandRouterRecognizesEveryPublishedAction() throws {
         let actions = ShelfBrowserBridgeCommandRouter.actionMetadata(

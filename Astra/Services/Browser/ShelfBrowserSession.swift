@@ -1168,7 +1168,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 ))
             case .navigate:
                 let command = try request.decodeJSON(NavigateCommand.self)
-                guard let url = ShelfBrowserAddress.normalizedURL(from: command.url) else {
+                guard let url = BrowserBridgeNavigationPolicy.normalizedProviderURL(from: command.url) else {
                     return .json(["ok": false, "error": "invalid_url"], statusCode: 400)
                 }
                 let wait = await navigateForBridge(to: url, source: "bridge")
@@ -3044,33 +3044,48 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 timeoutSeconds: timeoutSeconds,
                 intervalMilliseconds: intervalMilliseconds
             )
-        } else if !control.href.isEmpty, let url = ShelfBrowserAddress.normalizedURL(from: control.href) {
-            load(url, source: "bridge_open_control")
-            object = [
-                "ok": true,
-                "opened": true,
-                "url": url.absoluteString
-            ]
         } else {
-            let target = actionTarget(for: control, controlRef: controlRef)
-            let json = try await doubleClick(
-                selector: target.selector,
-                x: target.x,
-                y: target.y,
-                allowDangerous: allowDangerous,
-                label: target.label,
-                role: target.role,
-                text: nil,
-                placeholder: target.placeholder,
-                testID: target.testID
-            )
-            object = try Self.jsonObject(from: json)
+            switch BrowserBridgeNavigationPolicy.openControlNavigation(forHref: control.href) {
+            case .navigate(let url):
+                load(url, source: "bridge_open_control")
+                object = [
+                    "ok": true,
+                    "opened": true,
+                    "url": url.absoluteString
+                ]
+            case .reject:
+                object = [
+                    "ok": false,
+                    "opened": false,
+                    "error": "invalid_url",
+                    "url": control.href,
+                    "summary": "Blocked unsafe link target."
+                ]
+            case .fallbackToActivation:
+                let target = actionTarget(for: control, controlRef: controlRef)
+                let json = try await doubleClick(
+                    selector: target.selector,
+                    x: target.x,
+                    y: target.y,
+                    allowDangerous: allowDangerous,
+                    label: target.label,
+                    role: target.role,
+                    text: nil,
+                    placeholder: target.placeholder,
+                    testID: target.testID
+                )
+                object = try Self.jsonObject(from: json)
+            }
         }
 
         let after = await snapshotAfterActionDelay()
         addOutcomeFields(to: &object, action: .open, control: control, before: before, after: after)
         object["matchedControl"] = control.jsonObject(debug: false)
-        object["summary"] = "Opened \(browserControlDescription(control))."
+        if Self.boolValue(object["ok"]) {
+            object["summary"] = "Opened \(browserControlDescription(control))."
+        } else if object["summary"] == nil {
+            object["summary"] = "Could not open \(browserControlDescription(control))."
+        }
         return object
     }
 
@@ -5109,7 +5124,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 }
             case "navigate":
                 guard let urlText = action.url,
-                      let url = ShelfBrowserAddress.normalizedURL(from: urlText) else {
+                      let url = BrowserBridgeNavigationPolicy.normalizedProviderURL(from: urlText) else {
                     results.append(["ok": false, "action": action.action, "error": "invalid_url"])
                     continue
                 }
