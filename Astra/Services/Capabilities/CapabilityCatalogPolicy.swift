@@ -313,6 +313,11 @@ enum CapabilityCatalogPolicy {
         }
 
         let packPolicy = context.packPolicy
+        if packPolicy.hasUnresolvedEnabledPacks {
+            let evidence = packPolicy.unresolvedEnabledPackEvidence
+            operationalBlockers.append(.packPolicyRestricted(packPolicyMessage(from: evidence)))
+            appendUniqueEvidence(evidence, to: &policyEvidence)
+        }
         let hiddenEvidence = packPolicy.hiddenEvidence(for: package)
         if !hiddenEvidence.isEmpty {
             visibilityBlockers.append(.packPolicyRestricted(packPolicyMessage(from: hiddenEvidence)))

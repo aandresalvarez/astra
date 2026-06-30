@@ -100,6 +100,58 @@ struct WorkspaceRightRailPerformanceTests {
     }
 
     @MainActor
+    @Test("Capability rail signature invalidates when pack policy changes")
+    func capabilityRailSignatureInvalidatesOnPackPolicyChanges() {
+        let workspace = makeWorkspace(name: "Pack Policy")
+        let visiblePolicy = PackResolvedPolicy.empty
+        let unresolvedPolicy = PackResolvedPolicy.unresolvedEnabledPacks(["astra.pack.missing"])
+
+        let visibleSignature = CapabilityRailSnapshotSignature(
+            workspace: workspace,
+            globalSkills: [],
+            globalConnectors: [],
+            globalTools: [],
+            packages: [],
+            approvalRecords: [],
+            packPolicy: visiblePolicy,
+            prerequisiteStatuses: [:]
+        )
+        let unresolvedSignature = CapabilityRailSnapshotSignature(
+            workspace: workspace,
+            globalSkills: [],
+            globalConnectors: [],
+            globalTools: [],
+            packages: [],
+            approvalRecords: [],
+            packPolicy: unresolvedPolicy,
+            prerequisiteStatuses: [:]
+        )
+
+        #expect(visibleSignature != unresolvedSignature)
+    }
+
+    @Test("Approved capability refresh asks rail to rebuild and refresh prerequisites")
+    func approvedCapabilityRefreshRequestsDependentRefreshes() {
+        let unchanged = WorkspaceRightRailApprovedCapabilityRefreshPlan.make(
+            previousPackageIDs: ["builtin.github"],
+            nextPackageIDs: ["builtin.github"],
+            previousPolicy: .empty,
+            nextPolicy: .empty
+        )
+        let changed = WorkspaceRightRailApprovedCapabilityRefreshPlan.make(
+            previousPackageIDs: ["builtin.github"],
+            nextPackageIDs: ["builtin.github", "jira-workflow"],
+            previousPolicy: .empty,
+            nextPolicy: .unresolvedEnabledPacks(["astra.pack.missing"])
+        )
+
+        #expect(!unchanged.shouldRebuildSnapshot)
+        #expect(!unchanged.shouldRefreshPrerequisites)
+        #expect(changed.shouldRebuildSnapshot)
+        #expect(changed.shouldRefreshPrerequisites)
+    }
+
+    @MainActor
     @Test("Capability rail signature preserves installed plugin ID version pairings")
     func capabilityRailSignaturePreservesInstalledPluginVersionPairings() {
         let firstWorkspace = makeWorkspace(name: "Installed Plugins")

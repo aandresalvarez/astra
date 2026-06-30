@@ -970,6 +970,7 @@ struct WorkspaceRightRailView: View {
             globalTools: globalTools,
             packages: approvedCapabilityPackages,
             approvalRecords: approvedCapabilityRecords,
+            packPolicy: approvedCapabilityPackPolicy,
             prerequisiteStatuses: capabilityPrerequisiteStatuses
         )
     }
@@ -1207,9 +1208,23 @@ struct WorkspaceRightRailView: View {
             }.value
 
             guard !Task.isCancelled, approvedCapabilityRefreshID == refreshID else { return }
+            let refreshPlan = WorkspaceRightRailApprovedCapabilityRefreshPlan.make(
+                previousPackageIDs: approvedCapabilityPackages.map(\.id),
+                nextPackageIDs: snapshot.packages.map(\.id),
+                previousApprovalRecords: approvedCapabilityRecords,
+                nextApprovalRecords: snapshot.records,
+                previousPolicy: approvedCapabilityPackPolicy,
+                nextPolicy: snapshot.packPolicy
+            )
             approvedCapabilityPackages = snapshot.packages.isEmpty ? PluginCatalog.builtInPackages : snapshot.packages
             approvedCapabilityRecords = snapshot.records
             approvedCapabilityPackPolicy = snapshot.packPolicy
+            if refreshPlan.shouldRefreshPrerequisites {
+                refreshCapabilityPrerequisiteStatuses()
+            }
+            if refreshPlan.shouldRebuildSnapshot {
+                rebuildCapabilityRailSnapshot(for: capabilityRailSnapshotSignature)
+            }
         }
     }
 

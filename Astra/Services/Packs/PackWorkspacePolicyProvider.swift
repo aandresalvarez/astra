@@ -25,7 +25,11 @@ enum PackWorkspacePolicyProvider {
 
         let snapshot = catalogSnapshot ?? AstraPackCatalog().load()
         let enabledEntries = snapshot.entries.filter { enabledPackIDs.contains($0.manifest.id) }
-        guard !enabledEntries.isEmpty else { return .empty }
+        let resolvedPackIDs = Set(enabledEntries.map { $0.manifest.id.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() })
+        let unresolvedPackIDs = enabledPackIDs.subtracting(resolvedPackIDs)
+        guard unresolvedPackIDs.isEmpty else {
+            return .unresolvedEnabledPacks(unresolvedPackIDs)
+        }
 
         return AstraPackPolicyResolver.resolve(
             composition: AstraPackComposition.resolve(entries: enabledEntries)

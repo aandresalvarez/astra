@@ -215,6 +215,37 @@ struct AstraPackPolicyTests {
         #expect(policy.evidence.contains { $0.restrictionID == "disable-policy-package" })
     }
 
+    @Test("workspace policy provider fails closed when enabled packs are unresolved")
+    @MainActor
+    func workspacePolicyProviderFailsClosedForUnresolvedEnabledPacks() {
+        let workspace = Workspace(name: "Missing Pack Workspace", primaryPath: "/tmp/missing-pack-workspace")
+        workspace.enabledCapabilityIDs = ["policy-package"]
+        workspace.enabledPackIDs = ["astra.pack.missing"]
+        let package = makeCapabilityPackage(id: "policy-package")
+
+        let policy = PackWorkspacePolicyProvider.resolvedPolicy(
+            for: workspace,
+            catalogSnapshot: AstraPackCatalogSnapshot(entries: [], diagnostics: [])
+        )
+        let context = CapabilityCatalogPolicyContext.workspaceUser(
+            workspace: workspace,
+            currentAppVersion: SemanticVersion(1, 0, 0),
+            packPolicyResolver: { _ in policy }
+        )
+        let decision = CapabilityCatalogPolicy.decision(for: package, context: context)
+        let runtimePackages = CapabilityRuntimeResourceMatcher.enabledPackages(
+            for: workspace,
+            in: [package],
+            approvalRecords: [],
+            packPolicy: policy
+        )
+
+        #expect(policy.unresolvedEnabledPackIDs == ["astra.pack.missing"])
+        #expect(!decision.canRun)
+        #expect(runtimePackages.isEmpty)
+        #expect(decision.blockerMessages.contains { $0.contains("enabled pack could not be resolved") })
+    }
+
     @Test("workspace context factory applies resolved pack policy")
     @MainActor
     func workspaceContextFactoryAppliesResolvedPackPolicy() {

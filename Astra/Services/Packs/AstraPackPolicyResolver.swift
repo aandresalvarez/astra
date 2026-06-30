@@ -5,6 +5,7 @@ struct PackPolicyEvidence: Equatable, Sendable {
     enum Kind: String, Equatable, Sendable {
         case coreFloor = "core_floor"
         case packRestriction = "pack_restriction"
+        case unresolvedEnabledPack = "unresolved_enabled_pack"
     }
 
     var kind: Kind
@@ -22,6 +23,7 @@ struct PackPolicyDiagnostic: Equatable, Sendable {
         case policyWideningIgnored
         case unknownShelfID
         case unsupportedAction
+        case unresolvedEnabledPack
     }
 
     var code: Code
@@ -81,6 +83,7 @@ struct PackResolvedPolicy: Equatable, Sendable {
         warningRules: [],
         reviewGateRules: [],
         explicitConsentRules: [],
+        unresolvedEnabledPackIDs: [],
         evidence: [PackResolvedPolicy.coreFloorEvidence],
         diagnostics: []
     )
@@ -95,6 +98,7 @@ struct PackResolvedPolicy: Equatable, Sendable {
     var warningRules: [PackPolicyRule]
     var reviewGateRules: [PackPolicyRule]
     var explicitConsentRules: [PackPolicyRule]
+    var unresolvedEnabledPackIDs: Set<String>
     var evidence: [PackPolicyEvidence]
     var diagnostics: [PackPolicyDiagnostic]
 
@@ -102,10 +106,68 @@ struct PackResolvedPolicy: Equatable, Sendable {
         !hiddenCapabilityRules.isEmpty
             || !disabledCapabilityRules.isEmpty
             || !reviewGateRules.isEmpty
+            || hasUnresolvedEnabledPacks
     }
 
     var hasReviewGateRules: Bool {
         !reviewGateRules.isEmpty
+    }
+
+    var hasUnresolvedEnabledPacks: Bool {
+        !unresolvedEnabledPackIDs.isEmpty
+    }
+
+    static func unresolvedEnabledPacks(_ packIDs: Set<String>) -> PackResolvedPolicy {
+        let normalizedPackIDs = Set(packIDs.map(normalized).filter { !$0.isEmpty })
+        guard !normalizedPackIDs.isEmpty else { return .empty }
+
+        let evidence = normalizedPackIDs.sorted().map { packID in
+            PackPolicyEvidence(
+                kind: .unresolvedEnabledPack,
+                packID: packID,
+                restrictionID: nil,
+                contributionKind: "pack",
+                action: "resolveEnabledPack",
+                target: packID,
+                message: "Workspace enabled pack could not be resolved: \(packID)."
+            )
+        }
+        let diagnostics = normalizedPackIDs.sorted().map { packID in
+            PackPolicyDiagnostic(
+                code: .unresolvedEnabledPack,
+                packID: packID,
+                restrictionID: "",
+                message: "Workspace enabled pack could not be resolved: \(packID)."
+            )
+        }
+
+        return PackResolvedPolicy(
+            hiddenShelfIDs: [],
+            hiddenCapabilityPackageIDs: [],
+            hiddenCapabilityTags: [],
+            disabledCapabilityPackageIDs: [],
+            disabledCapabilityTags: [],
+            hiddenCapabilityRules: [],
+            disabledCapabilityRules: [],
+            warningRules: [],
+            reviewGateRules: [],
+            explicitConsentRules: [],
+            unresolvedEnabledPackIDs: normalizedPackIDs,
+            evidence: [PackResolvedPolicy.coreFloorEvidence] + evidence,
+            diagnostics: diagnostics
+        )
+    }
+
+    static func unresolvedEnabledPacks(_ packIDs: [String]) -> PackResolvedPolicy {
+        unresolvedEnabledPacks(Set(packIDs))
+    }
+
+    var unresolvedEnabledPackEvidence: [PackPolicyEvidence] {
+        evidence.filter { $0.kind == .unresolvedEnabledPack }
+    }
+
+    private static func normalized(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }
 
     func hiddenEvidence(for package: PluginPackage) -> [PackPolicyEvidence] {
@@ -357,6 +419,7 @@ enum AstraPackPolicyResolver {
         var warningRules: [PackPolicyRule] = []
         var reviewGateRules: [PackPolicyRule] = []
         var explicitConsentRules: [PackPolicyRule] = []
+        var unresolvedEnabledPackIDs: Set<String> = []
         var evidence: [PackPolicyEvidence] = [PackResolvedPolicy.coreFloorEvidence]
         var diagnostics: [PackPolicyDiagnostic] = []
 
@@ -390,6 +453,7 @@ enum AstraPackPolicyResolver {
                 warningRules: warningRules,
                 reviewGateRules: reviewGateRules,
                 explicitConsentRules: explicitConsentRules,
+                unresolvedEnabledPackIDs: unresolvedEnabledPackIDs,
                 evidence: evidence,
                 diagnostics: diagnostics
             )
