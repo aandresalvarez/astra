@@ -215,6 +215,131 @@ struct WorkspaceAppPackageTests {
         })
     }
 
+    @Test("package validation rejects malformed JSONL exports before import")
+    func packageValidationRejectsMalformedJSONLExportsBeforeImport() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let packageURL = root.appendingPathComponent("malformed-data.astra-app", isDirectory: true)
+        let databaseURL = try Self.groceryDatabase(in: root)
+
+        _ = try WorkspaceAppPackageService().exportPackage(
+            manifest: Self.groceryManifest(),
+            to: packageURL,
+            packageID: "malformed-data",
+            mode: .templatePlusSeedData,
+            appStorageDatabaseURL: databaseURL
+        )
+
+        let dataPath = "storage/data/seed/items.jsonl"
+        let dataURL = packageURL.appendingPathComponent(dataPath)
+        let malformedJSONL = """
+        {"id":"item-1","name":"Apples"}
+        not-json
+
+        """
+        try Data(malformedJSONL.utf8)
+            .write(to: dataURL, options: [.atomic])
+        let exports = [
+            WorkspaceAppPackageDataExport(
+                table: "items",
+                policy: .seed,
+                path: dataPath,
+                rowCount: 2
+            )
+        ]
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        try encoder.encode(exports)
+            .write(to: packageURL.appendingPathComponent("storage/data/exports.json"), options: [.atomic])
+        try Self.rewriteChecksums(at: packageURL)
+
+        let report = WorkspaceAppPackageService().validatePackage(at: packageURL)
+
+        #expect(!report.canInstall)
+        #expect(report.blockers.contains {
+            $0.path == "/\(dataPath)"
+        })
+    }
+
+    @Test("package validation streams large JSONL exports outside scanned text cap")
+    func packageValidationStreamsLargeJSONLExportsOutsideScannedTextCap() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let packageURL = root.appendingPathComponent("large-data.astra-app", isDirectory: true)
+        let databaseURL = try Self.groceryDatabase(in: root)
+
+        _ = try WorkspaceAppPackageService().exportPackage(
+            manifest: Self.groceryManifest(),
+            to: packageURL,
+            packageID: "large-data",
+            mode: .templatePlusSeedData,
+            appStorageDatabaseURL: databaseURL
+        )
+
+        let dataPath = "storage/data/seed/items.jsonl"
+        let rows = (0..<10).map { index in
+            #"{"id":"item-\#(index)","name":"\#(String(repeating: "a", count: 220_000))"}"#
+        }
+        try Data(rows.joined(separator: "\n").utf8)
+            .write(to: packageURL.appendingPathComponent(dataPath), options: [.atomic])
+        let exports = [
+            WorkspaceAppPackageDataExport(
+                table: "items",
+                policy: .seed,
+                path: dataPath,
+                rowCount: rows.count
+            )
+        ]
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        try encoder.encode(exports)
+            .write(to: packageURL.appendingPathComponent("storage/data/exports.json"), options: [.atomic])
+        try Self.rewriteChecksums(at: packageURL)
+
+        let report = WorkspaceAppPackageService().validatePackage(at: packageURL)
+
+        #expect(report.canInstall)
+    }
+
+    @Test("package validation rejects checksummed symlink resources before hashing")
+    func packageValidationRejectsChecksummedSymlinkResourcesBeforeHashing() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let packageURL = root.appendingPathComponent("symlinked-resource.astra-app", isDirectory: true)
+        _ = try WorkspaceAppPackageService().exportPackage(
+            manifest: Self.groceryManifest(),
+            to: packageURL,
+            packageID: "symlinked-resource"
+        )
+
+        let targetURL = root.appendingPathComponent("outside.md")
+        try Data("external package target".utf8).write(to: targetURL)
+        let linkPath = "docs/link.md"
+        let linkURL = packageURL.appendingPathComponent(linkPath)
+        try FileManager.default.createDirectory(
+            at: linkURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createSymbolicLink(at: linkURL, withDestinationURL: targetURL)
+        var checksums = try JSONDecoder().decode(
+            [WorkspaceAppPackageChecksum].self,
+            from: Data(contentsOf: packageURL.appendingPathComponent("checksums.json"))
+        )
+        checksums.append(WorkspaceAppPackageChecksum(path: linkPath, sha256: String(repeating: "0", count: 64)))
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        try encoder.encode(checksums)
+            .write(to: packageURL.appendingPathComponent("checksums.json"), options: [.atomic])
+
+        let report = WorkspaceAppPackageService().validatePackage(at: packageURL)
+
+        #expect(!report.canInstall)
+        #expect(report.blockers.contains {
+            $0.path == "/checksums.json/\(linkPath)"
+                && $0.message.contains("regular files")
+        })
+    }
+
     @Test("package library discovery blocks oversized portable text")
     func packageLibraryDiscoveryBlocksOversizedPortableText() throws {
         let root = try Self.temporaryRoot()
@@ -234,9 +359,14 @@ struct WorkspaceAppPackageTests {
         let entry = try #require(WorkspaceAppPackageLibraryService()
             .discoverPackages(in: root)
             .first { $0.packageURL.lastPathComponent == packageURL.lastPathComponent })
+        let report = WorkspaceAppPackageService().validatePackage(at: packageURL)
 
         #expect(!entry.canInstall)
         #expect(entry.blockerMessages.contains { $0.lowercased().contains("package resource limit") })
+        #expect(report.blockers.contains {
+            $0.path == "/docs/README.md"
+                && $0.message.lowercased().contains("package resource limit")
+        })
     }
 
     @Test("package validation marks missing required contracts for dependency mapping")

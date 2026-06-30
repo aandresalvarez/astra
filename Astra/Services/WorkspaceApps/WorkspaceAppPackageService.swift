@@ -644,7 +644,7 @@ struct WorkspaceAppPackageService {
             do {
                 actual = try resourceReader.digest(at: url, relativePath: "/\(checksum.path)")
             } catch let error as WorkspaceAppPackageResourceError {
-                issues.append(blocker("/\(checksum.path)", error.localizedDescription))
+                issues.append(blocker("/checksums.json/\(checksum.path)", error.localizedDescription))
                 continue
             } catch {
                 issues.append(blocker("/checksums.json/\(checksum.path)", "Checksum references a missing file."))
@@ -706,6 +706,7 @@ struct WorkspaceAppPackageService {
             let rowCount: Int
             do {
                 rowCount = try resourceReader.countJSONLines(
+                    [String: WorkspaceAppStorageValue].self,
                     at: url,
                     relativePath: "/\(dataExport.path)"
                 )
@@ -803,25 +804,64 @@ struct WorkspaceAppPackageService {
         packageURL: URL,
         issues: inout [WorkspaceAppPackageValidationReport.Issue]
     ) {
-        for path in portableFilePaths(in: packageURL) where path.hasSuffix(".json") || path.hasSuffix(".jsonl") || path.hasSuffix(".md") {
-            let text: String
-            do {
-                text = try resourceReader.scannedText(
+        for path in portableFilePaths(in: packageURL) {
+            let relativePath = "/\(path)"
+            if path.hasSuffix(".jsonl") {
+                validateNoForbiddenJSONLContent(
                     at: packageURL.appendingPathComponent(path),
-                    relativePath: "/\(path)"
+                    path: relativePath,
+                    issues: &issues
                 )
-            } catch {
-                issues.append(blocker("/\(path)", error.localizedDescription))
-                continue
+            } else if path.hasSuffix(".json") || path.hasSuffix(".md") {
+                let text: String
+                do {
+                    text = try resourceReader.scannedText(
+                        at: packageURL.appendingPathComponent(path),
+                        relativePath: relativePath
+                    )
+                } catch {
+                    issues.append(blocker(relativePath, error.localizedDescription))
+                    continue
+                }
+                appendForbiddenContentIssues(in: text, path: relativePath, issues: &issues)
             }
-            let lowercased = text.lowercased()
-            let forbiddenKeys = ["api_key", "apikey", "oauth", "password", "secret", "token"]
-            if forbiddenKeys.contains(where: { lowercased.contains($0) }) {
-                issues.append(blocker("/\(path)", "Package content appears to include credential material."))
+        }
+    }
+
+    private func validateNoForbiddenJSONLContent(
+        at url: URL,
+        path: String,
+        issues: inout [WorkspaceAppPackageValidationReport.Issue]
+    ) {
+        do {
+            try resourceReader.decodeJSONLines(
+                [String: WorkspaceAppStorageValue].self,
+                at: url,
+                relativePath: path
+            ) { row in
+                for value in row.values {
+                    if case let .text(text) = value {
+                        appendForbiddenContentIssues(in: text, path: path, issues: &issues)
+                    }
+                }
             }
-            if text.contains(NSHomeDirectory()) || lowercased.contains("/users/") {
-                issues.append(blocker("/\(path)", "Package content appears to include an absolute local path."))
-            }
+        } catch {
+            issues.append(blocker(path, error.localizedDescription))
+        }
+    }
+
+    private func appendForbiddenContentIssues(
+        in text: String,
+        path: String,
+        issues: inout [WorkspaceAppPackageValidationReport.Issue]
+    ) {
+        let lowercased = text.lowercased()
+        let forbiddenKeys = ["api_key", "apikey", "oauth", "password", "secret", "token"]
+        if forbiddenKeys.contains(where: { lowercased.contains($0) }) {
+            issues.append(blocker(path, "Package content appears to include credential material."))
+        }
+        if text.contains(NSHomeDirectory()) || lowercased.contains("/users/") {
+            issues.append(blocker(path, "Package content appears to include an absolute local path."))
         }
     }
 
@@ -834,9 +874,11 @@ struct WorkspaceAppPackageService {
                 packageURL: packageURL,
                 paths: portableFilePaths(in: packageURL),
                 isScannedTextPath: { path in
-                    path.hasSuffix(".json") || path.hasSuffix(".jsonl") || path.hasSuffix(".md")
+                    path.hasSuffix(".json") || path.hasSuffix(".md")
                 }
             )
+        } catch let error as WorkspaceAppPackageResourceError {
+            issues.append(blocker(error.path ?? "/", error.localizedDescription))
         } catch {
             issues.append(blocker("/", error.localizedDescription))
         }

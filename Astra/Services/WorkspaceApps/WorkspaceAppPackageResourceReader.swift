@@ -23,6 +23,20 @@ enum WorkspaceAppPackageResourceError: LocalizedError, Equatable {
     case lineTooLarge(path: String, maximum: Int)
     case tooManyRows(path: String, maximum: Int)
     case invalidUTF8(path: String)
+    case nonRegularFile(path: String)
+
+    var path: String? {
+        switch self {
+        case let .fileTooLarge(path, _, _),
+             let .lineTooLarge(path, _),
+             let .tooManyRows(path, _),
+             let .invalidUTF8(path),
+             let .nonRegularFile(path):
+            path
+        case .packageTooLarge:
+            nil
+        }
+    }
 
     var errorDescription: String? {
         switch self {
@@ -36,6 +50,8 @@ enum WorkspaceAppPackageResourceError: LocalizedError, Equatable {
             "Package resource limit exceeded for \(path): JSONL export exceeds \(maximum) rows."
         case let .invalidUTF8(path):
             "Package resource limit exceeded for \(path): file is not valid UTF-8 text."
+        case let .nonRegularFile(path):
+            "Package resource limit exceeded for \(path): package resources must be regular files."
         }
     }
 }
@@ -50,7 +66,11 @@ struct WorkspaceAppPackageResourceReader {
     ) throws {
         var totalBytes = 0
         for path in paths {
-            let size = try fileSize(at: packageURL.appendingPathComponent(path))
+            let relativePath = "/\(path)"
+            let size = try regularFileSize(
+                at: packageURL.appendingPathComponent(path),
+                relativePath: relativePath
+            )
             totalBytes += size
             if totalBytes > budget.maxPackageBytes {
                 throw WorkspaceAppPackageResourceError.packageTooLarge(
@@ -60,14 +80,14 @@ struct WorkspaceAppPackageResourceReader {
             }
             if size > budget.maxFileBytes {
                 throw WorkspaceAppPackageResourceError.fileTooLarge(
-                    path: "/\(path)",
+                    path: relativePath,
                     actual: size,
                     maximum: budget.maxFileBytes
                 )
             }
             if isScannedTextPath(path), size > budget.maxScannedTextFileBytes {
                 throw WorkspaceAppPackageResourceError.fileTooLarge(
-                    path: "/\(path)",
+                    path: relativePath,
                     actual: size,
                     maximum: budget.maxScannedTextFileBytes
                 )
@@ -76,7 +96,7 @@ struct WorkspaceAppPackageResourceReader {
     }
 
     func data(at url: URL, relativePath: String) throws -> Data {
-        let size = try fileSize(at: url)
+        let size = try regularFileSize(at: url, relativePath: relativePath)
         guard size <= budget.maxFileBytes else {
             throw WorkspaceAppPackageResourceError.fileTooLarge(
                 path: relativePath,
@@ -88,7 +108,7 @@ struct WorkspaceAppPackageResourceReader {
     }
 
     func scannedText(at url: URL, relativePath: String) throws -> String {
-        let size = try fileSize(at: url)
+        let size = try regularFileSize(at: url, relativePath: relativePath)
         guard size <= budget.maxScannedTextFileBytes else {
             throw WorkspaceAppPackageResourceError.fileTooLarge(
                 path: relativePath,
@@ -103,7 +123,7 @@ struct WorkspaceAppPackageResourceReader {
     }
 
     func digest(at url: URL, relativePath: String) throws -> String {
-        let size = try fileSize(at: url)
+        let size = try regularFileSize(at: url, relativePath: relativePath)
         guard size <= budget.maxFileBytes else {
             throw WorkspaceAppPackageResourceError.fileTooLarge(
                 path: relativePath,
@@ -123,9 +143,15 @@ struct WorkspaceAppPackageResourceReader {
         return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
-    func countJSONLines(at url: URL, relativePath: String) throws -> Int {
+    func countJSONLines<Value: Decodable>(
+        _ type: Value.Type,
+        at url: URL,
+        relativePath: String
+    ) throws -> Int {
+        let decoder = JSONDecoder()
         var count = 0
-        try readJSONLines(at: url, relativePath: relativePath) { _ in
+        try readJSONLines(at: url, relativePath: relativePath) { line in
+            _ = try decoder.decode(type, from: line)
             count += 1
         }
         return count
@@ -148,7 +174,7 @@ struct WorkspaceAppPackageResourceReader {
         relativePath: String,
         handleLine: (Data) throws -> Void
     ) throws {
-        let size = try fileSize(at: url)
+        let size = try regularFileSize(at: url, relativePath: relativePath)
         guard size <= budget.maxFileBytes else {
             throw WorkspaceAppPackageResourceError.fileTooLarge(
                 path: relativePath,
@@ -230,8 +256,11 @@ struct WorkspaceAppPackageResourceReader {
         try handleLine(line)
     }
 
-    private func fileSize(at url: URL) throws -> Int {
-        let values = try url.resourceValues(forKeys: [.fileSizeKey])
+    private func regularFileSize(at url: URL, relativePath: String) throws -> Int {
+        let values = try url.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey, .isSymbolicLinkKey])
+        guard values.isSymbolicLink != true, values.isRegularFile == true else {
+            throw WorkspaceAppPackageResourceError.nonRegularFile(path: relativePath)
+        }
         return values.fileSize ?? 0
     }
 }
