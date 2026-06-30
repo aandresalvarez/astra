@@ -39,6 +39,25 @@ struct ShelfRegistryTests {
         }
     }
 
+    @Test("Generated-file destinations are registered for routable shelves")
+    func generatedFileDestinationsAreRegisteredForRoutableShelves() {
+        let routableDestinations: [(TaskGeneratedFileShelfDestination, ShelfID, String)] = [
+            (.browser, .browser, "Open in Browser Shelf"),
+            (.files, .files, "Open in Files Shelf"),
+            (.query, .query, "Open in Query Shelf")
+        ]
+
+        for (destination, shelfID, title) in routableDestinations {
+            let descriptor = CoreShelfRegistry.requiredDescriptor(for: shelfID)
+            #expect(descriptor.generatedFileDestination?.title == title)
+            #expect(destination.shelfID == shelfID)
+            #expect(destination.title == title)
+        }
+
+        #expect(TaskGeneratedFileShelfDestination(shelfID: .plan) == nil)
+        #expect(TaskGeneratedFileShelfDestination(shelfID: .appPreview) == nil)
+    }
+
     @Test("Workspace canvas item maps to shelf ID")
     func workspaceCanvasItemMapsToShelfID() {
         #expect(WorkspaceCanvasItem.plan.shelfID == .plan)

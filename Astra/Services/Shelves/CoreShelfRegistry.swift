@@ -78,6 +78,13 @@ enum CoreShelfRegistry {
         descriptorsByID[id]
     }
 
+    static func requiredDescriptor(for id: ShelfID) -> ShelfDescriptor {
+        guard let descriptor = descriptor(for: id) else {
+            preconditionFailure("CoreShelfRegistry is missing a descriptor for shelf '\(id.rawValue)'")
+        }
+        return descriptor
+    }
+
     static func shelfID(forStableID stableID: String) -> ShelfID? {
         let trimmed = stableID.trimmingCharacters(in: .whitespacesAndNewlines)
         if let exact = ShelfID(rawValue: trimmed) {

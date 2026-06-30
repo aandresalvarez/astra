@@ -42,7 +42,11 @@ enum TaskGeneratedFileShelfDestination: Equatable {
     }
 
     private var generatedFileDestination: ShelfGeneratedFileDestinationMetadata {
-        CoreShelfRegistry.descriptor(for: shelfID)!.generatedFileDestination!
+        let descriptor = CoreShelfRegistry.requiredDescriptor(for: shelfID)
+        guard let destination = descriptor.generatedFileDestination else {
+            preconditionFailure("CoreShelfRegistry shelf '\(shelfID.rawValue)' is missing generated-file destination metadata")
+        }
+        return destination
     }
 }
 

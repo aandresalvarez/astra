@@ -33,7 +33,7 @@ enum WorkspaceCanvasItem: String, Equatable {
     }
 
     private var descriptor: ShelfDescriptor {
-        CoreShelfRegistry.descriptor(for: shelfID)!
+        CoreShelfRegistry.requiredDescriptor(for: shelfID)
     }
 }
 
