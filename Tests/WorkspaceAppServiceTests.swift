@@ -728,7 +728,7 @@ struct WorkspaceAppServiceTests {
                     id: "latest_candidates",
                     requirementRef: "sourceWarehouse",
                     operation: "runReadOnlyQuery",
-                    query: "SELECT * FROM clinical.enrollment_candidates LIMIT 100"
+                    tableRef: "clinical.enrollment_candidates"
                 ),
                 WorkspaceAppSource(
                     id: "redcap_records",

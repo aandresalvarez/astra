@@ -38,6 +38,27 @@ struct WorkspaceAppManifestTests {
         })
     }
 
+    @Test("manifest validation rejects BigQuery query-only capability read sources")
+    func validationRejectsBigQueryQueryOnlyCapabilityReadSources() {
+        var manifest = Self.reconciliationManifest()
+        manifest.sources[0] = WorkspaceAppSource(
+            id: "latest_candidates",
+            requirementRef: "sourceWarehouse",
+            operation: "runReadOnlyQuery",
+            query: "SELECT * FROM clinical.enrollment_candidates LIMIT 100"
+        )
+
+        let report = WorkspaceAppManifestValidator.validate(manifest)
+
+        #expect(!report.isValid)
+        #expect(report.blockers.contains {
+            $0.path == "/sources/0/query" && $0.message.contains("must not embed SQL")
+        })
+        #expect(report.blockers.contains {
+            $0.path == "/sources/0/tableRef" && $0.message.contains("structured tableRef")
+        })
+    }
+
     @Test("manifest validation blocks automations that default enabled")
     func validationBlocksEnabledAutomationDefaults() {
         var manifest = Self.reconciliationManifest()
@@ -675,7 +696,7 @@ struct WorkspaceAppManifestTests {
                     id: "latest_candidates",
                     requirementRef: "sourceWarehouse",
                     operation: "runReadOnlyQuery",
-                    query: "SELECT * FROM clinical.enrollment_candidates LIMIT 100"
+                    tableRef: "clinical.enrollment_candidates"
                 ),
                 WorkspaceAppSource(
                     id: "redcap_records",

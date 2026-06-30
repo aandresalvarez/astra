@@ -56,7 +56,7 @@ struct WorkspaceAppBigQueryReadClient: WorkspaceAppAsyncCapabilitySourceClient {
         guard operation == "runReadOnlyQuery" || operation == "previewRows" else {
             throw WorkspaceAppSourceResolutionError.unsupportedSource(source.id)
         }
-        let sql = try sqlBuilder.sql(for: source, operation: operation, limit: input.limit)
+        let sql = try sqlBuilder.sql(for: source, limit: input.limit)
         let result = try await queryRunner.run(QueryRequest(
             sql: sql,
             connection: connection(for: source, binding: binding),
@@ -93,7 +93,6 @@ struct WorkspaceAppBigQueryReadClient: WorkspaceAppAsyncCapabilitySourceClient {
 struct WorkspaceAppBigQueryReadSQLBuilder {
     func sql(
         for source: WorkspaceAppSource,
-        operation: String,
         limit: Int
     ) throws -> String {
         if let query = source.query?.trimmingCharacters(in: .whitespacesAndNewlines),
