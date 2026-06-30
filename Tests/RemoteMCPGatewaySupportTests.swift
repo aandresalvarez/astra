@@ -160,6 +160,21 @@ struct RemoteMCPGatewaySupportTests {
         #expect(policy.canonicalToolName(for: " Admin.Delete ") == nil)
     }
 
+    @Test("Gateway policy is exact-case even when native policy folds case")
+    func gatewayPolicyIsExactCaseAtRemoteBoundary() {
+        let policy = RemoteMCPGatewayToolPolicy(
+            allowedTools: ["Drive.Search", "drive.search"],
+            excludedTools: ["Admin.Delete"]
+        )
+
+        #expect(policy.allowedTools == ["Drive.Search", "drive.search"])
+        #expect(policy.canonicalToolName(for: " Drive.Search ") == "Drive.Search")
+        #expect(policy.canonicalToolName(for: "drive.search") == "drive.search")
+        #expect(policy.canonicalToolName(for: "DRIVE.SEARCH") == nil)
+        #expect(policy.canonicalToolName(for: "admin.delete") == nil)
+        #expect(policy.canonicalToolName(for: "Admin.Delete") == nil)
+    }
+
     @Test("Environment token provider reads the gateway process token")
     func environmentTokenProvider() throws {
         let provider = EnvironmentMCPGatewayAuthTokenProvider(

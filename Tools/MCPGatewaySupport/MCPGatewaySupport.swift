@@ -87,6 +87,7 @@ public struct RemoteMCPGatewayToolPolicy: Equatable {
     }
 
     private static func toolKey(_ value: String) -> String {
+        // MCP tool names are case-sensitive; trim whitespace without folding case.
         value.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }

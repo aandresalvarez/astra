@@ -146,14 +146,23 @@ enum RemoteMCPGatewayProjection {
         allowedTools: [String],
         excludedTools: [String]
     ) -> [String] {
+        policyArguments(flag: "--allowed-tool", tools: allowedTools)
+            + policyArguments(flag: "--excluded-tool", tools: excludedTools)
+    }
+
+    private static func policyArguments(flag: String, tools: [String]) -> [String] {
         var arguments: [String] = []
-        for tool in orderedUnique(allowedTools) where !tool.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            arguments += ["--allowed-tool", tool]
-        }
-        for tool in orderedUnique(excludedTools) where !tool.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            arguments += ["--excluded-tool", tool]
+        for tool in orderedTrimmedToolNames(tools) {
+            arguments += [flag, tool]
         }
         return arguments
+    }
+
+    private static func orderedTrimmedToolNames(_ tools: [String]) -> [String] {
+        orderedUnique(tools.compactMap { tool in
+            let trimmed = tool.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        })
     }
 
     private static func gatewayAccessTokenEnvironmentKeys(in arguments: [String]) -> [String] {
