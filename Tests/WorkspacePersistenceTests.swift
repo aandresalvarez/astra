@@ -265,6 +265,123 @@ struct WorkspacePersistenceTests {
         #expect(task.executionRootPath == nil)
     }
 
+    @Test("active working path import expands tilde and requires a directory")
+    @MainActor
+    func activeWorkingPathImportStandardizesTildeAndRequiresDirectory() throws {
+        let relativeRoot = ".astra-active-path-\(UUID().uuidString)"
+        let homeRoot = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(relativeRoot, isDirectory: true)
+        let activeDirectory = homeRoot.appendingPathComponent("repo-worktree", isDirectory: true)
+        try FileManager.default.createDirectory(at: activeDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: homeRoot) }
+
+        let config = minimalWorkspaceConfig(
+            name: "Tilde",
+            path: "~/\(relativeRoot)",
+            skillID: UUID().uuidString
+        )
+        var presentConfig = config
+        presentConfig.activeWorkingPath = "~/\(relativeRoot)/repo-worktree"
+
+        let presentContainer = try makeWorkspacePersistenceContainer()
+        let present = WorkspaceConfigManager.importWorkspace(
+            from: presentConfig,
+            modelContext: presentContainer.mainContext
+        )
+        #expect(present.activeWorkingPath == WorkspacePathPresentation.standardizedPath(activeDirectory.path))
+
+        let activeFile = homeRoot.appendingPathComponent("not-a-directory")
+        FileManager.default.createFile(atPath: activeFile.path, contents: Data())
+
+        var fileConfig = config
+        fileConfig.activeWorkingPath = "~/\(relativeRoot)/not-a-directory"
+        let fileContainer = try makeWorkspacePersistenceContainer()
+        let fileImported = WorkspaceConfigManager.importWorkspace(
+            from: fileConfig,
+            modelContext: fileContainer.mainContext
+        )
+        #expect(fileImported.activeWorkingPath == nil)
+    }
+
+    @Test("active working path import accepts canonical containment through symlinks")
+    @MainActor
+    func activeWorkingPathImportUsesCanonicalContainment() throws {
+        let parent = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("astra-canonical-active-\(UUID().uuidString)", isDirectory: true)
+        let realRoot = parent.appendingPathComponent("real", isDirectory: true)
+        let linkRoot = parent.appendingPathComponent("link", isDirectory: true)
+        let activeDirectory = realRoot.appendingPathComponent("repo-worktree", isDirectory: true)
+        try FileManager.default.createDirectory(at: activeDirectory, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: linkRoot, withDestinationURL: realRoot)
+        defer { try? FileManager.default.removeItem(at: parent) }
+
+        var config = minimalWorkspaceConfig(name: "Linked", path: linkRoot.path, skillID: UUID().uuidString)
+        config.activeWorkingPath = activeDirectory.path
+
+        let container = try makeWorkspacePersistenceContainer()
+        let imported = WorkspaceConfigManager.importWorkspace(from: config, modelContext: container.mainContext)
+
+        #expect(imported.activeWorkingPath == WorkspacePathPresentation.standardizedPath(activeDirectory.path))
+        #expect(imported.isUsingWorktree == true)
+    }
+
+    @Test("active working path import accepts app-managed worktrees outside workspace roots")
+    @MainActor
+    func activeWorkingPathImportAllowsAppManagedWorktrees() throws {
+        let workspaceRoot = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("astra-workspace-root-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: workspaceRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: workspaceRoot) }
+
+        let managedRoot = URL(fileURLWithPath: AppChannel.current.defaultWorktreesRoot, isDirectory: true)
+            .appendingPathComponent("import-regression-\(UUID().uuidString)", isDirectory: true)
+        let activeDirectory = managedRoot
+            .appendingPathComponent("repo", isDirectory: true)
+            .appendingPathComponent("feature", isDirectory: true)
+        try FileManager.default.createDirectory(at: activeDirectory, withIntermediateDirectories: true)
+        FileManager.default.createFile(
+            atPath: activeDirectory.appendingPathComponent(".git").path,
+            contents: Data()
+        )
+        defer { try? FileManager.default.removeItem(at: managedRoot) }
+
+        var config = minimalWorkspaceConfig(name: "Managed", path: workspaceRoot.path, skillID: UUID().uuidString)
+        config.activeWorkingPath = activeDirectory.path
+
+        let container = try makeWorkspacePersistenceContainer()
+        let imported = WorkspaceConfigManager.importWorkspace(from: config, modelContext: container.mainContext)
+
+        #expect(imported.activeWorkingPath == WorkspacePathPresentation.standardizedPath(activeDirectory.path))
+        #expect(imported.isUsingWorktree == true)
+    }
+
+    @Test("active working path import accepts git-registered worktrees outside workspace roots")
+    @MainActor
+    func activeWorkingPathImportAllowsRegisteredWorktrees() throws {
+        let parent = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("astra-registered-worktree-\(UUID().uuidString)", isDirectory: true)
+        let workspaceRoot = parent.appendingPathComponent("repo", isDirectory: true)
+        let repoGit = workspaceRoot.appendingPathComponent(".git", isDirectory: true)
+        let worktreeAdmin = repoGit
+            .appendingPathComponent("worktrees", isDirectory: true)
+            .appendingPathComponent("feature", isDirectory: true)
+        let externalWorktree = parent.appendingPathComponent("outside-feature", isDirectory: true)
+        try FileManager.default.createDirectory(at: worktreeAdmin, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: externalWorktree, withIntermediateDirectories: true)
+        let gitFile = externalWorktree.appendingPathComponent(".git")
+        try "gitdir: \(worktreeAdmin.path)\n".write(to: gitFile, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: parent) }
+
+        var config = minimalWorkspaceConfig(name: "Registered", path: workspaceRoot.path, skillID: UUID().uuidString)
+        config.activeWorkingPath = externalWorktree.path
+
+        let container = try makeWorkspacePersistenceContainer()
+        let imported = WorkspaceConfigManager.importWorkspace(from: config, modelContext: container.mainContext)
+
+        #expect(imported.activeWorkingPath == WorkspacePathPresentation.standardizedPath(externalWorktree.path))
+        #expect(imported.isUsingWorktree == true)
+    }
+
     @Test("import skips unsafe local tool definitions from workspace config")
     @MainActor
     func importSkipsUnsafeLocalToolDefinitions() throws {
