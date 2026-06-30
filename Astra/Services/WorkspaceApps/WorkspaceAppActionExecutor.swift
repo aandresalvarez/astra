@@ -1543,15 +1543,20 @@ struct WorkspaceAppActionExecutor {
         var summaries: [String] = []
         var linkedTaskID: UUID?
         var linkedArtifactPath: String?
+        var carriesHumanApproval = try hasHumanApprovalGate(before: startIndex, in: action, manifest: manifest)
 
         for (index, stepID) in action.steps.enumerated() {
             guard index >= startIndex else { continue }
             let step = try actionSpec(actionID: stepID, manifest: manifest)
             // B1 output binding: each step sees the previous step's rows.
             var stepInput = input.bindingForward(rows: rows)
-            // Human approval applies ONLY to the gate being resumed (at startIndex); a later
-            // gate.humanApproval step must re-prompt rather than inherit the prior approval.
-            if index > startIndex { stepInput.confirmedApproval = false }
+            stepInput.confirmedApproval = pipelineStepHasApproval(
+                step: step,
+                index: index,
+                startIndex: startIndex,
+                input: input,
+                carriesHumanApproval: carriesHumanApproval
+            )
             // Enforce the step's permission BEFORE any side effect (incl. launching
             // an async agent task), so an unapproved workflow can't queue work.
             try enforcePermission(for: step, app: app, input: stepInput)
@@ -1570,6 +1575,9 @@ struct WorkspaceAppActionExecutor {
                     gateStepIndex: index,
                     gateActionID: stepID
                 )
+            }
+            if step.type == "gate.humanApproval", stepInput.confirmedApproval {
+                carriesHumanApproval = true
             }
             // B2: await an async agent step — launch the task and suspend the run
             // until it completes (resumed via WorkspaceAppActionExecutor.resume).
@@ -1677,6 +1685,33 @@ struct WorkspaceAppActionExecutor {
             linkedTaskID,
             linkedArtifactPath
         )
+    }
+
+    private func hasHumanApprovalGate(
+        before stepIndex: Int,
+        in pipeline: WorkspaceAppActionSpec,
+        manifest: WorkspaceAppManifest
+    ) throws -> Bool {
+        guard stepIndex > 0 else { return false }
+        for stepID in pipeline.steps.prefix(stepIndex) {
+            if try actionSpec(actionID: stepID, manifest: manifest).type == "gate.humanApproval" {
+                return true
+            }
+        }
+        return false
+    }
+
+    private func pipelineStepHasApproval(
+        step: WorkspaceAppActionSpec,
+        index: Int,
+        startIndex: Int,
+        input: WorkspaceAppActionInput,
+        carriesHumanApproval: Bool
+    ) -> Bool {
+        if step.type == "gate.humanApproval" {
+            return index == startIndex && input.confirmedApproval
+        }
+        return (index == startIndex && input.confirmedApproval) || carriesHumanApproval
     }
 
     private func executeLoop(
