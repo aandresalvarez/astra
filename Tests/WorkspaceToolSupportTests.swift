@@ -246,6 +246,262 @@ struct WorkspaceToolSupportTests {
         #expect(ssh.errorMessage?.contains("host control-plane CLI 'ssh'") == true)
     }
 
+    @Test("Workspace command path mapper rejects host control-plane commands hidden by shell syntax")
+    func workspaceCommandPathMapperRejectsShellExpandedHostControlPlaneCommands() throws {
+        let configuration = WorkspaceToolConfiguration(
+            dockerExecutable: "docker",
+            image: "astra/workspace:latest",
+            containerName: "astra-test",
+            workdir: "/workspace",
+            network: "bridge",
+            taskID: "task-1",
+            runID: "run-1",
+            mounts: [
+                WorkspaceDockerMount(hostPath: "/tmp/workspace", containerPath: "/workspace", access: "rw", role: "workspace"),
+                WorkspaceDockerMount(hostPath: "/tmp/gcloud", containerPath: "/root/.config/gcloud", access: "ro", role: "credential")
+            ],
+            containerEnvironment: [
+                "CLOUDSDK_CONFIG": "/root/.config/gcloud",
+                "GOOGLE_APPLICATION_CREDENTIALS": "/root/.config/gcloud/application_default_credentials.json"
+            ]
+        )
+
+        let commands = [
+            "echo $(gcloud auth list --format=json)",
+            "echo \"$(gcloud auth list --format=json)\"",
+            "echo $(printf \"\\\" )\"; gcloud auth list)",
+            "echo \"$(printf \"\\\" )\"; gcloud auth list)\"",
+            "echo `printf \\`; gcloud auth list`",
+            "echo \"`printf \\`; gcloud auth list`\"",
+            "env TOKEN=$(gcloud auth application-default print-access-token)",
+            "sh -c 'gcloud projects list'",
+            "cmd='gcloud auth list'; sh -c \"$cmd\"",
+            "sh -c -- 'gcloud projects list'",
+            "bash -lc 'gcloud projects list'",
+            "bash -lc -- 'gcloud projects list'",
+            "dash -c 'gcloud projects list'",
+            "bash -c \"$'gcloud' auth list\"",
+            "command gcloud projects list",
+            "command 2>/tmp/e ssh deid-jsn-workbench hostname",
+            "exec gcloud auth list",
+            "sh -c 'exec gcloud auth list'",
+            "sh -c 'echo \"$(gcloud auth list)\"'",
+            "env -u FOO gcloud auth list",
+            "env >/tmp/log gcloud auth list",
+            "env --unset FOO --chdir /tmp gcloud auth list",
+            "env -S'gcloud auth list'",
+            "env -iS'gcloud auth list'",
+            "cmd='--split-string=gcloud auth list'; env \"$cmd\"",
+            "gh -R owner/repo api repos/owner/repo",
+            "gh --repo owner/repo pr view 148",
+            "gh --repo=owner/repo api repos/owner/repo",
+            "cmd='gh --repo owner/repo api repos/owner/repo'; $cmd",
+            "env -S 'gh --repo owner/repo api repos/owner/repo'",
+            "$(ssh deid-jsn-workbench hostname)",
+            "bash -c 'cat <(gcloud auth list)'",
+            "g\\cloud auth list",
+            "s\\sh deid-jsn-workbench hostname",
+            "printf 'gcloud auth list\\n' | sh",
+            "printf '%s\\n' 'gcloud auth list' | sh",
+            "printf '%s auth list\\n' gcloud | sh",
+            "printf gcloud\\ auth\\ list | sh",
+            "echo gcloud auth list | sh",
+            "sh <<'EOF'\ngcloud auth list\nEOF",
+            "sh -s <<1\ngcloud auth list\n1",
+            "bash -c \"sh <<< 'gcloud auth list'\"",
+            "bash -c 'bash <(printf \"gcloud auth list\\n\")'",
+            "bash -c 'source <(printf \"gcloud auth list\\n\")'",
+            ">/tmp/out gcloud auth list",
+            "2>&1 gcloud auth list",
+            "2>/tmp/e ssh deid-jsn-workbench hostname",
+            "f() { gcloud auth list; }; f",
+            "function f() { gcloud auth list; }; f",
+            "if gcloud auth list; then echo ok; fi",
+            "while gcloud auth list; do break; done",
+            "case x in x) gcloud auth list;; esac",
+            "time -p gcloud auth list",
+            "nohup gcloud auth list",
+            "nice -n 5 gcloud auth list",
+            "timeout 1 gcloud auth list",
+            "echo $(echo $(echo $(echo $(echo $(echo $(gcloud auth list))))))",
+            "/usr/bin/env gcloud auth list",
+            "cmd=gcloud; $cmd auth list",
+            "a=1 cmd=gcloud; $cmd auth list",
+            "cmd='gcloud auth list'; $cmd",
+            "${cmd:-gcloud} auth list",
+            "part=cl; g${part}oud auth list",
+            "cmd=x; ${cmd:+gcloud} auth list",
+            "${cmd:=gcloud} auth list",
+            "env -S 'gcloud auth list'",
+            "env -S '-i gcloud auth list'",
+            "env -S 'FOO=bar gcloud auth list'",
+            "env --split-string='gcloud auth list'",
+            "exec -a harmless gcloud auth list",
+            "eval 'gcloud auth list'",
+            "cmd=gcloud sh -c '$cmd auth list'",
+            "bash -c '$1 auth list' _ gcloud",
+            "bash -c 'exec \"$@\"' _ gcloud auth list",
+            "bash -c $'g\\143loud auth list'",
+            "command printf 'gcloud auth list\\n' | sh",
+            "printf 'gcloud auth list\\n' | env sh",
+            "$(printf gcloud) auth list",
+            "bash -c '$(printf gcloud) auth list'",
+            "g{cl,}oud auth list",
+            "coproc gcloud auth list",
+            "bash -c 'builtin eval gcloud auth list'",
+            "cat <<'EOF' | sh\ngcloud auth list\nEOF",
+            "cat <<EOF | bash\ngcloud auth list\nEOF",
+            "find . -exec gcloud auth list ';'",
+            "find . -name '*.swift' -execdir gh api repos/owner/repo \\;",
+            "g*oud auth list",
+            "g?oud auth list",
+            "sudo gcloud auth list",
+            "sudo -u root env FOO=bar gcloud auth list",
+            "sudo -b gcloud auth list",
+            "sudo -R /some/root gcloud auth list",
+            "gc\\\nloud auth list",
+            "bash -c 'gc\\\nloud auth list'",
+            "$(printf %s gcloud) auth list",
+            "cmd=gcloud; x=$cmd; $x auth list",
+            "eval -- gcloud auth list",
+            "env sh <<EOF\ngcloud auth list\nEOF",
+            "command sh <<EOF-1\ngcloud auth list\nEOF-1",
+            "env python3 - <<PY\nimport subprocess; subprocess.run(['gcloud', 'auth', 'list'])\nPY",
+            "printf 'import os; os.system(\"gcloud auth list\")\\n' | python3 -",
+            "cat <<PY | python3 -\nimport os; os.system(\"gcloud auth list\")\nPY",
+            "bash < <(echo gcloud auth list)",
+            "source <(cat <<EOF\ngcloud auth list\nEOF\n)",
+            "x() { \"$@\"; }; x gcloud auth list",
+            "python3 -c \"import subprocess; subprocess.run(['bq', 'ls'])\"",
+            "python3 -c \"import subprocess; subprocess.run(['gh', 'api', 'repos/owner/repo'])\"",
+            "python3 -c \"import subprocess; subprocess.run(('gcloud', 'auth', 'list'))\"",
+            "python3 -c \"import subprocess; subprocess.run(args=['gcloud', 'auth', 'list'])\"",
+            "python3 -c \"import subprocess; subprocess.run('gcloud auth list', shell=True)\"",
+            "python3 -c \"import subprocess; subprocess.run(args='gcloud auth list', shell=True)\"",
+            "python3 -c \"import subprocess; subprocess.run(r'gcloud auth list', shell=True)\"",
+            "python3 -c \"import subprocess; subprocess.run(shell=True, args='gcloud auth list')\"",
+            "python3 -c \"import os; os.system('ssh deid-jsn-workbench hostname')\"",
+            "python3 -c \"import os; os.system(f'gcloud auth list')\"",
+            "python3 -c 'import os; os.system(\"\"\"gcloud auth list\"\"\")'",
+            "python3 -c \"import os; os.system('g\\x63loud auth list')\"",
+            "python3 -c 'import os; os.system(\"g\" + \"cloud auth list\")'",
+            "printf '\\147cloud auth list\\n' | sh",
+            "echo -e 'g\\x63loud auth list' | sh"
+        ]
+
+        for command in commands {
+            let resolution = configuration.containerCommand(for: command)
+            #expect(
+                resolution.errorMessage?.contains("host control-plane CLI") == true,
+                "Expected host control-plane rejection for: \(command)"
+            )
+        }
+
+        let sixDeepSubstitution = configuration.containerCommand(
+            for: "echo $(echo $(echo $(echo $(echo $(echo $(gcloud auth list))))))"
+        )
+        #expect(sixDeepSubstitution.errorMessage?.contains("host control-plane CLI 'gcloud'") == true)
+        #expect(sixDeepSubstitution.errorMessage?.contains("too deeply nested") == false)
+    }
+
+    @Test("Workspace command path mapper fails closed on unresolved command variable expansions")
+    func workspaceCommandPathMapperFailsClosedOnUnresolvedCommandVariableExpansions() throws {
+        let configuration = WorkspaceToolConfiguration(
+            dockerExecutable: "docker",
+            image: "astra/workspace:latest",
+            containerName: "astra-test",
+            workdir: "/workspace",
+            network: "bridge",
+            taskID: "task-1",
+            runID: "run-1",
+            mounts: [
+                WorkspaceDockerMount(hostPath: "/tmp/workspace", containerPath: "/workspace", access: "rw", role: "workspace")
+            ],
+            containerEnvironment: [:]
+        )
+
+        let commands = [
+            "export cmd=gcloud; $cmd auth list",
+            "env cmd=gcloud sh -c \"$cmd auth list\""
+        ]
+
+        for command in commands {
+            let resolution = configuration.containerCommand(for: command)
+            #expect(
+                resolution.errorMessage?.contains("shell expansions ASTRA cannot safely evaluate") == true,
+                "Expected opaque expansion rejection for: \(command)"
+            )
+            #expect(resolution.errorMessage?.contains("host control-plane CLI 'opaque shell expansion'") == false)
+        }
+    }
+
+    @Test("Workspace command path mapper reports recursive scan depth truthfully")
+    func workspaceCommandPathMapperReportsRecursiveScanDepthTruthfully() throws {
+        let configuration = WorkspaceToolConfiguration(
+            dockerExecutable: "docker",
+            image: "astra/workspace:latest",
+            containerName: "astra-test",
+            workdir: "/workspace",
+            network: "bridge",
+            taskID: "task-1",
+            runID: "run-1",
+            mounts: [
+                WorkspaceDockerMount(hostPath: "/tmp/workspace", containerPath: "/workspace", access: "rw", role: "workspace")
+            ],
+            containerEnvironment: [:]
+        )
+
+        let resolution = configuration.containerCommand(
+            for: "echo $(echo $(echo $(echo $(echo $(echo $(echo $(ssh deid-jsn-workbench hostname)))))))"
+        )
+
+        #expect(resolution.errorMessage?.contains("too deeply nested") == true)
+        #expect(resolution.errorMessage?.contains("host control-plane CLI 'gh'") == false)
+
+        let deeplyNestedRender = configuration.containerCommand(
+            for: "echo $(echo $(echo $(echo $(echo $(echo $(echo $(echo safe))))))))"
+        )
+        #expect(deeplyNestedRender.errorMessage?.contains("too deeply nested") == true)
+    }
+
+    @Test("Workspace command path mapper allows control-plane tool names as data")
+    func workspaceCommandPathMapperAllowsHostControlPlaneToolNamesAsData() throws {
+        let configuration = WorkspaceToolConfiguration(
+            dockerExecutable: "docker",
+            image: "astra/workspace:latest",
+            containerName: "astra-test",
+            workdir: "/workspace",
+            network: "bridge",
+            taskID: "task-1",
+            runID: "run-1",
+            mounts: [
+                WorkspaceDockerMount(hostPath: "/tmp/workspace", containerPath: "/workspace", access: "rw", role: "workspace")
+            ],
+            containerEnvironment: [:]
+        )
+
+        let commands = [
+            "grep -R gcloud docs",
+            "grep -R '$(gcloud auth list)' docs",
+            "printf '%s\\n' '$(gcloud auth list)'",
+            "printf '%s\\n' '\\$(gcloud auth list)'",
+            "grep \"subprocess.run(['gcloud', 'auth', 'list'])\" file.py",
+            "command -v gcloud",
+            "printf 'ssh\\n'",
+            "echo gh api repo data",
+            "awk '/bq/ { print }' README.md",
+            "cat <<'EOF'\ngcloud auth list\nEOF",
+            "[ -f Package.swift ] && echo ok",
+            "[[ -f Package.swift ]] && echo ok",
+            "PATTERN='gcloud auth list'; grep -R \"$PATTERN\" docs"
+        ]
+
+        for command in commands {
+            let resolution = configuration.containerCommand(for: command)
+            #expect(resolution.errorMessage == nil)
+        }
+    }
+
     @Test("Workspace MCP server exposes and runs workspace_shell")
     func workspaceMCPServerExposesAndRunsWorkspaceShell() throws {
         let executor = RecordingWorkspaceCommandExecutor(result: WorkspaceCommandResult(
