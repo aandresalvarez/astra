@@ -315,6 +315,12 @@ struct HostControlToolSupportTests {
         let httpLoggingReadError = try #require(httpLoggingReadResult["error"] as? [String: Any])
         #expect((httpLoggingReadError["message"] as? String)?.contains("gcloud does not allow credential or mutating operations") == true)
 
+        let uriHTTPLoggingReadResult = try call(server, id: 19, tool: "gcloud", arguments: [
+            "arguments": ["compute", "instances", "list", "--uri", "--log-http"]
+        ])
+        let uriHTTPLoggingReadError = try #require(uriHTTPLoggingReadResult["error"] as? [String: Any])
+        #expect((uriHTTPLoggingReadError["message"] as? String)?.contains("gcloud does not allow credential or mutating operations") == true)
+
         let debugVerbosityReadResult = try call(server, id: 10, tool: "gcloud", arguments: [
             "arguments": ["--verbosity", "debug", "compute", "instances", "list"]
         ])
@@ -380,6 +386,7 @@ struct HostControlToolSupportTests {
         #expect(!hostLog.contains("--access-token-file"))
         #expect(!hostLog.contains("get-iam-policy"))
         #expect(!hostLog.contains("--log-http"))
+        #expect(!hostLog.contains("--uri --log-http"))
         #expect(!hostLog.contains("--verbosity debug"))
         #expect(!hostLog.contains("--verbosity=debug"))
         #expect(!hostLog.contains("--impersonate-service-account"))
