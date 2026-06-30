@@ -251,6 +251,7 @@ private final class RuntimePathResolverExecutableFileManager: FileManager {
 
     init(executablePaths: Set<String>) {
         self.executablePaths = executablePaths
+        super.init()
     }
 
     override func isExecutableFile(atPath path: String) -> Bool {
