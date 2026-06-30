@@ -211,6 +211,58 @@ struct WorkspaceAppPackageTests {
         })
     }
 
+    @Test("package validation reports malformed JSON Lines as format errors")
+    func packageValidationReportsMalformedJSONLinesAsFormatErrors() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let packageURL = root.appendingPathComponent("grocery-malformed-jsonl.astra-app", isDirectory: true)
+        let databaseURL = try Self.groceryDatabase(in: root)
+        _ = try WorkspaceAppPackageService().exportPackage(
+            manifest: Self.groceryManifest(),
+            to: packageURL,
+            packageID: "grocery-malformed-jsonl",
+            mode: .templatePlusSeedData,
+            appStorageDatabaseURL: databaseURL
+        )
+        let dataURL = packageURL.appendingPathComponent("storage/data/seed/items.jsonl")
+        try Data(#"{"id":"item-1","name":"Apples""#.utf8).write(to: dataURL, options: [.atomic])
+        try Self.rewriteChecksums(at: packageURL)
+
+        let report = WorkspaceAppPackageService().validatePackage(at: packageURL)
+
+        #expect(!report.canInstall)
+        #expect(report.blockers.contains {
+            $0.path == "/storage/data/seed/items.jsonl"
+                && $0.message.contains("valid JSON Lines")
+        })
+        #expect(!report.blockers.contains {
+            $0.path == "/storage/data/seed/items.jsonl"
+                && $0.message.contains("regular file inside the package")
+        })
+    }
+
+    @Test("package validation reports invalid UTF-8 package JSON separately")
+    func packageValidationReportsInvalidUTF8PackageJSONSeparately() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let packageURL = root.appendingPathComponent("grocery-invalid-package-json.astra-app", isDirectory: true)
+        _ = try WorkspaceAppPackageService().exportPackage(
+            manifest: Self.groceryManifest(),
+            to: packageURL,
+            packageID: "grocery-invalid-package-json"
+        )
+        try Data([0xff, 0xfe, 0xfd]).write(to: packageURL.appendingPathComponent("package.json"), options: [.atomic])
+        try Self.rewriteChecksums(at: packageURL)
+
+        let report = WorkspaceAppPackageService().validatePackage(at: packageURL)
+
+        #expect(!report.canInstall)
+        #expect(report.blockers.contains {
+            $0.path == "/package.json"
+                && $0.message.contains("valid UTF-8")
+        })
+    }
+
     @Test("package validation distinguishes invalid exports manifest from missing exports manifest")
     func packageValidationDistinguishesInvalidExportsManifestFromMissingExportsManifest() throws {
         let root = try Self.temporaryRoot()
@@ -229,6 +281,36 @@ struct WorkspaceAppPackageTests {
         try Data("[]".utf8).write(to: outsideURL)
         try FileManager.default.removeItem(at: exportsURL)
         try FileManager.default.createSymbolicLink(atPath: exportsURL.path, withDestinationPath: outsideURL.path)
+
+        let report = WorkspaceAppPackageService().validatePackage(at: packageURL)
+
+        #expect(!report.canInstall)
+        #expect(report.blockers.contains {
+            $0.path == "/storage/data/exports.json"
+                && $0.message.contains("regular file inside the package")
+        })
+    }
+
+    @Test("package validation rejects dangling exports manifests")
+    func packageValidationRejectsDanglingExportsManifests() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let packageURL = root.appendingPathComponent("grocery-dangling-exports.astra-app", isDirectory: true)
+        let databaseURL = try Self.groceryDatabase(in: root)
+        _ = try WorkspaceAppPackageService().exportPackage(
+            manifest: Self.groceryManifest(),
+            to: packageURL,
+            packageID: "grocery-dangling-exports",
+            mode: .templatePlusSeedData,
+            appStorageDatabaseURL: databaseURL
+        )
+        let exportsURL = packageURL.appendingPathComponent("storage/data/exports.json")
+        try FileManager.default.removeItem(at: exportsURL)
+        try FileManager.default.createSymbolicLink(
+            atPath: exportsURL.path,
+            withDestinationPath: root.appendingPathComponent("missing-exports.json").path
+        )
+        try Self.rewriteChecksums(at: packageURL)
 
         let report = WorkspaceAppPackageService().validatePackage(at: packageURL)
 

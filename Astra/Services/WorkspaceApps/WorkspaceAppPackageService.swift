@@ -568,13 +568,12 @@ struct WorkspaceAppPackageService {
     }
 
     private func decodeDataExports(at packageURL: URL) throws -> [WorkspaceAppPackageDataExport]? {
-        let url = packageURL
-            .appendingPathComponent("storage", isDirectory: true)
-            .appendingPathComponent("data", isDirectory: true)
-            .appendingPathComponent("exports.json")
-        guard fileManager.fileExists(atPath: url.path) else { return nil }
-        let data = try readContainedPackageFileData(in: packageURL, path: "storage/data/exports.json")
-        return try JSONDecoder().decode([WorkspaceAppPackageDataExport].self, from: data)
+        do {
+            let data = try readUTF8ContainedPackageFileData(in: packageURL, path: "storage/data/exports.json")
+            return try JSONDecoder().decode([WorkspaceAppPackageDataExport].self, from: data)
+        } catch WorkspaceAppPackageFileResolutionError.missing {
+            return nil
+        }
     }
 
     private func writeJSONLines(
@@ -593,10 +592,7 @@ struct WorkspaceAppPackageService {
         in packageURL: URL,
         path: String
     ) throws -> [[String: WorkspaceAppStorageValue]] {
-        let data = try readContainedPackageFileData(in: packageURL, path: path)
-        guard let text = String(data: data, encoding: .utf8) else {
-            throw WorkspaceAppPackageFileResolutionError.invalidEncoding
-        }
+        let text = try readUTF8ContainedPackageFileText(in: packageURL, path: path)
         let decoder = JSONDecoder()
         return try text
             .split(whereSeparator: \.isNewline)
@@ -626,7 +622,7 @@ struct WorkspaceAppPackageService {
     ) -> T? {
         let relativePath = path.hasPrefix("/") ? String(path.dropFirst()) : path
         do {
-            let data = try readContainedPackageFileData(in: packageURL, path: relativePath)
+            let data = try readUTF8ContainedPackageFileData(in: packageURL, path: relativePath)
             let decoder = JSONDecoder()
             decoder.dateDecodingStrategy = .iso8601
             return try decoder.decode(type, from: data)
@@ -743,6 +739,9 @@ struct WorkspaceAppPackageService {
                 continue
             } catch WorkspaceAppPackageFileResolutionError.invalidEncoding {
                 issues.append(blocker("/\(dataExport.path)", "Data export file must be valid UTF-8 JSON Lines."))
+                continue
+            } catch is DecodingError {
+                issues.append(blocker("/\(dataExport.path)", "Data export file must contain valid JSON Lines."))
                 continue
             } catch {
                 issues.append(blocker("/\(dataExport.path)", "Data export file must be a regular file inside the package."))
@@ -888,6 +887,22 @@ struct WorkspaceAppPackageService {
                 throw WorkspaceAppPackageFileResolutionError.invalidPath
             }
         }
+    }
+
+    private func readUTF8ContainedPackageFileData(in packageURL: URL, path: String) throws -> Data {
+        let data = try readContainedPackageFileData(in: packageURL, path: path)
+        guard String(data: data, encoding: .utf8) != nil else {
+            throw WorkspaceAppPackageFileResolutionError.invalidEncoding
+        }
+        return data
+    }
+
+    private func readUTF8ContainedPackageFileText(in packageURL: URL, path: String) throws -> String {
+        let data = try readContainedPackageFileData(in: packageURL, path: path)
+        guard let text = String(data: data, encoding: .utf8) else {
+            throw WorkspaceAppPackageFileResolutionError.invalidEncoding
+        }
+        return text
     }
 
     private func openContainedPackageFile(in packageURL: URL, path: String) throws -> Int32 {
