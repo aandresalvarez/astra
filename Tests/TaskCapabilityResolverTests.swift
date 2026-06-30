@@ -1043,32 +1043,24 @@ struct TaskCapabilityResolverTests {
         #expect(issues.first?.resourceName == "Jira")
     }
 
-    @Test("Runtime integrity still blocks live package skill missing browser adapter")
-    func runtimeIntegrityBlocksLivePackageSkillMissingBrowserAdapter() throws {
+    @Test("Runtime integrity does not require GitHub browser adapter for host-control package")
+    func runtimeIntegrityDoesNotRequireGitHubBrowserAdapterForHostControlPackage() throws {
         let container = try makeTaskCapabilityResolverContainer()
         let context = container.mainContext
         let githubPackage = try #require(PluginCatalog.builtInPackages.first { $0.id == "github-workflow" })
+        let packageSkill = try #require(githubPackage.skills.first)
 
         let workspace = Workspace(name: "GitHub Workspace", primaryPath: "/tmp/github-workspace")
         context.insert(workspace)
 
         let githubSkill = Skill(
-            name: "GitHub Agent",
-            allowedTools: ["Read", "Bash"],
-            behaviorInstructions: "Use GitHub CLI."
+            name: packageSkill.name,
+            allowedTools: packageSkill.allowedTools,
+            disallowedTools: packageSkill.disallowedTools,
+            behaviorInstructions: packageSkill.behaviorInstructions
         )
         githubSkill.workspace = workspace
         context.insert(githubSkill)
-
-        let githubTool = LocalTool(
-            name: "gh - GitHub CLI",
-            toolDescription: "Run GitHub CLI commands",
-            toolType: "cli",
-            command: "gh"
-        )
-        githubTool.workspace = workspace
-        githubTool.skill = githubSkill
-        context.insert(githubTool)
 
         let task = AgentTask(
             title: "Use GitHub",
@@ -1085,9 +1077,7 @@ struct TaskCapabilityResolverTests {
             checkExecutables: false
         )
 
-        #expect(issues.map(\.source) == [.selectedPackageSkill])
-        #expect(issues.map(\.resourceKind) == [.browserAdapter])
-        #expect(issues.first?.resourceName == BrowserSiteAdapterID.github)
+        #expect(issues.isEmpty)
     }
 
     @Test("Runtime integrity ignores stale package skill snapshots")

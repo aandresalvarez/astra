@@ -6,7 +6,7 @@ enum GitHubHostControlPolicy {
     ]
 
     private static let deniedFlags: Set<String> = [
-        "--show-token"
+        "--show-token", "-t"
     ]
 
     static func denialReason(for arguments: [String]) -> String? {

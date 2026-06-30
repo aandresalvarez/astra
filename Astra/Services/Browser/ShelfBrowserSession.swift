@@ -1113,6 +1113,21 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             return .json(response, statusCode: 404)
         }
 
+        if let denialReason = BrowserSiteActionPolicy.denialReason(
+            route: route,
+            currentURL: currentURL,
+            enabledBrowserAdapters: enabledBrowserAdapters
+        ) {
+            var response: [String: Any] = [
+                "ok": false,
+                "error": "site_action_not_allowed",
+                "reason": denialReason,
+                "adapterID": BrowserSiteAdapterID.github
+            ]
+            BrowserBridgeRecoveryHints.attach(to: &response, error: "site_action_not_allowed")
+            return .json(response, statusCode: 403)
+        }
+
         if let budgetResponse = browserRunGuardResponse(for: request) {
             return .json(budgetResponse, statusCode: 429)
         }

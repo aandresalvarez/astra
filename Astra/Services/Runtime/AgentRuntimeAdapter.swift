@@ -1242,14 +1242,16 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
             environment: executionEnvironment,
             currentDirectory: context.workspacePath,
             runID: context.runID,
-            taskEnvironment: taskEnv
+            taskEnvironment: taskEnv,
+            contextText: context.contextText
         )
         if let hostControlServer = HostControlPlaneMCPProjection.resolvedServer(
             task: context.task,
             environment: executionEnvironment,
             currentDirectory: context.workspacePath,
             runID: context.runID,
-            taskEnvironment: taskEnv.merging(hostControlEnvironment) { current, _ in current }
+            taskEnvironment: taskEnv.merging(hostControlEnvironment) { current, _ in current },
+            contextText: context.contextText
         ) {
             mcpServers.append(hostControlServer)
         }
@@ -1286,7 +1288,12 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
             servers: mcpServers,
             availableEnvironment: explicitMCPEnvironment
         )
-        let nativeDeniedTools = Array(Set(mcpDeniedTools + (usesDockerWorkspaceExecutor ? ["Bash"] : []))).sorted()
+        let deniesNativeShellForHostControl = HostControlPlaneMCPProjection.requiresNativeShellDenial(
+            task: context.task,
+            environment: executionEnvironment,
+            contextText: context.contextText
+        )
+        let nativeDeniedTools = Array(Set(mcpDeniedTools + (deniesNativeShellForHostControl ? ["Bash"] : []))).sorted()
         // Live approvals use the stdio control protocol (stream-json input, so
         // the prompt travels over stdin). Resolved before the allow-list so it
         // can decide whether ask-first tools are gated at the provider prompt.

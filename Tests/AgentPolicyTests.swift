@@ -1519,6 +1519,71 @@ struct RunPermissionManifestTests {
         }
     }
 
+    @Test("Host GitHub capability routes through ASTRA host-control MCP instead of native Bash")
+    func hostGitHubCapabilityRoutesThroughAstraHostControlMCPInsteadOfNativeBash() throws {
+        let container = try makeAgentPolicyContainer()
+        let context = container.mainContext
+        let package = try #require(PluginCatalog.builtInPackages.first { $0.id == "github-workflow" })
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-host-github-manifest-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let workspace = Workspace(name: "Host GitHub", primaryPath: root.path)
+        workspace.enabledCapabilityIDs = [package.id]
+        let pluginSkill = try #require(package.skills.first)
+        let githubSkill = Skill(
+            name: pluginSkill.name,
+            skillDescription: pluginSkill.description,
+            allowedTools: pluginSkill.allowedTools,
+            disallowedTools: pluginSkill.disallowedTools,
+            behaviorInstructions: pluginSkill.behaviorInstructions
+        )
+        githubSkill.workspace = workspace
+        let task = AgentTask(
+            title: "Review PR",
+            goal: "Use GitHub to inspect pull requests and checks",
+            workspace: workspace,
+            model: "test-model",
+            runtime: .claudeCode
+        )
+        task.skills = [githubSkill]
+        let run = TaskRun(task: task)
+        context.insert(workspace)
+        context.insert(githubSkill)
+        context.insert(task)
+        context.insert(run)
+
+        let manifest = AgentPolicyManifestService.recordPreflightManifest(
+            task: task,
+            run: run,
+            runtime: .claudeCode,
+            model: "test-model",
+            workspacePath: workspace.primaryPath,
+            phase: "test",
+            permissionPolicy: .restricted,
+            executionPolicy: .default,
+            defaultPolicyLevelRaw: AgentPolicyLevel.review.rawValue,
+            capabilityPackages: [package],
+            modelContext: context
+        )
+
+        #expect(manifest.mcpServers.contains { server in
+            server.packageID == "astra-builtin"
+                && server.id == HostControlPlaneMCPProjection.serverID
+                && server.allowedTools == ["github"]
+        })
+        #expect(manifest.providerRender.runtimeSupportTools.contains { descriptor in
+            descriptor.name == HostControlPlaneMCPProjection.providerToolPermission(for: "github")
+                && descriptor.allowedInputKeys == ["arguments", "timeout_seconds"]
+        })
+        #expect(!manifest.providerRender.allowedTools.contains { tool in
+            let lower = tool.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            return lower == "bash" || lower == "shell" || lower.hasPrefix("bash(") || lower.hasPrefix("shell(")
+        })
+        #expect(manifest.providerRender.deniedTools.contains("Bash"))
+    }
+
     @Test("Preflight manifest allows exact connector manifest shell probe when connectors are projected")
     func preflightManifestAllowsExactConnectorManifestShellProbeWhenConnectorsAreProjected() throws {
         let container = try makeAgentPolicyContainer()
@@ -2068,7 +2133,20 @@ struct RunPermissionManifestTests {
             modelContext: context
         )
 
-        #expect(manifest.providerRender.allowedTools.contains("Bash(gh *)"))
+        #expect(manifest.mcpServers.contains { server in
+            server.packageID == "astra-builtin"
+                && server.id == HostControlPlaneMCPProjection.serverID
+                && server.allowedTools == ["github"]
+        })
+        #expect(manifest.providerRender.runtimeSupportTools.contains { descriptor in
+            descriptor.name == HostControlPlaneMCPProjection.providerToolPermission(for: "github")
+                && descriptor.allowedInputKeys == ["arguments", "timeout_seconds"]
+        })
+        #expect(!manifest.providerRender.allowedTools.contains { tool in
+            let lower = tool.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            return lower == "bash" || lower == "shell" || lower.hasPrefix("bash(") || lower.hasPrefix("shell(")
+        })
+        #expect(manifest.providerRender.deniedTools.contains("Bash"))
     }
 
     @Test("Preflight manifest excludes pruned artifact task capabilities")

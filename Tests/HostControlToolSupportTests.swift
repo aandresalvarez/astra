@@ -23,6 +23,11 @@ struct HostControlToolSupportTests {
         ])
         #expect(errorMessage(deniedAuthTokenDisplay)?.contains("does not allow GitHub operation") == true)
 
+        let deniedAuthTokenDisplayShortFlag = try call(server, id: 12, tool: "github", arguments: [
+            "arguments": ["auth", "status", "-t"]
+        ])
+        #expect(errorMessage(deniedAuthTokenDisplayShortFlag)?.contains("does not allow GitHub operation") == true)
+
         let deniedAPI = try call(server, id: 2, tool: "github", arguments: [
             "arguments": ["api", "--method", "DELETE", "/repos/example/project"]
         ])

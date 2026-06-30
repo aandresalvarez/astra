@@ -47,14 +47,16 @@ struct CopilotMCPLaunchProjection {
                 environment: executionEnvironment,
                 currentDirectory: workspacePath,
                 runID: runID,
-                taskEnvironment: taskEnvironment
+                taskEnvironment: taskEnvironment,
+                contextText: contextText
             )
             if let hostControlServer = HostControlPlaneMCPProjection.resolvedServer(
                 task: task,
                 environment: executionEnvironment,
                 currentDirectory: workspacePath,
                 runID: runID,
-                taskEnvironment: taskEnvironment.merging(hostControlEnvironment) { current, _ in current }
+                taskEnvironment: taskEnvironment.merging(hostControlEnvironment) { current, _ in current },
+                contextText: contextText
             ) {
                 servers.append(hostControlServer)
             }
@@ -78,7 +80,8 @@ struct CopilotMCPLaunchProjection {
             environment: executionEnvironment,
             currentDirectory: workspacePath,
             runID: runID,
-            taskEnvironment: taskEnvironment
+            taskEnvironment: taskEnvironment,
+            contextText: contextText
         )
         let explicitMCPEnvironment = taskEnvironment
             .merging(workspaceExecutorEnvironment) { current, _ in current }
@@ -92,7 +95,8 @@ struct CopilotMCPLaunchProjection {
             )
         let dockerWorkspaceExecutorSupported = !usesDockerWorkspaceExecutor
             || (capabilities.supportsAdditionalMCPConfig && configURL != nil)
-        let hostControlPlaneSupported = !usesDockerWorkspaceExecutor
+        let requiresHostControlPlane = !hostControlEnvironment.isEmpty
+        let hostControlPlaneSupported = !requiresHostControlPlane
             || (capabilities.supportsAdditionalMCPConfig && configURL != nil)
         let unsupportedDetail = unsupportedDockerWorkspaceDetail(
             usesDockerWorkspaceExecutor: usesDockerWorkspaceExecutor,

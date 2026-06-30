@@ -9,13 +9,41 @@ enum HostControlPlaneMCPProjection {
         DockerWorkspaceMCPProjection.isEnabled(for: environment)
     }
 
+    static func enabledToolNames(
+        task: AgentTask,
+        environment: WorkspaceExecutionEnvironment,
+        contextText: String = ""
+    ) -> [String] {
+        if isEnabled(for: environment) {
+            return toolNames
+        }
+        let scope = TaskCapabilityResolver(task: task).promptScope(contextText: contextText)
+        return githubCapabilityIsInScope(scope) ? ["github"] : []
+    }
+
+    static func requiresNativeShellDenial(
+        task: AgentTask,
+        environment: WorkspaceExecutionEnvironment,
+        contextText: String = ""
+    ) -> Bool {
+        !enabledToolNames(task: task, environment: environment, contextText: contextText).isEmpty
+    }
+
     static func supportsHostControlPlane(runtime: AgentRuntimeID) -> Bool {
         AgentRuntimeAdapterRegistry.descriptor(for: runtime).supportsMCPServers
     }
 
     static func runtimeSupportToolDescriptors(for runtime: AgentRuntimeID) -> [ProviderRuntimeSupportToolDescriptor] {
+        runtimeSupportToolDescriptors(for: runtime, tools: toolNames)
+    }
+
+    static func runtimeSupportToolDescriptors(
+        for runtime: AgentRuntimeID,
+        tools requestedTools: [String]
+    ) -> [ProviderRuntimeSupportToolDescriptor] {
         guard supportsHostControlPlane(runtime: runtime) else { return [] }
-        return toolNames.map { tool in
+        let requested = requestedTools.filter { toolNames.contains($0) }
+        return requested.map { tool in
             ProviderRuntimeSupportToolDescriptor(
                 name: providerToolPermission(for: tool),
                 purpose: runtimeSupportPurpose(for: tool),
@@ -27,12 +55,17 @@ enum HostControlPlaneMCPProjection {
     }
 
     static func manifestServer() -> RunPermissionManifest.MCPServer {
-        RunPermissionManifest.MCPServer(
+        manifestServer(allowedTools: toolNames)
+    }
+
+    static func manifestServer(allowedTools requestedTools: [String]) -> RunPermissionManifest.MCPServer {
+        let allowedTools = requestedTools.filter { toolNames.contains($0) }
+        return RunPermissionManifest.MCPServer(
             id: serverID,
             packageID: "astra-builtin",
             displayName: "ASTRA Host Control Plane",
             transport: PluginMCPServer.Transport.stdio.rawValue,
-            allowedTools: toolNames,
+            allowedTools: allowedTools,
             excludedTools: [],
             resourcesEnabled: false,
             promptsEnabled: false,
@@ -45,9 +78,11 @@ enum HostControlPlaneMCPProjection {
         environment: WorkspaceExecutionEnvironment,
         currentDirectory: String,
         runID: UUID?,
-        taskEnvironment: [String: String] = [:]
+        taskEnvironment: [String: String] = [:],
+        contextText: String = ""
     ) -> MCPRuntimeProjection.ResolvedServer? {
-        guard isEnabled(for: environment) else { return nil }
+        let allowedTools = enabledToolNames(task: task, environment: environment, contextText: contextText)
+        guard !allowedTools.isEmpty else { return nil }
         let envKeys = environmentKeys(taskEnvironment: taskEnvironment)
         return MCPRuntimeProjection.ResolvedServer(
             packageID: "astra-builtin",
@@ -58,7 +93,7 @@ enum HostControlPlaneMCPProjection {
                 command: astraHostControlToolPath(),
                 arguments: [],
                 environmentKeys: envKeys,
-                allowedTools: toolNames,
+                allowedTools: allowedTools,
                 trustLevel: .high
             ),
             permittedEnvironmentKeys: Set(envKeys)
@@ -70,9 +105,10 @@ enum HostControlPlaneMCPProjection {
         environment: WorkspaceExecutionEnvironment,
         currentDirectory: String,
         runID: UUID?,
-        taskEnvironment: [String: String] = [:]
+        taskEnvironment: [String: String] = [:],
+        contextText: String = ""
     ) -> [String: String] {
-        guard isEnabled(for: environment) else { return [:] }
+        guard !enabledToolNames(task: task, environment: environment, contextText: contextText).isEmpty else { return [:] }
         var output: [String: String] = [
             "ASTRA_HOST_CONTROL_GH_EXECUTABLE": detectExecutable("gh"),
             "ASTRA_HOST_CONTROL_GCLOUD_EXECUTABLE": detectExecutable("gcloud"),
@@ -179,6 +215,19 @@ enum HostControlPlaneMCPProjection {
         let allowed = Set(allowedInputKeys(for: tool) + ["cmd"])
         return ProviderRuntimeSupportToolDescriptor.defaultDeniedActionInputKeys.filter {
             !allowed.contains($0)
+        }
+    }
+
+    private static func githubCapabilityIsInScope(_ scope: TaskCapabilityPromptScope) -> Bool {
+        scope.behaviorSkills.contains { skill in
+            let text = [
+                skill.name,
+                skill.skillDescription,
+                skill.behaviorInstructions
+            ].joined(separator: "\n").lowercased()
+            return text.contains("github")
+                || text.contains("mcp__astra_host__github")
+                || text.contains("astra_host-github")
         }
     }
 
