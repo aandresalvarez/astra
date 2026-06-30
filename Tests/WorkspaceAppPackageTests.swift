@@ -806,6 +806,56 @@ struct WorkspaceAppPackageTests {
     }
 
     @MainActor
+    @Test("package import reports invalid package when seed file disappears after validation")
+    func packageImportReportsInvalidPackageWhenSeedFileDisappearsAfterValidation() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let packageURL = root.appendingPathComponent("grocery-seed.astra-app", isDirectory: true)
+        let sourceDatabaseURL = try Self.groceryDatabase(in: root)
+        _ = try WorkspaceAppPackageService().exportPackage(
+            manifest: Self.groceryManifest(),
+            to: packageURL,
+            packageID: "grocery-seed",
+            mode: .templatePlusSeedData,
+            appStorageDatabaseURL: sourceDatabaseURL
+        )
+        let service = WorkspaceAppPackageService()
+        let report = service.validatePackage(at: packageURL)
+        #expect(report.canInstall)
+        try FileManager.default.removeItem(at: packageURL.appendingPathComponent("storage/data/seed/items.jsonl"))
+
+        let container = try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+        )
+        let workspaceURL = root.appendingPathComponent("workspace", isDirectory: true)
+        try FileManager.default.createDirectory(at: workspaceURL, withIntermediateDirectories: true)
+        let workspace = Workspace(name: "Package Import", primaryPath: workspaceURL.path)
+        container.mainContext.insert(workspace)
+
+        do {
+            _ = try service.importPackage(
+                at: packageURL,
+                validatedBy: report,
+                into: workspace,
+                modelContext: container.mainContext
+            )
+            Issue.record("Expected late package-file resolution failure to report an invalid package.")
+        } catch let error as WorkspaceAppPackageError {
+            guard case .invalidPackage(let report) = error else {
+                Issue.record("Expected invalidPackage, got \(error).")
+                return
+            }
+            #expect(!report.canInstall)
+            #expect(report.blockers.contains { issue in
+                issue.path == "/storage/data/exports.json"
+                    && issue.message == "Data export references a missing file."
+            })
+        }
+    }
+
+    @MainActor
     @Test("package update checks compare package identity version and digest")
     func packageUpdateChecksComparePackageIdentityVersionAndDigest() throws {
         let root = try Self.temporaryRoot()

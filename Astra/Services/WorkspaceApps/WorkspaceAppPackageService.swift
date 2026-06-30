@@ -361,6 +361,21 @@ struct WorkspaceAppPackageService {
         modelContext: ModelContext
     ) throws -> WorkspaceAppPackageImportResult {
         let report = validatePackage(at: packageURL)
+        return try importPackage(
+            at: packageURL,
+            validatedBy: report,
+            into: workspace,
+            modelContext: modelContext
+        )
+    }
+
+    @MainActor
+    func importPackage(
+        at packageURL: URL,
+        validatedBy report: WorkspaceAppPackageValidationReport,
+        into workspace: Workspace,
+        modelContext: ModelContext
+    ) throws -> WorkspaceAppPackageImportResult {
         guard report.canInstall,
               let package = report.package,
               var manifest = report.manifest else {
@@ -380,7 +395,11 @@ struct WorkspaceAppPackageService {
         )
         // Seed storage against the PERSISTED manifest (createApp may have suffixed the logical id) so
         // the imported rows land in the app's actual storage path.
-        try importStorageData(from: packageURL, manifest: result.manifest, workspace: workspace)
+        do {
+            try importStorageData(from: packageURL, manifest: result.manifest, workspace: workspace)
+        } catch is WorkspaceAppPackageFileResolutionError {
+            throw WorkspaceAppPackageError.invalidPackage(validatePackage(at: packageURL))
+        }
         return WorkspaceAppPackageImportResult(
             app: result.app,
             report: report,
