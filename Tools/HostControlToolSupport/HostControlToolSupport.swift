@@ -794,7 +794,6 @@ private struct JiraHTTPRequest {
 
 private enum JiraRequestPolicy {
     private static let readFields = [
-        "key",
         "summary",
         "status",
         "assignee",

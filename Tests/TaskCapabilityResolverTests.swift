@@ -408,6 +408,60 @@ struct TaskCapabilityResolverTests {
         #expect(!prompt.contains("/rest/api/3/mypermissions"))
     }
 
+    @Test("Docker routed Jira prompt includes connector alias in runtime examples")
+    func dockerRoutedJiraPromptIncludesConnectorAliasInRuntimeExamples() throws {
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+
+        let workspace = Workspace(name: "Docker Multi Jira Workspace", primaryPath: "/tmp/docker-multi-jira-workspace")
+        context.insert(workspace)
+
+        let eng = Connector(
+            name: "Eng Jira",
+            serviceType: "jira",
+            connectorDescription: "Engineering Jira",
+            baseURL: "https://eng.example.atlassian.net",
+            authMethod: "basic"
+        )
+        eng.workspace = workspace
+        eng.configKeys = ["JIRA_BASE_URL", "JIRA_EMAIL", "JIRA_API_TOKEN"]
+        eng.configValues = ["https://eng.example.atlassian.net", "eng@example.edu", "eng-token"]
+        context.insert(eng)
+
+        let ops = Connector(
+            name: "Ops Jira",
+            serviceType: "jira",
+            connectorDescription: "Operations Jira",
+            baseURL: "https://ops.example.atlassian.net",
+            authMethod: "basic"
+        )
+        ops.workspace = workspace
+        ops.configKeys = ["JIRA_BASE_URL", "JIRA_EMAIL", "JIRA_API_TOKEN"]
+        ops.configValues = ["https://ops.example.atlassian.net", "ops@example.edu", "ops-token"]
+        context.insert(ops)
+
+        let task = AgentTask(
+            title: "Compare Jira",
+            goal: "Read Jira issues in Docker from both sites",
+            workspace: workspace
+        )
+        task.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encode(WorkspaceExecutionEnvironment(
+            id: "image:workspace",
+            kind: .dockerImage,
+            displayName: "Workspace Image",
+            image: "astra/workspace:latest"
+        ))
+        context.insert(task)
+        try context.save()
+
+        let prompt = AgentPromptBuilder.buildPrompt(for: task)
+
+        #expect(prompt.contains(#"Runtime example: mcp__astra_host__jira with {"operation":"status","alias":"eng_jira"}"#))
+        #expect(prompt.contains(#"Runtime example: mcp__astra_host__jira with {"operation":"status","alias":"ops_jira"}"#))
+        #expect(prompt.contains(#"{"operation":"search_jql","alias":"eng_jira","jql":"project = KEY","max_results":1}"#))
+        #expect(prompt.contains(#"{"operation":"search_jql","alias":"ops_jira","jql":"project = KEY","max_results":1}"#))
+    }
+
     @Test("Follow-up prompt preserves namespaced connector manifest")
     func followUpPromptPreservesNamespacedConnectorManifest() throws {
         let container = try makeTaskCapabilityResolverContainer()

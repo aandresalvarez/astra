@@ -167,6 +167,7 @@ struct HostControlToolSupportTests {
         #expect(fields.contains("summary"))
         #expect(fields.contains("status"))
         #expect(fields.contains("assignee"))
+        #expect(!fields.split(separator: ",").contains("key"))
         #expect(!fields.contains("comment"))
         #expect(!fields.contains("attachment"))
     }

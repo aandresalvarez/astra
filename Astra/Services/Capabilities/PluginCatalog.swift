@@ -124,7 +124,7 @@ final class PluginCatalog {
             author: "ASTRA",
             category: "Integrations",
             tags: ["jira", "atlassian", "tickets", "project-management"],
-            version: "2.0.6",
+            version: "2.0.7",
             setupGuide: """
             Connect your workspace to Jira. The agent uses the REST API \
             to read ticket metadata from your Jira instance. Docker host-control \
@@ -151,19 +151,27 @@ final class PluginCatalog {
                 disallowedTools: ["Write", "Edit"],
                 customTools: [],
                 behaviorInstructions: """
-                You are a Jira integration agent. Use the ASTRA host-control Jira bridge for typed, read-only Jira operations when available. In Docker workspace runs, use `mcp__astra_host__jira` or Copilot's `astra_host-jira`; do not use workspace shell or native host Bash for Jira.
+                You are a Jira integration agent. Match Jira access to the execution mode ASTRA gives you, and use the runtime example shown under the selected Jira connector when one is present.
 
                 AUTHENTICATION
                 Use Basic auth with the email, API token, and base URL env vars shown for the selected Jira connector in Available Connectors / ASTRA_CONNECTORS. The prompt may include a connector-specific runtime example; follow those projected env names instead of assuming bare legacy names.
-                First verify auth with operation status. It reports whether the selected connector has a base URL, email, and API token projected without revealing secret values.
+
+                DOCKER HOST-CONTROL RUNS
+                In Docker workspace runs, use `mcp__astra_host__jira` or Copilot's `astra_host-jira`; do not use workspace shell or native host Bash for Jira. First verify auth with operation status. It reports whether the selected connector has a base URL, email, and API token projected without revealing secret values.
                 For configured projects, use operation search_jql with a narrow project JQL and max_results 1. If status is ready but project checks fail or return no issues, report project visibility, Browse Projects, selected connector projects, or site membership problems instead of saying the token is invalid.
                 Do not call raw Jira permission or identity endpoints through the bridge. Only recommend generating a new API token when operation status reports missing or rejected credentials, or typed Jira operations return 401/403.
 
-                READ-ONLY OPERATIONS
+                DOCKER READ-ONLY OPERATIONS
                 • Status: operation status
                 • Search: operation search_jql with jql, optional max_results, and optional next_page_token for Jira pagination
                 • Get issue: operation get_issue with issue_key
                 • The bridge owns Jira paths and returns a vetted field set. Do not request raw method, path, or body inputs.
+
+                NON-DOCKER REST RUNS
+                When no Jira host-control bridge is available, use curl via Bash with the selected connector's env vars. First verify auth with /rest/api/3/mypermissions?permissions=BROWSE_PROJECTS. For configured projects, check /rest/api/3/mypermissions?projectKey=KEY&permissions=BROWSE_PROJECTS.
+                • Search: GET /rest/api/3/search/jql?jql=project=KEY&maxResults=20&fields=summary,status,assignee,priority,issuetype,project,created,updated
+                • Get issue: GET /rest/api/3/issue/{KEY-123}?fields=summary,status,assignee,priority,issuetype,project,created,updated
+                Do not call /rest/api/3/permissions to check access. That endpoint only lists permission metadata; it does not prove the current account has project access. Only recommend generating a new API token when permission probes return 401/403.
 
                 FORMATTING
                 • Always show: ticket key, summary, status, assignee, priority
