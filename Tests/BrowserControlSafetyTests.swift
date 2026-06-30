@@ -251,6 +251,9 @@ struct BrowserControlSafetyTests {
         #expect(script.contains(#"url.hash = "";"#))
         #expect(script.contains("locator: target.locator || locatorSummary()"))
         #expect(script.contains(#"locator: { focused: true }"#))
+        #expect(script.contains("const focusedTextEntryEligible"))
+        #expect(script.contains(#"type === "hidden""#))
+        #expect(script.contains("!visible(target.el) && !focusedTextEntryEligible(target.el)"))
         let preserveFailure = try #require(script.range(of: "if (target.ok === false) return JSON.stringify(publicTarget(target));"))
         let successReturn = try #require(script.range(of: "return JSON.stringify(publicTarget(Object.assign({}, target, { ok: true })));"))
         #expect(preserveFailure.lowerBound < successReturn.lowerBound)
@@ -593,6 +596,74 @@ struct BrowserControlSafetyTests {
         #expect(BrowserKeypressSafety.requiresTextEntryPreflight(key: "Space", modifiers: []))
         #expect(BrowserKeypressSafety.requiresTextEntryPreflight(key: "Backspace", modifiers: []))
         #expect(BrowserKeypressSafety.requiresTextEntryPreflight(key: "v", modifiers: ["command"]))
+    }
+
+    @Test("Page activation keys can dispatch without focused target only for unbound focus")
+    func pageActivationKeysCanDispatchWithoutFocusedTargetOnlyForUnboundFocus() throws {
+        let missingTarget = BrowserTextEntryPreflight.missingFocusedTargetBlockResponse(
+            action: "keypress",
+            targetInfo: [
+                "ok": false,
+                "error": "no_focused_element",
+                "role": "document",
+                "tag": "body",
+                "url": "https://app.example.com/list"
+            ]
+        )
+        let missingTargetJSON = try jsonString(missingTarget)
+        let changedTargetJSON = try jsonString([
+            "ok": false,
+            "stopReason": "text_entry_target_changed",
+            "error": "text_entry_target_changed"
+        ])
+
+        #expect(BrowserKeypressSafety.canDispatchWithoutFocusedTarget(key: "Space", modifiers: []))
+        #expect(BrowserKeypressSafety.canDispatchWithoutFocusedTarget(key: "Enter", modifiers: []))
+        #expect(!BrowserKeypressSafety.canDispatchWithoutFocusedTarget(key: "Backspace", modifiers: []))
+        #expect(!BrowserKeypressSafety.canDispatchWithoutFocusedTarget(key: "Space", modifiers: ["command"]))
+        #expect(BrowserKeypressSafety.canDispatchBlockedPreflightWithoutFocusedTarget(
+            key: "Space",
+            modifiers: [],
+            blockedPreflightJSON: missingTargetJSON
+        ))
+        #expect(BrowserKeypressSafety.canDispatchBlockedPreflightWithoutFocusedTarget(
+            key: "Return",
+            modifiers: [],
+            blockedPreflightJSON: missingTargetJSON
+        ))
+        #expect(!BrowserKeypressSafety.canDispatchBlockedPreflightWithoutFocusedTarget(
+            key: "Backspace",
+            modifiers: [],
+            blockedPreflightJSON: missingTargetJSON
+        ))
+        #expect(!BrowserKeypressSafety.canDispatchBlockedPreflightWithoutFocusedTarget(
+            key: "Space",
+            modifiers: [],
+            blockedPreflightJSON: changedTargetJSON
+        ))
+    }
+
+    @Test("Keypress preflight only falls through unbound page activation blocks")
+    func keypressPreflightOnlyFallsThroughUnboundPageActivationBlocks() throws {
+        let repoRoot = URL(filePath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let sessionPath = repoRoot
+            .appendingPathComponent("Astra")
+            .appendingPathComponent("Services")
+            .appendingPathComponent("Browser")
+            .appendingPathComponent("ShelfBrowserSession.swift")
+            .path
+        let source = try String(contentsOfFile: sessionPath, encoding: .utf8)
+        let methodStart = try #require(source.range(of: "private func keypress(key: String, modifiers: [String]) async throws -> String {"))
+        let methodEnd = try #require(source[methodStart.upperBound...].range(of: "private func insertText"))
+        let methodSource = source[methodStart.lowerBound..<methodEnd.lowerBound]
+
+        let blockedResult = try #require(methodSource.range(of: "if let result = preflight.blockedResultJSON"))
+        let blockedSource = methodSource[blockedResult.lowerBound...]
+        let fallthroughGuard = try #require(blockedSource.range(of: "BrowserKeypressSafety.canDispatchBlockedPreflightWithoutFocusedTarget"))
+        let returnBlocked = try #require(blockedSource.range(of: "return result"))
+        #expect(blockedResult.lowerBound < fallthroughGuard.lowerBound)
+        #expect(fallthroughGuard.lowerBound < returnBlocked.lowerBound)
+        #expect(methodSource.contains("preflightTargetSignature = preflight.targetSignature"))
     }
 
     @Test("Uninspectable frame block redacts target metadata")
@@ -1179,5 +1250,10 @@ struct BrowserControlSafetyTests {
         let recovery = response["recovery"] as? [String: Any]
         #expect(recovery?["kind"] as? String == "inspect-trace")
         #expect(recovery?["failedAction"] as? String == "POST /click")
+    }
+
+    private func jsonString(_ object: [String: Any]) throws -> String {
+        let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+        return String(decoding: data, as: UTF8.self)
     }
 }

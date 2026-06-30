@@ -580,7 +580,16 @@ enum BrowserAutomationScripts {
           };
           const target = deepActiveElement(document, [], 0);
           if (!target.el) return JSON.stringify(publicTarget(target));
-          if (!visible(target.el)) return JSON.stringify(publicTarget(Object.assign({}, target, { ok: false, error: "target_not_visible" })));
+          const focusedTextEntryEligible = (el) => {
+            const tag = String(el.tagName || "").toLowerCase();
+            const type = String(el.getAttribute("type") || "").toLowerCase();
+            const role = String(el.getAttribute("role") || "").toLowerCase();
+            if (type === "hidden") return false;
+            return tag === "input" || tag === "textarea" || el.isContentEditable || role.includes("textbox");
+          };
+          if (!visible(target.el) && !focusedTextEntryEligible(target.el)) {
+            return JSON.stringify(publicTarget(Object.assign({}, target, { ok: false, error: "target_not_visible" })));
+          }
           if (disabled(target.el)) return JSON.stringify(publicTarget(Object.assign({}, target, { ok: false, error: "target_disabled" })));
           if (target.ok === false) return JSON.stringify(publicTarget(target));
           return JSON.stringify(publicTarget(Object.assign({}, target, { ok: true })));

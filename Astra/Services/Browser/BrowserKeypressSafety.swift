@@ -37,6 +37,26 @@ enum BrowserKeypressSafety {
         return !normalizedKey.isEmpty
     }
 
+    static func canDispatchWithoutFocusedTarget(key: String, modifiers: [String]) -> Bool {
+        let normalizedKey = key.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let normalizedModifiers = Set(modifiers.map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() })
+        guard normalizedModifiers.isEmpty else { return false }
+        return pageActivationKeys.contains(normalizedKey)
+    }
+
+    static func canDispatchBlockedPreflightWithoutFocusedTarget(
+        key: String,
+        modifiers: [String],
+        blockedPreflightJSON: String
+    ) -> Bool {
+        guard canDispatchWithoutFocusedTarget(key: key, modifiers: modifiers),
+              let data = blockedPreflightJSON.data(using: .utf8),
+              let response = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return false
+        }
+        return BrowserTextEntryPreflight.terminalStopReason(for: response) == "text_entry_target_not_bound"
+    }
+
     static func evaluate(
         key: String,
         modifiers: [String],
@@ -89,6 +109,10 @@ enum BrowserKeypressSafety {
         "arrowdown", "arrowleft", "arrowright", "arrowup",
         "down", "esc", "escape", "home", "end", "left",
         "pagedown", "pageup", "right", "tab", "up"
+    ]
+
+    private static let pageActivationKeys: Set<String> = [
+        "enter", "return", "space"
     ]
 
     private static let textEditingKeys: Set<String> = [

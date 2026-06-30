@@ -3582,8 +3582,8 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                     fields: ["key_length": String(key.count), "modifier_count": String(modifiers.count)]
                 )
             )
-            if let result = preflight.blockedResultJSON { return result }
-            preflightTargetSignature = preflight.targetSignature
+            if let result = preflight.blockedResultJSON, !BrowserKeypressSafety.canDispatchBlockedPreflightWithoutFocusedTarget(key: key, modifiers: modifiers, blockedPreflightJSON: result) { return result }
+            if preflight.blockedResultJSON == nil { preflightTargetSignature = preflight.targetSignature }
         }
         do {
             let json: String
