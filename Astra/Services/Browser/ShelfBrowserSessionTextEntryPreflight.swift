@@ -89,12 +89,13 @@ extension ShelfBrowserSession {
             ]
         }
 
-        let targetInfo = try await replacementTextEntryTargets(selector: selector)
+        let targetInfo = try await replacementTextEntryTargets(selector: selector, find: find)
         let ok = (targetInfo["ok"] as? Bool) ?? (targetInfo["ok"] as? NSNumber)?.boolValue ?? false
         guard ok else { return targetInfo }
 
+        let targetCount = Self.textEntryPreflightIntValue(targetInfo["targetCount"]) ?? 0
         let targets = targetInfo["targets"] as? [[String: Any]] ?? []
-        guard !targets.isEmpty else {
+        guard targetCount > 0 else {
             return [
                 "ok": false,
                 "error": "text_entry_target_not_found",
@@ -104,6 +105,7 @@ extension ShelfBrowserSession {
                 "url": currentURL
             ]
         }
+        guard !targets.isEmpty else { return nil }
         for target in targets {
             if let blocked = BrowserTextEntryPreflight.blockResponse(
                 action: BrowserActionKind.setValue.rawValue,
@@ -115,14 +117,14 @@ extension ShelfBrowserSession {
         return nil
     }
 
-    func replacementTextEntryTargets(selector: String) async throws -> [String: Any] {
+    func replacementTextEntryTargets(selector: String, find: String) async throws -> [String: Any] {
         let json: String
         if isUsingControlledBrowser {
-            json = try await controlledBrowser.replaceTextTargetsInfo(selector: selector)
+            json = try await controlledBrowser.replaceTextTargetsInfo(selector: selector, find: find)
             syncDisplayedStateForEngine()
             publishBridgeState()
         } else {
-            json = try await evaluateJavaScriptString(BrowserAutomationScripts.replaceTextTargetsInfoScript(selector: selector))
+            json = try await evaluateJavaScriptString(BrowserAutomationScripts.replaceTextTargetsInfoScript(selector: selector, find: find))
         }
         return try Self.jsonObject(from: json)
     }
@@ -137,5 +139,12 @@ extension ShelfBrowserSession {
             json = try await evaluateJavaScriptString(BrowserAutomationScripts.focusedTargetInfoScript())
         }
         return try Self.jsonObject(from: json)
+    }
+
+    private static func textEntryPreflightIntValue(_ value: Any?) -> Int? {
+        if let int = value as? Int { return int }
+        if let number = value as? NSNumber { return number.intValue }
+        if let string = value as? String { return Int(string) }
+        return nil
     }
 }

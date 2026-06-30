@@ -699,66 +699,14 @@ enum BrowserAutomationScripts {
           const target = resolveTarget();
           if (!target.ok) return JSON.stringify(publicTarget(target));
           const el = target.el;
+          \(sensitiveTextEntryPrelude)
           if (!("value" in el) && !el.isContentEditable && el.tagName !== "SELECT") {
             const result = publicTarget(target);
             result.ok = false;
             result.error = "target_not_editable";
             return JSON.stringify(result);
           }
-          const sensitiveRisk = (el) => {
-            const text = [
-              selectorFor(el),
-              labelFor(el),
-              nameFor(el),
-              roleFor(el),
-              el.tagName.toLowerCase(),
-              el.getAttribute("type") || "",
-              el.getAttribute("autocomplete") || "",
-              el.getAttribute("placeholder") || "",
-              el.getAttribute("data-testid") || el.getAttribute("data-test") || "",
-              el.getAttribute("href") || ""
-            ].join(" ").toLowerCase();
-            if (String(el.getAttribute("type") || "").toLowerCase() === "password" || /password|passcode|secret|current-password|new-password/.test(text)) return "credential_input_blocked";
-            if (/mfa|2fa|two factor|two-factor|verification code|security code|otp|one-time/.test(text)) return "mfa_input_blocked";
-            return "";
-          };
-          const redactedURL = (value) => {
-            try {
-              const parsed = new URL(String(value || ""), location.href);
-              return parsed.origin;
-            } catch (_) {
-              return value ? "[redacted url]" : "";
-            }
-          };
-          const sensitiveBlock = (el, action) => {
-            const error = sensitiveRisk(el);
-            if (!error) return null;
-            const risk = error === "mfa_input_blocked" ? "mfaInput" : "credentialInput";
-            return {
-              ok: false,
-              error,
-              action,
-              summary: error === "mfa_input_blocked"
-                ? "ASTRA will not type MFA or verification codes. The user should enter this directly in the browser."
-                : "ASTRA will not type passwords or secrets. The user should enter this directly in the browser.",
-              risk,
-              target: {
-                selector: selectorFor(el),
-                requestedSelector: selector || "",
-                label: "[redacted]",
-                name: "[redacted]",
-                role: roleFor(el),
-                tag: el.tagName.toLowerCase(),
-                type: el.getAttribute("type") || "",
-                autocomplete: el.getAttribute("autocomplete") || "",
-                placeholder: "[redacted]",
-                testID: el.getAttribute("data-testid") || el.getAttribute("data-test") || "",
-                href: redactedURL(el.getAttribute("href") || ""),
-                url: redactedURL(location.href)
-              }
-            };
-          };
-          const blocked = sensitiveBlock(el, action);
+          const blocked = astraSensitiveBlock(el, action, selector || "", { selectorFor, labelFor, nameFor, roleFor });
           if (blocked) return JSON.stringify(blocked);
           el.scrollIntoView({ block: "center", inline: "center" });
           el.focus();
@@ -850,59 +798,7 @@ enum BrowserAutomationScripts {
             if (tag === "select") return "combobox";
             return "";
           };
-          const sensitiveRisk = (el) => {
-            const text = [
-              selectorFor(el),
-              labelFor(el),
-              nameFor(el),
-              roleFor(el),
-              el.tagName.toLowerCase(),
-              el.getAttribute("type") || "",
-              el.getAttribute("autocomplete") || "",
-              el.getAttribute("placeholder") || "",
-              el.getAttribute("data-testid") || el.getAttribute("data-test") || "",
-              el.getAttribute("href") || ""
-            ].join(" ").toLowerCase();
-            if (String(el.getAttribute("type") || "").toLowerCase() === "password" || /password|passcode|secret|current-password|new-password/.test(text)) return "credential_input_blocked";
-            if (/mfa|2fa|two factor|two-factor|verification code|security code|otp|one-time/.test(text)) return "mfa_input_blocked";
-            return "";
-          };
-          const sensitiveBlock = (el, action) => {
-            const error = sensitiveRisk(el);
-            if (!error) return null;
-            const risk = error === "mfa_input_blocked" ? "mfaInput" : "credentialInput";
-            const redactedURL = (value) => {
-              try {
-                const parsed = new URL(String(value || ""), location.href);
-                return parsed.origin;
-              } catch (_) {
-                return value ? "[redacted url]" : "";
-              }
-            };
-            return {
-              ok: false,
-              error,
-              action,
-              summary: error === "mfa_input_blocked"
-                ? "ASTRA will not type MFA or verification codes. The user should enter this directly in the browser."
-                : "ASTRA will not type passwords or secrets. The user should enter this directly in the browser.",
-              risk,
-              target: {
-                selector: selectorFor(el),
-                requestedSelector: selector || "",
-                label: "[redacted]",
-                name: "[redacted]",
-                role: roleFor(el),
-                tag: el.tagName.toLowerCase(),
-                type: el.getAttribute("type") || "",
-                autocomplete: el.getAttribute("autocomplete") || "",
-                placeholder: "[redacted]",
-                testID: el.getAttribute("data-testid") || el.getAttribute("data-test") || "",
-                href: redactedURL(el.getAttribute("href") || ""),
-                url: redactedURL(location.href)
-              }
-            };
-          };
+          \(sensitiveTextEntryPrelude)
           const setNativeValue = (target, value) => {
             const proto = Object.getPrototypeOf(target);
             const descriptor = proto ? Object.getOwnPropertyDescriptor(proto, "value") : null;
@@ -931,7 +827,7 @@ enum BrowserAutomationScripts {
             const before = "value" in el ? String(el.value || "") : String(el.textContent || "");
             const result = replaceInString(before);
             if (result.count <= 0) continue;
-            const blocked = sensitiveBlock(el, "setValue");
+            const blocked = astraSensitiveBlock(el, "setValue", selector || "", { selectorFor, labelFor, nameFor, roleFor });
             if (blocked) return JSON.stringify(blocked);
             el.focus();
             if ("value" in el) {
@@ -962,10 +858,11 @@ enum BrowserAutomationScripts {
         """
     }
 
-    static func replaceTextTargetsInfoScript(selector: String) -> String {
+    static func replaceTextTargetsInfoScript(selector: String, find: String) -> String {
         """
         (() => {
           const selector = \(jsonLiteral(selector));
+          const find = \(jsonLiteral(find));
           const visible = (el) => {
             const style = window.getComputedStyle(el);
             const rect = el.getBoundingClientRect();
@@ -1014,13 +911,19 @@ enum BrowserAutomationScripts {
             if (tag === "select") return "combobox";
             return "";
           };
+          const replaceWouldMutate = (el) => {
+            if (!find) return false;
+            const before = "value" in el ? String(el.value || "") : String(el.textContent || "");
+            return before.includes(find);
+          };
           let candidates = [];
           try {
             candidates = Array.from(document.querySelectorAll(selector)).filter((el) => visible(el) && editable(el));
           } catch (_) {
             return JSON.stringify({ ok: false, error: "invalid_selector", selector });
           }
-          const targets = candidates.map((el) => ({
+          const mutationTargets = candidates.filter(replaceWouldMutate);
+          const targets = mutationTargets.map((el) => ({
             ok: true,
             selector: selectorFor(el),
             requestedSelector: selector,
@@ -1038,7 +941,7 @@ enum BrowserAutomationScripts {
             actionable: true,
             url: location.href
           }));
-          return JSON.stringify({ ok: true, selector, targetCount: targets.length, targets });
+          return JSON.stringify({ ok: true, selector, targetCount: candidates.length, mutationTargetCount: targets.length, targets });
         })()
         """
     }
@@ -1114,53 +1017,9 @@ enum BrowserAutomationScripts {
             if (name) return el.tagName.toLowerCase() + "[name=" + JSON.stringify(name) + "]";
             return el.tagName.toLowerCase();
           };
-          const sensitiveText = [
-            selectorFor(target),
-            labelFor(target),
-            nameFor(target),
-            roleFor(target),
-            target.tagName.toLowerCase(),
-            target.getAttribute("type") || "",
-            target.getAttribute("autocomplete") || "",
-            target.getAttribute("placeholder") || "",
-            target.getAttribute("data-testid") || target.getAttribute("data-test") || "",
-            target.getAttribute("href") || ""
-          ].join(" ").toLowerCase();
-          const sensitiveError = String(target.getAttribute("type") || "").toLowerCase() === "password" || /password|passcode|secret|current-password|new-password/.test(sensitiveText)
-            ? "credential_input_blocked"
-            : (/mfa|2fa|two factor|two-factor|verification code|security code|otp|one-time/.test(sensitiveText) ? "mfa_input_blocked" : "");
-          if (sensitiveError) {
-            const redactedURL = (value) => {
-              try {
-                const parsed = new URL(String(value || ""), location.href);
-                return parsed.origin;
-              } catch (_) {
-                return value ? "[redacted url]" : "";
-              }
-            };
-            return JSON.stringify({
-              ok: false,
-              error: sensitiveError,
-              action: "insertText",
-              summary: sensitiveError === "mfa_input_blocked"
-                ? "ASTRA will not type MFA or verification codes. The user should enter this directly in the browser."
-                : "ASTRA will not type passwords or secrets. The user should enter this directly in the browser.",
-              risk: sensitiveError === "mfa_input_blocked" ? "mfaInput" : "credentialInput",
-              target: {
-                selector: selectorFor(target),
-                label: "[redacted]",
-                name: "[redacted]",
-                role: roleFor(target),
-                tag: target.tagName.toLowerCase(),
-                type: target.getAttribute("type") || "",
-                autocomplete: target.getAttribute("autocomplete") || "",
-                placeholder: "[redacted]",
-                testID: target.getAttribute("data-testid") || target.getAttribute("data-test") || "",
-                href: redactedURL(target.getAttribute("href") || ""),
-                url: redactedURL(location.href)
-              }
-            });
-          }
+          \(sensitiveTextEntryPrelude)
+          const blocked = astraSensitiveBlock(target, "insertText", "", { selectorFor, labelFor, nameFor, roleFor });
+          if (blocked) return JSON.stringify(blocked);
           target.focus();
           if ("value" in target) {
             const start = target.selectionStart ?? String(target.value || "").length;
@@ -1179,6 +1038,89 @@ enum BrowserAutomationScripts {
           target.dispatchEvent(new Event("change", { bubbles: true }));
           return JSON.stringify({ ok: true, textLength: text.length, focusedTag: target.tagName ? target.tagName.toLowerCase() : "" });
         })()
+        """
+    }
+
+    private static var sensitiveTextEntryPrelude: String {
+        """
+          const astraSensitiveURL = (value) => {
+            try {
+              const parsed = new URL(String(value || ""), location.href);
+              return parsed.origin;
+            } catch (_) {
+              return value ? "[redacted url]" : "";
+            }
+          };
+          const astraSensitiveSelector = (value, el) => {
+            const tag = String(el?.tagName || "").toLowerCase();
+            if (!String(value || "").trim()) return "";
+            return tag ? tag + "[redacted-selector]" : "[redacted selector]";
+          };
+          const astraSensitiveMetadata = (el, requestedSelector, helpers) => ({
+            selector: helpers.selectorFor(el),
+            requestedSelector: requestedSelector || "",
+            label: helpers.labelFor(el),
+            name: helpers.nameFor(el),
+            role: helpers.roleFor(el),
+            tag: el.tagName.toLowerCase(),
+            type: el.getAttribute("type") || "",
+            autocomplete: el.getAttribute("autocomplete") || "",
+            placeholder: el.getAttribute("placeholder") || "",
+            testID: el.getAttribute("data-testid") || el.getAttribute("data-test") || "",
+            href: el.getAttribute("href") || ""
+          });
+          const astraSensitiveRisk = (metadata) => {
+            const text = [
+              metadata.selector,
+              metadata.requestedSelector,
+              metadata.label,
+              metadata.name,
+              metadata.role,
+              metadata.tag,
+              metadata.type,
+              metadata.autocomplete,
+              metadata.placeholder,
+              metadata.testID,
+              metadata.href
+            ].join(" ").toLowerCase();
+            if (String(metadata.type || "").toLowerCase() === "password"
+              || /password|passcode|secret|current-password|new-password/.test(text)) {
+              return "credential_input_blocked";
+            }
+            if (/mfa|2fa|two factor|two-factor|verification code|security code|otp|one-time/.test(text)) {
+              return "mfa_input_blocked";
+            }
+            return "";
+          };
+          const astraSensitiveBlock = (el, action, requestedSelector, helpers) => {
+            const metadata = astraSensitiveMetadata(el, requestedSelector, helpers);
+            const error = astraSensitiveRisk(metadata);
+            if (!error) return null;
+            const risk = error === "mfa_input_blocked" ? "mfaInput" : "credentialInput";
+            return {
+              ok: false,
+              error,
+              action,
+              summary: error === "mfa_input_blocked"
+                ? "ASTRA will not type MFA or verification codes. The user should enter this directly in the browser."
+                : "ASTRA will not type passwords or secrets. The user should enter this directly in the browser.",
+              risk,
+              target: {
+                selector: astraSensitiveSelector(metadata.selector, el),
+                requestedSelector: astraSensitiveSelector(metadata.requestedSelector, el),
+                label: "[redacted]",
+                name: "[redacted]",
+                role: metadata.role,
+                tag: metadata.tag,
+                type: metadata.type,
+                autocomplete: metadata.autocomplete,
+                placeholder: "[redacted]",
+                testID: metadata.testID,
+                href: astraSensitiveURL(metadata.href),
+                url: astraSensitiveURL(location.href)
+              }
+            };
+          };
         """
     }
 

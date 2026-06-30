@@ -120,6 +120,27 @@ struct BrowserAnalysisTests {
         #expect(evidence["accessibilityName"] as? String == "Password")
     }
 
+    @Test("Action targeting prefers visible labels for accessibility controls")
+    func actionTargetingPrefersVisibleLabelsForAccessibilityControls() throws {
+        let analysis = BrowserAnalysisBuilder.build(
+            snapshot: Self.sampleSnapshot(controls: [
+                Self.control(
+                    selector: "input[name=q]",
+                    tag: "input",
+                    role: "textbox",
+                    label: "Search docs",
+                    name: "q"
+                )
+            ]),
+            backend: "controlled Chromium profile",
+            engine: "controlled"
+        )
+        let control = try #require(analysis.controls.first)
+
+        #expect(BrowserControlTargetingPolicy.semanticName(for: control, source: .accessibility) == "Search docs")
+        #expect(BrowserControlTargetingPolicy.semanticName(for: control, source: .dom) == "q")
+    }
+
     @Test("Analyze response is compact by default and full when requested")
     func analyzeResponseCompactAndFull() {
         let controls = (0..<25).map { index in

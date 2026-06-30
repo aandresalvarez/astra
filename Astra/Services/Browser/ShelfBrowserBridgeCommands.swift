@@ -131,6 +131,15 @@ struct BrowserControlActionTarget {
     let usedSelector: Bool
 }
 
+enum BrowserControlTargetingPolicy {
+    static func semanticName(for control: BrowserControl, source: BrowserControlSource) -> String {
+        if source == .dom {
+            return control.name.isEmpty ? control.label : control.name
+        }
+        return control.label.isEmpty ? control.name : control.label
+    }
+}
+
 struct VerifyTextCommand: Decodable {
     let text: String
     let absent: Bool?

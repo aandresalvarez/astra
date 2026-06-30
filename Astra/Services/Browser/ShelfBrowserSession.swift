@@ -2594,7 +2594,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
 
     private func actionTarget(for control: BrowserControl, controlRef: BrowserControlRef?) -> BrowserControlActionTarget {
         let source = controlRef?.source ?? .dom
-        let semanticName = control.name.isEmpty ? control.label : control.name
+        let semanticName = BrowserControlTargetingPolicy.semanticName(for: control, source: source)
         let hasSemanticAnchor = !semanticName.isEmpty || !control.role.isEmpty || !control.placeholder.isEmpty || !control.testID.isEmpty
         let shouldUseSelector = source == .dom && !control.selector.isEmpty
         let shouldUseCoordinates = !shouldUseSelector && !hasSemanticAnchor

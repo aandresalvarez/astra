@@ -118,8 +118,8 @@ struct BrowserControlSafetyTests {
             action: BrowserActionKind.fill.rawValue,
             targetInfo: [
                 "ok": true,
-                "selector": "#password",
-                "requestedSelector": "input[type=password]",
+                "selector": #"input[aria-label="enter your secret"]"#,
+                "requestedSelector": #"input[aria-label="verification code"]"#,
                 "label": "correct horse battery staple",
                 "role": "textbox",
                 "tag": "input",
@@ -138,7 +138,8 @@ struct BrowserControlSafetyTests {
         let target = try #require(block["target"] as? [String: Any])
         #expect(target["href"] as? String == "https://example.com")
         #expect(target["url"] as? String == "https://example.com")
-        #expect(target["requestedSelector"] as? String == "input[type=password]")
+        #expect(target["selector"] as? String == "input[redacted-selector]")
+        #expect(target["requestedSelector"] as? String == "input[redacted-selector]")
         #expect(target["autocomplete"] as? String == "")
         #expect(target["label"] as? String == "[redacted]")
         #expect(target["placeholder"] as? String == "[redacted]")
@@ -197,19 +198,26 @@ struct BrowserControlSafetyTests {
         )
         #expect(typeScript.contains("credential_input_blocked"))
         #expect(typeScript.contains("mfa_input_blocked"))
-        #expect(typeScript.contains("const blocked = sensitiveBlock(el, action)"))
+        #expect(typeScript.contains("const astraSensitiveRisk"))
+        #expect(typeScript.contains("const astraSensitiveBlock"))
+        #expect(typeScript.contains("const blocked = astraSensitiveBlock(el, action, selector || \"\""))
         #expect(typeScript.contains("if (blocked) return JSON.stringify(blocked)"))
+        #expect(!typeScript.contains("const sensitiveRisk"))
 
         let insertScript = BrowserAutomationScripts.insertTextScript("secret")
         #expect(insertScript.contains("credential_input_blocked"))
         #expect(insertScript.contains("mfa_input_blocked"))
         #expect(insertScript.contains("autocomplete"))
-        #expect(insertScript.contains("nameFor(target)"))
-        #expect(insertScript.contains("href: redactedURL(target.getAttribute(\"href\") || \"\")"))
-        #expect(insertScript.contains("url: redactedURL(location.href)"))
+        #expect(insertScript.contains("name: helpers.nameFor(el)"))
+        #expect(insertScript.contains("astraSensitiveBlock(target, \"insertText\""))
+        #expect(insertScript.contains("href: astraSensitiveURL(metadata.href)"))
+        #expect(insertScript.contains("url: astraSensitiveURL(location.href)"))
 
-        let replaceTargetsScript = BrowserAutomationScripts.replaceTextTargetsInfoScript(selector: "input")
+        let replaceTargetsScript = BrowserAutomationScripts.replaceTextTargetsInfoScript(selector: "input", find: "old")
         #expect(replaceTargetsScript.contains("querySelectorAll(selector)"))
+        #expect(replaceTargetsScript.contains("const find = \"old\""))
+        #expect(replaceTargetsScript.contains("replaceWouldMutate"))
+        #expect(replaceTargetsScript.contains("mutationTargetCount"))
         #expect(replaceTargetsScript.contains("targets"))
         #expect(replaceTargetsScript.contains("name: nameFor(el)"))
 
@@ -219,12 +227,12 @@ struct BrowserControlSafetyTests {
             selector: "input",
             all: true
         )
-        #expect(replaceScript.contains("sensitiveBlock(el, \"setValue\")"))
+        #expect(replaceScript.contains("astraSensitiveBlock(el, \"setValue\", selector || \"\""))
         #expect(replaceScript.contains("return JSON.stringify(blocked)"))
-        #expect(replaceScript.contains("href: redactedURL(el.getAttribute(\"href\") || \"\")"))
-        #expect(replaceScript.contains("url: redactedURL(location.href)"))
+        #expect(replaceScript.contains("href: astraSensitiveURL(metadata.href)"))
+        #expect(replaceScript.contains("url: astraSensitiveURL(location.href)"))
         let replacementCheck = try #require(replaceScript.range(of: "const result = replaceInString(before);"))
-        let sensitiveCheck = try #require(replaceScript.range(of: "const blocked = sensitiveBlock(el, \"setValue\");"))
+        let sensitiveCheck = try #require(replaceScript.range(of: "const blocked = astraSensitiveBlock(el, \"setValue\""))
         #expect(replacementCheck.lowerBound < sensitiveCheck.lowerBound)
 
         let selectorlessReplaceScript = BrowserAutomationScripts.replaceTextScript(

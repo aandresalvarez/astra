@@ -148,8 +148,12 @@ enum BrowserTextEntryPreflight {
     private static func sanitizedTarget(_ targetInfo: [String: Any], risk: BrowserRisk) -> [String: Any] {
         let redactText = risk == .credentialInput || risk == .mfaInput
         var target: [String: Any] = [
-            "selector": string(targetInfo["selector"]),
-            "requestedSelector": string(targetInfo["requestedSelector"]),
+            "selector": redactText
+                ? sanitizedSensitiveSelector(string(targetInfo["selector"]), tag: string(targetInfo["tag"]))
+                : string(targetInfo["selector"]),
+            "requestedSelector": redactText
+                ? sanitizedSensitiveSelector(string(targetInfo["requestedSelector"]), tag: string(targetInfo["tag"]))
+                : string(targetInfo["requestedSelector"]),
             "label": redactText ? "[redacted]" : string(targetInfo["label"]),
             "name": redactText ? "[redacted]" : string(targetInfo["name"]),
             "role": string(targetInfo["role"]),
@@ -204,6 +208,14 @@ enum BrowserTextEntryPreflight {
         }
         let port = components.port.map { ":\($0)" } ?? ""
         return "\(scheme)://\(host)\(port)"
+    }
+
+    private static func sanitizedSensitiveSelector(_ value: String, tag: String) -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+        let normalizedTag = tag.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !normalizedTag.isEmpty else { return "[redacted selector]" }
+        return "\(normalizedTag)[redacted-selector]"
     }
 
     private static func sanitizedSensitiveURL(_ value: String) -> String {
