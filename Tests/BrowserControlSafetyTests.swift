@@ -203,6 +203,13 @@ struct BrowserControlSafetyTests {
             "stopReason": "credential_input_blocked",
             "results": []
         ]) == "credential_input_blocked")
+        let stopped = BrowserTextEntryPreflight.stoppedResponse(results: [[
+            "ok": false,
+            "action": "set",
+            "error": "credential_input_blocked"
+        ]])
+        #expect(stopped["ok"] as? Bool == false)
+        #expect(stopped["stopReason"] as? String == "credential_input_blocked")
         #expect(!BrowserTextEntryPreflight.isTerminalBlockResponse([
             "ok": false,
             "error": "target_not_visible"

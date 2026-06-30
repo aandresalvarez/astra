@@ -5007,7 +5007,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             )
             guard resolved.ok, let control = resolved.currentControl else {
                 results.append(resolved.response.merging(["action": "set"], uniquingKeysWith: { current, _ in current }))
-                return ["ok": false, "results": results]
+                return BrowserTextEntryPreflight.stoppedResponse(results: results)
             }
             let target = actionTarget(for: control, controlRef: resolved.currentControlRef)
             let before = try? await rawSnapshotObject()
@@ -5062,7 +5062,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             )
             guard resolved.ok, let control = resolved.currentControl else {
                 results.append(resolved.response.merging(["action": "click"], uniquingKeysWith: { current, _ in current }))
-                return ["ok": false, "results": results]
+                return BrowserTextEntryPreflight.stoppedResponse(results: results)
             }
             let target = actionTarget(for: control, controlRef: resolved.currentControlRef)
             let before = try? await rawSnapshotObject()

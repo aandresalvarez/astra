@@ -16,6 +16,7 @@ enum BrowserSensitiveControlClassifier {
         framePath: String = "",
         frameFocusUninspectable: Bool
     ) -> BrowserRisk {
+        _ = frameFocusUninspectable
         let text = [
             selector,
             requestedSelector,
@@ -153,6 +154,17 @@ enum BrowserTextEntryPreflight {
         guard isTerminalBlockResponse(response) else { return nil }
         let error = string(response["error"])
         return error.isEmpty ? string(response["stopReason"]) : error
+    }
+
+    static func stoppedResponse(results: [[String: Any]]) -> [String: Any] {
+        guard let stopReason = results.lazy.compactMap(terminalStopReason(for:)).first else {
+            return ["ok": false, "results": results]
+        }
+        return [
+            "ok": false,
+            "stopReason": stopReason,
+            "results": results
+        ]
     }
 
     private static func sanitizedTarget(_ targetInfo: [String: Any], risk: BrowserRisk) -> [String: Any] {
