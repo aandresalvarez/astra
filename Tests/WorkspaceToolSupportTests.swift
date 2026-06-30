@@ -279,11 +279,25 @@ struct WorkspaceToolSupportTests {
             "g\\cloud auth list",
             "s\\sh deid-jsn-workbench hostname",
             "printf 'gcloud auth list\\n' | sh",
+            "printf '%s\\n' 'gcloud auth list' | sh",
             "sh <<'EOF'\ngcloud auth list\nEOF",
+            "if gcloud auth list; then echo ok; fi",
+            "while gcloud auth list; do break; done",
+            "echo $(echo $(echo $(echo $(echo $(echo $(gcloud auth list))))))",
+            "/usr/bin/env gcloud auth list",
             "cmd=gcloud; $cmd auth list",
+            "a=1 cmd=gcloud; $cmd auth list",
+            "cmd='gcloud auth list'; $cmd",
+            "env -S 'gcloud auth list'",
+            "env --split-string='gcloud auth list'",
+            "exec -a harmless gcloud auth list",
+            "eval 'gcloud auth list'",
             "python3 -c \"import subprocess; subprocess.run(['bq', 'ls'])\"",
             "python3 -c \"import subprocess; subprocess.run(['gh', 'api', 'repos/owner/repo'])\"",
+            "python3 -c \"import subprocess; subprocess.run(('gcloud', 'auth', 'list'))\"",
             "python3 -c \"import subprocess; subprocess.run('gcloud auth list', shell=True)\"",
+            "python3 -c \"import subprocess; subprocess.run(args='gcloud auth list', shell=True)\"",
+            "python3 -c \"import subprocess; subprocess.run(shell=True, args='gcloud auth list')\"",
             "python3 -c \"import os; os.system('ssh deid-jsn-workbench hostname')\""
         ]
 
@@ -311,6 +325,10 @@ struct WorkspaceToolSupportTests {
 
         let commands = [
             "grep -R gcloud docs",
+            "grep -R '$(gcloud auth list)' docs",
+            "printf '%s\\n' '$(gcloud auth list)'",
+            "printf '%s\\n' '\\$(gcloud auth list)'",
+            "command -v gcloud",
             "printf 'ssh\\n'",
             "echo gh api repo data",
             "awk '/bq/ { print }' README.md"
