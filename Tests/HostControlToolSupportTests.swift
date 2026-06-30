@@ -324,6 +324,32 @@ struct HostControlToolSupportTests {
         ])
         #expect(try resultText(traceTokenReadResult).contains("gcloud:--trace-token task-token-for-log-correlation --filter labels.audit=tokenized-read compute instances list"))
 
+        let sensitiveWordFilterReadResult = try call(server, id: 13, tool: "gcloud", arguments: [
+            "arguments": [
+                "compute", "instances", "list",
+                "--filter", "labels.purpose=secret-rotation-check",
+                "--format=json"
+            ]
+        ])
+        #expect(try resultText(sensitiveWordFilterReadResult).contains("gcloud:compute instances list --filter labels.purpose=secret-rotation-check --format=json"))
+
+        let sensitiveWordResourceReadResult = try call(server, id: 14, tool: "gcloud", arguments: [
+            "arguments": [
+                "compute", "instances", "describe", "secret-rotation-checker",
+                "--zone=us-central1-a"
+            ]
+        ])
+        #expect(try resultText(sensitiveWordResourceReadResult).contains("gcloud:compute instances describe secret-rotation-checker --zone=us-central1-a"))
+
+        let impersonationReadResult = try call(server, id: 15, tool: "gcloud", arguments: [
+            "arguments": [
+                "compute", "instances", "list",
+                "--impersonate-service-account=reader@example.iam.gserviceaccount.com"
+            ]
+        ])
+        let impersonationReadError = try #require(impersonationReadResult["error"] as? [String: Any])
+        #expect((impersonationReadError["message"] as? String)?.contains("gcloud does not allow credential or mutating operations") == true)
+
         let hostLog = try String(contentsOf: log, encoding: .utf8)
         #expect(!hostLog.contains("auth print-access-token"))
         #expect(!hostLog.contains("run deploy"))
@@ -334,9 +360,12 @@ struct HostControlToolSupportTests {
         #expect(!hostLog.contains("--log-http"))
         #expect(!hostLog.contains("--verbosity debug"))
         #expect(!hostLog.contains("--verbosity=debug"))
+        #expect(!hostLog.contains("--impersonate-service-account"))
         #expect(hostLog.contains("gcloud compute instances list --format=json"))
         #expect(hostLog.contains("gcloud --project clinical-project --filter name~worker compute instances list --format=json"))
         #expect(hostLog.contains("gcloud --trace-token task-token-for-log-correlation --filter labels.audit=tokenized-read compute instances list"))
+        #expect(hostLog.contains("gcloud compute instances list --filter labels.purpose=secret-rotation-check --format=json"))
+        #expect(hostLog.contains("gcloud compute instances describe secret-rotation-checker --zone=us-central1-a"))
     }
 
     private func fakeExecutable(named name: String, root: URL, log: URL, stdout: String) throws -> URL {

@@ -67,7 +67,7 @@ struct HostControlCloudCommandPolicy: Sendable {
         guard !arguments.isEmpty else {
             return .denied("\(toolName) requires an operation")
         }
-        if Self.containsDeniedFlag(in: arguments) {
+        if containsDeniedFlag(in: arguments) {
             return .denied(deniedOperationMessage)
         }
 
@@ -78,17 +78,21 @@ struct HostControlCloudCommandPolicy: Sendable {
         if containsDeniedCommandPrefix(in: actionTokens) {
             return .denied(deniedOperationMessage)
         }
-        if actionTokens.contains(where: Self.containsCredentialDisclosureMarker) {
+
+        let operationIndex = operationTokenIndex(in: actionTokens)
+        let commandPath = operationIndex.map { Array(actionTokens.prefix(through: $0)) } ?? actionTokens
+        if commandPath.contains(where: Self.containsCredentialDisclosureMarker) {
             return .denied(deniedOperationMessage)
         }
 
-        guard let operation = operationToken(in: actionTokens) else {
+        guard let operationIndex else {
             if actionTokens.contains(where: deniedFamilies.contains) ||
                 actionTokens.contains(where: deniedVerbs.contains) {
                 return .denied(deniedOperationMessage)
             }
             return .denied("\(toolName) only allows read-only operations through host control")
         }
+        let operation = actionTokens[operationIndex]
         if deniedFamilies.contains(operation) || deniedVerbs.contains(operation) {
             return .denied(deniedOperationMessage)
         }
@@ -126,12 +130,12 @@ struct HostControlCloudCommandPolicy: Sendable {
         return tokens
     }
 
-    private func operationToken(in tokens: [String]) -> String? {
-        for token in tokens {
+    private func operationTokenIndex(in tokens: [String]) -> Int? {
+        for (index, token) in tokens.enumerated() {
             if readCommandGroups.contains(token) {
                 continue
             }
-            return token
+            return index
         }
         return nil
     }
@@ -157,21 +161,36 @@ struct HostControlCloudCommandPolicy: Sendable {
             token.contains("secret")
     }
 
-    private static func containsDeniedFlag(in arguments: [String]) -> Bool {
-        for (index, token) in arguments.enumerated() {
-            if containsCredentialDisclosureFlag(token) || containsHTTPLoggingFlag(token) {
+    private func containsDeniedFlag(in arguments: [String]) -> Bool {
+        var index = 0
+        while index < arguments.count {
+            let token = arguments[index]
+            if token == "--" {
+                return false
+            }
+            guard token.hasPrefix("-") else {
+                index += 1
+                continue
+            }
+
+            let nextToken = index + 1 < arguments.count ? arguments[index + 1] : nil
+            if Self.containsCredentialDisclosureFlag(token) ||
+                Self.containsHTTPLoggingFlag(token) ||
+                Self.usesDebugVerbosity(token, nextToken: nextToken) {
                 return true
             }
-            let nextToken = index + 1 < arguments.count ? arguments[index + 1] : nil
-            if usesDebugVerbosity(token, nextToken: nextToken) {
-                return true
+
+            let optionName = Self.optionName(for: token)
+            index += 1
+            if optionsWithValues.contains(optionName), !token.contains("="), index < arguments.count {
+                index += 1
             }
         }
         return false
     }
 
     private static func containsCredentialDisclosureFlag(_ token: String) -> Bool {
-        let flagName = token.split(separator: "=", maxSplits: 1).first.map(String.init) ?? token
+        let flagName = optionName(for: token)
         return flagName == "--flags-file" ||
             flagName == "--impersonate-service-account" ||
             flagName.contains("access-token") ||
@@ -182,7 +201,7 @@ struct HostControlCloudCommandPolicy: Sendable {
     }
 
     private static func containsHTTPLoggingFlag(_ token: String) -> Bool {
-        let flagName = token.split(separator: "=", maxSplits: 1).first.map(String.init) ?? token
+        let flagName = optionName(for: token)
         return flagName == "--log-http" || flagName == "--httplib2-debuglevel"
     }
 
@@ -194,5 +213,9 @@ struct HostControlCloudCommandPolicy: Sendable {
             return false
         }
         return token.split(separator: "=", maxSplits: 1).dropFirst().first == "debug"
+    }
+
+    private static func optionName(for token: String) -> String {
+        token.split(separator: "=", maxSplits: 1).first.map(String.init) ?? token
     }
 }
