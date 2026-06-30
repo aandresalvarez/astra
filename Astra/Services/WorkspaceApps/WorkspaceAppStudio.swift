@@ -1261,13 +1261,16 @@ enum WorkspaceAppStudioBuilder {
         return manifest
     }
 
-    /// An agentic workflow rendered as HTML: records CRUD + a governed agent pipeline (analyze task →
-    /// agent recommendation gate → human approval gate → implement task), chained by a `pipeline.run`.
-    /// Triggering the pipeline suspends at the gates for the native queue; the agent tasks run only
-    /// after approval (approvalRequired keeps the external task writes gated).
+    /// An agentic workflow rendered as HTML: records CRUD + a governed agent pipeline (start approval →
+    /// analyze task → agent recommendation gate → human approval gate → implement task), chained by a
+    /// `pipeline.run`. Triggering the pipeline suspends at the gates for the native queue; agent tasks
+    /// run only after human approval (approvalRequired keeps the external task writes gated).
     static func agenticWorkflowHTMLManifest(intent: String) -> WorkspaceAppManifest {
         var manifest = workflowHTMLBase(intent: intent, icon: "cpu", archetypes: ["Agentic Workflow", "HTML App"], mode: .approvalRequired, extraWrites: ["task.runs"])
         manifest.actions.append(contentsOf: [
+            WorkspaceAppActionSpec(id: "approve_analysis", type: "gate.humanApproval", label: "Approve Analysis",
+                                   approvalPrompt: "Allow this workflow to launch the analysis agent task?",
+                                   approvalDecisions: ["approve", "reject"]),
             WorkspaceAppActionSpec(id: "analyze", type: "task.createAndRun", label: "Analyze",
                                    taskTitle: "Analyze the records",
                                    taskGoal: "Analyze the app's review items and produce findings the implementation step can act on.",
@@ -1284,7 +1287,7 @@ enum WorkspaceAppStudioBuilder {
                                    taskGoal: "Implement the approved plan from the analysis and record the outcome.",
                                    inputBinding: WorkspaceAppActionInputBinding(source: "boundRows", table: nil, label: "Analysis findings", limit: nil)),
             WorkspaceAppActionSpec(id: "run_workflow", type: "pipeline.run", label: "Run Workflow",
-                                   steps: ["list_review_items", "analyze", "agent_review", "human_approval", "implement"])
+                                   steps: ["list_review_items", "approve_analysis", "analyze", "agent_review", "human_approval", "implement"])
         ])
         applyWorkflowHTML(&manifest, buttonIDs: ["run_workflow"])
         return manifest

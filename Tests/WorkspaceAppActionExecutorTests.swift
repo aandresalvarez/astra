@@ -1441,6 +1441,59 @@ struct WorkspaceAppActionExecutorTests {
     }
 
     @MainActor
+    @Test("pipeline approval carries to the following agent task launch")
+    func pipelineApprovalCarriesToFollowingAgentTaskLaunch() throws {
+        let fixture = try Self.makePublishedApp(permissionMode: .approvalRequired)
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+
+        var manifest = fixture.manifest
+        manifest.actions.append(
+            WorkspaceAppActionSpec(
+                id: "approvalTaskPipeline",
+                type: "pipeline.run",
+                label: "Approval Task Pipeline",
+                steps: ["approvalGate", "runReviewTask"]
+            )
+        )
+
+        let waitingResult = try WorkspaceAppActionExecutor().execute(
+            actionID: "approvalTaskPipeline",
+            app: fixture.app,
+            workspace: fixture.workspace,
+            manifest: manifest,
+            modelContext: fixture.context
+        )
+        #expect(waitingResult.run.status == .waiting)
+        #expect(waitingResult.run.pendingApprovalActionID == "approvalGate")
+
+        let waitingRun = try #require(try fixture.context.fetch(FetchDescriptor<WorkspaceAppRun>())
+            .first { $0.actionID == "approvalTaskPipeline" })
+
+        let approvedResult = try WorkspaceAppActionExecutor().resumeWithApproval(
+            run: waitingRun,
+            approved: true,
+            app: fixture.app,
+            workspace: fixture.workspace,
+            manifest: manifest,
+            modelContext: fixture.context
+        )
+
+        #expect(approvedResult.run.status == .waiting)
+        #expect(approvedResult.run.pendingApprovalActionID == nil)
+        #expect(approvedResult.run.pendingActionID == "approvalTaskPipeline")
+        #expect(approvedResult.run.pendingStepIndex == 2)
+        #expect(approvedResult.run.linkedTaskID != nil)
+
+        let events = try fixture.context.fetch(FetchDescriptor<WorkspaceAppRunEvent>())
+            .filter { $0.runID == waitingRun.id }
+        #expect(events.contains { $0.type == "workspaceApp.approval.confirmed" })
+        #expect(events.contains {
+            $0.type == "workspaceApp.pipeline.step.suspended" &&
+                $0.payload.contains("\"stepID\":\"runReviewTask\"")
+        })
+    }
+
+    @MainActor
     @Test("pipeline expression gates block until input satisfies condition")
     func pipelineExpressionGatesBlockUntilInputSatisfiesCondition() throws {
         let fixture = try Self.makePublishedApp(permissionMode: .draftOnly)
