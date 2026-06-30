@@ -324,6 +324,12 @@ struct WorkspaceToolSupportTests {
             let resolution = configuration.containerCommand(for: command)
             #expect(resolution.errorMessage?.contains("host control-plane CLI") == true)
         }
+
+        let sixDeepSubstitution = configuration.containerCommand(
+            for: "echo $(echo $(echo $(echo $(echo $(echo $(gcloud auth list))))))"
+        )
+        #expect(sixDeepSubstitution.errorMessage?.contains("host control-plane CLI 'gcloud'") == true)
+        #expect(sixDeepSubstitution.errorMessage?.contains("too deeply nested") == false)
     }
 
     @Test("Workspace command path mapper reports recursive scan depth truthfully")

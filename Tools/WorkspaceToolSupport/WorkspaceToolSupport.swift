@@ -349,7 +349,9 @@ public struct WorkspaceToolConfiguration: Equatable, Sendable {
         commands: [WorkspaceControlPlaneCommand],
         depth: Int
     ) -> WorkspaceControlPlaneCommand? {
-        guard depth < 6 else { return .recursiveScanDepthLimit }
+        guard depth <= Self.maxHostControlPlaneScanDepth else {
+            return .recursiveScanDepthLimit
+        }
 
         if let command = firstExecutableHostControlPlaneCommand(in: shellTokens(in: command), commands: commands, depth: depth) {
             return command
@@ -1151,6 +1153,8 @@ public struct WorkspaceToolConfiguration: Equatable, Sendable {
             "Available container paths: \(mount.containerPaths.joined(separator: ", "))"
         ].joined(separator: "\n")
     }
+
+    private static let maxHostControlPlaneScanDepth = 6
 }
 
 private struct WorkspaceControlPlaneCommand {
