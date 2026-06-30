@@ -35,7 +35,7 @@ struct RuntimePathResolverTests {
     @Test("Generic resolver covers per-user Google Cloud SDK tools")
     func genericResolverCoversUserGoogleCloudSDKTools() {
         let bqPath = "\(NSHomeDirectory())/google-cloud-sdk/bin/bq"
-        let fileManager = RuntimePathResolverExecutableFileManager(executablePaths: [bqPath])
+        let fileManager = RuntimePathResolverExecutableFileManager(executablePaths: Set([bqPath]))
 
         let resolved = RuntimePathResolver.detectExecutablePath(
             named: "bq",
@@ -48,7 +48,7 @@ struct RuntimePathResolverTests {
     @Test("Generic resolver accepts explicit executable paths")
     func genericResolverAcceptsExplicitExecutablePaths() {
         let executablePath = "/tmp/astra-explicit-tool-\(UUID().uuidString)"
-        let fileManager = RuntimePathResolverExecutableFileManager(executablePaths: [executablePath])
+        let fileManager = RuntimePathResolverExecutableFileManager(executablePaths: Set([executablePath]))
 
         let resolved = RuntimePathResolver.detectExecutablePath(
             named: executablePath,
