@@ -360,6 +360,7 @@ public final class DockerWorkspaceJobManager: WorkspaceJobManaging {
                 """
                 pidfile=\(shellQuote(directory + "/pid"))
                 pid_metadata=\(shellQuote(directory + "/pid.meta"))
+                pid_metadata_tmp="$pid_metadata.tmp"
                 command_script=\(shellQuote(directory + "/command.sh"))
                 kill_bin=""
                 for candidate in /bin/kill /usr/bin/kill /usr/local/bin/kill; do
@@ -428,14 +429,17 @@ public final class DockerWorkspaceJobManager: WorkspaceJobManaging {
                   [ -r "$pid_metadata" ] || return 1
                   managed_pid=""
                   managed_mode=""
+                  managed_start_time=""
                   while IFS='=' read -r key value; do
                     case "$key" in
                       pid) managed_pid="$value" ;;
                       mode) managed_mode="$value" ;;
+                      start_time) managed_start_time="$value" ;;
                     esac
                   done < "$pid_metadata"
                   [ "$managed_pid" = "$1" ] || return 1
                   [ "$managed_mode" = "setsid-process-group" ]
+                  [ -n "$managed_start_time" ] || return 1
                 }
                 process_group_exists() {
                   group_pid="$1"
@@ -504,7 +508,7 @@ public final class DockerWorkspaceJobManager: WorkspaceJobManaging {
                 if [ -r "$pidfile" ]; then
                   IFS= read -r command_pid < "$pidfile" || command_pid=""
                   terminate_pid_or_group "$command_pid"
-                  rm -f "$pidfile" "$pid_metadata"
+                  rm -f "$pidfile" "$pid_metadata" "$pid_metadata_tmp"
                 fi
                 """
             ],
@@ -544,9 +548,10 @@ public final class DockerWorkspaceJobManager: WorkspaceJobManaging {
         result="$job_dir/result.json"
         pidfile="$job_dir/pid"
         pid_metadata="$job_dir/pid.meta"
+        pid_metadata_tmp="$pid_metadata.tmp"
         timeout_marker="$job_dir/timeout"
         mkdir -p "$job_dir"
-        rm -f "$timeout_marker" "$pidfile" "$pid_metadata"
+        rm -f "$timeout_marker" "$pidfile" "$pid_metadata" "$pid_metadata_tmp"
         kill_bin=""
         for candidate in /bin/kill /usr/bin/kill /usr/local/bin/kill; do
           if [ -x "$candidate" ]; then
@@ -602,9 +607,10 @@ public final class DockerWorkspaceJobManager: WorkspaceJobManaging {
             printf 'mode=setsid-process-group\\n'
             printf 'pid=%s\\n' "$command_pid"
             printf 'start_time=%s\\n' "$command_start_time"
-          } > "$pid_metadata"
+          } > "$pid_metadata_tmp"
+          mv -f "$pid_metadata_tmp" "$pid_metadata"
         else
-          rm -f "$pid_metadata"
+          rm -f "$pid_metadata" "$pid_metadata_tmp"
         fi
         process_group_exists() {
           group_pid="$1"
@@ -659,7 +665,7 @@ public final class DockerWorkspaceJobManager: WorkspaceJobManaging {
           wait "$timeout_pid" 2>/dev/null || true
         fi
         terminate_command_group 1
-        rm -f "$pidfile" "$pid_metadata"
+        rm -f "$pidfile" "$pid_metadata" "$pid_metadata_tmp"
         kill "$heartbeat_pid" 2>/dev/null || true
         wait "$heartbeat_pid" 2>/dev/null || true
         status=failed
