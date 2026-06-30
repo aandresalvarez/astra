@@ -815,6 +815,20 @@ struct WorkspaceToolSupportTests {
         #expect(!hardLinkedStdout.text.contains("HOST_SECRET_FROM_OUTSIDE_JOB_DIR"))
         try FileManager.default.removeItem(at: stdoutURL)
 
+        try "RACE_SAFE_STDOUT\n".write(to: stdoutURL, atomically: true, encoding: .utf8)
+        let racedOutsideLink = root.appendingPathComponent("raced-stdout-hardlink.log", isDirectory: false)
+        store.afterTrustedRegularFileStatForTesting = { url in
+            guard url.lastPathComponent == "stdout.log" else { return }
+            try? FileManager.default.removeItem(at: racedOutsideLink)
+            try? FileManager.default.linkItem(at: stdoutURL, to: racedOutsideLink)
+        }
+        let racedHardLinkedStdout = try store.tail(jobID: record.jobID, stream: "stdout", lines: 10)
+        store.afterTrustedRegularFileStatForTesting = nil
+        #expect(racedHardLinkedStdout.text.isEmpty)
+        #expect(!racedHardLinkedStdout.text.contains("RACE_SAFE_STDOUT"))
+        try? FileManager.default.removeItem(at: racedOutsideLink)
+        try FileManager.default.removeItem(at: stdoutURL)
+
         let heartbeatURL = jobDirectory.appendingPathComponent("heartbeat.json")
         let resultURL = jobDirectory.appendingPathComponent("result.json")
         let outsideHeartbeat = root.appendingPathComponent("host-heartbeat.json", isDirectory: false)

@@ -117,6 +117,7 @@ public final class WorkspaceManagedJobStore {
     private let fileManager: FileManager
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
+    var afterTrustedRegularFileStatForTesting: ((URL) -> Void)?
 
     public init(rootPath: String, fileManager: FileManager = .default) {
         self.rootURL = URL(fileURLWithPath: rootPath, isDirectory: true)
@@ -211,6 +212,7 @@ public final class WorkspaceManagedJobStore {
               let expectedFileStat = trustedRegularFileStat(at: url, inside: directory) else {
             return nil
         }
+        afterTrustedRegularFileStatForTesting?(url)
 
         let directoryFD = open(directory.standardizedFileURL.path, O_RDONLY | O_CLOEXEC | O_DIRECTORY)
         guard directoryFD >= 0 else {
@@ -240,6 +242,7 @@ public final class WorkspaceManagedJobStore {
         var statInfo = stat()
         guard fstat(fd, &statInfo) == 0,
               (statInfo.st_mode & S_IFMT) == S_IFREG,
+              statInfo.st_nlink == 1,
               sameFile(statInfo, expectedFileStat) else {
             return nil
         }
