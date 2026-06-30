@@ -134,6 +134,32 @@ struct RemoteMCPGatewaySupportTests {
         #expect(remote.authHeaders.isEmpty)
     }
 
+    @Test("Gateway preserves mixed-case canonical tool names while rejecting aliases")
+    func gatewayPreservesMixedCaseCanonicalToolNames() throws {
+        let remote = RecordingRemoteMCPClient()
+        let gateway = LocalMCPGateway(
+            server: googleDriveDescriptor(),
+            remoteClient: remote,
+            authTokenProvider: StaticGatewayTokenProvider(token: "secret-access-token"),
+            toolPolicyEnforcer: ConfiguredMCPGatewayToolPolicyEnforcer(rules: [
+                MCPGatewayToolPolicyRule(toolName: "docs.batchUpdate", access: .read)
+            ])
+        )
+
+        let allowed = try parseJSON(try #require(gateway.handleLine(#"{"jsonrpc":"2.0","id":13,"method":"tools/call","params":{"name":"docs.batchUpdate","arguments":{"query":"budget"}}}"#)))
+        let allowedResult = try #require(allowed["result"] as? [String: Any])
+        #expect(allowedResult["isError"] as? Bool == false)
+
+        let alias = try parseJSON(try #require(gateway.handleLine(#"{"jsonrpc":"2.0","id":14,"method":"tools/call","params":{"name":"docs.batchupdate","arguments":{"query":"budget"}}}"#)))
+        let aliasResult = try #require(alias["result"] as? [String: Any])
+        let aliasContent = try #require(aliasResult["content"] as? [[String: Any]])
+
+        #expect(aliasResult["isError"] as? Bool == true)
+        #expect((aliasContent.first?["text"] as? String)?.contains("does not exactly match") == true)
+        #expect(remote.calledTools == ["docs.batchUpdate"])
+        #expect(remote.authHeaders == ["Bearer secret-access-token"])
+    }
+
     @Test("Gateway forwards read tools and explicitly approved write tools")
     func gatewayForwardsReadAndApprovedWriteTools() throws {
         let remote = RecordingRemoteMCPClient()

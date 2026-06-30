@@ -142,8 +142,8 @@ public struct ConfiguredMCPGatewayToolPolicyEnforcer: MCPGatewayToolPolicyEnforc
             }
             return .allowed
         }
-        guard toolName == normalizedToolName else {
-            return .denied("Gateway policy tool \(trimmed(toolName)) does not exactly match classified tool \(normalizedToolName).")
+        guard toolName == rule.toolName else {
+            return .denied("Gateway policy tool \(trimmed(toolName)) does not exactly match classified tool \(rule.toolName).")
         }
         guard !rule.access.requiresNativeApproval || rule.nativeApprovalGranted else {
             return .denied("Native approval required for \(rule.access.rawValue) tool \(trimmed(toolName)).")
@@ -161,17 +161,17 @@ public struct ConfiguredMCPGatewayToolPolicyEnforcer: MCPGatewayToolPolicyEnforc
         rules.reduce(into: [:]) { result, rule in
             let key = normalized(rule.toolName)
             guard !key.isEmpty else { return }
-            let canonicalRule = MCPGatewayToolPolicyRule(
-                toolName: key,
+            let candidate = MCPGatewayToolPolicyRule(
+                toolName: trimmed(rule.toolName),
                 access: rule.access,
                 nativeApprovalGranted: rule.nativeApprovalGranted
             )
             guard let existing = result[key] else {
-                result[key] = canonicalRule
+                result[key] = candidate
                 return
             }
             if rule.access.restrictionRank > existing.access.restrictionRank {
-                result[key] = canonicalRule
+                result[key] = candidate
             } else if rule.access == existing.access {
                 var merged = existing
                 merged.nativeApprovalGranted = existing.nativeApprovalGranted && rule.nativeApprovalGranted
