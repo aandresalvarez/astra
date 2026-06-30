@@ -344,6 +344,17 @@ struct WorkspaceToolSupportTests {
             "g{cl,}oud auth list",
             "coproc gcloud auth list",
             "bash -c 'builtin eval gcloud auth list'",
+            "cat <<'EOF' | sh\ngcloud auth list\nEOF",
+            "cat <<EOF | bash\ngcloud auth list\nEOF",
+            "find . -exec gcloud auth list ';'",
+            "find . -name '*.swift' -execdir gh api repos/owner/repo \\;",
+            "g*oud auth list",
+            "g?oud auth list",
+            "sudo gcloud auth list",
+            "sudo -u root env FOO=bar gcloud auth list",
+            "gc\\\nloud auth list",
+            "bash -c 'gc\\\nloud auth list'",
+            "$(printf %s gcloud) auth list",
             "python3 -c \"import subprocess; subprocess.run(['bq', 'ls'])\"",
             "python3 -c \"import subprocess; subprocess.run(['gh', 'api', 'repos/owner/repo'])\"",
             "python3 -c \"import subprocess; subprocess.run(('gcloud', 'auth', 'list'))\"",
@@ -397,6 +408,11 @@ struct WorkspaceToolSupportTests {
 
         #expect(resolution.errorMessage?.contains("too deeply nested") == true)
         #expect(resolution.errorMessage?.contains("host control-plane CLI 'gh'") == false)
+
+        let deeplyNestedRender = configuration.containerCommand(
+            for: "echo $(echo $(echo $(echo $(echo $(echo $(echo $(echo safe))))))))"
+        )
+        #expect(deeplyNestedRender.errorMessage?.contains("too deeply nested") == true)
     }
 
     @Test("Workspace command path mapper allows control-plane tool names as data")
@@ -420,6 +436,7 @@ struct WorkspaceToolSupportTests {
             "grep -R '$(gcloud auth list)' docs",
             "printf '%s\\n' '$(gcloud auth list)'",
             "printf '%s\\n' '\\$(gcloud auth list)'",
+            "grep \"subprocess.run(['gcloud', 'auth', 'list'])\" file.py",
             "command -v gcloud",
             "printf 'ssh\\n'",
             "echo gh api repo data",
