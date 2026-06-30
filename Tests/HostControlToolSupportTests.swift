@@ -250,6 +250,39 @@ struct HostControlToolSupportTests {
         #expect(runner.requests.map(\.timeoutSeconds) == [300])
     }
 
+    @Test("Host control default process runner uses server process limits")
+    func hostControlDefaultProcessRunnerUsesServerProcessLimits() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-host-server-output-limit-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let gh = root.appendingPathComponent("gh", isDirectory: false)
+        try """
+        #!/bin/sh
+        dd if=/dev/zero bs=1024 count=16 2>/dev/null | tr '\\0' A
+        printf 'TAIL_SENTINEL'
+        exit 0
+        """.write(to: gh, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: gh.path)
+
+        let server = HostControlMCPServer(
+            configuration: HostControlToolConfiguration(githubExecutable: gh.path),
+            processLimits: HostControlProcessLimits(maximumTimeoutSeconds: 5, outputByteLimit: 64)
+        )
+
+        let response = try call(server, id: 1, tool: "github", arguments: [
+            "arguments": ["pr", "view", "123"]
+        ])
+        let text = try resultText(response)
+
+        #expect(text.contains("exit_code: 125"))
+        #expect(text.contains("output_truncated: true"))
+        #expect(text.contains("stdout_truncated: true"))
+        #expect(text.contains("ASTRA truncated stdout after"))
+        #expect(!text.contains("TAIL_SENTINEL"))
+    }
+
     @Test("Host control process runner truncates excessive stdout before returning results")
     func hostControlProcessRunnerTruncatesExcessiveStdoutBeforeReturningResults() throws {
         let root = FileManager.default.temporaryDirectory

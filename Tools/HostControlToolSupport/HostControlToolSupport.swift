@@ -385,12 +385,12 @@ public final class HostControlMCPServer {
 
     public init(
         configuration: HostControlToolConfiguration,
-        processRunner: HostControlProcessRunning = HostControlProcessRunner(),
+        processRunner: HostControlProcessRunning? = nil,
         diagnosticsRecorder: HostControlToolDiagnosticsRecorder? = nil,
         processLimits: HostControlProcessLimits = .standard
     ) {
         self.configuration = configuration
-        self.processRunner = processRunner
+        self.processRunner = processRunner ?? HostControlProcessRunner(limits: processLimits)
         self.diagnosticsRecorder = diagnosticsRecorder
         self.processLimits = processLimits
     }
