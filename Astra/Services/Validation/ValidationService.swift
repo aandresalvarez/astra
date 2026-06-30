@@ -66,6 +66,7 @@ enum ValidationCommandPolicy {
         var isEscaped = false
         var isInSingleQuote = false
         var isInDoubleQuote = false
+        var previousDoubleQuotedDollar = false
         var containsUnsafeShellSyntax = false
 
         func finishToken() {
@@ -78,23 +79,39 @@ enum ValidationCommandPolicy {
             if isEscaped {
                 current.append(character)
                 isEscaped = false
+                previousDoubleQuotedDollar = false
                 continue
             }
             if character == "\\" && !isInSingleQuote {
                 isEscaped = true
+                previousDoubleQuotedDollar = false
                 continue
             }
             if character == "'" && !isInDoubleQuote {
                 isInSingleQuote.toggle()
+                previousDoubleQuotedDollar = false
                 continue
             }
             if character == "\"" && !isInSingleQuote {
                 isInDoubleQuote.toggle()
+                previousDoubleQuotedDollar = false
                 continue
+            }
+            if character == "\n" || character == "\r" {
+                containsUnsafeShellSyntax = true
             }
             if character.isWhitespace && !isInSingleQuote && !isInDoubleQuote {
                 finishToken()
+                previousDoubleQuotedDollar = false
                 continue
+            }
+            if isInDoubleQuote {
+                if character == "`" || (previousDoubleQuotedDollar && character == "(") {
+                    containsUnsafeShellSyntax = true
+                }
+                previousDoubleQuotedDollar = character == "$"
+            } else {
+                previousDoubleQuotedDollar = false
             }
             if !isInSingleQuote && !isInDoubleQuote && isUnsafeUnquotedShellCharacter(character) {
                 containsUnsafeShellSyntax = true
@@ -121,7 +138,8 @@ enum ValidationCommandPolicy {
         guard tokens.count >= 3 else { return false }
         return tokens[0].lowercased() == root &&
             tokens[1] == "-m" &&
-            tokens[2] == "pytest"
+            tokens[2] == "pytest" &&
+            !containsDisplayOnlyFlag(tokens.dropFirst(3))
     }
 
     private static func commandArgumentsAreValidationOrBuildOnly(root: String, tokens: [String]) -> Bool {
@@ -155,7 +173,7 @@ enum ValidationCommandPolicy {
     }
 
     private static func containsDisplayOnlyFlag<T: Sequence>(_ tokens: T) -> Bool where T.Element == String {
-        let displayOnly = Set(["--help", "-h", "-help", "help", "--version", "-version", "version", "--list-tests"])
+        let displayOnly = Set(["--help", "-h", "-help", "--version", "-version", "--list-tests"])
         return tokens.contains { displayOnly.contains($0) }
     }
 
@@ -188,8 +206,28 @@ enum ValidationCommandPolicy {
             return false
         }
         return tokens.dropFirst(2).allSatisfy { token in
-            token.hasPrefix("-") || isMakeVariableAssignment(token)
+            isSafeMakePostTargetOption(token) || isMakeVariableAssignment(token)
         }
+    }
+
+    private static func isSafeMakePostTargetOption(_ token: String) -> Bool {
+        let safeStandaloneOptions: Set<String> = [
+            "-j", "--jobs",
+            "-k", "--keep-going",
+            "-s", "--silent", "--quiet",
+            "--no-print-directory"
+        ]
+        if safeStandaloneOptions.contains(token) {
+            return true
+        }
+        if token.hasPrefix("-j") {
+            return token.dropFirst(2).allSatisfy(\.isNumber)
+        }
+        if token.hasPrefix("--jobs=") {
+            let value = token.dropFirst("--jobs=".count)
+            return !value.isEmpty && value.allSatisfy(\.isNumber)
+        }
+        return false
     }
 
     private static func isMakeVariableAssignment(_ token: String) -> Bool {

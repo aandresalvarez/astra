@@ -214,6 +214,53 @@ struct ValidationServiceTests {
         #expect(await runner.recordedCalls().isEmpty)
     }
 
+    @Test("runTests rejects double-quoted command substitution before execution")
+    func runTestsRejectsDoubleQuotedCommandSubstitutionBeforeExecution() async throws {
+        let commands = [
+            #"swift test --filter "$(touch should-not-run)""#,
+            #"swift test --filter "`touch should-not-run`""#
+        ]
+
+        for command in commands {
+            let root = "/tmp/astra-validation-command-substitution-\(UUID().uuidString.prefix(8))"
+            let workspace = Workspace(name: "Imported Validation Command Substitution Guard", primaryPath: root)
+            let task = AgentTask(title: "Validate", goal: "Reject imported command substitution", workspace: workspace)
+            task.testCommand = command
+            let runner = StubValidationCommandRunner(results: [
+                ValidationCommandResult(exitCode: 0, stdout: "unsafe pass", stderr: "")
+            ])
+
+            let result = await ValidationService.runTests(task: task, commandRunner: runner)
+
+            if case .error(let message) = result {
+                #expect(message.contains("not allowed"))
+            } else {
+                Issue.record("Expected command substitution to be rejected before execution")
+            }
+            #expect(await runner.recordedCalls().isEmpty)
+        }
+    }
+
+    @Test("runTests rejects newline command separators before execution")
+    func runTestsRejectsNewlineCommandSeparatorsBeforeExecution() async throws {
+        let root = "/tmp/astra-validation-newline-\(UUID().uuidString.prefix(8))"
+        let workspace = Workspace(name: "Imported Validation Newline Guard", primaryPath: root)
+        let task = AgentTask(title: "Validate", goal: "Reject imported newline command separator", workspace: workspace)
+        task.testCommand = "swift test\ntouch should-not-run"
+        let runner = StubValidationCommandRunner(results: [
+            ValidationCommandResult(exitCode: 0, stdout: "unsafe pass", stderr: "")
+        ])
+
+        let result = await ValidationService.runTests(task: task, commandRunner: runner)
+
+        if case .error(let message) = result {
+            #expect(message.contains("not allowed"))
+        } else {
+            Issue.record("Expected newline command separator to be rejected before execution")
+        }
+        #expect(await runner.recordedCalls().isEmpty)
+    }
+
     @Test("runTests rejects no-op commands as validation bypasses")
     func runTestsRejectsNoOpCommandsAsValidationBypasses() async throws {
         let root = "/tmp/astra-validation-noop-\(UUID().uuidString.prefix(8))"
@@ -253,6 +300,14 @@ struct ValidationServiceTests {
         }
         #expect(await runner.recordedCalls().isEmpty)
         #expect(!ValidationCommandPolicy.isAllowed("swift build --help"))
+    }
+
+    @Test("validation command policy allows help and version as argument values")
+    func validationCommandPolicyAllowsHelpAndVersionAsArgumentValues() {
+        #expect(ValidationCommandPolicy.isAllowed("swift test --filter help"))
+        #expect(ValidationCommandPolicy.isAllowed("swift test --filter version"))
+        #expect(ValidationCommandPolicy.isAllowed("pytest -k help"))
+        #expect(ValidationCommandPolicy.isAllowed("pytest -k version"))
     }
 
     @Test("validation contract command assertions use injected runner")
@@ -538,8 +593,12 @@ struct ValidationServiceTests {
     func validationCommandPolicyKeepsMakeToSingleTestTarget() {
         #expect(ValidationCommandPolicy.isAllowed("make test"))
         #expect(ValidationCommandPolicy.isAllowed("make test -j2 CI=1"))
+        #expect(ValidationCommandPolicy.isAllowed("make test --jobs=2 --keep-going"))
         #expect(!ValidationCommandPolicy.isAllowed("make test clean"))
         #expect(!ValidationCommandPolicy.isAllowed("make build"))
+        #expect(!ValidationCommandPolicy.isAllowed("make test '--eval=$(shell touch should-not-run)'"))
+        #expect(!ValidationCommandPolicy.isAllowed("make test '-E$(shell touch should-not-run)'"))
+        #expect(!ValidationCommandPolicy.isAllowed("make test --file=Injected.mk"))
     }
 
     @Test("validation command policy preserves file test assertions without allowing no-ops")
@@ -549,6 +608,13 @@ struct ValidationServiceTests {
         #expect(!ValidationCommandPolicy.isAllowed("test"))
         #expect(!ValidationCommandPolicy.isAllowed("[ ]"))
         #expect(!ValidationCommandPolicy.isAllowed("test -f proof.txt; touch should-not-run"))
+    }
+
+    @Test("validation command policy rejects python pytest display-only commands")
+    func validationCommandPolicyRejectsPythonPytestDisplayOnlyCommands() {
+        #expect(!ValidationCommandPolicy.isAllowed("python -m pytest --help"))
+        #expect(!ValidationCommandPolicy.isAllowed("python3 -m pytest --version"))
+        #expect(ValidationCommandPolicy.isAllowed("python -m pytest -k help"))
     }
 
     @Test("validation contract command allowlist blocks python before pytest module")
