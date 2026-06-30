@@ -4,6 +4,17 @@ import Testing
 
 @Suite("Remote MCP HTTP Client")
 struct RemoteMCPHTTPClientTests {
+    @Test("timeouts reject non-finite and sub-minimum request intervals")
+    func timeoutsRejectNonFiniteAndSubMinimumIntervals() {
+        let minimum = 0.001
+        #expect(RemoteMCPHTTPTimeouts(request: .nan).request == minimum)
+        #expect(RemoteMCPHTTPTimeouts(request: .infinity).request == minimum)
+        #expect(RemoteMCPHTTPTimeouts(request: -.infinity).request == minimum)
+        #expect(RemoteMCPHTTPTimeouts(request: 0).request == minimum)
+        #expect(RemoteMCPHTTPTimeouts(request: -1).request == minimum)
+        #expect(RemoteMCPHTTPTimeouts(request: 3).request == 3)
+    }
+
     @Test("lists tools using JSON RPC and bearer auth")
     func listsTools() throws {
         let transport = RecordingRemoteMCPHTTPTransport(response: .success([

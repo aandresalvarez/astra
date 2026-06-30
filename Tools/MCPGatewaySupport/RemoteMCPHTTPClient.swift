@@ -6,11 +6,13 @@ public protocol RemoteMCPHTTPTransport: AnyObject {
 
 public struct RemoteMCPHTTPTimeouts: Equatable {
     public static let gatewayDefault = RemoteMCPHTTPTimeouts(request: 30)
+    private static let minimumRequest: TimeInterval = 0.001
 
     public var request: TimeInterval
 
     public init(request: TimeInterval) {
-        self.request = max(0.001, request)
+        let finiteRequest = request.isFinite ? request : Self.minimumRequest
+        self.request = max(Self.minimumRequest, finiteRequest)
     }
 }
 
@@ -78,8 +80,8 @@ private final class RemoteMCPHTTPResponseBox {
 
     func store(_ result: Result<(Int, [String: Any]), Error>) {
         lock.lock()
+        defer { lock.unlock() }
         self.result = result
-        lock.unlock()
     }
 
     func load() -> Result<(Int, [String: Any]), Error>? {
