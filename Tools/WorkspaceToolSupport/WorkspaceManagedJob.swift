@@ -460,35 +460,45 @@ public final class DockerWorkspaceJobManager: WorkspaceJobManaging {
                   safe_pid "$target_pid" || return 0
                   kill -"$signal" "$target_pid" 2>/dev/null || true
                 }
+                terminate_verified_process_group() {
+                  group_pid="$1"
+                  if process_group_exists "$group_pid"; then
+                    signal_process_group TERM "$group_pid"
+                    sleep 5
+                    signal_process_group KILL "$group_pid"
+                  fi
+                }
+                terminate_direct_pid() {
+                  target_pid="$1"
+                  if kill -0 "$target_pid" 2>/dev/null; then
+                    signal_direct_pid TERM "$target_pid"
+                    sleep 5
+                    signal_direct_pid KILL "$target_pid"
+                  fi
+                }
                 terminate_pid_or_group() {
                   target_pid="$1"
                   safe_pid "$target_pid" || return 0
                   if pid_metadata_names_managed_group "$target_pid"; then
-                    if process_group_exists "$target_pid"; then
-                      signal_process_group TERM "$target_pid"
-                      sleep 5
-                      signal_process_group KILL "$target_pid"
-                    elif pid_matches_managed_session "$target_pid" && kill -0 "$target_pid" 2>/dev/null; then
-                      signal_direct_pid TERM "$target_pid"
-                      sleep 5
-                      signal_direct_pid KILL "$target_pid"
+                    if kill -0 "$target_pid" 2>/dev/null; then
+                      if pid_matches_managed_session "$target_pid"; then
+                        if process_group_exists "$target_pid"; then
+                          terminate_verified_process_group "$target_pid"
+                        else
+                          terminate_direct_pid "$target_pid"
+                        fi
+                      fi
+                    elif process_group_exists "$target_pid"; then
+                      terminate_verified_process_group "$target_pid"
                     fi
                   elif pid_matches_managed_command "$target_pid"; then
-                    if process_group_exists "$target_pid"; then
-                      signal_process_group TERM "$target_pid"
-                      sleep 5
-                      signal_process_group KILL "$target_pid"
-                    elif kill -0 "$target_pid" 2>/dev/null; then
-                      signal_direct_pid TERM "$target_pid"
-                      sleep 5
-                      signal_direct_pid KILL "$target_pid"
+                    if proc_is_session_group_leader "$target_pid"; then
+                      terminate_verified_process_group "$target_pid"
+                    else
+                      terminate_direct_pid "$target_pid"
                     fi
                   elif [ ! -e "$pid_metadata" ] && kill -0 "$target_pid" 2>/dev/null; then
-                    signal_direct_pid TERM "$target_pid"
-                    sleep 5
-                    if kill -0 "$target_pid" 2>/dev/null; then
-                      signal_direct_pid KILL "$target_pid"
-                    fi
+                    terminate_direct_pid "$target_pid"
                   fi
                 }
                 if [ -r "$pidfile" ]; then

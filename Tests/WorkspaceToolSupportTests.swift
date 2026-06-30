@@ -857,19 +857,31 @@ struct WorkspaceToolSupportTests {
         #expect(logLines.contains("kill -\"$signal\" -\"$group_pid\" 2>/dev/null || true"))
         #expect(logLines.contains("signal_direct_pid() {"))
         #expect(logLines.contains("kill -\"$signal\" \"$target_pid\" 2>/dev/null || true"))
+        #expect(logLines.contains("terminate_verified_process_group() {"))
+        #expect(logLines.contains("terminate_direct_pid() {"))
         #expect(logLines.contains("if pid_metadata_names_managed_group \"$target_pid\"; then"))
         #expect(logLines.contains("elif pid_matches_managed_command \"$target_pid\"; then"))
         #expect(logLines.contains("elif [ ! -e \"$pid_metadata\" ] && kill -0 \"$target_pid\" 2>/dev/null; then"))
         #expect(logLines.contains("""
           if pid_metadata_names_managed_group "$target_pid"; then
-            if process_group_exists "$target_pid"; then
+            if kill -0 "$target_pid" 2>/dev/null; then
+              if pid_matches_managed_session "$target_pid"; then
+                if process_group_exists "$target_pid"; then
+                  terminate_verified_process_group "$target_pid"
+                else
+                  terminate_direct_pid "$target_pid"
+                fi
+              fi
+            elif process_group_exists "$target_pid"; then
+              terminate_verified_process_group "$target_pid"
+            fi
         """))
-        #expect(logLines.contains("if process_group_exists \"$target_pid\"; then"))
-        #expect(logLines.contains("signal_process_group TERM \"$target_pid\""))
-        #expect(logLines.contains("signal_process_group KILL \"$target_pid\""))
+        #expect(logLines.contains("if proc_is_session_group_leader \"$target_pid\"; then"))
+        #expect(logLines.contains("signal_process_group TERM \"$group_pid\""))
+        #expect(logLines.contains("signal_process_group KILL \"$group_pid\""))
         #expect(!logLines.contains("\"$kill_bin\" -TERM -\"$target_pid\" 2>/dev/null || true"))
         #expect(!logLines.contains("\"$kill_bin\" -KILL -\"$target_pid\" 2>/dev/null || true"))
-        #expect(logLines.contains("elif pid_matches_managed_session \"$target_pid\" && kill -0 \"$target_pid\" 2>/dev/null; then"))
+        #expect(logLines.contains("if pid_matches_managed_session \"$target_pid\"; then"))
         #expect(logLines.contains("signal_direct_pid TERM \"$target_pid\""))
         #expect(logLines.contains("signal_direct_pid KILL \"$target_pid\""))
         #expect(logLines.contains("IFS= read -r command_pid < \"$pidfile\" || command_pid=\"\""))
