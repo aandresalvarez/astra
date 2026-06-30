@@ -43,6 +43,7 @@ struct WorkspaceAppSurfaceView: View {
     @State private var recordFormValues: [String: String] = [:]
     @State private var recordFormError = ""
     @State private var pendingDeleteRecordID: String?
+    @State private var pendingNativeFormSubmission: PendingNativeFormSubmission?
 
     init(
         snapshot: WorkspaceAppDetailDataSnapshot,
@@ -84,6 +85,14 @@ struct WorkspaceAppSurfaceView: View {
     }
 
     var body: some View {
+        content
+            .onChange(of: snapshot.manifest) { _, _ in
+                pendingNativeFormSubmission = nil
+            }
+    }
+
+    @ViewBuilder
+    private var content: some View {
         // HTML is the primary surface. A dynamic HTML app — interactive tools AND (Phase 3) data
         // apps wired to the astra.* bridge — owns the whole surface: render its model/template UI in
         // the CSP-locked WebView. The native `declarativeSurface` below is the LEGACY + governed-
@@ -226,19 +235,121 @@ struct WorkspaceAppSurfaceView: View {
                     onSubmit: { values in submitForm(view: view, manifest: manifest, values: values) }
                 )
             }
+            if let pendingNativeFormSubmission {
+                nativeFormApprovalForm(pendingNativeFormSubmission)
+            }
         }
     }
 
     private func submitForm(view: WorkspaceAppViewSpec, manifest: WorkspaceAppManifest, values: [String: WorkspaceAppStorageValue]) {
         // Route the draft through the declared write action (capability.write submitCreate) so it
         // goes through the governed, approval-gated path — never a direct write.
-        guard let submit = manifest.actions.first(where: { $0.type == "capability.write" && ($0.table == nil || $0.table == view.table) }) else { return }
-        _ = try? onRunAction(
-            submit,
-            manifest,
-            WorkspaceAppActionInput(table: view.table, record: values, confirmedApproval: true)
+        guard let submission = WorkspaceAppNativeFormSubmissionPolicy.submission(
+            for: view,
+            manifest: manifest,
+            values: values
+        ) else { return }
+        if submission.requiresExplicitApproval {
+            pendingNativeFormSubmission = PendingNativeFormSubmission(
+                viewID: view.id,
+                actionID: submission.action.id,
+                record: submission.input.record,
+                approvalPresentation: submission.approvalPresentation ?? WorkspaceAppNativeFormApprovalPresentation(
+                    title: "Confirm submission",
+                    prompt: "Review and approve this submission before it writes to the external system.",
+                    confirmLabel: "Approve"
+                )
+            )
+            return
+        }
+        runNativeFormSubmission(submission, manifest: manifest)
+    }
+
+    private func runNativeFormSubmission(
+        _ submission: WorkspaceAppNativeFormSubmission,
+        manifest: WorkspaceAppManifest,
+        confirmedApproval: Bool = false
+    ) {
+        var input = submission.input
+        input.confirmedApproval = confirmedApproval
+        do {
+            let result = try onRunAction(
+                submission.action,
+                manifest,
+                input
+            )
+            actionStatusMessage = result.outputSummary
+            pendingNativeFormSubmission = nil
+            onReload()
+        } catch {
+            actionStatusMessage = WorkspaceAppActionStatusPresentation.errorMessage(for: error)
+        }
+    }
+
+    @ViewBuilder
+    private func nativeFormApprovalForm(_ pending: PendingNativeFormSubmission) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(pending.approvalPresentation.title)
+                .font(Stanford.body(13).weight(.semibold))
+                .foregroundStyle(Stanford.black)
+            Text(pending.approvalPresentation.prompt)
+                .font(Stanford.caption(12))
+                .foregroundStyle(.secondary)
+            nativeFormApprovalRecordPreview(pending.record)
+            HStack(spacing: 8) {
+                Button(pending.approvalPresentation.confirmLabel) {
+                    approveNativeFormSubmission(pending)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+
+                Button("Cancel") {
+                    pendingNativeFormSubmission = nil
+                }
+                .buttonStyle(.plain)
+                .controlSize(.small)
+            }
+        }
+        .padding(10)
+        .background(Color.primary.opacity(0.025))
+        .clipShape(RoundedRectangle(cornerRadius: WorkspaceAppsPresentation.cardCornerRadius, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: WorkspaceAppsPresentation.cardCornerRadius, style: .continuous)
+                .stroke(Color.primary.opacity(0.08), lineWidth: 1)
         )
-        onReload()
+    }
+
+    @ViewBuilder
+    private func nativeFormApprovalRecordPreview(_ record: [String: WorkspaceAppStorageValue]) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ForEach(record.keys.sorted(), id: \.self) { key in
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(key)
+                        .font(Stanford.caption(11).weight(.medium))
+                        .foregroundStyle(.secondary)
+                    Text(WorkspaceAppStorageRowActionPresentationBuilder.displayValue(record[key]))
+                        .font(Stanford.caption(11))
+                        .foregroundStyle(.primary)
+                }
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    private func approveNativeFormSubmission(_ pending: PendingNativeFormSubmission) {
+        guard let manifest = snapshot.manifest,
+              let view = manifest.views.first(where: { $0.id == pending.viewID }),
+              let submission = WorkspaceAppNativeFormSubmissionPolicy.submission(
+                for: view,
+                manifest: manifest,
+                values: pending.record,
+                actionID: pending.actionID
+              ) else {
+            pendingNativeFormSubmission = nil
+            actionStatusMessage = "Submission is unavailable. Review the current form and submit again."
+            return
+        }
+        runNativeFormSubmission(submission, manifest: manifest, confirmedApproval: true)
     }
 
     @ViewBuilder
@@ -587,7 +698,14 @@ struct WorkspaceAppSurfaceView: View {
             actionStatusMessage = result.outputSummary
             onReload()
         } catch {
-            actionStatusMessage = String(describing: error)
+            actionStatusMessage = WorkspaceAppActionStatusPresentation.errorMessage(for: error)
         }
     }
+}
+
+private struct PendingNativeFormSubmission {
+    var viewID: String
+    var actionID: String
+    var record: [String: WorkspaceAppStorageValue]
+    var approvalPresentation: WorkspaceAppNativeFormApprovalPresentation
 }
