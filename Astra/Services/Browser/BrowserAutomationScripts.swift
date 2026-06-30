@@ -448,29 +448,9 @@ enum BrowserAutomationScripts {
       };
       const containsAny = (text, needles) => needles.some((needle) => text.includes(needle));
       const redactedInputValue = "[redacted-sensitive-input]";
-      const sensitiveFieldTerms = [
-        "password", "passcode", "secret", "token", "api key", "api-key", "api_token", "apikey",
-        "access token", "refresh token", "auth token", "bearer token",
-        "oauth", "client secret", "private key", "mfa", "2fa", "two factor",
-        "two-factor", "verification code", "security code", "one-time",
-        "one time", "otp", "totp", "ssn", "social security",
-        "dob", "date of birth", "birth date", "birthdate", "mrn",
-        "medical record", "medical record number", "patient id", "patient identifier",
-        "health record"
-      ];
-      const paymentFieldTerms = [
-        "credit card", "card number", "cardholder", "card holder",
-        "name on card", "cc-name", "cc-given-name", "cc-additional-name",
-        "cc-family-name", "cc-number", "cc-exp", "cc-exp-month",
-        "cc-exp-year", "cc-csc", "cc-type", "cvv", "cvc", "payment", "billing"
-      ];
-      const sensitiveAutocompleteTerms = [
-        "current-password", "new-password", "one-time-code",
-        "bday", "bday-day", "bday-month", "bday-year",
-        "cc-name", "cc-given-name", "cc-additional-name", "cc-family-name",
-        "cc-number", "cc-exp", "cc-exp-month", "cc-exp-year",
-        "cc-csc", "cc-type"
-      ];
+      const sensitiveFieldTerms = \(BrowserSensitiveInputRedactionPolicy.javaScriptArrayLiteral(BrowserSensitiveInputRedactionPolicy.sensitiveFieldTerms, indentation: "      "));
+      const paymentFieldTerms = \(BrowserSensitiveInputRedactionPolicy.javaScriptArrayLiteral(BrowserSensitiveInputRedactionPolicy.paymentFieldTerms, indentation: "      "));
+      const sensitiveAutocompleteTerms = \(BrowserSensitiveInputRedactionPolicy.javaScriptArrayLiteral(BrowserSensitiveInputRedactionPolicy.sensitiveAutocompleteTokens, indentation: "      "));
       const isEditablePaymentField = (el) => {
         const tag = String(el.tagName || "").toLowerCase();
         const role = String(el.getAttribute("role") || "").toLowerCase();
@@ -850,29 +830,9 @@ enum BrowserAutomationScripts {
           \(targetResolutionPrelude(selector: selector, x: nil, y: nil, allowDangerous: true, label: label, role: role, text: nil, placeholder: placeholder, testID: testID))
           const text = \(jsonLiteral(text));
           const clear = \(clear ? "true" : "false");
-          const sensitiveResultTerms = [
-            "password", "passcode", "secret", "token", "api key", "api-key", "api_token", "apikey",
-            "access token", "refresh token", "auth token", "bearer token",
-            "oauth", "client secret", "private key", "mfa", "2fa", "two factor",
-            "two-factor", "verification code", "security code", "one-time",
-            "one time", "otp", "totp", "ssn", "social security",
-            "dob", "date of birth", "birth date", "birthdate", "mrn",
-            "medical record", "medical record number", "patient id", "patient identifier",
-            "health record"
-          ];
-          const paymentResultTerms = [
-            "credit card", "card number", "cardholder", "card holder",
-            "name on card", "cc-name", "cc-given-name", "cc-additional-name",
-            "cc-family-name", "cc-number", "cc-exp", "cc-exp-month",
-            "cc-exp-year", "cc-csc", "cc-type", "cvv", "cvc", "payment", "billing"
-          ];
-          const sensitiveAutocompleteTerms = [
-            "current-password", "new-password", "one-time-code",
-            "bday", "bday-day", "bday-month", "bday-year",
-            "cc-name", "cc-given-name", "cc-additional-name", "cc-family-name",
-            "cc-number", "cc-exp", "cc-exp-month", "cc-exp-year",
-            "cc-csc", "cc-type"
-          ];
+          const sensitiveResultTerms = \(BrowserSensitiveInputRedactionPolicy.javaScriptArrayLiteral(BrowserSensitiveInputRedactionPolicy.sensitiveFieldTerms, indentation: "          "));
+          const paymentResultTerms = \(BrowserSensitiveInputRedactionPolicy.javaScriptArrayLiteral(BrowserSensitiveInputRedactionPolicy.paymentFieldTerms, indentation: "          "));
+          const sensitiveAutocompleteTerms = \(BrowserSensitiveInputRedactionPolicy.javaScriptArrayLiteral(BrowserSensitiveInputRedactionPolicy.sensitiveAutocompleteTokens, indentation: "          "));
           const redactedInputValue = "[redacted-sensitive-input]";
           const includesAny = (value, terms) => terms.some((term) => value.includes(term));
           const currentValueFor = (target) => {

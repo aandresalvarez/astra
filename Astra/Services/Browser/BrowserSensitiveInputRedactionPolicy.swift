@@ -44,23 +44,24 @@ enum BrowserSensitiveInputRedactionPolicy {
             sensitiveValues.append(contentsOf: result.sensitiveValues)
             redacted["focusedElement"] = result.object
         }
+        let snapshotSensitiveValues = uniqueSensitiveValues(sensitiveValues)
 
         if let text = object["text"] as? String {
-            let nextText = redactedText(text, sensitiveValues: sensitiveValues)
+            let nextText = redactedText(text, sensitiveValues: snapshotSensitiveValues)
             if nextText != text {
                 redacted["text"] = nextText
                 didRedact = true
             }
         }
         if let url = object["url"] as? String {
-            let nextURL = redactedText(url, sensitiveValues: sensitiveValues)
+            let nextURL = redactedText(url, sensitiveValues: snapshotSensitiveValues)
             if nextURL != url {
                 redacted["url"] = nextURL
                 didRedact = true
             }
         }
         if let title = object["title"] as? String {
-            let nextTitle = redactedText(title, sensitiveValues: sensitiveValues)
+            let nextTitle = redactedText(title, sensitiveValues: snapshotSensitiveValues)
             if nextTitle != title {
                 redacted["title"] = nextTitle
                 didRedact = true
@@ -262,7 +263,7 @@ enum BrowserSensitiveInputRedactionPolicy {
         return !nonEditableInputTypes.contains(type)
     }
 
-    private static let sensitiveAutocompleteTokens = [
+    static let sensitiveAutocompleteTokens = [
         "current-password",
         "new-password",
         "one-time-code",
@@ -282,7 +283,7 @@ enum BrowserSensitiveInputRedactionPolicy {
         "cc-type"
     ]
 
-    private static let sensitiveFieldTerms = [
+    static let sensitiveFieldTerms = [
         "password",
         "passcode",
         "secret",
@@ -329,7 +330,7 @@ enum BrowserSensitiveInputRedactionPolicy {
         "bday-year"
     ]
 
-    private static let paymentFieldTerms = [
+    static let paymentFieldTerms = [
         "credit card",
         "card number",
         "cardholder",
@@ -363,6 +364,16 @@ enum BrowserSensitiveInputRedactionPolicy {
         "cc-csc",
         "cc-type"
     ]
+
+    static func javaScriptArrayLiteral(_ values: [String], indentation: String) -> String {
+        let encodedValues = values.map { value in
+            let data = try! JSONEncoder().encode(value)
+            return String(data: data, encoding: .utf8)!
+        }
+        return "[\n"
+            + encodedValues.map { "\(indentation)  \($0)" }.joined(separator: ",\n")
+            + "\n\(indentation)]"
+    }
 
     private static func redactedText(_ text: String, sensitiveValues: [String]) -> String {
         var redacted = text
