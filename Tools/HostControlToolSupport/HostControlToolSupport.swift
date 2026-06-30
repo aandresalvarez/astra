@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 public struct HostControlToolConfiguration: Equatable, Sendable {
@@ -56,10 +57,16 @@ public struct HostControlToolConfiguration: Equatable, Sendable {
             ?? HostControlConnectorManifest(connectors: [])
     }
 
-    func redacted(_ value: String) -> String {
-        secretValues.reduce(value) { current, secret in
+    func redacted(_ value: String, includingSecretFragments: Bool = false) -> String {
+        let secrets = secretValues
+        var redacted = secrets.reduce(value) { current, secret in
             current.replacingOccurrences(of: secret, with: "[redacted]")
         }
+        guard includingSecretFragments else { return redacted }
+        for fragment in secretPrefixFragments(from: secrets) {
+            redacted = redacted.replacingOccurrences(of: fragment, with: "[redacted]")
+        }
+        return redacted
     }
 
     private var secretValues: [String] {
@@ -80,6 +87,16 @@ public struct HostControlToolConfiguration: Equatable, Sendable {
             || upper.contains("PASSWORD")
             || upper.contains("API_KEY")
             || upper.contains("CREDENTIAL")
+    }
+
+    private func secretPrefixFragments(from secrets: [String]) -> [String] {
+        Array(Set(secrets.flatMap { secret in
+            guard secret.count > 4 else { return [secret] }
+            return (4..<secret.count).map { length in
+                String(secret.prefix(length))
+            }
+        }))
+        .sorted { $0.count > $1.count }
     }
 
     private static func splitList(_ value: String?) -> [String] {
@@ -182,6 +199,8 @@ public protocol HostControlProcessRunning: AnyObject {
 
 public final class HostControlProcessRunner: HostControlProcessRunning {
     private let limits: HostControlProcessLimits
+    private let outputLimitGraceSeconds: TimeInterval = 0.5
+    private let timeoutGraceSeconds: TimeInterval = 2
 
     public init(limits: HostControlProcessLimits = .standard) {
         self.limits = limits
@@ -220,14 +239,24 @@ public final class HostControlProcessRunner: HostControlProcessRunning {
             }
         }
         stdout.fileHandleForReading.readabilityHandler = { handle in
+            guard !stdoutBuffer.isTruncated else {
+                self.stopReading(handle)
+                return
+            }
             let data = handle.availableData
             if stdoutBuffer.append(data) {
+                self.stopReading(handle)
                 terminateForOutputLimit()
             }
         }
         stderr.fileHandleForReading.readabilityHandler = { handle in
+            guard !stderrBuffer.isTruncated else {
+                self.stopReading(handle)
+                return
+            }
             let data = handle.availableData
             if stderrBuffer.append(data) {
+                self.stopReading(handle)
                 terminateForOutputLimit()
             }
         }
@@ -249,13 +278,19 @@ public final class HostControlProcessRunner: HostControlProcessRunning {
             )
         }
 
-        let timedOut = semaphore.wait(timeout: .now() + timeoutSeconds) == .timedOut
-        if timedOut {
-            process.terminate()
-            _ = semaphore.wait(timeout: .now() + 2)
-            if process.isRunning {
-                process.interrupt()
-            }
+        let waitOutcome = waitForProcess(
+            semaphore: semaphore,
+            timeoutSeconds: limits.clampedTimeout(timeoutSeconds),
+            outputLimitExceeded: outputLimitExceeded
+        )
+        let timedOut = waitOutcome == .timedOut
+        switch waitOutcome {
+        case .exited:
+            break
+        case .outputLimited:
+            stopProcess(process, semaphore: semaphore, graceSeconds: outputLimitGraceSeconds)
+        case .timedOut:
+            stopProcess(process, semaphore: semaphore, graceSeconds: timeoutGraceSeconds)
         }
 
         stdout.fileHandleForReading.readabilityHandler = nil
@@ -277,18 +312,79 @@ public final class HostControlProcessRunner: HostControlProcessRunning {
         )
     }
 
+    private enum ProcessWaitOutcome {
+        case exited
+        case outputLimited
+        case timedOut
+    }
+
+    private func waitForProcess(
+        semaphore: DispatchSemaphore,
+        timeoutSeconds: TimeInterval,
+        outputLimitExceeded: LockedFlag
+    ) -> ProcessWaitOutcome {
+        let deadline = Date().addingTimeInterval(timeoutSeconds)
+        while true {
+            if semaphore.wait(timeout: .now() + 0.05) == .success {
+                return .exited
+            }
+            if outputLimitExceeded.isSet {
+                return .outputLimited
+            }
+            if Date() >= deadline {
+                return .timedOut
+            }
+        }
+    }
+
+    private func stopProcess(_ process: Process, semaphore: DispatchSemaphore, graceSeconds: TimeInterval) {
+        guard process.isRunning else { return }
+        process.terminate()
+        if semaphore.wait(timeout: .now() + graceSeconds) == .success {
+            return
+        }
+        if process.isRunning {
+            _ = kill(process.processIdentifier, SIGKILL)
+            _ = semaphore.wait(timeout: .now() + 1)
+        }
+    }
+
+    private func stopReading(_ handle: FileHandle) {
+        handle.readabilityHandler = nil
+        try? handle.close()
+    }
+
     private func drainPipe(
         _ handle: FileHandle,
         into buffer: BoundedProcessOutput,
         onLimitExceeded: () -> Void
     ) {
+        guard !buffer.isTruncated else {
+            stopReading(handle)
+            return
+        }
+        let descriptor = handle.fileDescriptor
+        let flags = fcntl(descriptor, F_GETFL)
+        if flags >= 0 {
+            _ = fcntl(descriptor, F_SETFL, flags | O_NONBLOCK)
+        }
+        var bytes = [UInt8](repeating: 0, count: 8192)
+        defer { stopReading(handle) }
         while true {
-            guard let data = try? handle.read(upToCount: 8192),
-                  !data.isEmpty else {
+            let count = bytes.withUnsafeMutableBytes { rawBuffer in
+                read(descriptor, rawBuffer.baseAddress, rawBuffer.count)
+            }
+            if count == 0 {
                 return
             }
+            if count < 0 {
+                if errno == EINTR { continue }
+                return
+            }
+            let data = Data(bytes.prefix(count))
             if buffer.append(data) {
                 onLimitExceeded()
+                return
             }
         }
     }
@@ -654,8 +750,8 @@ public final class HostControlMCPServer {
             command: result.command,
             arguments: result.arguments,
             exitCode: result.exitCode,
-            stdout: configuration.redacted(result.stdout),
-            stderr: configuration.redacted(result.stderr),
+            stdout: configuration.redacted(result.stdout, includingSecretFragments: result.stdoutTruncated),
+            stderr: configuration.redacted(result.stderr, includingSecretFragments: result.stderrTruncated),
             timedOut: result.timedOut,
             stdoutTruncated: result.stdoutTruncated,
             stderrTruncated: result.stderrTruncated
@@ -735,7 +831,7 @@ public final class HostControlMCPServer {
                     ],
                     "timeout_seconds": [
                         "type": "number",
-                        "description": "Optional command timeout. Defaults to 120 seconds and is capped at 300 seconds."
+                        "description": timeoutDescription(kind: "command")
                     ]
                 ],
                 "required": ["arguments"],
@@ -753,7 +849,7 @@ public final class HostControlMCPServer {
                 "properties": [
                     "alias": ["type": "string", "description": "Configured SSH Host alias or workspace SSH connection alias."],
                     "remote_command": ["type": "string", "description": "Optional remote command passed to ssh as one argument."],
-                    "timeout_seconds": ["type": "number", "description": "Optional command timeout. Defaults to 120 seconds and is capped at 300 seconds."]
+                    "timeout_seconds": ["type": "number", "description": timeoutDescription(kind: "command")]
                 ],
                 "required": ["alias"],
                 "additionalProperties": false
@@ -773,11 +869,22 @@ public final class HostControlMCPServer {
                     "method": ["type": "string", "description": "For request: GET, POST, PUT, or DELETE."],
                     "path": ["type": "string", "description": "For request: Jira REST path beginning with /."],
                     "body": ["type": "string", "description": "For request: optional JSON body."],
-                    "timeout_seconds": ["type": "number", "description": "Optional request timeout. Defaults to 120 seconds and is capped at 300 seconds."]
+                    "timeout_seconds": ["type": "number", "description": timeoutDescription(kind: "request")]
                 ],
                 "additionalProperties": false
             ]
         ]
+    }
+
+    private func timeoutDescription(kind: String) -> String {
+        "Optional \(kind) timeout. Defaults to 120 seconds and is capped at \(formattedSeconds(processLimits.maximumTimeoutSeconds)) seconds."
+    }
+
+    private func formattedSeconds(_ value: TimeInterval) -> String {
+        if value.rounded(.towardZero) == value {
+            return "\(Int(value))"
+        }
+        return "\(value)"
     }
 
     private func stringArray(_ value: Any?) -> [String]? {
@@ -879,7 +986,7 @@ private struct JiraHTTPResponse {
             "body:",
             body.isEmpty ? "<empty>" : configuration.redacted(body),
             "error:",
-            errorMessage.map(configuration.redacted) ?? "<empty>"
+            errorMessage.map { configuration.redacted($0) } ?? "<empty>"
         ].joined(separator: "\n")
     }
 }
@@ -982,6 +1089,8 @@ private final class LockedFlag: @unchecked Sendable {
 }
 
 private final class BoundedProcessOutput: @unchecked Sendable {
+    private static let truncationBoundarySafetyBytes = 512
+
     private let lock = NSLock()
     private let label: String
     private let byteLimit: Int
@@ -1004,9 +1113,8 @@ private final class BoundedProcessOutput: @unchecked Sendable {
             data.append(chunk)
             return false
         }
-        if remaining > 0 {
-            data.append(chunk.prefix(remaining))
-        }
+        let discarded = min(data.count, Self.truncationBoundarySafetyBytes)
+        if discarded > 0 { data.removeLast(discarded) }
         let marker = "\n[ASTRA truncated \(label) after \(byteLimit) bytes]\n"
         data.append(Data(marker.utf8))
         truncated = true

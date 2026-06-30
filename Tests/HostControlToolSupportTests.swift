@@ -313,6 +313,141 @@ struct HostControlToolSupportTests {
         #expect(Data(result.stdout.utf8).count < 270_000)
     }
 
+    @Test("Host control process runner clamps timeouts at the shared runner boundary")
+    func hostControlProcessRunnerClampsTimeoutsAtSharedRunnerBoundary() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-host-runner-timeout-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let executable = try customExecutable(named: "slow", root: root, body: """
+        sleep 2
+        printf 'finished'
+        exit 0
+        """)
+        let started = Date()
+
+        let result = HostControlProcessRunner(limits: HostControlProcessLimits(maximumTimeoutSeconds: 1, outputByteLimit: 1024)).run(
+            executablePath: executable.path,
+            arguments: [],
+            timeoutSeconds: 10,
+            environment: [:]
+        )
+
+        #expect(result.timedOut)
+        #expect(result.exitCode == 124)
+        #expect(Date().timeIntervalSince(started) < 2)
+        #expect(!result.stdout.contains("finished"))
+    }
+
+    @Test("Host control process runner force stops output limited processes promptly")
+    func hostControlProcessRunnerForceStopsOutputLimitedProcessesPromptly() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-host-runner-output-stop-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let executable = try customExecutable(named: "noisy", root: root, body: """
+        trap '' TERM
+        while :; do
+          printf 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+        done
+        """)
+        let started = Date()
+
+        let result = HostControlProcessRunner(limits: HostControlProcessLimits(maximumTimeoutSeconds: 5, outputByteLimit: 64)).run(
+            executablePath: executable.path,
+            arguments: [],
+            timeoutSeconds: 5,
+            environment: [:]
+        )
+
+        #expect(result.exitCode == 125)
+        #expect(result.stdoutTruncated)
+        #expect(Date().timeIntervalSince(started) < 2)
+    }
+
+    @Test("Host control process runner does not wait on inherited pipes after exit")
+    func hostControlProcessRunnerDoesNotWaitOnInheritedPipesAfterExit() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-host-runner-inherited-pipe-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let executable = try customExecutable(named: "detached-noisy-child", root: root, body: """
+        (sleep 0.1; printf 'BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB'; sleep 2) &
+        exit 0
+        """)
+        let started = Date()
+
+        let result = HostControlProcessRunner(limits: HostControlProcessLimits(maximumTimeoutSeconds: 5, outputByteLimit: 32)).run(
+            executablePath: executable.path,
+            arguments: [],
+            timeoutSeconds: 5,
+            environment: [:]
+        )
+
+        #expect(result.exitCode == 0)
+        #expect(Date().timeIntervalSince(started) < 1)
+    }
+
+    @Test("Host control tool schemas describe the configured timeout cap")
+    func hostControlToolSchemasDescribeConfiguredTimeoutCap() throws {
+        let server = HostControlMCPServer(
+            configuration: HostControlToolConfiguration(githubExecutable: "/usr/bin/gh"),
+            processLimits: HostControlProcessLimits(maximumTimeoutSeconds: 42, outputByteLimit: 1024)
+        )
+
+        let list = try parseJSON(try #require(server.handleLine(#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#)))
+        let listResult = try #require(list["result"] as? [String: Any])
+        let tools = try #require(listResult["tools"] as? [[String: Any]])
+
+        for tool in tools {
+            let inputSchema = try #require(tool["inputSchema"] as? [String: Any])
+            let properties = try #require(inputSchema["properties"] as? [String: Any])
+            let timeout = try #require(properties["timeout_seconds"] as? [String: Any])
+            let description = try #require(timeout["description"] as? String)
+            #expect(description.contains("capped at 42 seconds"))
+            #expect(!description.contains("300 seconds"))
+        }
+    }
+
+    @Test("Host control truncation does not reveal connector secret prefixes")
+    func hostControlTruncationDoesNotRevealConnectorSecretPrefixes() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-host-truncated-secret-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let gh = try customExecutable(named: "gh", root: root, body: """
+        printf 'visible-prefix:'
+        printf '%s' "$JIRA_TOKEN_ENV"
+        printf ':hidden-tail'
+        exit 0
+        """)
+        let connectors = """
+        {"connectors":[{"id":"jira-1","alias":"jira","envPrefix":"JIRA_JIRA","name":"Jira","serviceType":"jira","baseURL":"https://example.atlassian.net","authMethod":"basic","env":{"JIRA_API_TOKEN":"JIRA_TOKEN_ENV"},"credentials":{"JIRA_API_TOKEN":"JIRA_TOKEN_ENV"},"config":{}}]}
+        """
+        let server = HostControlMCPServer(
+            configuration: HostControlToolConfiguration(
+                githubExecutable: gh.path,
+                connectorsJSON: connectors,
+                environment: [
+                    "ASTRA_CONNECTORS": connectors,
+                    "JIRA_TOKEN_ENV": "super-secret-token"
+                ]
+            ),
+            processLimits: HostControlProcessLimits(maximumTimeoutSeconds: 5, outputByteLimit: "visible-prefix:super-secr".count)
+        )
+
+        let response = try call(server, id: 1, tool: "github", arguments: ["arguments": ["pr", "view", "123"]])
+        let text = try resultText(response)
+
+        #expect(text.contains("output_truncated: true"))
+        #expect(!text.contains("super-secr"))
+        #expect(!text.contains("super-secret-token"))
+    }
+
     private func fakeExecutable(named name: String, root: URL, log: URL, stdout: String) throws -> URL {
         let executable = root.appendingPathComponent(name, isDirectory: false)
         let quotedLog = log.path.replacingOccurrences(of: "'", with: "'\\''")
@@ -322,6 +457,16 @@ struct HostControlToolSupportTests {
         printf '\(name):%s\\n' "$*"
         if [ '\(name)' = 'gh' ]; then printf 'secret:%s\\n' "$JIRA_TOKEN_ENV"; fi
         exit 0
+        """.write(to: executable, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
+        return executable
+    }
+
+    private func customExecutable(named name: String, root: URL, body: String) throws -> URL {
+        let executable = root.appendingPathComponent(name, isDirectory: false)
+        try """
+        #!/bin/sh
+        \(body)
         """.write(to: executable, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
         return executable
