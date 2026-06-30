@@ -1004,7 +1004,7 @@ enum BrowserAutomationScripts {
                 role: targetInfo.role || "",
                 tag,
                 type: targetInfo.type || "",
-                autocomplete: targetInfo.autocomplete || "",
+                autocomplete: "[redacted]",
                 placeholder: "[redacted]",
                 testID: targetInfo.testID || "",
                 href: astraSensitiveURL(targetInfo.href || ""),
@@ -1044,10 +1044,11 @@ enum BrowserAutomationScripts {
         """
     }
 
-    static func insertTextScript(_ text: String) -> String {
+    static func insertTextScript(_ text: String, expectedFocusedTargetSignature: String? = nil) -> String {
         """
         (() => {
           const text = \(jsonLiteral(text));
+          const expectedFocusedTargetSignature = \(optionalJSONLiteral(expectedFocusedTargetSignature));
           const target = document.activeElement && document.activeElement !== document.body ? document.activeElement : null;
           if (!target) return JSON.stringify({ ok: false, error: "no_focused_element" });
           const esc = (value) => {
@@ -1090,7 +1091,58 @@ enum BrowserAutomationScripts {
             if (name) return el.tagName.toLowerCase() + "[name=" + JSON.stringify(name) + "]";
             return el.tagName.toLowerCase();
           };
+          const astraSignatureURL = () => {
+            try {
+              const url = new URL(location.href);
+              url.search = "";
+              url.hash = "";
+              return url.toString();
+            } catch (_) {
+              return location.origin + location.pathname;
+            }
+          };
+          const targetSignatureFor = (el) => [
+            selectorFor(el),
+            el.tagName.toLowerCase(),
+            el.getAttribute("type") || "",
+            nameFor(el),
+            roleFor(el),
+            el.getAttribute("autocomplete") || "",
+            "",
+            "0",
+            astraSignatureURL()
+          ].join("\\u001f");
+          const redactedTargetChangedResponse = (el) => {
+            const tag = String(el?.tagName || "").toLowerCase();
+            return {
+              ok: false,
+              error: "text_entry_target_changed",
+              action: "insertText",
+              summary: "The focused text-entry target changed after ASTRA inspected it, so ASTRA did not send raw browser input.",
+              risk: "unknownHighImpact",
+              target: {
+                selector: tag ? tag + "[redacted-selector]" : "",
+                requestedSelector: "",
+                label: "[redacted]",
+                name: "[redacted]",
+                role: el ? roleFor(el) : "",
+                tag,
+                type: el ? (el.getAttribute("type") || "") : "",
+                autocomplete: "[redacted]",
+                placeholder: "[redacted]",
+                testID: el ? (el.getAttribute("data-testid") || el.getAttribute("data-test") || "") : "",
+                href: el ? astraSensitiveURL(el.getAttribute("href") || "") : "",
+                url: astraSensitiveURL(location.href),
+                framePath: [],
+                shadowDepth: 0,
+                frameFocusUninspectable: false
+              }
+            };
+          };
           \(sensitiveTextEntryPrelude)
+          if (expectedFocusedTargetSignature && targetSignatureFor(target) !== expectedFocusedTargetSignature) {
+            return JSON.stringify(redactedTargetChangedResponse(target));
+          }
           const blocked = astraSensitiveBlock(target, "insertText", "", { selectorFor, labelFor, nameFor, roleFor });
           if (blocked) return JSON.stringify(blocked);
           target.focus();
@@ -1143,6 +1195,13 @@ enum BrowserAutomationScripts {
             href: el.getAttribute("href") || ""
           });
           const astraSensitiveRisk = (metadata) => {
+            const lowerTag = String(metadata.tag || "").toLowerCase();
+            const lowerRole = String(metadata.role || "").toLowerCase();
+            const lowerType = String(metadata.type || "").toLowerCase();
+            const isEditableTextEntry = lowerTag === "input"
+              || lowerTag === "textarea"
+              || lowerRole.includes("textbox")
+              || lowerType === "password";
             const text = [
               metadata.selector,
               metadata.requestedSelector,
@@ -1156,11 +1215,11 @@ enum BrowserAutomationScripts {
               metadata.testID,
               metadata.href
             ].join(" ").toLowerCase();
-            if (String(metadata.type || "").toLowerCase() === "password"
-              || /password|passcode|secret|current-password|new-password/.test(text)) {
+            if (lowerType === "password"
+              || (isEditableTextEntry && /password|passcode|secret|current-password|new-password/.test(text))) {
               return "credential_input_blocked";
             }
-            if (/mfa|2fa|two factor|two-factor|verification code|security code|otp|one-time/.test(text)) {
+            if (isEditableTextEntry && /mfa|2fa|two factor|two-factor|verification code|security code|otp|one-time/.test(text)) {
               return "mfa_input_blocked";
             }
             return "";
@@ -1374,6 +1433,16 @@ enum BrowserAutomationScripts {
               height: Math.round(rect.height)
             };
           };
+          const astraSignatureURL = () => {
+            try {
+              const url = new URL(location.href);
+              url.search = "";
+              url.hash = "";
+              return url.toString();
+            } catch (_) {
+              return location.origin + location.pathname;
+            }
+          };
           const targetSignatureFor = (el, framePath, shadowDepth) => [
             selectorFor(el),
             el.tagName.toLowerCase(),
@@ -1383,7 +1452,7 @@ enum BrowserAutomationScripts {
             el.getAttribute("autocomplete") || "",
             Array.isArray(framePath) ? framePath.join(" ") : String(framePath || ""),
             String(shadowDepth || 0),
-            location.href
+            astraSignatureURL()
           ].join("\\u001f");
           const publicTarget = (target) => {
             const el = target.el;

@@ -230,6 +230,8 @@ struct BrowserControlSafetyTests {
         #expect(script.contains("name: nameFor(el)"))
         #expect(script.contains("ownerDocument"))
         #expect(script.contains("targetSignature: targetSignatureFor(el, target.framePath || [], target.shadowDepth || 0)"))
+        #expect(script.contains(#"url.search = "";"#))
+        #expect(script.contains(#"url.hash = "";"#))
         #expect(script.contains("locator: target.locator || locatorSummary()"))
         #expect(script.contains(#"locator: { focused: true }"#))
         let preserveFailure = try #require(script.range(of: "if (target.ok === false) return JSON.stringify(publicTarget(target));"))
@@ -258,6 +260,8 @@ struct BrowserControlSafetyTests {
         #expect(insertScript.contains("autocomplete"))
         #expect(insertScript.contains("name: helpers.nameFor(el)"))
         #expect(insertScript.contains("astraSensitiveBlock(target, \"insertText\""))
+        #expect(insertScript.contains("const isEditableTextEntry = lowerTag === \"input\""))
+        #expect(insertScript.contains("isEditableTextEntry && /password|passcode|secret|current-password|new-password/"))
         #expect(insertScript.contains("href: astraSensitiveURL(metadata.href)"))
         #expect(insertScript.contains("url: astraSensitiveURL(location.href)"))
 
@@ -387,6 +391,7 @@ struct BrowserControlSafetyTests {
         #expect(sessionSource.contains("controlledBrowser.insertText("))
         #expect(sessionSource.contains("expectedFocusedTargetSignature: preflight.targetSignature"))
         #expect(sessionSource.contains("BrowserAutomationScripts.keypressScript("))
+        #expect(sessionSource.contains("BrowserAutomationScripts.insertTextScript("))
         #expect(sessionSource.contains("expectedFocusedTargetSignature: preflightTargetSignature"))
         let embeddedScript = BrowserAutomationScripts.keypressScript(
             key: "x",
@@ -395,7 +400,17 @@ struct BrowserControlSafetyTests {
         )
         #expect(embeddedScript.contains("if (expectedFocusedTargetSignature)"))
         #expect(embeddedScript.contains("text_entry_target_changed"))
+        #expect(embeddedScript.contains(#"autocomplete: "[redacted]""#))
         #expect(embeddedScript.contains("const target = activeTarget.el || document.body"))
+        let embeddedInsertScript = BrowserAutomationScripts.insertTextScript(
+            "secret",
+            expectedFocusedTargetSignature: "expected-signature"
+        )
+        #expect(embeddedInsertScript.contains("const expectedFocusedTargetSignature = \"expected-signature\""))
+        #expect(embeddedInsertScript.contains("targetSignatureFor(target) !== expectedFocusedTargetSignature"))
+        #expect(embeddedInsertScript.contains("text_entry_target_changed"))
+        #expect(embeddedInsertScript.contains(#"autocomplete: "[redacted]""#))
+        #expect(embeddedInsertScript.contains(#"action: "insertText""#))
         #expect(controllerSource.contains("validateFocusedTextEntryTarget(action: \"keypress\", expectedSignature: expectedFocusedTargetSignature, client: client)"))
         #expect(controllerSource.contains("validateFocusedTextEntryTarget(action: \"insertText\", expectedSignature: expectedFocusedTargetSignature, client: client)"))
 
@@ -412,6 +427,31 @@ struct BrowserControlSafetyTests {
         let insertValidation = try #require(insertSource.range(of: "validateFocusedTextEntryTarget"))
         let insertDispatch = try #require(insertSource.range(of: #""Input.insertText""#))
         #expect(insertValidation.lowerBound < insertDispatch.lowerBound)
+    }
+
+    @Test("Focused target signatures ignore failed probes and URL query fragments")
+    func focusedTargetSignaturesIgnoreFailedProbesAndURLQueryFragments() throws {
+        #expect(BrowserTextEntryPreflight.targetSignature(for: [
+            "ok": false,
+            "targetSignature": "should-not-bind"
+        ]) == nil)
+
+        let signature = try #require(BrowserTextEntryPreflight.targetSignature(for: [
+            "ok": true,
+            "selector": "input[name=comment]",
+            "tag": "input",
+            "type": "text",
+            "name": "comment",
+            "role": "textbox",
+            "autocomplete": "off",
+            "framePath": [],
+            "shadowDepth": 0,
+            "url": "https://app.example.com/editor?token=secret#draft"
+        ]))
+
+        #expect(signature.hasSuffix("\u{1f}https://app.example.com/editor"))
+        #expect(!signature.contains("token=secret"))
+        #expect(!signature.contains("#draft"))
     }
 
     @Test("Keypress audit logs requested phase before focused text entry preflight")

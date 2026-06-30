@@ -193,10 +193,10 @@ enum BrowserTextEntryPreflight {
     }
 
     static func targetSignature(for targetInfo: [String: Any]) -> String? {
+        guard bool(targetInfo["ok"]) else { return nil }
         if let signature = targetInfo["targetSignature"] as? String, !signature.isEmpty {
             return signature
         }
-        guard bool(targetInfo["ok"]) else { return nil }
         return [
             string(targetInfo["selector"]),
             string(targetInfo["tag"]),
@@ -206,7 +206,7 @@ enum BrowserTextEntryPreflight {
             string(targetInfo["autocomplete"]),
             framePathString(targetInfo["framePath"]),
             string(targetInfo["shadowDepth"]),
-            string(targetInfo["url"])
+            signatureURL(string(targetInfo["url"]))
         ].joined(separator: "\u{1f}")
     }
 
@@ -275,6 +275,15 @@ enum BrowserTextEntryPreflight {
             return values.map { string($0) }.joined(separator: " ")
         }
         return string(value)
+    }
+
+    private static func signatureURL(_ value: String) -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              var components = URLComponents(string: trimmed) else { return trimmed }
+        components.query = nil
+        components.fragment = nil
+        return components.string ?? trimmed
     }
 
     private static func sanitizedFramePath(_ value: Any, redact: Bool) -> [String] {
