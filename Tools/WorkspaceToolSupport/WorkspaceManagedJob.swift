@@ -359,20 +359,26 @@ public final class DockerWorkspaceJobManager: WorkspaceJobManaging {
                 "sh", "-c",
                 """
                 pidfile=\(shellQuote(directory + "/pid"))
+                command_script=\(shellQuote(directory + "/command.sh"))
                 safe_pid() {
                   case "$1" in
                     ''|*[!0-9]*) return 1 ;;
                   esac
                   [ "$1" -gt 1 ] 2>/dev/null
                 }
+                pid_matches_managed_command() {
+                  safe_pid "$1" || return 1
+                  [ -r "/proc/$1/cmdline" ] || return 1
+                  tr '\\0' ' ' < "/proc/$1/cmdline" 2>/dev/null | grep -F -- "$command_script" >/dev/null 2>&1
+                }
                 terminate_pid_or_group() {
                   target_pid="$1"
                   safe_pid "$target_pid" || return 0
-                  if kill -0 -"$target_pid" 2>/dev/null; then
-                    kill -TERM -"$target_pid" 2>/dev/null || true
+                  if kill -0 -- -"$target_pid" 2>/dev/null; then
+                    kill -TERM -- -"$target_pid" 2>/dev/null || true
                     sleep 5
-                    kill -KILL -"$target_pid" 2>/dev/null || true
-                  elif kill -0 "$target_pid" 2>/dev/null; then
+                    kill -KILL -- -"$target_pid" 2>/dev/null || true
+                  elif pid_matches_managed_command "$target_pid" && kill -0 "$target_pid" 2>/dev/null; then
                     kill -TERM "$target_pid" 2>/dev/null || true
                     sleep 5
                     kill -KILL "$target_pid" 2>/dev/null || true
@@ -462,17 +468,17 @@ public final class DockerWorkspaceJobManager: WorkspaceJobManaging {
         terminate_command_group() {
           grace_seconds="${1:-5}"
           safe_pid "$command_pid" || return 0
-          if kill -0 -"$command_pid" 2>/dev/null; then
-            kill -TERM -"$command_pid" 2>/dev/null || true
+          if kill -0 -- -"$command_pid" 2>/dev/null; then
+            kill -TERM -- -"$command_pid" 2>/dev/null || true
             sleep "$grace_seconds"
-            kill -KILL -"$command_pid" 2>/dev/null || true
+            kill -KILL -- -"$command_pid" 2>/dev/null || true
           fi
         }
         timeout_pid=""
         if [ "$timeout_seconds" -gt 0 ]; then
           (
             sleep "$timeout_seconds"
-            if kill -0 -"$command_pid" 2>/dev/null; then
+            if kill -0 -- -"$command_pid" 2>/dev/null; then
               printf '%s\\n' timed_out > "$timeout_marker"
               terminate_command_group 5
             fi
