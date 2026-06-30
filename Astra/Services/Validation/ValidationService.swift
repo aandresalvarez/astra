@@ -106,7 +106,7 @@ enum ValidationCommandPolicy {
                 continue
             }
             if isInDoubleQuote {
-                if character == "`" || (previousDoubleQuotedDollar && character == "(") {
+                if character == "`" || character == "$" || (previousDoubleQuotedDollar && ["(", "{"].contains(character)) {
                     containsUnsafeShellSyntax = true
                 }
                 previousDoubleQuotedDollar = character == "$"
@@ -147,7 +147,8 @@ enum ValidationCommandPolicy {
         case "swift":
             guard tokens.count >= 2,
                   ["test", "build"].contains(tokens[1]),
-                  !containsDisplayOnlyFlag(tokens.dropFirst(2)) else {
+                  !containsDisplayOnlyFlag(tokens.dropFirst(2)),
+                  !(tokens[1] == "test" && swiftTestHasListSubcommand(tokens.dropFirst(2))) else {
                 return false
             }
             return true
@@ -158,9 +159,7 @@ enum ValidationCommandPolicy {
         case "npm":
             return packageManagerRunsOnlyTestScript(tokens: tokens, supportsBareForwardedArgs: false)
         case "yarn", "pnpm":
-            return tokens.count >= 2 &&
-                ((tokens[1] == "test") ||
-                 (tokens.count >= 3 && tokens[1] == "run" && tokens[2] == "test"))
+            return packageManagerRunsOnlyTestScript(tokens: tokens, supportsBareForwardedArgs: true)
         case "make":
             return makeRunsOnlyTestTarget(tokens)
         case "test", "[":
@@ -176,9 +175,32 @@ enum ValidationCommandPolicy {
             "--version", "-version",
             "--list-tests",
             "--collect-only", "--co",
-            "--show-bin-path"
+            "--show-bin-path",
+            "--setup-plan", "--fixtures", "--fixtures-per-test", "--markers"
         ])
         return tokens.contains { displayOnly.contains($0) }
+    }
+
+    private static func swiftTestHasListSubcommand(_ tokens: ArraySlice<String>) -> Bool {
+        let optionsWithValues: Set<String> = [
+            "--filter", "--skip", "--xunit-output", "--parallel-workers",
+            "--num-workers", "--configuration", "--package-path"
+        ]
+        var skipNext = false
+        for token in tokens {
+            if skipNext {
+                skipNext = false
+                continue
+            }
+            if optionsWithValues.contains(token) {
+                skipNext = true
+                continue
+            }
+            if token == "list" {
+                return true
+            }
+        }
+        return false
     }
 
     private static func packageManagerRunsOnlyTestScript(tokens: [String], supportsBareForwardedArgs: Bool) -> Bool {
@@ -194,13 +216,14 @@ enum ValidationCommandPolicy {
         let trailing = tokens.dropFirst(argumentStart)
         guard !trailing.isEmpty else { return true }
         if supportsBareForwardedArgs {
-            return true
+            return !containsDisplayOnlyFlag(trailing)
         }
         guard trailing.first == "--" else { return false }
         return !containsDisplayOnlyFlag(trailing.dropFirst())
     }
 
     private static func xcodebuildHasBuildOrTestAction(_ tokens: [String]) -> Bool {
+        guard !xcodebuildHasInfoOnlyMode(tokens.dropFirst()) else { return false }
         let optionsWithValues: Set<String> = [
             "-project", "-workspace", "-scheme", "-destination", "-configuration", "-sdk",
             "-derivedDataPath", "-resultBundlePath", "-resultBundleVersion",
@@ -222,6 +245,13 @@ enum ValidationCommandPolicy {
             }
         }
         return false
+    }
+
+    private static func xcodebuildHasInfoOnlyMode(_ tokens: ArraySlice<String>) -> Bool {
+        let infoOnlyModes = Set([
+            "-showBuildSettings", "-showdestinations", "-list", "-version", "-showsdks", "-usage", "-help"
+        ])
+        return tokens.contains { infoOnlyModes.contains($0) }
     }
 
     private static func makeRunsOnlyTestTarget(_ tokens: [String]) -> Bool {
@@ -305,7 +335,8 @@ enum ValidationCommandPolicy {
         guard !path.isEmpty,
               !path.hasPrefix("/"),
               !path.hasPrefix("~"),
-              !path.hasPrefix("-") else {
+              !path.hasPrefix("-"),
+              !path.hasPrefix("=") else {
             return false
         }
         let components = path.split(separator: "/", omittingEmptySubsequences: false)

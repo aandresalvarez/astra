@@ -301,6 +301,9 @@ struct ValidationServiceTests {
         #expect(await runner.recordedCalls().isEmpty)
         #expect(!ValidationCommandPolicy.isAllowed("swift build --help"))
         #expect(!ValidationCommandPolicy.isAllowed("swift build --show-bin-path"))
+        #expect(!ValidationCommandPolicy.isAllowed("swift test list"))
+        #expect(!ValidationCommandPolicy.isAllowed(#"swift test "${UNSET:---help}""#))
+        #expect(ValidationCommandPolicy.isAllowed("swift test --filter list"))
     }
 
     @Test("validation command policy allows help and version as argument values")
@@ -579,9 +582,13 @@ struct ValidationServiceTests {
         #expect(!ValidationCommandPolicy.isAllowed("npm run test:evil"))
         #expect(ValidationCommandPolicy.isAllowed("yarn run test"))
         #expect(ValidationCommandPolicy.isAllowed("yarn run test --ci"))
+        #expect(!ValidationCommandPolicy.isAllowed("yarn test --help"))
+        #expect(!ValidationCommandPolicy.isAllowed("yarn run test --version"))
         #expect(!ValidationCommandPolicy.isAllowed("yarn run test:evil"))
         #expect(ValidationCommandPolicy.isAllowed("pnpm run test"))
         #expect(ValidationCommandPolicy.isAllowed("pnpm run test -- --runInBand"))
+        #expect(!ValidationCommandPolicy.isAllowed("pnpm test --help"))
+        #expect(!ValidationCommandPolicy.isAllowed("pnpm run test --markers"))
         #expect(!ValidationCommandPolicy.isAllowed("pnpm run test:evil"))
     }
 
@@ -593,6 +600,8 @@ struct ValidationServiceTests {
         #expect(ValidationCommandPolicy.isAllowed("xcodebuild test-without-building -workspace App.xcworkspace -scheme App"))
         #expect(!ValidationCommandPolicy.isAllowed("xcodebuild archive -project test.xcodeproj"))
         #expect(!ValidationCommandPolicy.isAllowed("xcodebuild -list -project build.xcodeproj"))
+        #expect(!ValidationCommandPolicy.isAllowed("xcodebuild -showBuildSettings build"))
+        #expect(!ValidationCommandPolicy.isAllowed("xcodebuild -version test"))
         #expect(!ValidationCommandPolicy.isAllowed("xcodebuild -scheme test"))
     }
 
@@ -624,6 +633,7 @@ struct ValidationServiceTests {
         #expect(!ValidationCommandPolicy.isAllowed("test -d /"))
         #expect(!ValidationCommandPolicy.isAllowed("[ -e / ]"))
         #expect(!ValidationCommandPolicy.isAllowed("test -f ../outside"))
+        #expect(!ValidationCommandPolicy.isAllowed("test -f =zsh"))
         #expect(!ValidationCommandPolicy.isAllowed("test"))
         #expect(!ValidationCommandPolicy.isAllowed("[ ]"))
         #expect(!ValidationCommandPolicy.isAllowed("test -f proof.txt; touch should-not-run"))
@@ -635,6 +645,9 @@ struct ValidationServiceTests {
         #expect(!ValidationCommandPolicy.isAllowed("python3 -m pytest --version"))
         #expect(!ValidationCommandPolicy.isAllowed("python3 -m pytest --collect-only"))
         #expect(!ValidationCommandPolicy.isAllowed("pytest --collect-only"))
+        #expect(!ValidationCommandPolicy.isAllowed("pytest --setup-plan"))
+        #expect(!ValidationCommandPolicy.isAllowed("pytest --fixtures"))
+        #expect(!ValidationCommandPolicy.isAllowed("pytest --markers"))
         #expect(ValidationCommandPolicy.isAllowed("python -m pytest -k help"))
     }
 
