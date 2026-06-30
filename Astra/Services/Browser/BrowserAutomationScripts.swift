@@ -390,6 +390,8 @@ enum BrowserAutomationScripts {
           if (!text) continue;
           const parent = node.parentElement;
           if (!parent || !visible(parent)) continue;
+          const formControl = parent.closest ? parent.closest("input, textarea, select") : null;
+          if (formControl && isSensitiveValueControl(formControl)) continue;
           pieces.push(text);
           total += text.length + 1;
         }
@@ -425,7 +427,9 @@ enum BrowserAutomationScripts {
         "oauth", "client secret", "private key", "mfa", "2fa", "two factor",
         "two-factor", "verification code", "security code", "one-time",
         "one time", "otp", "totp", "ssn", "social security", "credit card",
-        "card number", "cvv", "cvc"
+        "dob", "date of birth", "birth date", "birthdate", "mrn",
+        "medical record", "medical record number", "patient id", "patient identifier",
+        "health record", "card number", "cvv", "cvc"
       ];
       const sensitiveAutocompleteTerms = [
         "current-password", "new-password", "one-time-code",
@@ -455,6 +459,14 @@ enum BrowserAutomationScripts {
         const value = String(el.value || "").slice(0, 160);
         if (!value) return "";
         return isSensitiveValueControl(el) ? "[redacted-sensitive-input]" : value;
+      };
+      const labelForSnapshot = (el) => {
+        const label = labelFor(el);
+        const value = String(el.value || "").replace(/\\s+/g, " ").trim().slice(0, 160);
+        if (value && isSensitiveValueControl(el) && (label === value || label.includes(value))) {
+          return "[redacted-sensitive-input]";
+        }
+        return label;
       };
       const frameLabelFor = (frame) => {
         const title = frame.getAttribute("title") || frame.getAttribute("name") || frame.getAttribute("aria-label") || frame.src || selectorFor(frame);
@@ -518,8 +530,8 @@ enum BrowserAutomationScripts {
           tag: el.tagName.toLowerCase(),
           role: roleFor(el),
           type: el.getAttribute("type") || "",
-          label: labelFor(el),
-          name: labelFor(el),
+          label: labelForSnapshot(el),
+          name: el.getAttribute("name") || "",
           placeholder: el.getAttribute("placeholder") || "",
           autocomplete: el.getAttribute("autocomplete") || "",
           testID: el.getAttribute("data-testid") || el.getAttribute("data-test") || "",
@@ -548,7 +560,8 @@ enum BrowserAutomationScripts {
           tag: active.tagName.toLowerCase(),
           role: active.getAttribute("role") || "",
           type: active.getAttribute("type") || "",
-          label: labelFor(active),
+          label: labelForSnapshot(active),
+          name: active.getAttribute("name") || "",
           autocomplete: active.getAttribute("autocomplete") || "",
           value: valueForSnapshot(active),
           bounds: boundsFor(active)

@@ -6,6 +6,7 @@ enum BrowserSensitiveInputRedactionPolicy {
     static func redactSnapshotObject(_ object: [String: Any]) -> (object: [String: Any], didRedact: Bool) {
         var redacted = object
         var didRedact = false
+        var sensitiveValues: [String] = []
 
         if let controls = object["controls"] as? [[String: Any]] {
             var nextControls: [[String: Any]] = []
@@ -13,6 +14,7 @@ enum BrowserSensitiveInputRedactionPolicy {
             for control in controls {
                 let result = redactControlObject(control)
                 didRedact = didRedact || result.didRedact
+                sensitiveValues.append(contentsOf: result.sensitiveValues)
                 nextControls.append(result.object)
             }
             redacted["controls"] = nextControls
@@ -21,15 +23,24 @@ enum BrowserSensitiveInputRedactionPolicy {
         if let focused = object["focusedElement"] as? [String: Any] {
             let result = redactControlObject(focused)
             didRedact = didRedact || result.didRedact
+            sensitiveValues.append(contentsOf: result.sensitiveValues)
             redacted["focusedElement"] = result.object
+        }
+
+        if let text = object["text"] as? String {
+            let nextText = redactedText(text, sensitiveValues: sensitiveValues)
+            if nextText != text {
+                redacted["text"] = nextText
+                didRedact = true
+            }
         }
 
         return (redacted, didRedact)
     }
 
-    static func redactControlObject(_ control: [String: Any]) -> (object: [String: Any], didRedact: Bool) {
+    static func redactControlObject(_ control: [String: Any]) -> (object: [String: Any], didRedact: Bool, sensitiveValues: [String]) {
         let value = string(control["value"])
-        guard !value.isEmpty else { return (control, false) }
+        guard !value.isEmpty else { return (control, false, []) }
 
         let shouldRedact = isSensitiveControl(
             selector: string(control["selector"]),
@@ -44,11 +55,13 @@ enum BrowserSensitiveInputRedactionPolicy {
             autocomplete: string(control["autocomplete"]),
             risk: nil
         )
-        guard shouldRedact else { return (control, false) }
+        guard shouldRedact else { return (control, false, []) }
 
         var redacted = control
         redacted["value"] = redactedInputValue
-        return (redacted, true)
+        redacted["label"] = redactedDisplayText(string(control["label"]), sensitiveValue: value)
+        redacted["name"] = redactedDisplayText(string(control["name"]), sensitiveValue: value)
+        return (redacted, true, [value])
     }
 
     static func redactedValue(
@@ -79,6 +92,18 @@ enum BrowserSensitiveInputRedactionPolicy {
             autocomplete: autocomplete,
             risk: risk
         ) ? redactedInputValue : value
+    }
+
+    static func redactedDisplayText(_ text: String, sensitiveValue: String) -> String {
+        let trimmedValue = sensitiveValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedValue.isEmpty else { return text }
+        let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedText.isEmpty else { return text }
+
+        if trimmedText == trimmedValue || trimmedText.contains(trimmedValue) {
+            return redactedInputValue
+        }
+        return text
     }
 
     static func isSensitiveControl(
@@ -161,11 +186,31 @@ enum BrowserSensitiveInputRedactionPolicy {
         "totp",
         "ssn",
         "social security",
+        "dob",
+        "date of birth",
+        "birth date",
+        "birthdate",
+        "mrn",
+        "medical record",
+        "medical record number",
+        "patient id",
+        "patient identifier",
+        "health record",
         "credit card",
         "card number",
         "cvv",
         "cvc"
     ]
+
+    private static func redactedText(_ text: String, sensitiveValues: [String]) -> String {
+        var redacted = text
+        for value in sensitiveValues {
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+            redacted = redacted.replacingOccurrences(of: trimmed, with: redactedInputValue)
+        }
+        return redacted
+    }
 
     private static func containsAny(_ text: String, _ needles: [String]) -> Bool {
         needles.contains { text.contains($0) }

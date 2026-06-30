@@ -43,6 +43,55 @@ struct BrowserPageSnapshotServiceTests {
         #expect(!compacted.contains("ghp_secret_token"))
     }
 
+    @Test("snapshot output redacts sensitive values from text and derived labels")
+    func snapshotOutputRedactsSensitiveValuesFromTextAndDerivedLabels() throws {
+        let compacted = try BrowserPageSnapshotService.compactSnapshot(
+            json: """
+            {
+              "ok": true,
+              "url": "https://example.com/patient",
+              "title": "Patient",
+              "text": "Clinical note contains MRN-424242 and should not echo it.",
+              "controls": [
+                {
+                  "selector": "#mrn",
+                  "tag": "textarea",
+                  "role": "textbox",
+                  "type": "",
+                  "label": "MRN-424242",
+                  "name": "MRN-424242",
+                  "placeholder": "Medical record number",
+                  "value": "MRN-424242"
+                }
+              ]
+            }
+            """,
+            mode: .full,
+            query: nil,
+            limit: nil
+        )
+        let object = try jsonObject(from: compacted)
+        let controls = try #require(object["controls"] as? [[String: Any]])
+        let control = try #require(controls.first)
+
+        #expect(object["text"] as? String == "Clinical note contains [redacted-sensitive-input] and should not echo it.")
+        #expect(control["label"] as? String == "[redacted-sensitive-input]")
+        #expect(control["name"] as? String == "[redacted-sensitive-input]")
+        #expect(control["value"] as? String == "[redacted-sensitive-input]")
+        #expect(!compacted.contains("MRN-424242"))
+    }
+
+    @Test("snapshot script avoids sensitive value-derived metadata")
+    func snapshotScriptAvoidsSensitiveValueDerivedMetadata() {
+        let script = BrowserAutomationScripts.snapshotScript
+
+        #expect(script.contains("const labelForSnapshot = (el) =>"))
+        #expect(script.contains("name: el.getAttribute(\"name\") || \"\""))
+        #expect(script.contains("formControl && isSensitiveValueControl(formControl)"))
+        #expect(script.contains("\"mrn\""))
+        #expect(!script.contains("name: labelFor(el)"))
+    }
+
     @Test("snapshot control filtering does not match redacted sensitive values")
     func snapshotControlFilteringDoesNotMatchRedactedSensitiveValues() throws {
         let compacted = try BrowserPageSnapshotService.compactSnapshot(

@@ -315,6 +315,23 @@ struct BrowserControl {
         )
     }
 
+    var redactedLabel: String {
+        redactedDisplayText(label)
+    }
+
+    var redactedName: String {
+        redactedDisplayText(name)
+    }
+
+    private var hasSensitiveValue: Bool {
+        providerVisibleValue == BrowserSensitiveInputRedactionPolicy.redactedInputValue
+    }
+
+    private func redactedDisplayText(_ text: String) -> String {
+        guard hasSensitiveValue else { return text }
+        return BrowserSensitiveInputRedactionPolicy.redactedDisplayText(text, sensitiveValue: value)
+    }
+
     func supports(_ action: BrowserActionKind) -> Bool {
         validActions.contains(action)
     }
@@ -322,8 +339,8 @@ struct BrowserControl {
     func jsonObject(debug: Bool = false) -> [String: Any] {
         var object: [String: Any] = [
             "controlID": controlID,
-            "label": label,
-            "name": name,
+            "label": redactedLabel,
+            "name": redactedName,
             "role": role,
             "tag": tag,
             "type": type,
@@ -349,7 +366,7 @@ struct BrowserControl {
         if debug {
             object["identityHash"] = identityHash
             object["rank"] = rank
-            object["evidence"] = evidence
+            object["evidence"] = redactedEvidence(evidence)
         } else {
             object["evidence"] = [
                 "labelSource": evidence["labelSource"] as? String ?? "computed",
@@ -359,6 +376,20 @@ struct BrowserControl {
             ]
         }
         return object
+    }
+
+    private func redactedEvidence(_ value: Any) -> Any {
+        guard hasSensitiveValue else { return value }
+        if let string = value as? String {
+            return BrowserSensitiveInputRedactionPolicy.redactedDisplayText(string, sensitiveValue: self.value)
+        }
+        if let object = value as? [String: Any] {
+            return object.mapValues(redactedEvidence)
+        }
+        if let array = value as? [Any] {
+            return array.map(redactedEvidence)
+        }
+        return value
     }
 }
 
@@ -384,7 +415,7 @@ struct BrowserControlRef {
         if let accessibilityNode {
             evidence["accessibilityNodeID"] = accessibilityNode.nodeID
             evidence["accessibilityRole"] = accessibilityNode.role
-            evidence["accessibilityName"] = accessibilityNode.name
+            evidence["accessibilityName"] = control.redactedAccessibilityText(accessibilityNode.name)
         }
 
         var object: [String: Any] = [
@@ -392,8 +423,8 @@ struct BrowserControlRef {
             "controlID": control.controlID,
             "source": source.rawValue,
             "role": control.role,
-            "name": control.name.isEmpty ? control.label : control.name,
-            "label": control.label,
+            "name": control.redactedName.isEmpty ? control.redactedLabel : control.redactedName,
+            "label": control.redactedLabel,
             "value": control.providerVisibleValue,
             "selectorFallback": control.selector,
             "framePath": control.framePath,
@@ -421,8 +452,26 @@ struct BrowserControlRef {
             "evidence": evidence
         ]
         if let accessibilityNode, debug {
-            object["accessibilityNode"] = accessibilityNode.jsonObject
+            object["accessibilityNode"] = control.redactedAccessibilityNodeObject(accessibilityNode)
         }
+        return object
+    }
+}
+
+private extension BrowserControl {
+    func redactedAccessibilityText(_ text: String) -> String {
+        guard providerVisibleValue == BrowserSensitiveInputRedactionPolicy.redactedInputValue else {
+            return text
+        }
+        return BrowserSensitiveInputRedactionPolicy.redactedDisplayText(text, sensitiveValue: value)
+    }
+
+    func redactedAccessibilityNodeObject(_ node: BrowserAccessibilityNode) -> [String: Any] {
+        var object = node.jsonObject
+        object["name"] = redactedAccessibilityText(node.name)
+        object["value"] = redactedAccessibilityText(node.value)
+        object["description"] = redactedAccessibilityText(node.description)
+        object["properties"] = node.properties.mapValues(redactedAccessibilityText)
         return object
     }
 }
@@ -1037,20 +1086,8 @@ enum BrowserAnalysisBuilder {
         let visible = true
         let actionable = bool(raw["actionable"]) && !disabled
         let bounds = raw["bounds"] as? [String: Any] ?? [:]
-        let autocomplete = string(raw["autocomplete"])
         let risk = classifyRisk(
             pageURL: pageURL,
-            selector: selector,
-            label: label,
-            role: role,
-            tag: tag,
-            type: type,
-            placeholder: placeholder,
-            testID: testID,
-            href: href
-        )
-        let value = BrowserSensitiveInputRedactionPolicy.redactedValue(
-            rawValue,
             selector: selector,
             label: label,
             name: name,
@@ -1059,9 +1096,7 @@ enum BrowserAnalysisBuilder {
             type: type,
             placeholder: placeholder,
             testID: testID,
-            href: href,
-            autocomplete: autocomplete,
-            risk: risk
+            href: href
         )
         let actions = validActions(
             pageURL: pageURL,
@@ -1156,7 +1191,7 @@ enum BrowserAnalysisBuilder {
             type: type,
             placeholder: placeholder,
             testID: testID,
-            value: value,
+            value: rawValue,
             href: href,
             framePath: framePath,
             shadowDepth: shadowDepth,
@@ -1383,6 +1418,7 @@ enum BrowserAnalysisBuilder {
         pageURL: String,
         selector: String,
         label: String,
+        name: String,
         role: String,
         tag: String,
         type: String,
@@ -1393,6 +1429,7 @@ enum BrowserAnalysisBuilder {
         let text = [
             selector,
             label,
+            name,
             role,
             tag,
             type,

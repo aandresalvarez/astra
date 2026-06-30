@@ -120,6 +120,41 @@ struct BrowserAnalysisTests {
         #expect(String(describing: response).contains("123456") == false)
     }
 
+    @Test("Analysis debug response redacts value-derived labels and accessibility names")
+    func analysisDebugResponseRedactsValueDerivedLabelsAndAccessibilityNames() throws {
+        let secret = "MRN-424242"
+        let analysis = BrowserAnalysisBuilder.build(
+            snapshot: Self.sampleSnapshot(controls: [
+                Self.control(
+                    selector: "textarea[name=mrn]",
+                    tag: "textarea",
+                    role: "textbox",
+                    label: secret,
+                    value: secret
+                )
+            ]),
+            backend: "controlled Chromium profile",
+            engine: "controlled",
+            accessibilitySnapshotObject: Self.accessibilitySnapshot(role: "textbox", name: secret)
+        )
+
+        let response = analysis.responseObject(query: nil, full: true, limit: nil, debug: true, version: .v2)
+        let controls = try #require(response["controls"] as? [[String: Any]])
+        let control = try #require(controls.first)
+        let refs = try #require(response["controlRefs"] as? [[String: Any]])
+        let ref = try #require(refs.first)
+        let evidence = try #require(ref["evidence"] as? [String: Any])
+        let accessibilityNode = try #require(ref["accessibilityNode"] as? [String: Any])
+
+        #expect(control["label"] as? String == "[redacted-sensitive-input]")
+        #expect(control["name"] as? String == "[redacted-sensitive-input]")
+        #expect(ref["label"] as? String == "[redacted-sensitive-input]")
+        #expect(ref["name"] as? String == "[redacted-sensitive-input]")
+        #expect(evidence["accessibilityName"] as? String == "[redacted-sensitive-input]")
+        #expect(accessibilityNode["name"] as? String == "[redacted-sensitive-input]")
+        #expect(String(describing: response).contains(secret) == false)
+    }
+
     @Test("V2 response adds semantic control refs without changing default response")
     func v2ResponseAddsSemanticControlRefs() throws {
         let analysis = BrowserAnalysisBuilder.build(
