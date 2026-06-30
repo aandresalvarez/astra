@@ -5,8 +5,10 @@ let package = Package(
     name: "ASTRA",
     platforms: [.macOS(.v14)],
     products: [
+        .library(name: "ASTRACore", targets: ["ASTRACore"]),
         .executable(name: "ASTRA", targets: ["ASTRAExecutable"]),
         .executable(name: "astra-browser", targets: ["AstraBrowserTool"]),
+        .executable(name: "astra-local-model", targets: ["AstraLocalModelTool"]),
         .executable(name: "astra-mcp-gateway", targets: ["AstraMCPGatewayTool"]),
         .executable(name: "astra-host-control", targets: ["AstraHostControlTool"]),
         .executable(name: "astra-workspace", targets: ["AstraWorkspaceTool"]),
@@ -53,6 +55,11 @@ let package = Package(
             name: "AstraBrowserTool",
             dependencies: ["ASTRACore"],
             path: "Tools/AstraBrowserTool"
+        ),
+        .executableTarget(
+            name: "AstraLocalModelTool",
+            dependencies: ["ASTRACore"],
+            path: "Tools/AstraLocalModelTool"
         ),
         .executableTarget(
             name: "AstraMCPGatewayTool",

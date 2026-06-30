@@ -2,11 +2,53 @@ import Foundation
 
 protocol ConnectorHTTPTransport {
     func data(for request: URLRequest) async throws -> (Data, URLResponse)
+    func data(for request: URLRequest, cancellationToken: LocalAgentCancellationToken?) async throws -> (Data, URLResponse)
+    func boundedData(
+        for request: URLRequest,
+        maxBytes: Int,
+        cancellationToken: LocalAgentCancellationToken?
+    ) async throws -> LocalAgentBoundedDataLoadResult
+}
+
+extension ConnectorHTTPTransport {
+    func data(for request: URLRequest, cancellationToken _: LocalAgentCancellationToken?) async throws -> (Data, URLResponse) {
+        try await data(for: request)
+    }
+
+    func boundedData(
+        for request: URLRequest,
+        maxBytes: Int,
+        cancellationToken: LocalAgentCancellationToken?
+    ) async throws -> LocalAgentBoundedDataLoadResult {
+        let (data, response) = try await data(for: request, cancellationToken: cancellationToken)
+        let cappedBytes = max(1, maxBytes)
+        return LocalAgentBoundedDataLoadResult(
+            data: Data(data.prefix(cappedBytes)),
+            response: response,
+            truncated: data.count > cappedBytes
+        )
+    }
 }
 
 struct URLSessionConnectorHTTPTransport: ConnectorHTTPTransport {
     func data(for request: URLRequest) async throws -> (Data, URLResponse) {
-        try await URLSession.shared.data(for: request)
+        try await data(for: request, cancellationToken: nil)
+    }
+
+    func data(for request: URLRequest, cancellationToken: LocalAgentCancellationToken?) async throws -> (Data, URLResponse) {
+        try await LocalAgentCancellableDataLoader.data(for: request, cancellationToken: cancellationToken)
+    }
+
+    func boundedData(
+        for request: URLRequest,
+        maxBytes: Int,
+        cancellationToken: LocalAgentCancellationToken?
+    ) async throws -> LocalAgentBoundedDataLoadResult {
+        try await LocalAgentCancellableDataLoader.boundedData(
+            for: request,
+            maxBytes: maxBytes,
+            cancellationToken: cancellationToken
+        )
     }
 }
 
@@ -15,6 +57,23 @@ enum ConnectorRequestBuilder {
         base: URL,
         path: String,
         queryItems: [URLQueryItem] = []
+    ) -> URL {
+        url(base: base, path: path, queryItems: queryItems, pathIsPercentEncoded: false)
+    }
+
+    static func urlWithPercentEncodedPath(
+        base: URL,
+        path: String,
+        queryItems: [URLQueryItem] = []
+    ) -> URL {
+        url(base: base, path: path, queryItems: queryItems, pathIsPercentEncoded: true)
+    }
+
+    private static func url(
+        base: URL,
+        path: String,
+        queryItems: [URLQueryItem],
+        pathIsPercentEncoded: Bool
     ) -> URL {
         guard var components = URLComponents(url: base, resolvingAgainstBaseURL: false) else {
             return base
@@ -32,11 +91,17 @@ enum ConnectorRequestBuilder {
             embeddedQueryItems = []
         }
 
-        let basePath = components.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let basePath = (pathIsPercentEncoded ? components.percentEncodedPath : components.path)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         let childPath = pathWithoutQuery.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        components.path = "/" + [basePath, childPath]
+        let resolvedPath = "/" + [basePath, childPath]
             .filter { !$0.isEmpty }
             .joined(separator: "/")
+        if pathIsPercentEncoded {
+            components.percentEncodedPath = resolvedPath
+        } else {
+            components.path = resolvedPath
+        }
         let combinedQueryItems = (components.queryItems ?? []) + embeddedQueryItems + queryItems
         components.queryItems = combinedQueryItems.isEmpty ? nil : combinedQueryItems
         return components.url ?? base

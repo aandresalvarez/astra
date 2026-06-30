@@ -139,4 +139,3 @@ final class QueryResultExplanationRecordingGenerator: QueryResultExplanationGene
         return try result.get()
     }
 }
-

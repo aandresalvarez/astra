@@ -111,6 +111,7 @@ enum TaskOutputArtifactPathPolicy {
         guard context == .taskFolder else { return false }
         return normalized == ".runtime" || normalized.hasPrefix(".runtime/") ||
             normalized == ".runtime-bin" || normalized.hasPrefix(".runtime-bin/") ||
+            normalized == ".local-agent" || normalized.hasPrefix(".local-agent/") ||
             normalized == "jobs" || normalized.hasPrefix("jobs/")
     }
 

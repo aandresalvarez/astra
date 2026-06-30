@@ -218,6 +218,8 @@ public enum CopilotStreamEventParser {
             return .permissionDenied(tool: tool, reason: reason)
         case .stats(let input, let output, let cost, let duration, let turns):
             return .result(text: nil, costUSD: cost, totalInputTokens: input, totalOutputTokens: output, durationMs: duration, numTurns: turns, isError: false)
+        case .diagnostic:
+            return nil
         case .astraProtocol(let event):
             return .astraProtocol(event)
         case .completed(let summary):

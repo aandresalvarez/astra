@@ -75,7 +75,7 @@ struct ProviderLaunchCapabilityScopeTests {
             .appendingPathComponent("AgentRuntimeWorker.swift")
         let workerSource = try String(contentsOf: workerURL, encoding: .utf8)
         let preflight = "AgentRuntimeLaunchPreflight.preflightCredentialProjectionBeforeLaunch("
-        let promptBuild = "let prompt = promptOverride ?? buildPrompt(for: task)"
+        let promptBuild = "let prompt = localAgentEnabled"
         let providerLaunch = "processRunner.runRuntimeProcess"
         let preflightRange = try #require(workerSource.range(of: preflight))
         let promptBuildRange = try #require(workerSource.range(of: promptBuild))
@@ -84,6 +84,23 @@ struct ProviderLaunchCapabilityScopeTests {
         #expect(sourceContains(workerSource, preflight))
         #expect(preflightRange.lowerBound < promptBuildRange.lowerBound)
         #expect(preflightRange.lowerBound < providerLaunchRange.lowerBound)
+    }
+
+    @Test("Worker wraps Local Agent follow-up prompts before launch")
+    func workerWrapsLocalAgentFollowUpPromptsBeforeLaunch() throws {
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let workerURL = repoRoot
+            .appendingPathComponent("Astra")
+            .appendingPathComponent("Services")
+            .appendingPathComponent("Runtime")
+            .appendingPathComponent("AgentRuntimeWorker.swift")
+        let workerSource = try String(contentsOf: workerURL, encoding: .utf8)
+
+        #expect(sourceContains(workerSource, "buildLocalAgentPrompt(for: task, promptOverride: promptOverride, recordingMode: recordingMode)"))
+        #expect(sourceContains(workerSource, "guard recordingMode == .followUp else"))
+        #expect(sourceContains(workerSource, "LocalAgentOrchestrator.buildFollowUpPrompt("))
     }
 
     @Test("Docker image preflight runs before credential projection and provider launch")

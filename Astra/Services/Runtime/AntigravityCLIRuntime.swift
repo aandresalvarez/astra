@@ -432,11 +432,46 @@ enum AntigravityCLIRuntime {
             return (tool: "WorkspaceAccess", reason: line, isBlocking: true)
         }
         if lower.contains("permission required") || lower.contains("requires permission") {
-            return (tool: "ToolApproval", reason: line, isBlocking: lower.contains("(y/n)") || lower.contains("approve"))
+            return (
+                tool: plainTextPermissionToolName(line: line) ?? "ToolApproval",
+                reason: line,
+                isBlocking: lower.contains("(y/n)") || lower.contains("approve") || lower.contains("approval")
+            )
         }
         if lower.contains("permission denied") {
-            return (tool: "ToolApproval", reason: line, isBlocking: false)
+            return (tool: plainTextPermissionToolName(line: line) ?? "ToolApproval", reason: line, isBlocking: false)
         }
         return nil
+    }
+
+    private static func plainTextPermissionToolName(line: String) -> String? {
+        if let shellTool = firstRegexCapture(
+            pattern: #"(?i)\b(?:shell|bash)\s*\(\s*([^)]+?)\s*\)"#,
+            in: line
+        ) {
+            return "shell(\(shellTool))"
+        }
+
+        let knownTools = [
+            "Read", "Grep", "Glob", "Write", "Edit", "MultiEdit", "WebFetch", "WebSearch", "Agent"
+        ]
+        for tool in knownTools {
+            let escaped = NSRegularExpression.escapedPattern(for: tool)
+            if line.range(of: #"(?i)(?:\btool\s*[:=]?\s*|\bfor\s+)\#(escaped)\b"#, options: .regularExpression) != nil {
+                return tool
+            }
+        }
+        return nil
+    }
+
+    private static func firstRegexCapture(pattern: String, in line: String) -> String? {
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)),
+              match.numberOfRanges > 1,
+              let range = Range(match.range(at: 1), in: line) else {
+            return nil
+        }
+        let value = line[range].trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty ? nil : value
     }
 }

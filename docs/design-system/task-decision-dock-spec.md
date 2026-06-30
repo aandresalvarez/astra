@@ -506,4 +506,3 @@ The implementation is complete when:
   named presentation constants.
 - Focused regressions pass.
 - `git diff --check` passes.
-

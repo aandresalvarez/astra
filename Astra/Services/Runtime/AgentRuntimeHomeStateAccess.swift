@@ -122,3 +122,7 @@ extension CursorCLIRuntimeAdapter {
 extension OpenCodeCLIRuntimeAdapter {
     var homeStateAccess: AgentRuntimeHomeStateAccess { .openCodeCLI }
 }
+
+extension LocalMLXRuntimeAdapter {
+    var homeStateAccess: AgentRuntimeHomeStateAccess { .none }
+}

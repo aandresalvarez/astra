@@ -277,6 +277,7 @@ final class AgentRuntimeStreamDebugCapture: @unchecked Sendable {
         case .fileChange: "file_change"
         case .permissionRequested: "permission_requested"
         case .stats: "stats"
+        case .diagnostic(let kind, _): "diagnostic:\(kind)"
         case .astraProtocol: "astra_protocol"
         case .completed: "completed"
         case .failed: "failed"

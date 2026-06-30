@@ -74,12 +74,14 @@ extension TaskThreadSnapshotTests {
 
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: root.appendingPathComponent(".runtime-bin"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: root.appendingPathComponent(".local-agent"), withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: root.appendingPathComponent(".runtime/docker-client/client-1"), withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: root.appendingPathComponent("jobs/job-1"), withIntermediateDirectories: true)
         try "# Summary".write(to: root.appendingPathComponent("summary.md"), atomically: true, encoding: .utf8)
         try "<h1>Preview</h1>".write(to: root.appendingPathComponent("index.html"), atomically: true, encoding: .utf8)
         try "select 1".write(to: root.appendingPathComponent("query.sql"), atomically: true, encoding: .utf8)
         try "shim".write(to: root.appendingPathComponent(".runtime-bin/astra-browser"), atomically: true, encoding: .utf8)
+        try #"{"messages":[]}"#.write(to: root.appendingPathComponent(".local-agent/request.json"), atomically: true, encoding: .utf8)
         try "{}".write(to: root.appendingPathComponent(".runtime/docker-client/client-1/config.json"), atomically: true, encoding: .utf8)
         try "out".write(to: root.appendingPathComponent("jobs/job-1/stdout.log"), atomically: true, encoding: .utf8)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -91,6 +93,7 @@ extension TaskThreadSnapshotTests {
         #expect(destinations["index.html"] == .browser)
         #expect(destinations["query.sql"] == .query)
         #expect(!files.contains { $0.path.hasSuffix(".runtime-bin/astra-browser") })
+        #expect(!files.contains { $0.path.hasSuffix(".local-agent/request.json") })
         #expect(!files.contains { $0.path.hasSuffix(".runtime/docker-client/client-1/config.json") })
         #expect(!files.contains { $0.path.hasSuffix("jobs/job-1/stdout.log") })
     }
@@ -703,12 +706,14 @@ extension TaskThreadSnapshotTests {
         let outputs = root.appendingPathComponent("outputs", isDirectory: true)
         let turns = root.appendingPathComponent("turns", isDirectory: true)
         let runtimeBin = root.appendingPathComponent(".runtime-bin", isDirectory: true)
+        let localAgent = root.appendingPathComponent(".local-agent", isDirectory: true)
         let diagnostics = root.appendingPathComponent("diagnostics", isDirectory: true)
 
         try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: outputs, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: turns, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: runtimeBin, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: localAgent, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: diagnostics, withIntermediateDirectories: true)
         try "# Report".write(to: root.appendingPathComponent("report.md"), atomically: true, encoding: .utf8)
         try "details".write(to: nested.appendingPathComponent("details.txt"), atomically: true, encoding: .utf8)
@@ -720,6 +725,7 @@ extension TaskThreadSnapshotTests {
         try "output".write(to: outputs.appendingPathComponent("turn_001.md"), atomically: true, encoding: .utf8)
         try "turn".write(to: turns.appendingPathComponent("turn_002.md"), atomically: true, encoding: .utf8)
         try "shim".write(to: runtimeBin.appendingPathComponent("astra-browser"), atomically: true, encoding: .utf8)
+        try #"{"messages":[]}"#.write(to: localAgent.appendingPathComponent("request.json"), atomically: true, encoding: .utf8)
         defer { try? FileManager.default.removeItem(at: root) }
 
         let rootModel = WorkspaceFileRoot(
@@ -747,6 +753,7 @@ extension TaskThreadSnapshotTests {
         #expect(!paths.contains("turns"))
         #expect(!paths.contains("turns/turn_002.md"))
         #expect(!paths.contains(".runtime-bin/astra-browser"))
+        #expect(!paths.contains(".local-agent/request.json"))
         #expect(!paths.contains("diagnostics"))
         #expect(!paths.contains("diagnostics/antigravity.log"))
     }

@@ -162,7 +162,8 @@ struct AgentRuntimeAdapterTests {
             .antigravityCLI: [".antigravity", ".gemini"],
             .codexCLI: [".codex"],
             .cursorCLI: [".cursor"],
-            .openCodeCLI: [".config/opencode", ".cache/opencode", ".local/share/opencode", ".local/state/opencode"]
+            .openCodeCLI: [".config/opencode", ".cache/opencode", ".local/share/opencode", ".local/state/opencode"],
+            .localMLX: []
         ]
 
         #expect(Set(expectedInherited.keys) == Set(AgentRuntimeAdapterRegistry.runtimeIDs))
@@ -170,7 +171,11 @@ struct AgentRuntimeAdapterTests {
             let access = AgentRuntimeAdapterRegistry.homeStateAccess(for: runtime)
             let expected = try #require(expectedInherited[runtime])
             #expect(access.inheritedHomeWritableRelativePaths == expected)
-            #expect(!access.isEmpty)
+            if runtime == .localMLX {
+                #expect(access.isEmpty)
+            } else {
+                #expect(!access.isEmpty)
+            }
             for relativePath in access.explicitHomeWritableRelativePaths + access.inheritedHomeWritableRelativePaths {
                 #expect(!relativePath.hasPrefix("/"))
                 #expect(!relativePath.contains("\n"))
@@ -427,6 +432,16 @@ struct AgentRuntimeAdapterTests {
 
     @Test("Adapter readiness check IDs match service reports")
     func adapterReadinessCheckIDsMatchServiceReports() async {
+        let previousLocalProviderGate = UserDefaults.standard.object(forKey: LocalModelSettingsStore.providerEnabledKey)
+        UserDefaults.standard.set(true, forKey: LocalModelSettingsStore.providerEnabledKey)
+        defer {
+            if let previousLocalProviderGate {
+                UserDefaults.standard.set(previousLocalProviderGate, forKey: LocalModelSettingsStore.providerEnabledKey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: LocalModelSettingsStore.providerEnabledKey)
+            }
+        }
+
         let runner = StubBinaryRunner()
         await runner.setResponse(
             forKey: "/opt/claude --version",

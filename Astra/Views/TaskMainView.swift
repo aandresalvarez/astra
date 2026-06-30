@@ -2729,6 +2729,12 @@ struct TaskMainView: View {
                 }
             }
 
+            if let localAgentSummary = presentation.localAgentSummary {
+                runActivityDetailSection(title: "Local Agent run", systemImage: "checklist") {
+                    factList(localAgentSummary.facts)
+                }
+            }
+
             if !presentation.tools.isEmpty {
                 runActivityDetailSection(title: "Tool activity", systemImage: "wrench.and.screwdriver") {
                     toolActivityList(presentation.tools)
@@ -3453,6 +3459,8 @@ struct TaskMainView: View {
             ("Budget exceeded", "xmark.octagon", Stanford.failed)
         case "permission.approval.requested":
             ("Permission requested", "hand.raised", Stanford.coolGrey)
+        case "local_agent.watchdog":
+            ("Local Agent watchdog", "clock.badge.exclamationmark", Stanford.poppy)
         case "astra.permission_summary":
             ("Permission summary", "checkmark.shield", Stanford.coolGrey)
         case "error":
@@ -3472,6 +3480,8 @@ struct TaskMainView: View {
             return "This task exceeded its budget. Resume with a higher budget or retry with a narrower request."
         case "permission.approval.requested":
             return permissionApprovalBody(for: notice.payload)
+        case "local_agent.watchdog":
+            return localAgentWatchdogBody(for: notice.payload)
         case "error" where runNoticeLooksPolicyBlocked(notice):
             return "ASTRA stopped this run because the requested action is outside the current policy. Review the policy or retry with broader permissions."
         case "error":
@@ -3516,6 +3526,33 @@ struct TaskMainView: View {
         return parts.joined(separator: ". ") + "."
     }
 
+    private func localAgentWatchdogBody(for payload: String) -> String {
+        guard let data = payload.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return payload.isEmpty ? "Local Agent recorded a watchdog warning." : String(payload.prefix(220))
+        }
+        let rawReason = json["reason"] as? String ?? "watchdog warning"
+        let reason = rawReason
+            .replacingOccurrences(of: "_", with: " ")
+        let phase = (json["phase"] as? String ?? "local agent")
+            .replacingOccurrences(of: "_", with: " ")
+        var parts = ["Local Agent reported \(reason) during \(phase)."]
+        if let tool = json["tool"] as? String {
+            parts.append("Tool: \(tool).")
+        }
+        if let duration = json["duration_ms"] as? String {
+            parts.append("Duration: \(duration) ms.")
+        }
+        if let timeout = json["timeout_seconds"] as? String {
+            parts.append("Timeout: \(timeout) seconds.")
+        }
+        let recovery = (json["recovery"] as? String) ?? LocalAgentRecoverySuggestions.suggestion(for: rawReason)
+        if let recovery, !recovery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            parts.append("Suggested next step: \(recovery)")
+        }
+        return parts.joined(separator: " ")
+    }
+
     private func permissionApprovalBody(for payload: String) -> String {
         RuntimePermissionApprovalText(payload: payload).noticeBody
     }
@@ -3556,7 +3593,7 @@ struct TaskMainView: View {
         }
 
         switch notice.type {
-        case "budget.warning", "budget.exceeded", "error", "permission.approval.requested":
+        case "budget.warning", "budget.exceeded", "error", "permission.approval.requested", "local_agent.watchdog":
             return notice.payload
         default:
             return nil
@@ -3865,6 +3902,16 @@ struct TaskMainView: View {
     }
 
     private var composerTaskStatusOverride: ComposerTaskStatusPresentation? {
+        if let run = latestRun,
+           run.runtimeID == AgentRuntimeID.localMLX.rawValue,
+           let presentation = ComposerToolbarPresentation.localMLXTaskStatusOverride(
+               taskStatus: task.status,
+               runStatus: run.status,
+               stopReason: run.stopReason
+           ) {
+            return presentation
+        }
+
         if task.status == .failed, let run = latestRun {
             let activity = currentThreadSnapshot.activity(for: run)
             let notices = runNoticesToDisplay(activity.notices, for: run)

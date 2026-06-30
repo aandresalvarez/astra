@@ -40,7 +40,7 @@ struct Phase3FunctionalTest {
     @Test(
         "3-agent debate with synthesis to markdown",
         .enabled(if: ProcessInfo.processInfo.environment["RUN_E2E"] != nil, "Set RUN_E2E=1 to run E2E tests that call live AI CLIs"),
-        arguments: E2ETestSupport.runtimeCases
+        arguments: E2ETestSupport.artifactRuntimeCases
     )
     @MainActor
     func parallelDebateSwarm(runtimeCase: E2ETestSupport.RuntimeCase) async throws {
@@ -219,7 +219,7 @@ struct Phase3FunctionalTest {
     @Test(
         "Budget exceeded kills swarm cleanly",
         .enabled(if: ProcessInfo.processInfo.environment["RUN_E2E"] != nil, "Set RUN_E2E=1 to run E2E tests that call live AI CLIs"),
-        arguments: E2ETestSupport.runtimeCases
+        arguments: E2ETestSupport.artifactRuntimeCases
     )
     @MainActor
     func budgetExceededKillsSwarm(runtimeCase: E2ETestSupport.RuntimeCase) async throws {

@@ -48,7 +48,7 @@ struct Phase2FunctionalTest {
     @Test(
         "Team task with 2 agents: Developer + QA Tester",
         .enabled(if: ProcessInfo.processInfo.environment["RUN_E2E"] != nil, "Set RUN_E2E=1 to run E2E tests that call live AI CLIs"),
-        arguments: E2ETestSupport.runtimeCases
+        arguments: E2ETestSupport.artifactRuntimeCases
     )
     @MainActor
     func makerCheckerTeam(runtimeCase: E2ETestSupport.RuntimeCase) async throws {

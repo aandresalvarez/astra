@@ -37,7 +37,7 @@ final class AgentRuntimeProcessRunner {
     }
 
     func cancel() {
-        currentProcess?.terminate()
+        currentProcess?.requestCancellation(reason: "cancelled_by_user")
         currentProcess = nil
     }
 
@@ -380,13 +380,18 @@ final class AgentRuntimeProcessRunner {
                 arguments: plan.arguments,
                 currentDirectory: plan.currentDirectory,
                 environment: plan.environment,
+                dedicatedEventFileDescriptor: plan.eventStream.dedicatedFileDescriptor,
+                dedicatedControlFileDescriptor: plan.controlStream.dedicatedFileDescriptor,
                 providesStdinChannel: plan.interactiveAsk != nil
             )
 
             let errorOutput = AgentLockedBuffer()
+            let diagnosticOutput = AgentLockedBuffer()
+            let diagnosticOutputCharacterLimit = 64_000
             let lineBuffer = AgentLockedBuffer()
             let eventPipeline = AgentRuntimeEventPipelineBox(
-                supportsAstraRunProtocol: AgentRuntimeAdapterRegistry.supportsAstraRunProtocol(for: plan.runtime)
+                supportsAstraRunProtocol: AgentRuntimeAdapterRegistry.supportsAstraRunProtocol(for: plan.runtime),
+                stripsReasoningTags: plan.runtime == .localMLX
             )
             let monitor = AgentProcessMonitor(
                 tokenBudget: tokenBudget,
@@ -437,12 +442,21 @@ final class AgentRuntimeProcessRunner {
                 }
             }
 
-            process.stdoutFileHandle.readabilityHandler = { handle in
+            process.eventFileHandle.readabilityHandler = { handle in
                 let data = handle.availableData
                 guard !data.isEmpty,
                       let chunk = String(data: data, encoding: .utf8) else { return }
 
                 lineBuffer.appendAndProcessLines(chunk, handleLine)
+            }
+
+            if process.usesDedicatedEventStream {
+                process.stdoutFileHandle.readabilityHandler = { handle in
+                    let data = handle.availableData
+                    guard !data.isEmpty,
+                          let chunk = String(data: data, encoding: .utf8) else { return }
+                    diagnosticOutput.appendKeepingSuffix(chunk, maxCharacters: diagnosticOutputCharacterLimit)
+                }
             }
 
             process.stderrFileHandle.readabilityHandler = { handle in
@@ -457,11 +471,19 @@ final class AgentRuntimeProcessRunner {
                 InFlightPermissionCenter.shared.failAll(taskID: taskID)
                 proc.stdoutFileHandle.readabilityHandler = nil
                 proc.stderrFileHandle.readabilityHandler = nil
+                proc.eventFileHandle.readabilityHandler = nil
                 if let chunk = String(
-                    data: proc.stdoutFileHandle.readDataToEndOfFile(),
+                    data: proc.eventFileHandle.readDataToEndOfFile(),
                     encoding: .utf8
                 ), !chunk.isEmpty {
                     lineBuffer.appendAndProcessLines(chunk, handleLine)
+                }
+                if proc.usesDedicatedEventStream,
+                   let string = String(
+                    data: proc.stdoutFileHandle.readDataToEndOfFile(),
+                    encoding: .utf8
+                   ), !string.isEmpty {
+                    diagnosticOutput.appendKeepingSuffix(string, maxCharacters: diagnosticOutputCharacterLimit)
                 }
                 if let string = String(
                     data: proc.stderrFileHandle.readDataToEndOfFile(),
@@ -473,10 +495,15 @@ final class AgentRuntimeProcessRunner {
                 for filtered in eventPipeline.flushParsedEvents() {
                     _ = monitor.processEvent(filtered, process: process)
                 }
-                let error = errorOutput.value
+                let error = Self.processError(
+                    terminationStatus: proc.terminationStatus,
+                    usesDedicatedEventStream: proc.usesDedicatedEventStream,
+                    stderr: errorOutput.value,
+                    stdoutDiagnostics: diagnosticOutput.value
+                )
                 let dockerFailure = DockerRuntimeFailureDiagnostics.diagnose(
                     exitCode: Int(proc.terminationStatus),
-                    error: error,
+                    error: error ?? "",
                     plan: plan
                 )
                 if let dockerFailure {
@@ -492,7 +519,7 @@ final class AgentRuntimeProcessRunner {
                 Self.cleanupBrowserToolShim(at: plan.browserShimDirectory, taskID: taskID)
                 resumeOnce(AgentProcessResult(
                     exitCode: Int(proc.terminationStatus),
-                    error: error.isEmpty ? nil : error,
+                    error: error,
                     providerVersion: plan.providerVersion,
                     policyViolation: monitor.policyViolation,
                     policyViolationMessage: monitor.policyViolationMessage,
@@ -864,6 +891,24 @@ final class AgentRuntimeProcessRunner {
                 "error": error.localizedDescription
             ], level: .warning)
         }
+    }
+
+    private static func processError(
+        terminationStatus: Int32,
+        usesDedicatedEventStream: Bool,
+        stderr: String,
+        stdoutDiagnostics: String
+    ) -> String? {
+        let stderr = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+        let stdoutDiagnostics = stdoutDiagnostics.trimmingCharacters(in: .whitespacesAndNewlines)
+        if usesDedicatedEventStream, terminationStatus == 0 {
+            return nil
+        }
+        let parts = usesDedicatedEventStream
+            ? [stderr, stdoutDiagnostics]
+            : [stderr]
+        let message = parts.filter { !$0.isEmpty }.joined(separator: "\n")
+        return message.isEmpty ? nil : message
     }
 
     /// Resolves the Claude provider env vars from `@AppStorage` so the spawned

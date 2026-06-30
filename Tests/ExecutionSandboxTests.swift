@@ -277,7 +277,8 @@ struct ExecutionSandboxTests {
             .antigravityCLI: [".antigravity", ".gemini"],
             .codexCLI: [".codex"],
             .cursorCLI: [".cursor"],
-            .openCodeCLI: [".config/opencode", ".cache/opencode", ".local/share/opencode", ".local/state/opencode"]
+            .openCodeCLI: [".config/opencode", ".cache/opencode", ".local/share/opencode", ".local/state/opencode"],
+            .localMLX: []
         ]
 
         #expect(Set(expectedInherited.keys) == Set(AgentRuntimeAdapterRegistry.runtimeIDs))

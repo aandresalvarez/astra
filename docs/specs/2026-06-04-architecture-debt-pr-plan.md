@@ -813,6 +813,27 @@ direct settings reads, or unbounded owner files.
 14. Next PR 14: Workspace Rail and Catalog View Decomposition.
 15. Next PR 15: Architecture Fitness Tests and Debt Metrics.
 
+## Validation Baseline
+
+Every PR should run:
+
+```bash
+git diff --check
+swift test --filter <RelevantSuiteOrTestName>
+```
+
+PRs touching runtime, persistence, validation, migration, task lifecycle, or
+shared presentation should also run:
+
+```bash
+swift test
+```
+
+UI PRs should additionally launch the development app:
+
+```bash
+./script/build_and_run.sh --verify
+```
 ## Definition of Done for Each PR
 
 - The PR states which architecture boundary it tightens.
