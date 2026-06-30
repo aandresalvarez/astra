@@ -1751,9 +1751,6 @@ enum WorkspaceConfigManager {
         if isRegisteredWorktree(activePath, attachedTo: workspaceRootPaths, fileManager: fileManager) {
             return activePath
         }
-        if isAppManagedWorktree(activePath, canonicalActive: canonicalActive, fileManager: fileManager) {
-            return activePath
-        }
 
         return nil
     }
@@ -1767,38 +1764,93 @@ enum WorkspaceConfigManager {
         ExecutionSandbox.canonicalize(path)
     }
 
+    private struct GitDirectoryLayout {
+        let gitDirectory: String
+        let commonDirectory: String
+    }
+
     private static func isRegisteredWorktree(
         _ activePath: String,
         attachedTo workspaceRootPaths: [String],
         fileManager: FileManager
     ) -> Bool {
-        guard let activeGitDirectory = gitDirectoryReference(for: activePath, fileManager: fileManager) else {
+        guard let activeLayout = gitDirectoryLayout(for: activePath, fileManager: fileManager),
+              worktreeAdminDirectory(activeLayout.gitDirectory, pointsBackTo: activePath, fileManager: fileManager) else {
             return false
         }
 
         return workspaceRootPaths.contains { rootPath in
-            guard let rootGitDirectory = gitDirectoryReference(for: rootPath, fileManager: fileManager) else {
+            guard let rootLayout = gitDirectoryLayout(for: rootPath, fileManager: fileManager),
+                  activeLayout.commonDirectory == rootLayout.commonDirectory else {
                 return false
             }
-            let worktreesDirectory = URL(fileURLWithPath: rootGitDirectory, isDirectory: true)
+            let worktreesDirectory = URL(fileURLWithPath: rootLayout.commonDirectory, isDirectory: true)
                 .appendingPathComponent("worktrees", isDirectory: true)
                 .path
-            return activeGitDirectory != worktreesDirectory
-                && isPath(activeGitDirectory, insideOrEqualTo: worktreesDirectory)
+            return activeLayout.gitDirectory != activeLayout.commonDirectory
+                && isPath(activeLayout.gitDirectory, insideOrEqualTo: worktreesDirectory)
         }
     }
 
-    private static func isAppManagedWorktree(
-        _ activePath: String,
-        canonicalActive: String,
+    private static func gitDirectoryLayout(for path: String, fileManager: FileManager) -> GitDirectoryLayout? {
+        guard let gitDirectory = gitDirectoryReference(for: path, fileManager: fileManager),
+              isExistingDirectory(gitDirectory, fileManager: fileManager) else {
+            return nil
+        }
+        let commonDirectory = commonGitDirectory(for: gitDirectory, fileManager: fileManager) ?? gitDirectory
+        guard isExistingDirectory(commonDirectory, fileManager: fileManager) else {
+            return nil
+        }
+        return GitDirectoryLayout(gitDirectory: gitDirectory, commonDirectory: commonDirectory)
+    }
+
+    private static func commonGitDirectory(for gitDirectory: String, fileManager: FileManager) -> String? {
+        let commonDirPath = URL(fileURLWithPath: gitDirectory, isDirectory: true)
+            .appendingPathComponent("commondir")
+            .path
+        guard let data = fileManager.contents(atPath: commonDirPath),
+              let raw = String(data: data, encoding: .utf8) else {
+            return nil
+        }
+        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty else { return nil }
+        let resolved = value.hasPrefix("/")
+            ? value
+            : URL(fileURLWithPath: gitDirectory, isDirectory: true)
+                .appendingPathComponent(value)
+                .standardizedFileURL
+                .path
+        return canonicalPath(resolved)
+    }
+
+    private static func worktreeAdminDirectory(
+        _ gitDirectory: String,
+        pointsBackTo activePath: String,
         fileManager: FileManager
     ) -> Bool {
-        guard WorkspacePathPresentation.isGitRepository(at: activePath, fileManager: fileManager),
-              let canonicalWorktreesRoot = canonicalPath(AppChannel.current.defaultWorktreesRoot) else {
+        let pointerPath = URL(fileURLWithPath: gitDirectory, isDirectory: true)
+            .appendingPathComponent("gitdir")
+            .path
+        guard let data = fileManager.contents(atPath: pointerPath),
+              let raw = String(data: data, encoding: .utf8) else {
             return false
         }
-        return canonicalActive != canonicalWorktreesRoot
-            && isPath(canonicalActive, insideOrEqualTo: canonicalWorktreesRoot)
+        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty else { return false }
+        let resolved = value.hasPrefix("/")
+            ? value
+            : URL(fileURLWithPath: gitDirectory, isDirectory: true)
+                .appendingPathComponent(value)
+                .standardizedFileURL
+                .path
+        guard let canonicalGitFile = canonicalPath(resolved),
+              let canonicalActive = canonicalPath(activePath) else {
+            return false
+        }
+        let pointedWorktree = (canonicalGitFile as NSString).lastPathComponent == ".git"
+            ? (canonicalGitFile as NSString).deletingLastPathComponent
+            : canonicalGitFile
+        return pointedWorktree == canonicalActive
     }
 
     private static func gitDirectoryReference(for path: String, fileManager: FileManager) -> String? {
