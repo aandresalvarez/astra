@@ -291,7 +291,7 @@ private enum WorkspaceManagedJobLogTailReader {
             if startOffset > 0 {
                 try handle.seek(toOffset: startOffset - 1)
                 let previousByte = try handle.read(upToCount: 1)?.first
-                startsInsideLine = previousByte != UInt8(ascii: "\n")
+                startsInsideLine = WorkspaceManagedJobLogTailPolicy.startsInsideLine(previousByte: previousByte)
             } else {
                 startsInsideLine = false
             }
@@ -331,6 +331,15 @@ private enum WorkspaceManagedJobLogTailReader {
     private struct LogSuffix {
         var data: Data
         var startsInsideLine: Bool
+    }
+}
+
+enum WorkspaceManagedJobLogTailPolicy {
+    static func startsInsideLine(previousByte: UInt8?) -> Bool {
+        guard let previousByte else {
+            return false
+        }
+        return previousByte != UInt8(ascii: "\n")
     }
 }
 

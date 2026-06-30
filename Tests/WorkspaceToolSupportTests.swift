@@ -798,6 +798,13 @@ struct WorkspaceToolSupportTests {
         #expect(tail.text.hasSuffix(secondLine))
     }
 
+    @Test("Workspace managed job tail preserves content when previous byte is unavailable")
+    func workspaceManagedJobTailPreservesContentWhenPreviousByteIsUnavailable() {
+        #expect(!WorkspaceManagedJobLogTailPolicy.startsInsideLine(previousByte: nil))
+        #expect(!WorkspaceManagedJobLogTailPolicy.startsInsideLine(previousByte: UInt8(ascii: "\n")))
+        #expect(WorkspaceManagedJobLogTailPolicy.startsInsideLine(previousByte: UInt8(ascii: "a")))
+    }
+
     @Test("Workspace managed job tail handles newline-dense suffixes without dropping recent content")
     func workspaceManagedJobTailHandlesNewlineDenseSuffixes() throws {
         let root = FileManager.default.temporaryDirectory
