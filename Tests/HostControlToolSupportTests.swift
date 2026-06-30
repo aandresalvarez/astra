@@ -131,6 +131,8 @@ struct HostControlToolSupportTests {
             ["--help", "query", "SELECT * FROM project.dataset.table"],
             ["--apilog", "help", "query", "SELECT * FROM project.dataset.table"],
             ["--apilog=/tmp/bq.log", "help"],
+            ["help", "--apilog=/tmp/bq.log"],
+            ["help", "query", "--apilog=/tmp/bq.log"],
             ["query", "DELETE FROM project.dataset.table WHERE true"],
             ["rm", "-f", "project:dataset.table"],
             ["extract", "project:dataset.table", "gs://example/export.json"]

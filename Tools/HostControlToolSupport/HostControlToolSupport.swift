@@ -799,6 +799,9 @@ private enum BigQueryHostControlPolicy {
         guard allowedCommands.contains(command) else {
             return blockedMessage(command: command)
         }
+        if let blockedOption = firstPostCommandOption(in: actionTokens.dropFirst()) {
+            return blockedMessage(command: blockedOption)
+        }
         return nil
     }
 
@@ -842,6 +845,10 @@ private enum BigQueryHostControlPolicy {
             let optionName = optionName(for: token)
             return helpOptions.contains(optionName) || versionOptions.contains(optionName)
         }
+    }
+
+    private static func firstPostCommandOption(in arguments: ArraySlice<String>) -> String? {
+        arguments.first { $0.hasPrefix("-") }.map(optionName(for:))
     }
 
     private static func optionName(for token: String) -> String {
