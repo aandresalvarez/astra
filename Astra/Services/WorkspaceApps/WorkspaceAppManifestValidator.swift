@@ -539,7 +539,8 @@ enum WorkspaceAppManifestValidator {
                     issues.append(blocker("\(path)/requirementRef", "Source references unknown requirement '\(requirementRef)'."))
                     continue
                 }
-                if requirement.contract == "tabularQuery.read" {
+                if requirement.contract == "tabularQuery.read",
+                   isBigQueryRequirement(requirement) {
                     if source.query?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
                         issues.append(blocker(
                             "\(path)/query",
@@ -556,6 +557,12 @@ enum WorkspaceAppManifestValidator {
             }
         }
         return seen
+    }
+
+    private static func isBigQueryRequirement(_ requirement: WorkspaceAppRequirement) -> Bool {
+        [requirement.providerHint, requirement.providerRequired]
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+            .contains("bigquery")
     }
 
     private static func validateViews(

@@ -59,6 +59,28 @@ struct WorkspaceAppManifestTests {
         })
     }
 
+    @Test("manifest validation allows package tabular query providers without BigQuery table refs")
+    func validationAllowsPackageTabularQueryProvidersWithoutBigQueryTableRefs() {
+        var manifest = Self.reconciliationManifest()
+        manifest.requirements[0] = WorkspaceAppRequirement(
+            id: "sourceWarehouse",
+            contract: "tabularQuery.read",
+            operations: ["describeTable", "runReadOnlyQuery"],
+            providerRequired: "warehouseApi"
+        )
+        manifest.sources[0] = WorkspaceAppSource(
+            id: "latest_candidates",
+            requirementRef: "sourceWarehouse",
+            operation: "runReadOnlyQuery",
+            query: "/warehouse/enrollment-candidates"
+        )
+
+        let report = WorkspaceAppManifestValidator.validate(manifest)
+
+        #expect(report.isValid)
+        #expect(!report.blockers.contains { $0.message.contains("BigQuery") })
+    }
+
     @Test("manifest validation blocks automations that default enabled")
     func validationBlocksEnabledAutomationDefaults() {
         var manifest = Self.reconciliationManifest()
