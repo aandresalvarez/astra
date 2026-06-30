@@ -103,6 +103,55 @@ struct BrowserPageSnapshotServiceTests {
         #expect(!compacted.contains("MRN-424242"))
     }
 
+    @Test("snapshot output still redacts metadata when sensitive value is already redacted")
+    func snapshotOutputStillRedactsMetadataWhenSensitiveValueIsAlreadyRedacted() throws {
+        let compacted = try BrowserPageSnapshotService.compactSnapshot(
+            json: """
+            {
+              "ok": true,
+              "url": "https://example.com/patient",
+              "title": "Patient",
+              "text": "Clinical note contains MRN-424242 and should not echo it.",
+              "controls": [
+                {
+                  "selector": "#MRN-424242",
+                  "tag": "input",
+                  "role": "textbox",
+                  "type": "password",
+                  "label": "Password",
+                  "name": "MRN-424242",
+                  "placeholder": "Password",
+                  "testID": "MRN-424242",
+                  "href": "https://example.com/patient/MRN-424242",
+                  "value": "[redacted-sensitive-input]"
+                }
+              ]
+            }
+            """,
+            mode: .full,
+            query: nil,
+            limit: nil
+        )
+        let object = try jsonObject(from: compacted)
+        let controls = try #require(object["controls"] as? [[String: Any]])
+        let control = try #require(controls.first)
+
+        #expect(object["text"] as? String == "Clinical note contains [redacted-sensitive-input] and should not echo it.")
+        #expect(control["selector"] as? String == "[redacted-sensitive-input]")
+        #expect(control["name"] as? String == "[redacted-sensitive-input]")
+        #expect(control["testID"] as? String == "[redacted-sensitive-input]")
+        #expect(control["href"] as? String == "[redacted-sensitive-input]")
+        #expect(control["value"] as? String == "[redacted-sensitive-input]")
+        #expect(!compacted.contains("MRN-424242"))
+    }
+
+    @Test("display redaction catches case escaped and percent encoded sensitive values")
+    func displayRedactionCatchesCaseEscapedAndPercentEncodedSensitiveValues() {
+        #expect(BrowserSensitiveInputRedactionPolicy.redactedDisplayText("token-abc", sensitiveValue: "TOKEN-ABC") == "[redacted-sensitive-input]")
+        #expect(BrowserSensitiveInputRedactionPolicy.redactedDisplayText(#"#MRN\ 424242"#, sensitiveValue: "MRN 424242") == "[redacted-sensitive-input]")
+        #expect(BrowserSensitiveInputRedactionPolicy.redactedDisplayText("https://example.com/MRN%20424242", sensitiveValue: "MRN 424242") == "[redacted-sensitive-input]")
+    }
+
     @Test("snapshot output redacts cardholder and generic payment values")
     func snapshotOutputRedactsCardholderAndGenericPaymentValues() throws {
         let cardholder = "Maya Private"

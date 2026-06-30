@@ -253,6 +253,34 @@ struct BrowserAnalysisTests {
         #expect(String(describing: response).contains(secret) == false)
     }
 
+    @Test("Username passkey autocomplete does not force credential risk")
+    func usernamePasskeyAutocompleteDoesNotForceCredentialRisk() throws {
+        let analysis = BrowserAnalysisBuilder.build(
+            snapshot: Self.sampleSnapshot(controls: [
+                Self.control(
+                    selector: "input[name=username]",
+                    tag: "input",
+                    role: "textbox",
+                    type: "text",
+                    label: "Username",
+                    value: "alvaro@example.com",
+                    autocomplete: "username webauthn",
+                    name: "username"
+                )
+            ]),
+            backend: "controlled Chromium profile",
+            engine: "controlled"
+        )
+
+        let response = analysis.responseObject(query: nil, full: true, limit: nil, version: .v2)
+        let controls = try #require(response["controls"] as? [[String: Any]])
+        let control = try #require(controls.first)
+
+        #expect(control["value"] as? String == "alvaro@example.com")
+        #expect(control["risk"] as? String == BrowserRisk.normal.rawValue)
+        #expect(control["requiresUserConfirmation"] as? Bool == false)
+    }
+
     @Test("Analysis debug response redacts accessibility values when DOM value is already redacted")
     func analysisDebugResponseRedactsAccessibilityValuesWhenDOMValueIsAlreadyRedacted() throws {
         let secret = "still-in-ax-tree-secret"

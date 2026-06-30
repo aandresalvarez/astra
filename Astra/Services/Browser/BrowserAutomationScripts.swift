@@ -446,7 +446,7 @@ enum BrowserAutomationScripts {
         "current-password", "new-password", "one-time-code",
         "cc-name", "cc-given-name", "cc-additional-name", "cc-family-name",
         "cc-number", "cc-exp", "cc-exp-month", "cc-exp-year",
-        "cc-csc", "cc-type", "webauthn"
+        "cc-csc", "cc-type"
       ];
       const isSensitiveValueControl = (el) => {
         const type = String(el.getAttribute("type") || "").toLowerCase();
@@ -760,7 +760,7 @@ enum BrowserAutomationScripts {
             "current-password", "new-password", "one-time-code",
             "cc-name", "cc-given-name", "cc-additional-name", "cc-family-name",
             "cc-number", "cc-exp", "cc-exp-month", "cc-exp-year",
-            "cc-csc", "cc-type", "webauthn"
+            "cc-csc", "cc-type"
           ];
           const redactedInputValue = "[redacted-sensitive-input]";
           const includesAny = (value, terms) => terms.some((term) => value.includes(term));

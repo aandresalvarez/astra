@@ -6,7 +6,7 @@ enum BrowserSensitiveInputRedactionPolicy {
     static func riskForAutocomplete(_ autocomplete: String) -> BrowserRisk? {
         let lowerAutocomplete = autocomplete.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !lowerAutocomplete.isEmpty else { return nil }
-        if containsAny(lowerAutocomplete, ["current-password", "new-password", "webauthn"]) {
+        if containsAny(lowerAutocomplete, ["current-password", "new-password"]) {
             return .credentialInput
         }
         if containsAny(lowerAutocomplete, ["one-time-code"]) {
@@ -56,7 +56,7 @@ enum BrowserSensitiveInputRedactionPolicy {
     static func redactControlObject(_ control: [String: Any]) -> (object: [String: Any], didRedact: Bool, sensitiveValues: [String]) {
         let value = string(control["value"])
         guard !value.isEmpty else { return (control, false, []) }
-        guard value != redactedInputValue else { return (control, false, []) }
+        let valueAlreadyRedacted = value == redactedInputValue
 
         let shouldRedact = isSensitiveControl(
             selector: string(control["selector"]),
@@ -72,16 +72,18 @@ enum BrowserSensitiveInputRedactionPolicy {
             risk: nil
         )
         guard shouldRedact else { return (control, false, []) }
+        let sensitiveValues = valueAlreadyRedacted ? sensitiveMetadataValues(from: control) : [value]
+        guard !valueAlreadyRedacted || !sensitiveValues.isEmpty else { return (control, false, []) }
 
         var redacted = control
         redacted["value"] = redactedInputValue
-        redacted["selector"] = redactedDisplayText(string(control["selector"]), sensitiveValue: value)
-        redacted["label"] = redactedDisplayText(string(control["label"]), sensitiveValue: value)
-        redacted["name"] = redactedDisplayText(string(control["name"]), sensitiveValue: value)
-        redacted["placeholder"] = redactedDisplayText(string(control["placeholder"]), sensitiveValue: value)
-        redacted["testID"] = redactedDisplayText(string(control["testID"]), sensitiveValue: value)
-        redacted["href"] = redactedDisplayText(string(control["href"]), sensitiveValue: value)
-        return (redacted, true, [value])
+        redacted["selector"] = redactedDisplayText(string(control["selector"]), sensitiveValues: sensitiveValues)
+        redacted["label"] = redactedDisplayText(string(control["label"]), sensitiveValues: sensitiveValues)
+        redacted["name"] = redactedDisplayText(string(control["name"]), sensitiveValues: sensitiveValues)
+        redacted["placeholder"] = redactedDisplayText(string(control["placeholder"]), sensitiveValues: sensitiveValues)
+        redacted["testID"] = redactedDisplayText(string(control["testID"]), sensitiveValues: sensitiveValues)
+        redacted["href"] = redactedDisplayText(string(control["href"]), sensitiveValues: sensitiveValues)
+        return (redacted, true, sensitiveValues)
     }
 
     static func redactedValue(
@@ -120,10 +122,14 @@ enum BrowserSensitiveInputRedactionPolicy {
         let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedText.isEmpty else { return text }
 
-        if trimmedText == trimmedValue || trimmedText.contains(trimmedValue) {
+        if textContainsSensitiveValue(trimmedText, sensitiveValue: trimmedValue) {
             return redactedInputValue
         }
         return text
+    }
+
+    private static func redactedDisplayText(_ text: String, sensitiveValues: [String]) -> String {
+        sensitiveValues.contains { textContainsSensitiveValue(text, sensitiveValue: $0) } ? redactedInputValue : text
     }
 
     static func isSensitiveControl(
@@ -181,8 +187,7 @@ enum BrowserSensitiveInputRedactionPolicy {
         "cc-exp-month",
         "cc-exp-year",
         "cc-csc",
-        "cc-type",
-        "webauthn"
+        "cc-type"
     ]
 
     private static let sensitiveFieldTerms = [
@@ -250,11 +255,92 @@ enum BrowserSensitiveInputRedactionPolicy {
     private static func redactedText(_ text: String, sensitiveValues: [String]) -> String {
         var redacted = text
         for value in sensitiveValues {
-            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty else { continue }
-            redacted = redacted.replacingOccurrences(of: trimmed, with: redactedInputValue)
+            for candidate in sensitiveComparisonValues(for: value) {
+                redacted = redacted.replacingOccurrences(of: candidate, with: redactedInputValue, options: [.caseInsensitive])
+            }
         }
         return redacted
+    }
+
+    private static func sensitiveMetadataValues(from control: [String: Any]) -> [String] {
+        let fields = [
+            string(control["selector"]),
+            string(control["label"]),
+            string(control["name"]),
+            string(control["placeholder"]),
+            string(control["testID"]),
+            string(control["href"])
+        ]
+        var seen: Set<String> = []
+        return fields.flatMap(sensitiveMetadataCandidates)
+            .filter { seen.insert($0.lowercased()).inserted }
+    }
+
+    private static func sensitiveMetadataCandidates(from text: String) -> [String] {
+        let variants = sensitiveComparisonValues(for: text)
+            .flatMap { [$0, strippedSelectorPrefix($0)] }
+        return variants
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty && isSensitiveMetadataCandidate($0) }
+    }
+
+    private static func isSensitiveMetadataCandidate(_ text: String) -> Bool {
+        let lower = text.lowercased()
+        guard containsAny(lower, sensitiveFieldTerms) else { return false }
+        return lower.contains { $0.isNumber }
+            || lower.contains("-")
+            || lower.contains("_")
+            || lower.contains("%")
+            || lower.contains("\\")
+            || lower.count > 20
+    }
+
+    private static func textContainsSensitiveValue(_ text: String, sensitiveValue: String) -> Bool {
+        let textVariants = sensitiveComparisonValues(for: text)
+        let valueVariants = sensitiveComparisonValues(for: sensitiveValue)
+        return textVariants.contains { textVariant in
+            valueVariants.contains { valueVariant in
+                textVariant == valueVariant || textVariant.contains(valueVariant)
+            }
+        }
+    }
+
+    private static func sensitiveComparisonValues(for value: String) -> [String] {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return [] }
+        var variants: [String] = [trimmed]
+        if let percentDecoded = trimmed.removingPercentEncoding {
+            variants.append(percentDecoded)
+        }
+        variants.append(cssUnescaped(trimmed))
+        if let percentDecoded = trimmed.removingPercentEncoding {
+            variants.append(cssUnescaped(percentDecoded))
+        }
+        var seen: Set<String> = []
+        return variants
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+            .filter { !$0.isEmpty && seen.insert($0).inserted }
+    }
+
+    private static func cssUnescaped(_ value: String) -> String {
+        var result = ""
+        var isEscaped = false
+        for character in value {
+            if isEscaped {
+                result.append(character)
+                isEscaped = false
+            } else if character == "\\" {
+                isEscaped = true
+            } else {
+                result.append(character)
+            }
+        }
+        if isEscaped { result.append("\\") }
+        return result
+    }
+
+    private static func strippedSelectorPrefix(_ value: String) -> String {
+        value.trimmingCharacters(in: CharacterSet(charactersIn: "#."))
     }
 
     private static func containsAny(_ text: String, _ needles: [String]) -> Bool {
