@@ -2229,6 +2229,8 @@ struct ControlledBrowserTests {
         #expect(script.contains("sensitiveResultTarget"))
         #expect(script.contains("redactSensitiveResultTarget(result, el, next)"))
         #expect(script.contains("result.label = redactedInputValue"))
+        #expect(script.contains("\"cc-name\""))
+        #expect(script.contains("\"payment\""))
         #expect(script.contains("[redacted-sensitive-input]"))
     }
 

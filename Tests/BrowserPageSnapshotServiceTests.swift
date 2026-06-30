@@ -70,13 +70,15 @@ struct BrowserPageSnapshotServiceTests {
               "text": "Clinical note contains MRN-424242 and should not echo it.",
               "controls": [
                 {
-                  "selector": "#mrn",
+                  "selector": "#MRN-424242",
                   "tag": "textarea",
                   "role": "textbox",
                   "type": "",
                   "label": "MRN-424242",
                   "name": "MRN-424242",
-                  "placeholder": "Medical record number",
+                  "placeholder": "Paste MRN-424242",
+                  "testID": "MRN-424242",
+                  "href": "https://example.com/patient/MRN-424242",
                   "value": "MRN-424242"
                 }
               ]
@@ -91,10 +93,63 @@ struct BrowserPageSnapshotServiceTests {
         let control = try #require(controls.first)
 
         #expect(object["text"] as? String == "Clinical note contains [redacted-sensitive-input] and should not echo it.")
+        #expect(control["selector"] as? String == "[redacted-sensitive-input]")
         #expect(control["label"] as? String == "[redacted-sensitive-input]")
         #expect(control["name"] as? String == "[redacted-sensitive-input]")
+        #expect(control["placeholder"] as? String == "[redacted-sensitive-input]")
+        #expect(control["testID"] as? String == "[redacted-sensitive-input]")
+        #expect(control["href"] as? String == "[redacted-sensitive-input]")
         #expect(control["value"] as? String == "[redacted-sensitive-input]")
         #expect(!compacted.contains("MRN-424242"))
+    }
+
+    @Test("snapshot output redacts cardholder and generic payment values")
+    func snapshotOutputRedactsCardholderAndGenericPaymentValues() throws {
+        let cardholder = "Maya Private"
+        let cardNumber = "4111111111111111"
+        let compacted = try BrowserPageSnapshotService.compactSnapshot(
+            json: """
+            {
+              "ok": true,
+              "url": "https://example.com/checkout",
+              "title": "Checkout",
+              "text": "Pay with saved card",
+              "controls": [
+                {
+                  "selector": "#cc-name",
+                  "tag": "input",
+                  "role": "textbox",
+                  "type": "text",
+                  "label": "Name on card",
+                  "name": "cc-name",
+                  "autocomplete": "cc-name",
+                  "value": "\(cardholder)"
+                },
+                {
+                  "selector": "#payment-method",
+                  "tag": "input",
+                  "role": "textbox",
+                  "type": "text",
+                  "label": "Payment method",
+                  "name": "paymentMethod",
+                  "value": "\(cardNumber)"
+                }
+              ]
+            }
+            """,
+            mode: .full,
+            query: nil,
+            limit: nil
+        )
+        let object = try jsonObject(from: compacted)
+        let controls = try #require(object["controls"] as? [[String: Any]])
+
+        #expect(controls.compactMap { $0["value"] as? String } == [
+            "[redacted-sensitive-input]",
+            "[redacted-sensitive-input]"
+        ])
+        #expect(!compacted.contains(cardholder))
+        #expect(!compacted.contains(cardNumber))
     }
 
     @Test("snapshot script avoids sensitive value-derived metadata")
@@ -107,6 +162,8 @@ struct BrowserPageSnapshotServiceTests {
         #expect(script.contains("el.isContentEditable"))
         #expect(script.contains("name: el.getAttribute(\"name\") || \"\""))
         #expect(script.contains("valueControl && isSensitiveValueControl(valueControl)"))
+        #expect(script.contains("\"cc-name\""))
+        #expect(script.contains("\"payment\""))
         #expect(script.contains("\"mrn\""))
         #expect(!script.contains("name: labelFor(el)"))
     }

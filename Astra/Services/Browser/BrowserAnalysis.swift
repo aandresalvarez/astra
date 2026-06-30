@@ -333,7 +333,7 @@ struct BrowserControl {
         providerVisibleValue == BrowserSensitiveInputRedactionPolicy.redactedInputValue
     }
 
-    private func redactedDisplayText(_ text: String) -> String {
+    func redactedDisplayText(_ text: String) -> String {
         guard hasSensitiveValue else { return text }
         return BrowserSensitiveInputRedactionPolicy.redactedDisplayText(text, sensitiveValue: value)
     }
@@ -350,12 +350,12 @@ struct BrowserControl {
             "role": role,
             "tag": tag,
             "type": type,
-            "selector": selector,
-            "placeholder": placeholder,
+            "selector": redactedDisplayText(selector),
+            "placeholder": redactedDisplayText(placeholder),
             "autocomplete": autocomplete,
-            "testID": testID,
+            "testID": redactedDisplayText(testID),
             "value": providerVisibleValue,
-            "href": href,
+            "href": redactedDisplayText(href),
             "framePath": framePath,
             "shadowDepth": shadowDepth,
             "state": disabled ? "disabled" : "enabled",
@@ -433,7 +433,7 @@ struct BrowserControlRef {
             "name": control.redactedName.isEmpty ? control.redactedLabel : control.redactedName,
             "label": control.redactedLabel,
             "value": control.providerVisibleValue,
-            "selectorFallback": control.selector,
+            "selectorFallback": control.redactedDisplayText(control.selector),
             "framePath": control.framePath,
             "bounds": control.bounds,
             "state": [
@@ -443,12 +443,12 @@ struct BrowserControlRef {
                 "actionable": control.actionable
             ],
             "context": [
-                "placeholder": control.placeholder,
+                "placeholder": control.redactedDisplayText(control.placeholder),
                 "autocomplete": control.autocomplete,
-                "testID": control.testID,
+                "testID": control.redactedDisplayText(control.testID),
                 "tag": control.tag,
                 "type": control.type,
-                "href": control.href,
+                "href": control.redactedDisplayText(control.href),
                 "shadowDepth": control.shadowDepth
             ],
             "validActions": control.validActions.map(\.rawValue),

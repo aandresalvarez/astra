@@ -439,11 +439,14 @@ enum BrowserAutomationScripts {
         "one time", "otp", "totp", "ssn", "social security", "credit card",
         "dob", "date of birth", "birth date", "birthdate", "mrn",
         "medical record", "medical record number", "patient id", "patient identifier",
-        "health record", "card number", "cvv", "cvc"
+        "health record", "card number", "cardholder", "card holder",
+        "name on card", "cvv", "cvc", "payment", "billing"
       ];
       const sensitiveAutocompleteTerms = [
         "current-password", "new-password", "one-time-code",
-        "cc-number", "cc-csc", "cc-exp", "webauthn"
+        "cc-name", "cc-given-name", "cc-additional-name", "cc-family-name",
+        "cc-number", "cc-exp", "cc-exp-month", "cc-exp-year",
+        "cc-csc", "cc-type", "webauthn"
       ];
       const isSensitiveValueControl = (el) => {
         const type = String(el.getAttribute("type") || "").toLowerCase();
@@ -750,11 +753,14 @@ enum BrowserAutomationScripts {
             "one time", "otp", "totp", "ssn", "social security", "credit card",
             "dob", "date of birth", "birth date", "birthdate", "mrn",
             "medical record", "medical record number", "patient id", "patient identifier",
-            "health record", "card number", "cvv", "cvc"
+            "health record", "card number", "cardholder", "card holder",
+            "name on card", "cvv", "cvc", "payment", "billing"
           ];
           const sensitiveAutocompleteTerms = [
             "current-password", "new-password", "one-time-code",
-            "cc-number", "cc-csc", "cc-exp", "webauthn"
+            "cc-name", "cc-given-name", "cc-additional-name", "cc-family-name",
+            "cc-number", "cc-exp", "cc-exp-month", "cc-exp-year",
+            "cc-csc", "cc-type", "webauthn"
           ];
           const redactedInputValue = "[redacted-sensitive-input]";
           const includesAny = (value, terms) => terms.some((term) => value.includes(term));

@@ -126,11 +126,15 @@ struct BrowserAnalysisTests {
         let analysis = BrowserAnalysisBuilder.build(
             snapshot: Self.sampleSnapshot(controls: [
                 Self.control(
-                    selector: "textarea[name=mrn]",
+                    selector: "textarea[data-secret='MRN-424242']",
                     tag: "textarea",
                     role: "textbox",
                     label: secret,
-                    value: secret
+                    value: secret,
+                    name: secret,
+                    placeholder: "Paste \(secret)",
+                    testID: secret,
+                    href: "https://example.com/patient/\(secret)"
                 )
             ]),
             backend: "controlled Chromium profile",
@@ -143,16 +147,75 @@ struct BrowserAnalysisTests {
         let control = try #require(controls.first)
         let refs = try #require(response["controlRefs"] as? [[String: Any]])
         let ref = try #require(refs.first)
+        let context = try #require(ref["context"] as? [String: Any])
         let evidence = try #require(ref["evidence"] as? [String: Any])
         let accessibilityNode = try #require(ref["accessibilityNode"] as? [String: Any])
 
+        #expect(control["selector"] as? String == "[redacted-sensitive-input]")
         #expect(control["label"] as? String == "[redacted-sensitive-input]")
         #expect(control["name"] as? String == "[redacted-sensitive-input]")
+        #expect(control["placeholder"] as? String == "[redacted-sensitive-input]")
+        #expect(control["testID"] as? String == "[redacted-sensitive-input]")
+        #expect(control["href"] as? String == "[redacted-sensitive-input]")
+        #expect(ref["selectorFallback"] as? String == "[redacted-sensitive-input]")
         #expect(ref["label"] as? String == "[redacted-sensitive-input]")
         #expect(ref["name"] as? String == "[redacted-sensitive-input]")
+        #expect(context["placeholder"] as? String == "[redacted-sensitive-input]")
+        #expect(context["testID"] as? String == "[redacted-sensitive-input]")
+        #expect(context["href"] as? String == "[redacted-sensitive-input]")
         #expect(evidence["accessibilityName"] as? String == "[redacted-sensitive-input]")
         #expect(accessibilityNode["name"] as? String == "[redacted-sensitive-input]")
         #expect(String(describing: response).contains(secret) == false)
+    }
+
+    @Test("Analysis response redacts cardholder and generic payment values")
+    func analysisResponseRedactsCardholderAndGenericPaymentValues() throws {
+        let cardholder = "Maya Private"
+        let cardNumber = "4111111111111111"
+        let analysis = BrowserAnalysisBuilder.build(
+            snapshot: Self.sampleSnapshot(controls: [
+                Self.control(
+                    selector: "#cc-name",
+                    tag: "input",
+                    role: "textbox",
+                    type: "text",
+                    label: "Name on card",
+                    value: cardholder,
+                    autocomplete: "cc-name",
+                    name: "cc-name"
+                ),
+                Self.control(
+                    selector: "#payment-method",
+                    tag: "input",
+                    role: "textbox",
+                    type: "text",
+                    label: "Payment method",
+                    value: cardNumber,
+                    name: "paymentMethod"
+                )
+            ]),
+            backend: "controlled Chromium profile",
+            engine: "controlled"
+        )
+
+        let response = analysis.responseObject(query: nil, full: true, limit: nil, version: .v2)
+        let controls = try #require(response["controls"] as? [[String: Any]])
+        let refs = try #require(response["controlRefs"] as? [[String: Any]])
+
+        #expect(controls.compactMap { $0["value"] as? String } == [
+            "[redacted-sensitive-input]",
+            "[redacted-sensitive-input]"
+        ])
+        #expect(refs.compactMap { $0["value"] as? String } == [
+            "[redacted-sensitive-input]",
+            "[redacted-sensitive-input]"
+        ])
+        #expect(controls.compactMap { $0["risk"] as? String } == [
+            BrowserRisk.payment.rawValue,
+            BrowserRisk.payment.rawValue
+        ])
+        #expect(String(describing: response).contains(cardholder) == false)
+        #expect(String(describing: response).contains(cardNumber) == false)
     }
 
     @Test("Analysis response applies autocomplete sensitivity from snapshots")
@@ -758,6 +821,8 @@ struct BrowserAnalysisTests {
         value: String = "",
         autocomplete: String = "",
         name: String? = nil,
+        placeholder: String = "",
+        testID: String = "",
         disabled: Bool = false,
         href: String = "",
         y: Int = 20
@@ -769,9 +834,9 @@ struct BrowserAnalysisTests {
             "type": type,
             "label": label,
             "name": name ?? label,
-            "placeholder": "",
+            "placeholder": placeholder,
             "autocomplete": autocomplete,
-            "testID": "",
+            "testID": testID,
             "disabled": disabled,
             "actionable": !disabled,
             "value": value,

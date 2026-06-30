@@ -12,7 +12,7 @@ enum BrowserSensitiveInputRedactionPolicy {
         if containsAny(lowerAutocomplete, ["one-time-code"]) {
             return .mfaInput
         }
-        if containsAny(lowerAutocomplete, ["cc-number", "cc-csc", "cc-exp"]) {
+        if containsAny(lowerAutocomplete, paymentAutocompleteTokens) {
             return .payment
         }
         return nil
@@ -75,8 +75,12 @@ enum BrowserSensitiveInputRedactionPolicy {
 
         var redacted = control
         redacted["value"] = redactedInputValue
+        redacted["selector"] = redactedDisplayText(string(control["selector"]), sensitiveValue: value)
         redacted["label"] = redactedDisplayText(string(control["label"]), sensitiveValue: value)
         redacted["name"] = redactedDisplayText(string(control["name"]), sensitiveValue: value)
+        redacted["placeholder"] = redactedDisplayText(string(control["placeholder"]), sensitiveValue: value)
+        redacted["testID"] = redactedDisplayText(string(control["testID"]), sensitiveValue: value)
+        redacted["href"] = redactedDisplayText(string(control["href"]), sensitiveValue: value)
         return (redacted, true, [value])
     }
 
@@ -135,7 +139,7 @@ enum BrowserSensitiveInputRedactionPolicy {
         autocomplete: String = "",
         risk: BrowserRisk? = nil
     ) -> Bool {
-        if let risk, [.credentialInput, .mfaInput, .privacySensitive].contains(risk) {
+        if let risk, [.credentialInput, .mfaInput, .privacySensitive, .payment].contains(risk) {
             return true
         }
 
@@ -168,9 +172,16 @@ enum BrowserSensitiveInputRedactionPolicy {
         "current-password",
         "new-password",
         "one-time-code",
+        "cc-name",
+        "cc-given-name",
+        "cc-additional-name",
+        "cc-family-name",
         "cc-number",
-        "cc-csc",
         "cc-exp",
+        "cc-exp-month",
+        "cc-exp-year",
+        "cc-csc",
+        "cc-type",
         "webauthn"
     ]
 
@@ -214,8 +225,26 @@ enum BrowserSensitiveInputRedactionPolicy {
         "health record",
         "credit card",
         "card number",
+        "cardholder",
+        "card holder",
+        "name on card",
         "cvv",
-        "cvc"
+        "cvc",
+        "payment",
+        "billing"
+    ]
+
+    private static let paymentAutocompleteTokens = [
+        "cc-name",
+        "cc-given-name",
+        "cc-additional-name",
+        "cc-family-name",
+        "cc-number",
+        "cc-exp",
+        "cc-exp-month",
+        "cc-exp-year",
+        "cc-csc",
+        "cc-type"
     ]
 
     private static func redactedText(_ text: String, sensitiveValues: [String]) -> String {
