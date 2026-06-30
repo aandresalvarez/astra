@@ -43,6 +43,7 @@ struct HostControlCloudCommandPolicy: Sendable {
     private let optionsWithValues: Set<String>
     private let readCommandGroups: Set<String>
     private let deniedCommandPrefixes: Set<[String]> = [
+        ["scheduler", "jobs", "run"],
         ["workflows", "run"]
     ]
 

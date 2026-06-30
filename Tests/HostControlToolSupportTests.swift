@@ -285,6 +285,12 @@ struct HostControlToolSupportTests {
         let workflowRunError = try #require(workflowRunResult["error"] as? [String: Any])
         #expect((workflowRunError["message"] as? String)?.contains("gcloud does not allow credential or mutating operations") == true)
 
+        let schedulerRunResult = try call(server, id: 17, tool: "gcloud", arguments: [
+            "arguments": ["scheduler", "jobs", "run", "list", "--location", "us-central1"]
+        ])
+        let schedulerRunError = try #require(schedulerRunResult["error"] as? [String: Any])
+        #expect((schedulerRunError["message"] as? String)?.contains("gcloud does not allow credential or mutating operations") == true)
+
         let flagsFileResult = try call(server, id: 7, tool: "gcloud", arguments: [
             "arguments": ["compute", "instances", "list", "--flags-file=/tmp/hidden-credentials.yaml"]
         ])
@@ -363,6 +369,7 @@ struct HostControlToolSupportTests {
         #expect(!hostLog.contains("run deploy"))
         #expect(!hostLog.contains("compute instances reset list"))
         #expect(!hostLog.contains("workflows run list"))
+        #expect(!hostLog.contains("scheduler jobs run list"))
         #expect(!hostLog.contains("--flags-file"))
         #expect(!hostLog.contains("get-iam-policy"))
         #expect(!hostLog.contains("--log-http"))
