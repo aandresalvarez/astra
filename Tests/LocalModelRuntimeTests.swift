@@ -4571,6 +4571,7 @@ struct LocalModelRuntimeTests {
         #expect(nativePackage.contains("swift-transformers"))
         #expect(nativePackage.contains("astra-local-model-native"))
         #expect(!nativePackage.contains("executable(name: \"astra-local-model\""))
+        #expect(nativePackage.contains(".package(name: \"ASTRA\", path: \"../..\")"))
         #expect(nativePackage.contains(".product(name: \"ASTRACore\", package: \"ASTRA\")"))
         #expect(nativeEntrypoint.contains("MLXLMCommon.loadModelContainer"))
         #expect(nativeEntrypoint.contains("import MLXVLM"))
@@ -4586,7 +4587,7 @@ struct LocalModelRuntimeTests {
         let completedRange = try #require(nativeEntrypoint.range(of: #"try emit(.init(type: "completed""#))
         let runOnceAfterCompletion = nativeEntrypoint[completedRange.upperBound...]
         let unsupportedArchitectureRange = try #require(runOnceAfterCompletion.range(of: "#else"))
-        #expect(!runOnceAfterCompletion[..<unsupportedArchitectureRange.lowerBound].contains("waitForKeepWarmTTL"))
+        #expect(runOnceAfterCompletion[..<unsupportedArchitectureRange.lowerBound].contains("waitForKeepWarmTTL"))
         #expect(nativeEntrypoint.contains("runSmoke"))
         #expect(nativeEntrypoint.contains("LocalModelSmokeReport"))
         #expect(nativeEntrypoint.contains("modelRootArgumentValue"))
@@ -4599,7 +4600,7 @@ struct LocalModelRuntimeTests {
         #expect(scaffoldEntrypoint.contains(#"argumentValue("--models-root", in: arguments) ?? argumentValue("--models-dir", in: arguments)"#))
         #expect(scaffoldEntrypoint.contains(#"argumentValue("--request-file", in: arguments) != nil"#))
         #expect(buildScript.contains(#"LOCAL_MODEL_BACKEND="${ASTRA_LOCAL_MODEL_BACKEND:-mlx}""#))
-        #expect(!buildScript.contains("swift build \"${native_args[@]}\"\n  native_build_dir="))
+        #expect(buildScript.contains("swift build \"${native_args[@]}\"\n  native_build_dir="))
         #expect(buildScript.contains(#"native_build_dir="$(swift build "${native_args[@]}" --show-bin-path)""#))
         #expect(buildScript.contains("scaffold|mlx)"))
         #expect(buildScript.contains(#""$LOCAL_MODEL_BACKEND" == "scaffold""#))
@@ -4624,6 +4625,31 @@ struct LocalModelRuntimeTests {
         #expect(workspacePreview.contains("resolvedWorkspaceWritePreviewPath"))
         #expect(workspacePreview.contains("localAgentWorkspaceWriteRelativePathIsAllowed"))
         #expect(!workspacePreview.contains("appendingPathComponent(path)"))
+        let branchPreflight = sourceSlice(
+            orchestratorSource,
+            from: "case .shellUnavailable(let answer):",
+            to: "case .requestShellApproval"
+        )
+        #expect(branchPreflight.contains(#"runtimeStopReason: "local_agent_shell_disabled""#))
+        #expect(!branchPreflight.contains("completeFinal(answer: answer"))
+    }
+
+    @Test("Local MLX readiness uses bundled helper resolver before generic PATH")
+    func localMLXReadinessUsesBundledHelperResolverBeforeGenericPath() {
+        #expect(LocalMLXRuntime.resolvedExecutable(
+            configuredPath: "  ",
+            detectPath: { "/Users/test/.astra/tools/astra-local-model" }
+        ) == "/Users/test/.astra/tools/astra-local-model")
+
+        #expect(LocalMLXRuntime.resolvedExecutable(
+            configuredPath: "/tmp/custom-astra-local-model",
+            detectPath: { "/Users/test/.astra/tools/astra-local-model" }
+        ) == "/tmp/custom-astra-local-model")
+
+        #expect(LocalMLXRuntime.resolvedExecutable(
+            configuredPath: "",
+            detectPath: { "" }
+        ) == nil)
     }
 
     @Test("Local model chat messages round trip image attachments")

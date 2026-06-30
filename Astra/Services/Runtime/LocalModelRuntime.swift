@@ -60,6 +60,18 @@ enum LocalMLXRuntime {
         )
     }
 
+    static func resolvedExecutable(
+        configuredPath: String,
+        detectPath: () -> String = { LocalMLXRuntime.detectPath() }
+    ) -> String? {
+        let configured = configuredPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !configured.isEmpty {
+            return configured
+        }
+        let detected = detectPath()
+        return detected.isEmpty ? nil : detected
+    }
+
     static func downloadCommand(repository: String, localDirectory: String) -> String {
         """
         mkdir -p "\(recommendedModelsRoot)"
@@ -3882,9 +3894,8 @@ struct LocalMLXRuntimeAdapter: AgentRuntimeAdapter {
             ])
         }
 
-        let executable = probes.resolvedExecutable(
-            configuredPath: configuration.executablePath(for: id),
-            binary: descriptor.executableName
+        let executable = LocalMLXRuntime.resolvedExecutable(
+            configuredPath: configuration.executablePath(for: id)
         )
         let helper = await probes.checkExecutable(
             id: readinessCheckID,

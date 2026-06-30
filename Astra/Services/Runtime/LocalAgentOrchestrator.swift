@@ -580,7 +580,12 @@ final class LocalAgentOrchestrator {
                     run: run,
                     modelContext: modelContext
                 )
-                return completeFinal(answer: answer, turn: 0, finalFormat: "git_branch_preflight")
+                recordMetrics(status: "blocked", stopReason: "local_agent_shell_disabled", turn: 0)
+                return AgentProcessResult(
+                    exitCode: -1,
+                    runtimeStopReason: "local_agent_shell_disabled",
+                    runtimeStopMessage: answer
+                )
 
             case .requestShellApproval(let command, let cwd):
                 let tool = "shell.exec"

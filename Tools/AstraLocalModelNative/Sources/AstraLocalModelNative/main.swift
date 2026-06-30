@@ -289,6 +289,7 @@ struct LocalModelNativeMain {
             firstTokenLatencyMs: firstTokenLatencyMs
         ), to: output)
         try emit(.init(type: "completed", summary: fullText), to: output)
+        try await waitForKeepWarmTTL(request: request, output: output, cancellation: cancellation)
         _ = container
         #else
         throw LocalModelNativeError.unsupportedArchitecture

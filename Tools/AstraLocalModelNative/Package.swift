@@ -8,7 +8,7 @@ let package = Package(
         .executable(name: "astra-local-model-native", targets: ["AstraLocalModelNative"])
     ],
     dependencies: [
-        .package(path: "../.."),
+        .package(name: "ASTRA", path: "../.."),
         .package(url: "https://github.com/ml-explore/mlx-swift", .upToNextMinor(from: "0.31.3")),
         .package(url: "https://github.com/ml-explore/mlx-swift-lm", .upToNextMajor(from: "3.31.3")),
         .package(url: "https://github.com/huggingface/swift-huggingface", from: "0.9.0"),
