@@ -360,6 +360,13 @@ public final class DockerWorkspaceJobManager: WorkspaceJobManaging {
                 """
                 pidfile=\(shellQuote(directory + "/pid"))
                 command_script=\(shellQuote(directory + "/command.sh"))
+                kill_bin=""
+                for candidate in /bin/kill /usr/bin/kill /usr/local/bin/kill; do
+                  if [ -x "$candidate" ]; then
+                    kill_bin="$candidate"
+                    break
+                  fi
+                done
                 safe_pid() {
                   case "$1" in
                     ''|*[!0-9]*) return 1 ;;
@@ -374,10 +381,10 @@ public final class DockerWorkspaceJobManager: WorkspaceJobManaging {
                 terminate_pid_or_group() {
                   target_pid="$1"
                   safe_pid "$target_pid" || return 0
-                  if kill -0 -- -"$target_pid" 2>/dev/null; then
-                    kill -TERM -- -"$target_pid" 2>/dev/null || true
+                  if [ -n "$kill_bin" ] && "$kill_bin" -0 -- -"$target_pid" 2>/dev/null; then
+                    "$kill_bin" -TERM -- -"$target_pid" 2>/dev/null || true
                     sleep 5
-                    kill -KILL -- -"$target_pid" 2>/dev/null || true
+                    "$kill_bin" -KILL -- -"$target_pid" 2>/dev/null || true
                   elif pid_matches_managed_command "$target_pid" && kill -0 "$target_pid" 2>/dev/null; then
                     kill -TERM "$target_pid" 2>/dev/null || true
                     sleep 5
@@ -429,6 +436,13 @@ public final class DockerWorkspaceJobManager: WorkspaceJobManaging {
         timeout_marker="$job_dir/timeout"
         mkdir -p "$job_dir"
         rm -f "$timeout_marker" "$pidfile"
+        kill_bin=""
+        for candidate in /bin/kill /usr/bin/kill /usr/local/bin/kill; do
+          if [ -x "$candidate" ]; then
+            kill_bin="$candidate"
+            break
+          fi
+        done
         setsid_bin=""
         if command -v setsid >/dev/null 2>&1; then
           setsid_bin="$(command -v setsid)"
@@ -468,17 +482,17 @@ public final class DockerWorkspaceJobManager: WorkspaceJobManaging {
         terminate_command_group() {
           grace_seconds="${1:-5}"
           safe_pid "$command_pid" || return 0
-          if kill -0 -- -"$command_pid" 2>/dev/null; then
-            kill -TERM -- -"$command_pid" 2>/dev/null || true
+          if [ -n "$kill_bin" ] && "$kill_bin" -0 -- -"$command_pid" 2>/dev/null; then
+            "$kill_bin" -TERM -- -"$command_pid" 2>/dev/null || true
             sleep "$grace_seconds"
-            kill -KILL -- -"$command_pid" 2>/dev/null || true
+            "$kill_bin" -KILL -- -"$command_pid" 2>/dev/null || true
           fi
         }
         timeout_pid=""
         if [ "$timeout_seconds" -gt 0 ]; then
           (
             sleep "$timeout_seconds"
-            if kill -0 -- -"$command_pid" 2>/dev/null; then
+            if [ -n "$kill_bin" ] && "$kill_bin" -0 -- -"$command_pid" 2>/dev/null; then
               printf '%s\\n' timed_out > "$timeout_marker"
               terminate_command_group 5
             fi
