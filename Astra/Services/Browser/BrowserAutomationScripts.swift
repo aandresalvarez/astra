@@ -2,7 +2,7 @@ import Foundation
 
 enum BrowserAutomationScripts {
     static let pageReadMessageHandlerName = "astraPageRead"
-    static let defaultEditableSelector = "input, textarea, [contenteditable]"
+    static let defaultEditableSelector = "input, textarea, [contenteditable]:not([contenteditable=false])"
 
     static let debugInstrumentationScript = """
     (() => {
@@ -427,7 +427,7 @@ enum BrowserAutomationScripts {
         return String(title || "").replace(/\\s+/g, " ").trim().slice(0, 160);
       };
       const allControls = () => {
-        const selector = "a, button, input, textarea, select, [role], [contenteditable], [tabindex]";
+        const selector = "a, button, input, textarea, select, [role], [contenteditable]:not([contenteditable=false]), [tabindex]";
         const out = [];
         const seen = new Set();
         const collect = (root, depth, framePath) => {
@@ -824,7 +824,7 @@ enum BrowserAutomationScripts {
           const changed = [];
           const candidates = selector
             ? Array.from(document.querySelectorAll(selector))
-            : Array.from(document.querySelectorAll("input, textarea, [contenteditable]"));
+            : Array.from(document.querySelectorAll("input, textarea, [contenteditable]:not([contenteditable=false])"));
           for (const el of candidates) {
             if (!visible(el) || !editable(el)) continue;
             const before = "value" in el ? String(el.value || "") : String(el.textContent || "");
@@ -1047,73 +1047,41 @@ enum BrowserAutomationScripts {
     static func insertTextScript(_ text: String, expectedFocusedTargetSignature: String? = nil) -> String {
         """
         (() => {
+          \(targetResolutionPrelude(selector: nil, x: nil, y: nil, allowDangerous: true, label: nil, role: nil, text: nil, placeholder: nil, testID: nil))
+          \(sensitiveTextEntryPrelude)
           const text = \(jsonLiteral(text));
           const expectedFocusedTargetSignature = \(optionalJSONLiteral(expectedFocusedTargetSignature));
-          const target = document.activeElement && document.activeElement !== document.body ? document.activeElement : null;
-          if (!target) return JSON.stringify({ ok: false, error: "no_focused_element" });
-          const esc = (value) => {
-            if (window.CSS && CSS.escape) return CSS.escape(value);
-            return String(value).replace(/'/g, "\\\\'");
-          };
-          const labelledText = (el) => {
-            const doc = el.ownerDocument || document;
-            const ids = String(el.getAttribute("aria-labelledby") || "").split(/\\s+/).filter(Boolean);
-            const byID = ids.map((id) => doc.getElementById(id)?.innerText || "").filter(Boolean).join(" ");
-            if (byID) return byID;
-            if (el.id) {
-              const label = doc.querySelector("label[for='" + esc(el.id) + "']");
-              if (label?.innerText) return label.innerText;
+          const deepActiveElement = (doc, framePath, shadowDepth) => {
+            let active = doc.activeElement && doc.activeElement !== doc.body ? doc.activeElement : null;
+            if (!active) return { ok: false, error: "no_focused_element", locator: { focused: true }, framePath, shadowDepth };
+            while (active.shadowRoot && active.shadowRoot.activeElement) {
+              active = active.shadowRoot.activeElement;
+              shadowDepth += 1;
             }
-            const parentLabel = el.closest("label");
-            if (parentLabel?.innerText) return parentLabel.innerText;
-            return "";
-          };
-          const labelFor = (el) => {
-            const aria = el.getAttribute("aria-label") || labelledText(el) || el.getAttribute("title") || el.getAttribute("placeholder") || el.getAttribute("name") || "";
-            const text = aria || el.innerText || el.value || el.id || el.tagName.toLowerCase();
-            return String(text).replace(/\\s+/g, " ").trim().slice(0, 160);
-          };
-          const nameFor = (el) => String(el.getAttribute("name") || "").replace(/\\s+/g, " ").trim().slice(0, 160);
-          const roleFor = (el) => {
-            const explicit = el.getAttribute("role");
-            if (explicit) return explicit;
-            const tag = el.tagName.toLowerCase();
-            const type = String(el.getAttribute("type") || "").toLowerCase();
-            if (tag === "button" || type === "button" || type === "submit") return "button";
-            if (tag === "a" && el.href) return "link";
-            if (tag === "input" || tag === "textarea" || el.isContentEditable) return "textbox";
-            if (tag === "select") return "combobox";
-            return "";
-          };
-          const selectorFor = (el) => {
-            if (el.id) return "#" + esc(el.id);
-            const name = nameFor(el);
-            if (name) return el.tagName.toLowerCase() + "[name=" + JSON.stringify(name) + "]";
-            return el.tagName.toLowerCase();
-          };
-          const astraSignatureURL = () => {
-            try {
-              const url = new URL(location.href);
-              url.search = "";
-              url.hash = "";
-              return url.toString();
-            } catch (_) {
-              return location.origin + location.pathname;
+            const tag = String(active.tagName || "").toLowerCase();
+            if (tag === "iframe" || tag === "frame") {
+              const nextFramePath = framePath.concat(frameLabelFor(active));
+              try {
+                if (!active.contentDocument) throw new Error("uninspectable frame");
+                const nested = deepActiveElement(active.contentDocument, nextFramePath, shadowDepth);
+                if (nested.el) return nested;
+                return { ok: false, error: nested.error || "no_focused_element", el: active, point: null, framePath: nextFramePath, shadowDepth };
+              } catch (_) {
+                return {
+                  ok: false,
+                  error: "focused_frame_uninspectable",
+                  el: active,
+                  point: null,
+                  framePath: nextFramePath,
+                  shadowDepth,
+                  frameFocusUninspectable: true
+                };
+              }
             }
+            return { ok: true, el: active, point: null, framePath, shadowDepth };
           };
-          const targetSignatureFor = (el) => [
-            selectorFor(el),
-            el.tagName.toLowerCase(),
-            el.getAttribute("type") || "",
-            nameFor(el),
-            roleFor(el),
-            el.getAttribute("autocomplete") || "",
-            "",
-            "0",
-            astraSignatureURL()
-          ].join("\\u001f");
-          const redactedTargetChangedResponse = (el) => {
-            const tag = String(el?.tagName || "").toLowerCase();
+          const redactedTargetChangedResponse = (targetInfo) => {
+            const tag = String(targetInfo.tag || "").toLowerCase();
             return {
               ok: false,
               error: "text_entry_target_changed",
@@ -1125,24 +1093,27 @@ enum BrowserAutomationScripts {
                 requestedSelector: "",
                 label: "[redacted]",
                 name: "[redacted]",
-                role: el ? roleFor(el) : "",
+                role: targetInfo.role || "",
                 tag,
-                type: el ? (el.getAttribute("type") || "") : "",
+                type: targetInfo.type || "",
                 autocomplete: "[redacted]",
                 placeholder: "[redacted]",
-                testID: el ? (el.getAttribute("data-testid") || el.getAttribute("data-test") || "") : "",
-                href: el ? astraSensitiveURL(el.getAttribute("href") || "") : "",
+                testID: targetInfo.testID || "",
+                href: astraSensitiveURL(targetInfo.href || ""),
                 url: astraSensitiveURL(location.href),
-                framePath: [],
-                shadowDepth: 0,
-                frameFocusUninspectable: false
+                framePath: Array.isArray(targetInfo.framePath) ? targetInfo.framePath.map(() => "[redacted frame]") : [],
+                shadowDepth: targetInfo.shadowDepth || 0,
+                frameFocusUninspectable: Boolean(targetInfo.frameFocusUninspectable)
               }
             };
           };
-          \(sensitiveTextEntryPrelude)
-          if (expectedFocusedTargetSignature && targetSignatureFor(target) !== expectedFocusedTargetSignature) {
-            return JSON.stringify(redactedTargetChangedResponse(target));
+          const activeTarget = deepActiveElement(document, [], 0);
+          const targetInfo = publicTarget(activeTarget);
+          if (!activeTarget.el) return JSON.stringify({ ok: false, error: targetInfo.error || "no_focused_element" });
+          if (expectedFocusedTargetSignature && targetInfo.targetSignature !== expectedFocusedTargetSignature) {
+            return JSON.stringify(redactedTargetChangedResponse(targetInfo));
           }
+          const target = activeTarget.el;
           const blocked = astraSensitiveBlock(target, "insertText", "", { selectorFor, labelFor, nameFor, roleFor });
           if (blocked) return JSON.stringify(blocked);
           target.focus();
@@ -1350,7 +1321,7 @@ enum BrowserAutomationScripts {
             const title = frame.getAttribute("title") || frame.getAttribute("name") || frame.getAttribute("aria-label") || frame.src || selectorFor(frame);
             return String(title || "").replace(/\\s+/g, " ").trim().slice(0, 160);
           };
-          const controlSelector = "a, button, input, textarea, select, [role], [contenteditable], [tabindex]";
+          const controlSelector = "a, button, input, textarea, select, [role], [contenteditable]:not([contenteditable=false]), [tabindex]";
           const allControls = () => {
             const out = [];
             const seen = new Set();

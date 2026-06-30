@@ -299,8 +299,8 @@ struct BrowserControlSafetyTests {
             all: true
         )
         #expect(selectorlessReplaceScript.contains("const selector = null"))
-        #expect(selectorlessReplaceScript.contains("querySelectorAll(\"input, textarea, [contenteditable]\")"))
-        #expect(!selectorlessReplaceScript.contains("[contenteditable=true]"))
+        #expect(selectorlessReplaceScript.contains("querySelectorAll(\"input, textarea, [contenteditable]:not([contenteditable=false])\")"))
+        #expect(!selectorlessReplaceScript.contains("querySelectorAll(\"input, textarea, [contenteditable]\")"))
     }
 
     @Test("Google editor replacement preflight preserves find-replace hint")
@@ -315,6 +315,8 @@ struct BrowserControlSafetyTests {
         let source = try String(contentsOfFile: preflightPath, encoding: .utf8)
 
         #expect(source.contains("GoogleWorkspaceBrowserService.isGoogleWorkspaceEditorURL(currentURL)"))
+        #expect(source.contains("BrowserFlightPageSnapshot.redactedURLString(currentURL)"))
+        #expect(source.contains(#""url": redactedCurrentURL"#))
         #expect(source.contains(#""editor_surface_requires_find_replace""#))
         #expect(source.contains("Google editor canvas text is not directly editable through DOM replacement."))
     }
@@ -407,7 +409,10 @@ struct BrowserControlSafetyTests {
             expectedFocusedTargetSignature: "expected-signature"
         )
         #expect(embeddedInsertScript.contains("const expectedFocusedTargetSignature = \"expected-signature\""))
-        #expect(embeddedInsertScript.contains("targetSignatureFor(target) !== expectedFocusedTargetSignature"))
+        #expect(embeddedInsertScript.contains("const activeTarget = deepActiveElement(document, [], 0)"))
+        #expect(embeddedInsertScript.contains("const targetInfo = publicTarget(activeTarget)"))
+        #expect(embeddedInsertScript.contains("targetInfo.targetSignature !== expectedFocusedTargetSignature"))
+        #expect(embeddedInsertScript.contains("framePath: Array.isArray(targetInfo.framePath) ? targetInfo.framePath.map(() => \"[redacted frame]\") : []"))
         #expect(embeddedInsertScript.contains("text_entry_target_changed"))
         #expect(embeddedInsertScript.contains(#"autocomplete: "[redacted]""#))
         #expect(embeddedInsertScript.contains(#"action: "insertText""#))

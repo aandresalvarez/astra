@@ -122,6 +122,7 @@ extension ShelfBrowserSession {
         let targetInfo = try await textEntryPreflightReplacementTargets(selector: selector, find: find, all: all)
         let ok = (targetInfo["ok"] as? Bool) ?? (targetInfo["ok"] as? NSNumber)?.boolValue ?? false
         guard ok else { return targetInfo }
+        let redactedCurrentURL = BrowserFlightPageSnapshot.redactedURLString(currentURL)
 
         let targetCount = BrowserTextEntryPreflightJSON.intValue(targetInfo["targetCount"]) ?? 0
         let targets = targetInfo["targets"] as? [[String: Any]] ?? []
@@ -133,7 +134,7 @@ extension ShelfBrowserSession {
                     "summary": "Google editor canvas text is not directly editable through DOM replacement.",
                     "find": find,
                     "selector": selector,
-                    "url": currentURL,
+                    "url": redactedCurrentURL,
                     "hint": "Google editor canvas text is not directly editable through DOM replacement. Open Find and replace, then use astra-browser set-value on the Find and Replace fields by selector."
                 ]
             }
@@ -143,7 +144,7 @@ extension ShelfBrowserSession {
                 "summary": "Text replacement requires at least one visible editable target before ASTRA can safely mutate page text.",
                 "find": find,
                 "selector": selector,
-                "url": currentURL
+                "url": redactedCurrentURL
             ]
         }
         guard !targets.isEmpty else { return nil }
