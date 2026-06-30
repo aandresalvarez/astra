@@ -414,7 +414,9 @@ struct HostControlToolSupportTests {
             ["--account", "privileged@example.com", "compute", "instances", "list"],
             ["--account=privileged@example.com", "compute", "instances", "list"],
             ["--configuration", "debug-config", "compute", "instances", "list"],
-            ["--configuration=debug-config", "compute", "instances", "list"]
+            ["--configuration=debug-config", "compute", "instances", "list"],
+            ["auth", "activate-service-account", "--key-file", "/tmp/private-key.json"],
+            ["auth", "activate-service-account", "--key-file=/tmp/private-key.json"]
         ]
 
         for (offset, arguments) in deniedFlagCases.enumerated() {
@@ -428,6 +430,7 @@ struct HostControlToolSupportTests {
         let hostLog = (try? String(contentsOf: log, encoding: .utf8)) ?? ""
         #expect(!hostLog.contains("--account"))
         #expect(!hostLog.contains("--configuration"))
+        #expect(!hostLog.contains("/tmp/private-key.json"))
     }
 
     @Test("Host control records denied gcloud policy attempts")
@@ -462,6 +465,8 @@ struct HostControlToolSupportTests {
                 "--account", "privileged@example.com",
                 "compute", "instances", "list",
                 "--access-token=synthetic-access-token-value",
+                "--key-file", "/tmp/private-key.json",
+                "--key-file=/tmp/inline-private-key.json",
                 "--impersonate-service-account=reader@example.iam.gserviceaccount.com"
             ]
         ])
@@ -472,6 +477,8 @@ struct HostControlToolSupportTests {
         #expect(!hostLog.contains("auth print-access-token"))
         #expect(!hostLog.contains("privileged@example.com"))
         #expect(!hostLog.contains("synthetic-access-token-value"))
+        #expect(!hostLog.contains("/tmp/private-key.json"))
+        #expect(!hostLog.contains("/tmp/inline-private-key.json"))
         #expect(!hostLog.contains("reader@example.iam.gserviceaccount.com"))
 
         let diagnosticLog = diagnostics.appendingPathComponent("host_control_tool_activity.jsonl", isDirectory: false)
@@ -482,9 +489,13 @@ struct HostControlToolSupportTests {
         #expect(diagnosticsText.contains(#""summary":"gcloud auth print-access-token""#))
         #expect(diagnosticsText.contains(#"--account <redacted>"#))
         #expect(diagnosticsText.contains(#"--access-token=<redacted>"#))
+        #expect(diagnosticsText.contains(#"--key-file <redacted>"#))
+        #expect(diagnosticsText.contains(#"--key-file=<redacted>"#))
         #expect(diagnosticsText.contains(#"--impersonate-service-account=<redacted>"#))
         #expect(!diagnosticsText.contains("privileged@example.com"))
-        #expect(!diagnosticsText.contains("ya29.secret-token"))
+        #expect(!diagnosticsText.contains("synthetic-access-token-value"))
+        #expect(!diagnosticsText.contains("/tmp/private-key.json"))
+        #expect(!diagnosticsText.contains("/tmp/inline-private-key.json"))
         #expect(!diagnosticsText.contains("reader@example.iam.gserviceaccount.com"))
     }
 

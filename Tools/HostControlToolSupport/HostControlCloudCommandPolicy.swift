@@ -195,6 +195,7 @@ struct HostControlCloudCommandPolicy: Sendable {
         return flagName == "--account" ||
             flagName == "--configuration" ||
             flagName == "--flags-file" ||
+            flagName == "--key-file" ||
             flagName == "--impersonate-service-account" ||
             flagName.contains("access-token") ||
             flagName.contains("identity-token") ||

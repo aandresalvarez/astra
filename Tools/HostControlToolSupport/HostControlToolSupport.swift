@@ -656,6 +656,7 @@ public final class HostControlMCPServer {
         optionName == "--account" ||
             optionName == "--configuration" ||
             optionName == "--flags-file" ||
+            optionName == "--key-file" ||
             optionName == "--impersonate-service-account" ||
             optionName.contains("access-token") ||
             optionName.contains("identity-token") ||
