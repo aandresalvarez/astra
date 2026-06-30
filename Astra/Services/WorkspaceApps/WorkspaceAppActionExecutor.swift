@@ -2284,7 +2284,7 @@ private struct WorkspaceAppCSVExportFormatter {
     }
 
     private func headerField(_ rawValue: String) -> String {
-        field(Self.literalizedSpreadsheetText(rawValue))
+        field(rawValue)
     }
 
     private func storageField(_ value: WorkspaceAppStorageValue?) -> String {

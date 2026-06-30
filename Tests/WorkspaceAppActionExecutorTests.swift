@@ -291,6 +291,49 @@ struct WorkspaceAppActionExecutorTests {
     }
 
     @MainActor
+    @Test("artifact CSV exports preserve declared column headers")
+    func artifactCSVExportsPreserveDeclaredColumnHeaders() throws {
+        let fixture = try Self.makePublishedApp(
+            permissionMode: .draftOnly,
+            manifest: Self.scoredExportManifest(permissionMode: .draftOnly)
+        )
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+
+        _ = try WorkspaceAppActionExecutor().execute(
+            actionID: "addScore",
+            app: fixture.app,
+            workspace: fixture.workspace,
+            manifest: fixture.manifest,
+            input: WorkspaceAppActionInput(
+                table: "scores",
+                record: [
+                    "id": .text("score-1"),
+                    "-score": .text("=2+3"),
+                    "formulaText": .text("-10")
+                ]
+            ),
+            modelContext: fixture.context
+        )
+
+        let result = try WorkspaceAppActionExecutor().execute(
+            actionID: "exportScores",
+            app: fixture.app,
+            workspace: fixture.workspace,
+            manifest: fixture.manifest,
+            modelContext: fixture.context
+        )
+
+        let path = try #require(result.run.linkedArtifactPath)
+        let csv = try String(contentsOfFile: path, encoding: .utf8)
+        #expect(csv == """
+        id,-score,formulaText
+        score-1,'=2+3,'-10
+
+        """)
+        #expect(!csv.hasPrefix("id,'-score,formulaText"))
+    }
+
+    @MainActor
     @Test("artifact export actions write linked JSON files from app storage")
     func artifactExportActionsWriteLinkedJSONFilesFromAppStorage() throws {
         let fixture = try Self.makePublishedApp(permissionMode: .draftOnly)
@@ -1773,6 +1816,54 @@ struct WorkspaceAppActionExecutorTests {
                     type: "artifact.export",
                     label: "Export Metrics",
                     table: "metrics",
+                    exportFormat: "csv"
+                )
+            ],
+            permissions: WorkspaceAppPermissions(
+                reads: ["appStorage.records"],
+                writes: ["appStorage.records"],
+                defaultMode: permissionMode
+            )
+        )
+    }
+
+    static func scoredExportManifest(permissionMode: WorkspaceAppPermissionMode) -> WorkspaceAppManifest {
+        WorkspaceAppManifest(
+            app: WorkspaceAppManifestMetadata(
+                id: "score-actions",
+                name: "Score Actions",
+                icon: "number"
+            ),
+            requirements: [
+                WorkspaceAppRequirement(
+                    id: "localRecords",
+                    contract: "appStorage.records",
+                    operations: ["insertRecord", "queryRecords"]
+                )
+            ],
+            storage: WorkspaceAppStorageSchema(tables: [
+                WorkspaceAppStorageTable(name: "scores", columns: [
+                    WorkspaceAppStorageColumn(name: "id", type: "uuid", primaryKey: true, required: true),
+                    WorkspaceAppStorageColumn(name: "-score", type: "text"),
+                    WorkspaceAppStorageColumn(name: "formulaText", type: "text")
+                ])
+            ]),
+            views: [
+                WorkspaceAppViewSpec(id: "scores", type: "table", title: "Scores")
+            ],
+            actions: [
+                WorkspaceAppActionSpec(
+                    id: "addScore",
+                    type: "appStorage.insert",
+                    label: "Add Score",
+                    requirementRef: "localRecords",
+                    operation: "insertRecord"
+                ),
+                WorkspaceAppActionSpec(
+                    id: "exportScores",
+                    type: "artifact.export",
+                    label: "Export Scores",
+                    table: "scores",
                     exportFormat: "csv"
                 )
             ],
