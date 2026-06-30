@@ -42,7 +42,62 @@ struct BrowserFocusedTextEntryPreflightResult {
     let targetSignature: String?
 }
 
+struct BrowserKeypressDispatchValidation {
+    let blockedResultJSON: String?
+    let targetSignature: String?
+    let allowUnboundFocusedTargetDispatch: Bool
+
+    static let none = BrowserKeypressDispatchValidation(
+        blockedResultJSON: nil,
+        targetSignature: nil,
+        allowUnboundFocusedTargetDispatch: false
+    )
+}
+
 extension ShelfBrowserSession {
+    func keypressTextEntryDispatchValidation(
+        key: String,
+        modifiers: [String],
+        started: Date,
+        skipTextEntryPreflight: Bool
+    ) async throws -> BrowserKeypressDispatchValidation {
+        guard !skipTextEntryPreflight,
+              BrowserKeypressSafety.requiresTextEntryPreflight(key: key, modifiers: modifiers) else {
+            return .none
+        }
+        let preflight = try await focusedTextEntryPreflight(
+            action: "keypress",
+            logContext: BrowserTextEntryLogContext(
+                started: started,
+                action: "keypress",
+                fields: ["key_length": String(key.count), "modifier_count": String(modifiers.count)]
+            )
+        )
+        guard let result = preflight.blockedResultJSON else {
+            return BrowserKeypressDispatchValidation(
+                blockedResultJSON: nil,
+                targetSignature: preflight.targetSignature,
+                allowUnboundFocusedTargetDispatch: false
+            )
+        }
+        guard BrowserKeypressSafety.canDispatchBlockedPreflightWithoutFocusedTarget(
+            key: key,
+            modifiers: modifiers,
+            blockedPreflightJSON: result
+        ) else {
+            return BrowserKeypressDispatchValidation(
+                blockedResultJSON: result,
+                targetSignature: nil,
+                allowUnboundFocusedTargetDispatch: false
+            )
+        }
+        return BrowserKeypressDispatchValidation(
+            blockedResultJSON: nil,
+            targetSignature: nil,
+            allowUnboundFocusedTargetDispatch: true
+        )
+    }
+
     func focusedTextEntryPreflight(
         action: String,
         logContext: BrowserTextEntryLogContext

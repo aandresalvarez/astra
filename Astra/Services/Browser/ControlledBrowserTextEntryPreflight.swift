@@ -4,9 +4,10 @@ extension ControlledBrowserController {
     nonisolated static func validateFocusedTextEntryTarget(
         action: String,
         expectedSignature: String?,
+        allowUnboundFocusedTargetDispatch: Bool = false,
         client: OperationCDPClient
     ) async throws -> [String: Any]? {
-        guard let expectedSignature, !expectedSignature.isEmpty else {
+        guard (expectedSignature?.isEmpty == false) || allowUnboundFocusedTargetDispatch else {
             return nil
         }
         let targetInfo = try await focusedTextEntryTargetInfo(client: client)
@@ -14,11 +15,18 @@ extension ControlledBrowserController {
             blocked["focusedTarget"] = BrowserTextEntryPreflight.redactedTargetAttachment(for: blocked)
             return blocked
         }
-        if var blocked = BrowserTextEntryPreflight.focusedTargetBindBlockResponse(
-            action: action,
-            targetInfo: targetInfo,
-            expectedSignature: expectedSignature
-        ) {
+        if let expectedSignature, !expectedSignature.isEmpty {
+            if var blocked = BrowserTextEntryPreflight.focusedTargetBindBlockResponse(
+                action: action,
+                targetInfo: targetInfo,
+                expectedSignature: expectedSignature
+            ) {
+                blocked["focusedTarget"] = BrowserTextEntryPreflight.redactedTargetAttachment(for: blocked)
+                return blocked
+            }
+        } else if allowUnboundFocusedTargetDispatch,
+                  BrowserTextEntryPreflight.targetSignature(for: targetInfo) != nil {
+            var blocked = BrowserTextEntryPreflight.focusChangedBlockResponse(action: action, targetInfo: targetInfo)
             blocked["focusedTarget"] = BrowserTextEntryPreflight.redactedTargetAttachment(for: blocked)
             return blocked
         }

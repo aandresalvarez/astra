@@ -715,7 +715,12 @@ final class ControlledBrowserController: ObservableObject {
         try await refreshPageMetadata()
         return value
     }
-    func keypress(key: String, modifiers: [String], expectedFocusedTargetSignature: String?) async throws -> String {
+    func keypress(
+        key: String,
+        modifiers: [String],
+        expectedFocusedTargetSignature: String?,
+        allowUnboundFocusedTargetDispatch: Bool = false
+    ) async throws -> String {
         try await ensureLaunched(initialURL: URL(string: "about:blank"))
         let definition = Self.keyDefinition(for: key, modifiers: modifiers)
         let modifierMask = Self.cdpModifierMask(for: modifiers)
@@ -731,7 +736,12 @@ final class ControlledBrowserController: ObservableObject {
         let webSocketURL = try await currentPageWebSocketURL()
         var blockedResponse: [String: Any]?
         let settlement = try await ControlledBrowserActionSettlementRunner.run(webSocketURL: webSocketURL) { client in
-            if let blocked = try await Self.validateFocusedTextEntryTarget(action: "keypress", expectedSignature: expectedFocusedTargetSignature, client: client) {
+            if let blocked = try await Self.validateFocusedTextEntryTarget(
+                action: "keypress",
+                expectedSignature: expectedFocusedTargetSignature,
+                allowUnboundFocusedTargetDispatch: allowUnboundFocusedTargetDispatch,
+                client: client
+            ) {
                 blockedResponse = blocked; return
             }
             _ = try await client.send(method: "Input.dispatchKeyEvent", params: downParams)

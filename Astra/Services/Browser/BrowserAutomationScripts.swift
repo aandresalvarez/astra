@@ -960,7 +960,12 @@ enum BrowserAutomationScripts {
         """
     }
 
-    static func keypressScript(key: String, modifiers: [String], expectedFocusedTargetSignature: String?) -> String {
+    static func keypressScript(
+        key: String,
+        modifiers: [String],
+        expectedFocusedTargetSignature: String?,
+        allowUnboundFocusedTargetDispatch: Bool = false
+    ) -> String {
         """
         (() => {
           \(targetResolutionPrelude(selector: nil, x: nil, y: nil, allowDangerous: true, label: nil, role: nil, text: nil, placeholder: nil, testID: nil))
@@ -968,6 +973,7 @@ enum BrowserAutomationScripts {
           const key = \(jsonLiteral(key));
           const modifiers = new Set(\(stringArrayLiteral(modifiers)));
           const expectedFocusedTargetSignature = \(optionalJSONLiteral(expectedFocusedTargetSignature));
+          const allowUnboundFocusedTargetDispatch = \(allowUnboundFocusedTargetDispatch ? "true" : "false");
           const deepActiveElement = (doc, framePath, shadowDepth) => {
             let active = doc.activeElement && doc.activeElement !== doc.body ? doc.activeElement : null;
             if (!active) return { ok: false, error: "no_focused_element", locator: { focused: true }, framePath, shadowDepth };
@@ -1032,6 +1038,8 @@ enum BrowserAutomationScripts {
             }
             const blocked = astraSensitiveBlock(activeTarget.el, "keypress", "", { selectorFor, labelFor, nameFor, roleFor });
             if (blocked) return JSON.stringify(blocked);
+          } else if (allowUnboundFocusedTargetDispatch && activeTarget.el) {
+            return JSON.stringify(redactedTargetChangedResponse(targetInfo));
           }
           const target = activeTarget.el || document.body;
           const lower = new Set(Array.from(modifiers).map((m) => String(m).toLowerCase()));
@@ -1196,7 +1204,7 @@ enum BrowserAutomationScripts {
               metadata.href
             ].join(" ").toLowerCase();
             if (lowerType === "password"
-              || (isEditableTextEntry && /password|passcode|secret|current-password|new-password/.test(text))) {
+              || (isEditableTextEntry && /password|passcode|secret|api key|apikey|api_key|token|access token|access_token|refresh token|refresh_token|id token|id_token|bearer|client secret|client_secret|credential|recovery code|current-password|new-password|personal access token/.test(text))) {
               return "credential_input_blocked";
             }
             if (isEditableTextEntry && /mfa|2fa|two factor|two-factor|verification code|security code|otp|one-time/.test(text)) {

@@ -3520,7 +3520,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         return try annotateBrowserLoopHint(json: json, action: "replaceText", target: resolvedSelector ?? find)
     }
 
-    private func keypress(key: String, modifiers: [String]) async throws -> String {
+    private func keypress(key: String, modifiers: [String], skipTextEntryPreflight: Bool = false) async throws -> String {
         let started = Date()
         let safetyDecision = BrowserKeypressSafety.evaluate(
             key: key,
@@ -3572,27 +3572,26 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             )
             return result
         }
-        var preflightTargetSignature: String?
-        if BrowserKeypressSafety.requiresTextEntryPreflight(key: key, modifiers: modifiers) {
-            let preflight = try await focusedTextEntryPreflight(
-                action: "keypress",
-                logContext: BrowserTextEntryLogContext(
-                    started: started,
-                    action: "keypress",
-                    fields: ["key_length": String(key.count), "modifier_count": String(modifiers.count)]
-                )
-            )
-            if let result = preflight.blockedResultJSON, !BrowserKeypressSafety.canDispatchBlockedPreflightWithoutFocusedTarget(key: key, modifiers: modifiers, blockedPreflightJSON: result) { return result }
-            if preflight.blockedResultJSON == nil { preflightTargetSignature = preflight.targetSignature }
-        }
+        let preflight = try await keypressTextEntryDispatchValidation(key: key, modifiers: modifiers, started: started, skipTextEntryPreflight: skipTextEntryPreflight)
+        if let result = preflight.blockedResultJSON { return result }
         do {
             let json: String
             if isUsingControlledBrowser {
-                json = try await controlledBrowser.keypress(key: key, modifiers: modifiers, expectedFocusedTargetSignature: preflightTargetSignature)
+                json = try await controlledBrowser.keypress(
+                    key: key,
+                    modifiers: modifiers,
+                    expectedFocusedTargetSignature: preflight.targetSignature,
+                    allowUnboundFocusedTargetDispatch: preflight.allowUnboundFocusedTargetDispatch
+                )
                 syncDisplayedStateForEngine()
                 publishBridgeState()
             } else {
-                json = try await evaluateJavaScriptString(BrowserAutomationScripts.keypressScript(key: key, modifiers: modifiers, expectedFocusedTargetSignature: preflightTargetSignature))
+                json = try await evaluateJavaScriptString(BrowserAutomationScripts.keypressScript(
+                    key: key,
+                    modifiers: modifiers,
+                    expectedFocusedTargetSignature: preflight.targetSignature,
+                    allowUnboundFocusedTargetDispatch: preflight.allowUnboundFocusedTargetDispatch
+                ))
             }
             logBrowserAction(
                 phase: "completed",
@@ -4901,7 +4900,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                     "textLength": text.count
                 ]
             }
-            inputJSON = try await keypress(key: "v", modifiers: ["command"])
+            inputJSON = try await keypress(key: "v", modifiers: ["command"], skipTextEntryPreflight: true)
             method = "browser_select_all_paste"
             try await Task.sleep(nanoseconds: 500_000_000)
         } else {

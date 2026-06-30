@@ -93,23 +93,31 @@ enum BrowserSensitiveControlClassifier {
         return containsAny(text, secretMaterialTokens) && containsAny(text, secretRevealActionTokens)
     }
 
-    private static let credentialTextEntryTokens = [
-        "password",
-        "passcode",
-        "secret",
-        "current-password",
-        "new-password"
-    ]
-
     private static let secretMaterialTokens = [
         "password",
         "passcode",
         "secret",
         "api key",
         "apikey",
+        "api_key",
         "token",
+        "access token",
+        "access_token",
+        "refresh token",
+        "refresh_token",
+        "id token",
+        "id_token",
+        "bearer",
+        "client secret",
+        "client_secret",
         "credential",
         "recovery code"
+    ]
+
+    private static let credentialTextEntryTokens = secretMaterialTokens + [
+        "current-password",
+        "new-password",
+        "personal access token"
     ]
 
     private static let secretRevealActionTokens = [
