@@ -373,6 +373,56 @@ struct ExecutionSandboxRunnerTests {
         }
     }
 
+    @Test("sandboxedPlan does not block restricted Codex for local Git config reads")
+    func sandboxedPlanDoesNotBlockRestrictedCodexLocalGitConfigReads() {
+        let launchResourcePlan = TaskLaunchResourcePlan(
+            taskID: UUID(),
+            runID: UUID(),
+            runtime: AgentRuntimeID.codexCLI.rawValue,
+            phase: "run",
+            workspacePath: "/tmp/whatever",
+            executionEnvironmentID: WorkspaceExecutionEnvironment.host.id,
+            executionEnvironmentKind: ExecutionEnvironmentKind.host.rawValue,
+            providerPlacement: ExecutionEnvironmentProviderPlacement.host.rawValue,
+            hostPathGrants: [
+                RuntimePathGrant(
+                    path: "/tmp/astra-home/.gitconfig",
+                    access: .read,
+                    source: .gitCredential,
+                    reason: "Local Git inspection requires external Git config.",
+                    sensitivity: .credential,
+                    lifetime: .run,
+                    exists: true
+                )
+            ],
+            gitCredential: RuntimeGitCredentialResource(
+                readablePaths: ["/tmp/astra-home/.gitconfig"],
+                writablePaths: [],
+                transports: [],
+                diagnostics: ["local_git_config"]
+            )
+        )
+
+        withStandardEnforcement(.off) {
+            let runner = AgentRuntimeProcessRunner(gitCredentialContextProvider: { _ in .empty })
+            let outcome = runner.sandboxedPlan(
+                adapter: FakeLaunchAdapter(runtime: .codexCLI, currentDirectory: "/tmp/whatever"),
+                context: makeContext(
+                    workspacePath: "/tmp/whatever",
+                    permissionPolicy: .restricted,
+                    launchResourcePlan: launchResourcePlan
+                )
+            )
+            guard case .plan(let plan) = outcome else {
+                Issue.record("Expected local Git config reads to avoid a native credential-access block")
+                return
+            }
+            #expect(plan.sandboxReadablePaths.contains("/tmp/astra-home/.gitconfig"))
+            #expect(plan.commandPlannedFields["provider_native_credential_read_path_count"] == "0")
+            #expect(plan.commandPlannedFields["git_credential_transports"] == "")
+        }
+    }
+
     @Test("sandboxedPlan blocks restricted Codex when SSH resource grants need native access")
     func sandboxedPlanBlocksRestrictedCodexSSHResourceCredentialAccess() {
         let launchResourcePlan = TaskLaunchResourcePlan(

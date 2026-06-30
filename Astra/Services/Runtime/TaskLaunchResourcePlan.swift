@@ -238,7 +238,7 @@ struct TaskLaunchResourcePlan: Codable, Equatable, Sendable {
 
     var providerNativeCredentialReadablePaths: [String] {
         uniquePaths(hostPathGrants.compactMap { grant in
-            guard grant.requiresProviderNativeCredentialRead else { return nil }
+            guard requiresProviderNativeCredentialRead(for: grant) else { return nil }
             return grant.path
         })
     }
@@ -408,14 +408,18 @@ struct TaskLaunchResourcePlan: Codable, Equatable, Sendable {
             return seen.insert(trimmed).inserted
         }
     }
-}
 
-private extension RuntimePathGrant {
-    var requiresProviderNativeCredentialRead: Bool {
-        guard source == .gitCredential || source == .remoteWorkspace else { return false }
-        switch access {
+    private func requiresProviderNativeCredentialRead(for grant: RuntimePathGrant) -> Bool {
+        switch grant.access {
         case .read, .readWrite:
-            return true
+            switch grant.source {
+            case .gitCredential:
+                return gitCredentialSandboxContext.needsExternalCredentialAccess
+            case .remoteWorkspace:
+                return true
+            default:
+                return false
+            }
         case .write:
             return false
         }
