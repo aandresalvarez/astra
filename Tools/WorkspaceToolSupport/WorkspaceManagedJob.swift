@@ -531,7 +531,7 @@ public final class DockerWorkspaceJobManager: WorkspaceJobManaging {
           fi
         done
         setsid_bin=""
-        for candidate in /usr/bin/setsid /bin/setsid /usr/sbin/setsid /sbin/setsid; do
+        for candidate in /usr/bin/setsid /bin/setsid /usr/sbin/setsid /sbin/setsid /usr/local/bin/setsid; do
           if [ -x "$candidate" ]; then
             setsid_bin="$candidate"
             break
