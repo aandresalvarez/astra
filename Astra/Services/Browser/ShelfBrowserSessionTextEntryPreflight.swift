@@ -47,7 +47,7 @@ extension ShelfBrowserSession {
         action: String,
         logContext: BrowserTextEntryLogContext
     ) async throws -> BrowserFocusedTextEntryPreflightResult {
-        let targetInfo = try await focusedTextEntryTargetInfo()
+        let targetInfo = try await textEntryPreflightFocusedTargetInfo()
         if let blocked = try blockedTextEntryResult(
             action: action,
             targetInfo: targetInfo,
@@ -56,9 +56,27 @@ extension ShelfBrowserSession {
         ) {
             return BrowserFocusedTextEntryPreflightResult(blockedResultJSON: blocked, targetSignature: nil)
         }
+        guard let targetSignature = BrowserTextEntryPreflight.targetSignature(for: targetInfo) else {
+            let blocked = BrowserTextEntryPreflight.missingFocusedTargetBlockResponse(action: action, targetInfo: targetInfo)
+            let result = try BrowserTextEntryPreflightJSON.string(blocked)
+            logBrowserAction(
+                phase: "completed",
+                action: logContext.action,
+                selector: logContext.selector,
+                label: logContext.label,
+                role: logContext.role,
+                text: nil,
+                placeholder: logContext.placeholder,
+                testID: logContext.testID,
+                fields: logContext.blockedFields,
+                resultJSON: result,
+                started: logContext.started
+            )
+            return BrowserFocusedTextEntryPreflightResult(blockedResultJSON: result, targetSignature: nil)
+        }
         return BrowserFocusedTextEntryPreflightResult(
             blockedResultJSON: nil,
-            targetSignature: BrowserTextEntryPreflight.targetSignature(for: targetInfo)
+            targetSignature: targetSignature
         )
     }
 
@@ -83,7 +101,7 @@ extension ShelfBrowserSession {
             return nil
         }
         blocked[attachmentKey] = BrowserTextEntryPreflight.redactedTargetAttachment(for: blocked)
-        let result = try Self.jsonString(blocked)
+        let result = try BrowserTextEntryPreflightJSON.string(blocked)
         logBrowserAction(
             phase: "completed",
             action: logContext.action,
@@ -101,11 +119,11 @@ extension ShelfBrowserSession {
     }
 
     func blockedReplacementTextEntryResult(find: String, selector: String, all: Bool) async throws -> [String: Any]? {
-        let targetInfo = try await replacementTextEntryTargets(selector: selector, find: find, all: all)
+        let targetInfo = try await textEntryPreflightReplacementTargets(selector: selector, find: find, all: all)
         let ok = (targetInfo["ok"] as? Bool) ?? (targetInfo["ok"] as? NSNumber)?.boolValue ?? false
         guard ok else { return targetInfo }
 
-        let targetCount = Self.textEntryPreflightIntValue(targetInfo["targetCount"]) ?? 0
+        let targetCount = BrowserTextEntryPreflightJSON.intValue(targetInfo["targetCount"]) ?? 0
         let targets = targetInfo["targets"] as? [[String: Any]] ?? []
         guard targetCount > 0 else {
             if GoogleWorkspaceBrowserService.isGoogleWorkspaceEditorURL(currentURL) {
@@ -139,32 +157,15 @@ extension ShelfBrowserSession {
         }
         return nil
     }
+}
 
-    func replacementTextEntryTargets(selector: String, find: String, all: Bool) async throws -> [String: Any] {
-        let json: String
-        if isUsingControlledBrowser {
-            json = try await controlledBrowser.replaceTextTargetsInfo(selector: selector, find: find, all: all)
-            syncDisplayedStateForEngine()
-            publishBridgeState()
-        } else {
-            json = try await evaluateJavaScriptString(BrowserAutomationScripts.replaceTextTargetsInfoScript(selector: selector, find: find, all: all))
-        }
-        return try Self.jsonObject(from: json)
+private enum BrowserTextEntryPreflightJSON {
+    static func string(_ object: [String: Any]) throws -> String {
+        let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+        return String(data: data, encoding: .utf8) ?? "{}"
     }
 
-    func focusedTextEntryTargetInfo() async throws -> [String: Any] {
-        let json: String
-        if isUsingControlledBrowser {
-            json = try await controlledBrowser.focusedTargetInfo()
-            syncDisplayedStateForEngine()
-            publishBridgeState()
-        } else {
-            json = try await evaluateJavaScriptString(BrowserAutomationScripts.focusedTargetInfoScript())
-        }
-        return try Self.jsonObject(from: json)
-    }
-
-    private static func textEntryPreflightIntValue(_ value: Any?) -> Int? {
+    static func intValue(_ value: Any?) -> Int? {
         if let int = value as? Int { return int }
         if let number = value as? NSNumber { return number.intValue }
         if let string = value as? String { return Int(string) }

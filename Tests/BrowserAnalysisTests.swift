@@ -88,6 +88,30 @@ struct BrowserAnalysisTests {
         #expect(otp.jsonObject()["autocomplete"] as? String == "one-time-code")
     }
 
+    @Test("Password reset links stay navigable")
+    func passwordResetLinksStayNavigable() throws {
+        let analysis = BrowserAnalysisBuilder.build(
+            snapshot: Self.sampleSnapshot(controls: [
+                Self.control(
+                    selector: "a[href='/reset-password']",
+                    tag: "a",
+                    role: "link",
+                    label: "Forgot password?",
+                    name: "Forgot password?",
+                    href: "https://example.com/reset-password"
+                )
+            ]),
+            backend: "embedded WebKit",
+            engine: "embedded",
+            createdAt: Date(timeIntervalSince1970: 1_000)
+        )
+
+        let link = try #require(analysis.controls.first)
+        #expect(link.risk == .navigation)
+        #expect(link.validActions.contains(.open))
+        #expect(!link.requiresUserConfirmation)
+    }
+
     @Test("Page snapshot script preserves DOM name separately from label")
     func pageSnapshotScriptPreservesDOMNameSeparatelyFromLabel() {
         let script = BrowserAutomationScripts.snapshotScript

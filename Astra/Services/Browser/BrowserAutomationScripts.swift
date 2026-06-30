@@ -582,6 +582,7 @@ enum BrowserAutomationScripts {
           if (!target.el) return JSON.stringify(publicTarget(target));
           if (!visible(target.el)) return JSON.stringify(publicTarget(Object.assign({}, target, { ok: false, error: "target_not_visible" })));
           if (disabled(target.el)) return JSON.stringify(publicTarget(Object.assign({}, target, { ok: false, error: "target_disabled" })));
+          if (target.ok === false) return JSON.stringify(publicTarget(target));
           return JSON.stringify(publicTarget(Object.assign({}, target, { ok: true })));
         })()
         """

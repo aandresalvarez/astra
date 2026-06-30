@@ -2,28 +2,29 @@ import AppKit
 import Combine
 import Foundation
 import WebKit
-
-enum ShelfBrowserAddress {
-    static func normalizedURL(from input: String) -> URL? {
-        let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return nil }
-
-        if let url = URL(string: trimmed), url.scheme != nil {
-            return url
+extension ShelfBrowserSession {
+    func textEntryPreflightReplacementTargets(selector: String, find: String, all: Bool) async throws -> [String: Any] {
+        let json: String
+        if isUsingControlledBrowser {
+            json = try await controlledBrowser.replaceTextTargetsInfo(selector: selector, find: find, all: all)
+            syncDisplayedStateForEngine()
+            publishBridgeState()
+        } else {
+            json = try await evaluateJavaScriptString(BrowserAutomationScripts.replaceTextTargetsInfoScript(selector: selector, find: find, all: all))
         }
+        return try Self.jsonObject(from: json)
+    }
 
-        let expandedPath = (trimmed as NSString).expandingTildeInPath
-        if expandedPath.hasPrefix("/") {
-            return URL(fileURLWithPath: expandedPath)
+    func textEntryPreflightFocusedTargetInfo() async throws -> [String: Any] {
+        let json: String
+        if isUsingControlledBrowser {
+            json = try await controlledBrowser.focusedTargetInfo()
+            syncDisplayedStateForEngine()
+            publishBridgeState()
+        } else {
+            json = try await evaluateJavaScriptString(BrowserAutomationScripts.focusedTargetInfoScript())
         }
-
-        if trimmed.contains(".") || trimmed.contains(":") || trimmed == "localhost" {
-            return URL(string: "https://\(trimmed)") ?? URL(string: "http://\(trimmed)")
-        }
-
-        var components = URLComponents(string: "https://www.google.com/search")
-        components?.queryItems = [URLQueryItem(name: "q", value: trimmed)]
-        return components?.url
+        return try Self.jsonObject(from: json)
     }
 }
 
@@ -884,7 +885,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         server.start()
     }
 
-    func publishBridgeState() {
+    private func publishBridgeState() {
         ShelfBrowserBridgeRegistry.shared.update(
             endpoint: bridgeEndpoint,
             currentURL: currentURL.isEmpty ? nil : currentURL,
@@ -948,7 +949,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         )
     }
 
-    func syncDisplayedStateForEngine() {
+    private func syncDisplayedStateForEngine() {
         if isUsingControlledBrowser {
             currentURL = controlledBrowser.currentURL
             pageTitle = controlledBrowser.pageTitle
@@ -5631,7 +5632,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         }
         return response
     }
-    func evaluateJavaScriptString(_ script: String) async throws -> String {
+    private func evaluateJavaScriptString(_ script: String) async throws -> String {
         try await withCheckedThrowingContinuation { continuation in
             webView.evaluateJavaScript(script) { result, error in
                 if let error {
@@ -5771,7 +5772,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             .lowercased()
     }
 
-    static func jsonObject(from json: String) throws -> [String: Any] {
+    private static func jsonObject(from json: String) throws -> [String: Any] {
         guard let data = json.data(using: .utf8),
               let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw CocoaError(.coderInvalidValue)
@@ -5779,7 +5780,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         return object
     }
 
-    static func jsonString(_ object: [String: Any]) throws -> String {
+    private static func jsonString(_ object: [String: Any]) throws -> String {
         let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
         return String(data: data, encoding: .utf8) ?? #"{"ok":false,"error":"encoding_failed"}"#
     }

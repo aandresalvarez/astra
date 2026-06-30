@@ -220,7 +220,7 @@ struct BrowserControlSafetyTests {
     }
 
     @Test("Focused text entry target script inspects shadow roots and frames")
-    func focusedTextEntryTargetScriptInspectsShadowRootsAndFrames() {
+    func focusedTextEntryTargetScriptInspectsShadowRootsAndFrames() throws {
         let script = BrowserAutomationScripts.focusedTargetInfoScript()
         #expect(script.contains("shadowRoot"))
         #expect(script.contains("activeElement"))
@@ -232,6 +232,9 @@ struct BrowserControlSafetyTests {
         #expect(script.contains("targetSignature: targetSignatureFor(el, target.framePath || [], target.shadowDepth || 0)"))
         #expect(script.contains("locator: target.locator || locatorSummary()"))
         #expect(script.contains(#"locator: { focused: true }"#))
+        let preserveFailure = try #require(script.range(of: "if (target.ok === false) return JSON.stringify(publicTarget(target));"))
+        let successReturn = try #require(script.range(of: "return JSON.stringify(publicTarget(Object.assign({}, target, { ok: true })));"))
+        #expect(preserveFailure.lowerBound < successReturn.lowerBound)
     }
 
     @Test("Text mutation scripts revalidate sensitive focused and replacement targets")
@@ -353,7 +356,7 @@ struct BrowserControlSafetyTests {
             .path
         let source = try String(contentsOfFile: preflightPath, encoding: .utf8)
         let methodStart = try #require(source.range(of: "func blockedReplacementTextEntryResult(find: String, selector: String, all: Bool) async throws -> [String: Any]? {"))
-        let methodEnd = try #require(source[methodStart.upperBound...].range(of: "func replacementTextEntryTargets"))
+        let methodEnd = try #require(source[methodStart.upperBound...].range(of: "private enum BrowserTextEntryPreflightJSON"))
         let methodSource = source[methodStart.lowerBound..<methodEnd.lowerBound]
 
         #expect(!methodSource.contains(#""text_entry_target_required""#))
@@ -591,6 +594,31 @@ struct BrowserControlSafetyTests {
         #expect(target["href"] as? String == "https://app.example.com")
         #expect(target["url"] as? String == "https://app.example.com")
         #expect(target["framePath"] as? [String] == ["https://frame.example.com"])
+    }
+
+    @Test("Missing focused target blocks text entry")
+    func missingFocusedTargetBlocksTextEntry() throws {
+        let blocked = BrowserTextEntryPreflight.missingFocusedTargetBlockResponse(
+            action: "keypress",
+            targetInfo: [
+                "ok": false,
+                "error": "no_focused_element",
+                "selector": "body",
+                "label": "Document",
+                "name": "document",
+                "role": "document",
+                "tag": "body",
+                "url": "https://app.example.com/editor?token=secret#draft"
+            ]
+        )
+        let target = try #require(blocked["target"] as? [String: Any])
+
+        #expect(blocked["error"] as? String == "text_entry_target_not_bound")
+        #expect(blocked["risk"] as? String == BrowserRisk.unknownHighImpact.rawValue)
+        #expect(BrowserTextEntryPreflight.isTerminalBlockResponse(blocked))
+        #expect(BrowserTextEntryPreflight.terminalStopReason(for: blocked) == "text_entry_target_not_bound")
+        #expect(target["label"] as? String == "[redacted]")
+        #expect(target["url"] as? String == "https://app.example.com")
     }
 
     @Test("Modified editing keypresses require sensitive text entry preflight")

@@ -34,11 +34,20 @@ enum BrowserSensitiveControlClassifier {
             framePath
         ].joined(separator: " ").lowercased()
 
-        if type.lowercased() == "password"
-            || containsAny(text, ["password", "passcode", "secret", "current-password", "new-password"]) {
+        let lowerTag = tag.lowercased()
+        let lowerRole = role.lowercased()
+        let lowerType = type.lowercased()
+        let isEditableTextEntry = lowerTag == "input"
+            || lowerTag == "textarea"
+            || lowerRole.contains("textbox")
+            || lowerType == "password"
+
+        if lowerType == "password"
+            || (isEditableTextEntry && containsAny(text, ["password", "passcode", "secret", "current-password", "new-password"])) {
             return .credentialInput
         }
-        if containsAny(text, ["mfa", "2fa", "two factor", "two-factor", "verification code", "security code", "otp", "one-time"]) {
+        if isEditableTextEntry,
+           containsAny(text, ["mfa", "2fa", "two factor", "two-factor", "verification code", "security code", "otp", "one-time"]) {
             return .mfaInput
         }
         if containsAny(text, ["delete", "remove", "destroy", "discard", "revoke", "terminate", "erase"]) {
@@ -135,6 +144,17 @@ enum BrowserTextEntryPreflight {
         blockedResponse["target"] as? [String: Any] ?? [:]
     }
 
+    static func missingFocusedTargetBlockResponse(action: String, targetInfo: [String: Any]) -> [String: Any] {
+        [
+            "ok": false,
+            "error": "text_entry_target_not_bound",
+            "action": action,
+            "summary": "ASTRA could not bind a focused text-entry target before dispatch, so ASTRA did not send raw browser input.",
+            "risk": BrowserRisk.unknownHighImpact.rawValue,
+            "target": sanitizedTarget(targetInfo, risk: .unknownHighImpact)
+        ]
+    }
+
     static func sanitizedTargetAttachment(for targetInfo: [String: Any]) -> [String: Any] {
         let risk = BrowserSensitiveControlClassifier.classify(targetInfo: targetInfo)
         return sanitizedTarget(targetInfo, risk: risk)
@@ -143,11 +163,11 @@ enum BrowserTextEntryPreflight {
     static func isTerminalBlockResponse(_ response: [String: Any]) -> Bool {
         guard let ok = response["ok"] as? Bool, ok == false else { return false }
         switch string(response["error"]) {
-        case "credential_input_blocked", "mfa_input_blocked", "focused_frame_uninspectable", "text_entry_target_changed":
+        case "credential_input_blocked", "mfa_input_blocked", "focused_frame_uninspectable", "text_entry_target_changed", "text_entry_target_not_bound":
             return true
         default:
             switch string(response["stopReason"]) {
-            case "credential_input_blocked", "mfa_input_blocked", "focused_frame_uninspectable", "text_entry_target_changed":
+            case "credential_input_blocked", "mfa_input_blocked", "focused_frame_uninspectable", "text_entry_target_changed", "text_entry_target_not_bound":
                 return true
             default:
                 return false
