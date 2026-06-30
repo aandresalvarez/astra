@@ -86,6 +86,8 @@ struct BrowserPageSnapshotServiceTests {
         let script = BrowserAutomationScripts.snapshotScript
 
         #expect(script.contains("const labelForSnapshot = (el) =>"))
+        #expect(script.contains("const editableValueFor = (el) =>"))
+        #expect(script.contains("el.isContentEditable"))
         #expect(script.contains("name: el.getAttribute(\"name\") || \"\""))
         #expect(script.contains("formControl && isSensitiveValueControl(formControl)"))
         #expect(script.contains("\"mrn\""))

@@ -2226,6 +2226,21 @@ struct ControlledBrowserTests {
         #expect(script.contains("locatorLabel"))
         #expect(script.contains("target_not_editable"))
         #expect(script.contains("insertReplacementText"))
+        #expect(script.contains("sensitiveResultTarget"))
+        #expect(script.contains("[redacted-sensitive-input]"))
+    }
+
+    @Test("replace text script does not echo missing sensitive find text")
+    func replaceTextScriptDoesNotEchoMissingSensitiveFindText() {
+        let script = BrowserAutomationScripts.replaceTextScript(
+            find: "secret-value",
+            replacement: "replacement",
+            selector: nil,
+            all: false
+        )
+
+        #expect(script.contains("findLength: find.length"))
+        #expect(!script.contains("\n    find,\n"))
     }
 
     @Test("snapshot reports focus and bounds metadata")

@@ -278,6 +278,7 @@ struct BrowserControl {
     let tag: String
     let type: String
     let placeholder: String
+    let autocomplete: String
     let testID: String
     let value: String
     let href: String
@@ -311,6 +312,7 @@ struct BrowserControl {
             placeholder: placeholder,
             testID: testID,
             href: href,
+            autocomplete: autocomplete,
             risk: risk
         )
     }
@@ -346,6 +348,7 @@ struct BrowserControl {
             "type": type,
             "selector": selector,
             "placeholder": placeholder,
+            "autocomplete": autocomplete,
             "testID": testID,
             "value": providerVisibleValue,
             "href": href,
@@ -381,7 +384,7 @@ struct BrowserControl {
     private func redactedEvidence(_ value: Any) -> Any {
         guard hasSensitiveValue else { return value }
         if let string = value as? String {
-            return BrowserSensitiveInputRedactionPolicy.redactedDisplayText(string, sensitiveValue: self.value)
+            return redactedDisplayText(string)
         }
         if let object = value as? [String: Any] {
             return object.mapValues(redactedEvidence)
@@ -437,6 +440,7 @@ struct BrowserControlRef {
             ],
             "context": [
                 "placeholder": control.placeholder,
+                "autocomplete": control.autocomplete,
                 "testID": control.testID,
                 "tag": control.tag,
                 "type": control.type,
@@ -466,12 +470,24 @@ private extension BrowserControl {
         return BrowserSensitiveInputRedactionPolicy.redactedDisplayText(text, sensitiveValue: value)
     }
 
+    func redactedAccessibilityValue(_ text: String) -> String {
+        guard providerVisibleValue == BrowserSensitiveInputRedactionPolicy.redactedInputValue else {
+            return text
+        }
+        if value == BrowserSensitiveInputRedactionPolicy.redactedInputValue {
+            return text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? text
+                : BrowserSensitiveInputRedactionPolicy.redactedInputValue
+        }
+        return BrowserSensitiveInputRedactionPolicy.redactedDisplayText(text, sensitiveValue: value)
+    }
+
     func redactedAccessibilityNodeObject(_ node: BrowserAccessibilityNode) -> [String: Any] {
         var object = node.jsonObject
         object["name"] = redactedAccessibilityText(node.name)
-        object["value"] = redactedAccessibilityText(node.value)
+        object["value"] = redactedAccessibilityValue(node.value)
         object["description"] = redactedAccessibilityText(node.description)
-        object["properties"] = node.properties.mapValues(redactedAccessibilityText)
+        object["properties"] = node.properties.mapValues(redactedAccessibilityValue)
         return object
     }
 }
@@ -1077,6 +1093,7 @@ enum BrowserAnalysisBuilder {
         let tag = string(raw["tag"])
         let type = string(raw["type"])
         let placeholder = string(raw["placeholder"])
+        let autocomplete = string(raw["autocomplete"])
         let testID = string(raw["testID"])
         let rawValue = string(raw["value"])
         let href = string(raw["href"])
@@ -1142,6 +1159,7 @@ enum BrowserAnalysisBuilder {
             tag,
             type,
             placeholder.lowercased(),
+            autocomplete.lowercased(),
             testID.lowercased(),
             framePath.joined(separator: ">"),
             String(shadowDepth),
@@ -1190,6 +1208,7 @@ enum BrowserAnalysisBuilder {
             tag: tag,
             type: type,
             placeholder: placeholder,
+            autocomplete: autocomplete,
             testID: testID,
             value: rawValue,
             href: href,

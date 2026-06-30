@@ -155,6 +155,70 @@ struct BrowserAnalysisTests {
         #expect(String(describing: response).contains(secret) == false)
     }
 
+    @Test("Analysis response applies autocomplete sensitivity from snapshots")
+    func analysisResponseAppliesAutocompleteSensitivityFromSnapshots() throws {
+        let secret = "autofill-password-value"
+        let analysis = BrowserAnalysisBuilder.build(
+            snapshot: Self.sampleSnapshot(controls: [
+                Self.control(
+                    selector: "#password",
+                    tag: "input",
+                    role: "textbox",
+                    type: "text",
+                    label: "Password",
+                    value: secret,
+                    autocomplete: "current-password"
+                )
+            ]),
+            backend: "controlled Chromium profile",
+            engine: "controlled"
+        )
+
+        let response = analysis.responseObject(query: nil, full: true, limit: nil, version: .v2)
+        let controls = try #require(response["controls"] as? [[String: Any]])
+        let control = try #require(controls.first)
+        let refs = try #require(response["controlRefs"] as? [[String: Any]])
+        let ref = try #require(refs.first)
+
+        #expect(control["value"] as? String == "[redacted-sensitive-input]")
+        #expect(control["autocomplete"] as? String == "current-password")
+        #expect(ref["value"] as? String == "[redacted-sensitive-input]")
+        #expect(((ref["context"] as? [String: Any])?["autocomplete"] as? String) == "current-password")
+        #expect(String(describing: response).contains(secret) == false)
+    }
+
+    @Test("Analysis debug response redacts accessibility values when DOM value is already redacted")
+    func analysisDebugResponseRedactsAccessibilityValuesWhenDOMValueIsAlreadyRedacted() throws {
+        let secret = "still-in-ax-tree-secret"
+        let analysis = BrowserAnalysisBuilder.build(
+            snapshot: Self.sampleSnapshot(controls: [
+                Self.control(
+                    selector: "#password",
+                    tag: "input",
+                    role: "textbox",
+                    type: "password",
+                    label: "Password",
+                    value: "[redacted-sensitive-input]"
+                )
+            ]),
+            backend: "controlled Chromium profile",
+            engine: "controlled",
+            accessibilitySnapshotObject: Self.accessibilitySnapshot(role: "textbox", name: "Password", value: secret)
+        )
+
+        let response = analysis.responseObject(query: nil, full: true, limit: nil, debug: true, version: .v2)
+        let refs = try #require(response["controlRefs"] as? [[String: Any]])
+        let ref = try #require(refs.first)
+        let evidence = try #require(ref["evidence"] as? [String: Any])
+        let accessibilityNode = try #require(ref["accessibilityNode"] as? [String: Any])
+
+        #expect(ref["label"] as? String == "Password")
+        #expect(evidence["accessibilityName"] as? String == "Password")
+        #expect(accessibilityNode["name"] as? String == "Password")
+        #expect(accessibilityNode["value"] as? String == "[redacted-sensitive-input]")
+        #expect(String(describing: response).contains(secret) == false)
+    }
+
     @Test("V2 response adds semantic control refs without changing default response")
     func v2ResponseAddsSemanticControlRefs() throws {
         let analysis = BrowserAnalysisBuilder.build(
@@ -605,7 +669,7 @@ struct BrowserAnalysisTests {
         ]
     }
 
-    private static func accessibilitySnapshot(role: String, name: String) -> [String: Any] {
+    private static func accessibilitySnapshot(role: String, name: String, value: String = "") -> [String: Any] {
         [
             "nodeCount": 1,
             "nodes": [
@@ -614,7 +678,11 @@ struct BrowserAnalysisTests {
                     "backendDOMNodeId": "42",
                     "ignored": false,
                     "role": ["value": role],
-                    "name": ["value": name]
+                    "name": ["value": name],
+                    "value": ["value": value],
+                    "properties": [
+                        ["name": "value", "value": ["value": value]]
+                    ]
                 ]
             ]
         ]
@@ -627,6 +695,7 @@ struct BrowserAnalysisTests {
         type: String = "",
         label: String,
         value: String = "",
+        autocomplete: String = "",
         disabled: Bool = false,
         href: String = "",
         y: Int = 20
@@ -639,6 +708,7 @@ struct BrowserAnalysisTests {
             "label": label,
             "name": label,
             "placeholder": "",
+            "autocomplete": autocomplete,
             "testID": "",
             "disabled": disabled,
             "actionable": !disabled,
@@ -671,6 +741,7 @@ struct BrowserAnalysisTests {
             tag: tag,
             type: "",
             placeholder: "",
+            autocomplete: "",
             testID: "",
             value: "",
             href: "",

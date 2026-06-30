@@ -454,15 +454,23 @@ enum BrowserAutomationScripts {
         ].join(" ").toLowerCase();
         return containsAny(text, sensitiveFieldTerms);
       };
+      const editableValueFor = (el) => {
+        if (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT") {
+          return String(el.value || "");
+        }
+        if (el.isContentEditable || String(el.getAttribute("contenteditable") || "").toLowerCase() === "true") {
+          return String(el.textContent || "");
+        }
+        return "";
+      };
       const valueForSnapshot = (el) => {
-        if (!(el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT")) return "";
-        const value = String(el.value || "").slice(0, 160);
+        const value = editableValueFor(el).slice(0, 160);
         if (!value) return "";
         return isSensitiveValueControl(el) ? "[redacted-sensitive-input]" : value;
       };
       const labelForSnapshot = (el) => {
         const label = labelFor(el);
-        const value = String(el.value || "").replace(/\\s+/g, " ").trim().slice(0, 160);
+        const value = editableValueFor(el).replace(/\\s+/g, " ").trim().slice(0, 160);
         if (value && isSensitiveValueControl(el) && (label === value || label.includes(value))) {
           return "[redacted-sensitive-input]";
         }
@@ -724,6 +732,39 @@ enum BrowserAutomationScripts {
               target.dispatchEvent(new Event("input", { bubbles: true }));
             }
           };
+          const sensitiveResultTerms = [
+            "password", "passcode", "secret", "token", "api key", "api-key", "api_token", "apikey",
+            "access token", "refresh token", "auth token", "bearer token",
+            "oauth", "client secret", "private key", "mfa", "2fa", "two factor",
+            "two-factor", "verification code", "security code", "one-time",
+            "one time", "otp", "totp", "ssn", "social security", "credit card",
+            "dob", "date of birth", "birth date", "birthdate", "mrn",
+            "medical record", "medical record number", "patient id", "patient identifier",
+            "health record", "card number", "cvv", "cvc"
+          ];
+          const sensitiveAutocompleteTerms = [
+            "current-password", "new-password", "one-time-code",
+            "cc-number", "cc-csc", "cc-exp", "webauthn"
+          ];
+          const includesAny = (value, terms) => terms.some((term) => value.includes(term));
+          const sensitiveResultTarget = (target) => {
+            const type = String(target.getAttribute("type") || "").toLowerCase();
+            if (type === "password" || type === "hidden") return true;
+            const autocomplete = String(target.getAttribute("autocomplete") || "").toLowerCase();
+            if (includesAny(autocomplete, sensitiveAutocompleteTerms)) return true;
+            const text = [
+              selectorFor(target),
+              labelFor(target),
+              target.getAttribute("name") || "",
+              roleFor(target),
+              target.tagName.toLowerCase(),
+              type,
+              target.getAttribute("placeholder") || "",
+              target.getAttribute("data-testid") || target.getAttribute("data-test") || "",
+              autocomplete
+            ].join(" ").toLowerCase();
+            return includesAny(text, sensitiveResultTerms);
+          };
           const before = "value" in el ? String(el.value || "") : String(el.textContent || "");
           const next = clear ? text : before + text;
           if ("value" in el) {
@@ -739,7 +780,7 @@ enum BrowserAutomationScripts {
           const result = publicTarget(target);
           result.ok = true;
           result.url = location.href;
-          result.value = next.slice(0, 300);
+          result.value = sensitiveResultTarget(el) ? "[redacted-sensitive-input]" : next.slice(0, 300);
           result.cleared = clear;
           return JSON.stringify(result);
         })()
@@ -806,7 +847,7 @@ enum BrowserAutomationScripts {
           return JSON.stringify({
             ok: false,
             error: googleEditor ? "editor_surface_requires_find_replace" : "text_not_found_in_editable_controls",
-            find,
+            findLength: find.length,
             url: location.href,
             hint: googleEditor
               ? "Google editor canvas text is not directly editable through DOM replacement. Open Find and replace, then use astra-browser set-value on the Find and Replace fields by selector."
