@@ -266,6 +266,7 @@ struct WorkspaceToolSupportTests {
             "env TOKEN=$(gcloud auth application-default print-access-token)",
             "sh -c 'gcloud projects list'",
             "bash -lc 'gcloud projects list'",
+            "dash -c 'gcloud projects list'",
             "command gcloud projects list",
             "exec gcloud auth list",
             "sh -c 'exec gcloud auth list'",
@@ -280,6 +281,7 @@ struct WorkspaceToolSupportTests {
             "s\\sh deid-jsn-workbench hostname",
             "printf 'gcloud auth list\\n' | sh",
             "printf '%s\\n' 'gcloud auth list' | sh",
+            "printf gcloud\\ auth\\ list | sh",
             "sh <<'EOF'\ngcloud auth list\nEOF",
             "if gcloud auth list; then echo ok; fi",
             "while gcloud auth list; do break; done",
@@ -305,6 +307,30 @@ struct WorkspaceToolSupportTests {
             let resolution = configuration.containerCommand(for: command)
             #expect(resolution.errorMessage?.contains("host control-plane CLI") == true)
         }
+    }
+
+    @Test("Workspace command path mapper reports recursive scan depth truthfully")
+    func workspaceCommandPathMapperReportsRecursiveScanDepthTruthfully() throws {
+        let configuration = WorkspaceToolConfiguration(
+            dockerExecutable: "docker",
+            image: "astra/workspace:latest",
+            containerName: "astra-test",
+            workdir: "/workspace",
+            network: "bridge",
+            taskID: "task-1",
+            runID: "run-1",
+            mounts: [
+                WorkspaceDockerMount(hostPath: "/tmp/workspace", containerPath: "/workspace", access: "rw", role: "workspace")
+            ],
+            containerEnvironment: [:]
+        )
+
+        let resolution = configuration.containerCommand(
+            for: "echo $(echo $(echo $(echo $(echo $(echo $(echo $(ssh deid-jsn-workbench hostname)))))))"
+        )
+
+        #expect(resolution.errorMessage?.contains("too deeply nested") == true)
+        #expect(resolution.errorMessage?.contains("host control-plane CLI 'gh'") == false)
     }
 
     @Test("Workspace command path mapper allows control-plane tool names as data")

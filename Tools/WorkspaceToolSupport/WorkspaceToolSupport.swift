@@ -349,7 +349,7 @@ public struct WorkspaceToolConfiguration: Equatable, Sendable {
         commands: [WorkspaceControlPlaneCommand],
         depth: Int
     ) -> WorkspaceControlPlaneCommand? {
-        guard depth < 6 else { return commands.first }
+        guard depth < 6 else { return .recursiveScanDepthLimit }
 
         if let command = firstExecutableHostControlPlaneCommand(in: shellTokens(in: command), commands: commands, depth: depth) {
             return command
@@ -527,7 +527,7 @@ public struct WorkspaceToolConfiguration: Equatable, Sendable {
 
     private func shellRunnerScript(at index: Int, in tokens: [ShellToken]) -> String? {
         guard case .word(let command) = tokens[index],
-              ["sh", "bash", "zsh"].contains(WorkspaceControlPlaneCommand.normalizedBasename(command.value)) else {
+              isShellRunner(command.value) else {
             return nil
         }
         var cursor = nextWordIndex(after: index, in: tokens)
@@ -745,13 +745,69 @@ public struct WorkspaceToolConfiguration: Equatable, Sendable {
     }
 
     private func pipedShellInputScripts(in command: String) -> [String] {
-        let pattern = #"(?:^|[;&|]\s*)((?:printf|echo)\s+(?:--\s+)?[\s\S]*?)\s*\|\s*(?:[A-Za-z0-9_./-]*/)?(?:sh|bash|zsh)(?:\s|$)"#
-        return captureGroup(1, matchesOf: pattern, in: command).flatMap { quotedStrings(in: $0) }
+        let pattern = #"(?:^|[;&|]\s*)((?:printf|echo)\s+(?:--\s+)?[\s\S]*?)\s*\|\s*(?:[A-Za-z0-9_./-]*/)?(?:sh|bash|zsh|dash)(?:\s|$)"#
+        return captureGroup(1, matchesOf: pattern, in: command).flatMap { pipedShellPayloadScripts(in: $0) }
     }
 
     private func heredocShellInputScripts(in command: String) -> [String] {
-        let pattern = #"(?:^|[;&|]\s*)(?:[A-Za-z0-9_./-]*/)?(?:sh|bash|zsh)\s+<<-?\s*['"]?([A-Za-z_][A-Za-z0-9_]*)['"]?[^\n]*\n([\s\S]*?)\n\1(?:\n|$)"#
+        let pattern = #"(?:^|[;&|]\s*)(?:[A-Za-z0-9_./-]*/)?(?:sh|bash|zsh|dash)\s+<<-?\s*['"]?([A-Za-z_][A-Za-z0-9_]*)['"]?[^\n]*\n([\s\S]*?)\n\1(?:\n|$)"#
         return captureGroup(2, matchesOf: pattern, in: command)
+    }
+
+    private func pipedShellPayloadScripts(in producerCommand: String) -> [String] {
+        let quoted = quotedStrings(in: producerCommand)
+        if !quoted.isEmpty {
+            return quoted
+        }
+
+        let words = shellTokens(in: producerCommand).compactMap(\.wordValue)
+        guard let command = words.first.map(WorkspaceControlPlaneCommand.normalizedBasename) else {
+            return []
+        }
+        switch command {
+        case "echo":
+            return shellEchoPayload(from: words).map { [$0] } ?? []
+        case "printf":
+            return shellPrintfPayload(from: words).map { [$0] } ?? []
+        default:
+            return []
+        }
+    }
+
+    private func shellEchoPayload(from words: [String]) -> String? {
+        var cursor = 1
+        if cursor < words.count, words[cursor] == "--" {
+            cursor += 1
+        }
+        while cursor < words.count, isEchoOption(words[cursor]) {
+            cursor += 1
+        }
+        return joinedShellPayload(words.dropFirst(cursor))
+    }
+
+    private func shellPrintfPayload(from words: [String]) -> String? {
+        var cursor = 1
+        if cursor < words.count, words[cursor] == "--" {
+            cursor += 1
+        }
+        guard cursor < words.count else {
+            return nil
+        }
+
+        let operands = Array(words.dropFirst(cursor))
+        if operands.count > 1, operands[0].contains("%") {
+            return joinedShellPayload(operands.dropFirst())
+        }
+        return joinedShellPayload(operands)
+    }
+
+    private func joinedShellPayload<S: Sequence>(_ words: S) -> String? where S.Element == String {
+        let payload = words.joined(separator: " ")
+        return payload.isEmpty ? nil : payload
+    }
+
+    private func isEchoOption(_ word: String) -> Bool {
+        word.hasPrefix("-") && word.dropFirst().allSatisfy { ["n", "e", "E"].contains($0) }
     }
 
     private func pythonSubprocessSequenceArguments(in command: String) -> [[String]] {
@@ -849,6 +905,10 @@ public struct WorkspaceToolConfiguration: Equatable, Sendable {
         ].contains(word)
     }
 
+    private func isShellRunner(_ word: String) -> Bool {
+        ["sh", "bash", "zsh", "dash"].contains(WorkspaceControlPlaneCommand.normalizedBasename(word))
+    }
+
     private func isAssignmentWord(_ word: String) -> Bool {
         shellAssignment(from: word) != nil
     }
@@ -909,7 +969,14 @@ public struct WorkspaceToolConfiguration: Equatable, Sendable {
     }
 
     private func hostControlPlaneCommandMessage(_ command: WorkspaceControlPlaneCommand) -> String {
-        [
+        if command.isRecursiveScanDepthLimit {
+            return [
+                "workspace command is too deeply nested to prove it avoids host control-plane CLIs.",
+                "ASTRA is failing closed because host capability metadata and credentials must be handled through ASTRA's host capability layer, not through workspace_shell.",
+                "Use workspace_shell only for project commands that belong inside the container image."
+            ].joined(separator: "\n")
+        }
+        return [
             "workspace command tried to run the host control-plane CLI '\(command.tool)' inside the Docker workspace.",
             "\(command.capability) metadata and credentials must be handled through ASTRA's host capability layer, not through workspace_shell.",
             "Use workspace_shell only for project commands that belong inside the container image. Enable or repair the \(command.capability) capability if this task needs \(command.capability) access."
@@ -942,6 +1009,13 @@ private struct WorkspaceControlPlaneCommand {
     var tool: String
     var capability: String
     var subcommands: Set<String> = []
+    var isRecursiveScanDepthLimit = false
+
+    static let recursiveScanDepthLimit = WorkspaceControlPlaneCommand(
+        tool: "recursive shell scan depth limit",
+        capability: "Host control-plane",
+        isRecursiveScanDepthLimit: true
+    )
 
     func matches(_ word: String) -> Bool {
         Self.normalizedBasename(word) == tool
