@@ -55,6 +55,30 @@ struct BrowserKeypressDispatchValidation {
 }
 
 extension ShelfBrowserSession {
+    func textEntryPreflightReplacementTargets(selector: String, find: String, all: Bool) async throws -> [String: Any] {
+        let json: String
+        if isUsingControlledBrowser {
+            json = try await controlledBrowser.replaceTextTargetsInfo(selector: selector, find: find, all: all)
+            syncDisplayedStateForEngine()
+            publishBridgeState()
+        } else {
+            json = try await evaluateJavaScriptString(BrowserAutomationScripts.replaceTextTargetsInfoScript(selector: selector, find: find, all: all))
+        }
+        return try Self.jsonObject(from: json)
+    }
+
+    func textEntryPreflightFocusedTargetInfo() async throws -> [String: Any] {
+        let json: String
+        if isUsingControlledBrowser {
+            json = try await controlledBrowser.focusedTargetInfo()
+            syncDisplayedStateForEngine()
+            publishBridgeState()
+        } else {
+            json = try await evaluateJavaScriptString(BrowserAutomationScripts.focusedTargetInfoScript())
+        }
+        return try Self.jsonObject(from: json)
+    }
+
     func keypressTextEntryDispatchValidation(
         key: String,
         modifiers: [String],

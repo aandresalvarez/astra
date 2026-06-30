@@ -2,31 +2,6 @@ import AppKit
 import Combine
 import Foundation
 import WebKit
-extension ShelfBrowserSession {
-    func textEntryPreflightReplacementTargets(selector: String, find: String, all: Bool) async throws -> [String: Any] {
-        let json: String
-        if isUsingControlledBrowser {
-            json = try await controlledBrowser.replaceTextTargetsInfo(selector: selector, find: find, all: all)
-            syncDisplayedStateForEngine()
-            publishBridgeState()
-        } else {
-            json = try await evaluateJavaScriptString(BrowserAutomationScripts.replaceTextTargetsInfoScript(selector: selector, find: find, all: all))
-        }
-        return try Self.jsonObject(from: json)
-    }
-
-    func textEntryPreflightFocusedTargetInfo() async throws -> [String: Any] {
-        let json: String
-        if isUsingControlledBrowser {
-            json = try await controlledBrowser.focusedTargetInfo()
-            syncDisplayedStateForEngine()
-            publishBridgeState()
-        } else {
-            json = try await evaluateJavaScriptString(BrowserAutomationScripts.focusedTargetInfoScript())
-        }
-        return try Self.jsonObject(from: json)
-    }
-}
 
 enum ShelfBrowserEngine: String, CaseIterable, Identifiable {
     case embedded
@@ -885,7 +860,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         server.start()
     }
 
-    private func publishBridgeState() {
+    func publishBridgeState() {
         ShelfBrowserBridgeRegistry.shared.update(
             endpoint: bridgeEndpoint,
             currentURL: currentURL.isEmpty ? nil : currentURL,
@@ -949,7 +924,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         )
     }
 
-    private func syncDisplayedStateForEngine() {
+    func syncDisplayedStateForEngine() {
         if isUsingControlledBrowser {
             currentURL = controlledBrowser.currentURL
             pageTitle = controlledBrowser.pageTitle
@@ -5646,7 +5621,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         }
         return response
     }
-    private func evaluateJavaScriptString(_ script: String) async throws -> String {
+    func evaluateJavaScriptString(_ script: String) async throws -> String {
         try await withCheckedThrowingContinuation { continuation in
             webView.evaluateJavaScript(script) { result, error in
                 if let error {
@@ -5786,7 +5761,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             .lowercased()
     }
 
-    private static func jsonObject(from json: String) throws -> [String: Any] {
+    static func jsonObject(from json: String) throws -> [String: Any] {
         guard let data = json.data(using: .utf8),
               let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw CocoaError(.coderInvalidValue)
