@@ -12,10 +12,9 @@ struct WorkspaceAppStudioJournalService: WorkspaceAppStudioJournalStoring {
     var fileManager: FileManager = .default
 
     func load(appID: String, workspacePath: String) -> WorkspaceAppStudioJournal {
-        let path = WorkspaceFileLayout.appStudioJournalFile(workspacePath: workspacePath, appID: appID)
-        guard !path.isEmpty,
-              fileManager.fileExists(atPath: path),
-              let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
+        guard let url = WorkspaceFileLayout.appStudioJournalFileURL(workspacePath: workspacePath, appID: appID),
+              fileManager.fileExists(atPath: url.path),
+              let data = try? Data(contentsOf: url),
               let journal = try? Self.decoder.decode(WorkspaceAppStudioJournal.self, from: data)
         else {
             return WorkspaceAppStudioJournal()
@@ -24,13 +23,12 @@ struct WorkspaceAppStudioJournalService: WorkspaceAppStudioJournalStoring {
     }
 
     func save(_ journal: WorkspaceAppStudioJournal, appID: String, workspacePath: String) {
-        let directory = WorkspaceFileLayout.appStudioDirectory(workspacePath: workspacePath, appID: appID)
-        let path = WorkspaceFileLayout.appStudioJournalFile(workspacePath: workspacePath, appID: appID)
-        guard !directory.isEmpty, !path.isEmpty else { return }
+        guard let directory = WorkspaceFileLayout.appStudioDirectoryURL(workspacePath: workspacePath, appID: appID),
+              let url = WorkspaceFileLayout.appStudioJournalFileURL(workspacePath: workspacePath, appID: appID) else { return }
         do {
-            try fileManager.createDirectory(atPath: directory, withIntermediateDirectories: true)
+            try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
             let data = try Self.encoder.encode(journal)
-            try data.write(to: URL(fileURLWithPath: path), options: [.atomic])
+            try data.write(to: url, options: [.atomic])
         } catch {
             AppLogger.error("App Studio journal save failed for \(appID): \(error)", category: "WorkspaceApps")
         }

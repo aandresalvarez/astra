@@ -42,19 +42,20 @@ struct WorkspaceAppVersionService {
         workspacePath: String,
         now: Date = Date()
     ) throws -> Int {
-        let versionsDir = WorkspaceFileLayout.appVersionsDirectory(workspacePath: workspacePath, appID: appID)
-        guard !versionsDir.isEmpty else {
+        guard let versionsDir = WorkspaceFileLayout.appVersionsDirectoryURL(workspacePath: workspacePath, appID: appID) else {
             throw WorkspaceAppServiceError.fileOperationFailed("Could not resolve versions directory for app \(appID).")
         }
-        try fileManager.createDirectory(atPath: versionsDir, withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: versionsDir, withIntermediateDirectories: true)
 
         var index = loadIndexOrEmpty(appID: appID, workspacePath: workspacePath)
         let next = (index.entries.map(\.number).max() ?? 0) + 1
 
-        let versionFile = WorkspaceFileLayout.appVersionFile(
+        guard let versionFile = WorkspaceFileLayout.appVersionFileURL(
             workspacePath: workspacePath, appID: appID, versionNumber: next
-        )
-        try manifestData.write(to: URL(fileURLWithPath: versionFile), options: [.atomic])
+        ) else {
+            throw WorkspaceAppServiceError.fileOperationFailed("Could not resolve version file for app \(appID).")
+        }
+        try manifestData.write(to: versionFile, options: [.atomic])
 
         index.entries.append(Index.Entry(number: next, digest: digest, publishedAt: now, validated: validated))
         index.publishedVersion = next
@@ -143,12 +144,14 @@ struct WorkspaceAppVersionService {
             throw WorkspaceAppServiceError.fileOperationFailed("Version \(target) not found for app \(app.logicalID).")
         }
 
-        let versionFile = WorkspaceFileLayout.appVersionFile(
+        guard let versionFile = WorkspaceFileLayout.appVersionFileURL(
             workspacePath: workspacePath, appID: app.logicalID, versionNumber: target
-        )
+        ) else {
+            throw WorkspaceAppServiceError.fileOperationFailed("Could not resolve version \(target) for app \(app.logicalID).")
+        }
         let data: Data
         do {
-            data = try Data(contentsOf: URL(fileURLWithPath: versionFile))
+            data = try Data(contentsOf: versionFile)
         } catch {
             throw WorkspaceAppServiceError.fileOperationFailed("Could not read version \(target): \(error.localizedDescription)")
         }
@@ -160,8 +163,10 @@ struct WorkspaceAppVersionService {
             throw WorkspaceAppServiceError.fileOperationFailed("Version \(target) is corrupt (digest mismatch).")
         }
 
-        let manifestPath = WorkspaceFileLayout.appManifestFile(workspacePath: workspacePath, appID: app.logicalID)
-        try data.write(to: URL(fileURLWithPath: manifestPath), options: [.atomic])
+        guard let manifestURL = WorkspaceFileLayout.appManifestFileURL(workspacePath: workspacePath, appID: app.logicalID) else {
+            throw WorkspaceAppServiceError.fileOperationFailed("Could not resolve manifest path for app \(app.logicalID).")
+        }
+        try data.write(to: manifestURL, options: [.atomic])
 
         // Persist the moved pointer to the source of truth BEFORE mutating the @Model, so a
         // failed index write never leaves the model ahead of disk.
@@ -203,21 +208,19 @@ struct WorkspaceAppVersionService {
     // MARK: - Index I/O (file-only)
 
     private nonisolated func loadIndex(appID: String, workspacePath: String) throws -> Index {
-        let path = WorkspaceFileLayout.appVersionsIndexFile(workspacePath: workspacePath, appID: appID)
-        guard !path.isEmpty else {
+        guard let url = WorkspaceFileLayout.appVersionsIndexFileURL(workspacePath: workspacePath, appID: appID) else {
             throw WorkspaceAppServiceError.fileOperationFailed("Could not resolve versions index for app \(appID).")
         }
-        let data = try Data(contentsOf: URL(fileURLWithPath: path))
+        let data = try Data(contentsOf: url)
         return try Self.decoder.decode(Index.self, from: data)
     }
 
     private nonisolated func writeIndex(_ index: Index, appID: String, workspacePath: String) throws {
-        let path = WorkspaceFileLayout.appVersionsIndexFile(workspacePath: workspacePath, appID: appID)
-        guard !path.isEmpty else {
+        guard let url = WorkspaceFileLayout.appVersionsIndexFileURL(workspacePath: workspacePath, appID: appID) else {
             throw WorkspaceAppServiceError.fileOperationFailed("Could not resolve versions index for app \(appID).")
         }
         let data = try Self.encoder.encode(index)
-        try data.write(to: URL(fileURLWithPath: path), options: [.atomic])
+        try data.write(to: url, options: [.atomic])
     }
 
     private nonisolated static let encoder: JSONEncoder = {

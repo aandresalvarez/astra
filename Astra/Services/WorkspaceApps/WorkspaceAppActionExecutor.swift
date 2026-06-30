@@ -785,10 +785,12 @@ struct WorkspaceAppActionExecutor {
         linkedTaskID: UUID?,
         linkedArtifactPath: String?
     ) {
-        let databaseURL = URL(fileURLWithPath: WorkspaceFileLayout.appDatabaseFile(
+        guard let databaseURL = WorkspaceFileLayout.appDatabaseFileURL(
             workspacePath: workspace.primaryPath,
             appID: app.logicalID
-        ))
+        ) else {
+            throw WorkspaceAppActionExecutionError.storageFailed("Could not resolve safe storage path for app '\(app.logicalID)'.")
+        }
         switch action.type {
         case "appStorage.insert":
             // Fall back to the action's declared table (matching update/delete/query) so an insert
@@ -1827,14 +1829,12 @@ struct WorkspaceAppActionExecutor {
             throw WorkspaceAppActionExecutionError.storageFailed(String(describing: error))
         }
 
-        let directory = WorkspaceFileLayout.appArtifactExportDirectory(
+        guard let directoryURL = WorkspaceFileLayout.appArtifactExportDirectoryURL(
             workspacePath: workspace.primaryPath,
             appID: app.logicalID
-        )
-        guard !directory.isEmpty else {
-            throw WorkspaceAppActionExecutionError.storageFailed("Workspace path is unavailable.")
+        ) else {
+            throw WorkspaceAppActionExecutionError.storageFailed("Could not resolve safe export path for app '\(app.logicalID)'.")
         }
-        let directoryURL = URL(fileURLWithPath: directory, isDirectory: true)
         try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
 
         switch format {
@@ -1954,10 +1954,10 @@ struct WorkspaceAppActionExecutor {
         switch binding.source {
         case "table":
             guard let table = binding.table?.trimmingCharacters(in: .whitespacesAndNewlines), !table.isEmpty else { return "" }
-            let databaseURL = URL(fileURLWithPath: WorkspaceFileLayout.appDatabaseFile(
+            guard let databaseURL = WorkspaceFileLayout.appDatabaseFileURL(
                 workspacePath: workspace.primaryPath,
                 appID: app.logicalID
-            ))
+            ) else { return "" }
             rows = (try? storageService.records(in: table, databaseURL: databaseURL, limit: limit)) ?? []
         default:  // "boundRows"
             rows = Array(input.boundRows.prefix(limit))
@@ -2038,10 +2038,10 @@ struct WorkspaceAppActionExecutor {
            let schema = manifest.storage?.tables.first(where: { $0.name == tableName }) {
             let columns = Set(schema.columns.map(\.name))
             let primaryKey = schema.columns.first(where: { $0.primaryKey })?.name
-            let databaseURL = URL(fileURLWithPath: WorkspaceFileLayout.appDatabaseFile(
+            guard let databaseURL = WorkspaceFileLayout.appDatabaseFileURL(
                 workspacePath: workspace.primaryPath,
                 appID: app.logicalID
-            ))
+            ) else { return mapped }
             for row in mapped {
                 var record = row.filter { columns.contains($0.key) }
                 if let primaryKey, record[primaryKey] == nil {

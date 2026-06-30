@@ -34,7 +34,13 @@ enum WorkspaceAppManifestValidator {
         if manifest.schemaVersion < 1 {
             issues.append(blocker("/schemaVersion", "Schema version must be at least 1."))
         }
-        validateIdentifier(manifest.app.id, path: "/app/id", label: "App ID", issues: &issues)
+        validateIdentifier(
+            manifest.app.id,
+            path: "/app/id",
+            label: "App ID",
+            rejectReservedPathComponent: true,
+            issues: &issues
+        )
         if manifest.app.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             issues.append(blocker("/app/name", "App name is required."))
         }
@@ -1329,6 +1335,7 @@ enum WorkspaceAppManifestValidator {
         _ value: String,
         path: String,
         label: String,
+        rejectReservedPathComponent: Bool = false,
         issues: inout [WorkspaceAppManifestValidationReport.Issue]
     ) {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1336,9 +1343,11 @@ enum WorkspaceAppManifestValidator {
             issues.append(blocker(path, "\(label) is required."))
             return
         }
-        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
-        if trimmed.rangeOfCharacter(from: allowed.inverted) != nil {
+        if value.rangeOfCharacter(from: WorkspaceAppIDPolicy.allowedCharacters.inverted) != nil {
             issues.append(blocker(path, "\(label) may contain only letters, numbers, dot, underscore, or hyphen."))
+        }
+        if rejectReservedPathComponent && WorkspaceAppIDPolicy.isReservedPathComponent(trimmed) {
+            issues.append(blocker(path, "\(label) may not be a reserved path component."))
         }
     }
 
