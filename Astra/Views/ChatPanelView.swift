@@ -555,43 +555,11 @@ struct ChatPanelView: View {
     }
 
     private var isSlashCommandInput: Bool {
-        let lower = messageText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        return ["/skill", "/tool", "/connector", "/template", "/routine", "/schedule", "/remember", "/recap", "/app"].contains { command in
-            lower == command || lower.hasPrefix(command + " ")
-        }
+        ChatPanelSlashCommandRouting.isSlashCommandInput(messageText)
     }
 
-    private struct SlashOption: Identifiable {
-        let id: String
-        let command: String
-        let icon: String
-        let color: Color
-        let title: String
-        let description: String
-    }
-
-    private var slashOptions: [SlashOption] {
-        let all: [SlashOption] = [
-            SlashOption(id: "skill", command: "/skill", icon: "puzzlepiece.extension", color: Stanford.lagunita,
-                       title: "Create Skill", description: "Define agent behavior, allowed tools, and instructions"),
-            SlashOption(id: "tool", command: "/tool", icon: "wrench.and.screwdriver", color: Stanford.plum,
-                       title: "Create Tool", description: "Add a CLI command, script, or MCP tool"),
-            SlashOption(id: "connector", command: "/connector", icon: "bolt.horizontal.circle", color: Stanford.paloAltoGreen,
-                       title: "Create Connector", description: "Set up auth for Jira, GitHub, Slack, or APIs"),
-            SlashOption(id: "template", command: "/template", icon: "rectangle.3.group", color: Stanford.poppy,
-                       title: "Use Template", description: "Create a multi-phase task from a template"),
-            SlashOption(id: "app", command: "/app", icon: "square.grid.2x2", color: Stanford.lagunita,
-                       title: "Open App Studio", description: "Design a governed local app with storage, views, and actions"),
-            SlashOption(id: "schedule", command: "/routine", icon: "arrow.triangle.2.circlepath", color: Stanford.poppy,
-                       title: "Create Routine", description: "Automate recurring work with instructions and capabilities"),
-            SlashOption(id: "remember", command: "/remember", icon: "text.badge.checkmark", color: Stanford.lagunita,
-                       title: "Add Memory", description: "Save a fact for the agent to remember in this workspace"),
-            SlashOption(id: "recap", command: "/recap", icon: "doc.text", color: Stanford.paloAltoGreen,
-                       title: "Recap Task", description: "Summarize this conversation so you can pause and resume later"),
-        ]
-        let filter = messageText.trimmingCharacters(in: .whitespaces).lowercased()
-        if filter == "/" { return all }
-        return all.filter { $0.command.hasPrefix(filter) }
+    private var slashOptions: [ChatPanelSlashOption] {
+        ChatPanelSlashOption.matching(messageText)
     }
 
     private var hasConversation: Bool {
@@ -1551,9 +1519,7 @@ struct ChatPanelView: View {
             return
         }
 
-        if let slashType = (["/skill", "/tool", "/connector", "/template", "/routine", "/schedule"] as [String])
-            .first(where: { lower == $0 || lower.hasPrefix($0 + " ") }) {
-
+        if let slashType = ChatPanelSlashCommandRouting.providerContextCommand(for: input) {
             // Build context for the slash command
             let slashContext = buildSlashContext(for: slashType)
             if let slashContext {
@@ -1922,70 +1888,25 @@ struct ChatPanelView: View {
     // MARK: - Slash Menu
 
     private var slashMenuHeight: CGFloat {
-        CGFloat(slashOptions.count) * 52
+        SlashCommandMenuPresentation.menuHeight(rowCount: slashOptions.count)
     }
 
     private var slashMenuView: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            ForEach(Array(slashOptions.enumerated()), id: \.element.id) { idx, option in
-                Button {
-                    selectSlashOption(option)
-                } label: {
-                    HStack(spacing: 10) {
-                        Image(systemName: option.icon)
-                            .font(Stanford.ui(16))
-                            .foregroundStyle(option.color)
-                            .frame(width: 24)
-                        VStack(alignment: .leading, spacing: 2) {
-                            HStack(spacing: 6) {
-                                Text(option.command)
-                                    .font(Stanford.ui(15, weight: .semibold, design: .monospaced))
-                                    .foregroundStyle(Stanford.black)
-                                Text(option.title)
-                                    .font(Stanford.body(14))
-                                    .foregroundStyle(Stanford.coolGrey)
-                            }
-                            Text(option.description)
-                                .font(Stanford.caption(13))
-                                .foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        if idx == slashSelectedIndex {
-                            Image(systemName: "return")
-                                .font(Stanford.ui(11))
-                                .foregroundStyle(.tertiary)
-                        }
-                    }
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 10)
-                    .background(idx == slashSelectedIndex ? Stanford.lagunita.opacity(0.08) : Color.clear)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .onHover { hovering in
-                    if hovering { slashSelectedIndex = idx }
-                }
-
-                if idx < slashOptions.count - 1 {
-                    Divider().padding(.leading, 48)
-                }
-            }
-        }
-        .background(.ultraThickMaterial)
-        .clipShape(RoundedRectangle(cornerRadius: 12))
-        .overlay(
-            RoundedRectangle(cornerRadius: 12)
-                .stroke(Stanford.sandstone.opacity(0.3), lineWidth: 1)
+        ChatPanelSlashCommandMenu(
+            options: slashOptions,
+            selectedIndex: $slashSelectedIndex,
+            onSelect: selectSlashOption
         )
-        .shadow(color: .black.opacity(0.12), radius: 12, y: -4)
-        .frame(maxWidth: 420)
-        .padding(.leading, 4)
     }
 
-    private func selectSlashOption(_ option: SlashOption) {
-        messageText = option.command
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-            sendMessage()
+    private func selectSlashOption(_ option: ChatPanelSlashOption) {
+        messageText = ChatPanelSlashCommandRouting.selectionText(for: option)
+        if option.executesImmediately {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                sendMessage()
+            }
+        } else {
+            isComposerFocused = true
         }
     }
 
