@@ -1024,18 +1024,7 @@ struct HostControlToolSupportTests {
     }
 
     private func repositoryRoot() throws -> URL {
-        var candidate = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
-        while true {
-            if FileManager.default.fileExists(atPath: candidate.appendingPathComponent("Package.swift").path),
-               FileManager.default.fileExists(atPath: candidate.appendingPathComponent("Astra").path) {
-                return candidate
-            }
-            let parent = candidate.deletingLastPathComponent()
-            if parent.path == candidate.path {
-                throw CocoaError(.fileNoSuchFile)
-            }
-            candidate = parent
-        }
+        try TestRepositoryRoot.resolve()
     }
 }
 
