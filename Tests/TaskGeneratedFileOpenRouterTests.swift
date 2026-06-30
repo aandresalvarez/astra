@@ -74,6 +74,25 @@ struct TaskGeneratedFileOpenRouterTests {
         ))
     }
 
+    @Test("query generated files seed query shelf availability")
+    func queryGeneratedFilesSeedQueryShelfAvailability() {
+        let taskWithoutDiscoveredQueryContent = ShelfAvailabilityPolicy.Context(
+            hasOpenTaskThread: true,
+            hasWorkspaceContext: true,
+            hasPlanContent: true,
+            hasFilesShelfContent: false,
+            hasQueryShelfContent: false,
+            isComposingWorkspaceApp: false,
+            activeShelfID: nil
+        )
+
+        #expect(TaskGeneratedFileOpenRouter.canOpenInShelf(
+            destination: .query,
+            policy: ShelfAvailabilityPolicy(),
+            context: taskWithoutDiscoveredQueryContent
+        ))
+    }
+
     @Test("open URL interception only handles shelf capable file URLs")
     func openURLInterceptionOnlyHandlesShelfCapableFileURLs() {
         #expect(TaskGeneratedFileOpenRouter.route(

@@ -181,6 +181,33 @@ struct AstraPackManifestValidatorTests {
         })
     }
 
+    @Test("validator rejects duplicate app template IDs")
+    func validatorRejectsDuplicateAppTemplateIDs() {
+        var manifest = Self.validManifest()
+        manifest.appTemplates = [
+            AstraPackAppTemplate(
+                id: "triage",
+                name: "Triage",
+                contributionKind: "workspaceApp",
+                templateID: "triage"
+            ),
+            AstraPackAppTemplate(
+                id: "triage",
+                name: "Triage Copy",
+                contributionKind: "workspaceApp",
+                templateID: "triage-copy"
+            )
+        ]
+
+        let report = AstraPackManifestValidator.validate(manifest)
+
+        #expect(!report.isValid)
+        #expect(report.blockers.contains {
+            $0.code == .duplicateAppTemplateID
+                && $0.path == "/appTemplates/1/id"
+        })
+    }
+
     @Test("validator rejects invalid ID references")
     func validatorRejectsInvalidIDReferences() {
         var manifest = Self.validManifest()

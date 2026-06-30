@@ -144,6 +144,7 @@ struct ContentView: View {
     @State private var selectedTaskPreferredMarkdownPath = ""
     @State private var selectedTaskHasQueryShelfContent = false
     @State private var selectedTaskPreferredQueryPath = ""
+    @State private var cachedShelfAvailabilityPolicy = ShelfAvailabilityPolicy()
     @State private var rememberedWorkspaceCanvasItemsRaw = WorkspaceCanvasItemPreferenceStore.load()
     /// First-run flag. Flips to true once the user finishes the
     /// onboarding wizard. Exposed via Settings → "Show Onboarding Again"
@@ -317,7 +318,25 @@ struct ContentView: View {
     }
 
     private var shelfAvailabilityPolicy: ShelfAvailabilityPolicy {
-        AstraPackWorkspaceProfileProvider.shelfAvailabilityPolicy(for: effectiveWorkspace)
+        cachedShelfAvailabilityPolicy
+    }
+
+    private var shelfAvailabilityPolicyRefreshSignature: String {
+        guard let workspace = effectiveWorkspace else { return "no-workspace" }
+        let enabledPacks = workspace.enabledPackIDs
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .sorted()
+            .joined(separator: ",")
+        let overrides = workspace.shelfVisibilityOverrides
+            .sorted { $0.key < $1.key }
+            .map { "\($0.key)=\($0.value)" }
+            .joined(separator: ",")
+        return [
+            workspace.id.uuidString,
+            enabledPacks,
+            overrides
+        ].joined(separator: "|")
     }
 
     private var shelfAvailabilityContext: ShelfAvailabilityPolicy.Context {
@@ -869,6 +888,9 @@ struct ContentView: View {
         }
         .onChange(of: shelfAvailabilityPolicy) {
             invalidateActiveWorkspaceCanvasItemIfUnavailable(remember: false)
+        }
+        .task(id: shelfAvailabilityPolicyRefreshSignature) {
+            await refreshShelfAvailabilityPolicy()
         }
         .onChange(of: activeWorkspaceCanvasItem) {
             syncBrowserPresentation()
@@ -1634,6 +1656,22 @@ struct ContentView: View {
         fields["reason"] = reason
         fields["pinned_to_task"] = String(isBrowserPinnedToTask)
         AppLogger.audit(.shelfBrowserPreview, category: "Browser", taskID: taskID, fields: fields)
+    }
+
+    @MainActor
+    private func refreshShelfAvailabilityPolicy() async {
+        let workspace = effectiveWorkspace
+        let hasEnabledPacks = workspace?.enabledPackIDs.contains {
+            !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        } ?? false
+        let catalogSnapshot = hasEnabledPacks
+            ? await Task.detached { AstraPackCatalog().load() }.value
+            : nil
+        guard !Task.isCancelled else { return }
+        cachedShelfAvailabilityPolicy = AstraPackWorkspaceProfileProvider.shelfAvailabilityPolicy(
+            for: workspace,
+            catalogSnapshot: catalogSnapshot
+        )
     }
 
     private func openGeneratedFile(_ path: String) {

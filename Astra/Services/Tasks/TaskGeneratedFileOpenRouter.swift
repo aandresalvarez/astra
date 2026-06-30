@@ -12,7 +12,11 @@ enum TaskGeneratedFileOpenRouter {
         context: ShelfAvailabilityPolicy.Context
     ) -> Bool {
         guard let destination else { return false }
-        return policy.canPresent(destination.shelfID, in: context)
+        var routeContext = context
+        if destination == .query {
+            routeContext.hasQueryShelfContent = true
+        }
+        return policy.canPresent(destination.shelfID, in: routeContext)
     }
 
     static func route(

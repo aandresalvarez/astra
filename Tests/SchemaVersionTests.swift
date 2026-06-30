@@ -42,6 +42,14 @@ struct SchemaVersionTests {
         #expect(ASTRASchemaV7.models.count == 10)
     }
 
+    @Test("Historical V7 and V8 schemas keep shipped top-level core model identities")
+    func historicalV7AndV8SchemasKeepShippedTopLevelCoreModelIdentities() {
+        #expect(ASTRASchemaV7.models.contains { $0 == Workspace.self })
+        #expect(ASTRASchemaV7.models.contains { $0 == AgentTask.self })
+        #expect(ASTRASchemaV8.models.contains { $0 == Workspace.self })
+        #expect(ASTRASchemaV8.models.contains { $0 == AgentTask.self })
+    }
+
     @Test("SchemaV1 version identifier is 1.0.0")
     func v1VersionIdentifier() {
         #expect(ASTRASchemaV1.versionIdentifier == Schema.Version(1, 0, 0))
@@ -532,17 +540,18 @@ struct SchemaVersionTests {
             configurations: [ModelConfiguration(url: storeURL)]
         )
         let oldContext = try #require(oldContainer?.mainContext)
-        let oldWorkspace = ASTRASchemaV7.Workspace()
-        oldWorkspace.name = "Legacy V7"
-        oldWorkspace.primaryPath = "/tmp/legacy-v7"
+        let oldWorkspace = Workspace(
+            name: "Legacy V7",
+            primaryPath: "/tmp/legacy-v7"
+        )
         oldContext.insert(oldWorkspace)
-        let oldTask = ASTRASchemaV7.AgentTask()
-        oldTask.title = "Legacy V7 Task"
-        oldTask.goal = "Do work"
-        oldTask.workspace = oldWorkspace
+        let oldTask = AgentTask(
+            title: "Legacy V7 Task",
+            goal: "Do work",
+            workspace: oldWorkspace
+        )
         oldContext.insert(oldTask)
-        let oldRun = ASTRASchemaV7.TaskRun()
-        oldRun.task = oldTask
+        let oldRun = TaskRun(task: oldTask)
         oldContext.insert(oldRun)
         try oldContext.save()
         // Capture the id BEFORE tearing down the old container — the model instance is faulted/destroyed

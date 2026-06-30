@@ -24,6 +24,7 @@ struct AstraPackManifestValidationReport: Sendable, Equatable {
             case unaddressablePolicyShelfID
             case emptyAppTemplateID
             case invalidAppTemplateID
+            case duplicateAppTemplateID
             case emptyTemplateID
             case invalidTemplateID
             case emptyPolicyRestrictionID
@@ -186,6 +187,7 @@ enum AstraPackManifestValidator {
         _ appTemplates: [AstraPackAppTemplate],
         issues: inout [AstraPackManifestValidationReport.Issue]
     ) {
+        var seenTemplateIDs: Set<String> = []
         for (index, template) in appTemplates.enumerated() {
             validateIdentifier(
                 template.id,
@@ -195,6 +197,19 @@ enum AstraPackManifestValidator {
                 invalidCode: .invalidAppTemplateID,
                 issues: &issues
             )
+            let normalizedID = template.id.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !normalizedID.isEmpty {
+                if seenTemplateIDs.contains(normalizedID) {
+                    issues.append(AstraPackManifestValidationReport.Issue(
+                        severity: .blocker,
+                        code: .duplicateAppTemplateID,
+                        path: "/appTemplates/\(index)/id",
+                        message: "App template ID '\(normalizedID)' is duplicated."
+                    ))
+                } else {
+                    seenTemplateIDs.insert(normalizedID)
+                }
+            }
             validateIdentifier(
                 template.templateID,
                 path: "/appTemplates/\(index)/templateID",

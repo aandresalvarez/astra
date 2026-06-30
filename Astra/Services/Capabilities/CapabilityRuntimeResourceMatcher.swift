@@ -143,9 +143,6 @@ enum CapabilityRuntimeResourceMatcher {
         if let approvalRecords {
             return approvalRecords
         }
-        guard packPolicy.hasReviewGateRules else {
-            return []
-        }
         return approvalRecordsLoaderForTesting?() ?? CapabilityApprovalStore().records()
     }
 

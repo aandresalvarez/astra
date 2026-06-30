@@ -1836,6 +1836,42 @@ enum ASTRASchemaV7: VersionedSchema {
             TaskSchedule.self
         ]
     }
+}
+
+/// V8 adds the Workspace App Studio runtime models on top of V7's execution-environment
+/// fields. They are additive, flat, UUID-keyed models with no relationships to existing
+/// entities, so V7 -> V8 is a lightweight migration that only creates the new tables.
+enum ASTRASchemaV8: VersionedSchema {
+    static var versionIdentifier = Schema.Version(8, 0, 0)
+
+    static var models: [any PersistentModel.Type] {
+        [
+            Workspace.self,
+            AgentTask.self,
+            TaskRun.self,
+            TaskEvent.self,
+            Artifact.self,
+            Skill.self,
+            Connector.self,
+            LocalTool.self,
+            TaskTemplate.self,
+            TaskSchedule.self,
+            // Workspace App Studio runtime (F1 re-land): additive, flat
+            // UUID-keyed models with no relationships to existing entities,
+            // so V7 -> V8 is a lightweight migration.
+            WorkspaceApp.self,
+            WorkspaceAppRun.self,
+            WorkspaceAppRunEvent.self,
+            WorkspaceAppDependencyBinding.self,
+            WorkspaceAppAutomationState.self
+        ]
+    }
+}
+
+/// V9 adds Google OAuth account profiles. Token values are intentionally not
+/// model fields; they live only in the dedicated Keychain-backed vault.
+enum ASTRASchemaV9: VersionedSchema {
+    static var versionIdentifier = Schema.Version(9, 0, 0)
 
     @Model
     final class Workspace {
@@ -2138,56 +2174,19 @@ enum ASTRASchemaV7: VersionedSchema {
 
         init() {}
     }
-}
-
-/// V8 adds the Workspace App Studio runtime models on top of V7's execution-environment
-/// fields. They are additive, flat, UUID-keyed models with no relationships to existing
-/// entities, so V7 -> V8 is a lightweight migration that only creates the new tables.
-enum ASTRASchemaV8: VersionedSchema {
-    static var versionIdentifier = Schema.Version(8, 0, 0)
-
-    static var models: [any PersistentModel.Type] {
-        [
-            ASTRASchemaV7.Workspace.self,
-            ASTRASchemaV7.AgentTask.self,
-            ASTRASchemaV7.TaskRun.self,
-            ASTRASchemaV7.TaskEvent.self,
-            ASTRASchemaV7.Artifact.self,
-            ASTRASchemaV7.Skill.self,
-            ASTRASchemaV7.Connector.self,
-            ASTRASchemaV7.LocalTool.self,
-            ASTRASchemaV7.TaskTemplate.self,
-            ASTRASchemaV7.TaskSchedule.self,
-            // Workspace App Studio runtime (F1 re-land): additive, flat
-            // UUID-keyed models with no relationships to existing entities,
-            // so V7 -> V8 is a lightweight migration.
-            WorkspaceApp.self,
-            WorkspaceAppRun.self,
-            WorkspaceAppRunEvent.self,
-            WorkspaceAppDependencyBinding.self,
-            WorkspaceAppAutomationState.self
-        ]
-    }
-}
-
-/// V9 adds Google OAuth account profiles. Token values are intentionally not
-/// model fields; they live only in the dedicated Keychain-backed vault.
-enum ASTRASchemaV9: VersionedSchema {
-    static var versionIdentifier = Schema.Version(9, 0, 0)
-    typealias Workspace = ASTRASchemaV7.Workspace
 
     static var models: [any PersistentModel.Type] {
         [
             Workspace.self,
-            ASTRASchemaV7.AgentTask.self,
-            ASTRASchemaV7.TaskRun.self,
-            ASTRASchemaV7.TaskEvent.self,
-            ASTRASchemaV7.Artifact.self,
-            ASTRASchemaV7.Skill.self,
-            ASTRASchemaV7.Connector.self,
-            ASTRASchemaV7.LocalTool.self,
-            ASTRASchemaV7.TaskTemplate.self,
-            ASTRASchemaV7.TaskSchedule.self,
+            AgentTask.self,
+            TaskRun.self,
+            TaskEvent.self,
+            Artifact.self,
+            Skill.self,
+            Connector.self,
+            LocalTool.self,
+            TaskTemplate.self,
+            TaskSchedule.self,
             WorkspaceApp.self,
             WorkspaceAppRun.self,
             WorkspaceAppRunEvent.self,

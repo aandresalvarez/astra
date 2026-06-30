@@ -2240,6 +2240,81 @@ struct TaskCapabilityResolverTests {
         #expect(explicitlyBlocked.isEmpty)
     }
 
+    @Test("Pack capability filters load approval store when any runtime exposure policy is active")
+    func packCapabilityFiltersLoadApprovalStoreWhenAnyRuntimeExposurePolicyIsActive() throws {
+        let workspace = Workspace(name: "Approved Draft Workspace", primaryPath: "/tmp/approved-draft-workspace")
+        workspace.enabledCapabilityIDs = ["draft-approved-tool"]
+        let draftPackage = PluginPackage(
+            id: "draft-approved-tool",
+            name: "Draft Approved Tool",
+            icon: "terminal",
+            description: "Draft tool approved outside pack policy.",
+            author: "Tests",
+            category: "Tools",
+            tags: [],
+            version: "1.0.0",
+            skills: [],
+            connectors: [],
+            localTools: [
+                PluginLocalTool(
+                    name: "Echo",
+                    description: "Echo",
+                    icon: "terminal",
+                    toolType: "cli",
+                    command: "echo",
+                    arguments: ""
+                )
+            ],
+            templates: [],
+            governance: .localDraft()
+        )
+        let approval = CapabilityApprovalRecord(
+            packageID: draftPackage.id,
+            packageVersion: draftPackage.version,
+            status: .approved,
+            approvedBy: "Security",
+            approvedAt: Date(),
+            reviewNotes: "Reviewed",
+            sourceDigest: try CapabilityApprovalDigest.digest(for: draftPackage)
+        )
+        let packPolicy = AstraPackPolicyResolver.resolve(
+            composition: AstraPackComposition.resolve(packs: [
+                AstraPackManifest(
+                    id: "astra.pack.disables-other-tool",
+                    name: "Disables Other Tool",
+                    version: "1.0.0",
+                    coreAPIVersion: "1.0",
+                    description: "Disables a different package without requiring review gates.",
+                    policyRestrictions: [
+                        AstraPackPolicyRestriction(
+                            id: "disable-other",
+                            contributionKind: "capabilityPackage",
+                            action: "disableCapability",
+                            effect: "restrict",
+                            targetID: "other-tool"
+                        )
+                    ]
+                )
+            ])
+        )
+        var didLoadApprovals = false
+        CapabilityRuntimeResourceMatcher.approvalRecordsLoaderForTesting = {
+            didLoadApprovals = true
+            return [approval]
+        }
+        defer { CapabilityRuntimeResourceMatcher.approvalRecordsLoaderForTesting = nil }
+
+        let enabled = CapabilityRuntimeResourceMatcher.enabledPackages(
+            for: workspace,
+            in: [draftPackage],
+            approvalRecords: nil,
+            packPolicy: packPolicy
+        )
+
+        #expect(didLoadApprovals)
+        #expect(enabled.map(\.id) == ["draft-approved-tool"])
+    }
+
     @Test("Runtime integrity reports unknown browser adapter IDs")
     func runtimeIntegrityReportsUnknownBrowserAdapterIDs() throws {
         let container = try makeTaskCapabilityResolverContainer()
