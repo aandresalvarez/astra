@@ -725,7 +725,11 @@ final class TaskLifecycleCoordinator {
                     exportedConfig.name = name
                     exportedConfig.primaryPath = url.path
                     modelContext.delete(existing)
-                    return WorkspaceConfigManager.importWorkspace(from: exportedConfig, modelContext: modelContext)
+                    return WorkspaceConfigManager.importWorkspace(
+                        from: exportedConfig,
+                        modelContext: modelContext,
+                        scheduleTrustPolicy: .preserveEnabledState
+                    )
                 }
                 modelContext.delete(existing)
                 return insertWorkspaceFromFolder(name: name, path: url.path)
