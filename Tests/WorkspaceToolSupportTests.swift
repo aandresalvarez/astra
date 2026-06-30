@@ -795,6 +795,45 @@ struct WorkspaceToolSupportTests {
         #expect(symlinkedStderr.text.isEmpty)
         #expect(!symlinkedStdout.text.contains("HOST_SECRET_FROM_OUTSIDE_JOB_DIR"))
         #expect(!symlinkedStderr.text.contains("HOST_SECRET_FROM_OUTSIDE_JOB_DIR"))
+
+        try FileManager.default.removeItem(at: stdoutURL)
+#if canImport(Darwin) || canImport(Glibc)
+        #expect(mkfifo(stdoutURL.path, 0o600) == 0)
+        let fifoStdout = try store.tail(jobID: record.jobID, stream: "stdout", lines: 10)
+        #expect(fifoStdout.text.isEmpty)
+        try FileManager.default.removeItem(at: stdoutURL)
+#endif
+
+        let heartbeatURL = jobDirectory.appendingPathComponent("heartbeat.json")
+        let resultURL = jobDirectory.appendingPathComponent("result.json")
+        let outsideHeartbeat = root.appendingPathComponent("host-heartbeat.json", isDirectory: false)
+        let outsideResult = root.appendingPathComponent("host-result.json", isDirectory: false)
+        try #"{"status":"running","timestamp":"2026-06-24T12:00:00Z"}"#
+            .write(to: outsideHeartbeat, atomically: true, encoding: .utf8)
+        try #"{"status":"succeeded","exitCode":0,"completedAt":"2026-06-24T12:00:00Z","message":"HOST_RESULT_FROM_OUTSIDE_JOB_DIR"}"#
+            .write(to: outsideResult, atomically: true, encoding: .utf8)
+        try FileManager.default.createSymbolicLink(at: heartbeatURL, withDestinationURL: outsideHeartbeat)
+        try FileManager.default.createSymbolicLink(at: resultURL, withDestinationURL: outsideResult)
+
+        let symlinkedRuntimeState = try store.load(jobID: record.jobID)
+        #expect(symlinkedRuntimeState.status == .queued)
+        #expect(symlinkedRuntimeState.lastHeartbeatAt == nil)
+        #expect(symlinkedRuntimeState.message == nil)
+
+        let outsideJobDirectory = root.appendingPathComponent("outside-job-dir", isDirectory: true)
+        try FileManager.default.createDirectory(at: outsideJobDirectory, withIntermediateDirectories: true)
+        try encoder.encode(record).write(to: outsideJobDirectory.appendingPathComponent("job.json"), options: [.atomic])
+        try "HOST_LOG_FROM_SYMLINKED_JOB_DIR\n"
+            .write(to: outsideJobDirectory.appendingPathComponent("stdout.log"), atomically: true, encoding: .utf8)
+        try FileManager.default.removeItem(at: jobDirectory)
+        try FileManager.default.createSymbolicLink(at: jobDirectory, withDestinationURL: outsideJobDirectory)
+
+        #expect(throws: (any Error).self) {
+            _ = try store.load(jobID: record.jobID)
+        }
+        #expect(throws: (any Error).self) {
+            _ = try store.tail(jobID: record.jobID, stream: "stdout", lines: 10)
+        }
     }
 
     @Test("Docker workspace job manager maps host workspace path before persisting command")

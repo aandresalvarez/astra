@@ -176,7 +176,9 @@ public final class WorkspaceManagedJobStore {
 
     public func load(jobID: String) throws -> WorkspaceManagedJobRecord {
         let directory = jobDirectory(jobID: jobID)
-        let data = try Data(contentsOf: WorkspaceManagedJobFileLayout(directory: directory).metadata)
+        guard let data = trustedFileData(at: WorkspaceManagedJobFileLayout(directory: directory).metadata, inside: directory) else {
+            throw trustedFileReadError(path: WorkspaceManagedJobFileLayout(directory: directory).metadata.path)
+        }
         var record = try decoder.decode(WorkspaceManagedJobRecord.self, from: data)
         applyTrustedFileLayout(to: &record, jobID: safeJobID(jobID), directory: directory)
         applyRuntimeFiles(to: &record, directory: directory)
@@ -198,22 +200,27 @@ public final class WorkspaceManagedJobStore {
     }
 
     private func trustedLogText(at url: URL, inside directory: URL) -> String {
-        let directoryPath = directory.standardizedFileURL.resolvingSymlinksInPath().path
-        let resolvedPath = url.standardizedFileURL.resolvingSymlinksInPath().path
-        guard resolvedPath.hasPrefix(directoryPath + "/") else {
+        guard let data = trustedFileData(at: url, inside: directory) else {
             return ""
         }
+        return String(data: data, encoding: .utf8) ?? ""
+    }
 
-        let fd = open(url.path, O_RDONLY | O_NOFOLLOW)
+    private func trustedFileData(at url: URL, inside directory: URL) -> Data? {
+        guard trustedRegularFileStat(at: url, inside: directory) != nil else {
+            return nil
+        }
+
+        let fd = open(url.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
         guard fd >= 0 else {
-            return ""
+            return nil
         }
         defer { close(fd) }
 
         var statInfo = stat()
         guard fstat(fd, &statInfo) == 0,
               (statInfo.st_mode & S_IFMT) == S_IFREG else {
-            return ""
+            return nil
         }
 
         var data = Data()
@@ -225,11 +232,59 @@ public final class WorkspaceManagedJobStore {
             } else if bytesRead == 0 {
                 break
             } else {
-                return ""
+                return nil
             }
         }
 
-        return String(data: data, encoding: .utf8) ?? ""
+        return data
+    }
+
+    private func trustedFileModificationDate(at url: URL, inside directory: URL) -> Date? {
+        guard let statInfo = trustedRegularFileStat(at: url, inside: directory) else {
+            return nil
+        }
+#if canImport(Darwin)
+        return Date(timeIntervalSince1970: TimeInterval(statInfo.st_mtimespec.tv_sec) + TimeInterval(statInfo.st_mtimespec.tv_nsec) / 1_000_000_000)
+#elseif canImport(Glibc)
+        return Date(timeIntervalSince1970: TimeInterval(statInfo.st_mtim.tv_sec) + TimeInterval(statInfo.st_mtim.tv_nsec) / 1_000_000_000)
+#else
+        return nil
+#endif
+    }
+
+    private func trustedRegularFileStat(at url: URL, inside directory: URL) -> stat? {
+        let rootPath = rootURL.standardizedFileURL.path
+        let directoryPath = directory.standardizedFileURL.path
+        let parentPath = url.deletingLastPathComponent().standardizedFileURL.path
+        guard directoryPath.hasPrefix(rootPath + "/"),
+              parentPath == directoryPath,
+              isTrustedDirectory(rootURL),
+              isTrustedDirectory(directory) else {
+            return nil
+        }
+
+        var statInfo = stat()
+        guard lstat(url.path, &statInfo) == 0,
+              (statInfo.st_mode & S_IFMT) == S_IFREG else {
+            return nil
+        }
+        return statInfo
+    }
+
+    private func isTrustedDirectory(_ url: URL) -> Bool {
+        var statInfo = stat()
+        guard lstat(url.standardizedFileURL.path, &statInfo) == 0 else {
+            return false
+        }
+        return (statInfo.st_mode & S_IFMT) == S_IFDIR
+    }
+
+    private func trustedFileReadError(path: String) -> Error {
+        NSError(
+            domain: "WorkspaceManagedJobStore",
+            code: 1,
+            userInfo: [NSLocalizedDescriptionKey: "Workspace job file is unsafe or unreadable: \(path)"]
+        )
     }
 
     public func mark(jobID: String, status: WorkspaceManagedJobStatus, message: String? = nil, exitCode: Int32? = nil) throws -> WorkspaceManagedJobRecord {
@@ -251,7 +306,8 @@ public final class WorkspaceManagedJobStore {
 
     private func applyRuntimeFiles(to record: inout WorkspaceManagedJobRecord, directory: URL) {
         let layout = WorkspaceManagedJobFileLayout(directory: directory)
-        if let heartbeat = try? RuntimeHeartbeat.read(from: layout.heartbeat, decoder: decoder) {
+        if let heartbeatData = trustedFileData(at: layout.heartbeat, inside: directory),
+           let heartbeat = try? RuntimeHeartbeat.read(from: heartbeatData, decoder: decoder) {
             record.lastHeartbeatAt = heartbeat.timestamp
             if record.status == .queued {
                 record.status = .running
@@ -259,10 +315,11 @@ public final class WorkspaceManagedJobStore {
         }
 
         record.lastOutputAt = [layout.stdout, layout.stderr]
-            .compactMap { (try? fileManager.attributesOfItem(atPath: $0.path)[.modificationDate]) as? Date }
+            .compactMap { trustedFileModificationDate(at: $0, inside: directory) }
             .max()
 
-        if let result = try? RuntimeResult.read(from: layout.result, decoder: decoder) {
+        if let resultData = trustedFileData(at: layout.result, inside: directory),
+           let result = try? RuntimeResult.read(from: resultData, decoder: decoder) {
             record.status = result.status
             record.exitCode = result.exitCode
             record.completedAt = result.completedAt
@@ -297,8 +354,8 @@ public final class WorkspaceManagedJobStore {
         var status: WorkspaceManagedJobStatus
         var timestamp: Date
 
-        static func read(from url: URL, decoder: JSONDecoder) throws -> RuntimeHeartbeat {
-            try decoder.decode(RuntimeHeartbeat.self, from: Data(contentsOf: url))
+        static func read(from data: Data, decoder: JSONDecoder) throws -> RuntimeHeartbeat {
+            try decoder.decode(RuntimeHeartbeat.self, from: data)
         }
     }
 
@@ -308,8 +365,8 @@ public final class WorkspaceManagedJobStore {
         var completedAt: Date
         var message: String?
 
-        static func read(from url: URL, decoder: JSONDecoder) throws -> RuntimeResult {
-            try decoder.decode(RuntimeResult.self, from: Data(contentsOf: url))
+        static func read(from data: Data, decoder: JSONDecoder) throws -> RuntimeResult {
+            try decoder.decode(RuntimeResult.self, from: data)
         }
     }
 
