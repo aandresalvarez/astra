@@ -14,7 +14,8 @@ enum AgentPromptConnectorContextBuilder {
             connectorDescription(
                 connector: conn,
                 alias: aliasesByID[conn.id] ?? ConnectorRuntimeProjection.alias(for: conn),
-                bindings: bindingsByConnectorID[conn.id] ?? []
+                bindings: bindingsByConnectorID[conn.id] ?? [],
+                dockerRouted: dockerRouted
             )
         }
         guard !connectorDescriptions.isEmpty else { return nil }
@@ -36,7 +37,8 @@ enum AgentPromptConnectorContextBuilder {
     private static func connectorDescription(
         connector: Connector,
         alias: String,
-        bindings: [ConnectorRuntimeProjection.EnvironmentBinding]
+        bindings: [ConnectorRuntimeProjection.EnvironmentBinding],
+        dockerRouted: Bool
     ) -> String {
         let credentialBindings = bindings.filter {
             $0.kind == .credential && !$0.value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -79,7 +81,7 @@ enum AgentPromptConnectorContextBuilder {
                 .joined(separator: ", ")
             desc += "\n  Config env vars: \(rendered)"
         }
-        if let example = connectorRuntimeExample(for: connector, bindings: bindings) {
+        if let example = connectorRuntimeExample(for: connector, bindings: bindings, dockerRouted: dockerRouted) {
             desc += "\n  Runtime example: \(example)"
         }
         desc += "\n  Auth: \(connector.authMethod)"
@@ -101,12 +103,13 @@ enum AgentPromptConnectorContextBuilder {
 
     private static func connectorRuntimeExample(
         for connector: Connector,
-        bindings: [ConnectorRuntimeProjection.EnvironmentBinding]
+        bindings: [ConnectorRuntimeProjection.EnvironmentBinding],
+        dockerRouted: Bool
     ) -> String? {
         let serviceType = connector.serviceType.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         switch serviceType {
         case "jira":
-            return jiraRuntimeExample(for: connector, bindings: bindings)
+            return jiraRuntimeExample(for: connector, bindings: bindings, dockerRouted: dockerRouted)
         case "redcap":
             return redcapRuntimeExample(bindings: bindings)
         case "gcloud", "google_cloud", "googlecloud", "gcp":
@@ -118,8 +121,12 @@ enum AgentPromptConnectorContextBuilder {
 
     private static func jiraRuntimeExample(
         for connector: Connector,
-        bindings: [ConnectorRuntimeProjection.EnvironmentBinding]
+        bindings: [ConnectorRuntimeProjection.EnvironmentBinding],
+        dockerRouted: Bool
     ) -> String? {
+        if dockerRouted {
+            return #"mcp__astra_host__jira with {"operation":"status"}; for reads use {"operation":"search_jql","jql":"project = KEY","max_results":1}"#
+        }
         guard let baseURL = runtimeURLBase(
             bindings: bindings,
             logicalNames: ["baseURL", "jiraBaseURL", "url"],
