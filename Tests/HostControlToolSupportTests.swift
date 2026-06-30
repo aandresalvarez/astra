@@ -294,9 +294,9 @@ struct HostControlToolSupportTests {
     @Test("Jira host control search uses vetted read fields")
     func jiraHostControlSearchUsesVettedReadFields() throws {
         JiraCaptureURLProtocol.reset()
-        _ = URLProtocol.registerClass(JiraCaptureURLProtocol.self)
+        HostControlURLSessionConfiguration.protocolClassesForTesting = [JiraCaptureURLProtocol.self]
         defer {
-            URLProtocol.unregisterClass(JiraCaptureURLProtocol.self)
+            HostControlURLSessionConfiguration.protocolClassesForTesting = []
             JiraCaptureURLProtocol.reset()
         }
 
@@ -500,6 +500,822 @@ struct HostControlToolSupportTests {
         })
     }
 
+    @Test("Host control process tools clamp provider-selected timeouts")
+    func hostControlProcessToolsClampProviderSelectedTimeouts() throws {
+        let runner = CapturingHostControlProcessRunner()
+        let server = HostControlMCPServer(
+            configuration: HostControlToolConfiguration(githubExecutable: "/usr/bin/gh"),
+            processRunner: runner
+        )
+
+        _ = try call(server, id: 1, tool: "github", arguments: [
+            "arguments": ["pr", "view", "123"],
+            "timeout_seconds": 7200
+        ])
+
+        #expect(runner.requests.map(\.timeoutSeconds) == [300])
+    }
+
+    @Test("Host control process tools normalize non-finite timeout inputs")
+    func hostControlProcessToolsNormalizeNonFiniteTimeoutInputs() throws {
+        let runner = CapturingHostControlProcessRunner()
+        let server = HostControlMCPServer(
+            configuration: HostControlToolConfiguration(githubExecutable: "/usr/bin/gh"),
+            processRunner: runner,
+            processLimits: HostControlProcessLimits(maximumTimeoutSeconds: 42, outputByteLimit: 1024)
+        )
+
+        _ = try call(server, id: 1, tool: "github", arguments: [
+            "arguments": ["pr", "view", "123"],
+            "timeout_seconds": "nan"
+        ])
+
+        #expect(runner.requests.map(\.timeoutSeconds) == [42])
+    }
+
+    @Test("Host control process limits reject non-finite configured timeout caps")
+    func hostControlProcessLimitsRejectNonFiniteConfiguredTimeoutCaps() {
+        let limits = HostControlProcessLimits(maximumTimeoutSeconds: .nan, outputByteLimit: 1024)
+
+        #expect(limits.maximumTimeoutSeconds == 300)
+        #expect(limits.clampedTimeout(.nan) == 300)
+    }
+
+    @Test("Host control process limits clamp huge finite configured timeout caps")
+    func hostControlProcessLimitsClampHugeFiniteConfiguredTimeoutCaps() {
+        let limits = HostControlProcessLimits(maximumTimeoutSeconds: .greatestFiniteMagnitude, outputByteLimit: 1024)
+
+        #expect(limits.maximumTimeoutSeconds == 86_400)
+        #expect(limits.clampedTimeout(.greatestFiniteMagnitude) == 86_400)
+    }
+
+    @Test("Host control process limits are immutable after validation")
+    func hostControlProcessLimitsAreImmutableAfterValidation() throws {
+        let source = try hostControlToolSource()
+        let definition = try sourceSnippet(
+            startingWith: "public struct HostControlProcessLimits",
+            endingBefore: "public protocol HostControlProcessRunning",
+            in: source
+        )
+
+        #expect(definition.contains("public let maximumTimeoutSeconds"))
+        #expect(definition.contains("public let outputByteLimit"))
+        #expect(!definition.contains("public var maximumTimeoutSeconds"))
+        #expect(!definition.contains("public var outputByteLimit"))
+    }
+
+    @Test("Host control default process runner uses server process limits")
+    func hostControlDefaultProcessRunnerUsesServerProcessLimits() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-host-server-output-limit-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let gh = root.appendingPathComponent("gh", isDirectory: false)
+        try """
+        #!/bin/sh
+        dd if=/dev/zero bs=1024 count=16 2>/dev/null | tr '\\0' A
+        printf 'TAIL_SENTINEL'
+        exit 0
+        """.write(to: gh, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: gh.path)
+
+        let server = HostControlMCPServer(
+            configuration: HostControlToolConfiguration(githubExecutable: gh.path),
+            processLimits: HostControlProcessLimits(maximumTimeoutSeconds: 5, outputByteLimit: 64)
+        )
+
+        let response = try call(server, id: 1, tool: "github", arguments: [
+            "arguments": ["pr", "view", "123"]
+        ])
+        let text = try resultText(response)
+
+        #expect(text.contains("exit_code: 125"))
+        #expect(text.contains("output_truncated: true"))
+        #expect(text.contains("stdout_truncated: true"))
+        #expect(text.contains("ASTRA truncated stdout after"))
+        #expect(!text.contains("TAIL_SENTINEL"))
+    }
+
+    @Test("Host control process runner treats abandoned pipe reads as truncated")
+    func hostControlProcessRunnerTreatsAbandonedPipeReadsAsTruncated() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-host-abandoned-pipe-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let gh = try customExecutable(named: "gh", root: root, body: """
+        ( sleep 2; printf 'et-token' ) &
+        printf 'visible-prefix:super-secr'
+        exit 0
+        """)
+        let connectors = """
+        {"connectors":[{"id":"jira-1","alias":"jira","envPrefix":"JIRA_JIRA","name":"Jira","serviceType":"jira","baseURL":"https://example.atlassian.net","authMethod":"basic","env":{"JIRA_API_TOKEN":"JIRA_TOKEN_ENV"},"credentials":{"JIRA_API_TOKEN":"JIRA_TOKEN_ENV"},"config":{}}]}
+        """
+        let server = HostControlMCPServer(
+            configuration: HostControlToolConfiguration(
+                githubExecutable: gh.path,
+                connectorsJSON: connectors,
+                environment: [
+                    "ASTRA_CONNECTORS": connectors,
+                    "JIRA_TOKEN_ENV": "super-secret-token"
+                ]
+            ),
+            processLimits: HostControlProcessLimits(maximumTimeoutSeconds: 5, outputByteLimit: 256)
+        )
+
+        let response = try call(server, id: 1, tool: "github", arguments: ["arguments": ["pr", "view", "123"]])
+        let text = try resultText(response)
+
+        #expect(text.contains("exit_code: 125"))
+        #expect(text.contains("output_truncated: true"))
+        #expect(text.contains("stdout_truncated: true"))
+        #expect(text.contains("ASTRA truncated stdout after"))
+        #expect(!text.contains("super-secr"))
+        #expect(!text.contains("super-secret-token"))
+        #expect(!text.contains("et-token"))
+        #expect(try #require(response["result"] as? [String: Any])["isError"] as? Bool == true)
+    }
+
+    @Test("Host control process runner truncates excessive stdout before returning results")
+    func hostControlProcessRunnerTruncatesExcessiveStdoutBeforeReturningResults() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-host-output-limit-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let executable = root.appendingPathComponent("noisy", isDirectory: false)
+        try """
+        #!/bin/sh
+        dd if=/dev/zero bs=1024 count=320 2>/dev/null | tr '\\0' A
+        printf 'TAIL_SENTINEL'
+        exit 0
+        """.write(to: executable, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
+
+        let result = HostControlProcessRunner().run(
+            executablePath: executable.path,
+            arguments: [],
+            timeoutSeconds: 10,
+            environment: [:]
+        )
+
+        #expect(result.exitCode == 125)
+        #expect(result.stdoutTruncated)
+        #expect(result.stdout.contains("ASTRA truncated stdout after"))
+        #expect(!result.stdout.contains("TAIL_SENTINEL"))
+        #expect(Data(result.stdout.utf8).count < 270_000)
+    }
+
+    @Test("Host control process runner keeps truncation marker within tiny output limits")
+    func hostControlProcessRunnerKeepsTruncationMarkerWithinTinyOutputLimits() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-host-tiny-output-limit-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let executable = try customExecutable(named: "tiny-noisy", root: root, body: """
+        printf 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+        exit 0
+        """)
+
+        let result = HostControlProcessRunner(limits: HostControlProcessLimits(maximumTimeoutSeconds: 5, outputByteLimit: 8)).run(
+            executablePath: executable.path,
+            arguments: [],
+            timeoutSeconds: 5,
+            environment: [:]
+        )
+
+        #expect(result.exitCode == 125)
+        #expect(result.stdoutTruncated)
+        #expect(Data(result.stdout.utf8).count <= 8)
+    }
+
+    @Test("Host control process runner caps decoded output after invalid UTF-8 expansion")
+    func hostControlProcessRunnerCapsDecodedOutputAfterInvalidUTF8Expansion() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-host-invalid-utf8-output-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let invalidByteEscapes = String(repeating: "\\200", count: 64)
+        let executable = try customExecutable(named: "invalid-utf8", root: root, body: """
+        printf '%b' '\(invalidByteEscapes)'
+        exit 0
+        """)
+
+        let result = HostControlProcessRunner(limits: HostControlProcessLimits(maximumTimeoutSeconds: 5, outputByteLimit: 64)).run(
+            executablePath: executable.path,
+            arguments: [],
+            timeoutSeconds: 5,
+            environment: [:]
+        )
+
+        #expect(result.exitCode == 125)
+        #expect(result.stdoutTruncated)
+        #expect(Data(result.stdout.utf8).count <= 64)
+    }
+
+    @Test("Host control process runner preserves safe output prefix before truncation marker")
+    func hostControlProcessRunnerPreservesSafeOutputPrefixBeforeTruncationMarker() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-host-safe-output-prefix-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let executable = try customExecutable(named: "prefix-noisy", root: root, body: """
+        printf 'SAFE-PREFIX-0123456789'
+        printf 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+        printf 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+        printf 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+        printf 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+        printf 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+        printf 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+        exit 0
+        """)
+
+        let outputLimit = 640
+        let result = HostControlProcessRunner(limits: HostControlProcessLimits(maximumTimeoutSeconds: 5, outputByteLimit: outputLimit)).run(
+            executablePath: executable.path,
+            arguments: [],
+            timeoutSeconds: 5,
+            environment: [:]
+        )
+
+        #expect(result.exitCode == 125)
+        #expect(result.stdoutTruncated)
+        #expect(result.stdout.contains("SAFE-PREFIX-0123456789"))
+        #expect(result.stdout.contains("ASTRA truncated stdout after \(outputLimit) bytes"))
+        #expect(Data(result.stdout.utf8).count <= outputLimit)
+    }
+
+    @Test("Host control process runner clamps timeouts at the shared runner boundary")
+    func hostControlProcessRunnerClampsTimeoutsAtSharedRunnerBoundary() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-host-runner-timeout-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let executable = try customExecutable(named: "slow", root: root, body: """
+        sleep 2
+        printf 'finished'
+        exit 0
+        """)
+        let started = Date()
+
+        let result = HostControlProcessRunner(limits: HostControlProcessLimits(maximumTimeoutSeconds: 1, outputByteLimit: 1024)).run(
+            executablePath: executable.path,
+            arguments: [],
+            timeoutSeconds: 10,
+            environment: [:]
+        )
+
+        #expect(result.timedOut)
+        #expect(result.exitCode == 124)
+        #expect(Date().timeIntervalSince(started) < 4)
+        #expect(!result.stdout.contains("finished"))
+    }
+
+    @Test("Host control process runner uses monotonic deadlines and fail-closed pipe drain")
+    func hostControlProcessRunnerUsesMonotonicDeadlinesAndFailClosedPipeDrain() throws {
+        let source = try hostControlToolSource()
+        let wait = try sourceSnippet(startingWith: "    private func waitForProcess(", endingBefore: "    private func dispatchInterval", in: source)
+        let drain = try sourceSnippet(startingWith: "    private func drainPipe(", endingBefore: "private final class LockedFlag", in: source)
+        let jira = try sourceSnippet(startingWith: "private final class BoundedJiraHTTPDelegate", endingBefore: "private final class JiraHTTPClient", in: source)
+
+        #expect(wait.contains("DispatchTime.now()"))
+        #expect(!wait.contains("Date()"))
+        #expect(source.contains("guard !data.isEmpty else"))
+        #expect(drain.contains("guard flags >= 0 else"))
+        #expect(drain.contains("guard fcntl(descriptor, F_SETFL, flags | O_NONBLOCK) >= 0 else"))
+        #expect(drain.contains("guard let handle = reader.claimForDrain() else { return }"))
+        #expect(drain.contains("buffer.markTruncated()"))
+        #expect(drain.contains("defer { try? handle.close() }"))
+        #expect(jira.contains("BoundedProcessOutput(label: \"Jira response body\""))
+        #expect(jira.contains("bodyTruncated = true"))
+        #expect(source.contains("outputByteLimit: processLimits.outputByteLimit"))
+    }
+
+    @Test("Host control process runner force stops output limited processes promptly")
+    func hostControlProcessRunnerForceStopsOutputLimitedProcessesPromptly() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-host-runner-output-stop-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let executable = try customExecutable(named: "noisy", root: root, body: """
+        trap '' TERM
+        while :; do
+          printf 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+        done
+        """)
+        let started = Date()
+
+        let result = HostControlProcessRunner(limits: HostControlProcessLimits(maximumTimeoutSeconds: 5, outputByteLimit: 64)).run(
+            executablePath: executable.path,
+            arguments: [],
+            timeoutSeconds: 5,
+            environment: [:]
+        )
+
+        #expect(result.exitCode == 125)
+        #expect(result.stdoutTruncated)
+        #expect(Date().timeIntervalSince(started) < 4)
+    }
+
+    @Test("Host control process runner reaps inherited child processes before returning")
+    func hostControlProcessRunnerReapsInheritedChildProcessesBeforeReturning() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-host-runner-inherited-pipe-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let marker = root.appendingPathComponent("child-survived", isDirectory: false)
+        let executable = try customExecutable(named: "detached-noisy-child", root: root, body: """
+        (sleep 1; touch "\(marker.path)") &
+        exit 0
+        """)
+        let started = Date()
+
+        let result = HostControlProcessRunner(limits: HostControlProcessLimits(maximumTimeoutSeconds: 5, outputByteLimit: 32)).run(
+            executablePath: executable.path,
+            arguments: [],
+            timeoutSeconds: 5,
+            environment: [:]
+        )
+
+        Thread.sleep(forTimeInterval: 1.2)
+        #expect(result.exitCode == 0 || result.exitCode == 125)
+        if result.exitCode == 125 {
+            #expect(result.stdoutTruncated || result.stderrTruncated)
+        }
+        #expect(!FileManager.default.fileExists(atPath: marker.path))
+        #expect(Date().timeIntervalSince(started) < 2)
+    }
+
+    @Test("Host control tool schemas describe the configured timeout cap")
+    func hostControlToolSchemasDescribeConfiguredTimeoutCap() throws {
+        let server = HostControlMCPServer(
+            configuration: HostControlToolConfiguration(githubExecutable: "/usr/bin/gh"),
+            processLimits: HostControlProcessLimits(maximumTimeoutSeconds: 42, outputByteLimit: 1024)
+        )
+
+        let list = try parseJSON(try #require(server.handleLine(#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#)))
+        let listResult = try #require(list["result"] as? [String: Any])
+        let tools = try #require(listResult["tools"] as? [[String: Any]])
+
+        for tool in tools {
+            let inputSchema = try #require(tool["inputSchema"] as? [String: Any])
+            let properties = try #require(inputSchema["properties"] as? [String: Any])
+            let timeout = try #require(properties["timeout_seconds"] as? [String: Any])
+            let description = try #require(timeout["description"] as? String)
+            #expect(description.contains("Defaults to 42 seconds"))
+            #expect(description.contains("capped at 42 seconds"))
+            #expect(!description.contains("Defaults to 120 seconds"))
+            #expect(!description.contains("300 seconds"))
+        }
+    }
+
+    @Test("Host control tool schemas never describe non-finite timeout caps")
+    func hostControlToolSchemasNeverDescribeNonFiniteTimeoutCaps() throws {
+        let server = HostControlMCPServer(
+            configuration: HostControlToolConfiguration(githubExecutable: "/usr/bin/gh"),
+            processLimits: HostControlProcessLimits(maximumTimeoutSeconds: .nan, outputByteLimit: 1024)
+        )
+
+        let list = try parseJSON(try #require(server.handleLine(#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#)))
+        let listResult = try #require(list["result"] as? [String: Any])
+        let tools = try #require(listResult["tools"] as? [[String: Any]])
+
+        for tool in tools {
+            let inputSchema = try #require(tool["inputSchema"] as? [String: Any])
+            let properties = try #require(inputSchema["properties"] as? [String: Any])
+            let timeout = try #require(properties["timeout_seconds"] as? [String: Any])
+            let description = try #require(timeout["description"] as? String)
+            #expect(description.contains("capped at 300 seconds"))
+            #expect(!description.lowercased().contains("nan"))
+        }
+    }
+
+    @Test("Host control tool schemas never describe huge finite timeout caps")
+    func hostControlToolSchemasNeverDescribeHugeFiniteTimeoutCaps() throws {
+        let server = HostControlMCPServer(
+            configuration: HostControlToolConfiguration(githubExecutable: "/usr/bin/gh"),
+            processLimits: HostControlProcessLimits(maximumTimeoutSeconds: .greatestFiniteMagnitude, outputByteLimit: 1024)
+        )
+
+        let list = try parseJSON(try #require(server.handleLine(#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#)))
+        let listResult = try #require(list["result"] as? [String: Any])
+        let tools = try #require(listResult["tools"] as? [[String: Any]])
+
+        for tool in tools {
+            let inputSchema = try #require(tool["inputSchema"] as? [String: Any])
+            let properties = try #require(inputSchema["properties"] as? [String: Any])
+            let timeout = try #require(properties["timeout_seconds"] as? [String: Any])
+            let description = try #require(timeout["description"] as? String)
+            #expect(description.contains("capped at 86400 seconds"))
+            #expect(!description.lowercased().contains("inf"))
+            #expect(!description.lowercased().contains("nan"))
+        }
+    }
+
+    @Test("Host control truncation does not reveal connector secret prefixes")
+    func hostControlTruncationDoesNotRevealConnectorSecretPrefixes() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-host-truncated-secret-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let gh = try customExecutable(named: "gh", root: root, body: """
+        printf 'visible-prefix:'
+        printf '%s' "$JIRA_TOKEN_ENV"
+        printf ':hidden-tail'
+        exit 0
+        """)
+        let connectors = """
+        {"connectors":[{"id":"jira-1","alias":"jira","envPrefix":"JIRA_JIRA","name":"Jira","serviceType":"jira","baseURL":"https://example.atlassian.net","authMethod":"basic","env":{"JIRA_API_TOKEN":"JIRA_TOKEN_ENV"},"credentials":{"JIRA_API_TOKEN":"JIRA_TOKEN_ENV"},"config":{}}]}
+        """
+        let server = HostControlMCPServer(
+            configuration: HostControlToolConfiguration(
+                githubExecutable: gh.path,
+                connectorsJSON: connectors,
+                environment: [
+                    "ASTRA_CONNECTORS": connectors,
+                    "JIRA_TOKEN_ENV": "super-secret-token"
+                ]
+            ),
+            processLimits: HostControlProcessLimits(maximumTimeoutSeconds: 5, outputByteLimit: "visible-prefix:super-secr".count)
+        )
+
+        let response = try call(server, id: 1, tool: "github", arguments: ["arguments": ["pr", "view", "123"]])
+        let text = try resultText(response)
+
+        #expect(text.contains("output_truncated: true"))
+        #expect(!text.contains("super-secr"))
+        #expect(!text.contains("super-secret-token"))
+    }
+
+    @Test("Host control redacts secret prefixes on both streams when either stream truncates")
+    func hostControlRedactsSecretPrefixesOnBothStreamsWhenEitherStreamTruncates() throws {
+        let connectors = """
+        {"connectors":[{"id":"jira-1","alias":"jira","envPrefix":"JIRA_JIRA","name":"Jira","serviceType":"jira","baseURL":"https://example.atlassian.net","authMethod":"basic","env":{"JIRA_API_TOKEN":"JIRA_TOKEN_ENV"},"credentials":{"JIRA_API_TOKEN":"JIRA_TOKEN_ENV"},"config":{}}]}
+        """
+        let runner = CapturingHostControlProcessRunner(result: HostControlCommandResult(
+            command: "/usr/bin/gh",
+            arguments: ["pr", "view", "123"],
+            exitCode: 125,
+            stdout: "stdout-prefix:super-secr",
+            stderr: "stderr was truncated",
+            stdoutTruncated: false,
+            stderrTruncated: true
+        ))
+        let server = HostControlMCPServer(
+            configuration: HostControlToolConfiguration(
+                githubExecutable: "/usr/bin/gh",
+                connectorsJSON: connectors,
+                environment: [
+                    "ASTRA_CONNECTORS": connectors,
+                    "JIRA_TOKEN_ENV": "super-secret-token"
+                ]
+            ),
+            processRunner: runner
+        )
+
+        let response = try call(server, id: 1, tool: "github", arguments: ["arguments": ["pr", "view", "123"]])
+        let text = try resultText(response)
+
+        #expect(text.contains("output_truncated: true"))
+        #expect(!text.contains("super-secr"))
+        #expect(!text.contains("super-secret-token"))
+    }
+
+    @Test("Host control redacts secret prefixes from timed-out output")
+    func hostControlRedactsSecretPrefixesFromTimedOutOutput() throws {
+        let connectors = """
+        {"connectors":[{"id":"jira-1","alias":"jira","envPrefix":"JIRA_JIRA","name":"Jira","serviceType":"jira","baseURL":"https://example.atlassian.net","authMethod":"basic","env":{"JIRA_API_TOKEN":"JIRA_TOKEN_ENV"},"credentials":{"JIRA_API_TOKEN":"JIRA_TOKEN_ENV"},"config":{}}]}
+        """
+        let runner = CapturingHostControlProcessRunner(result: HostControlCommandResult(
+            command: "/usr/bin/gh",
+            arguments: ["pr", "view", "123"],
+            exitCode: 124,
+            stdout: "timed-out-prefix:super-secr",
+            stderr: "",
+            timedOut: true
+        ))
+        let server = HostControlMCPServer(
+            configuration: HostControlToolConfiguration(
+                githubExecutable: "/usr/bin/gh",
+                connectorsJSON: connectors,
+                environment: [
+                    "ASTRA_CONNECTORS": connectors,
+                    "JIRA_TOKEN_ENV": "super-secret-token"
+                ]
+            ),
+            processRunner: runner
+        )
+
+        let response = try call(server, id: 1, tool: "github", arguments: ["arguments": ["pr", "view", "123"]])
+        let text = try resultText(response)
+
+        #expect(text.contains("timed_out: true"))
+        #expect(!text.contains("super-secr"))
+        #expect(!text.contains("super-secret-token"))
+    }
+
+    @Test("Host control redacts long secret fragments without prefix enumeration")
+    func hostControlRedactsLongSecretFragmentsWithoutPrefixEnumeration() throws {
+        let longSecret = String(repeating: "s", count: 12_000) + "-tail"
+        let leakedPrefix = String(longSecret.prefix(8_000))
+        let connectors = """
+        {"connectors":[{"id":"jira-1","alias":"jira","envPrefix":"JIRA_JIRA","name":"Jira","serviceType":"jira","baseURL":"https://example.atlassian.net","authMethod":"basic","env":{"JIRA_API_TOKEN":"JIRA_TOKEN_ENV"},"credentials":{"JIRA_API_TOKEN":"JIRA_TOKEN_ENV"},"config":{}}]}
+        """
+        let configuration = HostControlToolConfiguration(
+            connectorsJSON: connectors,
+            environment: [
+                "ASTRA_CONNECTORS": connectors,
+                "JIRA_TOKEN_ENV": longSecret
+            ]
+        )
+
+        let redacted = configuration.redacted("prefix:\(leakedPrefix):suffix", includingSecretFragments: true)
+
+        #expect(redacted.contains("prefix:[redacted]:suffix"))
+        #expect(!redacted.contains(String(repeating: "s", count: 64)))
+    }
+
+    @Test("Host control redacts short secret prefixes at truncation boundaries")
+    func hostControlRedactsShortSecretPrefixesAtTruncationBoundaries() throws {
+        let connectors = """
+        {"connectors":[{"id":"jira-1","alias":"jira","envPrefix":"JIRA_JIRA","name":"Jira","serviceType":"jira","baseURL":"https://example.atlassian.net","authMethod":"basic","env":{"JIRA_API_TOKEN":"JIRA_TOKEN_ENV"},"credentials":{"JIRA_API_TOKEN":"JIRA_TOKEN_ENV"},"config":{}}]}
+        """
+        let runner = CapturingHostControlProcessRunner(result: HostControlCommandResult(
+            command: "/usr/bin/gh",
+            arguments: ["pr", "view", "123"],
+            exitCode: 125,
+            stdout: "visible-prefix:su\n[ASTRA truncated stdout after 17 bytes]\n",
+            stderr: "",
+            stdoutTruncated: true
+        ))
+        let server = HostControlMCPServer(
+            configuration: HostControlToolConfiguration(
+                githubExecutable: "/usr/bin/gh",
+                connectorsJSON: connectors,
+                environment: [
+                    "ASTRA_CONNECTORS": connectors,
+                    "JIRA_TOKEN_ENV": "super-secret-token"
+                ]
+            ),
+            processRunner: runner
+        )
+
+        let response = try call(server, id: 1, tool: "github", arguments: ["arguments": ["pr", "view", "123"]])
+        let text = try resultText(response)
+
+        #expect(text.contains("visible-prefix:[redacted]"))
+        #expect(!text.contains("visible-prefix:su"))
+        #expect(!text.contains("super-secret-token"))
+    }
+
+    @Test("Host control redacts short secret prefixes at capped output markers")
+    func hostControlRedactsShortSecretPrefixesAtCappedOutputMarkers() throws {
+        let connectors = """
+        {"connectors":[{"id":"jira-1","alias":"jira","envPrefix":"JIRA_JIRA","name":"Jira","serviceType":"jira","baseURL":"https://example.atlassian.net","authMethod":"basic","env":{"JIRA_API_TOKEN":"JIRA_TOKEN_ENV"},"credentials":{"JIRA_API_TOKEN":"JIRA_TOKEN_ENV"},"config":{}}]}
+        """
+        let runner = CapturingHostControlProcessRunner(result: HostControlCommandResult(
+            command: "/usr/bin/gh",
+            arguments: ["pr", "view", "123"],
+            exitCode: 125,
+            stdout: "visible-prefix:su\n[ASTRA redacted stdout output capped after 96 bytes]\n",
+            stderr: "",
+            stdoutTruncated: true
+        ))
+        let server = HostControlMCPServer(
+            configuration: HostControlToolConfiguration(
+                githubExecutable: "/usr/bin/gh",
+                connectorsJSON: connectors,
+                environment: [
+                    "ASTRA_CONNECTORS": connectors,
+                    "JIRA_TOKEN_ENV": "super-secret-token"
+                ]
+            ),
+            processRunner: runner
+        )
+
+        let response = try call(server, id: 1, tool: "github", arguments: ["arguments": ["pr", "view", "123"]])
+        let text = try resultText(response)
+
+        #expect(text.contains("visible-prefix:[redacted]"))
+        #expect(!text.contains("visible-prefix:su"))
+        #expect(!text.contains("super-secret-token"))
+    }
+
+    @Test("Host control redacts short secret prefixes after final caps create markers")
+    func hostControlRedactsShortSecretPrefixesAfterFinalCapsCreateMarkers() throws {
+        let connectors = """
+        {"connectors":[{"id":"jira-1","alias":"jira","envPrefix":"JIRA_JIRA","name":"Jira","serviceType":"jira","baseURL":"https://example.atlassian.net","authMethod":"basic","env":{"JIRA_API_TOKEN":"JIRA_TOKEN_ENV"},"credentials":{"JIRA_API_TOKEN":"JIRA_TOKEN_ENV"},"config":{}}]}
+        """
+        let outputLimit = 96
+        let marker = "\n[ASTRA redacted stdout output capped after \(outputLimit) bytes]\n"
+        let leakedPrefix = "visible-prefix:su"
+        let filler = String(repeating: "x", count: max(0, outputLimit - marker.utf8.count - leakedPrefix.utf8.count))
+        let runner = CapturingHostControlProcessRunner(result: HostControlCommandResult(
+            command: "/usr/bin/gh",
+            arguments: ["pr", "view", "123"],
+            exitCode: 0,
+            stdout: filler + leakedPrefix + String(repeating: "z", count: 200),
+            stderr: ""
+        ))
+        let server = HostControlMCPServer(
+            configuration: HostControlToolConfiguration(
+                githubExecutable: "/usr/bin/gh",
+                connectorsJSON: connectors,
+                environment: [
+                    "ASTRA_CONNECTORS": connectors,
+                    "JIRA_TOKEN_ENV": "super-secret-token"
+                ]
+            ),
+            processRunner: runner,
+            processLimits: HostControlProcessLimits(maximumTimeoutSeconds: 5, outputByteLimit: outputLimit)
+        )
+
+        let response = try call(server, id: 1, tool: "github", arguments: ["arguments": ["pr", "view", "123"]])
+        let stdout = try stdoutSection(in: resultText(response))
+
+        #expect(stdout.utf8.count <= outputLimit)
+        #expect(!stdout.contains("visible-prefix:su"))
+        #expect(!stdout.contains("super-secret-token"))
+        #expect(try #require(response["result"] as? [String: Any])["isError"] as? Bool == true)
+    }
+
+    @Test("Host control short secret prefix scan only checks truncation boundaries")
+    func hostControlShortSecretPrefixScanOnlyChecksTruncationBoundaries() throws {
+        let source = try hostControlToolSource()
+        let prefixScan = try sourceSnippet(
+            startingWith: "    private func mergedSecretPrefixRanges(",
+            endingBefore: "    private static func splitList",
+            in: source
+        )
+
+        let boundaryScanCount = prefixScan.components(separatedBy: "truncatedOutputBoundaries(in: value)").count - 1
+        #expect(boundaryScanCount == 1)
+        #expect(prefixScan.contains("boundaries: boundaries"))
+        #expect(prefixScan.contains("output capped after"))
+        #expect(!prefixScan.contains("for index in value.indices"))
+        #expect(!prefixScan.contains("Array(value[range])"))
+        #expect(!prefixScan.contains("secret.prefix(length)"))
+    }
+
+    @Test("Host control reapplies output caps after secret prefix redaction")
+    func hostControlReappliesOutputCapsAfterSecretPrefixRedaction() throws {
+        let connectors = """
+        {"connectors":[{"id":"jira-1","alias":"jira","envPrefix":"JIRA_JIRA","name":"Jira","serviceType":"jira","baseURL":"https://example.atlassian.net","authMethod":"basic","env":{"JIRA_API_TOKEN":"JIRA_TOKEN_ENV"},"credentials":{"JIRA_API_TOKEN":"JIRA_TOKEN_ENV"},"config":{}}]}
+        """
+        let runner = CapturingHostControlProcessRunner(result: HostControlCommandResult(
+            command: "/usr/bin/gh",
+            arguments: ["pr", "view", "123"],
+            exitCode: 125,
+            stdout: String(repeating: "supe", count: 40),
+            stderr: "",
+            stdoutTruncated: true
+        ))
+        let server = HostControlMCPServer(
+            configuration: HostControlToolConfiguration(
+                githubExecutable: "/usr/bin/gh",
+                connectorsJSON: connectors,
+                environment: [
+                    "ASTRA_CONNECTORS": connectors,
+                    "JIRA_TOKEN_ENV": "super-secret-token"
+                ]
+            ),
+            processRunner: runner,
+            processLimits: HostControlProcessLimits(maximumTimeoutSeconds: 5, outputByteLimit: 96)
+        )
+
+        let response = try call(server, id: 1, tool: "github", arguments: ["arguments": ["pr", "view", "123"]])
+        let stdout = try stdoutSection(in: resultText(response))
+
+        #expect(stdout.utf8.count <= 96)
+        #expect(stdout.contains("redacted"))
+        #expect(!stdout.contains("supe"))
+    }
+
+    @Test("Host control caps redacted output even when runner did not truncate")
+    func hostControlCapsRedactedOutputEvenWhenRunnerDidNotTruncate() throws {
+        let connectors = """
+        {"connectors":[{"id":"jira-1","alias":"jira","envPrefix":"JIRA_JIRA","name":"Jira","serviceType":"jira","baseURL":"https://example.atlassian.net","authMethod":"basic","env":{"JIRA_API_TOKEN":"JIRA_TOKEN_ENV"},"credentials":{"JIRA_API_TOKEN":"JIRA_TOKEN_ENV"},"config":{}}]}
+        """
+        let runner = CapturingHostControlProcessRunner(result: HostControlCommandResult(
+            command: "/usr/bin/gh",
+            arguments: ["pr", "view", "123"],
+            exitCode: 0,
+            stdout: String(repeating: "pass", count: 40),
+            stderr: "",
+            stdoutTruncated: false
+        ))
+        let server = HostControlMCPServer(
+            configuration: HostControlToolConfiguration(
+                githubExecutable: "/usr/bin/gh",
+                connectorsJSON: connectors,
+                environment: [
+                    "ASTRA_CONNECTORS": connectors,
+                    "JIRA_TOKEN_ENV": "pass"
+                ]
+            ),
+            processRunner: runner,
+            processLimits: HostControlProcessLimits(maximumTimeoutSeconds: 5, outputByteLimit: 96)
+        )
+
+        let response = try call(server, id: 1, tool: "github", arguments: ["arguments": ["pr", "view", "123"]])
+        let stdout = try stdoutSection(in: resultText(response))
+
+        #expect(stdout.utf8.count <= 96)
+        #expect(stdout.contains("redacted"))
+        #expect(!stdout.contains("pass"))
+        #expect(try #require(response["result"] as? [String: Any])["isError"] as? Bool == true)
+        #expect(try resultText(response).contains("output_truncated: true"))
+    }
+
+    @Test("Jira truncated response bodies redact secret prefixes and become errors")
+    func jiraTruncatedResponseBodiesRedactSecretPrefixesAndBecomeErrors() throws {
+        let connectors = """
+        {"connectors":[{"id":"jira-1","alias":"jira","envPrefix":"JIRA_JIRA","name":"Jira","serviceType":"jira","baseURL":"https://example.atlassian.net","authMethod":"basic","env":{"JIRA_API_TOKEN":"JIRA_TOKEN_ENV"},"credentials":{"JIRA_API_TOKEN":"JIRA_TOKEN_ENV"},"config":{}}]}
+        """
+        let configuration = HostControlToolConfiguration(
+            connectorsJSON: connectors,
+            environment: [
+                "ASTRA_CONNECTORS": connectors,
+                "JIRA_TOKEN_ENV": "super-secret-token"
+            ]
+        )
+        let response = JiraHTTPResponse(
+            statusCode: 200,
+            body: "visible-prefix:super-secr\n[ASTRA truncated Jira response body after 25 bytes]\n",
+            errorMessage: nil,
+            bodyTruncated: true
+        )
+
+        let formatted = response.formatted(configuration: configuration, outputByteLimit: 256)
+
+        #expect(response.isError)
+        #expect(formatted.contains("body_truncated: true"))
+        #expect(formatted.contains("visible-prefix:[redacted]"))
+        #expect(!formatted.contains("super-secr"))
+        #expect(!formatted.contains("super-secret-token"))
+    }
+
+    @Test("Jira response formatter reapplies caps after redaction")
+    func jiraResponseFormatterReappliesCapsAfterRedaction() throws {
+        let connectors = """
+        {"connectors":[{"id":"jira-1","alias":"jira","envPrefix":"JIRA_JIRA","name":"Jira","serviceType":"jira","baseURL":"https://example.atlassian.net","authMethod":"basic","env":{"JIRA_API_TOKEN":"JIRA_TOKEN_ENV"},"credentials":{"JIRA_API_TOKEN":"JIRA_TOKEN_ENV"},"config":{}}]}
+        """
+        let configuration = HostControlToolConfiguration(
+            connectorsJSON: connectors,
+            environment: [
+                "ASTRA_CONNECTORS": connectors,
+                "JIRA_TOKEN_ENV": "super-secret-token"
+            ]
+        )
+        let response = JiraHTTPResponse(
+            statusCode: 200,
+            body: String(repeating: "supe", count: 40),
+            errorMessage: nil,
+            bodyTruncated: true
+        )
+
+        let body = try bodySection(in: response.formatted(configuration: configuration, outputByteLimit: 96))
+
+        #expect(body.utf8.count <= 96)
+        #expect(body.contains("redacted"))
+        #expect(!body.contains("supe"))
+    }
+
+    @Test("Jira formatted caps mark otherwise successful responses as errors")
+    func jiraFormattedCapsMarkOtherwiseSuccessfulResponsesAsErrors() throws {
+        let connectors = """
+        {"connectors":[{"id":"jira-1","alias":"jira","envPrefix":"JIRA_JIRA","name":"Jira","serviceType":"jira","baseURL":"https://example.atlassian.net","authMethod":"basic","env":{"JIRA_API_TOKEN":"JIRA_TOKEN_ENV"},"credentials":{"JIRA_API_TOKEN":"JIRA_TOKEN_ENV"},"config":{}}]}
+        """
+        let configuration = HostControlToolConfiguration(
+            connectorsJSON: connectors,
+            environment: [
+                "ASTRA_CONNECTORS": connectors,
+                "JIRA_TOKEN_ENV": "supe"
+            ]
+        )
+        let response = JiraHTTPResponse(
+            statusCode: 200,
+            body: String(repeating: "supe", count: 12),
+            errorMessage: nil,
+            bodyTruncated: false
+        )
+
+        let formatted = response.formattedPayload(configuration: configuration, outputByteLimit: 64)
+
+        #expect(!response.isError)
+        #expect(formatted.bodyTruncated)
+        #expect(formatted.text.contains("body_truncated: true"))
+        #expect(!formatted.text.contains("supe"))
+    }
+
     private func fakeExecutable(named name: String, root: URL, log: URL, stdout: String) throws -> URL {
         let executable = root.appendingPathComponent(name, isDirectory: false)
         let quotedLog = log.path.replacingOccurrences(of: "'", with: "'\\''")
@@ -509,6 +1325,16 @@ struct HostControlToolSupportTests {
         printf '\(name):%s\\n' "$*"
         if [ '\(name)' = 'gh' ]; then printf 'secret:%s\\n' "$JIRA_TOKEN_ENV"; fi
         exit 0
+        """.write(to: executable, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
+        return executable
+    }
+
+    private func customExecutable(named name: String, root: URL, body: String) throws -> URL {
+        let executable = root.appendingPathComponent(name, isDirectory: false)
+        try """
+        #!/bin/sh
+        \(body)
         """.write(to: executable, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
         return executable
@@ -552,6 +1378,36 @@ struct HostControlToolSupportTests {
     private func errorMessage(_ object: [String: Any]) throws -> String {
         let error = try #require(object["error"] as? [String: Any])
         return try #require(error["message"] as? String)
+    }
+
+    private func stdoutSection(in text: String) throws -> String {
+        let start = try #require(text.range(of: "stdout:\n"))
+        let end = try #require(text.range(of: "\nstderr:", range: start.upperBound..<text.endIndex))
+        return String(text[start.upperBound..<end.lowerBound])
+    }
+
+    private func bodySection(in text: String) throws -> String {
+        let start = try #require(text.range(of: "body:\n"))
+        let end = try #require(text.range(of: "\nerror:", range: start.upperBound..<text.endIndex))
+        return String(text[start.upperBound..<end.lowerBound])
+    }
+
+    private func hostControlToolSource() throws -> String {
+        let root = try repositoryRoot()
+        return try String(
+            contentsOf: root.appendingPathComponent("Tools/HostControlToolSupport/HostControlToolSupport.swift"),
+            encoding: .utf8
+        )
+    }
+
+    private func sourceSnippet(startingWith start: String, endingBefore end: String, in source: String) throws -> String {
+        let startIndex = try #require(source.range(of: start)?.lowerBound)
+        let endIndex = try #require(source.range(of: end, range: startIndex..<source.endIndex)?.lowerBound)
+        return String(source[startIndex..<endIndex])
+    }
+
+    private func repositoryRoot() throws -> URL {
+        try TestRepositoryRoot.resolve()
     }
 }
 
@@ -601,4 +1457,41 @@ private final class JiraCaptureURLProtocol: URLProtocol {
     }
 
     override func stopLoading() {}
+}
+
+private final class CapturingHostControlProcessRunner: HostControlProcessRunning {
+    struct Request: Equatable {
+        var executablePath: String
+        var arguments: [String]
+        var timeoutSeconds: TimeInterval
+        var environment: [String: String]
+    }
+
+    private(set) var requests: [Request] = []
+    private let result: HostControlCommandResult
+
+    init(result: HostControlCommandResult = HostControlCommandResult(
+        command: "/usr/bin/gh",
+        arguments: [],
+        exitCode: 0,
+        stdout: "ok",
+        stderr: ""
+    )) {
+        self.result = result
+    }
+
+    func run(
+        executablePath: String,
+        arguments: [String],
+        timeoutSeconds: TimeInterval,
+        environment: [String: String]
+    ) -> HostControlCommandResult {
+        requests.append(Request(
+            executablePath: executablePath,
+            arguments: arguments,
+            timeoutSeconds: timeoutSeconds,
+            environment: environment
+        ))
+        return result
+    }
 }

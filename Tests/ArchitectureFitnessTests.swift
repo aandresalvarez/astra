@@ -1204,18 +1204,7 @@ struct ArchitectureFitnessTests {
     }
 
     private func repositoryRoot() throws -> URL {
-        var candidate = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
-        while true {
-            if FileManager.default.fileExists(atPath: candidate.appendingPathComponent("Package.swift").path),
-               FileManager.default.fileExists(atPath: candidate.appendingPathComponent("Astra").path) {
-                return candidate
-            }
-            let parent = candidate.deletingLastPathComponent()
-            if parent.path == candidate.path {
-                throw ArchitectureFitnessError.repositoryRootNotFound
-            }
-            candidate = parent
-        }
+        try TestRepositoryRoot.resolve()
     }
 
     private func swiftFiles(under root: URL) throws -> [URL] {
@@ -1297,6 +1286,5 @@ struct ArchitectureFitnessTests {
 }
 
 private enum ArchitectureFitnessError: Error {
-    case repositoryRootNotFound
     case sourceSnippetNotFound(String)
 }
