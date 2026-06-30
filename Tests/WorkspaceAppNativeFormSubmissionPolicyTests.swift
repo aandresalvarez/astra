@@ -65,8 +65,70 @@ struct WorkspaceAppNativeFormSubmissionPolicyTests {
 
         #expect(submission.action.id == "submit")
         #expect(submission.requiresExplicitApproval == true)
+        #expect(submission.approvalPresentation?.prompt == "Submit this record to REDCap?")
+        #expect(submission.approvalPresentation?.confirmLabel == "Submit")
         #expect(submission.input.confirmedApproval == false)
         #expect(submission.input.confirmedDestructive == false)
+    }
+
+    @Test("approvalRequired native writes show approval UI even without action prompt decorations")
+    func approvalRequiredNativeWritesUseFallbackApprovalUI() throws {
+        var manifest = Self.manifest(
+            actions: [Self.action(id: "submit", operation: "submitCreate")]
+        )
+        manifest.permissions.defaultMode = .approvalRequired
+        let view = try #require(manifest.views.first)
+
+        let submission = try #require(WorkspaceAppNativeFormSubmissionPolicy.submission(
+            for: view,
+            manifest: manifest,
+            values: Self.record
+        ))
+
+        #expect(submission.requiresExplicitApproval == true)
+        #expect(submission.approvalPresentation?.prompt == "Review and approve this submission before it writes to the external system.")
+        #expect(submission.approvalPresentation?.confirmLabel == "Approve")
+        #expect(submission.input.confirmedApproval == false)
+    }
+
+    @Test("negative-only approval decisions do not become the confirm action")
+    func negativeOnlyApprovalDecisionsUseUnambiguousApproveLabel() throws {
+        var manifest = Self.manifest(actions: [
+            Self.action(
+                id: "submit",
+                operation: "submitCreate",
+                approvalPrompt: "Submit this record?",
+                approvalDecisions: ["Reject", "Cancel"]
+            )
+        ])
+        manifest.permissions.defaultMode = .approvalRequired
+        let view = try #require(manifest.views.first)
+
+        let submission = try #require(WorkspaceAppNativeFormSubmissionPolicy.submission(
+            for: view,
+            manifest: manifest,
+            values: Self.record
+        ))
+
+        #expect(submission.requiresExplicitApproval == true)
+        #expect(submission.approvalPresentation?.confirmLabel == "Approve")
+    }
+
+    @Test("explicit approval resume fails closed when action id is no longer current")
+    func explicitApprovalResumeRequiresCurrentActionID() throws {
+        let manifest = Self.manifest(actions: [
+            Self.action(id: "submit", operation: "submitCreate")
+        ])
+        let view = try #require(manifest.views.first)
+
+        let submission = WorkspaceAppNativeFormSubmissionPolicy.submission(
+            for: view,
+            manifest: manifest,
+            values: Self.record,
+            actionID: "removed-submit"
+        )
+
+        #expect(submission?.action.id == nil)
     }
 
     private static let record: [String: WorkspaceAppStorageValue] = ["participant_id": .text("P-001")]
