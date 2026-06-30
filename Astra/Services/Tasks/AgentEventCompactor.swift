@@ -4,6 +4,7 @@ import SwiftData
 enum AgentEventCompactor {
     static let threshold = 200
     static let keepCount = 50
+    private static let maxPreservedFinalResponseChunks = 24
 
     private enum FilePathPattern {
         static let regex = try! NSRegularExpression(pattern: #"(?:~|/)[A-Za-z0-9._~+@%=\-/:]+"#)
@@ -203,7 +204,10 @@ enum AgentEventCompactor {
             let finalResponses = sorted
                 .dropFirst(latestBoundaryIndex + 1)
                 .filter { $0.type == "agent.response" }
-                .suffix(3)
+            guard finalResponses.count <= maxPreservedFinalResponseChunks else {
+                output.remove(sorted[latestBoundaryIndex].id)
+                continue
+            }
             for event in finalResponses {
                 output.insert(event.id)
             }

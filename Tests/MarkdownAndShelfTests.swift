@@ -176,6 +176,44 @@ struct MarkdownTextViewTests {
         #expect(blocks.map(\.kind) == [.heading(level: 3), .table])
     }
 
+    @Test("Display preparation preserves compact hash table headers")
+    func displayPreparationPreservesCompactHashTableHeaders() {
+        let prepared = MarkdownRenderPreparation.prepareForDisplay("""
+        #PR | Status | Details
+        --- | --- | ---
+        123 | Open | Needs review
+        """)
+
+        #expect(prepared.contains("#PR | Status | Details"))
+        #expect(!prepared.contains("#PR\n\n| Status | Details"))
+
+        let blocks = MarkdownTextView.parse(prepared)
+        #expect(blocks.count == 1)
+        #expect(blocks.first?.kind == .table)
+        #expect(blocks.first?.content.contains("#PR | Status | Details") == true)
+    }
+
+    @Test("Joined response payloads normalize after preserving chunk boundaries")
+    func joinedResponsePayloadsNormalizeAfterPreservingChunkBoundaries() {
+        let joined = TaskRunAnswerPresentationPolicy.joinedResponsePayloads([
+            "```swift\n",
+            "    let value = 1\n",
+            "```\n"
+        ])
+
+        #expect(joined.contains("```swift\n    let value = 1\n```"))
+    }
+
+    @Test("Joined response payloads drop protocol marker chunks without dropping answer")
+    func joinedResponsePayloadsDropProtocolMarkerChunksWithoutDroppingAnswer() {
+        let joined = TaskRunAnswerPresentationPolicy.joinedResponsePayloads([
+            "ASTRA_EVENT {\"type\":\"agent.response\"}",
+            "Final answer is visible."
+        ])
+
+        #expect(joined == "Final answer is visible.")
+    }
+
     @Test("Display preparation preserves fenced table-looking text")
     func displayPreparationPreservesFencedTableLookingText() {
         let source = """

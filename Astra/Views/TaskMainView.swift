@@ -900,13 +900,16 @@ struct TaskMainView: View {
         let runs = currentThreadSnapshot.sortedRuns
         let generatedFilePaths = threadViewModel.generatedFilePaths
         let inputs = task.inputs
-        let taskFolder = TaskWorkspaceAccess(task: task).taskFolder
+        let access = TaskWorkspaceAccess(task: task)
+        let taskFolder = access.taskFolder
+        let workspacePath = access.effectiveWorkspacePath
         let items = await Task.detached(priority: .userInitiated) {
             TaskFileIndex.headerItems(
                 runs: runs,
                 generatedFilePaths: generatedFilePaths,
                 inputs: inputs,
-                taskFolder: taskFolder
+                taskFolder: taskFolder,
+                workspacePath: workspacePath
             )
         }.value
         // Under `.task(id:)`: don't apply a result whose inputs are now stale.

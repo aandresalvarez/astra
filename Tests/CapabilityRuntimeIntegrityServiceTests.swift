@@ -1,3 +1,4 @@
+import Foundation
 import SwiftData
 import Testing
 @testable import ASTRA
@@ -405,6 +406,64 @@ struct CapabilityRuntimeIntegrityServiceTests {
         #expect(issues.map(\.resourceKind) == [.localTool])
         #expect(issues.first?.resourceName == "Shared Helper")
         #expect(issues.first?.message == "local tool Shared Helper is not active for this workspace")
+    }
+
+    @Test("runtime integrity validates matched local tool executable")
+    func runtimeIntegrityValidatesMatchedLocalToolExecutable() throws {
+        let container = try makeRuntimeIntegrityContainer()
+        let context = container.mainContext
+        let packageCommand = "astra-missing-helper-\(UUID().uuidString)"
+        let package = PluginPackage(
+            id: "runtime-local-tool-executable",
+            name: "Runtime Local Tool Executable",
+            icon: "terminal",
+            description: "Package requiring a local tool",
+            author: "Tests",
+            category: "Tests",
+            tags: [],
+            version: "1.0.0",
+            skills: [],
+            connectors: [],
+            localTools: [
+                PluginLocalTool(
+                    name: "Shared Helper",
+                    description: "Shared helper",
+                    icon: "terminal",
+                    toolType: "cli",
+                    command: packageCommand,
+                    arguments: ""
+                )
+            ],
+            templates: [],
+            governance: .builtInApproved()
+        )
+        let workspace = Workspace(name: "Runtime Local Tool Executable", primaryPath: "/tmp/runtime-local-tool-executable")
+        workspace.enabledCapabilityIDs = [package.id]
+        context.insert(workspace)
+
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("CapabilityRuntimeIntegrityServiceTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let executable = directory.appendingPathComponent("shared-helper")
+        try "#!/bin/sh\nexit 0\n".write(to: executable, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
+
+        let configuredTool = LocalTool(name: "Shared Helper", toolType: "cli", command: executable.path)
+        configuredTool.workspace = workspace
+        context.insert(configuredTool)
+
+        let task = AgentTask(title: "Use local tool", goal: "Use shared helper", workspace: workspace)
+        context.insert(task)
+        try context.save()
+
+        let issues = CapabilityRuntimeIntegrityService.issues(
+            for: task,
+            packages: [package],
+            checkExecutables: true
+        )
+
+        #expect(issues.isEmpty)
     }
 
     @Test("unknown browser adapter IDs are runtime integrity issues")

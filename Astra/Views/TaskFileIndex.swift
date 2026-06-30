@@ -42,6 +42,7 @@ enum TaskFileIndex {
         generatedFilePaths: [String],
         inputs: [String],
         taskFolder: String = "",
+        workspacePath: String = "",
         fileManager: FileManager = .default
     ) -> [TaskFileItem] {
         var seen = Set<String>()
@@ -50,7 +51,7 @@ enum TaskFileIndex {
         func append(path rawPath: String, source: String, change: StoredFileChange? = nil) {
             let path = normalizedPath(rawPath)
             guard !path.isEmpty,
-                  shouldIncludeUserFacingPath(path, taskFolder: taskFolder),
+                  shouldIncludeUserFacingPath(path, source: source, taskFolder: taskFolder, workspacePath: workspacePath),
                   seen.insert(path).inserted else { return }
 
             var isDirectory = ObjCBool(false)
@@ -250,12 +251,33 @@ enum TaskFileIndex {
         return parent.isEmpty ? basename : "\(parent)/\(basename)"
     }
 
-    private static func shouldIncludeUserFacingPath(_ path: String, taskFolder: String) -> Bool {
-        guard !taskFolder.isEmpty,
-              TaskOutputArtifactPathPolicy.relativePath(path, under: taskFolder) != nil else {
+    private static func shouldIncludeUserFacingPath(
+        _ path: String,
+        source: String = "",
+        taskFolder: String,
+        workspacePath: String = ""
+    ) -> Bool {
+        if source == "input" {
             return true
         }
-        return TaskOutputArtifactPathPolicy.isDisplayableUserArtifactPath(path, taskFolder: taskFolder)
+
+        if !taskFolder.isEmpty,
+           let relative = TaskOutputArtifactPathPolicy.relativePath(path, under: taskFolder) {
+            return TaskOutputArtifactPathPolicy.displayableUserArtifactRelativePath(
+                relative,
+                context: .taskFolder
+            ) != nil
+        }
+
+        if !workspacePath.isEmpty,
+           let relative = TaskOutputArtifactPathPolicy.relativePath(path, under: workspacePath) {
+            return TaskOutputArtifactPathPolicy.displayableUserArtifactRelativePath(
+                relative,
+                context: .workspace
+            ) != nil
+        }
+
+        return true
     }
 
     private static func shouldIncludeReferencedPath(_ path: String) -> Bool {
