@@ -4600,7 +4600,7 @@ struct LocalModelRuntimeTests {
         #expect(scaffoldEntrypoint.contains(#"argumentValue("--models-root", in: arguments) ?? argumentValue("--models-dir", in: arguments)"#))
         #expect(scaffoldEntrypoint.contains(#"argumentValue("--request-file", in: arguments) != nil"#))
         #expect(buildScript.contains(#"LOCAL_MODEL_BACKEND="${ASTRA_LOCAL_MODEL_BACKEND:-mlx}""#))
-        #expect(buildScript.contains("swift build \"${native_args[@]}\"\n  native_build_dir="))
+        #expect(!buildScript.contains("swift build \"${native_args[@]}\"\n  native_build_dir="))
         #expect(buildScript.contains(#"native_build_dir="$(swift build "${native_args[@]}" --show-bin-path)""#))
         #expect(buildScript.contains("scaffold|mlx)"))
         #expect(buildScript.contains(#""$LOCAL_MODEL_BACKEND" == "scaffold""#))
