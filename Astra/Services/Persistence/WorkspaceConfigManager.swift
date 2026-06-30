@@ -632,17 +632,11 @@ enum WorkspaceConfigManager {
         workspace.memories = config.memories ?? []
         workspace.isStarred = config.isStarred ?? false
         workspace.activeExecutionEnvironmentJSON = sanitizedExecutionEnvironmentJSON(config.activeExecutionEnvironmentJSON)
-        // Only restore the worktree focus when the worktree actually exists on
-        // this machine; otherwise reset to root so new chats don't pin to a
-        // path that isn't here.
-        if let active = config.activeWorkingPath,
-           !active.isEmpty,
-           active != config.primaryPath,
-           FileManager.default.fileExists(atPath: active) {
-            workspace.activeWorkingPath = active
-        } else {
-            workspace.activeWorkingPath = nil
-        }
+        workspace.activeWorkingPath = importedActiveWorkingPath(
+            config.activeWorkingPath,
+            primaryPath: config.primaryPath,
+            additionalPaths: config.additionalPaths
+        )
         if let refs = config.installedPlugins {
             workspace.installedPluginIDs = refs.map(\.id)
             workspace.installedPluginVersions = refs.map(\.version)
@@ -1741,6 +1735,184 @@ enum WorkspaceConfigManager {
     private static func appendUnique(_ value: String, to values: inout [String]) {
         guard !values.contains(value) else { return }
         values.append(value)
+    }
+
+    private static func importedActiveWorkingPath(
+        _ activeWorkingPath: String?,
+        primaryPath: String,
+        additionalPaths: [String],
+        fileManager: FileManager = .default
+    ) -> String? {
+        guard let active = activeWorkingPath,
+              !active.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return nil
+        }
+
+        let activePath = WorkspacePathPresentation.standardizedPath(active)
+        guard !activePath.isEmpty,
+              isExistingDirectory(activePath, fileManager: fileManager),
+              let canonicalActive = canonicalPath(activePath) else {
+            return nil
+        }
+
+        let primary = WorkspacePathPresentation.standardizedPath(primaryPath)
+        guard canonicalActive != canonicalPath(primary) else {
+            return nil
+        }
+
+        let workspaceRootPaths = ([primaryPath] + additionalPaths)
+            .map(WorkspacePathPresentation.standardizedPath)
+            .filter { !$0.isEmpty }
+        let canonicalWorkspaceRoots = workspaceRootPaths.compactMap(canonicalPath)
+
+        if canonicalWorkspaceRoots.contains(where: { isPath(canonicalActive, insideOrEqualTo: $0) }) {
+            return activePath
+        }
+        if isRegisteredWorktree(activePath, attachedTo: workspaceRootPaths, fileManager: fileManager) {
+            return activePath
+        }
+
+        return nil
+    }
+
+    private static func isExistingDirectory(_ path: String, fileManager: FileManager) -> Bool {
+        var isDirectory = ObjCBool(false)
+        return fileManager.fileExists(atPath: path, isDirectory: &isDirectory) && isDirectory.boolValue
+    }
+
+    private static func canonicalPath(_ path: String) -> String? {
+        ExecutionSandbox.canonicalize(path)
+    }
+
+    private struct GitDirectoryLayout {
+        let gitDirectory: String
+        let commonDirectory: String
+    }
+
+    private static func isRegisteredWorktree(
+        _ activePath: String,
+        attachedTo workspaceRootPaths: [String],
+        fileManager: FileManager
+    ) -> Bool {
+        guard let activeLayout = gitDirectoryLayout(for: activePath, fileManager: fileManager),
+              worktreeAdminDirectory(activeLayout.gitDirectory, pointsBackTo: activePath, fileManager: fileManager) else {
+            return false
+        }
+
+        return workspaceRootPaths.contains { rootPath in
+            guard let rootLayout = gitDirectoryLayout(for: rootPath, fileManager: fileManager),
+                  activeLayout.commonDirectory == rootLayout.commonDirectory else {
+                return false
+            }
+            let worktreesDirectory = URL(fileURLWithPath: rootLayout.commonDirectory, isDirectory: true)
+                .appendingPathComponent("worktrees", isDirectory: true)
+                .path
+            return activeLayout.gitDirectory != activeLayout.commonDirectory
+                && isPath(activeLayout.gitDirectory, insideOrEqualTo: worktreesDirectory)
+        }
+    }
+
+    private static func gitDirectoryLayout(for path: String, fileManager: FileManager) -> GitDirectoryLayout? {
+        guard let gitDirectory = gitDirectoryReference(for: path, fileManager: fileManager),
+              isExistingDirectory(gitDirectory, fileManager: fileManager) else {
+            return nil
+        }
+        let commonDirectory = commonGitDirectory(for: gitDirectory, fileManager: fileManager) ?? gitDirectory
+        guard isExistingDirectory(commonDirectory, fileManager: fileManager) else {
+            return nil
+        }
+        return GitDirectoryLayout(gitDirectory: gitDirectory, commonDirectory: commonDirectory)
+    }
+
+    private static func commonGitDirectory(for gitDirectory: String, fileManager: FileManager) -> String? {
+        let commonDirPath = URL(fileURLWithPath: gitDirectory, isDirectory: true)
+            .appendingPathComponent("commondir")
+            .path
+        guard let data = fileManager.contents(atPath: commonDirPath),
+              let raw = String(data: data, encoding: .utf8) else {
+            return nil
+        }
+        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty else { return nil }
+        let resolved = value.hasPrefix("/")
+            ? value
+            : URL(fileURLWithPath: gitDirectory, isDirectory: true)
+                .appendingPathComponent(value)
+                .standardizedFileURL
+                .path
+        return canonicalPath(resolved)
+    }
+
+    private static func worktreeAdminDirectory(
+        _ gitDirectory: String,
+        pointsBackTo activePath: String,
+        fileManager: FileManager
+    ) -> Bool {
+        let pointerPath = URL(fileURLWithPath: gitDirectory, isDirectory: true)
+            .appendingPathComponent("gitdir")
+            .path
+        guard let data = fileManager.contents(atPath: pointerPath),
+              let raw = String(data: data, encoding: .utf8) else {
+            return false
+        }
+        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty else { return false }
+        let resolved = value.hasPrefix("/")
+            ? value
+            : URL(fileURLWithPath: gitDirectory, isDirectory: true)
+                .appendingPathComponent(value)
+                .standardizedFileURL
+                .path
+        guard let canonicalGitFile = canonicalPath(resolved),
+              let canonicalActive = canonicalPath(activePath) else {
+            return false
+        }
+        let pointedWorktree = (canonicalGitFile as NSString).lastPathComponent == ".git"
+            ? (canonicalGitFile as NSString).deletingLastPathComponent
+            : canonicalGitFile
+        return pointedWorktree == canonicalActive
+    }
+
+    private static func gitDirectoryReference(for path: String, fileManager: FileManager) -> String? {
+        let gitPath = URL(fileURLWithPath: path, isDirectory: true)
+            .appendingPathComponent(".git")
+            .path
+        var isDirectory = ObjCBool(false)
+        guard fileManager.fileExists(atPath: gitPath, isDirectory: &isDirectory) else {
+            return nil
+        }
+        if isDirectory.boolValue {
+            return canonicalPath(gitPath)
+        }
+        guard let data = fileManager.contents(atPath: gitPath),
+              let text = String(data: data, encoding: .utf8) else {
+            return nil
+        }
+        let prefix = "gitdir:"
+        guard let line = text.split(whereSeparator: \.isNewline).first,
+              line.lowercased().hasPrefix(prefix) else {
+            return nil
+        }
+        let rawReference = line.dropFirst(prefix.count).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !rawReference.isEmpty else { return nil }
+        let referencePath: String
+        if rawReference.hasPrefix("/") {
+            referencePath = rawReference
+        } else {
+            referencePath = URL(fileURLWithPath: path, isDirectory: true)
+                .appendingPathComponent(rawReference)
+                .standardizedFileURL
+                .path
+        }
+        return canonicalPath(referencePath)
+    }
+
+    private static func isPath(_ path: String, insideOrEqualTo root: String) -> Bool {
+        guard !path.isEmpty, !root.isEmpty else { return false }
+        if root == "/" {
+            return path.hasPrefix("/")
+        }
+        return path == root || path.hasPrefix(root + "/")
     }
 }
 
