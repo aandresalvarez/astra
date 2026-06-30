@@ -1181,32 +1181,24 @@ struct TaskCapabilityResolverTests {
         #expect(issues.first?.resourceName == "Jira")
     }
 
-    @Test("Runtime integrity still blocks live package skill missing browser adapter")
-    func runtimeIntegrityBlocksLivePackageSkillMissingBrowserAdapter() throws {
+    @Test("Runtime integrity does not require GitHub browser adapter for host-control package")
+    func runtimeIntegrityDoesNotRequireGitHubBrowserAdapterForHostControlPackage() throws {
         let container = try makeTaskCapabilityResolverContainer()
         let context = container.mainContext
         let githubPackage = try #require(PluginCatalog.builtInPackages.first { $0.id == "github-workflow" })
+        let packageSkill = try #require(githubPackage.skills.first)
 
         let workspace = Workspace(name: "GitHub Workspace", primaryPath: "/tmp/github-workspace")
         context.insert(workspace)
 
         let githubSkill = Skill(
-            name: "GitHub Agent",
-            allowedTools: ["Read", "Bash"],
-            behaviorInstructions: "Use GitHub CLI."
+            name: packageSkill.name,
+            allowedTools: packageSkill.allowedTools,
+            disallowedTools: packageSkill.disallowedTools,
+            behaviorInstructions: packageSkill.behaviorInstructions
         )
         githubSkill.workspace = workspace
         context.insert(githubSkill)
-
-        let githubTool = LocalTool(
-            name: "gh - GitHub CLI",
-            toolDescription: "Run GitHub CLI commands",
-            toolType: "cli",
-            command: "gh"
-        )
-        githubTool.workspace = workspace
-        githubTool.skill = githubSkill
-        context.insert(githubTool)
 
         let task = AgentTask(
             title: "Use GitHub",
@@ -1223,9 +1215,47 @@ struct TaskCapabilityResolverTests {
             checkExecutables: false
         )
 
+        #expect(issues.isEmpty)
+    }
+
+    @Test("Runtime integrity checks selected GitHub host-control skill prerequisites")
+    func runtimeIntegrityChecksSelectedGitHubHostControlSkillPrerequisites() throws {
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+        let githubPackage = try #require(PluginCatalog.builtInPackages.first { $0.id == "github-workflow" })
+        let packageSkill = try #require(githubPackage.skills.first)
+
+        let workspace = Workspace(name: "Selected GitHub Workspace", primaryPath: "/tmp/selected-github-workspace")
+        context.insert(workspace)
+
+        let githubSkill = Skill(
+            name: packageSkill.name,
+            allowedTools: packageSkill.allowedTools,
+            disallowedTools: packageSkill.disallowedTools,
+            behaviorInstructions: packageSkill.behaviorInstructions
+        )
+        githubSkill.workspace = workspace
+        context.insert(githubSkill)
+
+        let task = AgentTask(
+            title: "Review PRs",
+            goal: "List GitHub pull requests",
+            workspace: workspace
+        )
+        task.skills = [githubSkill]
+        context.insert(task)
+        try context.save()
+
+        let issues = CapabilityRuntimeIntegrityService.issues(
+            for: task,
+            packages: [githubPackage],
+            checkExecutables: false,
+            prerequisiteStatuses: [CommonCLIPrerequisites.githubAuth.id: .unauthenticated(detail: "not logged in")]
+        )
+
         #expect(issues.map(\.source) == [.selectedPackageSkill])
-        #expect(issues.map(\.resourceKind) == [.browserAdapter])
-        #expect(issues.first?.resourceName == BrowserSiteAdapterID.github)
+        #expect(issues.map(\.resourceKind) == [.credential])
+        #expect(issues.first?.resourceName == "GitHub login")
     }
 
     @Test("Runtime integrity ignores stale package skill snapshots")
@@ -1600,6 +1630,31 @@ struct TaskCapabilityResolverTests {
         #expect(AgentRuntimeProcessRunner.hasActiveCLITools(task, contextText: followUpContext))
     }
 
+    @Test("Provider launch context activates GitHub package for terminal PR abbreviations")
+    func providerLaunchContextActivatesGitHubPackageForTerminalPRAbbreviations() throws {
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+        let (workspace, githubPackage) = try makeGitHubEnabledWorkspace(in: context, name: "github-pr-abbreviation-scope")
+
+        let task = AgentTask(
+            title: "Bake a cake",
+            goal: "Bake a chocolate sponge cake and write the recipe",
+            workspace: workspace
+        )
+        context.insert(task)
+        try context.save()
+
+        let terminalPluralContext = "Review PRs"
+        let scope = TaskCapabilityResolver(task: task)
+            .resolvedScope(.providerLaunch(contextText: terminalPluralContext))
+        #expect(scope.enabledPackageIDs.contains(githubPackage.id))
+        #expect(HostControlPlaneMCPProjection.enabledToolNames(
+            task: task,
+            environment: .host,
+            contextText: terminalPluralContext
+        ) == ["github"])
+    }
+
     @Test("A pruned-but-existing enabled capability is not a launch failure")
     func prunedEnabledCapabilityIsNotALaunchFailure() throws {
         let container = try makeTaskCapabilityResolverContainer()
@@ -1700,7 +1755,9 @@ struct TaskCapabilityResolverTests {
 
         let roster = try #require(CapabilityRosterBuilder.roster(for: workspace))
         #expect(roster.contains("GitHub"))
-        #expect(roster.contains("`gh`"))
+        // GitHub capability now routes through the GitHub Agent skill (host-control MCP),
+        // not a direct `gh` Bash command, so the invocation hint reflects the skill path.
+        #expect(roster.contains("GitHub Agent"))
         // Awareness must instruct the agent to surface, not silently skip, gaps.
         #expect(roster.lowercased().contains("do not silently skip"))
     }

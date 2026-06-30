@@ -321,28 +321,27 @@ final class PluginCatalog {
         ),
 
         // ────────────────────────────────────────────
-        // 4. GitHub Workflow — requires gh CLI
+        // 4. GitHub Workflow — requires host-control mediated gh CLI
         // ────────────────────────────────────────────
         PluginPackage(
             id: "github-workflow",
             name: "GitHub Workflow",
             icon: "chevron.left.forwardslash.chevron.right",
             iconDescriptor: .brand("github", fallbackSystemName: "chevron.left.forwardslash.chevron.right"),
-            description: "Manage issues, PRs, and CI from your workspace",
+            description: "Inspect issues, PRs, and CI from your workspace",
             author: "ASTRA",
             category: "Integrations",
             tags: ["github", "git", "pull-requests", "issues", "ci"],
-            version: "2.1.2",
+            version: "2.1.4",
             setupGuide: """
-            Connect your workspace to GitHub using the GitHub CLI. This \
-            capability does not use a stored GitHub connector or token; it \
-            runs `gh` against the current repository or an explicit owner/repo.
+            Connect your workspace to GitHub using ASTRA's host-control \
+            GitHub tool. This capability does not use a stored GitHub \
+            connector or token; ASTRA brokers read-only `gh` operations \
+            against the current repository or an explicit owner/repo.
 
             What you can do:
             • List and search issues and pull requests
             • Read PR diffs, review comments, and CI status
-            • Create issues with labels and assignees
-            • Post comments on issues and PRs
             • Check workflow runs and deployment status
 
             Setup:
@@ -353,30 +352,29 @@ final class PluginCatalog {
             skills: [PluginSkill(
                 name: "GitHub Agent",
                 icon: "chevron.left.forwardslash.chevron.right",
-                description: "Manage issues, PRs, and CI via GitHub CLI",
-                allowedTools: ["Read", "Bash", "Glob", "Grep"],
-                disallowedTools: ["Write", "Edit"],
+                description: "Inspect issues, PRs, and CI via ASTRA host-control GitHub",
+                allowedTools: ["Read", "Glob", "Grep"],
+                disallowedTools: ["Write", "Edit", "Bash"],
                 customTools: [],
                 behaviorInstructions: """
-                You are a GitHub integration agent. Use the GitHub CLI (`gh`) via Bash for GitHub work. Do not rely on stored connector credentials.
+                You are a GitHub integration agent. Use ASTRA's host-control GitHub MCP tool for GitHub work: `mcp__astra_host__github` (GitHub Copilot CLI may display it as `astra_host-github`). Do not use Bash, shell, workspace shell, direct `gh`, browser clicks, or raw GitHub API calls to bypass this broker.
 
                 AUTHENTICATION
-                • Require `gh` to be installed and authenticated locally
+                • Require `gh` to be installed and authenticated locally on the host
                 • If authentication fails, tell the user to run `gh auth login`
                 • Prefer the current git repository context; use `--repo owner/repo` when the user specifies a repository outside the current checkout
 
                 COMMON OPERATIONS
-                • List issues: gh issue list --state open --limit 30
-                • View issue: gh issue view ISSUE_NUMBER --comments
-                • Create issue: gh issue create --title "..." --body "..." --label "bug"
-                • List recent PRs across repositories: gh search prs --author "@me" --state all --limit 30 --sort updated --order desc --json number,title,state,author,repository,url,createdAt,updatedAt
-                • List PRs in current repo: gh pr list --state open --limit 30
-                • View PR: gh pr view PR_NUMBER --comments --json title,author,state,labels,files,reviews,statusCheckRollup,url
-                • PR diff: gh pr diff PR_NUMBER
-                • Review checks: gh pr checks PR_NUMBER
-                • Workflow runs: gh run list --limit 10
-                • View workflow run: gh run view RUN_ID --log
-                • Comment on issue or PR: gh issue comment NUMBER --body "..." or gh pr comment NUMBER --body "..."
+                • List issues: call `mcp__astra_host__github` with arguments `["issue", "list", "--state", "open", "--limit", "30"]`
+                • Search issues: call `mcp__astra_host__github` with arguments `["search", "issues", "query terms", "--state", "open", "--limit", "30", "--json", "number,title,state,author,repository,url,createdAt,updatedAt"]`
+                • View issue: call `mcp__astra_host__github` with arguments `["issue", "view", "ISSUE_NUMBER", "--comments"]`
+                • List recent PRs across repositories: call `mcp__astra_host__github` with arguments `["search", "prs", "--author", "@me", "--state", "all", "--limit", "30", "--sort", "updated", "--order", "desc", "--json", "number,title,state,author,repository,url,createdAt,updatedAt"]`
+                • List PRs in current repo: call `mcp__astra_host__github` with arguments `["pr", "list", "--state", "open", "--limit", "30"]`
+                • View PR: call `mcp__astra_host__github` with arguments `["pr", "view", "PR_NUMBER", "--comments", "--json", "title,author,state,labels,files,reviews,statusCheckRollup,url"]`
+                • PR diff: call `mcp__astra_host__github` with arguments `["pr", "diff", "PR_NUMBER"]`
+                • Review checks: call `mcp__astra_host__github` with arguments `["pr", "checks", "PR_NUMBER"]`
+                • Workflow runs: call `mcp__astra_host__github` with arguments `["run", "list", "--limit", "10"]`
+                • View workflow run: call `mcp__astra_host__github` with arguments `["run", "view", "RUN_ID", "--log"]`
 
                 FORMATTING
                 • Issues/PRs: show number, title, state, author, labels, and URL
@@ -384,37 +382,29 @@ final class PluginCatalog {
                 • CI: show workflow name, status, conclusion, and failing job details
 
                 RULES
-                • Always confirm with the user before creating issues, posting comments, merging PRs, or triggering workflows
+                • This capability is read-only. Do not create issues, post comments, merge PRs, trigger workflows, or call raw mutating GitHub APIs.
+                • If the user requests a GitHub write, explain that ASTRA's built-in GitHub host-control capability is read-only and that writes require opening GitHub outside ASTRA or a future confirmed-write integration.
                 • Prefer `--json` with `--jq` for structured parsing when available
                 • Do not pipe JSON into `python3 - <<'PY'`; the heredoc consumes stdin, so Python will not receive the command output. If Python parsing is required, write JSON to a temp file first or pass it as an argument.
-                • Prefer `gh search prs` for cross-repository PR searches. If REST search is required, call `gh api /search/issues` with a leading slash.
+                • Prefer the brokered `search issues` and `search prs` operations for cross-repository searches; raw GitHub API calls are outside this read-only capability.
                 • Include links to issues/PRs in your responses
                 • Never ask the user to paste GitHub credentials when `gh auth login` is the right fix
                 """,
                 environmentKeys: [], environmentValues: []
             )],
             connectors: [],
-            localTools: [
-                PluginLocalTool(
-                    name: "gh — GitHub CLI",
-                    description: "Run GitHub CLI commands (issues, PRs, repos, actions)",
-                    icon: "terminal",
-                    toolType: "cli",
-                    command: "gh",
-                    arguments: ""
-                )
-            ],
+            localTools: [],
             templates: [],
-            browserAdapters: [BrowserSiteAdapterID.github],
+            browserAdapters: [],
             prerequisites: [
                 CommonCLIPrerequisites.githubCLI,
                 CommonCLIPrerequisites.githubAuth
             ],
             governance: .builtInApproved(
                 riskLevel: .high,
-                dataAccess: [.workspaceFiles, .externalService, .network, .authenticatedBrowserContent],
-                externalEffects: [.readOnly, .externalAPIWrite, .ticketMutation, .browserNavigation],
-                policyNotes: "GitHub work uses the local gh CLI and may read repository state, issues, pull requests, Actions, and authenticated GitHub browser pages. External writes require user confirmation."
+                dataAccess: [.workspaceFiles, .externalService, .network],
+                externalEffects: [.readOnly],
+                policyNotes: "GitHub work uses ASTRA host-control mediated gh commands for read-only repository, issue, pull request, and Actions inspection. Native Bash/direct gh and GitHub browser mutation bypasses are not part of this built-in capability."
             )
         ),
 

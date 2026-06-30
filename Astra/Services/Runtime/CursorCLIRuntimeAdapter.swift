@@ -219,6 +219,12 @@ struct CursorCLIRuntimeAdapter: AgentRuntimeAdapter {
         let model = AgentRuntimeProcessRunner.model(context.task.model, for: id)
         let providerModel = CursorCLIRuntime.resolvedModelName(model)
         let additionalPaths = AgentRuntimeProcessRunner.runtimeAdditionalPaths(for: context.task)
+        let executionEnvironment = DockerExecutionPlanner.resolveEnvironment(for: context.task)
+        let hostControlTools = HostControlPlaneMCPProjection.enabledToolNames(
+            task: context.task,
+            environment: executionEnvironment,
+            contextText: context.contextText
+        )
         let plan = CursorCLIRuntime.buildCommand(
             executablePath: executable,
             prompt: context.prompt,
@@ -234,6 +240,26 @@ struct CursorCLIRuntimeAdapter: AgentRuntimeAdapter {
                 contextText: context.contextText
             )
                 || taskEnv["ASTRA_BROWSER_URL"] != nil
+        )
+        var commandPlannedFields = [
+            "runtime": id.rawValue,
+            "phase": context.phase,
+            "model": model,
+            "provider_model": providerModel,
+            "permission_policy": effectivePermissionPolicy.rawValue,
+            "parses_json_lines": String(plan.parsesJSONLines),
+            "additional_paths_count": String(additionalPaths.count),
+            "task_env_count": String(taskEnv.count),
+            "uses_print": String(plan.arguments.contains("--print")),
+            "uses_stream_json": String(plan.arguments.contains("stream-json")),
+            "uses_workspace": String(plan.arguments.contains("--workspace")),
+            "uses_trust": String(plan.arguments.contains("--trust")),
+            "uses_sandbox": String(plan.arguments.contains("--sandbox")),
+            "uses_force": String(plan.arguments.contains("--force"))
+        ]
+        commandPlannedFields.merge(
+            HostControlPlaneRuntimeLaunchGuard.planMetadata(runtime: id, requiredTools: hostControlTools),
+            uniquingKeysWith: { current, _ in current }
         )
 
         return AgentRuntimeProcessLaunchPlan(
@@ -255,22 +281,7 @@ struct CursorCLIRuntimeAdapter: AgentRuntimeAdapter {
                 "executable_mtime": AgentRuntimeProcessRunner.fileModificationTimestamp(executable),
                 "provider_home_configured": String(!context.providerHomeDirectory.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             ],
-            commandPlannedFields: [
-                "runtime": id.rawValue,
-                "phase": context.phase,
-                "model": model,
-                "provider_model": providerModel,
-                "permission_policy": effectivePermissionPolicy.rawValue,
-                "parses_json_lines": String(plan.parsesJSONLines),
-                "additional_paths_count": String(additionalPaths.count),
-                "task_env_count": String(taskEnv.count),
-                "uses_print": String(plan.arguments.contains("--print")),
-                "uses_stream_json": String(plan.arguments.contains("stream-json")),
-                "uses_workspace": String(plan.arguments.contains("--workspace")),
-                "uses_trust": String(plan.arguments.contains("--trust")),
-                "uses_sandbox": String(plan.arguments.contains("--sandbox")),
-                "uses_force": String(plan.arguments.contains("--force"))
-            ]
+            commandPlannedFields: commandPlannedFields
         )
     }
 

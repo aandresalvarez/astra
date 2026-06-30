@@ -625,7 +625,11 @@ enum CapabilityRuntimeIntegrityService {
     }
 
     private static func hasRuntimeCompanionResources(_ package: PluginPackage) -> Bool {
-        !package.connectors.isEmpty || !package.localTools.isEmpty || !package.mcpServers.isEmpty || !package.browserAdapters.isEmpty
+        !package.connectors.isEmpty
+            || !package.localTools.isEmpty
+            || !package.mcpServers.isEmpty
+            || !package.browserAdapters.isEmpty
+            || HostControlPlaneMCPProjection.packageUsesHostControlRuntime(package)
     }
 
     private static let genericIntentTokens: Set<String> = [

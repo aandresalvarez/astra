@@ -5,6 +5,151 @@ import Testing
 
 @Suite("Host Control Tool Support", .serialized)
 struct HostControlToolSupportTests {
+    @Test("GitHub host-control denies credential export and broad mutations before launch")
+    func githubHostControlDeniesCredentialExportAndBroadMutationsBeforeLaunch() throws {
+        let runner = RecordingHostControlProcessRunner(stdout: "ok")
+        let server = HostControlMCPServer(
+            configuration: HostControlToolConfiguration(githubExecutable: "gh"),
+            processRunner: runner
+        )
+
+        let deniedAuth = try call(server, id: 1, tool: "github", arguments: [
+            "arguments": ["auth", "token"]
+        ])
+        #expect(try errorMessage(deniedAuth).contains("does not allow GitHub operation"))
+
+        let deniedAuthTokenDisplay = try call(server, id: 10, tool: "github", arguments: [
+            "arguments": ["auth", "status", "--show-token"]
+        ])
+        #expect(try errorMessage(deniedAuthTokenDisplay).contains("does not allow GitHub operation"))
+
+        let deniedAuthTokenDisplayShortFlag = try call(server, id: 12, tool: "github", arguments: [
+            "arguments": ["auth", "status", "-t"]
+        ])
+        #expect(try errorMessage(deniedAuthTokenDisplayShortFlag).contains("does not allow GitHub operation"))
+
+        let deniedBundledAuthTokenDisplayShortFlag = try call(server, id: 13, tool: "github", arguments: [
+            "arguments": ["auth", "status", "-at"]
+        ])
+        #expect(try errorMessage(deniedBundledAuthTokenDisplayShortFlag).contains("does not allow GitHub operation"))
+
+        let deniedJQEnvironmentRead = try call(server, id: 14, tool: "github", arguments: [
+            "arguments": ["auth", "status", "--json", "hosts", "--jq", "env"]
+        ])
+        #expect(try errorMessage(deniedJQEnvironmentRead).contains("does not allow GitHub operation"))
+
+        let deniedWebLaunch = try call(server, id: 15, tool: "github", arguments: [
+            "arguments": ["pr", "view", "123", "--web"]
+        ])
+        #expect(try errorMessage(deniedWebLaunch).contains("does not allow GitHub operation"))
+
+        let deniedWebLaunchShortFlag = try call(server, id: 16, tool: "github", arguments: [
+            "arguments": ["repo", "view", "owner/project", "-w"]
+        ])
+        #expect(try errorMessage(deniedWebLaunchShortFlag).contains("does not allow GitHub operation"))
+
+        let deniedAPI = try call(server, id: 2, tool: "github", arguments: [
+            "arguments": ["api", "--method", "DELETE", "/repos/example/project"]
+        ])
+        #expect(try errorMessage(deniedAPI).contains("does not allow GitHub operation"))
+
+        let deniedWorkflow = try call(server, id: 3, tool: "github", arguments: [
+            "arguments": ["workflow", "run", "ci.yml"]
+        ])
+        #expect(try errorMessage(deniedWorkflow).contains("does not allow GitHub operation"))
+
+        let deniedIssueWrite = try call(server, id: 4, tool: "github", arguments: [
+            "arguments": ["issue", "create", "--title", "bug"]
+        ])
+        #expect(try errorMessage(deniedIssueWrite).contains("does not allow GitHub operation"))
+
+        let deniedPRComment = try call(server, id: 5, tool: "github", arguments: [
+            "arguments": ["pr", "comment", "123", "--body", "ready"]
+        ])
+        #expect(try errorMessage(deniedPRComment).contains("does not allow GitHub operation"))
+
+        #expect(runner.invocations.isEmpty)
+
+        let allowed = try call(server, id: 6, tool: "github", arguments: [
+            "arguments": ["pr", "view", "123", "--comments"]
+        ])
+        #expect(try resultText(allowed).contains("ok"))
+
+        let allowedRepoBeforeCommand = try call(server, id: 7, tool: "github", arguments: [
+            "arguments": ["--repo", "owner/project", "pr", "view", "123"]
+        ])
+        #expect(try resultText(allowedRepoBeforeCommand).contains("ok"))
+
+        let allowedRepoBetweenCommandAndSubcommand = try call(server, id: 8, tool: "github", arguments: [
+            "arguments": ["pr", "--repo", "owner/project", "view", "123"]
+        ])
+        #expect(try resultText(allowedRepoBetweenCommandAndSubcommand).contains("ok"))
+
+        let allowedHostnameBetweenCommandAndSubcommand = try call(server, id: 9, tool: "github", arguments: [
+            "arguments": ["pr", "--hostname", "github.com", "view", "123"]
+        ])
+        #expect(try resultText(allowedHostnameBetweenCommandAndSubcommand).contains("ok"))
+
+        let allowedAuthStatus = try call(server, id: 11, tool: "github", arguments: [
+            "arguments": ["auth", "status", "--hostname", "github.com"]
+        ])
+        #expect(try resultText(allowedAuthStatus).contains("ok"))
+
+        let allowedIssueTemplate = try call(server, id: 13, tool: "github", arguments: [
+            "arguments": ["issue", "list", "--json", "number,title", "-t", "{{range .}}{{.number}}{{end}}"]
+        ])
+        #expect(try resultText(allowedIssueTemplate).contains("ok"))
+
+        #expect(runner.invocations.map(\.arguments) == [
+            ["pr", "view", "123", "--comments"],
+            ["--repo", "owner/project", "pr", "view", "123"],
+            ["pr", "--repo", "owner/project", "view", "123"],
+            ["pr", "--hostname", "github.com", "view", "123"],
+            ["auth", "status", "--hostname", "github.com"],
+            ["issue", "list", "--json", "number,title", "-t", "{{range .}}{{.number}}{{end}}"]
+        ])
+    }
+
+    @Test("Host control MCP enforces allowed tools and forwards workspace current directory")
+    func hostControlMCPEnforcesAllowedToolsAndForwardsWorkspaceCurrentDirectory() throws {
+        let runner = RecordingHostControlProcessRunner(stdout: "ok")
+        let server = HostControlMCPServer(
+            configuration: HostControlToolConfiguration(
+                githubExecutable: "gh",
+                gcloudExecutable: "gcloud",
+                allowedTools: ["github"],
+                currentDirectory: "/tmp/astra-workspace"
+            ),
+            processRunner: runner
+        )
+
+        let list = try parseJSON(try #require(server.handleLine(#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#)))
+        let listResult = try #require(list["result"] as? [String: Any])
+        let tools = try #require(listResult["tools"] as? [[String: Any]])
+        #expect(tools.compactMap { $0["name"] as? String } == ["github"])
+
+        let denied = try call(server, id: 2, tool: "gcloud", arguments: [
+            "arguments": ["compute", "instances", "list"]
+        ])
+        #expect(try errorMessage(denied).contains("not enabled for this task"))
+        #expect(runner.invocations.isEmpty)
+
+        let allowed = try call(server, id: 3, tool: "github", arguments: [
+            "arguments": ["pr", "view", "123"]
+        ])
+        #expect(try resultText(allowed).contains("ok"))
+        #expect(runner.invocations.last?.currentDirectory == "/tmp/astra-workspace")
+
+        let normalizedAllowed = try call(server, id: 4, tool: " GitHub ", arguments: [
+            "arguments": ["pr", "view", "456"]
+        ])
+        #expect(try resultText(normalizedAllowed).contains("ok"))
+        #expect(runner.invocations.last?.arguments == ["pr", "view", "456"])
+
+        #expect(HostControlToolConfiguration.fromEnvironment([:]).allowedTools == HostControlToolConfiguration.knownToolNames)
+        #expect(HostControlToolConfiguration.fromEnvironment(["ASTRA_HOST_CONTROL_ALLOWED_TOOLS": ""]).allowedTools.isEmpty)
+    }
+
     @Test("Host control MCP runs fake host tools and redacts connector secrets")
     func hostControlMCPRunsFakeHostToolsAndRedactsConnectorSecrets() throws {
         let root = FileManager.default.temporaryDirectory
@@ -1777,6 +1922,7 @@ private final class CapturingHostControlProcessRunner: HostControlProcessRunning
         var arguments: [String]
         var timeoutSeconds: TimeInterval
         var environment: [String: String]
+        var currentDirectory: String?
     }
 
     private(set) var requests: [Request] = []
@@ -1796,14 +1942,56 @@ private final class CapturingHostControlProcessRunner: HostControlProcessRunning
         executablePath: String,
         arguments: [String],
         timeoutSeconds: TimeInterval,
-        environment: [String: String]
+        environment: [String: String],
+        currentDirectory: String?
     ) -> HostControlCommandResult {
         requests.append(Request(
             executablePath: executablePath,
             arguments: arguments,
             timeoutSeconds: timeoutSeconds,
-            environment: environment
+            environment: environment,
+            currentDirectory: currentDirectory
         ))
         return result
+    }
+}
+
+private final class RecordingHostControlProcessRunner: HostControlProcessRunning {
+    struct Invocation: Equatable {
+        var executablePath: String
+        var arguments: [String]
+        var timeoutSeconds: TimeInterval
+        var environment: [String: String]
+        var currentDirectory: String?
+    }
+
+    private(set) var invocations: [Invocation] = []
+    private let stdout: String
+
+    init(stdout: String) {
+        self.stdout = stdout
+    }
+
+    func run(
+        executablePath: String,
+        arguments: [String],
+        timeoutSeconds: TimeInterval,
+        environment: [String: String],
+        currentDirectory: String?
+    ) -> HostControlCommandResult {
+        invocations.append(Invocation(
+            executablePath: executablePath,
+            arguments: arguments,
+            timeoutSeconds: timeoutSeconds,
+            environment: environment,
+            currentDirectory: currentDirectory
+        ))
+        return HostControlCommandResult(
+            command: executablePath,
+            arguments: arguments,
+            exitCode: 0,
+            stdout: stdout,
+            stderr: ""
+        )
     }
 }

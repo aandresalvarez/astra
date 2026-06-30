@@ -242,6 +242,104 @@ struct BrowserBridgeSecurityTests {
         #expect(ShelfBrowserBridgeCommandRouter.route(method: "POST", path: "/snapshot") == nil)
     }
 
+    @Test("GitHub browser adapter allows read routes and blocks mutating routes")
+    func githubBrowserAdapterAllowsReadRoutesAndBlocksMutatingRoutes() throws {
+        let enabled = Set([BrowserSiteAdapterID.github])
+
+        #expect(BrowserSiteActionPolicy.denialReason(
+            route: .snapshot,
+            currentURL: "https://github.com/owner/repo/pull/1",
+            enabledBrowserAdapters: enabled
+        ) == nil)
+        #expect(BrowserSiteActionPolicy.denialReason(
+            route: .readPage,
+            currentURL: "https://github.com/owner/repo/pull/1",
+            enabledBrowserAdapters: enabled
+        ) == nil)
+        #expect(BrowserSiteActionPolicy.denialReason(
+            route: .open,
+            currentURL: "https://github.com/owner/repo/pull/1",
+            enabledBrowserAdapters: enabled
+        )?.contains("GitHub browser control is read-only") == true)
+
+        #expect(BrowserSiteActionPolicy.denialReason(
+            route: .click,
+            currentURL: "https://github.com/owner/repo/pull/1",
+            enabledBrowserAdapters: enabled
+        )?.contains("GitHub browser control is read-only") == true)
+        #expect(BrowserSiteActionPolicy.denialReason(
+            route: .fill,
+            currentURL: "https://github.com/owner/repo/issues/new",
+            enabledBrowserAdapters: enabled
+        )?.contains("GitHub browser control is read-only") == true)
+        #expect(BrowserSiteActionPolicy.denialReason(
+            route: .batch,
+            currentURL: "https://github.com/owner/repo/actions",
+            enabledBrowserAdapters: enabled
+        ) == nil)
+        #expect(BrowserSiteActionPolicy.denialReason(
+            route: .click,
+            currentURL: "https://example.com/",
+            enabledBrowserAdapters: enabled
+        ) == nil)
+    }
+
+    @Test("GitHub host-control read-only mode blocks mutating browser routes without adapter")
+    func githubHostControlReadOnlyModeBlocksMutatingBrowserRoutesWithoutAdapter() throws {
+        #expect(BrowserSiteActionPolicy.denialReason(
+            route: .snapshot,
+            currentURL: "https://github.com/owner/repo/pull/1",
+            enabledBrowserAdapters: [],
+            githubReadOnlyMode: true
+        ) == nil)
+
+        #expect(BrowserSiteActionPolicy.denialReason(
+            route: .click,
+            currentURL: "https://github.com/owner/repo/pull/1",
+            enabledBrowserAdapters: [],
+            githubReadOnlyMode: true
+        )?.contains("GitHub browser control is read-only") == true)
+
+        #expect(BrowserSiteActionPolicy.denialReason(
+            route: .click,
+            currentURL: "https://github.com/owner/repo/pull/1",
+            enabledBrowserAdapters: [],
+            githubReadOnlyMode: false
+        ) == nil)
+    }
+
+    @Test("GitHub read-only mode reuses route policy for batch subactions")
+    func githubReadOnlyModeReusesRoutePolicyForBatchSubactions() throws {
+        #expect(BrowserSiteActionPolicy.denialReason(
+            batchAction: "navigate",
+            currentURL: "https://github.com/owner/repo/pull/1",
+            enabledBrowserAdapters: [],
+            githubReadOnlyMode: true
+        ) == nil)
+        #expect(BrowserSiteActionPolicy.denialReason(
+            batchAction: "snapshot",
+            currentURL: "https://github.com/owner/repo/pull/1",
+            enabledBrowserAdapters: [],
+            githubReadOnlyMode: true
+        ) == nil)
+
+        for action in ["click", "open", "double-click", "fill", "set-value", "act", "keypress", "text"] {
+            #expect(BrowserSiteActionPolicy.denialReason(
+                batchAction: action,
+                currentURL: "https://github.com/owner/repo/pull/1",
+                enabledBrowserAdapters: [],
+                githubReadOnlyMode: true
+            )?.contains("GitHub browser control is read-only") == true)
+        }
+
+        #expect(BrowserSiteActionPolicy.denialReason(
+            batchAction: "click",
+            currentURL: "https://example.com/",
+            enabledBrowserAdapters: [],
+            githubReadOnlyMode: true
+        ) == nil)
+    }
+
     @Test("Bridge actions response preserves metadata contract")
     func bridgeActionsResponsePreservesMetadataContract() throws {
         let response = ShelfBrowserBridgeCommandRouter.actionsResponse(

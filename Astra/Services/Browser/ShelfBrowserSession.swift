@@ -145,6 +145,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
     private var browserActionLoopCounts: [String: (state: String, count: Int)] = [:]
     private let browserAnalysisCache = BrowserAnalysisCache()
     private var enabledBrowserAdapters: Set<String> = []
+    private var githubReadOnlyMode = false
     private var lastBrowserTrace: [String: Any]?
     private var browserDiagnostics = BrowserDiagnosticsSessionState()
     private var lastPageFingerprint: String?
@@ -360,33 +361,10 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         publishBridgeState()
     }
 
-    static func isDisplayablePageURL(_ value: String) -> Bool {
-        let normalizedURL = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        return !normalizedURL.isEmpty && normalizedURL != "about:blank"
-    }
-
-    static func controlledBrowserHandoffAddress(currentURL: String, webViewURL: URL?) -> String? {
-        let candidates = [
-            webViewURL?.absoluteString,
-            currentURL
-        ]
-
-        return firstDisplayableHandoffAddress(candidates)
-    }
-
-    static func embeddedBrowserHandoffAddress(currentURL: String, controlledURL: String) -> String? {
-        firstDisplayableHandoffAddress([controlledURL, currentURL])
-    }
-
-    private static func firstDisplayableHandoffAddress(_ candidates: [String?]) -> String? {
-        for candidate in candidates.compactMap({ $0?.trimmingCharacters(in: .whitespacesAndNewlines) }) {
-            guard isDisplayablePageURL(candidate),
-                  let normalized = ShelfBrowserAddress.normalizedURL(from: candidate) else {
-                continue
-            }
-            return normalized.absoluteString
-        }
-        return nil
+    func setGitHubReadOnlyMode(_ enabled: Bool) {
+        guard githubReadOnlyMode != enabled else { return }
+        githubReadOnlyMode = enabled
+        publishBridgeState()
     }
 
     func load(_ address: String, source: String = "app") {
@@ -1087,6 +1065,15 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             var response: [String: Any] = ["ok": false, "error": "not_found"]
             BrowserBridgeRecoveryHints.attach(to: &response, error: "not_found")
             return .json(response, statusCode: 404)
+        }
+
+        if let response = BrowserSiteActionPolicy.routeDenialResponse(
+            route: route,
+            currentURL: currentURL,
+            enabledBrowserAdapters: enabledBrowserAdapters,
+            githubReadOnlyMode: githubReadOnlyMode
+        ) {
+            return response
         }
 
         if let budgetResponse = browserRunGuardResponse(for: request) {
@@ -5110,6 +5097,17 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             return stopReason != nil
         }
         batchLoop: for action in command.actions.prefix(20) {
+            if let denialResult = BrowserSiteActionPolicy.batchDenialResult(
+                action: action.action,
+                normalizedAction: action.normalizedAction,
+                currentURL: currentURL,
+                enabledBrowserAdapters: enabledBrowserAdapters,
+                githubReadOnlyMode: githubReadOnlyMode
+            ) {
+                results.append(denialResult)
+                stopReason = "site_action_not_allowed"
+                break batchLoop
+            }
             switch action.normalizedAction {
             case "analyze":
                 let hasExplicitVersion = action.v2 != nil || action.version != nil || action.analysisVersion != nil

@@ -323,6 +323,7 @@ struct TaskCapabilityResolver {
     private func makePromptScope(contextText: String, forcePrune: Bool) -> TaskCapabilityPromptScope {
         let connectors = allConnectors
         var tools = allLocalTools
+        let enabledPackageIDs = enabledCapabilityPackages().map(\.id)
         if Self.shouldExposeBrowserBridge(for: task, contextText: contextText),
            !tools.contains(where: { $0.command == "astra-browser" }) {
             tools.append(Self.browserBridgeTool())
@@ -339,6 +340,7 @@ struct TaskCapabilityResolver {
                 localTools: tools,
                 prunedForBrowserTask: false,
                 excludedSkillNames: [],
+                enabledPackageIDs: enabledPackageIDs,
                 contextText: contextText
             )
         }
@@ -388,6 +390,10 @@ struct TaskCapabilityResolver {
             localTools: includedLocalTools,
             prunedForBrowserTask: true,
             excludedSkillNames: excludedNames,
+            enabledPackageIDs: enabledPackageIDs.filter { packageID in
+                includedSkills.contains { $0.originPackageID == packageID }
+                    || Self.packageID(packageID, matchesTaskText: searchableText)
+            },
             contextText: contextText
         )
     }
@@ -407,6 +413,7 @@ struct TaskCapabilityResolver {
                 localTools: tools,
                 prunedForBrowserTask: false,
                 excludedSkillNames: [],
+                enabledPackageIDs: enabledCapabilityPackages().map(\.id),
                 contextText: ""
             )
         case .providerLaunch(let contextText):
@@ -459,6 +466,7 @@ struct TaskCapabilityResolver {
         localTools: [LocalTool],
         prunedForBrowserTask: Bool,
         excludedSkillNames: [String],
+        enabledPackageIDs: [String],
         contextText: String
     ) -> TaskCapabilityPromptScope {
         let skillIDs = Set(skills.map(\.id))
@@ -521,8 +529,30 @@ struct TaskCapabilityResolver {
             localTools: scopedTools,
             enabledBrowserAdapters: enabledBrowserAdapters,
             prunedForBrowserTask: prunedForBrowserTask,
-            excludedSkillNames: excludedSkillNames
+            excludedSkillNames: excludedSkillNames,
+            enabledPackageIDs: Self.uniqueStrings(enabledPackageIDs)
         )
+    }
+
+    private static func packageID(_ packageID: String, matchesTaskText taskText: String) -> Bool {
+        guard packageID == "github-workflow" else { return false }
+        if ["github", "pull request", "pull requests", "issue", "issues", "ci", "workflow run"].contains(where: {
+            taskText.contains($0)
+        }) {
+            return true
+        }
+        return taskTextContainsToken(taskText, matching: ["pr", "prs"])
+    }
+
+    private static func taskTextContainsToken(_ taskText: String, matching expectedTokens: Set<String>) -> Bool {
+        taskText
+            .split { !$0.isLetter && !$0.isNumber }
+            .contains { expectedTokens.contains(String($0)) }
+    }
+
+    private static func uniqueStrings(_ values: [String]) -> [String] {
+        var seen: Set<String> = []
+        return values.filter { seen.insert($0).inserted }
     }
 
     private static func shouldPruneCapabilitiesForTask(task: AgentTask, contextText: String) -> Bool {
@@ -687,11 +717,20 @@ struct TaskCapabilityResolver {
         let normalized = normalizedSearchText(text)
         var tokens = Set<String>()
         for token in normalized.split(separator: " ").map(String.init) {
+            if token == "pr" || token == "prs" {
+                tokens.insert("pr")
+                tokens.insert("prs")
+                continue
+            }
             guard token.count >= 3, !genericCapabilityTokens.contains(token) else { continue }
             tokens.insert(token)
             if token.count > 4, token.hasSuffix("s") {
                 tokens.insert(String(token.dropLast()))
             }
+        }
+        if normalized.contains("pull request") || normalized.contains("pull requests") {
+            tokens.insert("pr")
+            tokens.insert("prs")
         }
         return tokens
     }
@@ -862,4 +901,5 @@ struct TaskCapabilityPromptScope {
     let enabledBrowserAdapters: [String]
     let prunedForBrowserTask: Bool
     let excludedSkillNames: [String]
+    let enabledPackageIDs: [String]
 }

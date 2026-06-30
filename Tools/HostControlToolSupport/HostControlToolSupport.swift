@@ -2,11 +2,15 @@ import Darwin
 import Foundation
 
 public struct HostControlToolConfiguration: Equatable, Sendable {
+    public static let knownToolNames: Set<String> = ["github", "gcloud", "bq", "ssh", "jira"]
+
     public var githubExecutable: String
     public var gcloudExecutable: String
     public var bigQueryExecutable: String
     public var sshExecutable: String
     public var allowedSSHAliases: [String]
+    public var allowedTools: Set<String>
+    public var currentDirectory: String
     public var diagnosticsHostPath: String
     public var taskID: String
     public var runID: String
@@ -19,6 +23,8 @@ public struct HostControlToolConfiguration: Equatable, Sendable {
         bigQueryExecutable: String = "bq",
         sshExecutable: String = "ssh",
         allowedSSHAliases: [String] = [],
+        allowedTools: Set<String> = knownToolNames,
+        currentDirectory: String = "",
         diagnosticsHostPath: String = "",
         taskID: String = "unknown-task",
         runID: String = "unknown-run",
@@ -30,6 +36,10 @@ public struct HostControlToolConfiguration: Equatable, Sendable {
         self.bigQueryExecutable = Self.clean(bigQueryExecutable) ?? "bq"
         self.sshExecutable = Self.clean(sshExecutable) ?? "ssh"
         self.allowedSSHAliases = Self.deduplicated(allowedSSHAliases.compactMap(Self.clean))
+        let normalizedTools = Set(allowedTools.map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() })
+            .intersection(Self.knownToolNames)
+        self.allowedTools = normalizedTools
+        self.currentDirectory = Self.clean(currentDirectory) ?? ""
         self.diagnosticsHostPath = Self.clean(diagnosticsHostPath) ?? ""
         self.taskID = Self.clean(taskID) ?? "unknown-task"
         self.runID = Self.clean(runID) ?? "unknown-run"
@@ -44,6 +54,8 @@ public struct HostControlToolConfiguration: Equatable, Sendable {
             bigQueryExecutable: clean(env["ASTRA_HOST_CONTROL_BQ_EXECUTABLE"]) ?? "bq",
             sshExecutable: clean(env["ASTRA_HOST_CONTROL_SSH_EXECUTABLE"]) ?? "ssh",
             allowedSSHAliases: splitList(env["ASTRA_HOST_CONTROL_ALLOWED_SSH_ALIASES"]),
+            allowedTools: allowedToolSet(env["ASTRA_HOST_CONTROL_ALLOWED_TOOLS"]),
+            currentDirectory: clean(env["ASTRA_HOST_CONTROL_CURRENT_DIRECTORY"]) ?? "",
             diagnosticsHostPath: clean(env["ASTRA_HOST_CONTROL_DIAGNOSTICS_HOST"]) ?? "",
             taskID: clean(env["ASTRA_HOST_CONTROL_TASK_ID"]) ?? "unknown-task",
             runID: clean(env["ASTRA_HOST_CONTROL_RUN_ID"]) ?? "unknown-run",
@@ -223,6 +235,11 @@ public struct HostControlToolConfiguration: Equatable, Sendable {
             .compactMap(clean)
     }
 
+    private static func allowedToolSet(_ value: String?) -> Set<String> {
+        guard value != nil else { return knownToolNames }
+        return Set(splitList(value).map { $0.lowercased() }).intersection(knownToolNames)
+    }
+
     private static func deduplicated(_ values: [String]) -> [String] {
         var seen: Set<String> = []
         return values.filter { seen.insert($0).inserted }
@@ -345,7 +362,8 @@ public protocol HostControlProcessRunning: AnyObject {
         executablePath: String,
         arguments: [String],
         timeoutSeconds: TimeInterval,
-        environment: [String: String]
+        environment: [String: String],
+        currentDirectory: String?
     ) -> HostControlCommandResult
 }
 
@@ -362,6 +380,7 @@ private final class HostControlScopedProcess: @unchecked Sendable {
     private let executablePath: String
     private let arguments: [String]
     private let environment: [String: String]
+    private let currentDirectory: String?
     private let lock = NSLock()
 
     private var processID: pid_t = 0
@@ -388,10 +407,12 @@ private final class HostControlScopedProcess: @unchecked Sendable {
         return status
     }
 
-    init(executablePath: String, arguments: [String], environment: [String: String]) {
+    init(executablePath: String, arguments: [String], environment: [String: String], currentDirectory: String?) {
         self.executablePath = executablePath
         self.arguments = arguments
         self.environment = environment
+        let trimmedDirectory = currentDirectory?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        self.currentDirectory = trimmedDirectory.isEmpty ? nil : trimmedDirectory
     }
 
     func run() throws {
@@ -407,6 +428,11 @@ private final class HostControlScopedProcess: @unchecked Sendable {
 
         try addPipe(stdoutPipe, targetDescriptor: STDOUT_FILENO, actions: &actions, operation: "stdout")
         try addPipe(stderrPipe, targetDescriptor: STDERR_FILENO, actions: &actions, operation: "stderr")
+        if let currentDirectory {
+            try currentDirectory.withCString { path in
+                try check(posix_spawn_file_actions_addchdir_np(&actions, path), operation: "posix_spawn_file_actions_addchdir_np")
+            }
+        }
 
         try check(posix_spawnattr_setflags(&attr, Int16(POSIX_SPAWN_SETPGROUP)), operation: "posix_spawnattr_setflags")
         try check(posix_spawnattr_setpgroup(&attr, 0), operation: "posix_spawnattr_setpgroup")
@@ -559,7 +585,8 @@ public final class HostControlProcessRunner: HostControlProcessRunning {
         executablePath: String,
         arguments: [String],
         timeoutSeconds: TimeInterval,
-        environment: [String: String]
+        environment: [String: String],
+        currentDirectory: String? = nil
     ) -> HostControlCommandResult {
         let invocation = commandInvocation(executablePath: executablePath, arguments: arguments)
 
@@ -571,7 +598,8 @@ public final class HostControlProcessRunner: HostControlProcessRunning {
         let process = HostControlScopedProcess(
             executablePath: invocation.executablePath,
             arguments: invocation.arguments,
-            environment: processEnvironment
+            environment: processEnvironment,
+            currentDirectory: currentDirectory
         )
         let stdoutBuffer = BoundedProcessOutput(label: "stdout", byteLimit: limits.outputByteLimit)
         let stderrBuffer = BoundedProcessOutput(label: "stderr", byteLimit: limits.outputByteLimit)
@@ -896,20 +924,25 @@ public final class HostControlMCPServer {
               let toolName = params["name"] as? String else {
             return encodeError(id: id, code: -32602, message: "Unsupported tool")
         }
+        let normalizedToolName = normalizedToolName(toolName)
+        guard toolIsAllowed(normalizedToolName) else {
+            return encodeError(id: id, code: -32602, message: "\(normalizedToolName) is not enabled for this task")
+        }
         let arguments = params["arguments"] as? [String: Any] ?? [:]
-        switch toolName {
+        switch normalizedToolName {
         case "github":
             return handleProcessTool(
                 id: id,
-                toolName: toolName,
+                toolName: normalizedToolName,
                 executable: configuration.githubExecutable,
                 arguments: arguments,
-                allowedFirstArguments: ["api", "auth", "issue", "pr", "repo", "search", "run", "workflow"]
+                allowedFirstArguments: nil,
+                argumentPolicy: GitHubHostControlPolicy.denialReason(for:)
             )
         case "gcloud":
             return handleProcessTool(
                 id: id,
-                toolName: toolName,
+                toolName: normalizedToolName,
                 executable: configuration.gcloudExecutable,
                 arguments: arguments,
                 allowedFirstArguments: nil,
@@ -928,7 +961,7 @@ public final class HostControlMCPServer {
         case "bq":
             return handleProcessTool(
                 id: id,
-                toolName: toolName,
+                toolName: normalizedToolName,
                 executable: configuration.bigQueryExecutable,
                 arguments: arguments,
                 allowedFirstArguments: nil,
@@ -983,7 +1016,8 @@ public final class HostControlMCPServer {
             executablePath: executable,
             arguments: argv,
             timeoutSeconds: timeout,
-            environment: configuration.environment
+            environment: configuration.environment,
+            currentDirectory: configuration.currentDirectory
         )
         let redacted = redactedResult(result)
         diagnosticsRecorder?.record(
@@ -1018,7 +1052,8 @@ public final class HostControlMCPServer {
             executablePath: configuration.sshExecutable,
             arguments: sshArguments,
             timeoutSeconds: timeout,
-            environment: configuration.environment
+            environment: configuration.environment,
+            currentDirectory: configuration.currentDirectory
         )
         let redacted = redactedResult(result)
         diagnosticsRecorder?.record(
@@ -1291,7 +1326,18 @@ public final class HostControlMCPServer {
             ),
             sshSchema(),
             jiraSchema()
-        ]
+        ].filter { schema in
+            guard let name = schema["name"] as? String else { return false }
+            return toolIsAllowed(name)
+        }
+    }
+
+    private func toolIsAllowed(_ toolName: String) -> Bool {
+        configuration.allowedTools.contains(normalizedToolName(toolName))
+    }
+
+    private func normalizedToolName(_ toolName: String) -> String {
+        toolName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }
 
     private func processSchema(name: String, description: String, argumentDescription: String) -> [String: Any] {

@@ -1550,6 +1550,8 @@ struct AgentRuntimeAdapterTests {
         #expect(hostServer["command"] as? String == (RuntimePathResolver.astraToolsPath as NSString).appendingPathComponent("astra-host-control"))
         let hostEnv = try #require(hostServer["env"] as? [String: String])
         #expect(hostEnv["ASTRA_HOST_CONTROL_GCLOUD_EXECUTABLE"] == "${ASTRA_HOST_CONTROL_GCLOUD_EXECUTABLE}")
+        #expect(hostEnv["ASTRA_HOST_CONTROL_ALLOWED_TOOLS"] == "${ASTRA_HOST_CONTROL_ALLOWED_TOOLS}")
+        #expect(hostEnv["ASTRA_HOST_CONTROL_CURRENT_DIRECTORY"] == "${ASTRA_HOST_CONTROL_CURRENT_DIRECTORY}")
         #expect(hostEnv["ASTRA_HOST_CONTROL_DIAGNOSTICS_HOST"] == "${ASTRA_HOST_CONTROL_DIAGNOSTICS_HOST}")
     }
 
@@ -1636,6 +1638,8 @@ struct AgentRuntimeAdapterTests {
         #expect(hostServer["command"] as? String == (RuntimePathResolver.astraToolsPath as NSString).appendingPathComponent("astra-host-control"))
         let hostEnv = try #require(hostServer["env"] as? [String: String])
         #expect(hostEnv["ASTRA_HOST_CONTROL_GCLOUD_EXECUTABLE"] == "${ASTRA_HOST_CONTROL_GCLOUD_EXECUTABLE}")
+        #expect(hostEnv["ASTRA_HOST_CONTROL_ALLOWED_TOOLS"] == "${ASTRA_HOST_CONTROL_ALLOWED_TOOLS}")
+        #expect(hostEnv["ASTRA_HOST_CONTROL_CURRENT_DIRECTORY"] == "${ASTRA_HOST_CONTROL_CURRENT_DIRECTORY}")
 
         let allowTools = Self.argumentValues(after: "--allow-tool", in: plan.arguments)
         #expect(allowTools.contains("astra_workspace(workspace_shell)"))
@@ -2028,6 +2032,218 @@ struct AgentRuntimeAdapterTests {
         #expect(!availableTools.contains(BrowserBridgeMCPProjection.providerToolPermission))
     }
 
+    @Test("Copilot GitHub host-control launch plan blocks when MCP config is unsupported")
+    @MainActor
+    func copilotGitHubHostControlLaunchPlanBlocksWhenMCPConfigIsUnsupported() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-copilot-github-no-mcp-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let copilotPath = try Self.writeFakeCopilotExecutable(in: root, supportsAdditionalMCPConfig: false)
+
+        let workspace = Workspace(name: "GitHub Host Control", primaryPath: root.path)
+        workspace.enabledCapabilityIDs = [HostControlPlaneMCPProjection.githubPackageID]
+        let task = AgentTask(
+            title: "Review PR",
+            goal: "Use GitHub to inspect pull requests",
+            workspace: workspace,
+            model: "gpt-5",
+            runtime: .copilotCLI
+        )
+        let githubSkill = Skill(
+            name: "GitHub Workflow",
+            allowedTools: ["Read"],
+            behaviorInstructions: "Use ASTRA host-control GitHub MCP tool mcp__astra_host__github for GitHub operations."
+        )
+        githubSkill.originPackageID = HostControlPlaneMCPProjection.githubPackageID
+        githubSkill.workspace = workspace
+        task.skills = [githubSkill]
+
+        let plan = AgentRuntimeAdapterRegistry
+            .adapter(for: .copilotCLI)
+            .makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext(
+                prompt: "Review pull requests",
+                task: task,
+                workspacePath: workspace.primaryPath,
+                executablePath: copilotPath,
+                providerHomeDirectory: root.appendingPathComponent("copilot-home").path,
+                permissionPolicy: .restricted,
+                executionPolicy: .default,
+                permissionManifest: nil,
+                timeoutSeconds: 30,
+                phase: "run",
+                contextText: "Use GitHub to inspect pull requests."
+            ))
+
+        #expect(plan.commandPlannedFields["host_control_plane_supported"] == "false")
+        #expect(plan.commandPlannedFields["host_control_plane_launch_block_reason"] == "host_control_plane_unsupported_runtime")
+        #expect(plan.commandPlannedFields["host_control_plane_unsupported_detail"]?.contains("--additional-mcp-config") == true)
+        #expect(plan.environment["ASTRA_HOST_CONTROL_ALLOWED_TOOLS"] == "github")
+        #expect(plan.environment["ASTRA_HOST_CONTROL_CURRENT_DIRECTORY"] == workspace.primaryPath)
+        #expect(plan.arguments.contains("--additional-mcp-config") == false)
+    }
+
+    @Test("Copilot GitHub host-control launch strips native gh grants when MCP config is supported")
+    @MainActor
+    func copilotGitHubHostControlLaunchStripsNativeGHGrantsWhenMCPConfigIsSupported() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-copilot-github-host-control-no-native-gh-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let copilotPath = try Self.writeFakeCopilotExecutable(in: root, supportsAdditionalMCPConfig: true)
+
+        let workspace = Workspace(name: "GitHub Host Control", primaryPath: root.path)
+        workspace.enabledCapabilityIDs = [HostControlPlaneMCPProjection.githubPackageID]
+        let task = AgentTask(
+            title: "Review PR",
+            goal: "Use GitHub to inspect pull requests",
+            workspace: workspace,
+            model: "gpt-5",
+            runtime: .copilotCLI
+        )
+        let legacyGitHubSkill = Skill(
+            name: "GitHub Workflow",
+            allowedTools: ["Read", "Bash"],
+            behaviorInstructions: "Use ASTRA host-control GitHub MCP tool mcp__astra_host__github for GitHub operations."
+        )
+        legacyGitHubSkill.originPackageID = HostControlPlaneMCPProjection.githubPackageID
+        legacyGitHubSkill.workspace = workspace
+        task.skills = [legacyGitHubSkill]
+
+        let legacyGHTool = LocalTool(
+            name: "gh - GitHub CLI",
+            toolDescription: "Inspect GitHub pull requests",
+            toolType: "cli",
+            command: "gh"
+        )
+        legacyGHTool.workspace = workspace
+
+        let plan = AgentRuntimeAdapterRegistry
+            .adapter(for: .copilotCLI)
+            .makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext(
+                prompt: "Review pull requests",
+                task: task,
+                workspacePath: workspace.primaryPath,
+                executablePath: copilotPath,
+                providerHomeDirectory: root.appendingPathComponent("copilot-home").path,
+                permissionPolicy: .restricted,
+                executionPolicy: .default,
+                permissionManifest: nil,
+                timeoutSeconds: 30,
+                phase: "run",
+                contextText: "Use GitHub to inspect pull requests."
+            ))
+
+        #expect(plan.commandPlannedFields["host_control_plane_supported"] == "true")
+        #expect(plan.environment["ASTRA_HOST_CONTROL_ALLOWED_TOOLS"] == "github")
+        #expect(plan.arguments.contains("--additional-mcp-config"))
+        let joinedArguments = plan.arguments.joined(separator: " ")
+        #expect(joinedArguments.contains("astra_host-github"))
+        #expect(!joinedArguments.contains("shell(gh:*)"))
+    }
+
+    @Test("Non-MCP runtimes block GitHub host-control tasks before launch")
+    @MainActor
+    func nonMCPRuntimesBlockGitHubHostControlTasksBeforeLaunch() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-host-control-non-mcp-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        for runtime in [AgentRuntimeID.openCodeCLI, .cursorCLI, .antigravityCLI] {
+            let workspace = Workspace(name: "GitHub Host Control", primaryPath: root.path)
+            workspace.enabledCapabilityIDs = [HostControlPlaneMCPProjection.githubPackageID]
+            let task = AgentTask(
+                title: "Review PR",
+                goal: "Use GitHub to inspect pull requests",
+                workspace: workspace,
+                model: "test-model",
+                runtime: runtime
+            )
+            let githubSkill = Skill(
+                name: "GitHub Agent",
+                allowedTools: ["Read"],
+                behaviorInstructions: "Use ASTRA host-control GitHub MCP tool mcp__astra_host__github for GitHub operations."
+            )
+            githubSkill.originPackageID = HostControlPlaneMCPProjection.githubPackageID
+            githubSkill.workspace = workspace
+            task.skills = [githubSkill]
+
+            let plan = AgentRuntimeAdapterRegistry
+                .adapter(for: runtime)
+                .makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext(
+                    prompt: "Review pull requests",
+                    task: task,
+                    workspacePath: workspace.primaryPath,
+                    executablePath: "/bin/echo",
+                    providerHomeDirectory: root.appendingPathComponent(runtime.rawValue).path,
+                    permissionPolicy: .restricted,
+                    executionPolicy: .default,
+                    permissionManifest: nil,
+                    timeoutSeconds: 30,
+                    phase: "run",
+                    contextText: "Use GitHub to inspect pull requests."
+                ))
+
+            #expect(plan.commandPlannedFields["host_control_plane_tool_count"] == "1")
+            #expect(plan.commandPlannedFields["host_control_plane_supported"] == "false")
+            #expect(plan.commandPlannedFields["host_control_plane_launch_block_reason"] == "host_control_plane_unsupported_runtime")
+            #expect(plan.commandPlannedFields["host_control_plane_unsupported_detail"]?.contains("host-control MCP server for github") == true)
+            #expect(HostControlPlaneRuntimeLaunchGuard.launchBlock(for: plan)?.runtimeStopReason == "host_control_plane_unsupported_runtime")
+        }
+    }
+
+    @Test("Host-control launch diagnostics name the required host tools")
+    @MainActor
+    func hostControlLaunchDiagnosticsNameRequiredHostTools() throws {
+        let sharedMetadata = HostControlPlaneRuntimeLaunchGuard.planMetadata(
+            runtime: .openCodeCLI,
+            requiredTools: ["gcloud", "bq"]
+        )
+        #expect(sharedMetadata["host_control_plane_unsupported_detail"]?.contains("gcloud, bq") == true)
+        #expect(sharedMetadata["host_control_plane_unsupported_detail"]?.contains("GitHub") == false)
+
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-copilot-docker-host-control-detail-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let copilotPath = try Self.writeFakeCopilotExecutable(in: root, supportsAdditionalMCPConfig: false)
+
+        let workspace = Workspace(name: "Docker Workspace", primaryPath: root.path)
+        let task = AgentTask(
+            title: "Inspect cloud",
+            goal: "Inspect cloud resources from Docker",
+            workspace: workspace,
+            model: "claude-sonnet-4.6",
+            runtime: .copilotCLI
+        )
+        task.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encode(WorkspaceExecutionEnvironment(
+            id: "image:workspace",
+            kind: .dockerImage,
+            displayName: "Workspace Image",
+            image: "astra/workspace:latest"
+        ))
+
+        let plan = AgentRuntimeAdapterRegistry
+            .adapter(for: .copilotCLI)
+            .makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext(
+                prompt: "inspect cloud",
+                task: task,
+                workspacePath: workspace.primaryPath,
+                executablePath: copilotPath,
+                providerHomeDirectory: root.appendingPathComponent("copilot-home", isDirectory: true).path,
+                permissionPolicy: .restricted,
+                executionPolicy: .default,
+                permissionManifest: nil,
+                timeoutSeconds: 30,
+                runID: UUID(uuidString: "94E22B8A-5084-47F0-9D3A-C05F5829500B")
+            ))
+
+        let detail = try #require(plan.commandPlannedFields["host_control_plane_unsupported_detail"])
+        #expect(detail.contains("github, gcloud, bq, ssh, jira"))
+        #expect(!detail.contains("host-control GitHub MCP server"))
+    }
+
     @Test("CDP-only browser tasks inject required controlled engine into browser environment")
     @MainActor
     func cdpOnlyBrowserTasksInjectRequiredControlledEngineIntoBrowserEnvironment() throws {
@@ -2145,13 +2361,17 @@ struct AgentRuntimeAdapterTests {
         )
     }
 
-    private static func writeFakeCopilotExecutable(in directory: URL) throws -> String {
+    private static func writeFakeCopilotExecutable(
+        in directory: URL,
+        supportsAdditionalMCPConfig: Bool = true
+    ) throws -> String {
         let url = directory.appendingPathComponent("copilot")
+        let mcpConfigHelp = supportsAdditionalMCPConfig ? " --additional-mcp-config CONFIG" : ""
         let script = """
         #!/bin/sh
         if [ "$1" = "help" ]; then
           cat <<'HELP'
-        --allow-tool TOOL --available-tools=TOOLS --excluded-tools=TOOLS --output-format=FORMAT --stream=MODE --no-ask-user --effort LEVEL --additional-mcp-config CONFIG
+        --allow-tool TOOL --available-tools=TOOLS --excluded-tools=TOOLS --output-format=FORMAT --stream=MODE --no-ask-user --effort LEVEL\(mcpConfigHelp)
         HELP
           exit 0
         fi
