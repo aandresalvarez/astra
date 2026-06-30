@@ -478,6 +478,17 @@ final class AgentLockedBuffer: @unchecked Sendable {
         lock.unlock()
     }
 
+    func appendKeepingSuffix(_ string: String, maxCharacters: Int) {
+        lock.lock()
+        _value += string
+        if maxCharacters <= 0 {
+            _value = ""
+        } else if _value.count > maxCharacters {
+            _value = String(_value.suffix(maxCharacters))
+        }
+        lock.unlock()
+    }
+
     func appendAndDrainLines(_ string: String) -> [String] {
         lock.lock()
         defer { lock.unlock() }

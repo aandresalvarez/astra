@@ -217,7 +217,7 @@ struct GitHubConnectorSearchService {
            !error.message.isEmpty {
             return error.message
         }
-        return String(data: data.prefix(500), encoding: .utf8) ?? "unreadable response"
+        return ConnectorResponseSnippet.text(from: data)
     }
 
     private static func resultLine(_ result: GitHubSearchResult) -> String {

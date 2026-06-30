@@ -1101,6 +1101,25 @@ struct LocalModelRuntimeTests {
         #expect(LocalAgentToolExecutor.browserRequestTimeout == 15)
     }
 
+    @Test("Connector response snippets lossy-decode bounded UTF-8 prefixes")
+    func connectorResponseSnippetsLossyDecodeBoundedUTF8Prefixes() {
+        let data = Data([0x61, 0x62, 0x63, 0xC3])
+
+        #expect(ConnectorResponseSnippet.text(from: data, maxBytes: 4) == "abc\u{FFFD}")
+        #expect(ConnectorResponseSnippet.text(from: Data(), maxBytes: 4).isEmpty)
+        #expect(ConnectorResponseSnippet.text(from: data, maxBytes: 2) == "ab")
+    }
+
+    @Test("Agent locked buffer can keep only a bounded suffix")
+    func agentLockedBufferCanKeepOnlyBoundedSuffix() {
+        let buffer = AgentLockedBuffer()
+
+        buffer.appendKeepingSuffix("abcdef", maxCharacters: 4)
+        buffer.appendKeepingSuffix("ghij", maxCharacters: 4)
+
+        #expect(buffer.value == "ghij")
+    }
+
     @Test("Local tool observations are compacted before model replay")
     func localToolObservationsAreCompactedBeforeModelReplay() throws {
         let observation = LocalAgentToolObservation(

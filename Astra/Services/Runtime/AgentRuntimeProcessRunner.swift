@@ -387,6 +387,7 @@ final class AgentRuntimeProcessRunner {
 
             let errorOutput = AgentLockedBuffer()
             let diagnosticOutput = AgentLockedBuffer()
+            let diagnosticOutputCharacterLimit = 64_000
             let lineBuffer = AgentLockedBuffer()
             let eventPipeline = AgentRuntimeEventPipelineBox(
                 supportsAstraRunProtocol: AgentRuntimeAdapterRegistry.supportsAstraRunProtocol(for: plan.runtime),
@@ -454,7 +455,7 @@ final class AgentRuntimeProcessRunner {
                     let data = handle.availableData
                     guard !data.isEmpty,
                           let chunk = String(data: data, encoding: .utf8) else { return }
-                    diagnosticOutput.append(chunk)
+                    diagnosticOutput.appendKeepingSuffix(chunk, maxCharacters: diagnosticOutputCharacterLimit)
                 }
             }
 
@@ -482,7 +483,7 @@ final class AgentRuntimeProcessRunner {
                     data: proc.stdoutFileHandle.readDataToEndOfFile(),
                     encoding: .utf8
                    ), !string.isEmpty {
-                    diagnosticOutput.append(string)
+                    diagnosticOutput.appendKeepingSuffix(string, maxCharacters: diagnosticOutputCharacterLimit)
                 }
                 if let string = String(
                     data: proc.stderrFileHandle.readDataToEndOfFile(),

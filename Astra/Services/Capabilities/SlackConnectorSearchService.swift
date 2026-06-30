@@ -262,7 +262,7 @@ struct SlackConnectorSearchService {
            !message.isEmpty {
             return message
         }
-        return String(data: data.prefix(500), encoding: .utf8) ?? "unreadable response"
+        return ConnectorResponseSnippet.text(from: data)
     }
 
     private static func messageLine(_ message: SlackMessageSearchResult) -> String {

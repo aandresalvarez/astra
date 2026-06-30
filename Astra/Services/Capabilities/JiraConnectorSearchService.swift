@@ -197,7 +197,7 @@ struct JiraConnectorSearchService {
                 return messages.joined(separator: "; ")
             }
         }
-        return String(data: data.prefix(500), encoding: .utf8) ?? "unreadable response"
+        return ConnectorResponseSnippet.text(from: data)
     }
 
     private static func issueLine(_ issue: JiraSearchResult) -> String {
