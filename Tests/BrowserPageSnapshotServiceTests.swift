@@ -212,6 +212,37 @@ struct BrowserPageSnapshotServiceTests {
         #expect(!compacted.contains("MRN-424242"))
     }
 
+    @Test("snapshot output redacts sensitive values from URL")
+    func snapshotOutputRedactsSensitiveValuesFromURL() throws {
+        let compacted = try BrowserPageSnapshotService.compactSnapshot(
+            json: """
+            {
+              "ok": true,
+              "url": "https://example.com/search?token=ghp_secret_token_123456",
+              "title": "Search",
+              "text": "Search page",
+              "controls": [
+                {
+                  "selector": "#token",
+                  "tag": "input",
+                  "role": "textbox",
+                  "type": "password",
+                  "label": "Token",
+                  "value": "ghp_secret_token_123456"
+                }
+              ]
+            }
+            """,
+            mode: .full,
+            query: nil,
+            limit: nil
+        )
+        let object = try jsonObject(from: compacted)
+
+        #expect(object["url"] as? String == "https://example.com/search?token=[redacted-sensitive-input]")
+        #expect(!compacted.contains("ghp_secret_token_123456"))
+    }
+
     @Test("snapshot output still redacts metadata when sensitive value is already redacted")
     func snapshotOutputStillRedactsMetadataWhenSensitiveValueIsAlreadyRedacted() throws {
         let compacted = try BrowserPageSnapshotService.compactSnapshot(
@@ -260,6 +291,7 @@ struct BrowserPageSnapshotServiceTests {
         #expect(BrowserSensitiveInputRedactionPolicy.redactedDisplayText(#"#MRN\ 424242"#, sensitiveValue: "MRN 424242") == "[redacted-sensitive-input]")
         #expect(BrowserSensitiveInputRedactionPolicy.redactedDisplayText(#"#\31 23456"#, sensitiveValue: "123456") == "[redacted-sensitive-input]")
         #expect(BrowserSensitiveInputRedactionPolicy.redactedDisplayText("https://example.com/MRN%20424242", sensitiveValue: "MRN 424242") == "[redacted-sensitive-input]")
+        #expect(BrowserSensitiveInputRedactionPolicy.redactedDisplayText("ghp_secret_token", sensitiveValue: "ghp_secret_token_123456") == "[redacted-sensitive-input]")
     }
 
     @Test("snapshot output redacts cardholder and generic payment values")

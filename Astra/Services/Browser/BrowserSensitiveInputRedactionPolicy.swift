@@ -52,6 +52,13 @@ enum BrowserSensitiveInputRedactionPolicy {
                 didRedact = true
             }
         }
+        if let url = object["url"] as? String {
+            let nextURL = redactedText(url, sensitiveValues: sensitiveValues)
+            if nextURL != url {
+                redacted["url"] = nextURL
+                didRedact = true
+            }
+        }
         if let title = object["title"] as? String {
             let nextTitle = redactedText(title, sensitiveValues: sensitiveValues)
             if nextTitle != title {
@@ -435,7 +442,9 @@ enum BrowserSensitiveInputRedactionPolicy {
         let valueVariants = sensitiveComparisonValues(for: sensitiveValue)
         return textVariants.contains { textVariant in
             valueVariants.contains { valueVariant in
-                textVariant == valueVariant || textVariant.contains(valueVariant)
+                textVariant == valueVariant
+                    || textVariant.contains(valueVariant)
+                    || (textVariant.count >= 8 && valueVariant.count >= 8 && valueVariant.contains(textVariant))
             }
         }
     }
