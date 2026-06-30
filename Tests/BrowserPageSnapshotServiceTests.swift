@@ -345,6 +345,8 @@ struct BrowserPageSnapshotServiceTests {
         #expect(script.contains("const valueContainsMetadata = normalizedValue.length >= prefixLength"))
         #expect(script.contains("normalizedValue.includes(normalizedMetadata)"))
         #expect(script.contains("const isEditablePaymentField = (el) =>"))
+        #expect(script.contains("selector: selectorFor(el)"))
+        #expect(script.contains("selector: selectorFor(active)"))
         #expect(script.contains("return metadataValueForSnapshot(el, editableValueFor(el), label)"))
         #expect(script.contains("name: metadataValueForSnapshot(el, rawValue, el.getAttribute(\"name\") || \"\")"))
         #expect(script.contains("if (sensitiveControlForTextNode(parent)) continue"))
@@ -445,7 +447,9 @@ struct BrowserPageSnapshotServiceTests {
         #expect(script.contains(#"for (const key of ["selector", "requestedSelector", "label", "name", "placeholder", "testID", "href"])"#))
         #expect(script.contains("redactSensitiveResultMetadata(result[key], value)"))
         #expect(script.contains("normalizedValue.includes(normalizedRaw)"))
+        #expect(script.contains("&& (includesAny(text, sensitiveResultTerms) || includesAny(text, paymentResultTerms));"))
         #expect(script.contains("sensitiveMetadataCandidate(raw) ? redactedInputValue : raw"))
+        #expect(!script.contains("&& (/[0-9]/.test(text) || text.includes(\"-\") || text.includes(\"_\") || text.includes(\"%\") || value.length > 20)"))
         #expect(!script.contains("redactSensitiveResultTarget(result, el, next);\n          result.cleared = clear;"))
     }
 

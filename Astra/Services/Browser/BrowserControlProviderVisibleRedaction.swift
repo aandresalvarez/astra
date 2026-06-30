@@ -1,10 +1,19 @@
 import Foundation
 
-extension BrowserControl {
-    var providerVisibleRedaction: (object: [String: Any], didRedact: Bool, sensitiveValues: [String]) {
-        BrowserSensitiveInputRedactionPolicy.redactControlObject(rawControlObject, risk: risk)
-    }
+struct BrowserControlProviderVisibleRedaction {
+    let object: [String: Any]
+    let didRedact: Bool
+    let sensitiveValues: [String]
 
+    init(rawControlObject: [String: Any], risk: BrowserRisk) {
+        let result = BrowserSensitiveInputRedactionPolicy.redactControlObject(rawControlObject, risk: risk)
+        object = result.object
+        didRedact = result.didRedact
+        sensitiveValues = result.sensitiveValues
+    }
+}
+
+extension BrowserControl {
     var rawControlObject: [String: Any] {
         [
             "selector": selector,

@@ -212,6 +212,42 @@ struct BrowserAnalysisTests {
         #expect(String(describing: response).contains("medical_record_number") == false)
     }
 
+    @Test("Analysis response does not use sensitive pre-redacted labels in control IDs")
+    func analysisResponseDoesNotUseSensitivePreRedactedLabelsInControlIDs() throws {
+        let sensitiveLabel = "MRN-424242"
+        let analysis = BrowserAnalysisBuilder.build(
+            snapshot: Self.sampleSnapshot(controls: [
+                Self.control(
+                    selector: "#patient-mrn",
+                    tag: "input",
+                    role: "textbox",
+                    type: "text",
+                    label: sensitiveLabel,
+                    value: "[redacted-sensitive-input]",
+                    name: "api_token_sk_live_123"
+                )
+            ]),
+            backend: "controlled Chromium profile",
+            engine: "controlled"
+        )
+
+        let internalControl = try #require(analysis.controls.first)
+        let response = analysis.responseObject(query: nil, full: true, limit: nil, version: .v2)
+        let controls = try #require(response["controls"] as? [[String: Any]])
+        let control = try #require(controls.first)
+        let refs = try #require(response["controlRefs"] as? [[String: Any]])
+        let ref = try #require(refs.first)
+
+        #expect(internalControl.selector == "#patient-mrn")
+        #expect(control["label"] as? String == "[redacted-sensitive-input]")
+        #expect(control["name"] as? String == "[redacted-sensitive-input]")
+        #expect((control["controlID"] as? String)?.contains("mrn") == false)
+        #expect((control["controlID"] as? String)?.contains("424242") == false)
+        #expect((ref["controlID"] as? String)?.contains("api_token") == false)
+        #expect(String(describing: response).contains(sensitiveLabel) == false)
+        #expect(String(describing: response).contains("api_token_sk_live_123") == false)
+    }
+
     @Test("Analysis query filtering uses provider-visible redacted fields")
     func analysisQueryFilteringUsesProviderVisibleRedactedFields() throws {
         let secret = "ghp_secret_token"
@@ -1086,6 +1122,22 @@ struct BrowserAnalysisTests {
                 ]
             ],
             risk: .normal,
+            providerVisibleRedaction: BrowserControlProviderVisibleRedaction(
+                rawControlObject: [
+                    "selector": selector,
+                    "label": label,
+                    "name": label,
+                    "role": role,
+                    "tag": tag,
+                    "type": "",
+                    "placeholder": "",
+                    "testID": "",
+                    "value": "",
+                    "href": "",
+                    "autocomplete": ""
+                ],
+                risk: .normal
+            ),
             confidence: 0.99,
             rank: 100,
             evidence: [:]

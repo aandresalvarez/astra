@@ -102,37 +102,13 @@ enum BrowserSensitiveInputRedactionPolicy {
         label: String,
         role: String,
         tag: String,
-        value: String,
-        selector: String,
-        name: String,
-        type: String,
-        placeholder: String,
-        testID: String,
-        href: String,
-        autocomplete: String,
-        risk: BrowserRisk
+        redactedLabel: String
     ) -> String {
         let fallback = role.isEmpty ? tag : role
-        let source = label.isEmpty ? fallback : label
-        let visibleValue = redactedValue(
-            value,
-            selector: selector,
-            label: label,
-            name: name,
-            role: role,
-            tag: tag,
-            type: type,
-            placeholder: placeholder,
-            testID: testID,
-            href: href,
-            autocomplete: autocomplete,
-            risk: risk
-        )
-        guard visibleValue == redactedInputValue,
-              redactedDisplayText(source, sensitiveValue: value) == redactedInputValue else {
-            return source
+        guard !label.isEmpty else {
+            return fallback
         }
-        return fallback
+        return redactedLabel == redactedInputValue ? fallback : label
     }
 
     static func redactedValue(

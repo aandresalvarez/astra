@@ -296,6 +296,7 @@ struct BrowserControl {
     let primaryAction: BrowserActionKind?
     let actionOutcomes: [[String: Any]]
     let risk: BrowserRisk
+    let providerVisibleRedaction: BrowserControlProviderVisibleRedaction
     let confidence: Double
     let rank: Int
     let evidence: [String: Any]
@@ -1136,7 +1137,28 @@ enum BrowserAnalysisBuilder {
             boundsBucket(bounds)
         ].joined(separator: "\u{1f}")
         let identityHash = stableHash(identitySeed)
-        let slugSource = BrowserSensitiveInputRedactionPolicy.controlIDSlugSource(label: label, role: role, tag: tag, value: rawValue, selector: selector, name: name, type: type, placeholder: placeholder, testID: testID, href: href, autocomplete: autocomplete, risk: risk)
+        let providerVisibleRedaction = BrowserControlProviderVisibleRedaction(
+            rawControlObject: [
+                "selector": selector,
+                "label": label,
+                "name": name,
+                "role": role,
+                "tag": tag,
+                "type": type,
+                "placeholder": placeholder,
+                "testID": testID,
+                "value": rawValue,
+                "href": href,
+                "autocomplete": autocomplete
+            ],
+            risk: risk
+        )
+        let slugSource = BrowserSensitiveInputRedactionPolicy.controlIDSlugSource(
+            label: label,
+            role: role,
+            tag: tag,
+            redactedLabel: providerVisibleRedaction.object["label"] as? String ?? label
+        )
         let rank = rankControl(
             label: label,
             role: role,
@@ -1192,6 +1214,7 @@ enum BrowserAnalysisBuilder {
             primaryAction: primaryAction,
             actionOutcomes: actionOutcomes,
             risk: risk,
+            providerVisibleRedaction: providerVisibleRedaction,
             confidence: confidence,
             rank: rank,
             evidence: evidence

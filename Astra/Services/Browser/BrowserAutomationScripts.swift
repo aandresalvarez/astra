@@ -607,7 +607,7 @@ enum BrowserAutomationScripts {
           const el = entry.el;
           const rawValue = editableValueFor(el);
           return ({
-          selector: metadataValueForSnapshot(el, rawValue, selectorFor(el)),
+          selector: selectorFor(el),
           tag: el.tagName.toLowerCase(),
           role: roleFor(el),
           type: el.getAttribute("type") || "",
@@ -637,7 +637,7 @@ enum BrowserAutomationScripts {
           deviceScaleFactor: window.devicePixelRatio || 1
         },
         focusedElement: active ? {
-          selector: redactedMetadataForSnapshot(active, selectorFor(active)),
+          selector: selectorFor(active),
           tag: active.tagName.toLowerCase(),
           role: active.getAttribute("role") || "",
           type: active.getAttribute("type") || "",
@@ -862,8 +862,7 @@ enum BrowserAutomationScripts {
           const sensitiveMetadataCandidate = (value) => {
             const text = norm(cssUnescaped(value));
             return text
-              && (includesAny(text, sensitiveResultTerms) || includesAny(text, paymentResultTerms))
-              && (/[0-9]/.test(text) || text.includes("-") || text.includes("_") || text.includes("%") || value.length > 20);
+              && (includesAny(text, sensitiveResultTerms) || includesAny(text, paymentResultTerms));
           };
           const redactSensitiveResultMetadata = (value, sensitiveValue) => {
             const raw = String(value || "");
