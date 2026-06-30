@@ -146,6 +146,7 @@ struct BrowserControlActionServiceTests {
                 "role": "button",
                 "tag": "button",
                 "type": "password",
+                "autocomplete": "current-password",
                 "placeholder": "Enter password",
                 "testID": "password-field",
                 "href": "https://example.com/login",
@@ -173,6 +174,7 @@ struct BrowserControlActionServiceTests {
         #expect(summary["requestedSelector"] as? String == "button.primary")
         #expect(summary["label"] as? String == "Password")
         #expect(summary["type"] as? String == "password")
+        #expect(summary["autocomplete"] as? String == "current-password")
         #expect(summary["placeholder"] as? String == "Enter password")
         #expect(summary["testID"] as? String == "password-field")
         #expect(summary["href"] as? String == "https://example.com/login")

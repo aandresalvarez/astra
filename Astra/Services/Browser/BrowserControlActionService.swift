@@ -49,6 +49,7 @@ enum BrowserControlActionService {
             "role": object["role"] as? String ?? "",
             "tag": object["tag"] as? String ?? "",
             "type": object["type"] as? String ?? "",
+            "autocomplete": object["autocomplete"] as? String ?? "",
             "placeholder": object["placeholder"] as? String ?? "",
             "testID": object["testID"] as? String ?? "",
             "href": object["href"] as? String ?? "",

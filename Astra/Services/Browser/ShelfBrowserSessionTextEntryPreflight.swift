@@ -89,28 +89,42 @@ extension ShelfBrowserSession {
             ]
         }
 
-        let targetInfo = try await waitForActionableTarget(
-            selector: selector,
-            x: nil,
-            y: nil,
-            allowDangerous: true,
-            label: nil,
-            role: nil,
-            text: nil,
-            placeholder: nil,
-            testID: nil
-        )
-        if let blocked = BrowserTextEntryPreflight.blockResponse(
-            action: BrowserActionKind.setValue.rawValue,
-            targetInfo: targetInfo
-        ) {
-            return blocked
-        }
+        let targetInfo = try await replacementTextEntryTargets(selector: selector)
         let ok = (targetInfo["ok"] as? Bool) ?? (targetInfo["ok"] as? NSNumber)?.boolValue ?? false
-        guard ok else {
-            return targetInfo
+        guard ok else { return targetInfo }
+
+        let targets = targetInfo["targets"] as? [[String: Any]] ?? []
+        guard !targets.isEmpty else {
+            return [
+                "ok": false,
+                "error": "text_entry_target_not_found",
+                "summary": "Text replacement requires at least one visible editable target before ASTRA can safely mutate page text.",
+                "find": find,
+                "selector": selector,
+                "url": currentURL
+            ]
+        }
+        for target in targets {
+            if let blocked = BrowserTextEntryPreflight.blockResponse(
+                action: BrowserActionKind.setValue.rawValue,
+                targetInfo: target
+            ) {
+                return blocked
+            }
         }
         return nil
+    }
+
+    func replacementTextEntryTargets(selector: String) async throws -> [String: Any] {
+        let json: String
+        if isUsingControlledBrowser {
+            json = try await controlledBrowser.replaceTextTargetsInfo(selector: selector)
+            syncDisplayedStateForEngine()
+            publishBridgeState()
+        } else {
+            json = try await evaluateJavaScriptString(BrowserAutomationScripts.replaceTextTargetsInfoScript(selector: selector))
+        }
+        return try Self.jsonObject(from: json)
     }
 
     func focusedTextEntryTargetInfo() async throws -> [String: Any] {

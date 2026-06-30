@@ -367,11 +367,12 @@ enum BrowserAutomationScripts {
         return "";
       };
       const labelledText = (el) => {
+        const doc = el.ownerDocument || document;
         const ids = String(el.getAttribute("aria-labelledby") || "").split(/\\s+/).filter(Boolean);
-        const byID = ids.map((id) => document.getElementById(id)?.innerText || "").filter(Boolean).join(" ");
+        const byID = ids.map((id) => doc.getElementById(id)?.innerText || "").filter(Boolean).join(" ");
         if (byID) return byID;
         if (el.id) {
-          const label = document.querySelector("label[for='" + esc(el.id) + "']");
+          const label = doc.querySelector("label[for='" + esc(el.id) + "']");
           if (label?.innerText) return label.innerText;
         }
         const parentLabel = el.closest("label");
@@ -401,7 +402,8 @@ enum BrowserAutomationScripts {
         if (testID) return el.tagName.toLowerCase() + "[" + (el.getAttribute("data-testid") ? "data-testid" : el.getAttribute("data-test") ? "data-test" : "aria-label") + "=" + JSON.stringify(testID) + "]";
         const parts = [];
         let node = el;
-        while (node && node.nodeType === Node.ELEMENT_NODE && node !== document.body && parts.length < 5) {
+        const body = (el.ownerDocument || document).body;
+        while (node && node.nodeType === Node.ELEMENT_NODE && node !== body && parts.length < 5) {
           let part = node.tagName.toLowerCase();
           const parent = node.parentElement;
           if (parent) {
@@ -418,6 +420,7 @@ enum BrowserAutomationScripts {
         const text = aria || el.innerText || el.value || el.id || el.tagName.toLowerCase();
         return String(text).replace(/\\s+/g, " ").trim().slice(0, 160);
       };
+      const nameFor = (el) => String(el.getAttribute("name") || "").replace(/\\s+/g, " ").trim().slice(0, 160);
       const frameLabelFor = (frame) => {
         const title = frame.getAttribute("title") || frame.getAttribute("name") || frame.getAttribute("aria-label") || frame.src || selectorFor(frame);
         return String(title || "").replace(/\\s+/g, " ").trim().slice(0, 160);
@@ -482,7 +485,7 @@ enum BrowserAutomationScripts {
           type: el.getAttribute("type") || "",
           autocomplete: el.getAttribute("autocomplete") || "",
           label: labelFor(el),
-          name: labelFor(el),
+          name: nameFor(el),
           placeholder: el.getAttribute("placeholder") || "",
           testID: el.getAttribute("data-testid") || el.getAttribute("data-test") || "",
           disabled: disabled(el),
@@ -512,6 +515,7 @@ enum BrowserAutomationScripts {
           type: active.getAttribute("type") || "",
           autocomplete: active.getAttribute("autocomplete") || "",
           label: labelFor(active),
+          name: nameFor(active),
           value: (active.tagName === "INPUT" || active.tagName === "TEXTAREA" || active.tagName === "SELECT") ? String(active.value || "").slice(0, 160) : "",
           bounds: boundsFor(active)
         } : null,
@@ -750,6 +754,91 @@ enum BrowserAutomationScripts {
             const rect = el.getBoundingClientRect();
             return style.display !== "none" && style.visibility !== "hidden" && (rect.width > 0 || rect.height > 0);
           };
+          const esc = (value) => {
+            if (window.CSS && CSS.escape) return CSS.escape(value);
+            return String(value).replace(/'/g, "\\\\'");
+          };
+          const labelledText = (el) => {
+            const doc = el.ownerDocument || document;
+            const ids = String(el.getAttribute("aria-labelledby") || "").split(/\\s+/).filter(Boolean);
+            const byID = ids.map((id) => doc.getElementById(id)?.innerText || "").filter(Boolean).join(" ");
+            if (byID) return byID;
+            if (el.id) {
+              const label = doc.querySelector("label[for='" + esc(el.id) + "']");
+              if (label?.innerText) return label.innerText;
+            }
+            const parentLabel = el.closest("label");
+            if (parentLabel?.innerText) return parentLabel.innerText;
+            return "";
+          };
+          const labelFor = (el) => {
+            const aria = el.getAttribute("aria-label") || labelledText(el) || el.getAttribute("title") || el.getAttribute("placeholder") || el.getAttribute("name") || "";
+            const text = aria || el.innerText || el.value || el.id || el.tagName.toLowerCase();
+            return String(text).replace(/\\s+/g, " ").trim().slice(0, 160);
+          };
+          const nameFor = (el) => String(el.getAttribute("name") || "").replace(/\\s+/g, " ").trim().slice(0, 160);
+          const selectorFor = (el) => {
+            if (el.id) return "#" + esc(el.id);
+            const name = nameFor(el);
+            if (name) return el.tagName.toLowerCase() + "[name=" + JSON.stringify(name) + "]";
+            return el.tagName.toLowerCase();
+          };
+          const roleFor = (el) => {
+            const explicit = el.getAttribute("role");
+            if (explicit) return explicit;
+            const tag = el.tagName.toLowerCase();
+            const type = String(el.getAttribute("type") || "").toLowerCase();
+            if (tag === "button" || type === "button" || type === "submit") return "button";
+            if (tag === "a" && el.href) return "link";
+            if (tag === "input" || tag === "textarea" || el.isContentEditable) return "textbox";
+            if (tag === "select") return "combobox";
+            return "";
+          };
+          const sensitiveRisk = (el) => {
+            const text = [
+              selectorFor(el),
+              labelFor(el),
+              nameFor(el),
+              roleFor(el),
+              el.tagName.toLowerCase(),
+              el.getAttribute("type") || "",
+              el.getAttribute("autocomplete") || "",
+              el.getAttribute("placeholder") || "",
+              el.getAttribute("data-testid") || el.getAttribute("data-test") || "",
+              el.getAttribute("href") || ""
+            ].join(" ").toLowerCase();
+            if (String(el.getAttribute("type") || "").toLowerCase() === "password" || /password|passcode|secret|current-password|new-password/.test(text)) return "credential_input_blocked";
+            if (/mfa|2fa|two factor|two-factor|verification code|security code|otp|one-time/.test(text)) return "mfa_input_blocked";
+            return "";
+          };
+          const sensitiveBlock = (el, action) => {
+            const error = sensitiveRisk(el);
+            if (!error) return null;
+            const risk = error === "mfa_input_blocked" ? "mfaInput" : "credentialInput";
+            return {
+              ok: false,
+              error,
+              action,
+              summary: error === "mfa_input_blocked"
+                ? "ASTRA will not type MFA or verification codes. The user should enter this directly in the browser."
+                : "ASTRA will not type passwords or secrets. The user should enter this directly in the browser.",
+              risk,
+              target: {
+                selector: selectorFor(el),
+                requestedSelector: selector || "",
+                label: "[redacted]",
+                name: "[redacted]",
+                role: roleFor(el),
+                tag: el.tagName.toLowerCase(),
+                type: el.getAttribute("type") || "",
+                autocomplete: el.getAttribute("autocomplete") || "",
+                placeholder: "[redacted]",
+                testID: el.getAttribute("data-testid") || el.getAttribute("data-test") || "",
+                href: el.getAttribute("href") || "",
+                url: location.href
+              }
+            };
+          };
           const setNativeValue = (target, value) => {
             const proto = Object.getPrototypeOf(target);
             const descriptor = proto ? Object.getOwnPropertyDescriptor(proto, "value") : null;
@@ -773,6 +862,11 @@ enum BrowserAutomationScripts {
           const candidates = selector
             ? Array.from(document.querySelectorAll(selector))
             : Array.from(document.querySelectorAll("input, textarea, [contenteditable=true]"));
+          for (const el of candidates) {
+            if (!visible(el)) continue;
+            const blocked = sensitiveBlock(el, "setValue");
+            if (blocked) return JSON.stringify(blocked);
+          }
           for (const el of candidates) {
             if (!visible(el)) continue;
             const before = "value" in el ? String(el.value || "") : String(el.textContent || "");
@@ -803,6 +897,87 @@ enum BrowserAutomationScripts {
               ? "Google editor canvas text is not directly editable through DOM replacement. Open Find and replace, then use astra-browser set-value on the Find and Replace fields by selector."
               : "No editable input, textarea, or contenteditable element contained the requested text. Use snapshot --mode controls to find a specific field selector."
           });
+        })()
+        """
+    }
+
+    static func replaceTextTargetsInfoScript(selector: String) -> String {
+        """
+        (() => {
+          const selector = \(jsonLiteral(selector));
+          const visible = (el) => {
+            const style = window.getComputedStyle(el);
+            const rect = el.getBoundingClientRect();
+            return style.display !== "none" && style.visibility !== "hidden" && (rect.width > 0 || rect.height > 0);
+          };
+          const editable = (el) => "value" in el || el.isContentEditable || el.tagName === "TEXTAREA";
+          const esc = (value) => {
+            if (window.CSS && CSS.escape) return CSS.escape(value);
+            return String(value).replace(/'/g, "\\\\'");
+          };
+          const labelledText = (el) => {
+            const doc = el.ownerDocument || document;
+            const ids = String(el.getAttribute("aria-labelledby") || "").split(/\\s+/).filter(Boolean);
+            const byID = ids.map((id) => doc.getElementById(id)?.innerText || "").filter(Boolean).join(" ");
+            if (byID) return byID;
+            if (el.id) {
+              const label = doc.querySelector("label[for='" + esc(el.id) + "']");
+              if (label?.innerText) return label.innerText;
+            }
+            const parentLabel = el.closest("label");
+            if (parentLabel?.innerText) return parentLabel.innerText;
+            return "";
+          };
+          const selectorFor = (el) => {
+            if (el.id) return "#" + esc(el.id);
+            const testID = el.getAttribute("data-testid") || el.getAttribute("data-test") || el.getAttribute("aria-label");
+            if (testID) return el.tagName.toLowerCase() + "[" + (el.getAttribute("data-testid") ? "data-testid" : el.getAttribute("data-test") ? "data-test" : "aria-label") + "=" + JSON.stringify(testID) + "]";
+            const name = el.getAttribute("name");
+            if (name) return el.tagName.toLowerCase() + "[name=" + JSON.stringify(name) + "]";
+            return el.tagName.toLowerCase();
+          };
+          const labelFor = (el) => {
+            const aria = el.getAttribute("aria-label") || labelledText(el) || el.getAttribute("title") || el.getAttribute("placeholder") || el.getAttribute("name") || "";
+            const text = aria || el.innerText || el.value || el.id || el.tagName.toLowerCase();
+            return String(text).replace(/\\s+/g, " ").trim().slice(0, 160);
+          };
+          const nameFor = (el) => String(el.getAttribute("name") || "").replace(/\\s+/g, " ").trim().slice(0, 160);
+          const roleFor = (el) => {
+            const explicit = el.getAttribute("role");
+            if (explicit) return explicit;
+            const tag = el.tagName.toLowerCase();
+            const type = String(el.getAttribute("type") || "").toLowerCase();
+            if (tag === "button" || type === "button" || type === "submit") return "button";
+            if (tag === "a" && el.href) return "link";
+            if (tag === "input" || tag === "textarea" || el.isContentEditable) return "textbox";
+            if (tag === "select") return "combobox";
+            return "";
+          };
+          let candidates = [];
+          try {
+            candidates = Array.from(document.querySelectorAll(selector)).filter((el) => visible(el) && editable(el));
+          } catch (_) {
+            return JSON.stringify({ ok: false, error: "invalid_selector", selector });
+          }
+          const targets = candidates.map((el) => ({
+            ok: true,
+            selector: selectorFor(el),
+            requestedSelector: selector,
+            label: labelFor(el),
+            name: nameFor(el),
+            role: roleFor(el),
+            tag: el.tagName.toLowerCase(),
+            type: el.getAttribute("type") || "",
+            autocomplete: el.getAttribute("autocomplete") || "",
+            placeholder: el.getAttribute("placeholder") || "",
+            testID: el.getAttribute("data-testid") || el.getAttribute("data-test") || "",
+            href: el.getAttribute("href") || "",
+            disabled: Boolean(el.disabled) || el.getAttribute("aria-disabled") === "true" || el.getAttribute("disabled") !== null,
+            visible: true,
+            actionable: true,
+            url: location.href
+          }));
+          return JSON.stringify({ ok: true, selector, targetCount: targets.length, targets });
         })()
         """
     }
@@ -838,6 +1013,85 @@ enum BrowserAutomationScripts {
           const text = \(jsonLiteral(text));
           const target = document.activeElement && document.activeElement !== document.body ? document.activeElement : null;
           if (!target) return JSON.stringify({ ok: false, error: "no_focused_element" });
+          const esc = (value) => {
+            if (window.CSS && CSS.escape) return CSS.escape(value);
+            return String(value).replace(/'/g, "\\\\'");
+          };
+          const labelledText = (el) => {
+            const doc = el.ownerDocument || document;
+            const ids = String(el.getAttribute("aria-labelledby") || "").split(/\\s+/).filter(Boolean);
+            const byID = ids.map((id) => doc.getElementById(id)?.innerText || "").filter(Boolean).join(" ");
+            if (byID) return byID;
+            if (el.id) {
+              const label = doc.querySelector("label[for='" + esc(el.id) + "']");
+              if (label?.innerText) return label.innerText;
+            }
+            const parentLabel = el.closest("label");
+            if (parentLabel?.innerText) return parentLabel.innerText;
+            return "";
+          };
+          const labelFor = (el) => {
+            const aria = el.getAttribute("aria-label") || labelledText(el) || el.getAttribute("title") || el.getAttribute("placeholder") || el.getAttribute("name") || "";
+            const text = aria || el.innerText || el.value || el.id || el.tagName.toLowerCase();
+            return String(text).replace(/\\s+/g, " ").trim().slice(0, 160);
+          };
+          const nameFor = (el) => String(el.getAttribute("name") || "").replace(/\\s+/g, " ").trim().slice(0, 160);
+          const roleFor = (el) => {
+            const explicit = el.getAttribute("role");
+            if (explicit) return explicit;
+            const tag = el.tagName.toLowerCase();
+            const type = String(el.getAttribute("type") || "").toLowerCase();
+            if (tag === "button" || type === "button" || type === "submit") return "button";
+            if (tag === "a" && el.href) return "link";
+            if (tag === "input" || tag === "textarea" || el.isContentEditable) return "textbox";
+            if (tag === "select") return "combobox";
+            return "";
+          };
+          const selectorFor = (el) => {
+            if (el.id) return "#" + esc(el.id);
+            const name = nameFor(el);
+            if (name) return el.tagName.toLowerCase() + "[name=" + JSON.stringify(name) + "]";
+            return el.tagName.toLowerCase();
+          };
+          const sensitiveText = [
+            selectorFor(target),
+            labelFor(target),
+            nameFor(target),
+            roleFor(target),
+            target.tagName.toLowerCase(),
+            target.getAttribute("type") || "",
+            target.getAttribute("autocomplete") || "",
+            target.getAttribute("placeholder") || "",
+            target.getAttribute("data-testid") || target.getAttribute("data-test") || "",
+            target.getAttribute("href") || ""
+          ].join(" ").toLowerCase();
+          const sensitiveError = String(target.getAttribute("type") || "").toLowerCase() === "password" || /password|passcode|secret|current-password|new-password/.test(sensitiveText)
+            ? "credential_input_blocked"
+            : (/mfa|2fa|two factor|two-factor|verification code|security code|otp|one-time/.test(sensitiveText) ? "mfa_input_blocked" : "");
+          if (sensitiveError) {
+            return JSON.stringify({
+              ok: false,
+              error: sensitiveError,
+              action: "insertText",
+              summary: sensitiveError === "mfa_input_blocked"
+                ? "ASTRA will not type MFA or verification codes. The user should enter this directly in the browser."
+                : "ASTRA will not type passwords or secrets. The user should enter this directly in the browser.",
+              risk: sensitiveError === "mfa_input_blocked" ? "mfaInput" : "credentialInput",
+              target: {
+                selector: selectorFor(target),
+                label: "[redacted]",
+                name: "[redacted]",
+                role: roleFor(target),
+                tag: target.tagName.toLowerCase(),
+                type: target.getAttribute("type") || "",
+                autocomplete: target.getAttribute("autocomplete") || "",
+                placeholder: "[redacted]",
+                testID: target.getAttribute("data-testid") || target.getAttribute("data-test") || "",
+                href: target.getAttribute("href") || "",
+                url: location.href
+              }
+            });
+          }
           target.focus();
           if ("value" in target) {
             const start = target.selectionStart ?? String(target.value || "").length;
@@ -912,11 +1166,12 @@ enum BrowserAutomationScripts {
             return "";
           };
           const labelledText = (el) => {
+            const doc = el.ownerDocument || document;
             const ids = String(el.getAttribute("aria-labelledby") || "").split(/\\s+/).filter(Boolean);
-            const byID = ids.map((id) => document.getElementById(id)?.innerText || "").filter(Boolean).join(" ");
+            const byID = ids.map((id) => doc.getElementById(id)?.innerText || "").filter(Boolean).join(" ");
             if (byID) return byID;
             if (el.id) {
-              const label = document.querySelector("label[for='" + esc(el.id) + "']");
+              const label = doc.querySelector("label[for='" + esc(el.id) + "']");
               if (label?.innerText) return label.innerText;
             }
             const parentLabel = el.closest("label");
@@ -929,7 +1184,8 @@ enum BrowserAutomationScripts {
             if (testID) return el.tagName.toLowerCase() + "[" + (el.getAttribute("data-testid") ? "data-testid" : el.getAttribute("data-test") ? "data-test" : "aria-label") + "=" + JSON.stringify(testID) + "]";
             const parts = [];
             let node = el;
-            while (node && node.nodeType === Node.ELEMENT_NODE && node !== document.body && parts.length < 5) {
+            const body = (el.ownerDocument || document).body;
+            while (node && node.nodeType === Node.ELEMENT_NODE && node !== body && parts.length < 5) {
               let part = node.tagName.toLowerCase();
               const parent = node.parentElement;
               if (parent) {
@@ -946,6 +1202,7 @@ enum BrowserAutomationScripts {
             const text = aria || el.innerText || el.value || el.id || el.tagName.toLowerCase();
             return String(text).replace(/\\s+/g, " ").trim().slice(0, 160);
           };
+          const nameFor = (el) => String(el.getAttribute("name") || "").replace(/\\s+/g, " ").trim().slice(0, 160);
           const frameLabelFor = (frame) => {
             const title = frame.getAttribute("title") || frame.getAttribute("name") || frame.getAttribute("aria-label") || frame.src || selectorFor(frame);
             return String(title || "").replace(/\\s+/g, " ").trim().slice(0, 160);
@@ -1048,7 +1305,7 @@ enum BrowserAutomationScripts {
               selector: selectorFor(el),
               requestedSelector: selector || "",
               label: labelFor(el),
-              name: labelFor(el),
+              name: nameFor(el),
               role: roleFor(el),
               tag: el.tagName.toLowerCase(),
               type: el.getAttribute("type") || "",

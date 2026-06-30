@@ -155,7 +155,7 @@ enum BrowserTextEntryPreflight {
             "url": string(targetInfo["url"])
         ]
         if let framePath = targetInfo["framePath"] {
-            target["framePath"] = framePath
+            target["framePath"] = sanitizedFramePath(framePath, redact: redactText)
         }
         if let shadowDepth = targetInfo["shadowDepth"] {
             target["shadowDepth"] = shadowDepth
@@ -170,5 +170,32 @@ enum BrowserTextEntryPreflight {
         if let string = value as? String { return string }
         if let number = value as? NSNumber { return number.stringValue }
         return ""
+    }
+
+    private static func sanitizedFramePath(_ value: Any, redact: Bool) -> [String] {
+        let entries: [String]
+        if let strings = value as? [String] {
+            entries = strings
+        } else if let values = value as? [Any] {
+            entries = values.map { string($0) }
+        } else {
+            entries = [string(value)]
+        }
+        guard redact else {
+            return entries
+        }
+        return entries.map(sanitizedSensitiveFramePathEntry)
+    }
+
+    private static func sanitizedSensitiveFramePathEntry(_ value: String) -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "[redacted frame]" }
+        guard let components = URLComponents(string: trimmed),
+              let scheme = components.scheme,
+              let host = components.host else {
+            return "[redacted frame]"
+        }
+        let port = components.port.map { ":\($0)" } ?? ""
+        return "\(scheme)://\(host)\(port)"
     }
 }

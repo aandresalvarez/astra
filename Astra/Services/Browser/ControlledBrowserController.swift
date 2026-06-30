@@ -710,6 +710,11 @@ final class ControlledBrowserController: ObservableObject {
         return value
     }
 
+    func replaceTextTargetsInfo(selector: String) async throws -> String {
+        try await ensureLaunched(initialURL: URL(string: "about:blank"))
+        return try await evaluate(script: BrowserAutomationScripts.replaceTextTargetsInfoScript(selector: selector))
+    }
+
     func keypress(key: String, modifiers: [String]) async throws -> String {
         try await ensureLaunched(initialURL: URL(string: "about:blank"))
         let definition = Self.keyDefinition(for: key, modifiers: modifiers)

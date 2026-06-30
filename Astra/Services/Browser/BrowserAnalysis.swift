@@ -277,6 +277,7 @@ struct BrowserControl {
     let role: String
     let tag: String
     let type: String
+    let autocomplete: String
     let placeholder: String
     let testID: String
     let value: String
@@ -311,6 +312,7 @@ struct BrowserControl {
             "role": role,
             "tag": tag,
             "type": type,
+            "autocomplete": autocomplete,
             "selector": selector,
             "placeholder": placeholder,
             "testID": testID,
@@ -960,6 +962,7 @@ enum BrowserAnalysisBuilder {
                 string(raw["role"]),
                 string(raw["tag"]),
                 string(raw["type"]),
+                string(raw["autocomplete"]).lowercased(),
                 string(raw["label"]).lowercased(),
                 string(raw["placeholder"]).lowercased(),
                 string(raw["testID"]).lowercased(),
@@ -1011,6 +1014,7 @@ enum BrowserAnalysisBuilder {
         let role = string(raw["role"])
         let tag = string(raw["tag"])
         let type = string(raw["type"])
+        let autocomplete = string(raw["autocomplete"])
         let placeholder = string(raw["placeholder"])
         let testID = string(raw["testID"])
         let value = string(raw["value"])
@@ -1025,9 +1029,11 @@ enum BrowserAnalysisBuilder {
             pageURL: pageURL,
             selector: selector,
             label: label,
+            name: name,
             role: role,
             tag: tag,
             type: type,
+            autocomplete: autocomplete,
             placeholder: placeholder,
             testID: testID,
             href: href
@@ -1075,6 +1081,7 @@ enum BrowserAnalysisBuilder {
             name.lowercased(),
             tag,
             type,
+            autocomplete.lowercased(),
             placeholder.lowercased(),
             testID.lowercased(),
             framePath.joined(separator: ">"),
@@ -1123,6 +1130,7 @@ enum BrowserAnalysisBuilder {
             role: role,
             tag: tag,
             type: type,
+            autocomplete: autocomplete,
             placeholder: placeholder,
             testID: testID,
             value: value,
@@ -1352,9 +1360,11 @@ enum BrowserAnalysisBuilder {
         pageURL: String,
         selector: String,
         label: String,
+        name: String,
         role: String,
         tag: String,
         type: String,
+        autocomplete: String,
         placeholder: String,
         testID: String,
         href: String
@@ -1363,11 +1373,11 @@ enum BrowserAnalysisBuilder {
             selector: selector,
             requestedSelector: "",
             label: label,
-            name: label,
+            name: name,
             role: role,
             tag: tag,
             type: type,
-            autocomplete: "",
+            autocomplete: autocomplete,
             placeholder: placeholder,
             testID: testID,
             href: href,
@@ -1380,9 +1390,11 @@ enum BrowserAnalysisBuilder {
         let text = [
             selector,
             label,
+            name,
             role,
             tag,
             type,
+            autocomplete,
             placeholder,
             testID,
             href

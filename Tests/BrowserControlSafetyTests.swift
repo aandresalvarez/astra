@@ -96,6 +96,20 @@ struct BrowserControlSafetyTests {
             ]
         ))
         #expect(autocompleteBlock["error"] as? String == "credential_input_blocked")
+
+        let nameBlock = try #require(BrowserTextEntryPreflight.blockResponse(
+            action: BrowserActionKind.fill.rawValue,
+            targetInfo: [
+                "ok": true,
+                "selector": "input",
+                "label": "Account",
+                "name": "current-password",
+                "role": "textbox",
+                "tag": "input",
+                "type": "text"
+            ]
+        ))
+        #expect(nameBlock["error"] as? String == "credential_input_blocked")
     }
 
     @Test("Text entry preflight redacts sensitive target attachments")
@@ -114,6 +128,10 @@ struct BrowserControlSafetyTests {
                 "testID": "login-password",
                 "href": "https://example.com/reset-password",
                 "url": "https://example.com/login",
+                "framePath": [
+                    "https://auth.example.com/challenge?reset_token=secret-token",
+                    "Verification code frame"
+                ],
                 "value": "raw-secret"
             ]
         ))
@@ -124,6 +142,10 @@ struct BrowserControlSafetyTests {
         #expect(target["label"] as? String == "[redacted]")
         #expect(target["placeholder"] as? String == "[redacted]")
         #expect(target["value"] == nil)
+        #expect(target["framePath"] as? [String] == [
+            "https://auth.example.com",
+            "[redacted frame]"
+        ])
         #expect(BrowserTextEntryPreflight.redactedTargetAttachment(for: block)["value"] == nil)
     }
 
@@ -151,6 +173,31 @@ struct BrowserControlSafetyTests {
         #expect(script.contains("contentDocument"))
         #expect(script.contains("focused_frame_uninspectable"))
         #expect(script.contains("autocomplete"))
+        #expect(script.contains("name: nameFor(el)"))
+        #expect(script.contains("ownerDocument"))
+    }
+
+    @Test("Text mutation scripts revalidate sensitive focused and replacement targets")
+    func textMutationScriptsRevalidateSensitiveTargets() {
+        let insertScript = BrowserAutomationScripts.insertTextScript("secret")
+        #expect(insertScript.contains("credential_input_blocked"))
+        #expect(insertScript.contains("mfa_input_blocked"))
+        #expect(insertScript.contains("autocomplete"))
+        #expect(insertScript.contains("nameFor(target)"))
+
+        let replaceTargetsScript = BrowserAutomationScripts.replaceTextTargetsInfoScript(selector: "input")
+        #expect(replaceTargetsScript.contains("querySelectorAll(selector)"))
+        #expect(replaceTargetsScript.contains("targets"))
+        #expect(replaceTargetsScript.contains("name: nameFor(el)"))
+
+        let replaceScript = BrowserAutomationScripts.replaceTextScript(
+            find: "old",
+            replacement: "new",
+            selector: "input",
+            all: true
+        )
+        #expect(replaceScript.contains("sensitiveBlock(el, \"setValue\")"))
+        #expect(replaceScript.contains("return JSON.stringify(blocked)"))
     }
 
     @Test("Drive open default timeout covers slow Google Drive search results")

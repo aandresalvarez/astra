@@ -53,6 +53,48 @@ struct BrowserAnalysisTests {
         #expect(delete.requiresUserConfirmation)
     }
 
+    @Test("Analyzer classifies name and autocomplete sensitive metadata")
+    func analyzerClassifiesNameAndAutocompleteSensitiveMetadata() throws {
+        let analysis = BrowserAnalysisBuilder.build(
+            snapshot: Self.sampleSnapshot(controls: [
+                Self.control(
+                    selector: "input",
+                    tag: "input",
+                    role: "textbox",
+                    type: "text",
+                    label: "Account",
+                    name: "current-password"
+                ),
+                Self.control(
+                    selector: "#token",
+                    tag: "input",
+                    role: "textbox",
+                    type: "text",
+                    label: "Code",
+                    autocomplete: "one-time-code"
+                )
+            ]),
+            backend: "embedded WebKit",
+            engine: "embedded",
+            createdAt: Date(timeIntervalSince1970: 1_000)
+        )
+
+        let password = try #require(analysis.controls.first { $0.name == "current-password" })
+        #expect(password.risk == .credentialInput)
+        #expect(password.requiresUserConfirmation)
+
+        let otp = try #require(analysis.controls.first { $0.autocomplete == "one-time-code" })
+        #expect(otp.risk == .mfaInput)
+        #expect(otp.jsonObject()["autocomplete"] as? String == "one-time-code")
+    }
+
+    @Test("Page snapshot script preserves DOM name separately from label")
+    func pageSnapshotScriptPreservesDOMNameSeparatelyFromLabel() {
+        let script = BrowserAutomationScripts.snapshotScript
+        #expect(script.contains("name: nameFor(el)"))
+        #expect(script.contains("ownerDocument"))
+    }
+
     @Test("Analyze response is compact by default and full when requested")
     func analyzeResponseCompactAndFull() {
         let controls = (0..<25).map { index in
@@ -544,6 +586,8 @@ struct BrowserAnalysisTests {
         role: String,
         type: String = "",
         label: String,
+        name: String? = nil,
+        autocomplete: String = "",
         value: String = "",
         disabled: Bool = false,
         href: String = "",
@@ -555,7 +599,8 @@ struct BrowserAnalysisTests {
             "role": role,
             "type": type,
             "label": label,
-            "name": label,
+            "name": name ?? label,
+            "autocomplete": autocomplete,
             "placeholder": "",
             "testID": "",
             "disabled": disabled,
@@ -588,6 +633,7 @@ struct BrowserAnalysisTests {
             role: role,
             tag: tag,
             type: "",
+            autocomplete: "",
             placeholder: "",
             testID: "",
             value: "",

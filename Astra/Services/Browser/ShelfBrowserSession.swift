@@ -4988,10 +4988,12 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         pasteboard.clearContents()
         return pasteboard.setString(text, forType: .string)
     }
-
     private func act(_ command: ActCommand) async throws -> [String: Any] {
         var results: [[String: Any]] = []
-
+        func appendActResult(_ result: [String: Any]) -> String? {
+            results.append(result)
+            return BrowserTextEntryPreflight.terminalStopReason(for: result)
+        }
         let setAnalysisID = command.setAnalysisID ?? command.analysisID
         let setControlID = command.setControlID ?? command.controlID
         if let set = command.set,
@@ -5024,7 +5026,9 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             object["action"] = "set"
             object["matchedControl"] = control.jsonObject(debug: false)
             object["preflight"] = resolved.response
-            results.append(object)
+            if let stopReason = appendActResult(object) {
+                return ["ok": false, "stopReason": stopReason, "results": results]
+            }
         } else if let find = command.find, let set = command.set {
             let matches = try await findControl(query: find, role: command.role, limit: 8)
             let controls = matches["controls"] as? [[String: Any]] ?? []
@@ -5038,12 +5042,14 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 return ["ok": false, "results": results]
             }
             let json = try await type(selector: selector, text: set, clear: true)
-            results.append(try Self.jsonObject(from: json).merging([
+            let result = try Self.jsonObject(from: json).merging([
                 "action": "set",
                 "matchedControl": editable ?? [:]
-            ], uniquingKeysWith: { current, _ in current }))
+            ], uniquingKeysWith: { current, _ in current })
+            if let stopReason = appendActResult(result) {
+                return ["ok": false, "stopReason": stopReason, "results": results]
+            }
         }
-
         let clickAnalysisID = command.clickAnalysisID ?? command.analysisID
         let clickControlID = command.clickControlID ?? command.controlID
         if ShelfBrowserCommandNormalization.normalized(clickAnalysisID) != nil,
@@ -5086,7 +5092,6 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             )
             results.append(result.merging(["action": "click"], uniquingKeysWith: { current, _ in current }))
         }
-
         if command.waitSaved == true {
             let result = try await waitSaved(
                 timeoutSeconds: command.timeoutSeconds ?? 8,
@@ -5094,27 +5099,27 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             )
             results.append(result.merging(["action": "waitSaved"], uniquingKeysWith: { current, _ in current }))
         }
-
         if let verify = command.verify {
             let result = try await verifyText(verify, absent: false)
             results.append(result.merging(["action": "verify"], uniquingKeysWith: { current, _ in current }))
         }
-
         if let absent = command.absent {
             let result = try await verifyText(absent, absent: true)
             results.append(result.merging(["action": "verifyAbsent"], uniquingKeysWith: { current, _ in current }))
         }
-
         return [
             "ok": !results.isEmpty && results.allSatisfy { Self.boolValue($0["ok"]) },
             "results": results
         ]
     }
-
     private func runBatch(_ command: BatchCommand) async throws -> [String: Any] {
         var results: [[String: Any]] = []
         var stopReason: String?
-        func appendBatchResult(_ result: [String: Any]) -> Bool { results.append(result); stopReason = BrowserTextEntryPreflight.terminalStopReason(for: result); return stopReason != nil }
+        func appendBatchResult(_ result: [String: Any]) -> Bool {
+            results.append(result)
+            stopReason = BrowserTextEntryPreflight.terminalStopReason(for: result)
+            return stopReason != nil
+        }
         batchLoop: for action in command.actions.prefix(20) {
             switch action.normalizedAction {
             case "analyze":
@@ -5558,14 +5563,16 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                     timeoutSeconds: action.timeoutSeconds,
                     intervalMilliseconds: action.intervalMilliseconds
                 ))
-                results.append(result.merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
+                let batchResult = result.merging(["action": action.action], uniquingKeysWith: { current, _ in current })
+                if appendBatchResult(batchResult) { break batchLoop }
             case "keypress":
                 guard let key = action.key else {
                     results.append(["ok": false, "action": action.action, "error": "missing_key"])
                     continue
                 }
                 let json = try await keypress(key: key, modifiers: action.modifiers ?? [])
-                results.append(try Self.jsonObject(from: json).merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
+                let result = try Self.jsonObject(from: json).merging(["action": action.action], uniquingKeysWith: { current, _ in current })
+                if appendBatchResult(result) { break batchLoop }
             case "text", "inserttext":
                 guard let text = action.text else {
                     results.append(["ok": false, "action": action.action, "error": "missing_text"])
@@ -5607,7 +5614,6 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 results.append(["ok": false, "action": action.action, "error": "unknown_action"])
             }
         }
-
         var response: [String: Any] = [
             "ok": stopReason == nil && results.allSatisfy { Self.boolValue($0["ok"]) },
             "results": results
@@ -5626,7 +5632,6 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         }
         return response
     }
-
     func evaluateJavaScriptString(_ script: String) async throws -> String {
         try await withCheckedThrowingContinuation { continuation in
             webView.evaluateJavaScript(script) { result, error in
@@ -5642,7 +5647,6 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             }
         }
     }
-
     private static func controlsMatching(_ controls: [[String: Any]], label: String, role: String?) -> [[String: Any]] {
         let normalizedLabel = label.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let normalizedRole = role?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -5665,7 +5669,6 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             controlMatchScore(left, query: normalizedLabel, role: normalizedRole) > controlMatchScore(right, query: normalizedLabel, role: normalizedRole)
         }
     }
-
     static func controlLabelStronglyMatches(_ control: [String: Any], requestedLabel: String) -> Bool {
         let query = normalizedControlLabel(requestedLabel)
         guard !query.isEmpty else { return true }
@@ -5673,7 +5676,6 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             normalizedControlLabel(control[key] as? String) == query
         }
     }
-
     static func mailMutationControlAction(_ control: [String: Any]) -> String? {
         let normalized = normalizedControlLabel([
             control["label"] as? String ?? "",
@@ -5871,7 +5873,6 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         if ["0", "false", "no", "n"].contains(value) { return false }
         return nil
     }
-
     private struct EmbeddedPageReadRequest {
         var frames: [[String: Any]]
         var warnings: [String]
