@@ -283,6 +283,21 @@ struct HostControlToolSupportTests {
         #expect(limits.clampedTimeout(.greatestFiniteMagnitude) == 86_400)
     }
 
+    @Test("Host control process limits are immutable after validation")
+    func hostControlProcessLimitsAreImmutableAfterValidation() throws {
+        let source = try hostControlToolSource()
+        let definition = try sourceSnippet(
+            startingWith: "public struct HostControlProcessLimits",
+            endingBefore: "public protocol HostControlProcessRunning",
+            in: source
+        )
+
+        #expect(definition.contains("public let maximumTimeoutSeconds"))
+        #expect(definition.contains("public let outputByteLimit"))
+        #expect(!definition.contains("public var maximumTimeoutSeconds"))
+        #expect(!definition.contains("public var outputByteLimit"))
+    }
+
     @Test("Host control default process runner uses server process limits")
     func hostControlDefaultProcessRunnerUsesServerProcessLimits() throws {
         let root = FileManager.default.temporaryDirectory

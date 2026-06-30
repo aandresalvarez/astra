@@ -266,8 +266,8 @@ public struct HostControlProcessLimits: Equatable, Sendable {
     private static let defaultMaximumTimeoutSeconds: TimeInterval = 300
     private static let maximumConfigurableTimeoutSeconds: TimeInterval = 24 * 60 * 60
 
-    public var maximumTimeoutSeconds: TimeInterval
-    public var outputByteLimit: Int
+    public let maximumTimeoutSeconds: TimeInterval
+    public let outputByteLimit: Int
 
     public init(
         maximumTimeoutSeconds: TimeInterval = 300,
