@@ -423,6 +423,20 @@ public final class DockerWorkspaceJobManager: WorkspaceJobManaging {
                   [ "$managed_start_time" = "$current_start_time" ] || return 1
                   proc_is_session_group_leader "$1"
                 }
+                pid_metadata_names_managed_group() {
+                  safe_pid "$1" || return 1
+                  [ -r "$pid_metadata" ] || return 1
+                  managed_pid=""
+                  managed_mode=""
+                  while IFS='=' read -r key value; do
+                    case "$key" in
+                      pid) managed_pid="$value" ;;
+                      mode) managed_mode="$value" ;;
+                    esac
+                  done < "$pid_metadata"
+                  [ "$managed_pid" = "$1" ] || return 1
+                  [ "$managed_mode" = "setsid-process-group" ]
+                }
                 process_group_exists() {
                   group_pid="$1"
                   safe_pid "$group_pid" || return 1
@@ -449,12 +463,12 @@ public final class DockerWorkspaceJobManager: WorkspaceJobManaging {
                 terminate_pid_or_group() {
                   target_pid="$1"
                   safe_pid "$target_pid" || return 0
-                  if pid_matches_managed_session "$target_pid"; then
+                  if pid_metadata_names_managed_group "$target_pid"; then
                     if process_group_exists "$target_pid"; then
                       signal_process_group TERM "$target_pid"
                       sleep 5
                       signal_process_group KILL "$target_pid"
-                    elif kill -0 "$target_pid" 2>/dev/null; then
+                    elif pid_matches_managed_session "$target_pid" && kill -0 "$target_pid" 2>/dev/null; then
                       signal_direct_pid TERM "$target_pid"
                       sleep 5
                       signal_direct_pid KILL "$target_pid"
@@ -608,11 +622,20 @@ public final class DockerWorkspaceJobManager: WorkspaceJobManaging {
             signal_process_group KILL "$command_pid"
           fi
         }
+        command_leader_matches_start_time() {
+          safe_pid "$command_pid" || return 1
+          kill -0 "$command_pid" 2>/dev/null || return 1
+          if [ -n "$command_start_time" ]; then
+            current_start_time="$(proc_start_time "$command_pid" || true)"
+            [ "$command_start_time" = "$current_start_time" ] || return 1
+          fi
+          return 0
+        }
         timeout_pid=""
         if [ "$timeout_seconds" -gt 0 ]; then
           (
             sleep "$timeout_seconds"
-            if process_group_exists "$command_pid"; then
+            if command_leader_matches_start_time && process_group_exists "$command_pid"; then
               printf '%s\\n' timed_out > "$timeout_marker"
               terminate_command_group 5
             fi
