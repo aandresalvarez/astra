@@ -798,6 +798,7 @@ struct TaskCapabilityResolver {
         "develop",
         "doc",
         "document",
+        "docker",
         "download",
         "drive",
         "file",

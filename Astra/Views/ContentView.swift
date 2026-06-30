@@ -4080,18 +4080,7 @@ struct WorkspaceSetupForm: View {
     }
 
     private func capabilityOutcomeSubtitle(for option: OnboardingCapabilityOption) -> String {
-        switch option.packageID {
-        case OnboardingCapabilitySetup.jiraPackageID:
-            return "Create, update, and summarize Jira tickets"
-        case OnboardingCapabilitySetup.githubPackageID:
-            return "Review PRs, issues, and CI"
-        case OnboardingCapabilitySetup.gcloudPackageID:
-            return "Query BigQuery and work with GCP resources"
-        case OnboardingCapabilitySetup.redcapPackageID:
-            return "Talk to REDCap projects and metadata"
-        default:
-            return option.subtitle
-        }
+        OnboardingCapabilitySetup.outcomeSubtitle(for: option)
     }
 
     private func capabilityReadyMessage(for packageID: String) -> String {

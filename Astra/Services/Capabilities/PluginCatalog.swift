@@ -120,20 +120,21 @@ final class PluginCatalog {
             name: "Jira Workflow",
             icon: "list.bullet.clipboard",
             iconDescriptor: .brand("jira", fallbackSystemName: "list.bullet.clipboard"),
-            description: "Query, create, and update Jira tickets",
+            description: "Docker host-control searches and reads Jira; non-Docker credential runs can still mutate tickets",
             author: "ASTRA",
             category: "Integrations",
             tags: ["jira", "atlassian", "tickets", "project-management"],
-            version: "2.0.3",
+            version: "2.0.7",
             setupGuide: """
             Connect your workspace to Jira. The agent uses the REST API \
-            to interact with your Jira instance directly.
+            to read ticket metadata from your Jira instance. Docker host-control \
+            runs are typed and read-only; non-Docker runs can still receive \
+            Jira credentials alongside Bash, so governance reports ticket \
+            mutation risk until that path is enforced.
 
             What you can do:
             • Search tickets by project, sprint, status, or assignee
-            • Read ticket details, comments, and history
-            • Create new tickets with proper fields
-            • Update status, assignee, and add comments
+            • Read ticket summaries, status, assignee, priority, project, and issue type
             • Summarize sprint progress and blockers
 
             Setup:
@@ -145,27 +146,32 @@ final class PluginCatalog {
             skills: [PluginSkill(
                 name: "Jira Agent",
                 icon: "list.bullet.clipboard",
-                description: "Query, create, and update Jira tickets via REST API",
+                description: "Search and read Jira tickets via typed read-only operations",
                 allowedTools: ["Read", "Bash", "Glob", "Grep"],
                 disallowedTools: ["Write", "Edit"],
                 customTools: [],
                 behaviorInstructions: """
-                You are a Jira integration agent. Use curl via Bash to interact with the Jira REST API.
+                You are a Jira integration agent. Match Jira access to the execution mode ASTRA gives you, and use the runtime example shown under the selected Jira connector when one is present.
 
                 AUTHENTICATION
                 Use Basic auth with the email, API token, and base URL env vars shown for the selected Jira connector in Available Connectors / ASTRA_CONNECTORS. The prompt may include a connector-specific runtime example; follow those projected env names instead of assuming bare legacy names.
-                First verify auth with /rest/api/3/mypermissions?permissions=BROWSE_PROJECTS. For configured projects, check /rest/api/3/mypermissions?projectKey=KEY&permissions=BROWSE_PROJECTS,CREATE_ISSUES. If permissions authenticate but project checks fail, report project visibility or CREATE_ISSUES problems instead of saying the token is invalid.
-                Use /rest/api/3/myself only as a fallback identity check when permission probes are rejected. Do not treat /myself returning 401/403 as proof of an invalid token if a permission endpoint succeeds.
-                Do not call /rest/api/3/permissions to check access. That endpoint only lists permission metadata; it does not prove the current account has project access.
-                Only recommend generating a new API token when both permission and fallback auth probes return 401/403. If permissions authenticate but searches return zero projects or issues, first check the selected connector's configured projects, Browse Projects, Create Issues, and site/project membership.
 
-                COMMON OPERATIONS
-                • Search: GET /rest/api/3/search/jql?jql=project=KEY+AND+status!=Done&maxResults=20
-                • Get issue: GET /rest/api/3/issue/{KEY-123}
-                • Create issue: POST /rest/api/3/issue with {"fields":{"project":{"key":"..."},"summary":"...","issuetype":{"name":"Task"}}}
-                • Update fields: PUT /rest/api/3/issue/{KEY-123}
-                • Add comment: POST /rest/api/3/issue/{KEY-123}/comment with {"body":{"type":"doc","version":1,"content":[...]}}
-                • Transition: POST /rest/api/3/issue/{KEY-123}/transitions
+                DOCKER HOST-CONTROL RUNS
+                In Docker workspace runs, use `mcp__astra_host__jira` or Copilot's `astra_host-jira`; do not use workspace shell or native host Bash for Jira. First verify auth with operation status. It reports whether the selected connector has a base URL, email, and API token projected without revealing secret values.
+                For configured projects, use operation search_jql with a narrow project JQL and max_results 1. If status is ready but project checks fail or return no issues, report project visibility, Browse Projects, selected connector projects, or site membership problems instead of saying the token is invalid.
+                Do not call raw Jira permission or identity endpoints through the bridge. Only recommend generating a new API token when operation status reports missing or rejected credentials, or typed Jira operations return 401/403.
+
+                DOCKER READ-ONLY OPERATIONS
+                • Status: operation status
+                • Search: operation search_jql with jql, optional max_results, and optional next_page_token for Jira pagination
+                • Get issue: operation get_issue with issue_key
+                • The bridge owns Jira paths and returns a vetted field set. Do not request raw method, path, or body inputs.
+
+                NON-DOCKER REST RUNS
+                When no Jira host-control bridge is available, use curl via Bash with the selected connector's env vars. First verify auth with /rest/api/3/mypermissions?permissions=BROWSE_PROJECTS. For configured projects, check /rest/api/3/mypermissions?projectKey=KEY&permissions=BROWSE_PROJECTS.
+                • Search: GET /rest/api/3/search/jql?jql=project=KEY&maxResults=20&fields=summary,status,assignee,priority,issuetype,project,created,updated
+                • Get issue: GET /rest/api/3/issue/{KEY-123}?fields=summary,status,assignee,priority,issuetype,project,created,updated
+                Do not call /rest/api/3/permissions to check access. That endpoint only lists permission metadata; it does not prove the current account has project access. Only recommend generating a new API token when permission probes return 401/403.
 
                 FORMATTING
                 • Always show: ticket key, summary, status, assignee, priority
@@ -173,10 +179,10 @@ final class PluginCatalog {
                 • When summarizing a sprint, group by status (To Do / In Progress / Done)
 
                 RULES
-                • Always confirm with the user before creating or modifying tickets
+                • Do not create, update, comment on, transition, delete, or otherwise mutate Jira tickets with this capability
                 • Default searches to the selected connector's configured project keys unless told otherwise
                 • Use JQL for complex queries
-                • Handle pagination for large result sets
+                • Handle pagination for large result sets by passing returned nextPageToken values as next_page_token
                 """,
                 environmentKeys: ["JIRA_BASE_URL"], environmentValues: [""]
             )],
@@ -201,7 +207,7 @@ final class PluginCatalog {
                 riskLevel: .high,
                 dataAccess: [.connectorCredentials, .externalService, .network],
                 externalEffects: [.readOnly, .externalAPIWrite, .ticketMutation],
-                policyNotes: "Jira API access uses Keychain-backed connector credentials. Ticket creation, comments, transitions, and updates require explicit user confirmation at task time."
+                policyNotes: "Jira API access uses Keychain-backed connector credentials. Docker host-control routes are typed and read-only, but non-Docker runs can still access Jira credentials from Bash; governance must report ticket mutation effects until that path is also enforced."
             )
         ),
 

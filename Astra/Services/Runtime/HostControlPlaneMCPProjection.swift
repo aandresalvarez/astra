@@ -156,7 +156,7 @@ enum HostControlPlaneMCPProjection {
         case "ssh":
             return "Run configured workspace SSH aliases on the host through ASTRA without provider Bash."
         case "jira":
-            return "Use ASTRA-projected Jira connector credentials through the host control-plane bridge."
+            return "Use typed, read-only Jira connector operations through ASTRA's host control-plane bridge."
         default:
             return "Use ASTRA's host control-plane bridge."
         }
@@ -169,7 +169,7 @@ enum HostControlPlaneMCPProjection {
         case "ssh":
             return ["alias", "remote_command", "timeout_seconds"]
         case "jira":
-            return ["operation", "alias", "method", "path", "body", "timeout_seconds"]
+            return ["operation", "alias", "issue_key", "jql", "max_results", "next_page_token", "timeout_seconds"]
         default:
             return []
         }

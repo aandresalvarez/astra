@@ -95,6 +95,16 @@ struct HostControlToolSupportTests {
         #expect(jiraText.contains("api_token_present: true"))
         #expect(!jiraText.contains("super-secret-token"))
 
+        let jiraSchema = try #require(tools.first { $0["name"] as? String == "jira" })
+        let inputSchema = try #require(jiraSchema["inputSchema"] as? [String: Any])
+        let properties = try #require(inputSchema["properties"] as? [String: Any])
+        #expect(properties.keys.contains("issue_key"))
+        #expect(properties.keys.contains("jql"))
+        #expect(properties.keys.contains("next_page_token"))
+        #expect(!properties.keys.contains("method"))
+        #expect(!properties.keys.contains("path"))
+        #expect(!properties.keys.contains("body"))
+
         let hostLog = try String(contentsOf: log, encoding: .utf8)
         #expect(hostLog.contains("gh pr view 123 --comments"))
         #expect(hostLog.contains("gcloud compute instances list --format=json"))
@@ -195,6 +205,99 @@ struct HostControlToolSupportTests {
         #expect(try resultText(result).contains("gcloud:compute ssh bq"))
         let hostLog = try String(contentsOf: log, encoding: .utf8)
         #expect(hostLog.contains("gcloud compute ssh bq"))
+    }
+
+    @Test("Jira host control rejects raw REST request passthrough")
+    func jiraHostControlRejectsRawRESTRequestPassthrough() throws {
+        let connectors = """
+        {"connectors":[{"id":"jira-1","alias":"jira","envPrefix":"JIRA_JIRA","name":"Jira","serviceType":"jira","baseURL":"http://127.0.0.1:9","authMethod":"basic","env":{"JIRA_EMAIL":"JIRA_EMAIL_ENV","JIRA_API_TOKEN":"JIRA_TOKEN_ENV"},"credentials":{"JIRA_EMAIL":"JIRA_EMAIL_ENV","JIRA_API_TOKEN":"JIRA_TOKEN_ENV"},"config":{}}]}
+        """
+        let configuration = HostControlToolConfiguration(
+            connectorsJSON: connectors,
+            environment: [
+                "ASTRA_CONNECTORS": connectors,
+                "JIRA_EMAIL_ENV": "user@example.com",
+                "JIRA_TOKEN_ENV": "super-secret-token"
+            ]
+        )
+        let server = HostControlMCPServer(configuration: configuration)
+
+        let response = try call(server, id: 1, tool: "jira", arguments: [
+            "operation": "request",
+            "method": "DELETE",
+            "path": "/rest/api/3/issue/ASTRA-1",
+            "body": #"{"deleteSubtasks":true}"#
+        ])
+
+        let error = try errorMessage(response)
+        #expect(error.contains("Unsupported Jira operation 'request'"))
+    }
+
+    @Test("Jira host control search uses vetted read fields")
+    func jiraHostControlSearchUsesVettedReadFields() throws {
+        JiraCaptureURLProtocol.reset()
+        _ = URLProtocol.registerClass(JiraCaptureURLProtocol.self)
+        defer {
+            URLProtocol.unregisterClass(JiraCaptureURLProtocol.self)
+            JiraCaptureURLProtocol.reset()
+        }
+
+        let connectors = """
+        {"connectors":[{"id":"jira-1","alias":"jira","envPrefix":"JIRA_JIRA","name":"Jira","serviceType":"jira","baseURL":"https://jira.example.test","authMethod":"basic","env":{"JIRA_EMAIL":"JIRA_EMAIL_ENV","JIRA_API_TOKEN":"JIRA_TOKEN_ENV"},"credentials":{"JIRA_EMAIL":"JIRA_EMAIL_ENV","JIRA_API_TOKEN":"JIRA_TOKEN_ENV"},"config":{}}]}
+        """
+        let configuration = HostControlToolConfiguration(
+            connectorsJSON: connectors,
+            environment: [
+                "ASTRA_CONNECTORS": connectors,
+                "JIRA_EMAIL_ENV": "user@example.com",
+                "JIRA_TOKEN_ENV": "super-secret-token"
+            ]
+        )
+        let server = HostControlMCPServer(configuration: configuration)
+
+        let response = try call(server, id: 1, tool: "jira", arguments: [
+            "operation": "search_jql",
+            "jql": "project = ASTRA",
+            "max_results": 5,
+            "next_page_token": "token-123"
+        ])
+
+        #expect(try resultText(response).contains("status_code: 200"))
+        let url = try #require(JiraCaptureURLProtocol.capturedURLs.last)
+        #expect(url.path == "/rest/api/3/search/jql")
+        let components = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
+        let fields = try #require(components.queryItems?.first { $0.name == "fields" }?.value)
+        #expect(components.queryItems?.first { $0.name == "nextPageToken" }?.value == "token-123")
+        #expect(fields.contains("summary"))
+        #expect(fields.contains("status"))
+        #expect(fields.contains("assignee"))
+        #expect(!fields.split(separator: ",").contains("key"))
+        #expect(!fields.contains("comment"))
+        #expect(!fields.contains("attachment"))
+    }
+
+    @Test("Jira host control rejects non HTTP base URL schemes")
+    func jiraHostControlRejectsNonHTTPBaseURLSchemes() throws {
+        let connectors = """
+        {"connectors":[{"id":"jira-1","alias":"jira","envPrefix":"JIRA_JIRA","name":"Jira","serviceType":"jira","baseURL":"httpx://jira.example.test","authMethod":"basic","env":{"JIRA_EMAIL":"JIRA_EMAIL_ENV","JIRA_API_TOKEN":"JIRA_TOKEN_ENV"},"credentials":{"JIRA_EMAIL":"JIRA_EMAIL_ENV","JIRA_API_TOKEN":"JIRA_TOKEN_ENV"},"config":{}}]}
+        """
+        let configuration = HostControlToolConfiguration(
+            connectorsJSON: connectors,
+            environment: [
+                "ASTRA_CONNECTORS": connectors,
+                "JIRA_EMAIL_ENV": "user@example.com",
+                "JIRA_TOKEN_ENV": "super-secret-token"
+            ]
+        )
+        let server = HostControlMCPServer(configuration: configuration)
+
+        let response = try call(server, id: 1, tool: "jira", arguments: [
+            "operation": "status"
+        ])
+
+        let text = try resultText(response)
+        #expect(text.contains("base_url: <missing or invalid>"))
+        #expect(text.contains("ready: false"))
     }
 
     @Test("Host and Docker mixed harness routes control-plane and workspace commands separately")
@@ -391,4 +494,52 @@ struct HostControlToolSupportTests {
         let error = try #require(object["error"] as? [String: Any])
         return try #require(error["message"] as? String)
     }
+}
+
+private final class JiraCaptureURLProtocol: URLProtocol {
+    private static let lock = NSLock()
+    private static var captured: [URL] = []
+
+    static var capturedURLs: [URL] {
+        lock.lock()
+        defer { lock.unlock() }
+        return captured
+    }
+
+    static func reset() {
+        lock.lock()
+        captured = []
+        lock.unlock()
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool {
+        request.url?.host == "jira.example.test"
+    }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest {
+        request
+    }
+
+    override func startLoading() {
+        guard let url = request.url else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badURL))
+            return
+        }
+
+        Self.lock.lock()
+        Self.captured.append(url)
+        Self.lock.unlock()
+
+        let response = HTTPURLResponse(
+            url: url,
+            statusCode: 200,
+            httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Type": "application/json"]
+        )!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data(#"{"issues":[]}"#.utf8))
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
 }

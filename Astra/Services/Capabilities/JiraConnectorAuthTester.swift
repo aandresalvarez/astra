@@ -254,7 +254,7 @@ struct JiraConnectorAuthTester {
                 path: "/rest/api/3/mypermissions",
                 queryItems: [
                     URLQueryItem(name: "projectKey", value: project),
-                    URLQueryItem(name: "permissions", value: "BROWSE_PROJECTS,CREATE_ISSUES")
+                    URLQueryItem(name: "permissions", value: "BROWSE_PROJECTS")
                 ]
             )
 
@@ -271,20 +271,6 @@ struct JiraConnectorAuthTester {
                             "project_index": String(index),
                             "project_count": String(projects.count),
                             "permission": "BROWSE_PROJECTS"
-                        ]
-                    )
-                }
-                if permission("CREATE_ISSUES", in: scoped.data) != true {
-                    return outcome(
-                        result: "missing_permission",
-                        endpointKind: "jira.project_permissions",
-                        statusCode: scoped.statusCode,
-                        message: "Jira authenticated, but this account lacks CREATE_ISSUES for project \(project).",
-                        level: .warning,
-                        fields: [
-                            "project_index": String(index),
-                            "project_count": String(projects.count),
-                            "permission": "CREATE_ISSUES"
                         ]
                     )
                 }
@@ -342,7 +328,7 @@ struct JiraConnectorAuthTester {
             result: "authenticated",
             endpointKind: "jira.project_permissions",
             statusCode: 200,
-            message: "Jira authenticated; configured projects are visible and CREATE_ISSUES is available.",
+            message: "Jira authenticated; configured projects are visible with BROWSE_PROJECTS.",
             level: .info,
             fields: ["project_count": String(projects.count)]
         )

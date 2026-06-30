@@ -406,6 +406,103 @@ struct TaskCapabilityResolverTests {
         #expect(!prompt.contains("For Google Cloud or BigQuery host CLI operations, use `mcp__astra_host__gcloud` or `mcp__astra_host__bq`"))
     }
 
+    @Test("Docker routed Jira prompt suppresses raw REST runtime examples")
+    func dockerRoutedJiraPromptSuppressesRawRESTRuntimeExamples() throws {
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+
+        let workspace = Workspace(name: "Docker Jira Workspace", primaryPath: "/tmp/docker-jira-workspace")
+        context.insert(workspace)
+
+        let connector = Connector(
+            name: "Jira",
+            serviceType: "jira",
+            connectorDescription: "Jira REST API",
+            baseURL: "https://jira.example.atlassian.net",
+            authMethod: "basic"
+        )
+        connector.workspace = workspace
+        connector.configKeys = ["JIRA_BASE_URL", "JIRA_EMAIL", "JIRA_API_TOKEN"]
+        connector.configValues = ["https://jira.example.atlassian.net", "person@example.edu", "token"]
+        context.insert(connector)
+
+        let task = AgentTask(
+            title: "Read Jira",
+            goal: "Read Jira issues in Docker",
+            workspace: workspace
+        )
+        task.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encode(WorkspaceExecutionEnvironment(
+            id: "image:workspace",
+            kind: .dockerImage,
+            displayName: "Workspace Image",
+            image: "astra/workspace:latest"
+        ))
+        context.insert(task)
+        try context.save()
+
+        let prompt = AgentPromptBuilder.buildPrompt(for: task)
+
+        #expect(prompt.contains("mcp__astra_host__jira"))
+        #expect(prompt.contains(#""operation":"status""#))
+        #expect(prompt.contains(#""operation":"search_jql""#))
+        #expect(!prompt.contains("Runtime example: curl"))
+        #expect(!prompt.contains("/rest/api/3/mypermissions"))
+    }
+
+    @Test("Docker routed Jira prompt includes connector alias in runtime examples")
+    func dockerRoutedJiraPromptIncludesConnectorAliasInRuntimeExamples() throws {
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+
+        let workspace = Workspace(name: "Docker Multi Jira Workspace", primaryPath: "/tmp/docker-multi-jira-workspace")
+        context.insert(workspace)
+
+        let eng = Connector(
+            name: "Eng Jira",
+            serviceType: "jira",
+            connectorDescription: "Engineering Jira",
+            baseURL: "https://eng.example.atlassian.net",
+            authMethod: "basic"
+        )
+        eng.workspace = workspace
+        eng.configKeys = ["JIRA_BASE_URL", "JIRA_EMAIL", "JIRA_API_TOKEN"]
+        eng.configValues = ["https://eng.example.atlassian.net", "eng@example.edu", "eng-token"]
+        context.insert(eng)
+
+        let ops = Connector(
+            name: "Ops Jira",
+            serviceType: "jira",
+            connectorDescription: "Operations Jira",
+            baseURL: "https://ops.example.atlassian.net",
+            authMethod: "basic"
+        )
+        ops.workspace = workspace
+        ops.configKeys = ["JIRA_BASE_URL", "JIRA_EMAIL", "JIRA_API_TOKEN"]
+        ops.configValues = ["https://ops.example.atlassian.net", "ops@example.edu", "ops-token"]
+        context.insert(ops)
+
+        let task = AgentTask(
+            title: "Compare Jira",
+            goal: "Read Jira issues in Docker from both sites",
+            workspace: workspace
+        )
+        task.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encode(WorkspaceExecutionEnvironment(
+            id: "image:workspace",
+            kind: .dockerImage,
+            displayName: "Workspace Image",
+            image: "astra/workspace:latest"
+        ))
+        context.insert(task)
+        try context.save()
+
+        let prompt = AgentPromptBuilder.buildPrompt(for: task)
+
+        #expect(prompt.contains(#"Runtime example: mcp__astra_host__jira with {"operation":"status","alias":"eng_jira"}"#))
+        #expect(prompt.contains(#"Runtime example: mcp__astra_host__jira with {"operation":"status","alias":"ops_jira"}"#))
+        #expect(prompt.contains(#"{"operation":"search_jql","alias":"eng_jira","jql":"project = KEY","max_results":1}"#))
+        #expect(prompt.contains(#"{"operation":"search_jql","alias":"ops_jira","jql":"project = KEY","max_results":1}"#))
+    }
+
     @Test("Follow-up prompt preserves namespaced connector manifest")
     func followUpPromptPreservesNamespacedConnectorManifest() throws {
         let container = try makeTaskCapabilityResolverContainer()
@@ -1539,6 +1636,57 @@ struct TaskCapabilityResolverTests {
         // pruning them for focus must not be reported as missing.
         #expect(!issues.contains { $0.resourceKind == .skill })
         #expect(!issues.contains { $0.resourceKind == .localTool })
+    }
+
+    @Test("Provider launch checks Google Drive browser package by product intent")
+    func providerLaunchChecksGoogleDriveBrowserPackageByProductIntent() throws {
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+        let package = PluginPackage(
+            id: "local-google-drive-browser",
+            name: "Google Drive Browser",
+            icon: "folder.badge.gearshape",
+            description: "Adds Google Drive browser policy checks",
+            author: "ASTRA",
+            category: "Browser",
+            tags: ["google-drive"],
+            version: "1.0.0",
+            skills: [],
+            connectors: [],
+            localTools: [],
+            templates: [],
+            browserAdapters: [BrowserSiteAdapterID.googleDrive],
+            governance: .localDraft()
+        )
+
+        let workspace = Workspace(name: "Google Drive Integrity", primaryPath: "/tmp/google-drive-integrity")
+        workspace.enabledCapabilityIDs = [package.id]
+        context.insert(workspace)
+
+        let task = AgentTask(
+            title: "Read Drive file",
+            goal: "read a Google Drive file",
+            workspace: workspace
+        )
+        context.insert(task)
+        try context.save()
+
+        let issues = CapabilityRuntimeIntegrityService.issues(
+            for: task,
+            packages: [package],
+            checkExecutables: false,
+            policyContext: CapabilityCatalogPolicyContext.workspaceUser(
+                workspace: workspace,
+                currentAppVersion: SemanticVersion(1, 0, 0)
+            ),
+            scope: .providerLaunch(contextText: task.goal)
+        )
+
+        #expect(issues.contains {
+            $0.packageID == package.id &&
+                $0.resourceKind == CapabilityRuntimeIntegrityIssue.ResourceKind.policy &&
+                $0.message.contains("catalog policy blocks runtime activation")
+        })
     }
 
     @Test("Capability roster advertises enabled capabilities with an invocation hint")

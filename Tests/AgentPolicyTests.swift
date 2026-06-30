@@ -1505,7 +1505,12 @@ struct RunPermissionManifestTests {
             #expect(manifest.providerRender.runtimeSupportTools.contains { descriptor in
                 descriptor.name == HostControlPlaneMCPProjection.providerToolPermission(for: "jira")
                     && descriptor.allowedInputKeys.contains("operation")
-                    && descriptor.allowedInputKeys.contains("path")
+                    && descriptor.allowedInputKeys.contains("issue_key")
+                    && descriptor.allowedInputKeys.contains("jql")
+                    && descriptor.allowedInputKeys.contains("next_page_token")
+                    && !descriptor.allowedInputKeys.contains("method")
+                    && !descriptor.allowedInputKeys.contains("path")
+                    && !descriptor.allowedInputKeys.contains("body")
             })
             #expect(manifest.providerRender.diagnostics.contains { diagnostic in
                 diagnostic.id == "container.host-control-plane-routing"
