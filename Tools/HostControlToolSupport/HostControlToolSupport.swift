@@ -383,7 +383,8 @@ public final class HostControlMCPServer {
                 toolName: toolName,
                 executable: configuration.gcloudExecutable,
                 arguments: arguments,
-                allowedFirstArguments: nil
+                allowedFirstArguments: nil,
+                argumentPolicy: GCloudHostControlPolicy.rejectionMessage
             )
         case "bq":
             return handleProcessTool(
@@ -639,7 +640,7 @@ public final class HostControlMCPServer {
             processSchema(
                 name: "gcloud",
                 description: "Run Google Cloud CLI control-plane commands on the host through ASTRA without provider Bash.",
-                argumentDescription: "Arguments for gcloud, for example [\"compute\", \"instances\", \"list\", \"--format=json\"]."
+                argumentDescription: "Arguments for gcloud, for example [\"compute\", \"instances\", \"list\", \"--format=json\"]. BigQuery command groups such as [\"bq\", ...], [\"alpha\", \"bq\", ...], and [\"beta\", \"bq\", ...] are denied."
             ),
             processSchema(
                 name: "bq",
@@ -765,6 +766,58 @@ public final class HostControlMCPServer {
             return nil
         }
         return String(data: data, encoding: .utf8)
+    }
+}
+
+private enum GCloudHostControlPolicy {
+    private static let bigQueryGroup = "bq"
+    private static let globalOptionsWithValues: Set<String> = [
+        "--account",
+        "--billing-project",
+        "--configuration",
+        "--flags-file",
+        "--format",
+        "--impersonate-service-account",
+        "--project",
+        "--trace-token"
+    ]
+
+    static func rejectionMessage(arguments: [String]) -> String? {
+        let commandPath = commandPathTokens(arguments)
+        guard commandPath.contains(where: { $0.lowercased() == bigQueryGroup }) else {
+            return nil
+        }
+        return [
+            "gcloud command is not allowed by ASTRA host-control policy: BigQuery command group.",
+            "Use the bq host-control tool for help/version metadata only, or an explicitly approved BigQuery capability for resource access."
+        ].joined(separator: " ")
+    }
+
+    private static func commandPathTokens(_ arguments: [String]) -> [String] {
+        var tokens: [String] = []
+        var index = 0
+        while index < arguments.count {
+            let token = arguments[index]
+            if token == "--" {
+                index += 1
+                continue
+            }
+            if token.hasPrefix("-") {
+                let optionName = optionName(for: token)
+                index += 1
+                if globalOptionsWithValues.contains(optionName), !token.contains("="), index < arguments.count {
+                    index += 1
+                }
+                continue
+            }
+            tokens.append(token)
+            index += 1
+        }
+        return tokens
+    }
+
+    private static func optionName(for token: String) -> String {
+        token.split(separator: "=", maxSplits: 1).first.map(String.init) ?? token
     }
 }
 

@@ -145,6 +145,32 @@ struct HostControlToolSupportTests {
         #expect(!FileManager.default.fileExists(atPath: log.path))
     }
 
+    @Test("Host control gcloud blocks BigQuery command families before running host executable")
+    func hostControlGcloudBlocksBigQueryCommandFamiliesBeforeRunningHostExecutable() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-host-control-gcloud-bigquery-policy-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let log = root.appendingPathComponent("host.log", isDirectory: false)
+        let gcloud = try fakeExecutable(named: "gcloud", root: root, log: log, stdout: "gcloud:$*")
+        let server = HostControlMCPServer(configuration: HostControlToolConfiguration(gcloudExecutable: gcloud.path))
+
+        let blockedArguments = [
+            ["bq", "tables", "show-rows", "project.dataset.table"],
+            ["--project", "project", "bq", "tables", "show-rows", "project.dataset.table"],
+            ["alpha", "bq", "tables", "show-rows", "project.dataset.table"],
+            ["--format=json", "alpha", "bq", "tables", "show-rows", "project.dataset.table"],
+            ["beta", "bq", "jobs", "list", "--project=project"]
+        ]
+
+        for (offset, arguments) in blockedArguments.enumerated() {
+            let response = try call(server, id: offset + 1, tool: "gcloud", arguments: ["arguments": arguments])
+            #expect(try errorMessage(response).contains("gcloud command is not allowed"))
+        }
+        #expect(!FileManager.default.fileExists(atPath: log.path))
+    }
+
     @Test("Host and Docker mixed harness routes control-plane and workspace commands separately")
     func hostAndDockerMixedHarnessRoutesControlPlaneAndWorkspaceCommandsSeparately() throws {
         let root = FileManager.default.temporaryDirectory
