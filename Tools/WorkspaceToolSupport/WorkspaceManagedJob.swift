@@ -426,7 +426,7 @@ public final class DockerWorkspaceJobManager: WorkspaceJobManaging {
                 process_group_exists() {
                   group_pid="$1"
                   safe_pid "$group_pid" || return 1
-                  if [ -n "$kill_bin" ] && "$kill_bin" -0 -"$group_pid" 2>/dev/null; then
+                  if [ -n "$kill_bin" ] && "$kill_bin" -0 -- -"$group_pid" 2>/dev/null; then
                     return 0
                   fi
                   kill -0 -"$group_pid" 2>/dev/null
@@ -435,7 +435,7 @@ public final class DockerWorkspaceJobManager: WorkspaceJobManaging {
                   signal="$1"
                   group_pid="$2"
                   safe_pid "$group_pid" || return 0
-                  if [ -n "$kill_bin" ] && "$kill_bin" -"$signal" -"$group_pid" 2>/dev/null; then
+                  if [ -n "$kill_bin" ] && "$kill_bin" -"$signal" -- -"$group_pid" 2>/dev/null; then
                     return 0
                   fi
                   kill -"$signal" -"$group_pid" 2>/dev/null || true
@@ -521,6 +521,10 @@ public final class DockerWorkspaceJobManager: WorkspaceJobManaging {
         setsid_bin=""
         if command -v setsid >/dev/null 2>&1; then
           setsid_bin="$(command -v setsid)"
+          case "$setsid_bin" in
+            /*) [ -x "$setsid_bin" ] || setsid_bin="" ;;
+            *) setsid_bin="" ;;
+          esac
         fi
         if [ -z "$setsid_bin" ]; then
           for candidate in /usr/bin/setsid /bin/setsid /usr/local/bin/setsid /usr/sbin/setsid /sbin/setsid; do
@@ -578,7 +582,7 @@ public final class DockerWorkspaceJobManager: WorkspaceJobManaging {
         process_group_exists() {
           group_pid="$1"
           safe_pid "$group_pid" || return 1
-          if [ -n "$kill_bin" ] && "$kill_bin" -0 -"$group_pid" 2>/dev/null; then
+          if [ -n "$kill_bin" ] && "$kill_bin" -0 -- -"$group_pid" 2>/dev/null; then
             return 0
           fi
           kill -0 -"$group_pid" 2>/dev/null
@@ -587,7 +591,7 @@ public final class DockerWorkspaceJobManager: WorkspaceJobManaging {
           signal="$1"
           group_pid="$2"
           safe_pid "$group_pid" || return 0
-          if [ -n "$kill_bin" ] && "$kill_bin" -"$signal" -"$group_pid" 2>/dev/null; then
+          if [ -n "$kill_bin" ] && "$kill_bin" -"$signal" -- -"$group_pid" 2>/dev/null; then
             return 0
           fi
           kill -"$signal" -"$group_pid" 2>/dev/null || true
