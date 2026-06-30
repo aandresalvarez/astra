@@ -221,7 +221,7 @@ struct BrowserBridgeSecurityTests {
             route: .open,
             currentURL: "https://github.com/owner/repo/pull/1",
             enabledBrowserAdapters: enabled
-        ) == nil)
+        )?.contains("GitHub browser control is read-only") == true)
 
         #expect(BrowserSiteActionPolicy.denialReason(
             route: .click,
@@ -266,6 +266,38 @@ struct BrowserBridgeSecurityTests {
             currentURL: "https://github.com/owner/repo/pull/1",
             enabledBrowserAdapters: [],
             githubReadOnlyMode: false
+        ) == nil)
+    }
+
+    @Test("GitHub read-only mode reuses route policy for batch subactions")
+    func githubReadOnlyModeReusesRoutePolicyForBatchSubactions() throws {
+        #expect(BrowserSiteActionPolicy.denialReason(
+            batchAction: "navigate",
+            currentURL: "https://github.com/owner/repo/pull/1",
+            enabledBrowserAdapters: [],
+            githubReadOnlyMode: true
+        ) == nil)
+        #expect(BrowserSiteActionPolicy.denialReason(
+            batchAction: "snapshot",
+            currentURL: "https://github.com/owner/repo/pull/1",
+            enabledBrowserAdapters: [],
+            githubReadOnlyMode: true
+        ) == nil)
+
+        for action in ["click", "open", "double-click", "fill", "set-value", "act", "keypress", "text"] {
+            #expect(BrowserSiteActionPolicy.denialReason(
+                batchAction: action,
+                currentURL: "https://github.com/owner/repo/pull/1",
+                enabledBrowserAdapters: [],
+                githubReadOnlyMode: true
+            )?.contains("GitHub browser control is read-only") == true)
+        }
+
+        #expect(BrowserSiteActionPolicy.denialReason(
+            batchAction: "click",
+            currentURL: "https://example.com/",
+            enabledBrowserAdapters: [],
+            githubReadOnlyMode: true
         ) == nil)
     }
 

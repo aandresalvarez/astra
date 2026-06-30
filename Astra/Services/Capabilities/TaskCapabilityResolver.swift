@@ -323,6 +323,7 @@ struct TaskCapabilityResolver {
     private func makePromptScope(contextText: String, forcePrune: Bool) -> TaskCapabilityPromptScope {
         let connectors = allConnectors
         var tools = allLocalTools
+        let enabledPackageIDs = enabledCapabilityPackages().map(\.id)
         if Self.shouldExposeBrowserBridge(for: task, contextText: contextText),
            !tools.contains(where: { $0.command == "astra-browser" }) {
             tools.append(Self.browserBridgeTool())
@@ -339,6 +340,7 @@ struct TaskCapabilityResolver {
                 localTools: tools,
                 prunedForBrowserTask: false,
                 excludedSkillNames: [],
+                enabledPackageIDs: enabledPackageIDs,
                 contextText: contextText
             )
         }
@@ -388,6 +390,10 @@ struct TaskCapabilityResolver {
             localTools: includedLocalTools,
             prunedForBrowserTask: true,
             excludedSkillNames: excludedNames,
+            enabledPackageIDs: enabledPackageIDs.filter { packageID in
+                includedSkills.contains { $0.originPackageID == packageID }
+                    || Self.packageID(packageID, matchesTaskText: searchableText)
+            },
             contextText: contextText
         )
     }
@@ -407,6 +413,7 @@ struct TaskCapabilityResolver {
                 localTools: tools,
                 prunedForBrowserTask: false,
                 excludedSkillNames: [],
+                enabledPackageIDs: enabledCapabilityPackages().map(\.id),
                 contextText: ""
             )
         case .providerLaunch(let contextText):
@@ -459,6 +466,7 @@ struct TaskCapabilityResolver {
         localTools: [LocalTool],
         prunedForBrowserTask: Bool,
         excludedSkillNames: [String],
+        enabledPackageIDs: [String],
         contextText: String
     ) -> TaskCapabilityPromptScope {
         let skillIDs = Set(skills.map(\.id))
@@ -521,8 +529,21 @@ struct TaskCapabilityResolver {
             localTools: scopedTools,
             enabledBrowserAdapters: enabledBrowserAdapters,
             prunedForBrowserTask: prunedForBrowserTask,
-            excludedSkillNames: excludedSkillNames
+            excludedSkillNames: excludedSkillNames,
+            enabledPackageIDs: Self.uniqueStrings(enabledPackageIDs)
         )
+    }
+
+    private static func packageID(_ packageID: String, matchesTaskText taskText: String) -> Bool {
+        guard packageID == "github-workflow" else { return false }
+        return ["github", "pull request", "pull requests", "pr ", "prs ", "issue", "issues", "ci", "workflow run"].contains {
+            taskText.contains($0)
+        }
+    }
+
+    private static func uniqueStrings(_ values: [String]) -> [String] {
+        var seen: Set<String> = []
+        return values.filter { seen.insert($0).inserted }
     }
 
     private static func shouldPruneCapabilitiesForTask(task: AgentTask, contextText: String) -> Bool {
@@ -861,4 +882,5 @@ struct TaskCapabilityPromptScope {
     let enabledBrowserAdapters: [String]
     let prunedForBrowserTask: Bool
     let excludedSkillNames: [String]
+    let enabledPackageIDs: [String]
 }

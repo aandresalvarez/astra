@@ -265,8 +265,20 @@ struct ContentView: View {
         return HostControlPlaneMCPProjection.enabledToolNames(
             task: task,
             environment: DockerExecutionPlanner.resolveEnvironment(for: task),
-            contextText: task.goal
+            contextText: browserPolicyContextText(for: task)
         ).contains("github")
+    }
+
+    private func browserPolicyContextText(for task: AgentTask) -> String {
+        let latestUserMessage = task.events
+            .filter { $0.type == "user.message" }
+            .max { $0.timestamp < $1.timestamp }?
+            .payload
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if let latestUserMessage, !latestUserMessage.isEmpty {
+            return latestUserMessage
+        }
+        return task.goal
     }
 
     private var browserPinnedToTaskBinding: Binding<Bool> {

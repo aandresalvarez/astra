@@ -5094,6 +5094,22 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         var results: [[String: Any]] = []
         var stopReason: String?
         batchLoop: for action in command.actions.prefix(20) {
+            if let denialReason = BrowserSiteActionPolicy.denialReason(
+                batchAction: action.normalizedAction,
+                currentURL: currentURL,
+                enabledBrowserAdapters: enabledBrowserAdapters,
+                githubReadOnlyMode: githubReadOnlyMode
+            ) {
+                results.append([
+                    "ok": false,
+                    "action": action.action,
+                    "error": "site_action_not_allowed",
+                    "reason": denialReason,
+                    "adapterID": BrowserSiteAdapterID.github
+                ])
+                stopReason = "site_action_not_allowed"
+                break batchLoop
+            }
             switch action.normalizedAction {
             case "analyze":
                 let hasExplicitVersion = action.v2 != nil || action.version != nil || action.analysisVersion != nil

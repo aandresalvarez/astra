@@ -166,6 +166,22 @@ struct CopilotMCPLaunchProjection {
 enum HostControlPlaneRuntimeLaunchGuard {
     static let missingHostControlMCPReason = "host_control_plane_unsupported_runtime"
 
+    static func planMetadata(runtime: AgentRuntimeID, requiredTools: [String]) -> [String: String] {
+        let requiresHostControlPlane = !requiredTools.isEmpty
+        let supportsHostControlPlane = !requiresHostControlPlane
+            || HostControlPlaneMCPProjection.supportsHostControlPlane(runtime: runtime)
+        return [
+            "host_control_plane_tool_count": String(requiredTools.count),
+            "host_control_plane_supported": String(supportsHostControlPlane),
+            "host_control_plane_unsupported_detail": supportsHostControlPlane
+                ? ""
+                : "\(runtime.displayName) does not support provider MCP servers, so ASTRA cannot attach the host-control GitHub MCP server.",
+            "host_control_plane_launch_block_reason": supportsHostControlPlane
+                ? "none"
+                : missingHostControlMCPReason
+        ]
+    }
+
     static func launchBlock(for plan: AgentRuntimeProcessLaunchPlan) -> AgentProcessResult? {
         guard plan.commandPlannedFields["host_control_plane_launch_block_reason"] == missingHostControlMCPReason else {
             return nil

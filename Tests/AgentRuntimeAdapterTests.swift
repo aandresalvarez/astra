@@ -2041,6 +2041,7 @@ struct AgentRuntimeAdapterTests {
         let copilotPath = try Self.writeFakeCopilotExecutable(in: root, supportsAdditionalMCPConfig: false)
 
         let workspace = Workspace(name: "GitHub Host Control", primaryPath: root.path)
+        workspace.enabledCapabilityIDs = [HostControlPlaneMCPProjection.githubPackageID]
         let task = AgentTask(
             title: "Review PR",
             goal: "Use GitHub to inspect pull requests",
@@ -2053,6 +2054,7 @@ struct AgentRuntimeAdapterTests {
             allowedTools: ["Read"],
             behaviorInstructions: "Use ASTRA host-control GitHub MCP tool mcp__astra_host__github for GitHub operations."
         )
+        githubSkill.originPackageID = HostControlPlaneMCPProjection.githubPackageID
         githubSkill.workspace = workspace
         task.skills = [githubSkill]
 
@@ -2078,6 +2080,57 @@ struct AgentRuntimeAdapterTests {
         #expect(plan.environment["ASTRA_HOST_CONTROL_ALLOWED_TOOLS"] == "github")
         #expect(plan.environment["ASTRA_HOST_CONTROL_CURRENT_DIRECTORY"] == workspace.primaryPath)
         #expect(plan.arguments.contains("--additional-mcp-config") == false)
+    }
+
+    @Test("Non-MCP runtimes block GitHub host-control tasks before launch")
+    @MainActor
+    func nonMCPRuntimesBlockGitHubHostControlTasksBeforeLaunch() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-host-control-non-mcp-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        for runtime in [AgentRuntimeID.openCodeCLI, .cursorCLI, .antigravityCLI] {
+            let workspace = Workspace(name: "GitHub Host Control", primaryPath: root.path)
+            workspace.enabledCapabilityIDs = [HostControlPlaneMCPProjection.githubPackageID]
+            let task = AgentTask(
+                title: "Review PR",
+                goal: "Use GitHub to inspect pull requests",
+                workspace: workspace,
+                model: "test-model",
+                runtime: runtime
+            )
+            let githubSkill = Skill(
+                name: "GitHub Agent",
+                allowedTools: ["Read"],
+                behaviorInstructions: "Use ASTRA host-control GitHub MCP tool mcp__astra_host__github for GitHub operations."
+            )
+            githubSkill.originPackageID = HostControlPlaneMCPProjection.githubPackageID
+            githubSkill.workspace = workspace
+            task.skills = [githubSkill]
+
+            let plan = AgentRuntimeAdapterRegistry
+                .adapter(for: runtime)
+                .makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext(
+                    prompt: "Review pull requests",
+                    task: task,
+                    workspacePath: workspace.primaryPath,
+                    executablePath: "/bin/echo",
+                    providerHomeDirectory: root.appendingPathComponent(runtime.rawValue).path,
+                    permissionPolicy: .restricted,
+                    executionPolicy: .default,
+                    permissionManifest: nil,
+                    timeoutSeconds: 30,
+                    phase: "run",
+                    contextText: "Use GitHub to inspect pull requests."
+                ))
+
+            #expect(plan.commandPlannedFields["host_control_plane_tool_count"] == "1")
+            #expect(plan.commandPlannedFields["host_control_plane_supported"] == "false")
+            #expect(plan.commandPlannedFields["host_control_plane_launch_block_reason"] == "host_control_plane_unsupported_runtime")
+            #expect(plan.commandPlannedFields["host_control_plane_unsupported_detail"]?.contains("host-control GitHub MCP server") == true)
+            #expect(HostControlPlaneRuntimeLaunchGuard.launchBlock(for: plan)?.runtimeStopReason == "host_control_plane_unsupported_runtime")
+        }
     }
 
     @Test("CDP-only browser tasks inject required controlled engine into browser environment")

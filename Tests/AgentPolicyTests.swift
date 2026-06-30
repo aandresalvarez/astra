@@ -1584,6 +1584,58 @@ struct RunPermissionManifestTests {
         #expect(manifest.providerRender.deniedTools.contains("Bash"))
     }
 
+    @Test("Custom GitHub text does not enable host-control GitHub")
+    func customGitHubTextDoesNotEnableHostControlGitHub() throws {
+        let container = try makeAgentPolicyContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Markdown", primaryPath: "/tmp/github-flavored-markdown")
+        let skill = Skill(
+            name: "GitHub-flavored Markdown",
+            skillDescription: "Format Markdown tables for README files",
+            allowedTools: ["Read", "Bash"],
+            behaviorInstructions: "Use GitHub-flavored Markdown conventions when formatting text."
+        )
+        skill.workspace = workspace
+        let task = AgentTask(
+            title: "Format docs",
+            goal: "Format this README table using GitHub-flavored Markdown",
+            workspace: workspace,
+            model: "test-model",
+            runtime: .claudeCode
+        )
+        task.skills = [skill]
+        let run = TaskRun(task: task)
+        context.insert(workspace)
+        context.insert(skill)
+        context.insert(task)
+        context.insert(run)
+
+        let tools = HostControlPlaneMCPProjection.enabledToolNames(
+            task: task,
+            environment: DockerExecutionPlanner.resolveEnvironment(for: task),
+            contextText: task.goal
+        )
+        #expect(tools.isEmpty)
+
+        let manifest = AgentPolicyManifestService.recordPreflightManifest(
+            task: task,
+            run: run,
+            runtime: .claudeCode,
+            model: "claude-sonnet-4-6",
+            workspacePath: workspace.primaryPath,
+            phase: "test",
+            permissionPolicy: .restricted,
+            executionPolicy: .default,
+            defaultPolicyLevelRaw: AgentPolicyLevel.review.rawValue,
+            modelContext: context
+        )
+
+        #expect(!manifest.mcpServers.contains { $0.id == HostControlPlaneMCPProjection.serverID })
+        #expect(!manifest.providerRender.runtimeSupportTools.contains {
+            $0.name == HostControlPlaneMCPProjection.providerToolPermission(for: "github")
+        })
+    }
+
     @Test("Preflight manifest allows exact connector manifest shell probe when connectors are projected")
     func preflightManifestAllowsExactConnectorManifestShellProbeWhenConnectorsAreProjected() throws {
         let container = try makeAgentPolicyContainer()

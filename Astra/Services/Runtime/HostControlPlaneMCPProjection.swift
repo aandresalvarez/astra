@@ -4,6 +4,7 @@ import ASTRACore
 enum HostControlPlaneMCPProjection {
     static let serverID = "astra_host"
     static let toolNames = ["github", "gcloud", "bq", "ssh", "jira"]
+    static let githubPackageID = "github-workflow"
 
     static func isEnabled(for environment: WorkspaceExecutionEnvironment) -> Bool {
         DockerWorkspaceMCPProjection.isEnabled(for: environment)
@@ -30,14 +31,14 @@ enum HostControlPlaneMCPProjection {
     }
 
     static func packageUsesHostControlRuntime(_ package: PluginPackage) -> Bool {
-        package.skills.contains { skill in
+        if package.id == githubPackageID {
+            return true
+        }
+        return package.skills.contains { skill in
             let text = [
-                skill.name,
-                skill.description,
                 skill.behaviorInstructions
             ].joined(separator: "\n").lowercased()
-            return text.contains("github")
-                || text.contains("mcp__astra_host__github")
+            return text.contains("mcp__astra_host__github")
                 || text.contains("astra_host-github")
         }
     }
@@ -237,15 +238,14 @@ enum HostControlPlaneMCPProjection {
     }
 
     private static func githubCapabilityIsInScope(_ scope: TaskCapabilityPromptScope) -> Bool {
-        scope.behaviorSkills.contains { skill in
-            let text = [
-                skill.name,
-                skill.skillDescription,
-                skill.behaviorInstructions
-            ].joined(separator: "\n").lowercased()
-            return text.contains("github")
-                || text.contains("mcp__astra_host__github")
-                || text.contains("astra_host-github")
+        if scope.enabledPackageIDs.contains(githubPackageID) {
+            return true
+        }
+        return scope.behaviorSkills.contains { skill in
+            if skill.originPackageID == githubPackageID {
+                return true
+            }
+            return false
         }
     }
 

@@ -2605,6 +2605,12 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
             AntigravityCLIRuntime.diagnosticLogPath(task: context.task, runID: $0)
         }
         let additionalPaths = AgentRuntimeProcessRunner.runtimeAdditionalPaths(for: context.task)
+        let executionEnvironment = DockerExecutionPlanner.resolveEnvironment(for: context.task)
+        let hostControlTools = HostControlPlaneMCPProjection.enabledToolNames(
+            task: context.task,
+            environment: executionEnvironment,
+            contextText: context.contextText
+        )
         let plan = AntigravityCLIRuntime.buildCommand(
             executablePath: executable,
             prompt: context.prompt,
@@ -2618,6 +2624,28 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
             includeAstraToolsPath: AgentRuntimeProcessRunner.hasActiveCLITools(context.task, contextText: context.contextText)
                 || taskEnv["ASTRA_BROWSER_URL"] != nil,
             diagnosticLogPath: diagnosticLogPath
+        )
+        var commandPlannedFields = [
+            "runtime": id.rawValue,
+            "phase": context.phase,
+            "model": model,
+            "provider_model": providerModel,
+            "model_applied": String(modelApplied),
+            "permission_policy": effectivePermissionPolicy.rawValue,
+            "parses_json_lines": String(plan.parsesJSONLines),
+            "additional_paths_count": String(additionalPaths.count),
+            "task_env_count": String(taskEnv.count),
+            "uses_print": String(plan.arguments.contains("--print")),
+            "uses_print_timeout": String(plan.arguments.contains("--print-timeout")),
+            "uses_log_file": String(plan.arguments.contains("--log-file")),
+            "diagnostic_log_configured": String(diagnosticLogPath != nil),
+            "diagnostic_log_path": diagnosticLogPath ?? "",
+            "uses_sandbox": String(plan.arguments.contains("--sandbox")),
+            "uses_dangerously_skip_permissions": String(plan.arguments.contains("--dangerously-skip-permissions"))
+        ]
+        commandPlannedFields.merge(
+            HostControlPlaneRuntimeLaunchGuard.planMetadata(runtime: id, requiredTools: hostControlTools),
+            uniquingKeysWith: { current, _ in current }
         )
 
         return AgentRuntimeProcessLaunchPlan(
@@ -2639,24 +2667,7 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
                 "executable_mtime": AgentRuntimeProcessRunner.fileModificationTimestamp(executable),
                 "provider_home_configured": String(!context.providerHomeDirectory.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             ],
-            commandPlannedFields: [
-                "runtime": id.rawValue,
-                "phase": context.phase,
-                "model": model,
-                "provider_model": providerModel,
-                "model_applied": String(modelApplied),
-                "permission_policy": effectivePermissionPolicy.rawValue,
-                "parses_json_lines": String(plan.parsesJSONLines),
-                "additional_paths_count": String(additionalPaths.count),
-                "task_env_count": String(taskEnv.count),
-                "uses_print": String(plan.arguments.contains("--print")),
-                "uses_print_timeout": String(plan.arguments.contains("--print-timeout")),
-                "uses_log_file": String(plan.arguments.contains("--log-file")),
-                "diagnostic_log_configured": String(diagnosticLogPath != nil),
-                "diagnostic_log_path": diagnosticLogPath ?? "",
-                "uses_sandbox": String(plan.arguments.contains("--sandbox")),
-                "uses_dangerously_skip_permissions": String(plan.arguments.contains("--dangerously-skip-permissions"))
-            ]
+            commandPlannedFields: commandPlannedFields
         )
     }
 
