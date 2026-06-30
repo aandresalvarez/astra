@@ -197,7 +197,7 @@ enum BrowserTextEntryPreflight {
             "action": action,
             "summary": "The focused text-entry target changed after ASTRA inspected it, so ASTRA did not send raw browser input.",
             "risk": BrowserRisk.unknownHighImpact.rawValue,
-            "target": sanitizedTargetAttachment(for: targetInfo)
+            "target": sanitizedTarget(targetInfo, risk: .unknownHighImpact)
         ]
     }
 

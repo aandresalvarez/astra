@@ -559,6 +559,40 @@ struct BrowserControlSafetyTests {
         #expect(target["framePath"] as? [String] == ["https://auth.example.com"])
     }
 
+    @Test("Target changed blocks force high impact redaction")
+    func targetChangedBlocksForceHighImpactRedaction() throws {
+        let blocked = BrowserTextEntryPreflight.focusChangedBlockResponse(
+            action: "keypress",
+            targetInfo: [
+                "selector": "input[name='comment']",
+                "requestedSelector": "input[name='comment']",
+                "label": "Comment",
+                "name": "comment",
+                "role": "textbox",
+                "tag": "input",
+                "type": "text",
+                "autocomplete": "off",
+                "placeholder": "Comment",
+                "href": "https://app.example.com/comment?token=secret#frag",
+                "url": "https://app.example.com/editor?session=secret#frag",
+                "framePath": ["https://frame.example.com/editor?token=secret#frag"]
+            ]
+        )
+        let target = try #require(blocked["target"] as? [String: Any])
+
+        #expect(blocked["error"] as? String == "text_entry_target_changed")
+        #expect(blocked["risk"] as? String == BrowserRisk.unknownHighImpact.rawValue)
+        #expect(target["selector"] as? String == "input[redacted-selector]")
+        #expect(target["requestedSelector"] as? String == "input[redacted-selector]")
+        #expect(target["label"] as? String == "[redacted]")
+        #expect(target["name"] as? String == "[redacted]")
+        #expect(target["autocomplete"] as? String == "[redacted]")
+        #expect(target["placeholder"] as? String == "[redacted]")
+        #expect(target["href"] as? String == "https://app.example.com")
+        #expect(target["url"] as? String == "https://app.example.com")
+        #expect(target["framePath"] as? [String] == ["https://frame.example.com"])
+    }
+
     @Test("Modified editing keypresses require sensitive text entry preflight")
     func modifiedEditingKeypressesRequireSensitiveTextEntryPreflight() {
         #expect(BrowserKeypressSafety.requiresTextEntryPreflight(key: "Backspace", modifiers: ["command"]))
