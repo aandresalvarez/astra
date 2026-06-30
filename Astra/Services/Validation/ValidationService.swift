@@ -32,10 +32,6 @@ enum ValidationCommandPolicy {
         }
 
         let allowedExactRoots: Set<String> = [
-            "true",
-            "false",
-            "test",
-            "[",
             "pytest",
             "npm",
             "yarn",
@@ -56,6 +52,7 @@ enum ValidationCommandPolicy {
     private static func containsShellComposition(_ command: String) -> Bool {
         let disallowedFragments = ["&&", "||", ";", "|", "`", "$(", ">", "<", "\n", "\r"]
         return disallowedFragments.contains { command.contains($0) }
+            || command.contains("&")
     }
 
     private static func shellRoot(_ command: String) -> String? {
@@ -76,8 +73,6 @@ enum ValidationCommandPolicy {
 
     private static func commandArgumentsAreValidationOrBuildOnly(root: String, command: String) -> Bool {
         switch root {
-        case "true", "false", "test", "[":
-            return true
         case "swift":
             return command == "swift test" ||
                 command.hasPrefix("swift test ") ||

@@ -552,7 +552,7 @@ struct TaskContextStateTests {
                     description: "Advisory proof command passes",
                     method: .command,
                     required: false,
-                    command: "true"
+                    command: "swift build --help"
                 )
             ])
         )
@@ -594,7 +594,7 @@ struct TaskContextStateTests {
                     id: "old-proof",
                     description: "Old proof passes",
                     method: .command,
-                    command: "true"
+                    command: "swift build --help"
                 )
             ])
         )
@@ -610,7 +610,7 @@ struct TaskContextStateTests {
                     id: "new-proof",
                     description: "New proof has not run",
                     method: .command,
-                    command: "true"
+                    command: "swift build --help"
                 )
             ])
         )

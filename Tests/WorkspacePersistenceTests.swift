@@ -464,9 +464,9 @@ struct WorkspacePersistenceTests {
         #expect(importedTask.resolvedRuntimeID == .copilotCLI)
     }
 
-    @Test("imported task shell validation commands are downgraded before durable storage")
+    @Test("imported task shell validation commands keep run-tests intent before durable storage")
     @MainActor
-    func importedTaskShellValidationCommandsAreDowngraded() throws {
+    func importedTaskShellValidationCommandsKeepRunTestsIntent() throws {
         let container = try makeWorkspacePersistenceContainer()
         let context = container.mainContext
         var config = minimalWorkspaceConfig(
@@ -520,7 +520,67 @@ struct WorkspacePersistenceTests {
         let imported = WorkspaceConfigManager.importWorkspace(from: config, modelContext: context)
         let importedTask = try #require(imported.tasks.first)
 
-        #expect(importedTask.validationStrategy == .manual)
+        #expect(importedTask.validationStrategy == .runTests)
+        #expect(importedTask.testCommand.isEmpty)
+    }
+
+    @Test("imported task empty run-tests commands keep run-tests intent before durable storage")
+    @MainActor
+    func importedTaskEmptyRunTestsCommandsKeepRunTestsIntent() throws {
+        let container = try makeWorkspacePersistenceContainer()
+        let context = container.mainContext
+        var config = minimalWorkspaceConfig(
+            name: "Imported Empty Validation",
+            path: "/tmp/astra_import_empty_validation_\(UUID().uuidString)",
+            skillID: UUID().uuidString
+        )
+        let now = Date(timeIntervalSince1970: 1_777_001_600)
+        config.tasks = [
+            WorkspaceConfigManager.TaskConfig(
+                id: UUID().uuidString,
+                title: "Imported Empty Tests",
+                goal: "Keep the explicit run-tests requirement",
+                status: TaskStatus.queued.rawValue,
+                isPinned: nil,
+                isDone: nil,
+                inputs: [],
+                constraints: [],
+                acceptanceCriteria: [],
+                tokenBudget: 25_000,
+                tokensUsed: 0,
+                model: AgentRuntimeAdapterRegistry.defaultModel(for: .claudeCode),
+                runtimeID: AgentRuntimeID.claudeCode.rawValue,
+                costUSD: 0,
+                sessionId: nil,
+                maxTurns: 25,
+                createdAt: now,
+                updatedAt: now,
+                completedAt: nil,
+                unreadAt: nil,
+                isolationStrategy: nil,
+                validationStrategy: ValidationStrategy.runTests.rawValue,
+                testCommand: "   ",
+                draftMessages: nil,
+                chainedGoal: nil,
+                chainedFromID: nil,
+                useAgentTeam: nil,
+                teamSize: nil,
+                teamInstructions: nil,
+                templateID: nil,
+                templateHooksJSON: nil,
+                runs: [],
+                events: [],
+                artifacts: nil,
+                skillIDs: nil,
+                skillNames: [],
+                skillSnapshots: nil
+            )
+        ]
+
+        let imported = WorkspaceConfigManager.importWorkspace(from: config, modelContext: context)
+        let importedTask = try #require(imported.tasks.first)
+
+        #expect(importedTask.validationStrategy == .runTests)
         #expect(importedTask.testCommand.isEmpty)
     }
 

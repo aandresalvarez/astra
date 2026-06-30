@@ -1628,7 +1628,7 @@ enum WorkspaceConfigManager {
             return (strategy, command)
         }
         guard ValidationCommandPolicy.isAllowed(command) else {
-            return (.manual, "")
+            return (.runTests, "")
         }
         return (.runTests, command)
     }

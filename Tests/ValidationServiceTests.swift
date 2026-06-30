@@ -133,6 +133,46 @@ struct ValidationServiceTests {
         #expect(await runner.recordedCalls().isEmpty)
     }
 
+    @Test("runTests rejects background shell operator before execution")
+    func runTestsRejectsBackgroundShellOperatorBeforeExecution() async throws {
+        let root = "/tmp/astra-validation-background-\(UUID().uuidString.prefix(8))"
+        let workspace = Workspace(name: "Imported Validation Background Guard", primaryPath: root)
+        let task = AgentTask(title: "Validate", goal: "Reject imported background shell composition", workspace: workspace)
+        task.testCommand = "swift test & touch should-not-run"
+        let runner = StubValidationCommandRunner(results: [
+            ValidationCommandResult(exitCode: 0, stdout: "unsafe pass", stderr: "")
+        ])
+
+        let result = await ValidationService.runTests(task: task, commandRunner: runner)
+
+        if case .error(let message) = result {
+            #expect(message.contains("not allowed"))
+        } else {
+            Issue.record("Expected background shell operator to be rejected before execution")
+        }
+        #expect(await runner.recordedCalls().isEmpty)
+    }
+
+    @Test("runTests rejects no-op commands as validation bypasses")
+    func runTestsRejectsNoOpCommandsAsValidationBypasses() async throws {
+        let root = "/tmp/astra-validation-noop-\(UUID().uuidString.prefix(8))"
+        let workspace = Workspace(name: "Imported Validation No-op Guard", primaryPath: root)
+        let task = AgentTask(title: "Validate", goal: "Reject imported no-op validation", workspace: workspace)
+        task.testCommand = "true"
+        let runner = StubValidationCommandRunner(results: [
+            ValidationCommandResult(exitCode: 0, stdout: "noop", stderr: "")
+        ])
+
+        let result = await ValidationService.runTests(task: task, commandRunner: runner)
+
+        if case .error(let message) = result {
+            #expect(message.contains("not allowed"))
+        } else {
+            Issue.record("Expected no-op test command to be rejected before execution")
+        }
+        #expect(await runner.recordedCalls().isEmpty)
+    }
+
     @Test("validation contract command assertions use injected runner")
     func validationContractCommandAssertionsUseInjectedRunner() async throws {
         let root = try temporaryRoot()
@@ -218,7 +258,7 @@ struct ValidationServiceTests {
                     id: "command-pass",
                     description: "Command exits zero",
                     method: .command,
-                    command: "true"
+                    command: "swift build --help"
                 )
             ])
         )
@@ -259,7 +299,7 @@ struct ValidationServiceTests {
                     id: "command-fails",
                     description: "Command exits zero",
                     method: .command,
-                    command: "false"
+                    command: "swift build --package-path \(root)/missing-package"
                 )
             ])
         )
