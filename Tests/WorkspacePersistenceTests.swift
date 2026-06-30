@@ -404,10 +404,23 @@ struct WorkspacePersistenceTests {
             .appendingPathComponent("worktrees", isDirectory: true)
             .appendingPathComponent("feature", isDirectory: true)
         let externalWorktree = parent.appendingPathComponent("outside-feature", isDirectory: true)
+        let unrelatedWorktree = parent.appendingPathComponent("other-feature", isDirectory: true)
         try FileManager.default.createDirectory(at: repoGit, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: externalWorktree, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: unrelatedWorktree, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: forgedAdmin, withIntermediateDirectories: true)
         try "gitdir: \(forgedAdmin.path)\n".write(
             to: externalWorktree.appendingPathComponent(".git"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try ".\n".write(
+            to: forgedAdmin.appendingPathComponent("commondir"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try "\(unrelatedWorktree.appendingPathComponent(".git").path)\n".write(
+            to: forgedAdmin.appendingPathComponent("gitdir"),
             atomically: true,
             encoding: .utf8
         )
