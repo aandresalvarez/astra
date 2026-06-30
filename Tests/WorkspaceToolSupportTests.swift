@@ -809,6 +809,12 @@ struct WorkspaceToolSupportTests {
         try FileManager.default.removeItem(at: stdoutURL)
 #endif
 
+        try FileManager.default.linkItem(at: outside, to: stdoutURL)
+        let hardLinkedStdout = try store.tail(jobID: record.jobID, stream: "stdout", lines: 10)
+        #expect(hardLinkedStdout.text.isEmpty)
+        #expect(!hardLinkedStdout.text.contains("HOST_SECRET_FROM_OUTSIDE_JOB_DIR"))
+        try FileManager.default.removeItem(at: stdoutURL)
+
         let heartbeatURL = jobDirectory.appendingPathComponent("heartbeat.json")
         let resultURL = jobDirectory.appendingPathComponent("result.json")
         let outsideHeartbeat = root.appendingPathComponent("host-heartbeat.json", isDirectory: false)
@@ -839,6 +845,56 @@ struct WorkspaceToolSupportTests {
         #expect(throws: (any Error).self) {
             _ = try store.tail(jobID: record.jobID, stream: "stdout", lines: 10)
         }
+    }
+
+    @Test("Docker workspace job manager rejects symlinked job root before launch")
+    func dockerWorkspaceJobManagerRejectsSymlinkedJobRootBeforeLaunch() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-workspace-job-root-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let hostWorkspace = root.appendingPathComponent("repo", isDirectory: true)
+        try FileManager.default.createDirectory(at: hostWorkspace, withIntermediateDirectories: true)
+        let outsideJobs = root.appendingPathComponent("outside-jobs", isDirectory: true)
+        try FileManager.default.createDirectory(at: outsideJobs, withIntermediateDirectories: true)
+        let jobRoot = root.appendingPathComponent("jobs", isDirectory: true)
+        try FileManager.default.createSymbolicLink(at: jobRoot, withDestinationURL: outsideJobs)
+
+        let docker = root.appendingPathComponent("docker")
+        let log = root.appendingPathComponent("docker.log")
+        let quotedLogPath = log.path.replacingOccurrences(of: "'", with: "'\\''")
+        try """
+        #!/bin/sh
+        printf '%s\\n' "$*" >> '\(quotedLogPath)'
+        exit 0
+        """.write(to: docker, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: docker.path)
+
+        let configuration = WorkspaceToolConfiguration(
+            dockerExecutable: docker.path,
+            image: "astra/workspace:latest",
+            containerName: "astra-test-job-root",
+            workdir: "/workspace",
+            network: "bridge",
+            taskID: "task-root",
+            runID: "run-root",
+            mounts: [
+                WorkspaceDockerMount(hostPath: hostWorkspace.path, containerPath: "/workspace", access: "rw", role: "workspace")
+            ],
+            jobRootHostPath: jobRoot.path,
+            jobRootContainerPath: "/workspace/jobs"
+        )
+        let manager = DockerWorkspaceJobManager(
+            configuration: configuration,
+            executor: DockerWorkspaceCommandExecutor(configuration: configuration)
+        )
+
+        let job = manager.start(command: "printf should-not-run", timeoutSeconds: nil, label: nil, progressProbe: nil)
+
+        #expect(job.status == .failed)
+        #expect(job.message?.contains("Workspace job file is unsafe or unreadable") == true)
+        #expect(!FileManager.default.fileExists(atPath: log.path))
     }
 
     @Test("Docker workspace job manager maps host workspace path before persisting command")

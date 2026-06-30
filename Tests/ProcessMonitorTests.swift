@@ -1019,6 +1019,53 @@ struct ProcessMonitorTests {
         #expect(monitor.runtimeStopMessage?.contains("managed workspace job dbt-build") == true)
     }
 
+    @Test("Managed workspace job monitor ignores symlinked heartbeat files")
+    func managedWorkspaceJobMonitorIgnoresSymlinkedHeartbeatFiles() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-managed-job-symlink-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let heartbeat = root.appendingPathComponent("heartbeat.json", isDirectory: false)
+        let result = root.appendingPathComponent("result.json", isDirectory: false)
+        let outsideHeartbeat = root.appendingPathComponent("outside-heartbeat.json", isDirectory: false)
+        let freshTimestamp = ISO8601DateFormatter().string(from: Date())
+        let staleTimestamp = ISO8601DateFormatter().string(from: Date(timeIntervalSinceNow: -120))
+        try #"{"status":"running","timestamp":"\#(freshTimestamp)"}"#
+            .write(to: outsideHeartbeat, atomically: true, encoding: .utf8)
+        try FileManager.default.createSymbolicLink(at: heartbeat, withDestinationURL: outsideHeartbeat)
+
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            idleTimeoutSeconds: 60,
+            noSemanticProgressTimeoutSeconds: 60,
+            managedWorkspaceJobIdleTimeoutSeconds: 1
+        )
+        let process = MonitorMockProcess()
+
+        _ = monitor.processEvent(
+            .toolResult(
+                toolId: "job-start",
+                content: """
+                job_id: dbt-build
+                status: running
+                runtime: docker
+                command: dbt build --select +death --full-refresh
+                last_heartbeat_at: \(staleTimestamp)
+                heartbeat: \(heartbeat.path)
+                result: \(result.path)
+                """
+            ),
+            process: process
+        )
+
+        let watchdogStopped = monitor.evaluateWatchdogTimeoutForTesting(process: process)
+
+        #expect(watchdogStopped == true)
+        #expect(process.didTerminate == true)
+        #expect(monitor.runtimeStopReason == "provider_workspace_job_stalled")
+    }
+
     @Test("Terminal progress exit grace terminates without runtime stop")
     func terminalProgressExitGraceTerminatesWithoutRuntimeStop() {
         let taskID = UUID()

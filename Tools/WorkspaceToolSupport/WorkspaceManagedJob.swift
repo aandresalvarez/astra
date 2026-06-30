@@ -137,6 +137,7 @@ public final class WorkspaceManagedJobStore {
     }
 
     public func create(command: String, timeoutSeconds: TimeInterval?, label: String?, progressProbe: String?, runtime: String) throws -> WorkspaceManagedJobRecord {
+        try validateJobRootForCreation()
         let jobID = makeJobID()
         let directory = jobDirectory(jobID: jobID)
         let layout = WorkspaceManagedJobFileLayout(directory: directory)
@@ -166,6 +167,7 @@ public final class WorkspaceManagedJobStore {
     }
 
     public func save(_ record: WorkspaceManagedJobRecord) throws {
+        try validateJobRootForCreation()
         let directory = jobDirectory(jobID: record.jobID)
         var trustedRecord = record
         applyTrustedFileLayout(to: &trustedRecord, jobID: safeJobID(record.jobID), directory: directory)
@@ -287,10 +289,25 @@ public final class WorkspaceManagedJobStore {
 
         var statInfo = stat()
         guard lstat(url.path, &statInfo) == 0,
-              (statInfo.st_mode & S_IFMT) == S_IFREG else {
+              (statInfo.st_mode & S_IFMT) == S_IFREG,
+              statInfo.st_nlink == 1 else {
             return nil
         }
         return statInfo
+    }
+
+    public func validateJobRootForCreation() throws {
+        let parent = rootURL.deletingLastPathComponent()
+        if fileManager.fileExists(atPath: parent.path),
+           !isTrustedDirectoryChain(from: parent, to: parent) {
+            throw trustedFileReadError(path: parent.path)
+        }
+        guard fileManager.fileExists(atPath: rootURL.path) else { return }
+        guard let rootStat = trustedDirectoryStat(at: rootURL),
+              isTrustedDirectoryChain(from: parent, to: rootURL),
+              rootStat.st_nlink >= 1 else {
+            throw trustedFileReadError(path: rootURL.path)
+        }
     }
 
     private func isTrustedDirectory(_ url: URL) -> Bool {
@@ -471,6 +488,11 @@ public final class DockerWorkspaceJobManager: WorkspaceJobManaging {
         let pathResolution = configuration.containerCommand(for: trimmed)
         if let errorMessage = pathResolution.errorMessage {
             return failedSynthetic(command: command, message: errorMessage)
+        }
+        do {
+            try store.validateJobRootForCreation()
+        } catch {
+            return failedSynthetic(command: command, message: error.localizedDescription)
         }
         let container = executor.ensureContainerStarted()
         guard container.exitCode == 0 else {

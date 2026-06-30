@@ -1041,7 +1041,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
     }
 
     private static func managedWorkspaceJobFileState(atPath path: String) -> ManagedWorkspaceJobFileState? {
-        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path, isDirectory: false)),
+        guard let data = safeManagedWorkspaceJobFileData(atPath: path),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             return nil
         }
@@ -1054,7 +1054,53 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
     }
 
     private static func fileModificationDate(atPath path: String) -> Date? {
-        (try? FileManager.default.attributesOfItem(atPath: path)[.modificationDate]) as? Date
+        guard let statInfo = safeManagedWorkspaceJobFileStat(atPath: path) else { return nil }
+        return Date(timeIntervalSince1970: TimeInterval(statInfo.st_mtimespec.tv_sec) + TimeInterval(statInfo.st_mtimespec.tv_nsec) / 1_000_000_000)
+    }
+
+    private static func safeManagedWorkspaceJobFileData(atPath path: String) -> Data? {
+        guard let expectedStat = safeManagedWorkspaceJobFileStat(atPath: path) else { return nil }
+        let fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
+        guard fd >= 0 else { return nil }
+        defer { close(fd) }
+
+        var openedStat = stat()
+        guard fstat(fd, &openedStat) == 0,
+              sameManagedWorkspaceJobFile(openedStat, expectedStat),
+              (openedStat.st_mode & S_IFMT) == S_IFREG,
+              openedStat.st_nlink == 1 else {
+            return nil
+        }
+
+        var data = Data()
+        var buffer = [UInt8](repeating: 0, count: 64 * 1024)
+        while true {
+            let bytesRead = read(fd, &buffer, buffer.count)
+            if bytesRead > 0 {
+                data.append(buffer, count: bytesRead)
+            } else if bytesRead == 0 {
+                break
+            } else if errno == EINTR {
+                continue
+            } else {
+                return nil
+            }
+        }
+        return data
+    }
+
+    private static func safeManagedWorkspaceJobFileStat(atPath path: String) -> stat? {
+        var statInfo = stat()
+        guard lstat(path, &statInfo) == 0,
+              (statInfo.st_mode & S_IFMT) == S_IFREG,
+              statInfo.st_nlink == 1 else {
+            return nil
+        }
+        return statInfo
+    }
+
+    private static func sameManagedWorkspaceJobFile(_ lhs: stat, _ rhs: stat) -> Bool {
+        lhs.st_dev == rhs.st_dev && lhs.st_ino == rhs.st_ino
     }
 
     private static func parseISO8601Date(_ value: String) -> Date? {
