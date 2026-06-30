@@ -696,8 +696,6 @@ struct WorkspaceAppPackageService {
         let exports: [WorkspaceAppPackageDataExport]
         do {
             exports = try decodeDataExports(at: packageURL) ?? []
-        } catch WorkspaceAppPackageFileResolutionError.missing {
-            exports = []
         } catch {
             issues.append(dataExportsManifestIssue(for: error))
             exports = []
