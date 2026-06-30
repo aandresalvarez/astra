@@ -334,6 +334,43 @@ struct BrowserControlSafetyTests {
         #expect(!source.contains("if let resolvedSelector, let blocked = try await blockedReplacementTextEntryResult"))
     }
 
+    @Test("Selectorless replace preflight does not report unreachable missing selector errors")
+    func selectorlessReplacePreflightDoesNotReportUnreachableMissingSelectorErrors() throws {
+        let repoRoot = URL(filePath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let preflightPath = repoRoot
+            .appendingPathComponent("Astra")
+            .appendingPathComponent("Services")
+            .appendingPathComponent("Browser")
+            .appendingPathComponent("ShelfBrowserSessionTextEntryPreflight.swift")
+            .path
+        let source = try String(contentsOfFile: preflightPath, encoding: .utf8)
+        let methodStart = try #require(source.range(of: "func blockedReplacementTextEntryResult(find: String, selector: String, all: Bool) async throws -> [String: Any]? {"))
+        let methodEnd = try #require(source[methodStart.upperBound...].range(of: "func replacementTextEntryTargets"))
+        let methodSource = source[methodStart.lowerBound..<methodEnd.lowerBound]
+
+        #expect(!methodSource.contains(#""text_entry_target_required""#))
+        #expect(!methodSource.contains("guard !selector.isEmpty"))
+    }
+
+    @Test("Keypress audit logs requested phase before focused text entry preflight")
+    func keypressAuditLogsRequestedPhaseBeforeFocusedTextEntryPreflight() throws {
+        let repoRoot = URL(filePath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let sessionPath = repoRoot
+            .appendingPathComponent("Astra")
+            .appendingPathComponent("Services")
+            .appendingPathComponent("Browser")
+            .appendingPathComponent("ShelfBrowserSession.swift")
+            .path
+        let source = try String(contentsOfFile: sessionPath, encoding: .utf8)
+        let methodStart = try #require(source.range(of: "private func keypress(key: String, modifiers: [String]) async throws -> String {"))
+        let methodEnd = try #require(source[methodStart.upperBound...].range(of: "private func insertText"))
+        let methodSource = source[methodStart.lowerBound..<methodEnd.lowerBound]
+
+        let requestedLog = try #require(methodSource.range(of: #"phase: "requested""#))
+        let preflightCheck = try #require(methodSource.range(of: "BrowserKeypressSafety.requiresTextEntryPreflight"))
+        #expect(requestedLog.lowerBound < preflightCheck.lowerBound)
+    }
+
     @Test("Replacement target inspection refreshes controlled browser metadata")
     func replacementTargetInspectionRefreshesControlledBrowserMetadata() throws {
         let repoRoot = URL(filePath: #filePath).deletingLastPathComponent().deletingLastPathComponent()

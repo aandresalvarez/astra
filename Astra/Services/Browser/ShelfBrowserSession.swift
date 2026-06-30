@@ -3528,6 +3528,20 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             isGoogleWorkspaceEditor: isGoogleWorkspaceEditor,
             state: &keypressSafetyState
         )
+        logBrowserAction(
+            phase: "requested",
+            action: "keypress",
+            selector: nil,
+            label: nil,
+            role: nil,
+            text: nil,
+            placeholder: nil,
+            testID: nil,
+            fields: [
+                "key_length": String(key.count),
+                "modifier_count": String(modifiers.count)
+            ]
+        )
         guard safetyDecision.allowed else {
             let result = try Self.jsonString([
                 "ok": false,
@@ -3570,20 +3584,6 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         ) {
             return result
         }
-        logBrowserAction(
-            phase: "requested",
-            action: "keypress",
-            selector: nil,
-            label: nil,
-            role: nil,
-            text: nil,
-            placeholder: nil,
-            testID: nil,
-            fields: [
-                "key_length": String(key.count),
-                "modifier_count": String(modifiers.count)
-            ]
-        )
         do {
             let json: String
             if isUsingControlledBrowser {

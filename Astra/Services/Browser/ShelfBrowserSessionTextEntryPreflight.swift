@@ -79,16 +79,6 @@ extension ShelfBrowserSession {
     }
 
     func blockedReplacementTextEntryResult(find: String, selector: String, all: Bool) async throws -> [String: Any]? {
-        guard !selector.isEmpty else {
-            return [
-                "ok": false,
-                "error": "text_entry_target_required",
-                "summary": "Text replacement requires a concrete editable target selector before ASTRA can safely mutate page text.",
-                "find": find,
-                "url": currentURL
-            ]
-        }
-
         let targetInfo = try await replacementTextEntryTargets(selector: selector, find: find, all: all)
         let ok = (targetInfo["ok"] as? Bool) ?? (targetInfo["ok"] as? NSNumber)?.boolValue ?? false
         guard ok else { return targetInfo }
