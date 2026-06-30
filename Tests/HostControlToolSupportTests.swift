@@ -267,6 +267,14 @@ struct HostControlToolSupportTests {
         #expect(runner.requests.map(\.timeoutSeconds) == [42])
     }
 
+    @Test("Host control process limits reject non-finite configured timeout caps")
+    func hostControlProcessLimitsRejectNonFiniteConfiguredTimeoutCaps() {
+        let limits = HostControlProcessLimits(maximumTimeoutSeconds: .nan, outputByteLimit: 1024)
+
+        #expect(limits.maximumTimeoutSeconds == 300)
+        #expect(limits.clampedTimeout(.nan) == 300)
+    }
+
     @Test("Host control default process runner uses server process limits")
     func hostControlDefaultProcessRunnerUsesServerProcessLimits() throws {
         let root = FileManager.default.temporaryDirectory
@@ -483,6 +491,27 @@ struct HostControlToolSupportTests {
             let description = try #require(timeout["description"] as? String)
             #expect(description.contains("capped at 42 seconds"))
             #expect(!description.contains("300 seconds"))
+        }
+    }
+
+    @Test("Host control tool schemas never describe non-finite timeout caps")
+    func hostControlToolSchemasNeverDescribeNonFiniteTimeoutCaps() throws {
+        let server = HostControlMCPServer(
+            configuration: HostControlToolConfiguration(githubExecutable: "/usr/bin/gh"),
+            processLimits: HostControlProcessLimits(maximumTimeoutSeconds: .nan, outputByteLimit: 1024)
+        )
+
+        let list = try parseJSON(try #require(server.handleLine(#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#)))
+        let listResult = try #require(list["result"] as? [String: Any])
+        let tools = try #require(listResult["tools"] as? [[String: Any]])
+
+        for tool in tools {
+            let inputSchema = try #require(tool["inputSchema"] as? [String: Any])
+            let properties = try #require(inputSchema["properties"] as? [String: Any])
+            let timeout = try #require(properties["timeout_seconds"] as? [String: Any])
+            let description = try #require(timeout["description"] as? String)
+            #expect(description.contains("capped at 300 seconds"))
+            #expect(!description.lowercased().contains("nan"))
         }
     }
 

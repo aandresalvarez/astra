@@ -216,6 +216,7 @@ public struct HostControlCommandResult: Equatable, Sendable {
 
 public struct HostControlProcessLimits: Equatable, Sendable {
     public static let standard = HostControlProcessLimits()
+    private static let defaultMaximumTimeoutSeconds: TimeInterval = 300
 
     public var maximumTimeoutSeconds: TimeInterval
     public var outputByteLimit: Int
@@ -224,12 +225,14 @@ public struct HostControlProcessLimits: Equatable, Sendable {
         maximumTimeoutSeconds: TimeInterval = 300,
         outputByteLimit: Int = 256 * 1024
     ) {
-        self.maximumTimeoutSeconds = max(1, maximumTimeoutSeconds)
+        let finiteMaximum = maximumTimeoutSeconds.isFinite ? maximumTimeoutSeconds : Self.defaultMaximumTimeoutSeconds
+        self.maximumTimeoutSeconds = max(1, finiteMaximum)
         self.outputByteLimit = max(1, outputByteLimit)
     }
 
     func clampedTimeout(_ requested: TimeInterval) -> TimeInterval {
-        min(max(1, requested), maximumTimeoutSeconds)
+        let finiteRequest = requested.isFinite ? requested : maximumTimeoutSeconds
+        return min(max(1, finiteRequest), maximumTimeoutSeconds)
     }
 }
 
