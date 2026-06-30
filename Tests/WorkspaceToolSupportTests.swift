@@ -993,6 +993,43 @@ struct WorkspaceToolSupportTests {
         #expect(logLines.contains("exec -d --workdir /workspace astra-test-job sh -c"))
         #expect(logLines.contains("/workspace/jobs/\(job.jobID)"))
         #expect(logLines.contains("timeout_seconds=7200"))
+        #expect(!logLines.contains("command -v setsid"))
+        #expect(!logLines.contains("setsid_bin=\"$(command -v setsid)\""))
+        #expect(logLines.contains("for candidate in /usr/bin/setsid /bin/setsid /usr/sbin/setsid /sbin/setsid /usr/local/bin/setsid; do"))
+        #expect(logLines.contains("kill_bin=\"\""))
+        #expect(logLines.contains("for candidate in /bin/kill /usr/bin/kill /usr/local/bin/kill; do"))
+        #expect(logLines.contains("kill_bin=\"$candidate\""))
+        #expect(logLines.contains(#""exitCode":127"#))
+        #expect(logLines.contains("process group isolation unavailable"))
+        #expect(logLines.contains("\"$setsid_bin\" sh \"$job_dir/command.sh\" > \"$stdout\" 2> \"$stderr\" &"))
+        #expect(logLines.contains("pid_metadata=\"$job_dir/pid.meta\""))
+        #expect(logLines.contains("rm -f \"$timeout_marker\" \"$pidfile\" \"$pid_metadata\""))
+        #expect(logLines.contains("command_start_time=\"$(proc_start_time \"$command_pid\" || true)\""))
+        #expect(logLines.contains("printf 'mode=setsid-process-group\\n'"))
+        #expect(logLines.contains("printf 'start_time=%s\\n' \"$command_start_time\""))
+        #expect(logLines.contains("pid_metadata_tmp=\"$pid_metadata.tmp\""))
+        #expect(logLines.contains("} > \"$pid_metadata_tmp\""))
+        #expect(logLines.contains("mv -f \"$pid_metadata_tmp\" \"$pid_metadata\""))
+        #expect(!logLines.contains("} > \"$pid_metadata\""))
+        #expect(logLines.contains("rm -f \"$pidfile\" \"$pid_metadata\""))
+        #expect(logLines.contains("safe_pid \"$command_pid\" || return 0"))
+        #expect(logLines.contains("process_group_exists() {"))
+        #expect(logLines.contains("\"$kill_bin\" -0 -- -\"$group_pid\" 2>/dev/null"))
+        #expect(logLines.contains("kill -0 -\"$group_pid\" 2>/dev/null"))
+        #expect(logLines.contains("command_leader_matches_start_time() {"))
+        #expect(logLines.contains("kill -0 \"$command_pid\" 2>/dev/null || return 1"))
+        #expect(logLines.contains("current_start_time=\"$(proc_start_time \"$command_pid\" || true)\""))
+        #expect(logLines.contains("[ \"$command_start_time\" = \"$current_start_time\" ] || return 1"))
+        #expect(logLines.contains("signal_process_group() {"))
+        #expect(logLines.contains("\"$kill_bin\" -\"$signal\" -- -\"$group_pid\" 2>/dev/null"))
+        #expect(logLines.contains("kill -\"$signal\" -\"$group_pid\" 2>/dev/null || true"))
+        #expect(logLines.contains("if command_leader_matches_start_time && process_group_exists \"$command_pid\"; then"))
+        #expect(logLines.contains("signal_process_group TERM \"$command_pid\""))
+        #expect(logLines.contains("signal_process_group KILL \"$command_pid\""))
+        #expect(!logLines.contains("\"$kill_bin\" -TERM -\"$command_pid\" 2>/dev/null || true"))
+        #expect(!logLines.contains("\"$kill_bin\" -KILL -\"$command_pid\" 2>/dev/null || true"))
+        #expect(!logLines.contains("kill -TERM \"$command_pid\" 2>/dev/null || true"))
+        #expect(!logLines.contains("kill -KILL \"$command_pid\" 2>/dev/null || true"))
         #expect(logLines.contains("status=timed_out; code=124"))
 
         try #"{"status":"succeeded","exitCode":0,"completedAt":"2026-06-24T12:00:00Z"}"#
@@ -1545,6 +1582,121 @@ struct WorkspaceToolSupportTests {
         let tail = try store.tail(jobID: job.jobID, stream: "stdout", lines: 2)
 
         #expect(tail.text == "\nfinal line")
+    }
+
+    @Test("Docker workspace job cancel terminates command process group")
+    func dockerWorkspaceJobCancelTerminatesCommandProcessGroup() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-workspace-job-cancel-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let docker = root.appendingPathComponent("docker")
+        let log = root.appendingPathComponent("docker.log")
+        let quotedLogPath = log.path.replacingOccurrences(of: "'", with: "'\\''")
+        try """
+        #!/bin/sh
+        LOG='\(quotedLogPath)'
+        printf '%s\\n' "$*" >> "$LOG"
+        case "$1" in
+          inspect) exit 1 ;;
+          rm) exit 0 ;;
+          run) echo container-id; exit 0 ;;
+          exec) exit 0 ;;
+          stop) exit 0 ;;
+          *) exit 99 ;;
+        esac
+        """.write(to: docker, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: docker.path)
+
+        let jobRoot = root.appendingPathComponent("jobs", isDirectory: true)
+        let configuration = WorkspaceToolConfiguration(
+            dockerExecutable: docker.path,
+            image: "astra/workspace:latest",
+            containerName: "astra-test-job-cancel",
+            workdir: "/workspace",
+            network: "bridge",
+            taskID: "task-cancel",
+            runID: "run-cancel",
+            mounts: [
+                WorkspaceDockerMount(hostPath: root.path, containerPath: "/workspace", access: "rw", role: "workspace")
+            ],
+            jobRootHostPath: jobRoot.path,
+            jobRootContainerPath: "/workspace/jobs"
+        )
+        let executor = DockerWorkspaceCommandExecutor(configuration: configuration)
+        let manager = DockerWorkspaceJobManager(configuration: configuration, executor: executor)
+
+        let job = manager.start(command: "sleep 60", timeoutSeconds: 7200, label: nil, progressProbe: nil)
+        _ = manager.cancel(jobID: job.jobID)
+        executor.cleanup()
+
+        let logLines = try String(contentsOf: log, encoding: .utf8)
+        #expect(logLines.contains("pidfile='/workspace/jobs/\(job.jobID)/pid'"))
+        #expect(logLines.contains("pid_metadata='/workspace/jobs/\(job.jobID)/pid.meta'"))
+        #expect(logLines.contains("command_script='/workspace/jobs/\(job.jobID)/command.sh'"))
+        #expect(logLines.contains("kill_bin=\"\""))
+        #expect(logLines.contains("for candidate in /bin/kill /usr/bin/kill /usr/local/bin/kill; do"))
+        #expect(logLines.contains("kill_bin=\"$candidate\""))
+        #expect(logLines.contains("safe_pid() {"))
+        #expect(logLines.contains("''|*[!0-9]*) return 1"))
+        #expect(logLines.contains("[ \"$1\" -gt 1 ] 2>/dev/null"))
+        #expect(logLines.contains("pid_matches_managed_command() {"))
+        #expect(logLines.contains("cmdline=\"$(tr '\\0' ' ' < \"/proc/$1/cmdline\" 2>/dev/null || cat \"/proc/$1/cmdline\" 2>/dev/null || true)\""))
+        #expect(logLines.contains("case \"$cmdline\" in"))
+        #expect(logLines.contains("*\"$command_script\"*) return 0"))
+        #expect(logLines.contains("pid_matches_managed_session() {"))
+        #expect(logLines.contains("[ -r \"$pid_metadata\" ] || return 1"))
+        #expect(logLines.contains("[ \"$managed_pid\" = \"$1\" ] || return 1"))
+        #expect(logLines.contains("[ \"$managed_mode\" = \"setsid-process-group\" ] || return 1"))
+        #expect(logLines.contains("current_start_time=\"$(proc_start_time \"$1\" || true)\""))
+        #expect(logLines.contains("[ \"$managed_start_time\" = \"$current_start_time\" ] || return 1"))
+        #expect(logLines.contains("pid_metadata_names_managed_group() {"))
+        #expect(logLines.contains("pid) managed_pid=\"$value\""))
+        #expect(logLines.contains("mode) managed_mode=\"$value\""))
+        #expect(logLines.contains("start_time) managed_start_time=\"$value\""))
+        #expect(logLines.contains("[ \"$managed_mode\" = \"setsid-process-group\" ]"))
+        #expect(logLines.contains("[ -n \"$managed_start_time\" ] || return 1"))
+        #expect(!logLines.contains("grep -F -- \"$command_script\""))
+        #expect(logLines.contains("safe_pid \"$target_pid\" || return 0"))
+        #expect(logLines.contains("process_group_exists() {"))
+        #expect(logLines.contains("\"$kill_bin\" -0 -- -\"$group_pid\" 2>/dev/null"))
+        #expect(logLines.contains("kill -0 -\"$group_pid\" 2>/dev/null"))
+        #expect(logLines.contains("signal_process_group() {"))
+        #expect(logLines.contains("\"$kill_bin\" -\"$signal\" -- -\"$group_pid\" 2>/dev/null"))
+        #expect(logLines.contains("kill -\"$signal\" -\"$group_pid\" 2>/dev/null || true"))
+        #expect(logLines.contains("signal_direct_pid() {"))
+        #expect(logLines.contains("kill -\"$signal\" \"$target_pid\" 2>/dev/null || true"))
+        #expect(logLines.contains("terminate_verified_process_group() {"))
+        #expect(logLines.contains("terminate_direct_pid() {"))
+        #expect(logLines.contains("if pid_metadata_names_managed_group \"$target_pid\"; then"))
+        #expect(logLines.contains("elif pid_matches_managed_command \"$target_pid\"; then"))
+        #expect(logLines.contains("elif [ ! -e \"$pid_metadata\" ] && kill -0 \"$target_pid\" 2>/dev/null; then"))
+        #expect(logLines.contains("""
+          if pid_metadata_names_managed_group "$target_pid"; then
+            if kill -0 "$target_pid" 2>/dev/null; then
+              if pid_matches_managed_session "$target_pid"; then
+                if process_group_exists "$target_pid"; then
+                  terminate_verified_process_group "$target_pid"
+                else
+                  terminate_direct_pid "$target_pid"
+                fi
+              fi
+            elif process_group_exists "$target_pid"; then
+              terminate_verified_process_group "$target_pid"
+            fi
+        """))
+        #expect(logLines.contains("if proc_is_session_group_leader \"$target_pid\"; then"))
+        #expect(logLines.contains("signal_process_group TERM \"$group_pid\""))
+        #expect(logLines.contains("signal_process_group KILL \"$group_pid\""))
+        #expect(!logLines.contains("\"$kill_bin\" -TERM -\"$target_pid\" 2>/dev/null || true"))
+        #expect(!logLines.contains("\"$kill_bin\" -KILL -\"$target_pid\" 2>/dev/null || true"))
+        #expect(logLines.contains("if pid_matches_managed_session \"$target_pid\"; then"))
+        #expect(logLines.contains("signal_direct_pid TERM \"$target_pid\""))
+        #expect(logLines.contains("signal_direct_pid KILL \"$target_pid\""))
+        #expect(logLines.contains("IFS= read -r command_pid < \"$pidfile\" || command_pid=\"\""))
+        #expect(!logLines.contains("command_pid=\"$(cat \"$pidfile\")\""))
+        #expect(logLines.contains("rm -f \"$pidfile\""))
     }
 
     @Test("Docker workspace job manager maps host workspace path before persisting command")

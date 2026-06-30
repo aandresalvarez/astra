@@ -876,7 +876,160 @@ public final class DockerWorkspaceJobManager: WorkspaceJobManaging {
                 arguments: [
                     "exec", configuration.containerName,
                     "sh", "-c",
-                    "if [ -r \(shellQuote(directory + "/pid")) ]; then kill -TERM \"$(cat \(shellQuote(directory + "/pid")))\" 2>/dev/null || true; fi"
+                    """
+                    pidfile=\(shellQuote(directory + "/pid"))
+                    pid_metadata=\(shellQuote(directory + "/pid.meta"))
+                    pid_metadata_tmp="$pid_metadata.tmp"
+                    command_script=\(shellQuote(directory + "/command.sh"))
+                    kill_bin=""
+                    for candidate in /bin/kill /usr/bin/kill /usr/local/bin/kill; do
+                      if [ -x "$candidate" ]; then
+                        kill_bin="$candidate"
+                        break
+                      fi
+                    done
+                    safe_pid() {
+                      case "$1" in
+                        ''|*[!0-9]*) return 1 ;;
+                      esac
+                      [ "$1" -gt 1 ] 2>/dev/null
+                    }
+                    proc_start_time() {
+                      safe_pid "$1" || return 1
+                      [ -r "/proc/$1/stat" ] || return 1
+                      stat_line="$(cat "/proc/$1/stat" 2>/dev/null || true)"
+                      stat_rest="${stat_line##*) }"
+                      set -- $stat_rest
+                      [ "$#" -ge 20 ] || return 1
+                      shift 19
+                      printf '%s\\n' "$1"
+                    }
+                    proc_is_session_group_leader() {
+                      target_pid="$1"
+                      safe_pid "$target_pid" || return 1
+                      [ -r "/proc/$target_pid/stat" ] || return 1
+                      stat_line="$(cat "/proc/$target_pid/stat" 2>/dev/null || true)"
+                      stat_rest="${stat_line##*) }"
+                      set -- $stat_rest
+                      [ "$#" -ge 4 ] || return 1
+                      [ "$3" = "$target_pid" ] && [ "$4" = "$target_pid" ]
+                    }
+                    pid_matches_managed_command() {
+                      safe_pid "$1" || return 1
+                      [ -r "/proc/$1/cmdline" ] || return 1
+                      cmdline="$(tr '\\0' ' ' < "/proc/$1/cmdline" 2>/dev/null || cat "/proc/$1/cmdline" 2>/dev/null || true)"
+                      case "$cmdline" in
+                        *"$command_script"*) return 0 ;;
+                        *) return 1 ;;
+                      esac
+                    }
+                    pid_matches_managed_session() {
+                      safe_pid "$1" || return 1
+                      [ -r "$pid_metadata" ] || return 1
+                      managed_pid=""
+                      managed_mode=""
+                      managed_start_time=""
+                      while IFS='=' read -r key value; do
+                        case "$key" in
+                          pid) managed_pid="$value" ;;
+                          mode) managed_mode="$value" ;;
+                          start_time) managed_start_time="$value" ;;
+                        esac
+                      done < "$pid_metadata"
+                      [ "$managed_pid" = "$1" ] || return 1
+                      [ "$managed_mode" = "setsid-process-group" ] || return 1
+                      [ -n "$managed_start_time" ] || return 1
+                      current_start_time="$(proc_start_time "$1" || true)"
+                      [ "$managed_start_time" = "$current_start_time" ] || return 1
+                      proc_is_session_group_leader "$1"
+                    }
+                    pid_metadata_names_managed_group() {
+                      safe_pid "$1" || return 1
+                      [ -r "$pid_metadata" ] || return 1
+                      managed_pid=""
+                      managed_mode=""
+                      managed_start_time=""
+                      while IFS='=' read -r key value; do
+                        case "$key" in
+                          pid) managed_pid="$value" ;;
+                          mode) managed_mode="$value" ;;
+                          start_time) managed_start_time="$value" ;;
+                        esac
+                      done < "$pid_metadata"
+                      [ "$managed_pid" = "$1" ] || return 1
+                      [ "$managed_mode" = "setsid-process-group" ]
+                      [ -n "$managed_start_time" ] || return 1
+                    }
+                    process_group_exists() {
+                      group_pid="$1"
+                      safe_pid "$group_pid" || return 1
+                      if [ -n "$kill_bin" ] && "$kill_bin" -0 -- -"$group_pid" 2>/dev/null; then
+                        return 0
+                      fi
+                      kill -0 -"$group_pid" 2>/dev/null
+                    }
+                    signal_process_group() {
+                      signal="$1"
+                      group_pid="$2"
+                      safe_pid "$group_pid" || return 0
+                      if [ -n "$kill_bin" ] && "$kill_bin" -"$signal" -- -"$group_pid" 2>/dev/null; then
+                        return 0
+                      fi
+                      kill -"$signal" -"$group_pid" 2>/dev/null || true
+                    }
+                    signal_direct_pid() {
+                      signal="$1"
+                      target_pid="$2"
+                      safe_pid "$target_pid" || return 0
+                      kill -"$signal" "$target_pid" 2>/dev/null || true
+                    }
+                    terminate_verified_process_group() {
+                      group_pid="$1"
+                      if process_group_exists "$group_pid"; then
+                        signal_process_group TERM "$group_pid"
+                        sleep 5
+                        signal_process_group KILL "$group_pid"
+                      fi
+                    }
+                    terminate_direct_pid() {
+                      target_pid="$1"
+                      if kill -0 "$target_pid" 2>/dev/null; then
+                        signal_direct_pid TERM "$target_pid"
+                        sleep 5
+                        signal_direct_pid KILL "$target_pid"
+                      fi
+                    }
+                    terminate_pid_or_group() {
+                      target_pid="$1"
+                      safe_pid "$target_pid" || return 0
+                      if pid_metadata_names_managed_group "$target_pid"; then
+                        if kill -0 "$target_pid" 2>/dev/null; then
+                          if pid_matches_managed_session "$target_pid"; then
+                            if process_group_exists "$target_pid"; then
+                              terminate_verified_process_group "$target_pid"
+                            else
+                              terminate_direct_pid "$target_pid"
+                            fi
+                          fi
+                        elif process_group_exists "$target_pid"; then
+                          terminate_verified_process_group "$target_pid"
+                        fi
+                      elif pid_matches_managed_command "$target_pid"; then
+                        if proc_is_session_group_leader "$target_pid"; then
+                          terminate_verified_process_group "$target_pid"
+                        else
+                          terminate_direct_pid "$target_pid"
+                        fi
+                      elif [ ! -e "$pid_metadata" ] && kill -0 "$target_pid" 2>/dev/null; then
+                        terminate_direct_pid "$target_pid"
+                      fi
+                    }
+                    if [ -r "$pidfile" ]; then
+                      IFS= read -r command_pid < "$pidfile" || command_pid=""
+                      terminate_pid_or_group "$command_pid"
+                      rm -f "$pidfile" "$pid_metadata" "$pid_metadata_tmp"
+                    fi
+                    """
                 ],
                 commandLabel: "workspace_job_cancel \(record.jobID)",
                 timeoutSeconds: 10
@@ -912,9 +1065,25 @@ public final class DockerWorkspaceJobManager: WorkspaceJobManaging {
         heartbeat="$job_dir/heartbeat.json"
         result="$job_dir/result.json"
         pidfile="$job_dir/pid"
+        pid_metadata="$job_dir/pid.meta"
+        pid_metadata_tmp="$pid_metadata.tmp"
         timeout_marker="$job_dir/timeout"
         mkdir -p "$job_dir"
-        rm -f "$timeout_marker"
+        rm -f "$timeout_marker" "$pidfile" "$pid_metadata" "$pid_metadata_tmp"
+        kill_bin=""
+        for candidate in /bin/kill /usr/bin/kill /usr/local/bin/kill; do
+          if [ -x "$candidate" ]; then
+            kill_bin="$candidate"
+            break
+          fi
+        done
+        setsid_bin=""
+        for candidate in /usr/bin/setsid /bin/setsid /usr/sbin/setsid /sbin/setsid /usr/local/bin/setsid; do
+          if [ -x "$candidate" ]; then
+            setsid_bin="$candidate"
+            break
+          fi
+        done
         (
           while :; do
             printf '{"status":"running","timestamp":"%s"}\\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$heartbeat"
@@ -922,18 +1091,87 @@ public final class DockerWorkspaceJobManager: WorkspaceJobManaging {
           done
         ) &
         heartbeat_pid=$!
-        sh "$job_dir/command.sh" > "$stdout" 2> "$stderr" &
+        if [ -z "$setsid_bin" ]; then
+          printf '%s\\n' "setsid is required for managed job process-group isolation." > "$stderr"
+          kill "$heartbeat_pid" 2>/dev/null || true
+          wait "$heartbeat_pid" 2>/dev/null || true
+          printf '{"status":"failed","exitCode":127,"completedAt":"%s","message":"process group isolation unavailable"}\\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$result"
+          printf '{"status":"failed","timestamp":"%s"}\\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$heartbeat"
+          exit 0
+        fi
+        safe_pid() {
+          case "$1" in
+            ''|*[!0-9]*) return 1 ;;
+          esac
+          [ "$1" -gt 1 ] 2>/dev/null
+        }
+        proc_start_time() {
+          safe_pid "$1" || return 1
+          [ -r "/proc/$1/stat" ] || return 1
+          stat_line="$(cat "/proc/$1/stat" 2>/dev/null || true)"
+          stat_rest="${stat_line##*) }"
+          set -- $stat_rest
+          [ "$#" -ge 20 ] || return 1
+          shift 19
+          printf '%s\\n' "$1"
+        }
+        "$setsid_bin" sh "$job_dir/command.sh" > "$stdout" 2> "$stderr" &
         command_pid=$!
         printf '%s\\n' "$command_pid" > "$pidfile"
+        command_start_time="$(proc_start_time "$command_pid" || true)"
+        if [ -n "$command_start_time" ]; then
+          {
+            printf 'version=1\\n'
+            printf 'mode=setsid-process-group\\n'
+            printf 'pid=%s\\n' "$command_pid"
+            printf 'start_time=%s\\n' "$command_start_time"
+          } > "$pid_metadata_tmp"
+          mv -f "$pid_metadata_tmp" "$pid_metadata"
+        else
+          rm -f "$pid_metadata" "$pid_metadata_tmp"
+        fi
+        process_group_exists() {
+          group_pid="$1"
+          safe_pid "$group_pid" || return 1
+          if [ -n "$kill_bin" ] && "$kill_bin" -0 -- -"$group_pid" 2>/dev/null; then
+            return 0
+          fi
+          kill -0 -"$group_pid" 2>/dev/null
+        }
+        signal_process_group() {
+          signal="$1"
+          group_pid="$2"
+          safe_pid "$group_pid" || return 0
+          if [ -n "$kill_bin" ] && "$kill_bin" -"$signal" -- -"$group_pid" 2>/dev/null; then
+            return 0
+          fi
+          kill -"$signal" -"$group_pid" 2>/dev/null || true
+        }
+        terminate_command_group() {
+          grace_seconds="${1:-5}"
+          safe_pid "$command_pid" || return 0
+          if process_group_exists "$command_pid"; then
+            signal_process_group TERM "$command_pid"
+            sleep "$grace_seconds"
+            signal_process_group KILL "$command_pid"
+          fi
+        }
+        command_leader_matches_start_time() {
+          safe_pid "$command_pid" || return 1
+          kill -0 "$command_pid" 2>/dev/null || return 1
+          if [ -n "$command_start_time" ]; then
+            current_start_time="$(proc_start_time "$command_pid" || true)"
+            [ "$command_start_time" = "$current_start_time" ] || return 1
+          fi
+          return 0
+        }
         timeout_pid=""
         if [ "$timeout_seconds" -gt 0 ]; then
           (
             sleep "$timeout_seconds"
-            if kill -0 "$command_pid" 2>/dev/null; then
+            if command_leader_matches_start_time && process_group_exists "$command_pid"; then
               printf '%s\\n' timed_out > "$timeout_marker"
-              kill -TERM "$command_pid" 2>/dev/null || true
-              sleep 5
-              kill -KILL "$command_pid" 2>/dev/null || true
+              terminate_command_group 5
             fi
           ) &
           timeout_pid=$!
@@ -944,6 +1182,8 @@ public final class DockerWorkspaceJobManager: WorkspaceJobManaging {
           kill "$timeout_pid" 2>/dev/null || true
           wait "$timeout_pid" 2>/dev/null || true
         fi
+        terminate_command_group 1
+        rm -f "$pidfile" "$pid_metadata" "$pid_metadata_tmp"
         kill "$heartbeat_pid" 2>/dev/null || true
         wait "$heartbeat_pid" 2>/dev/null || true
         status=failed
