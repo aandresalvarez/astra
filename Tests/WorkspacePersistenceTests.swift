@@ -1091,6 +1091,229 @@ struct WorkspacePersistenceTests {
         #expect(result.auditFields["skipped_connector_count"] == "1")
     }
 
+    @Test("imported schedules are quarantined until local re-enable")
+    @MainActor
+    func importedSchedulesAreQuarantinedUntilLocalReenable() throws {
+        let container = try makeWorkspacePersistenceContainer()
+        let context = container.mainContext
+        var config = minimalWorkspaceConfig(
+            name: "Imported Schedule",
+            path: "/tmp/astra_import_schedule_\(UUID().uuidString)",
+            skillID: UUID().uuidString
+        )
+        let dueDate = Date.distantPast
+        config.schedules = [
+            WorkspaceConfigManager.ScheduleConfig(
+                id: UUID().uuidString,
+                name: "Enabled Routine",
+                isEnabled: true,
+                goal: "Launch from imported config",
+                templateVariablesJSON: "{}",
+                model: "claude-sonnet-4-6",
+                tokenBudget: 50_000,
+                scheduleType: ScheduleType.once.rawValue,
+                nextFireDate: dueDate,
+                intervalSeconds: 3600,
+                dailyHour: 9,
+                dailyMinute: 0,
+                weeklyDayOfWeek: 2,
+                fireCount: 0
+            ),
+            WorkspaceConfigManager.ScheduleConfig(
+                id: UUID().uuidString,
+                name: "Already Disabled Routine",
+                isEnabled: false,
+                goal: "Already disabled before import",
+                templateVariablesJSON: "{}",
+                model: "claude-sonnet-4-6",
+                tokenBudget: 50_000,
+                scheduleType: ScheduleType.once.rawValue,
+                nextFireDate: dueDate,
+                intervalSeconds: 3600,
+                dailyHour: 9,
+                dailyMinute: 0,
+                weeklyDayOfWeek: 2,
+                fireCount: 0
+            )
+        ]
+
+        let result = WorkspaceConfigManager.importWorkspaceResult(from: config, modelContext: context)
+        let importedSchedule = try #require(result.workspace.schedules.first { $0.name == "Enabled Routine" })
+        let alreadyDisabled = try #require(result.workspace.schedules.first { $0.name == "Already Disabled Routine" })
+
+        #expect(importedSchedule.isEnabled == false)
+        #expect(alreadyDisabled.isEnabled == false)
+        #expect(importedSchedule.nextFireDate == dueDate)
+        #expect(importedSchedule.goal == "Launch from imported config")
+        #expect(result.quarantinedScheduleCount == 1)
+        #expect(result.auditFields["quarantined_schedule_count"] == "1")
+
+        let scheduler = TaskScheduler()
+        let queue = TaskQueue()
+        scheduler.checkAndFire(modelContext: context, taskQueue: queue)
+        #expect(result.workspace.tasks.filter { $0.originScheduleID == importedSchedule.id }.isEmpty)
+        #expect(queue.hasProcessingLoop == false)
+
+        importedSchedule.isEnabled = true
+        try context.save()
+        #expect(importedSchedule.isEnabled == true)
+    }
+
+    @Test("trusted local schedule reimports preserve enabled state")
+    @MainActor
+    func trustedLocalScheduleReimportsPreserveEnabledState() throws {
+        let container = try makeWorkspacePersistenceContainer()
+        let context = container.mainContext
+        var config = minimalWorkspaceConfig(
+            name: "Trusted Reimport",
+            path: "/tmp/astra_trusted_schedule_\(UUID().uuidString)",
+            skillID: UUID().uuidString
+        )
+        config.schedules = [
+            WorkspaceConfigManager.ScheduleConfig(
+                id: UUID().uuidString,
+                name: "Enabled Local Routine",
+                isEnabled: true,
+                goal: "Keep running after trusted replace",
+                templateVariablesJSON: "{}",
+                model: "claude-sonnet-4-6",
+                tokenBudget: 50_000,
+                scheduleType: ScheduleType.once.rawValue,
+                nextFireDate: Date.distantFuture,
+                intervalSeconds: 3600,
+                dailyHour: 9,
+                dailyMinute: 0,
+                weeklyDayOfWeek: 2,
+                fireCount: 0
+            )
+        ]
+
+        let result = WorkspaceConfigManager.importWorkspaceResult(
+            from: config,
+            modelContext: context,
+            scheduleTrustPolicy: .preserveEnabledState
+        )
+        let importedSchedule = try #require(result.workspace.schedules.first)
+
+        #expect(importedSchedule.isEnabled == true)
+        #expect(result.quarantinedScheduleCount == 0)
+        #expect(result.auditFields["quarantined_schedule_count"] == "0")
+    }
+
+    @Test("folder replace preserves trusted local enabled schedules")
+    @MainActor
+    func folderReplacePreservesTrustedLocalEnabledSchedules() throws {
+        let container = try makeWorkspacePersistenceContainer()
+        let context = container.mainContext
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra_trusted_replace_\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+
+        let workspace = Workspace(name: "Trusted Replace", primaryPath: folder.path)
+        context.insert(workspace)
+        let schedule = TaskSchedule(name: "Enabled Local Routine", goal: "Keep running", workspace: workspace)
+        schedule.isEnabled = true
+        context.insert(schedule)
+        try context.save()
+
+        let coordinator = TaskLifecycleCoordinator(modelContext: context, taskQueue: TaskQueue())
+        let replaced = try #require(coordinator.createWorkspaceFromFolder(
+            folder,
+            existingWorkspaces: [workspace],
+            askDuplicateAction: { _, _ in .replace }
+        ))
+        let replacedSchedule = try #require(replaced.schedules.first)
+
+        #expect(replaced.primaryPath == folder.path)
+        #expect(replacedSchedule.isEnabled == true)
+    }
+
+    @Test("configured folder replace preserves trusted local enabled schedules")
+    @MainActor
+    func configuredFolderReplacePreservesTrustedLocalEnabledSchedules() throws {
+        let container = try makeWorkspacePersistenceContainer()
+        let context = container.mainContext
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra_configured_trusted_replace_\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+
+        let workspace = Workspace(name: "Configured Trusted Replace", primaryPath: folder.path)
+        context.insert(workspace)
+        let schedule = TaskSchedule(name: "Enabled Config Routine", goal: "Keep running", workspace: workspace)
+        schedule.isEnabled = true
+        context.insert(schedule)
+        try context.save()
+
+        let configURL = URL(fileURLWithPath: WorkspaceFileLayout.workspaceConfigFile(for: folder.path))
+        try WorkspaceConfigManager.exportToFile(
+            workspace: workspace,
+            modelContext: context,
+            url: configURL
+        )
+
+        let coordinator = TaskLifecycleCoordinator(modelContext: context, taskQueue: TaskQueue())
+        let replaced = try #require(coordinator.importFromConfig(
+            at: configURL,
+            existingWorkspaces: [workspace],
+            askDuplicateAction: { _, _ in .replace }
+        ))
+        let replacedSchedule = try #require(replaced.schedules.first)
+
+        #expect(replaced.primaryPath == folder.standardizedFileURL.path)
+        #expect(replacedSchedule.isEnabled == true)
+    }
+
+    @Test("external config replace still quarantines enabled schedules")
+    @MainActor
+    func externalConfigReplaceStillQuarantinesEnabledSchedules() throws {
+        let container = try makeWorkspacePersistenceContainer()
+        let context = container.mainContext
+        let localFolder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra_local_replace_\(UUID().uuidString)", isDirectory: true)
+        let externalFolder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra_external_replace_\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: localFolder, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: externalFolder, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: localFolder)
+            try? FileManager.default.removeItem(at: externalFolder)
+        }
+
+        let workspace = Workspace(name: "External Replace", primaryPath: localFolder.path)
+        context.insert(workspace)
+        let schedule = TaskSchedule(name: "Imported External Routine", goal: "Do not auto-arm", workspace: workspace)
+        schedule.isEnabled = true
+        context.insert(schedule)
+        try context.save()
+
+        let configURL = externalFolder.appendingPathComponent(WorkspaceFileLayout.workspaceConfigFileName)
+        try WorkspaceConfigManager.exportToFile(
+            workspace: workspace,
+            modelContext: context,
+            url: configURL
+        )
+
+        let coordinator = TaskLifecycleCoordinator(modelContext: context, taskQueue: TaskQueue())
+        let replaced = try #require(coordinator.importFromConfig(
+            at: configURL,
+            existingWorkspaces: [workspace],
+            askDuplicateAction: { _, _ in .replace }
+        ))
+        let replacedSchedule = try #require(replaced.schedules.first)
+
+        #expect(replaced.primaryPath == externalFolder.standardizedFileURL.path)
+        #expect(replacedSchedule.isEnabled == false)
+    }
+
+    @Test("schedule editor saves preserve existing enabled state")
+    func scheduleEditorSavesPreserveExistingEnabledState() {
+        #expect(ScheduleEditorPersistencePolicy.enabledStateAfterSave(existingIsEnabled: false) == false)
+        #expect(ScheduleEditorPersistencePolicy.enabledStateAfterSave(existingIsEnabled: true) == true)
+        #expect(ScheduleEditorPersistencePolicy.enabledStateAfterSave(existingIsEnabled: nil) == true)
+    }
+
     @Test("auto-export skip launch flags are recognized")
     func autoExportSkipLaunchFlagsAreRecognized() {
         #expect(WorkspacePersistenceCoordinator.shouldSkipAutoExport(

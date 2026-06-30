@@ -15,6 +15,29 @@ enum WorkspaceConfigManager {
 
     static let currentVersion = 10
 
+    enum ScheduleImportTrustPolicy {
+        case quarantineEnabledSchedules
+        case preserveEnabledState
+
+        func enabledState(for config: ScheduleConfig) -> Bool {
+            switch self {
+            case .quarantineEnabledSchedules:
+                false
+            case .preserveEnabledState:
+                config.isEnabled
+            }
+        }
+
+        func quarantinedScheduleCount(in schedules: [ScheduleConfig]?) -> Int {
+            switch self {
+            case .quarantineEnabledSchedules:
+                schedules?.filter(\.isEnabled).count ?? 0
+            case .preserveEnabledState:
+                0
+            }
+        }
+    }
+
     struct WorkspaceConfigExportResult {
         enum Status: String {
             case exported
@@ -93,6 +116,7 @@ enum WorkspaceConfigManager {
         var connectorCount: Int
         var localToolCount: Int
         var taskCount: Int
+        var quarantinedScheduleCount: Int
         var skippedConnectorCount: Int
         var skippedLocalToolCount: Int
 
@@ -108,6 +132,7 @@ enum WorkspaceConfigManager {
                 "connector_count": String(connectorCount),
                 "local_tool_count": String(localToolCount),
                 "task_count": String(taskCount),
+                "quarantined_schedule_count": String(quarantinedScheduleCount),
                 "skipped_connector_count": String(skippedConnectorCount),
                 "skipped_local_tool_count": String(skippedLocalToolCount)
             ]
@@ -608,12 +633,24 @@ enum WorkspaceConfigManager {
     }
 
     /// Create a new Workspace + Skills + Connectors + Tools + Templates from a config.
-    static func importWorkspace(from config: WorkspaceConfig, modelContext: ModelContext) -> Workspace {
-        importWorkspaceResult(from: config, modelContext: modelContext).workspace
+    static func importWorkspace(
+        from config: WorkspaceConfig,
+        modelContext: ModelContext,
+        scheduleTrustPolicy: ScheduleImportTrustPolicy = .quarantineEnabledSchedules
+    ) -> Workspace {
+        importWorkspaceResult(
+            from: config,
+            modelContext: modelContext,
+            scheduleTrustPolicy: scheduleTrustPolicy
+        ).workspace
     }
 
     /// Create a new Workspace + Skills + Connectors + Tools + Templates from a config.
-    static func importWorkspaceResult(from config: WorkspaceConfig, modelContext: ModelContext) -> WorkspaceConfigImportResult {
+    static func importWorkspaceResult(
+        from config: WorkspaceConfig,
+        modelContext: ModelContext,
+        scheduleTrustPolicy: ScheduleImportTrustPolicy = .quarantineEnabledSchedules
+    ) -> WorkspaceConfigImportResult {
         let workspace = Workspace(
             name: config.name,
             primaryPath: config.primaryPath,
@@ -728,8 +765,9 @@ enum WorkspaceConfigManager {
             SSHConnectionManager.save(config.sshConnections, workspacePath: config.primaryPath)
         }
 
+        let quarantinedScheduleCount = scheduleTrustPolicy.quarantinedScheduleCount(in: config.schedules)
         for sc in config.schedules ?? [] {
-            let schedule = makeSchedule(from: sc, workspace: workspace)
+            let schedule = makeImportedSchedule(from: sc, workspace: workspace, trustPolicy: scheduleTrustPolicy)
             modelContext.insert(schedule)
         }
 
@@ -757,6 +795,7 @@ enum WorkspaceConfigManager {
             connectorCount: workspace.connectors.count,
             localToolCount: workspace.localTools.count,
             taskCount: workspace.tasks.count,
+            quarantinedScheduleCount: quarantinedScheduleCount,
             skippedConnectorCount: skippedConnectorCount,
             skippedLocalToolCount: skippedLocalToolCount
         )
@@ -1313,7 +1352,11 @@ enum WorkspaceConfigManager {
         )
     }
 
-    private static func makeSchedule(from config: ScheduleConfig, workspace: Workspace) -> TaskSchedule {
+    private static func makeImportedSchedule(
+        from config: ScheduleConfig,
+        workspace: Workspace,
+        trustPolicy: ScheduleImportTrustPolicy
+    ) -> TaskSchedule {
         let schedule = TaskSchedule(
             name: config.name,
             goal: config.goal,
@@ -1327,7 +1370,7 @@ enum WorkspaceConfigManager {
         if let id = config.id.flatMap(UUID.init(uuidString:)) {
             schedule.id = id
         }
-        schedule.isEnabled = config.isEnabled
+        schedule.isEnabled = trustPolicy.enabledState(for: config)
         schedule.templateID = config.templateID.flatMap(UUID.init(uuidString:))
         schedule.templateVariablesJSON = config.templateVariablesJSON
         schedule.routineDescription = config.routineDescription ?? schedule.routineDescription
