@@ -681,6 +681,7 @@ struct CapabilityLibraryTests {
             "gcloud-workflow",
             "github-workflow",
             "google-drive-browser",
+            "google-workspace",
             "jira-workflow",
             "mcp-smoke-test",
             "redcap-workflow",
@@ -707,10 +708,15 @@ struct CapabilityLibraryTests {
         #expect(packages.first { $0.id == "github-workflow" }?.browserAdapters == [BrowserSiteAdapterID.github])
         #expect(packages.first { $0.id == "github-workflow" }?.localTools.map(\.command) == ["gh"])
         #expect(packages.first { $0.id == "github-workflow" }?.prerequisites.map(\.binary) == ["gh", "gh"])
-        #expect(packages.first { $0.id == "github-workflow" }?.version == "2.1.2")
-        #expect(packages.first { $0.id == "github-workflow" }?.skills.first?.behaviorInstructions.contains("gh search prs --author \"@me\"") == true)
-        #expect(packages.first { $0.id == "github-workflow" }?.skills.first?.behaviorInstructions.contains("Do not pipe JSON into `python3 - <<'PY'`") == true)
-        #expect(packages.first { $0.id == "github-workflow" }?.skills.first?.behaviorInstructions.contains("gh api /search/issues") == true)
+        let github = packages.first { $0.id == "github-workflow" }
+        #expect(github?.version == "2.1.3")
+        #expect(github?.governance.externalEffects == [.readOnly, .browserNavigation])
+        #expect(github?.skills.first?.behaviorInstructions.contains("gh search prs --author \"@me\"") == true)
+        #expect(github?.skills.first?.behaviorInstructions.contains("Do not pipe JSON into `python3 - <<'PY'`") == true)
+        #expect(github?.skills.first?.behaviorInstructions.contains("gh api /search/issues") == true)
+        #expect(github?.skills.first?.behaviorInstructions.contains("This capability is read-only") == true)
+        #expect(github?.skills.first?.behaviorInstructions.contains("gh issue create") == false)
+        #expect(github?.skills.first?.behaviorInstructions.contains("gh pr comment") == false)
         #expect(packages.first { $0.id == "google-drive-browser" }?.browserAdapters == [BrowserSiteAdapterID.googleDrive])
         #expect(packages.first { $0.id == "redcap-workflow" }?.connectors.map(\.baseURL) == ["https://redcap.stanford.edu/api/"])
         #expect(packages.first { $0.id == "redcap-workflow" }?.connectors.first?.credentialHints.map(\.key) == ["REDCAP_API_TOKEN"])

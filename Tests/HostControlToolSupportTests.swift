@@ -28,13 +28,44 @@ struct HostControlToolSupportTests {
         ])
         #expect(errorMessage(deniedWorkflow)?.contains("does not allow GitHub operation") == true)
 
+        let deniedIssueWrite = try call(server, id: 4, tool: "github", arguments: [
+            "arguments": ["issue", "create", "--title", "bug"]
+        ])
+        #expect(errorMessage(deniedIssueWrite)?.contains("does not allow GitHub operation") == true)
+
+        let deniedPRComment = try call(server, id: 5, tool: "github", arguments: [
+            "arguments": ["pr", "comment", "123", "--body", "ready"]
+        ])
+        #expect(errorMessage(deniedPRComment)?.contains("does not allow GitHub operation") == true)
+
         #expect(runner.invocations.isEmpty)
 
-        let allowed = try call(server, id: 4, tool: "github", arguments: [
+        let allowed = try call(server, id: 6, tool: "github", arguments: [
             "arguments": ["pr", "view", "123", "--comments"]
         ])
         #expect(try resultText(allowed).contains("ok"))
-        #expect(runner.invocations.map(\.arguments) == [["pr", "view", "123", "--comments"]])
+
+        let allowedRepoBeforeCommand = try call(server, id: 7, tool: "github", arguments: [
+            "arguments": ["--repo", "owner/project", "pr", "view", "123"]
+        ])
+        #expect(try resultText(allowedRepoBeforeCommand).contains("ok"))
+
+        let allowedRepoBetweenCommandAndSubcommand = try call(server, id: 8, tool: "github", arguments: [
+            "arguments": ["pr", "--repo", "owner/project", "view", "123"]
+        ])
+        #expect(try resultText(allowedRepoBetweenCommandAndSubcommand).contains("ok"))
+
+        let allowedHostnameBetweenCommandAndSubcommand = try call(server, id: 9, tool: "github", arguments: [
+            "arguments": ["pr", "--hostname", "github.com", "view", "123"]
+        ])
+        #expect(try resultText(allowedHostnameBetweenCommandAndSubcommand).contains("ok"))
+
+        #expect(runner.invocations.map(\.arguments) == [
+            ["pr", "view", "123", "--comments"],
+            ["--repo", "owner/project", "pr", "view", "123"],
+            ["pr", "--repo", "owner/project", "view", "123"],
+            ["pr", "--hostname", "github.com", "view", "123"]
+        ])
     }
 
     @Test("Host control MCP runs fake host tools and redacts connector secrets")

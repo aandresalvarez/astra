@@ -1,6 +1,10 @@
 import Foundation
 
 enum GitHubHostControlPolicy {
+    private static let optionsWithValues: Set<String> = [
+        "-H", "--hostname", "-R", "--repo", "--jq", "-q", "--json", "--template"
+    ]
+
     static func denialReason(for arguments: [String]) -> String? {
         let operation = normalizedOperation(arguments)
 
@@ -41,11 +45,36 @@ enum GitHubHostControlPolicy {
     }
 
     private static func normalizedOperation(_ arguments: [String]) -> Operation {
-        let command = arguments.first?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
-        let subcommand = arguments.dropFirst().first { !$0.hasPrefix("-") }?
+        let tokens = commandTokens(from: arguments)
+        let command = tokens.first?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        let subcommand = tokens.dropFirst().first?
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
         return Operation(command: command, subcommand: subcommand)
+    }
+
+    private static func commandTokens(from arguments: [String]) -> [String] {
+        var tokens: [String] = []
+        var index = 0
+        while index < arguments.count {
+            let token = arguments[index]
+            if token == "--" {
+                index += 1
+                tokens.append(contentsOf: arguments.dropFirst(index))
+                break
+            }
+            if token.hasPrefix("-") {
+                index += 1
+                let optionName = token.split(separator: "=", maxSplits: 1).first.map(String.init) ?? token
+                if optionsWithValues.contains(optionName), !token.contains("="), index < arguments.count {
+                    index += 1
+                }
+                continue
+            }
+            tokens.append(token)
+            index += 1
+        }
+        return tokens
     }
 
     private struct Operation {

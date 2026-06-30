@@ -322,11 +322,11 @@ final class PluginCatalog {
             name: "GitHub Workflow",
             icon: "chevron.left.forwardslash.chevron.right",
             iconDescriptor: .brand("github", fallbackSystemName: "chevron.left.forwardslash.chevron.right"),
-            description: "Manage issues, PRs, and CI from your workspace",
+            description: "Inspect issues, PRs, and CI from your workspace",
             author: "ASTRA",
             category: "Integrations",
             tags: ["github", "git", "pull-requests", "issues", "ci"],
-            version: "2.1.2",
+            version: "2.1.3",
             setupGuide: """
             Connect your workspace to GitHub using the GitHub CLI. This \
             capability does not use a stored GitHub connector or token; it \
@@ -335,8 +335,6 @@ final class PluginCatalog {
             What you can do:
             • List and search issues and pull requests
             • Read PR diffs, review comments, and CI status
-            • Create issues with labels and assignees
-            • Post comments on issues and PRs
             • Check workflow runs and deployment status
 
             Setup:
@@ -347,7 +345,7 @@ final class PluginCatalog {
             skills: [PluginSkill(
                 name: "GitHub Agent",
                 icon: "chevron.left.forwardslash.chevron.right",
-                description: "Manage issues, PRs, and CI via GitHub CLI",
+                description: "Inspect issues, PRs, and CI via GitHub CLI",
                 allowedTools: ["Read", "Bash", "Glob", "Grep"],
                 disallowedTools: ["Write", "Edit"],
                 customTools: [],
@@ -362,7 +360,6 @@ final class PluginCatalog {
                 COMMON OPERATIONS
                 • List issues: gh issue list --state open --limit 30
                 • View issue: gh issue view ISSUE_NUMBER --comments
-                • Create issue: gh issue create --title "..." --body "..." --label "bug"
                 • List recent PRs across repositories: gh search prs --author "@me" --state all --limit 30 --sort updated --order desc --json number,title,state,author,repository,url,createdAt,updatedAt
                 • List PRs in current repo: gh pr list --state open --limit 30
                 • View PR: gh pr view PR_NUMBER --comments --json title,author,state,labels,files,reviews,statusCheckRollup,url
@@ -370,7 +367,6 @@ final class PluginCatalog {
                 • Review checks: gh pr checks PR_NUMBER
                 • Workflow runs: gh run list --limit 10
                 • View workflow run: gh run view RUN_ID --log
-                • Comment on issue or PR: gh issue comment NUMBER --body "..." or gh pr comment NUMBER --body "..."
 
                 FORMATTING
                 • Issues/PRs: show number, title, state, author, labels, and URL
@@ -378,7 +374,8 @@ final class PluginCatalog {
                 • CI: show workflow name, status, conclusion, and failing job details
 
                 RULES
-                • Always confirm with the user before creating issues, posting comments, merging PRs, or triggering workflows
+                • This capability is read-only. Do not create issues, post comments, merge PRs, trigger workflows, or call raw mutating GitHub APIs.
+                • If the user requests a GitHub write, explain that ASTRA's built-in GitHub host-control capability is read-only and that writes require opening GitHub/gh outside ASTRA or a future confirmed-write integration.
                 • Prefer `--json` with `--jq` for structured parsing when available
                 • Do not pipe JSON into `python3 - <<'PY'`; the heredoc consumes stdin, so Python will not receive the command output. If Python parsing is required, write JSON to a temp file first or pass it as an argument.
                 • Prefer `gh search prs` for cross-repository PR searches. If REST search is required, call `gh api /search/issues` with a leading slash.
@@ -407,8 +404,8 @@ final class PluginCatalog {
             governance: .builtInApproved(
                 riskLevel: .high,
                 dataAccess: [.workspaceFiles, .externalService, .network, .authenticatedBrowserContent],
-                externalEffects: [.readOnly, .externalAPIWrite, .ticketMutation, .browserNavigation],
-                policyNotes: "GitHub work uses the local gh CLI and may read repository state, issues, pull requests, Actions, and authenticated GitHub browser pages. External writes require user confirmation."
+                externalEffects: [.readOnly, .browserNavigation],
+                policyNotes: "GitHub work uses the local gh CLI and authenticated GitHub browser pages for read-only repository, issue, pull request, and Actions inspection. Built-in host-control denies GitHub writes."
             )
         ),
 

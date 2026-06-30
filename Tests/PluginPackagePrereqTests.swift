@@ -137,7 +137,7 @@ struct PluginPackagePrereqTests {
     func builtInGitHubRequiresGhAndExposesBrowserAdapter() {
         let github = PluginCatalog.builtInPackages.first { $0.id == "github-workflow" }
         #expect(github != nil)
-        #expect(github?.version == "2.1.2")
+        #expect(github?.version == "2.1.3")
         #expect(github?.connectors.isEmpty == true)
         #expect(github?.browserAdapters == [BrowserSiteAdapterID.github])
         #expect(github?.localTools.map(\.command) == ["gh"])
