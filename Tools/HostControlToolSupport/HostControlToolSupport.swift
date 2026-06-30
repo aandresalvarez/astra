@@ -428,12 +428,13 @@ public final class HostControlMCPServer {
             case .allowed:
                 break
             case .denied(let message):
+                let diagnosticArguments = redactedDiagnosticArguments(argv)
                 diagnosticsRecorder?.record(
                     toolName: toolName,
-                    summary: "\(toolName) \(argv.joined(separator: " "))",
+                    summary: "\(toolName) \(diagnosticArguments.joined(separator: " "))",
                     result: HostControlCommandResult(
                         command: executable,
-                        arguments: argv,
+                        arguments: diagnosticArguments,
                         exitCode: 126,
                         stdout: "",
                         stderr: message,
@@ -617,6 +618,50 @@ public final class HostControlMCPServer {
             stderr: configuration.redacted(result.stderr),
             timedOut: result.timedOut
         )
+    }
+
+    private func redactedDiagnosticArguments(_ arguments: [String]) -> [String] {
+        var redacted: [String] = []
+        var redactsNextValue = false
+        for argument in arguments {
+            if redactsNextValue {
+                redacted.append("<redacted>")
+                redactsNextValue = false
+                continue
+            }
+
+            guard argument.hasPrefix("-") else {
+                redacted.append(argument)
+                continue
+            }
+
+            let parts = argument.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+            let optionName = String(parts.first ?? "")
+            guard isSensitiveDiagnosticOption(optionName) else {
+                redacted.append(argument)
+                continue
+            }
+
+            if parts.count > 1 {
+                redacted.append("\(optionName)=<redacted>")
+            } else {
+                redacted.append(optionName)
+                redactsNextValue = true
+            }
+        }
+        return redacted
+    }
+
+    private func isSensitiveDiagnosticOption(_ optionName: String) -> Bool {
+        optionName == "--account" ||
+            optionName == "--configuration" ||
+            optionName == "--flags-file" ||
+            optionName == "--impersonate-service-account" ||
+            optionName.contains("access-token") ||
+            optionName.contains("identity-token") ||
+            optionName.contains("credential") ||
+            optionName.contains("password") ||
+            optionName.contains("secret")
     }
 
     private func encodeCommandResult(id: Any?, result: HostControlCommandResult) -> String? {

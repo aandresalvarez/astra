@@ -457,8 +457,22 @@ struct HostControlToolSupportTests {
         let error = try #require(result["error"] as? [String: Any])
         #expect((error["message"] as? String)?.contains("gcloud does not allow credential or mutating operations") == true)
 
+        let sensitiveFlagResult = try call(server, id: 31, tool: "gcloud", arguments: [
+            "arguments": [
+                "--account", "privileged@example.com",
+                "compute", "instances", "list",
+                "--access-token=ya29.secret-token",
+                "--impersonate-service-account=reader@example.iam.gserviceaccount.com"
+            ]
+        ])
+        let sensitiveFlagError = try #require(sensitiveFlagResult["error"] as? [String: Any])
+        #expect((sensitiveFlagError["message"] as? String)?.contains("gcloud does not allow credential or mutating operations") == true)
+
         let hostLog = (try? String(contentsOf: log, encoding: .utf8)) ?? ""
         #expect(!hostLog.contains("auth print-access-token"))
+        #expect(!hostLog.contains("privileged@example.com"))
+        #expect(!hostLog.contains("ya29.secret-token"))
+        #expect(!hostLog.contains("reader@example.iam.gserviceaccount.com"))
 
         let diagnosticLog = diagnostics.appendingPathComponent("host_control_tool_activity.jsonl", isDirectory: false)
         let diagnosticsText = try String(contentsOf: diagnosticLog, encoding: .utf8)
@@ -466,6 +480,12 @@ struct HostControlToolSupportTests {
         #expect(diagnosticsText.contains(#""taskID":"task-denied-gcloud""#))
         #expect(diagnosticsText.contains(#""runID":"run-denied-gcloud""#))
         #expect(diagnosticsText.contains(#""summary":"gcloud auth print-access-token""#))
+        #expect(diagnosticsText.contains(#"--account <redacted>"#))
+        #expect(diagnosticsText.contains(#"--access-token=<redacted>"#))
+        #expect(diagnosticsText.contains(#"--impersonate-service-account=<redacted>"#))
+        #expect(!diagnosticsText.contains("privileged@example.com"))
+        #expect(!diagnosticsText.contains("ya29.secret-token"))
+        #expect(!diagnosticsText.contains("reader@example.iam.gserviceaccount.com"))
     }
 
     private func fakeExecutable(named name: String, root: URL, log: URL, stdout: String) throws -> URL {
