@@ -477,6 +477,44 @@ struct CapabilityCatalogPolicyTests {
             reason: RemoteMCPGatewayEndpointTrustPolicy.untrustedCredentialEndpointReason
         )))
     }
+
+    @Test("Credential forwarding remote MCP with missing URL keeps single URL blocker")
+    func credentialForwardingRemoteMCPWithMissingURLKeepsSingleURLBlocker() {
+        var package = makePolicyPackage(governance: .builtInApproved(riskLevel: .high))
+        package.id = GoogleWorkspaceCapability.packageID
+        package.sourceMetadata = .builtIn()
+        package.mcpServers = [
+            PluginMCPServer(
+                id: "google_workspace_drive",
+                displayName: "Google Workspace Drive",
+                transport: .http,
+                connectorBindings: [GoogleWorkspaceCapability.connectorBinding],
+                controlPlane: policyGatewayAuthorizationControlPlane()
+            )
+        ]
+
+        let decision = CapabilityCatalogPolicy.decision(
+            for: package,
+            context: CapabilityCatalogPolicyContext(
+                currentAppVersion: SemanticVersion(1, 0, 0),
+                enabledPackageIDs: [package.id]
+            )
+        )
+
+        let unsafeServerBlockers = decision.blockers.compactMap { blocker -> String? in
+            guard case .unsafeMCPServer(name: "Google Workspace Drive", let reason) = blocker else {
+                return nil
+            }
+            return reason
+        }
+
+        #expect(unsafeServerBlockers == ["remote MCP URL is missing or invalid"])
+        #expect(!unsafeServerBlockers.contains {
+            $0.contains(RemoteMCPGatewayEndpointTrustPolicy.missingCredentialEndpointReason)
+        })
+        #expect(!decision.canEnable)
+        #expect(!decision.canRun)
+    }
 }
 
 private func makePolicyPackage(governance: CapabilityGovernance) -> PluginPackage {
