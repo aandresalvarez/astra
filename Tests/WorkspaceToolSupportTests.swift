@@ -765,7 +765,33 @@ struct WorkspaceToolSupportTests {
         let tail = try store.tail(jobID: job.jobID, stream: "stdout", lines: 1)
 
         #expect(!tail.text.contains(oversizedLinePrefix))
+        #expect(tail.text.utf8.count <= 64 * 1024)
         #expect(tail.text.hasSuffix(String(repeating: "x", count: 64)))
+    }
+
+    @Test("Workspace managed job tail keeps bounded suffix when final long line ends with newline")
+    func workspaceManagedJobTailKeepsBoundedSuffixForTerminatedFinalLongLine() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-workspace-job-tail-long-final-line-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let store = WorkspaceManagedJobStore(rootPath: root.path)
+        let job = try store.create(
+            command: "printf long-final-line",
+            timeoutSeconds: nil,
+            label: nil,
+            progressProbe: nil,
+            runtime: "docker"
+        )
+        try ("older output\n" + String(repeating: "z", count: 600_000) + "\n")
+            .write(to: URL(fileURLWithPath: job.stdoutLogPath), atomically: true, encoding: .utf8)
+
+        let tail = try store.tail(jobID: job.jobID, stream: "stdout", lines: 1)
+
+        #expect(!tail.text.isEmpty)
+        #expect(tail.text.utf8.count <= 64 * 1024)
+        #expect(!tail.text.contains("older output"))
+        #expect(tail.text.hasSuffix(String(repeating: "z", count: 64)))
     }
 
     @Test("Workspace managed job tail keeps complete first line when byte window starts on a line boundary")

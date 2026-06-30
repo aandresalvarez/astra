@@ -309,23 +309,28 @@ private enum WorkspaceManagedJobLogTailReader {
         guard startsInsideLine, let newline = text.firstIndex(of: "\n") else {
             return text
         }
-        return String(text[text.index(after: newline)...])
+        let completeLineSuffix = String(text[text.index(after: newline)...])
+        return completeLineSuffix.isEmpty ? text : completeLineSuffix
     }
 
     private static func lastLines(_ text: String, count: Int) -> String {
+        var end = text.endIndex
+        if end > text.startIndex, text[text.index(before: end)] == "\n" {
+            end = text.index(before: end)
+        }
         var remainingNewlines = count
-        var cursor = text.endIndex
+        var cursor = end
         while cursor > text.startIndex {
             let previous = text.index(before: cursor)
             if text[previous] == "\n" {
                 remainingNewlines -= 1
                 if remainingNewlines == 0 {
-                    return String(text[text.index(after: previous)...])
+                    return String(text[text.index(after: previous)..<end])
                 }
             }
             cursor = previous
         }
-        return text
+        return String(text[..<end])
     }
 
     private struct LogSuffix {
