@@ -390,15 +390,16 @@ public final class HostControlMCPServer {
               let toolName = params["name"] as? String else {
             return encodeError(id: id, code: -32602, message: "Unsupported tool")
         }
-        guard toolIsAllowed(toolName) else {
-            return encodeError(id: id, code: -32602, message: "\(toolName) is not enabled for this task")
+        let normalizedToolName = normalizedToolName(toolName)
+        guard toolIsAllowed(normalizedToolName) else {
+            return encodeError(id: id, code: -32602, message: "\(normalizedToolName) is not enabled for this task")
         }
         let arguments = params["arguments"] as? [String: Any] ?? [:]
-        switch toolName {
+        switch normalizedToolName {
         case "github":
             return handleProcessTool(
                 id: id,
-                toolName: toolName,
+                toolName: normalizedToolName,
                 executable: configuration.githubExecutable,
                 arguments: arguments,
                 allowedFirstArguments: nil,
@@ -407,7 +408,7 @@ public final class HostControlMCPServer {
         case "gcloud":
             return handleProcessTool(
                 id: id,
-                toolName: toolName,
+                toolName: normalizedToolName,
                 executable: configuration.gcloudExecutable,
                 arguments: arguments,
                 allowedFirstArguments: nil
@@ -415,7 +416,7 @@ public final class HostControlMCPServer {
         case "bq":
             return handleProcessTool(
                 id: id,
-                toolName: toolName,
+                toolName: normalizedToolName,
                 executable: configuration.bigQueryExecutable,
                 arguments: arguments,
                 allowedFirstArguments: nil
@@ -683,7 +684,11 @@ public final class HostControlMCPServer {
     }
 
     private func toolIsAllowed(_ toolName: String) -> Bool {
-        configuration.allowedTools.contains(toolName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+        configuration.allowedTools.contains(normalizedToolName(toolName))
+    }
+
+    private func normalizedToolName(_ toolName: String) -> String {
+        toolName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }
 
     private func processSchema(name: String, description: String, argumentDescription: String) -> [String: Any] {

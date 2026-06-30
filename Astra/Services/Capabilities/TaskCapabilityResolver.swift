@@ -536,9 +536,18 @@ struct TaskCapabilityResolver {
 
     private static func packageID(_ packageID: String, matchesTaskText taskText: String) -> Bool {
         guard packageID == "github-workflow" else { return false }
-        return ["github", "pull request", "pull requests", "pr ", "prs ", "issue", "issues", "ci", "workflow run"].contains {
+        if ["github", "pull request", "pull requests", "issue", "issues", "ci", "workflow run"].contains(where: {
             taskText.contains($0)
+        }) {
+            return true
         }
+        return taskTextContainsToken(taskText, matching: ["pr", "prs"])
+    }
+
+    private static func taskTextContainsToken(_ taskText: String, matching expectedTokens: Set<String>) -> Bool {
+        taskText
+            .split { !$0.isLetter && !$0.isNumber }
+            .contains { expectedTokens.contains(String($0)) }
     }
 
     private static func uniqueStrings(_ values: [String]) -> [String] {
@@ -708,11 +717,20 @@ struct TaskCapabilityResolver {
         let normalized = normalizedSearchText(text)
         var tokens = Set<String>()
         for token in normalized.split(separator: " ").map(String.init) {
+            if token == "pr" || token == "prs" {
+                tokens.insert("pr")
+                tokens.insert("prs")
+                continue
+            }
             guard token.count >= 3, !genericCapabilityTokens.contains(token) else { continue }
             tokens.insert(token)
             if token.count > 4, token.hasSuffix("s") {
                 tokens.insert(String(token.dropLast()))
             }
+        }
+        if normalized.contains("pull request") || normalized.contains("pull requests") {
+            tokens.insert("pr")
+            tokens.insert("prs")
         }
         return tokens
     }

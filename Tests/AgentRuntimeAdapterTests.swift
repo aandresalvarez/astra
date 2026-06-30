@@ -2128,9 +2128,60 @@ struct AgentRuntimeAdapterTests {
             #expect(plan.commandPlannedFields["host_control_plane_tool_count"] == "1")
             #expect(plan.commandPlannedFields["host_control_plane_supported"] == "false")
             #expect(plan.commandPlannedFields["host_control_plane_launch_block_reason"] == "host_control_plane_unsupported_runtime")
-            #expect(plan.commandPlannedFields["host_control_plane_unsupported_detail"]?.contains("host-control GitHub MCP server") == true)
+            #expect(plan.commandPlannedFields["host_control_plane_unsupported_detail"]?.contains("host-control MCP server for github") == true)
             #expect(HostControlPlaneRuntimeLaunchGuard.launchBlock(for: plan)?.runtimeStopReason == "host_control_plane_unsupported_runtime")
         }
+    }
+
+    @Test("Host-control launch diagnostics name the required host tools")
+    @MainActor
+    func hostControlLaunchDiagnosticsNameRequiredHostTools() throws {
+        let sharedMetadata = HostControlPlaneRuntimeLaunchGuard.planMetadata(
+            runtime: .openCodeCLI,
+            requiredTools: ["gcloud", "bq"]
+        )
+        #expect(sharedMetadata["host_control_plane_unsupported_detail"]?.contains("gcloud, bq") == true)
+        #expect(sharedMetadata["host_control_plane_unsupported_detail"]?.contains("GitHub") == false)
+
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-copilot-docker-host-control-detail-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let copilotPath = try Self.writeFakeCopilotExecutable(in: root, supportsAdditionalMCPConfig: false)
+
+        let workspace = Workspace(name: "Docker Workspace", primaryPath: root.path)
+        let task = AgentTask(
+            title: "Inspect cloud",
+            goal: "Inspect cloud resources from Docker",
+            workspace: workspace,
+            model: "claude-sonnet-4.6",
+            runtime: .copilotCLI
+        )
+        task.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encode(WorkspaceExecutionEnvironment(
+            id: "image:workspace",
+            kind: .dockerImage,
+            displayName: "Workspace Image",
+            image: "astra/workspace:latest"
+        ))
+
+        let plan = AgentRuntimeAdapterRegistry
+            .adapter(for: .copilotCLI)
+            .makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext(
+                prompt: "inspect cloud",
+                task: task,
+                workspacePath: workspace.primaryPath,
+                executablePath: copilotPath,
+                providerHomeDirectory: root.appendingPathComponent("copilot-home", isDirectory: true).path,
+                permissionPolicy: .restricted,
+                executionPolicy: .default,
+                permissionManifest: nil,
+                timeoutSeconds: 30,
+                runID: UUID(uuidString: "94E22B8A-5084-47F0-9D3A-C05F5829500B")
+            ))
+
+        let detail = try #require(plan.commandPlannedFields["host_control_plane_unsupported_detail"])
+        #expect(detail.contains("github, gcloud, bq, ssh, jira"))
+        #expect(!detail.contains("host-control GitHub MCP server"))
     }
 
     @Test("CDP-only browser tasks inject required controlled engine into browser environment")

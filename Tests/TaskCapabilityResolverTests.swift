@@ -1492,6 +1492,31 @@ struct TaskCapabilityResolverTests {
         #expect(AgentRuntimeProcessRunner.hasActiveCLITools(task, contextText: followUpContext))
     }
 
+    @Test("Provider launch context activates GitHub package for terminal PR abbreviations")
+    func providerLaunchContextActivatesGitHubPackageForTerminalPRAbbreviations() throws {
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+        let (workspace, githubPackage) = try makeGitHubEnabledWorkspace(in: context, name: "github-pr-abbreviation-scope")
+
+        let task = AgentTask(
+            title: "Bake a cake",
+            goal: "Bake a chocolate sponge cake and write the recipe",
+            workspace: workspace
+        )
+        context.insert(task)
+        try context.save()
+
+        let terminalPluralContext = "Review PRs"
+        let scope = TaskCapabilityResolver(task: task)
+            .resolvedScope(.providerLaunch(contextText: terminalPluralContext))
+        #expect(scope.enabledPackageIDs.contains(githubPackage.id))
+        #expect(HostControlPlaneMCPProjection.enabledToolNames(
+            task: task,
+            environment: .host,
+            contextText: terminalPluralContext
+        ) == ["github"])
+    }
+
     @Test("A pruned-but-existing enabled capability is not a launch failure")
     func prunedEnabledCapabilityIsNotALaunchFailure() throws {
         let container = try makeTaskCapabilityResolverContainer()

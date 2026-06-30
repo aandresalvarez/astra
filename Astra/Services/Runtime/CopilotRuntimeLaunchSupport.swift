@@ -98,6 +98,7 @@ struct CopilotMCPLaunchProjection {
         let dockerWorkspaceExecutorSupported = !usesDockerWorkspaceExecutor
             || (capabilities.supportsAdditionalMCPConfig && configURL != nil)
         let requiresHostControlPlane = !hostControlEnvironment.isEmpty
+        let requiredHostControlTools = HostControlPlaneRuntimeLaunchGuard.requiredTools(from: hostControlEnvironment)
         let hostControlPlaneSupported = !requiresHostControlPlane
             || (capabilities.supportsAdditionalMCPConfig && configURL != nil)
         let unsupportedDetail = unsupportedDockerWorkspaceDetail(
@@ -107,6 +108,7 @@ struct CopilotMCPLaunchProjection {
         )
         let hostControlUnsupportedDetail = unsupportedHostControlPlaneDetail(
             requiresHostControlPlane: requiresHostControlPlane,
+            requiredTools: requiredHostControlTools,
             supportsAdditionalMCPConfig: capabilities.supportsAdditionalMCPConfig,
             configURL: configURL
         )
@@ -149,12 +151,13 @@ struct CopilotMCPLaunchProjection {
 
     private static func unsupportedHostControlPlaneDetail(
         requiresHostControlPlane: Bool,
+        requiredTools: [String],
         supportsAdditionalMCPConfig: Bool,
         configURL: URL?
     ) -> String {
         if !requiresHostControlPlane { return "" }
         if !supportsAdditionalMCPConfig {
-            return "GitHub Copilot CLI does not support --additional-mcp-config, so ASTRA cannot attach the host-control GitHub MCP server."
+            return "GitHub Copilot CLI does not support --additional-mcp-config, so ASTRA cannot attach the \(HostControlPlaneRuntimeLaunchGuard.serverDescription(requiredTools: requiredTools))."
         }
         if configURL == nil {
             return "ASTRA could not render the host-control MCP config for GitHub Copilot CLI."
@@ -167,6 +170,7 @@ enum HostControlPlaneRuntimeLaunchGuard {
     static let missingHostControlMCPReason = "host_control_plane_unsupported_runtime"
 
     static func planMetadata(runtime: AgentRuntimeID, requiredTools: [String]) -> [String: String] {
+        let requiredTools = normalizedUniqueTools(requiredTools)
         let requiresHostControlPlane = !requiredTools.isEmpty
         let supportsHostControlPlane = !requiresHostControlPlane
             || HostControlPlaneMCPProjection.supportsHostControlPlane(runtime: runtime)
@@ -175,11 +179,36 @@ enum HostControlPlaneRuntimeLaunchGuard {
             "host_control_plane_supported": String(supportsHostControlPlane),
             "host_control_plane_unsupported_detail": supportsHostControlPlane
                 ? ""
-                : "\(runtime.displayName) does not support provider MCP servers, so ASTRA cannot attach the host-control GitHub MCP server.",
+                : "\(runtime.displayName) does not support provider MCP servers, so ASTRA cannot attach the \(serverDescription(requiredTools: requiredTools)).",
             "host_control_plane_launch_block_reason": supportsHostControlPlane
                 ? "none"
                 : missingHostControlMCPReason
         ]
+    }
+
+    static func requiredTools(from environment: [String: String]) -> [String] {
+        normalizedUniqueTools(splitToolList(environment["ASTRA_HOST_CONTROL_ALLOWED_TOOLS"]))
+    }
+
+    static func serverDescription(requiredTools: [String]) -> String {
+        let requiredTools = normalizedUniqueTools(requiredTools)
+        guard !requiredTools.isEmpty else { return "host-control MCP server" }
+        return "host-control MCP server for \(requiredTools.joined(separator: ", "))"
+    }
+
+    private static func normalizedUniqueTools(_ tools: [String]) -> [String] {
+        var seen: Set<String> = []
+        return tools.compactMap { tool in
+            let normalized = tool.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard !normalized.isEmpty, seen.insert(normalized).inserted else { return nil }
+            return normalized
+        }
+    }
+
+    private static func splitToolList(_ value: String?) -> [String] {
+        value?
+            .split(separator: ",")
+            .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) } ?? []
     }
 
     static func launchBlock(for plan: AgentRuntimeProcessLaunchPlan) -> AgentProcessResult? {

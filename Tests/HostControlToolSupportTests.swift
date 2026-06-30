@@ -120,6 +120,12 @@ struct HostControlToolSupportTests {
         #expect(try resultText(allowed).contains("ok"))
         #expect(runner.invocations.last?.currentDirectory == "/tmp/astra-workspace")
 
+        let normalizedAllowed = try call(server, id: 4, tool: " GitHub ", arguments: [
+            "arguments": ["pr", "view", "456"]
+        ])
+        #expect(try resultText(normalizedAllowed).contains("ok"))
+        #expect(runner.invocations.last?.arguments == ["pr", "view", "456"])
+
         #expect(HostControlToolConfiguration.fromEnvironment([:]).allowedTools == HostControlToolConfiguration.knownToolNames)
         #expect(HostControlToolConfiguration.fromEnvironment(["ASTRA_HOST_CONTROL_ALLOWED_TOOLS": ""]).allowedTools.isEmpty)
     }
