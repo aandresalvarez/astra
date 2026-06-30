@@ -341,7 +341,15 @@ struct HostControlToolSupportTests {
         ])
         #expect(try resultText(sensitiveWordResourceReadResult).contains("gcloud:compute instances describe secret-rotation-checker --zone=us-central1-a"))
 
-        let impersonationReadResult = try call(server, id: 15, tool: "gcloud", arguments: [
+        let locationReadResult = try call(server, id: 15, tool: "gcloud", arguments: [
+            "arguments": [
+                "--location", "us-central1",
+                "functions", "list"
+            ]
+        ])
+        #expect(try resultText(locationReadResult).contains("gcloud:--location us-central1 functions list"))
+
+        let impersonationReadResult = try call(server, id: 16, tool: "gcloud", arguments: [
             "arguments": [
                 "compute", "instances", "list",
                 "--impersonate-service-account=reader@example.iam.gserviceaccount.com"
@@ -366,6 +374,7 @@ struct HostControlToolSupportTests {
         #expect(hostLog.contains("gcloud --trace-token task-token-for-log-correlation --filter labels.audit=tokenized-read compute instances list"))
         #expect(hostLog.contains("gcloud compute instances list --filter labels.purpose=secret-rotation-check --format=json"))
         #expect(hostLog.contains("gcloud compute instances describe secret-rotation-checker --zone=us-central1-a"))
+        #expect(hostLog.contains("gcloud --location us-central1 functions list"))
     }
 
     private func fakeExecutable(named name: String, root: URL, log: URL, stdout: String) throws -> URL {

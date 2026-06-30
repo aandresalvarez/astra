@@ -21,8 +21,8 @@ struct HostControlCloudCommandPolicy: Sendable {
         ],
         optionsWithValues: [
             "--account", "--billing-project", "--configuration", "--filter", "--flatten",
-            "--format", "--limit", "--page-size", "--project", "--project-id", "--region",
-            "--sort-by", "--trace-token", "--uri", "--verbosity", "--zone"
+            "--format", "--limit", "--location", "--page-size", "--project", "--project-id",
+            "--region", "--sort-by", "--trace-token", "--uri", "--verbosity", "--zone"
         ],
         readCommandGroups: [
             "access-approval", "active-directory", "ai", "alloydb", "artifacts", "asset",
