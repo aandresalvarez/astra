@@ -49,10 +49,11 @@ struct CapabilityDefinitionRepairServiceTests {
             approvedPackages: [package]
         )
 
-        #expect(library.installedVersion(of: "jira-workflow") == "2.0.5")
+        #expect(library.installedVersion(of: "jira-workflow") == "2.0.6")
         #expect(skill.allowedTools == package.skills[0].allowedTools)
-        #expect(skill.behaviorInstructions.contains("/rest/api/3/mypermissions"))
+        #expect(skill.behaviorInstructions.contains("operation status"))
         #expect(skill.behaviorInstructions.contains("operation search_jql"))
+        #expect(!skill.behaviorInstructions.contains("/rest/api/3/mypermissions"))
         #expect(!skill.behaviorInstructions.contains("/rest/api/3/search?jql="))
     }
 
@@ -90,8 +91,9 @@ struct CapabilityDefinitionRepairServiceTests {
             approvedPackages: [package]
         )
 
-        #expect(skill.behaviorInstructions.contains("/rest/api/3/mypermissions"))
-        #expect(skill.behaviorInstructions.contains("Only recommend generating a new API token"))
+        #expect(skill.behaviorInstructions.contains("operation status"))
+        #expect(skill.behaviorInstructions.contains("operation search_jql"))
+        #expect(!skill.behaviorInstructions.contains("/rest/api/3/mypermissions"))
     }
 
     @Test("Startup repair refreshes stale local package-created Jira skill")
@@ -129,8 +131,9 @@ struct CapabilityDefinitionRepairServiceTests {
             approvedPackages: [package]
         )
 
-        #expect(skill.behaviorInstructions.contains("/rest/api/3/mypermissions"))
+        #expect(skill.behaviorInstructions.contains("operation status"))
         #expect(skill.behaviorInstructions.contains("operation search_jql"))
+        #expect(!skill.behaviorInstructions.contains("/rest/api/3/mypermissions"))
         #expect(!skill.behaviorInstructions.contains("/rest/api/3/search?jql="))
     }
 

@@ -120,14 +120,17 @@ final class PluginCatalog {
             name: "Jira Workflow",
             icon: "list.bullet.clipboard",
             iconDescriptor: .brand("jira", fallbackSystemName: "list.bullet.clipboard"),
-            description: "Search and read Jira tickets",
+            description: "Docker host-control searches and reads Jira; non-Docker credential runs can still mutate tickets",
             author: "ASTRA",
             category: "Integrations",
             tags: ["jira", "atlassian", "tickets", "project-management"],
-            version: "2.0.5",
+            version: "2.0.6",
             setupGuide: """
             Connect your workspace to Jira. The agent uses the REST API \
-            to read ticket metadata from your Jira instance.
+            to read ticket metadata from your Jira instance. Docker host-control \
+            runs are typed and read-only; non-Docker runs can still receive \
+            Jira credentials alongside Bash, so governance reports ticket \
+            mutation risk until that path is enforced.
 
             What you can do:
             • Search tickets by project, sprint, status, or assignee
@@ -152,10 +155,9 @@ final class PluginCatalog {
 
                 AUTHENTICATION
                 Use Basic auth with the email, API token, and base URL env vars shown for the selected Jira connector in Available Connectors / ASTRA_CONNECTORS. The prompt may include a connector-specific runtime example; follow those projected env names instead of assuming bare legacy names.
-                First verify auth with /rest/api/3/mypermissions?permissions=BROWSE_PROJECTS. For configured projects, check /rest/api/3/mypermissions?projectKey=KEY&permissions=BROWSE_PROJECTS. If permissions authenticate but project checks fail, report project visibility or Browse Projects problems instead of saying the token is invalid.
-                Use /rest/api/3/myself only as a fallback identity check when permission probes are rejected. Do not treat /myself returning 401/403 as proof of an invalid token if a permission endpoint succeeds.
-                Do not call /rest/api/3/permissions to check access. That endpoint only lists permission metadata; it does not prove the current account has project access.
-                Only recommend generating a new API token when both permission and fallback auth probes return 401/403. If permissions authenticate but searches return zero projects or issues, first check the selected connector's configured projects, Browse Projects, and site/project membership.
+                First verify auth with operation status. It reports whether the selected connector has a base URL, email, and API token projected without revealing secret values.
+                For configured projects, use operation search_jql with a narrow project JQL and max_results 1. If status is ready but project checks fail or return no issues, report project visibility, Browse Projects, selected connector projects, or site membership problems instead of saying the token is invalid.
+                Do not call raw Jira permission or identity endpoints through the bridge. Only recommend generating a new API token when operation status reports missing or rejected credentials, or typed Jira operations return 401/403.
 
                 READ-ONLY OPERATIONS
                 • Status: operation status
