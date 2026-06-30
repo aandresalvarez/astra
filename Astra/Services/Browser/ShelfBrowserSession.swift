@@ -3501,7 +3501,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
 
     private func replaceText(find: String, replacement: String, selector: String?, all: Bool) async throws -> String {
         let resolvedSelector = ShelfBrowserCommandNormalization.normalized(selector)
-        if let resolvedSelector, let blocked = try await blockedReplacementTextEntryResult(find: find, selector: resolvedSelector, all: all) {
+        if let blocked = try await blockedReplacementTextEntryResult(find: find, selector: resolvedSelector ?? BrowserAutomationScripts.defaultEditableSelector, all: all) {
             return try Self.jsonString(blocked)
         }
         if isUsingControlledBrowser {
@@ -3557,7 +3557,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             )
             return result
         }
-        if let result = try await blockedFocusedTextEntryResult(
+        if BrowserKeypressSafety.requiresTextEntryPreflight(key: key, modifiers: modifiers), let result = try await blockedFocusedTextEntryResult(
             action: "keypress",
             logContext: BrowserTextEntryLogContext(
                 started: started,

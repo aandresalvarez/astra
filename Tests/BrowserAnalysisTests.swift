@@ -235,6 +235,36 @@ struct BrowserAnalysisTests {
         #expect(match.controlRef.source == .accessibility)
     }
 
+    @Test("DOM resolver preserves stable DOM names when visible labels change")
+    func domResolverPreservesStableDOMNamesWhenVisibleLabelsChange() throws {
+        let cached = BrowserAnalysisBuilder.build(
+            snapshot: Self.sampleSnapshot(controls: [
+                Self.control(selector: "input[name=email]", tag: "input", role: "textbox", label: "Email", name: "email")
+            ]),
+            backend: "embedded WebKit",
+            engine: "embedded"
+        )
+        let live = BrowserAnalysisBuilder.build(
+            snapshot: Self.sampleSnapshot(controls: [
+                Self.control(selector: "input[name=email]", tag: "input", role: "textbox", label: "Work email", name: "email")
+            ]),
+            backend: "embedded WebKit",
+            engine: "embedded"
+        )
+
+        let cachedControl = try #require(cached.controls.first)
+        let match = try #require(BrowserControlResolver.matchingLiveControl(
+            cachedControl: cachedControl,
+            cachedAnalysis: cached,
+            liveAnalysis: live
+        ))
+
+        #expect(match.strategy == "controlRef")
+        #expect(match.usedSelectorFallback == false)
+        #expect(match.control.label == "Work email")
+        #expect(match.controlRef.source == .dom)
+    }
+
     @Test("Control IDs stay stable across state-only changes")
     func stableIDsAcrossStateOnlyChanges() throws {
         let controls = [

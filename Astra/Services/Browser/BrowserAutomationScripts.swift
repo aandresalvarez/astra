@@ -2,6 +2,7 @@ import Foundation
 
 enum BrowserAutomationScripts {
     static let pageReadMessageHandlerName = "astraPageRead"
+    static let defaultEditableSelector = "input, textarea, [contenteditable=true]"
 
     static let debugInstrumentationScript = """
     (() => {

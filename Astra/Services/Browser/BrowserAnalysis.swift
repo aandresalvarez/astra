@@ -629,8 +629,8 @@ enum BrowserControlResolver {
         liveControl: BrowserControl,
         liveRef: BrowserControlRef
     ) -> Double {
-        let cachedName = normalized(cachedRef.control.label.isEmpty ? cachedRef.control.name : cachedRef.control.label)
-        let liveName = normalized(liveRef.control.label.isEmpty ? liveRef.control.name : liveRef.control.label)
+        let cachedName = normalized(BrowserControlTargetingPolicy.semanticName(for: cachedRef.control, source: cachedRef.source))
+        let liveName = normalized(BrowserControlTargetingPolicy.semanticName(for: liveRef.control, source: liveRef.source))
         let cachedRole = normalized(cachedRef.control.role)
         let liveRole = normalized(liveRef.control.role)
 

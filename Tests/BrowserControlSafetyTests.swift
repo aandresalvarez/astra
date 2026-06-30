@@ -301,6 +301,21 @@ struct BrowserControlSafetyTests {
         #expect(!source.contains(#"annotateBrowserLoopHint(json: json, action: "replaceText", target: resolvedSelector ?? "")"#))
     }
 
+    @Test("Selectorless replace inspects the same editable targets it can mutate")
+    func selectorlessReplacePreflightsDefaultEditableTargets() throws {
+        let repoRoot = URL(filePath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let sessionPath = repoRoot
+            .appendingPathComponent("Astra")
+            .appendingPathComponent("Services")
+            .appendingPathComponent("Browser")
+            .appendingPathComponent("ShelfBrowserSession.swift")
+            .path
+        let source = try String(contentsOfFile: sessionPath, encoding: .utf8)
+
+        #expect(source.contains("resolvedSelector ?? BrowserAutomationScripts.defaultEditableSelector"))
+        #expect(!source.contains("if let resolvedSelector, let blocked = try await blockedReplacementTextEntryResult"))
+    }
+
     @Test("Replacement target inspection refreshes controlled browser metadata")
     func replacementTargetInspectionRefreshesControlledBrowserMetadata() throws {
         let repoRoot = URL(filePath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
@@ -372,6 +387,22 @@ struct BrowserControlSafetyTests {
         )
 
         #expect(decision.allowed)
+    }
+
+    @Test("Navigation keypresses do not require sensitive text entry preflight")
+    func navigationKeypressesDoNotRequireSensitiveTextEntryPreflight() {
+        #expect(!BrowserKeypressSafety.requiresTextEntryPreflight(key: "Escape", modifiers: []))
+        #expect(!BrowserKeypressSafety.requiresTextEntryPreflight(key: "Tab", modifiers: []))
+        #expect(!BrowserKeypressSafety.requiresTextEntryPreflight(key: "ArrowLeft", modifiers: []))
+        #expect(!BrowserKeypressSafety.requiresTextEntryPreflight(key: "l", modifiers: ["command"]))
+    }
+
+    @Test("Text-producing keypresses require sensitive text entry preflight")
+    func textProducingKeypressesRequireSensitiveTextEntryPreflight() {
+        #expect(BrowserKeypressSafety.requiresTextEntryPreflight(key: "x", modifiers: []))
+        #expect(BrowserKeypressSafety.requiresTextEntryPreflight(key: "Space", modifiers: []))
+        #expect(BrowserKeypressSafety.requiresTextEntryPreflight(key: "Backspace", modifiers: []))
+        #expect(BrowserKeypressSafety.requiresTextEntryPreflight(key: "v", modifiers: ["command"]))
     }
 
     @Test("Google Docs full-document clipboard requires controlled when auto-promote is disabled")
