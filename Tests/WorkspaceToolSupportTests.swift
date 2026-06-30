@@ -1041,6 +1041,141 @@ struct WorkspaceToolSupportTests {
         #expect(!tail.text.contains("unsafe or unreadable"))
     }
 
+    @Test("Workspace managed job tail bounds bytes before returning capped lines")
+    func workspaceManagedJobTailBoundsBytesBeforeReturningCappedLines() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-workspace-job-tail-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let store = WorkspaceManagedJobStore(rootPath: root.path)
+        let job = try store.create(
+            command: "printf large-log",
+            timeoutSeconds: nil,
+            label: nil,
+            progressProbe: nil,
+            runtime: "docker"
+        )
+        let oversizedLinePrefix = "prefix-that-proves-the-whole-log-was-returned:"
+        let oversizedLastLine = oversizedLinePrefix + String(repeating: "x", count: 600_000)
+        try ("older output\n" + oversizedLastLine)
+            .write(to: URL(fileURLWithPath: job.stdoutLogPath), atomically: true, encoding: .utf8)
+
+        let tail = try store.tail(jobID: job.jobID, stream: "stdout", lines: 1)
+
+        #expect(!tail.text.contains(oversizedLinePrefix))
+        #expect(tail.text.utf8.count <= 64 * 1024)
+        #expect(tail.text.hasSuffix(String(repeating: "x", count: 64)))
+    }
+
+    @Test("Workspace managed job tail bounds decoded invalid UTF-8 expansion")
+    func workspaceManagedJobTailBoundsDecodedInvalidUTF8Expansion() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-workspace-job-tail-invalid-utf8-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let store = WorkspaceManagedJobStore(rootPath: root.path)
+        let job = try store.create(
+            command: "printf invalid-log-bytes",
+            timeoutSeconds: nil,
+            label: nil,
+            progressProbe: nil,
+            runtime: "docker"
+        )
+        var log = Data("older output\n".utf8)
+        log.append(Data(repeating: 0xFF, count: 600_000))
+        try log.write(to: URL(fileURLWithPath: job.stdoutLogPath), options: .atomic)
+
+        let tail = try store.tail(jobID: job.jobID, stream: "stdout", lines: 1)
+
+        #expect(!tail.text.isEmpty)
+        #expect(tail.text.utf8.count <= 64 * 1024)
+        #expect(!tail.text.contains("older output"))
+    }
+
+    @Test("Workspace managed job tail keeps bounded suffix when final long line ends with newline")
+    func workspaceManagedJobTailKeepsBoundedSuffixForTerminatedFinalLongLine() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-workspace-job-tail-long-final-line-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let store = WorkspaceManagedJobStore(rootPath: root.path)
+        let job = try store.create(
+            command: "printf long-final-line",
+            timeoutSeconds: nil,
+            label: nil,
+            progressProbe: nil,
+            runtime: "docker"
+        )
+        try ("older output\n" + String(repeating: "z", count: 600_000) + "\n")
+            .write(to: URL(fileURLWithPath: job.stdoutLogPath), atomically: true, encoding: .utf8)
+
+        let tail = try store.tail(jobID: job.jobID, stream: "stdout", lines: 1)
+
+        #expect(!tail.text.isEmpty)
+        #expect(tail.text.utf8.count <= 64 * 1024)
+        #expect(!tail.text.contains("older output"))
+        #expect(tail.text.hasSuffix(String(repeating: "z", count: 64)))
+    }
+
+    @Test("Workspace managed job tail keeps complete first line when byte window starts on a line boundary")
+    func workspaceManagedJobTailKeepsBoundaryAlignedFirstLine() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-workspace-job-tail-boundary-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let store = WorkspaceManagedJobStore(rootPath: root.path)
+        let job = try store.create(
+            command: "printf boundary-log",
+            timeoutSeconds: nil,
+            label: nil,
+            progressProbe: nil,
+            runtime: "docker"
+        )
+        let byteLimit = 64 * 1024
+        let secondLine = "second recent"
+        let firstLinePrefix = "first recent:"
+        let firstLine = firstLinePrefix
+            + String(repeating: "a", count: byteLimit - firstLinePrefix.utf8.count - 1 - secondLine.utf8.count)
+        let recentWindow = firstLine + "\n" + secondLine
+        #expect(recentWindow.utf8.count == byteLimit)
+        try ("older output\n" + recentWindow)
+            .write(to: URL(fileURLWithPath: job.stdoutLogPath), atomically: true, encoding: .utf8)
+
+        let tail = try store.tail(jobID: job.jobID, stream: "stdout", lines: 2)
+
+        #expect(tail.text.hasPrefix(firstLinePrefix))
+        #expect(tail.text.hasSuffix(secondLine))
+    }
+
+    @Test("Workspace managed job tail preserves content when previous byte is unavailable")
+    func workspaceManagedJobTailPreservesContentWhenPreviousByteIsUnavailable() {
+        #expect(!WorkspaceManagedJobLogTailPolicy.startsInsideLine(previousByte: nil))
+        #expect(!WorkspaceManagedJobLogTailPolicy.startsInsideLine(previousByte: UInt8(ascii: "\n")))
+        #expect(WorkspaceManagedJobLogTailPolicy.startsInsideLine(previousByte: UInt8(ascii: "a")))
+    }
+
+    @Test("Workspace managed job tail handles newline-dense suffixes without dropping recent content")
+    func workspaceManagedJobTailHandlesNewlineDenseSuffixes() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-workspace-job-tail-newlines-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let store = WorkspaceManagedJobStore(rootPath: root.path)
+        let job = try store.create(
+            command: "printf newline-log",
+            timeoutSeconds: nil,
+            label: nil,
+            progressProbe: nil,
+            runtime: "docker"
+        )
+        try (String(repeating: "\n", count: 200_000) + "final line")
+            .write(to: URL(fileURLWithPath: job.stdoutLogPath), atomically: true, encoding: .utf8)
+
+        let tail = try store.tail(jobID: job.jobID, stream: "stdout", lines: 2)
+
+        #expect(tail.text == "\nfinal line")
+    }
+
     @Test("Docker workspace job manager maps host workspace path before persisting command")
     func dockerWorkspaceJobManagerMapsHostWorkspacePathBeforePersistingCommand() throws {
         let root = FileManager.default.temporaryDirectory

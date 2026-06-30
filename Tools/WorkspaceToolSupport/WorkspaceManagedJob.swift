@@ -196,22 +196,46 @@ public final class WorkspaceManagedJobStore {
         let directory = jobDirectory(jobID: record.jobID)
         let layout = WorkspaceManagedJobFileLayout(directory: directory)
         let logURL = normalizedStream == "stderr" ? layout.stderr : layout.stdout
-        let text = trustedLogText(at: logURL, inside: directory)
+        let text = trustedLogTailText(at: logURL, inside: directory, lines: lines)
         return WorkspaceManagedJobTail(
             jobID: record.jobID,
             stream: normalizedStream == "stderr" ? "stderr" : "stdout",
-            text: lastLines(text, count: lines)
+            text: text
         )
     }
 
-    private func trustedLogText(at url: URL, inside directory: URL) -> String {
-        guard let data = trustedFileData(at: url, inside: directory) else {
-            return ""
-        }
-        return String(data: data, encoding: .utf8) ?? ""
+    private func trustedLogTailText(at url: URL, inside directory: URL, lines: Int) -> String {
+        withTrustedFileDescriptor(at: url, inside: directory) { fd in
+            WorkspaceManagedJobLogTailReader.tail(fileDescriptor: fd, lines: lines)
+        } ?? ""
     }
 
     private func trustedFileData(at url: URL, inside directory: URL) -> Data? {
+        withTrustedFileDescriptor(at: url, inside: directory) { fd in
+            var data = Data()
+            var buffer = [UInt8](repeating: 0, count: 64 * 1024)
+            while true {
+                let bytesRead = read(fd, &buffer, buffer.count)
+                if bytesRead > 0 {
+                    data.append(buffer, count: bytesRead)
+                } else if bytesRead == 0 {
+                    break
+                } else if errno == EINTR {
+                    continue
+                } else {
+                    return nil
+                }
+            }
+
+            return data
+        }
+    }
+
+    private func withTrustedFileDescriptor<T>(
+        at url: URL,
+        inside directory: URL,
+        _ body: (Int32) -> T?
+    ) -> T? {
         guard let expectedDirectoryStat = trustedDirectoryStat(at: directory),
               let expectedFileStat = trustedRegularFileStat(at: url, inside: directory) else {
             return nil
@@ -251,22 +275,7 @@ public final class WorkspaceManagedJobStore {
             return nil
         }
 
-        var data = Data()
-        var buffer = [UInt8](repeating: 0, count: 64 * 1024)
-        while true {
-            let bytesRead = read(fd, &buffer, buffer.count)
-            if bytesRead > 0 {
-                data.append(buffer, count: bytesRead)
-            } else if bytesRead == 0 {
-                break
-            } else if errno == EINTR {
-                continue
-            } else {
-                return nil
-            }
-        }
-
-        return data
+        return body(fd)
     }
 
     private func trustedFileModificationDate(at url: URL, inside directory: URL) -> Date? {
@@ -528,12 +537,6 @@ public final class WorkspaceManagedJobStore {
         return filtered.isEmpty ? "unknown-job" : String(filtered.prefix(80))
     }
 
-    private func lastLines(_ text: String, count: Int) -> String {
-        let limit = max(1, min(count, 10_000))
-        let lines = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
-        return lines.suffix(limit).joined(separator: "\n")
-    }
-
     private struct RuntimeHeartbeat: Codable {
         var status: WorkspaceManagedJobStatus
         var timestamp: Date
@@ -601,6 +604,141 @@ enum WorkspaceManagedJobPathContainment {
         return String(candidatePath.dropFirst(dropCount))
             .split(separator: "/")
             .map(String.init)
+    }
+}
+
+private enum WorkspaceManagedJobLogTailReader {
+    private static let maximumLineCount = 10_000
+    private static let minimumReadBytes = 64 * 1024
+    private static let bytesPerRequestedLine = 1024
+    private static let maximumReadBytes = 4 * 1024 * 1024
+
+    static func tail(fileDescriptor: Int32, lines: Int) -> String {
+        let lineLimit = max(1, min(lines, maximumLineCount))
+        let byteLimit = max(
+            minimumReadBytes,
+            min(maximumReadBytes, lineLimit * bytesPerRequestedLine)
+        )
+        guard let suffix = readSuffix(fileDescriptor: fileDescriptor, byteLimit: byteLimit) else {
+            return ""
+        }
+        let tailData = lastLines(
+            dropPartialLeadingLineIfNeeded(suffix.data, startsInsideLine: suffix.startsInsideLine),
+            count: lineLimit
+        )
+        return decodeBounded(tailData, byteLimit: byteLimit)
+    }
+
+    private static func readSuffix(fileDescriptor fd: Int32, byteLimit: Int) -> LogSuffix? {
+        let fileSize = lseek(fd, 0, SEEK_END)
+        guard fileSize >= 0 else {
+            return nil
+        }
+
+        let bytesToRead = min(Int64(byteLimit), Int64(fileSize))
+        let startOffset = Int64(fileSize) - bytesToRead
+        let startsInsideLine: Bool
+        if startOffset > 0 {
+            guard lseek(fd, off_t(startOffset - 1), SEEK_SET) >= 0 else {
+                return nil
+            }
+            var byte = [UInt8](repeating: 0, count: 1)
+            let previousByte = read(fd, &byte, 1) == 1 ? byte[0] : nil
+            startsInsideLine = WorkspaceManagedJobLogTailPolicy.startsInsideLine(previousByte: previousByte)
+        } else {
+            startsInsideLine = false
+        }
+
+        guard lseek(fd, off_t(startOffset), SEEK_SET) >= 0 else {
+            return nil
+        }
+
+        var data = Data()
+        var remaining = Int(bytesToRead)
+        var buffer = [UInt8](repeating: 0, count: min(64 * 1024, max(1, remaining)))
+        while remaining > 0 {
+            let bytesRead = read(fd, &buffer, min(buffer.count, remaining))
+            if bytesRead > 0 {
+                data.append(buffer, count: bytesRead)
+                remaining -= bytesRead
+            } else if bytesRead == 0 {
+                break
+            } else if errno == EINTR {
+                continue
+            } else {
+                return nil
+            }
+        }
+
+        return LogSuffix(data: data, startsInsideLine: startsInsideLine)
+    }
+
+    private static func dropPartialLeadingLineIfNeeded(_ data: Data, startsInsideLine: Bool) -> Data {
+        guard startsInsideLine, let newline = data.firstIndex(of: UInt8(ascii: "\n")) else {
+            return data
+        }
+        let completeLineStart = data.index(after: newline)
+        guard completeLineStart < data.endIndex else {
+            return data
+        }
+        return Data(data[completeLineStart...])
+    }
+
+    private static func lastLines(_ data: Data, count: Int) -> Data {
+        var end = data.endIndex
+        if end > data.startIndex, data[data.index(before: end)] == UInt8(ascii: "\n") {
+            end = data.index(before: end)
+        }
+        var remainingNewlines = count
+        var cursor = end
+        while cursor > data.startIndex {
+            let previous = data.index(before: cursor)
+            if data[previous] == UInt8(ascii: "\n") {
+                remainingNewlines -= 1
+                if remainingNewlines == 0 {
+                    return Data(data[data.index(after: previous)..<end])
+                }
+            }
+            cursor = previous
+        }
+        return Data(data[..<end])
+    }
+
+    private static func decodeBounded(_ data: Data, byteLimit: Int) -> String {
+        let text = String(decoding: data, as: UTF8.self)
+        guard text.utf8.count > byteLimit else {
+            return text
+        }
+        return suffixFittingUTF8Bytes(text, byteLimit: byteLimit)
+    }
+
+    private static func suffixFittingUTF8Bytes(_ text: String, byteLimit: Int) -> String {
+        guard byteLimit > 0 else {
+            return ""
+        }
+        let utf8 = text.utf8
+        var start = utf8.index(utf8.endIndex, offsetBy: -byteLimit)
+        while start < utf8.endIndex {
+            if let stringStart = String.Index(start, within: text) {
+                return String(text[stringStart...])
+            }
+            utf8.formIndex(after: &start)
+        }
+        return ""
+    }
+
+    private struct LogSuffix {
+        var data: Data
+        var startsInsideLine: Bool
+    }
+}
+
+enum WorkspaceManagedJobLogTailPolicy {
+    static func startsInsideLine(previousByte: UInt8?) -> Bool {
+        guard let previousByte else {
+            return false
+        }
+        return previousByte != UInt8(ascii: "\n")
     }
 }
 
