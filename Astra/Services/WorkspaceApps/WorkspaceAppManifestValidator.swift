@@ -51,7 +51,8 @@ enum WorkspaceAppManifestValidator {
             issues: &issues
         )
         let storageTables = validateStorage(manifest.storage, issues: &issues)
-        let sourceIDs = validateSources(manifest.sources, requirementIDs: requirementIDs, issues: &issues)
+        let requirementsByID = Dictionary(manifest.requirements.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let sourceIDs = validateSources(manifest.sources, requirementsByID: requirementsByID, issues: &issues)
         let actionIDs = validateActions(
             manifest.actions,
             requirementIDs: requirementIDs,
@@ -540,7 +541,7 @@ enum WorkspaceAppManifestValidator {
 
     private static func validateSources(
         _ sources: [WorkspaceAppSource],
-        requirementIDs: Set<String>,
+        requirementsByID: [String: WorkspaceAppRequirement],
         issues: inout [WorkspaceAppManifestValidationReport.Issue]
     ) -> Set<String> {
         var seen = Set<String>()
@@ -553,12 +554,36 @@ enum WorkspaceAppManifestValidator {
                 seen: &seen,
                 issues: &issues
             )
-            if let requirementRef = source.requirementRef,
-               !requirementIDs.contains(requirementRef) {
-                issues.append(blocker("\(path)/requirementRef", "Source references unknown requirement '\(requirementRef)'."))
+            if let requirementRef = source.requirementRef {
+                guard let requirement = requirementsByID[requirementRef] else {
+                    issues.append(blocker("\(path)/requirementRef", "Source references unknown requirement '\(requirementRef)'."))
+                    continue
+                }
+                if requirement.contract == "tabularQuery.read",
+                   isBigQueryRequirement(requirement) {
+                    if source.query?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
+                        issues.append(blocker(
+                            "\(path)/query",
+                            "BigQuery capability.read source '\(source.id)' must not embed SQL in query. Use tableRef so ASTRA owns the bounded native read."
+                        ))
+                    }
+                    if source.tableRef?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false {
+                        issues.append(blocker(
+                            "\(path)/tableRef",
+                            "BigQuery capability.read source '\(source.id)' must declare a structured tableRef before it can be published."
+                        ))
+                    }
+                }
             }
         }
         return seen
+    }
+
+    private static func isBigQueryRequirement(_ requirement: WorkspaceAppRequirement) -> Bool {
+        let providers = [requirement.providerHint, requirement.providerRequired]
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+            .filter { !$0.isEmpty }
+        return providers.isEmpty || providers.contains("bigquery")
     }
 
     private static func validateViews(
