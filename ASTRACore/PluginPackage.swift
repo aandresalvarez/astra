@@ -297,7 +297,7 @@ public struct CapabilityIconDescriptor: Codable, Sendable, Equatable {
     }
 }
 
-public struct PluginPackage: Codable, Identifiable {
+public struct PluginPackage: Codable, Identifiable, Sendable {
     public var formatVersion: Int
     public var id: String
     public var name: String
@@ -495,7 +495,7 @@ public struct PluginSetupRequirement: Codable, Equatable, Sendable, Identifiable
     }
 }
 
-public struct PluginSkill: Codable {
+public struct PluginSkill: Codable, Sendable {
     public var name: String
     public var icon: String
     public var description: String
@@ -521,7 +521,7 @@ public struct PluginSkill: Codable {
     }
 }
 
-public struct PluginConnector: Codable {
+public struct PluginConnector: Codable, Sendable {
     public var name: String
     public var serviceType: String
     public var icon: String
@@ -532,7 +532,7 @@ public struct PluginConnector: Codable {
     public var configHints: [ConfigHint]
     public var notes: String
 
-    public struct CredentialHint: Codable {
+    public struct CredentialHint: Codable, Sendable {
         public var key: String
         public var hint: String
 
@@ -542,7 +542,7 @@ public struct PluginConnector: Codable {
         }
     }
 
-    public struct ConfigHint: Codable {
+    public struct ConfigHint: Codable, Sendable {
         public var key: String
         public var hint: String
         public var isList: Bool
@@ -569,7 +569,7 @@ public struct PluginConnector: Codable {
     }
 }
 
-public struct PluginLocalTool: Codable {
+public struct PluginLocalTool: Codable, Sendable {
     public var name: String
     public var description: String
     public var icon: String
@@ -715,7 +715,7 @@ public struct PluginMCPServer: Codable, Equatable, Sendable, Identifiable {
     }
 }
 
-public struct PluginTemplate: Codable {
+public struct PluginTemplate: Codable, Sendable {
     public var name: String
     public var icon: String
     public var description: String

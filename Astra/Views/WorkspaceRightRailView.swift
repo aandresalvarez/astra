@@ -2306,7 +2306,7 @@ private struct PendingRailDeletion: Identifiable {
     let perform: () -> Void
 }
 
-private struct ApprovedCapabilitiesSnapshot: @unchecked Sendable {
+private struct ApprovedCapabilitiesSnapshot: Sendable {
     var packages: [PluginPackage]
     var records: [CapabilityApprovalRecord]
     var packPolicy: PackResolvedPolicy

@@ -38,6 +38,7 @@ struct TaskCapabilityResolver {
     }
 
     var resolver: SkillResolver {
+        let shelfAvailabilityPolicy = WorkspaceShelfRuntimePolicy.resolvedShelfAvailabilityPolicy(for: task.workspace)
         let standaloneTools = allLocalTools.filter { $0.skill == nil }
         let standaloneSnapshots = standaloneTools.map(LocalToolSnapshotConfig.init(localTool:))
         let liveConnectors = allConnectors
@@ -48,7 +49,7 @@ struct TaskCapabilityResolver {
                 .filter { $0.toolType != "mcp" && !$0.command.isEmpty }
                 .map(\.command)
         )
-        if Self.shouldExposeBrowserBridge(for: task) {
+        if Self.shouldExposeBrowserBridge(for: task, shelfAvailabilityPolicy: shelfAvailabilityPolicy) {
             liveCLICommands.insert("astra-browser")
         }
 
@@ -321,15 +322,24 @@ struct TaskCapabilityResolver {
     }
 
     private func makePromptScope(contextText: String, forcePrune: Bool) -> TaskCapabilityPromptScope {
+        let shelfAvailabilityPolicy = WorkspaceShelfRuntimePolicy.resolvedShelfAvailabilityPolicy(for: task.workspace)
         let connectors = allConnectors
         var tools = allLocalTools
-        if Self.shouldExposeBrowserBridge(for: task, contextText: contextText),
+        if Self.shouldExposeBrowserBridge(
+            for: task,
+            contextText: contextText,
+            shelfAvailabilityPolicy: shelfAvailabilityPolicy
+        ),
            !tools.contains(where: { $0.command == "astra-browser" }) {
             tools.append(Self.browserBridgeTool())
         }
         let skills = allBehaviorSkills(connectors: connectors)
 
-        let shouldPruneForRuntimeScope = Self.shouldPruneCapabilitiesForTask(task: task, contextText: contextText)
+        let shouldPruneForRuntimeScope = Self.shouldPruneCapabilitiesForTask(
+            task: task,
+            contextText: contextText,
+            shelfAvailabilityPolicy: shelfAvailabilityPolicy
+        )
             || Self.hasRuntimeScopedCapabilities(skills: skills, connectors: connectors, localTools: tools)
 
         guard forcePrune || shouldPruneForRuntimeScope else {
@@ -395,9 +405,10 @@ struct TaskCapabilityResolver {
     func resolvedScope(_ scope: TaskCapabilityResolutionScope) -> TaskCapabilityPromptScope {
         switch scope {
         case .fullInventory:
+            let shelfAvailabilityPolicy = WorkspaceShelfRuntimePolicy.resolvedShelfAvailabilityPolicy(for: task.workspace)
             let connectors = allConnectors
             var tools = allLocalTools
-            if Self.shouldExposeBrowserBridge(for: task, contextText: ""),
+            if Self.shouldExposeBrowserBridge(for: task, contextText: "", shelfAvailabilityPolicy: shelfAvailabilityPolicy),
                !tools.contains(where: { $0.command == "astra-browser" }) {
                 tools.append(Self.browserBridgeTool())
             }
@@ -525,10 +536,18 @@ struct TaskCapabilityResolver {
         )
     }
 
-    private static func shouldPruneCapabilitiesForTask(task: AgentTask, contextText: String) -> Bool {
+    private static func shouldPruneCapabilitiesForTask(
+        task: AgentTask,
+        contextText: String,
+        shelfAvailabilityPolicy: ShelfAvailabilityPolicy? = nil
+    ) -> Bool {
         let text = searchableTaskText(task: task, contextText: contextText)
         guard !text.isEmpty else { return false }
-        if shouldExposeBrowserBridge(for: task, contextText: contextText),
+        if shouldExposeBrowserBridge(
+            for: task,
+            contextText: contextText,
+            shelfAvailabilityPolicy: shelfAvailabilityPolicy
+        ),
            browserIntentTerms.contains(where: { text.contains($0) }) {
             return true
         }
@@ -561,8 +580,12 @@ struct TaskCapabilityResolver {
         return hasAction && hasTarget
     }
 
-    static func shouldExposeBrowserBridge(for task: AgentTask, contextText: String = "") -> Bool {
-        guard canPresentBrowserShelf(for: task) else { return false }
+    static func shouldExposeBrowserBridge(
+        for task: AgentTask,
+        contextText: String = "",
+        shelfAvailabilityPolicy: ShelfAvailabilityPolicy? = nil
+    ) -> Bool {
+        guard canPresentBrowserShelf(for: task, shelfAvailabilityPolicy: shelfAvailabilityPolicy) else { return false }
         let state = ShelfBrowserBridgeRegistry.shared.promptState(for: task.id)
         guard state.isExposed else { return false }
         if state.isPresented || state.hasCurrentURL {
@@ -572,8 +595,14 @@ struct TaskCapabilityResolver {
         return explicitBrowserControlTerms.contains { text.contains($0) }
     }
 
-    private static func canPresentBrowserShelf(for task: AgentTask) -> Bool {
-        WorkspaceShelfRuntimePolicy.canPresentBrowserShelf(for: task.workspace)
+    private static func canPresentBrowserShelf(
+        for task: AgentTask,
+        shelfAvailabilityPolicy: ShelfAvailabilityPolicy? = nil
+    ) -> Bool {
+        WorkspaceShelfRuntimePolicy.canPresentBrowserShelf(
+            for: task.workspace,
+            shelfAvailabilityPolicy: shelfAvailabilityPolicy
+        )
     }
 
     private static func browserBridgeTool() -> LocalTool {

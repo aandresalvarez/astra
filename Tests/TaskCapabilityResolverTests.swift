@@ -2189,6 +2189,42 @@ struct TaskCapabilityResolverTests {
         #expect(AgentRuntimeProcessRunner.scopedEnvironmentVariables(for: task, contextText: contextText)["ASTRA_BROWSER_URL"] == nil)
     }
 
+    @Test("Supplied shelf policy controls runtime browser bridge exposure")
+    func suppliedShelfPolicyControlsRuntimeBrowserBridgeExposure() throws {
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+
+        let workspace = Workspace(name: "Browser Policy Workspace", primaryPath: "/tmp/browser-policy")
+        context.insert(workspace)
+        let task = AgentTask(
+            title: "Inspect current browser page",
+            goal: "Use the ASTRA browser to inspect the current page.",
+            workspace: workspace
+        )
+        context.insert(task)
+        try context.save()
+
+        ShelfBrowserBridgeRegistry.shared.update(
+            endpoint: "http://127.0.0.1:49152",
+            currentURL: "https://example.com/dashboard",
+            currentTitle: "Dashboard",
+            taskID: task.id,
+            isPresented: true,
+            isEnabled: true
+        )
+        defer { ShelfBrowserBridgeRegistry.shared.reset() }
+
+        let contextText = "Use the ASTRA browser to inspect the current page."
+        let disabledBrowserPolicy = ShelfAvailabilityPolicy(disabledShelfIDs: [.browser])
+
+        #expect(TaskCapabilityResolver.shouldExposeBrowserBridge(for: task, contextText: contextText))
+        #expect(!TaskCapabilityResolver.shouldExposeBrowserBridge(
+            for: task,
+            contextText: contextText,
+            shelfAvailabilityPolicy: disabledBrowserPolicy
+        ))
+    }
+
     @Test("Browser adapters require runnable catalog policy")
     func browserAdaptersRequireRunnableCatalogPolicy() throws {
         let workspace = Workspace(name: "Draft Browser Workspace", primaryPath: "/tmp/draft-browser-workspace")
