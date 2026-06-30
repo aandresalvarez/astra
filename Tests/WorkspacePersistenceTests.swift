@@ -836,6 +836,84 @@ struct WorkspacePersistenceTests {
         #expect(replacedSchedule.isEnabled == true)
     }
 
+    @Test("configured folder replace preserves trusted local enabled schedules")
+    @MainActor
+    func configuredFolderReplacePreservesTrustedLocalEnabledSchedules() throws {
+        let container = try makeWorkspacePersistenceContainer()
+        let context = container.mainContext
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra_configured_trusted_replace_\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+
+        let workspace = Workspace(name: "Configured Trusted Replace", primaryPath: folder.path)
+        context.insert(workspace)
+        let schedule = TaskSchedule(name: "Enabled Config Routine", goal: "Keep running", workspace: workspace)
+        schedule.isEnabled = true
+        context.insert(schedule)
+        try context.save()
+
+        let configURL = URL(fileURLWithPath: WorkspaceFileLayout.workspaceConfigFile(for: folder.path))
+        try WorkspaceConfigManager.exportToFile(
+            workspace: workspace,
+            modelContext: context,
+            url: configURL
+        )
+
+        let coordinator = TaskLifecycleCoordinator(modelContext: context, taskQueue: TaskQueue())
+        let replaced = try #require(coordinator.importFromConfig(
+            at: configURL,
+            existingWorkspaces: [workspace],
+            askDuplicateAction: { _, _ in .replace }
+        ))
+        let replacedSchedule = try #require(replaced.schedules.first)
+
+        #expect(replaced.primaryPath == folder.standardizedFileURL.path)
+        #expect(replacedSchedule.isEnabled == true)
+    }
+
+    @Test("external config replace still quarantines enabled schedules")
+    @MainActor
+    func externalConfigReplaceStillQuarantinesEnabledSchedules() throws {
+        let container = try makeWorkspacePersistenceContainer()
+        let context = container.mainContext
+        let localFolder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra_local_replace_\(UUID().uuidString)", isDirectory: true)
+        let externalFolder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra_external_replace_\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: localFolder, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: externalFolder, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: localFolder)
+            try? FileManager.default.removeItem(at: externalFolder)
+        }
+
+        let workspace = Workspace(name: "External Replace", primaryPath: localFolder.path)
+        context.insert(workspace)
+        let schedule = TaskSchedule(name: "Imported External Routine", goal: "Do not auto-arm", workspace: workspace)
+        schedule.isEnabled = true
+        context.insert(schedule)
+        try context.save()
+
+        let configURL = externalFolder.appendingPathComponent(WorkspaceFileLayout.workspaceConfigFileName)
+        try WorkspaceConfigManager.exportToFile(
+            workspace: workspace,
+            modelContext: context,
+            url: configURL
+        )
+
+        let coordinator = TaskLifecycleCoordinator(modelContext: context, taskQueue: TaskQueue())
+        let replaced = try #require(coordinator.importFromConfig(
+            at: configURL,
+            existingWorkspaces: [workspace],
+            askDuplicateAction: { _, _ in .replace }
+        ))
+        let replacedSchedule = try #require(replaced.schedules.first)
+
+        #expect(replaced.primaryPath == externalFolder.standardizedFileURL.path)
+        #expect(replacedSchedule.isEnabled == false)
+    }
+
     @Test("schedule editor saves preserve existing enabled state")
     func scheduleEditorSavesPreserveExistingEnabledState() {
         #expect(ScheduleEditorPersistencePolicy.enabledStateAfterSave(existingIsEnabled: false) == false)

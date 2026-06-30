@@ -686,8 +686,13 @@ final class TaskLifecycleCoordinator {
                             config.tasks = freshExport.tasks
                         }
                     }
+                    let scheduleTrustPolicy = scheduleTrustPolicyForConfigReplace(existing: existing, configURL: url)
                     modelContext.delete(existing)
-                    return WorkspaceConfigManager.importWorkspace(from: config, modelContext: modelContext)
+                    return WorkspaceConfigManager.importWorkspace(
+                        from: config,
+                        modelContext: modelContext,
+                        scheduleTrustPolicy: scheduleTrustPolicy
+                    )
                 case .duplicate:
                     var dupConfig = config
                     dupConfig.name = config.name + " (Imported)"
@@ -707,6 +712,15 @@ final class TaskLifecycleCoordinator {
             ], level: .error)
             return nil
         }
+    }
+
+    private func scheduleTrustPolicyForConfigReplace(
+        existing: Workspace,
+        configURL: URL
+    ) -> WorkspaceConfigManager.ScheduleImportTrustPolicy {
+        let configFolderPath = configURL.deletingLastPathComponent().standardizedFileURL.path
+        let existingPath = URL(fileURLWithPath: existing.primaryPath).standardizedFileURL.path
+        return configFolderPath == existingPath ? .preserveEnabledState : .quarantineEnabledSchedules
     }
 
     func createWorkspaceFromFolder(_ url: URL, existingWorkspaces: [Workspace],
