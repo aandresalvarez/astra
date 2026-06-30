@@ -63,10 +63,25 @@ struct HostControlToolSupportTests {
         ])
         #expect(try resultText(gcloudResult).contains("gcloud:compute instances list --format=json"))
 
-        let bqResult = try call(server, id: 4, tool: "bq", arguments: [
-            "arguments": ["ls", "project:dataset"]
+        let bqHelpResult = try call(server, id: 7, tool: "bq", arguments: [
+            "arguments": ["--help"]
         ])
-        #expect(try resultText(bqResult).contains("bq:ls project:dataset"))
+        #expect(try resultText(bqHelpResult).contains("bq:--help"))
+
+        let bqShortHelpResult = try call(server, id: 8, tool: "bq", arguments: [
+            "arguments": ["-h"]
+        ])
+        #expect(try resultText(bqShortHelpResult).contains("bq:-h"))
+
+        let bqVersionResult = try call(server, id: 9, tool: "bq", arguments: [
+            "arguments": ["version"]
+        ])
+        #expect(try resultText(bqVersionResult).contains("bq:version"))
+
+        let bqLongVersionResult = try call(server, id: 10, tool: "bq", arguments: [
+            "arguments": ["--version"]
+        ])
+        #expect(try resultText(bqLongVersionResult).contains("bq:--version"))
 
         let sshResult = try call(server, id: 5, tool: "ssh", arguments: [
             "alias": "deid-jsn-workbench",
@@ -83,7 +98,10 @@ struct HostControlToolSupportTests {
         let hostLog = try String(contentsOf: log, encoding: .utf8)
         #expect(hostLog.contains("gh pr view 123 --comments"))
         #expect(hostLog.contains("gcloud compute instances list --format=json"))
-        #expect(hostLog.contains("bq ls project:dataset"))
+        #expect(hostLog.contains("bq --help"))
+        #expect(hostLog.contains("bq -h"))
+        #expect(hostLog.contains("bq version"))
+        #expect(hostLog.contains("bq --version"))
         #expect(hostLog.contains("ssh deid-jsn-workbench hostname && uptime"))
 
         let diagnosticLog = diagnostics.appendingPathComponent("host_control_tool_activity.jsonl", isDirectory: false)
@@ -91,6 +109,92 @@ struct HostControlToolSupportTests {
         #expect(diagnosticsText.contains(#""toolName":"github""#))
         #expect(diagnosticsText.contains(#""toolName":"jira""#))
         #expect(!diagnosticsText.contains("super-secret-token"))
+    }
+
+    @Test("Host control bq blocks resource access and mutation commands before running host executable")
+    func hostControlBQBlocksResourceAccessAndMutationCommandsBeforeRunningHostExecutable() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-host-control-bq-policy-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let log = root.appendingPathComponent("host.log", isDirectory: false)
+        let bq = try fakeExecutable(named: "bq", root: root, log: log, stdout: "bq:$*")
+        let server = HostControlMCPServer(configuration: HostControlToolConfiguration(bigQueryExecutable: bq.path))
+
+        let blockedArguments = [
+            ["ls", "project:dataset"],
+            ["--format=json", "ls", "--project_id", "project"],
+            ["show", "project:dataset.table"],
+            ["--format=prettyjson", "show", "--schema", "project:dataset.table"],
+            ["query", "SELECT * FROM project.dataset.table"],
+            ["--help", "query", "SELECT * FROM project.dataset.table"],
+            ["--apilog", "help", "query", "SELECT * FROM project.dataset.table"],
+            ["--apilog=/tmp/bq.log", "help"],
+            ["help", "--apilog=/tmp/bq.log"],
+            ["help", "query", "--apilog=/tmp/bq.log"],
+            ["query", "DELETE FROM project.dataset.table WHERE true"],
+            ["rm", "-f", "project:dataset.table"],
+            ["extract", "project:dataset.table", "gs://example/export.json"]
+        ]
+
+        for (offset, arguments) in blockedArguments.enumerated() {
+            let response = try call(server, id: offset + 1, tool: "bq", arguments: ["arguments": arguments])
+            #expect(try errorMessage(response).contains("bq command is not allowed"))
+        }
+        #expect(!FileManager.default.fileExists(atPath: log.path))
+    }
+
+    @Test("Host control gcloud blocks BigQuery command families before running host executable")
+    func hostControlGcloudBlocksBigQueryCommandFamiliesBeforeRunningHostExecutable() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-host-control-gcloud-bigquery-policy-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let log = root.appendingPathComponent("host.log", isDirectory: false)
+        let gcloud = try fakeExecutable(named: "gcloud", root: root, log: log, stdout: "gcloud:$*")
+        let server = HostControlMCPServer(configuration: HostControlToolConfiguration(gcloudExecutable: gcloud.path))
+
+        let blockedArguments = [
+            ["bq", "tables", "show-rows", "project.dataset.table"],
+            ["--project", "project", "bq", "tables", "show-rows", "project.dataset.table"],
+            ["--filter", "name~example", "bq", "tables", "show-rows", "project.dataset.table"],
+            ["--limit", "10", "bq", "jobs", "list"],
+            ["--sort-by", "~creationTimestamp", "bq", "jobs", "list"],
+            ["--verbosity", "debug", "bq", "tables", "show-rows", "project.dataset.table"],
+            ["alpha", "bq", "tables", "show-rows", "project.dataset.table"],
+            ["--access-token-file", "/tmp/token.json", "alpha", "bq", "tables", "show-rows", "project.dataset.table"],
+            ["--format=json", "alpha", "bq", "tables", "show-rows", "project.dataset.table"],
+            ["--page-size", "50", "beta", "bq", "jobs", "list", "--project=project"],
+            ["beta", "bq", "jobs", "list", "--project=project"]
+        ]
+
+        for (offset, arguments) in blockedArguments.enumerated() {
+            let response = try call(server, id: offset + 1, tool: "gcloud", arguments: ["arguments": arguments])
+            #expect(try errorMessage(response).contains("gcloud command is not allowed"))
+        }
+        #expect(!FileManager.default.fileExists(atPath: log.path))
+    }
+
+    @Test("Host control gcloud allows non-BigQuery commands with bq positional arguments")
+    func hostControlGcloudAllowsNonBigQueryCommandsWithBQPositionalArguments() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-host-control-gcloud-bq-positional-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let log = root.appendingPathComponent("host.log", isDirectory: false)
+        let gcloud = try fakeExecutable(named: "gcloud", root: root, log: log, stdout: "gcloud:$*")
+        let server = HostControlMCPServer(configuration: HostControlToolConfiguration(gcloudExecutable: gcloud.path))
+
+        let result = try call(server, id: 1, tool: "gcloud", arguments: [
+            "arguments": ["compute", "ssh", "bq"]
+        ])
+
+        #expect(try resultText(result).contains("gcloud:compute ssh bq"))
+        let hostLog = try String(contentsOf: log, encoding: .utf8)
+        #expect(hostLog.contains("gcloud compute ssh bq"))
     }
 
     @Test("Host and Docker mixed harness routes control-plane and workspace commands separately")
@@ -281,5 +385,10 @@ struct HostControlToolSupportTests {
         let result = try #require(object["result"] as? [String: Any])
         let content = try #require(result["content"] as? [[String: Any]])
         return try #require(content.first?["text"] as? String)
+    }
+
+    private func errorMessage(_ object: [String: Any]) throws -> String {
+        let error = try #require(object["error"] as? [String: Any])
+        return try #require(error["message"] as? String)
     }
 }

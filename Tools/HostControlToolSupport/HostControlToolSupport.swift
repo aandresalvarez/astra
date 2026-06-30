@@ -383,7 +383,8 @@ public final class HostControlMCPServer {
                 toolName: toolName,
                 executable: configuration.gcloudExecutable,
                 arguments: arguments,
-                allowedFirstArguments: nil
+                allowedFirstArguments: nil,
+                argumentPolicy: GCloudHostControlPolicy.rejectionMessage
             )
         case "bq":
             return handleProcessTool(
@@ -391,7 +392,8 @@ public final class HostControlMCPServer {
                 toolName: toolName,
                 executable: configuration.bigQueryExecutable,
                 arguments: arguments,
-                allowedFirstArguments: nil
+                allowedFirstArguments: nil,
+                argumentPolicy: BigQueryHostControlPolicy.rejectionMessage
             )
         case "ssh":
             return handleSSH(id: id, arguments: arguments)
@@ -407,7 +409,8 @@ public final class HostControlMCPServer {
         toolName: String,
         executable: String,
         arguments: [String: Any],
-        allowedFirstArguments: Set<String>?
+        allowedFirstArguments: Set<String>?,
+        argumentPolicy: (([String]) -> String?)? = nil
     ) -> String? {
         guard let argv = stringArray(arguments["arguments"]) else {
             return encodeError(id: id, code: -32602, message: "\(toolName) requires an arguments array")
@@ -419,6 +422,9 @@ public final class HostControlMCPServer {
            let first = argv.first?.lowercased(),
            !allowedFirstArguments.contains(first) {
             return encodeError(id: id, code: -32602, message: "\(toolName) does not allow subcommand '\(first)'")
+        }
+        if let rejection = argumentPolicy?(argv) {
+            return encodeError(id: id, code: -32602, message: rejection)
         }
         let timeout = timeoutSeconds(from: arguments["timeout_seconds"]) ?? 120
         let result = processRunner.run(
@@ -634,12 +640,12 @@ public final class HostControlMCPServer {
             processSchema(
                 name: "gcloud",
                 description: "Run Google Cloud CLI control-plane commands on the host through ASTRA without provider Bash.",
-                argumentDescription: "Arguments for gcloud, for example [\"compute\", \"instances\", \"list\", \"--format=json\"]."
+                argumentDescription: "Arguments for gcloud, for example [\"compute\", \"instances\", \"list\", \"--format=json\"]. BigQuery command groups such as [\"bq\", ...], [\"alpha\", \"bq\", ...], and [\"beta\", \"bq\", ...] are denied."
             ),
             processSchema(
                 name: "bq",
-                description: "Run BigQuery CLI control-plane commands on the host through ASTRA without provider Bash.",
-                argumentDescription: "Arguments for bq, for example [\"ls\", \"project:dataset\"]."
+                description: "Run BigQuery CLI help/version commands on the host through ASTRA without provider Bash.",
+                argumentDescription: "Help-only bq arguments, for example [\"--help\"], [\"help\"], or [\"version\"]. Resource listing, display, query, export, load, delete, copy, table mutation, and job commands are denied."
             ),
             sshSchema(),
             jiraSchema()
@@ -760,6 +766,177 @@ public final class HostControlMCPServer {
             return nil
         }
         return String(data: data, encoding: .utf8)
+    }
+}
+
+private enum GCloudHostControlPolicy {
+    private static let bigQueryGroup = "bq"
+    private static let releaseTracks: Set<String> = ["alpha", "beta"]
+    private static let globalOptionsWithValues: Set<String> = [
+        "--account",
+        "--access-token-file",
+        "--api-endpoint-overrides",
+        "--billing-project",
+        "--configuration",
+        "--filter",
+        "--flags-file",
+        "--flatten",
+        "--format",
+        "--impersonate-service-account",
+        "--limit",
+        "--page-size",
+        "--project",
+        "--sort-by",
+        "--trace-token",
+        "--verbosity"
+    ]
+
+    static func rejectionMessage(arguments: [String]) -> String? {
+        let commandPath = commandPathTokens(arguments)
+        guard isBigQueryCommandFamily(commandPath) else {
+            return nil
+        }
+        return [
+            "gcloud command is not allowed by ASTRA host-control policy: BigQuery command group.",
+            "Use the bq host-control tool for help/version metadata only, or an explicitly approved BigQuery capability for resource access."
+        ].joined(separator: " ")
+    }
+
+    private static func isBigQueryCommandFamily(_ commandPath: [String]) -> Bool {
+        guard let first = commandPath.first?.lowercased() else {
+            return false
+        }
+        if first == bigQueryGroup {
+            return true
+        }
+        guard releaseTracks.contains(first),
+              let second = commandPath.dropFirst().first?.lowercased() else {
+            return false
+        }
+        return second == bigQueryGroup
+    }
+
+    private static func commandPathTokens(_ arguments: [String]) -> [String] {
+        var tokens: [String] = []
+        var index = 0
+        while index < arguments.count {
+            let token = arguments[index]
+            if token == "--" {
+                index += 1
+                continue
+            }
+            if token.hasPrefix("-") {
+                let optionName = optionName(for: token)
+                index += 1
+                if globalOptionsWithValues.contains(optionName), !token.contains("="), index < arguments.count {
+                    index += 1
+                }
+                continue
+            }
+            tokens.append(token)
+            index += 1
+        }
+        return tokens
+    }
+
+    private static func optionName(for token: String) -> String {
+        token.split(separator: "=", maxSplits: 1).first.map(String.init) ?? token
+    }
+}
+
+private enum BigQueryHostControlPolicy {
+    private static let allowedCommands: Set<String> = ["help", "version"]
+    private static let helpOptions: Set<String> = ["--help", "-h"]
+    private static let versionOptions: Set<String> = ["--version"]
+    private static let globalOptionsWithValues: Set<String> = [
+        "--format",
+        "--location",
+        "--max_results",
+        "--page_token",
+        "--project_id"
+    ]
+
+    static func rejectionMessage(arguments: [String]) -> String? {
+        if isBareHelpOrVersion(arguments) {
+            return nil
+        }
+
+        let actionTokens: [String]
+        switch actionTokensAfterLeadingOptions(arguments) {
+        case .allowed(let tokens):
+            actionTokens = tokens
+        case .blocked(let token):
+            return blockedMessage(command: token)
+        }
+
+        guard let command = actionTokens.first?.lowercased() else {
+            return blockedMessage(command: "<missing>")
+        }
+        guard allowedCommands.contains(command) else {
+            return blockedMessage(command: command)
+        }
+        if let blockedOption = firstPostCommandOption(in: actionTokens.dropFirst()) {
+            return blockedMessage(command: blockedOption)
+        }
+        return nil
+    }
+
+    private enum LeadingOptionParse {
+        case allowed([String])
+        case blocked(String)
+    }
+
+    private static func actionTokensAfterLeadingOptions(_ arguments: [String]) -> LeadingOptionParse {
+        var index = 0
+        while index < arguments.count {
+            let token = arguments[index]
+            if token == "--" {
+                index += 1
+                break
+            }
+            guard token.hasPrefix("-") else { break }
+
+            let optionName = optionName(for: token)
+            if helpOptions.contains(optionName) || versionOptions.contains(optionName) {
+                index += 1
+                continue
+            }
+            guard globalOptionsWithValues.contains(optionName) else {
+                return .blocked(optionName)
+            }
+
+            index += 1
+            if !token.contains("=") {
+                guard index < arguments.count else {
+                    return .blocked(optionName)
+                }
+                index += 1
+            }
+        }
+        return .allowed(Array(arguments.dropFirst(index)))
+    }
+
+    private static func isBareHelpOrVersion(_ arguments: [String]) -> Bool {
+        !arguments.isEmpty && arguments.allSatisfy { token in
+            let optionName = optionName(for: token)
+            return helpOptions.contains(optionName) || versionOptions.contains(optionName)
+        }
+    }
+
+    private static func firstPostCommandOption(in arguments: ArraySlice<String>) -> String? {
+        arguments.first { $0.hasPrefix("-") }.map(optionName(for:))
+    }
+
+    private static func optionName(for token: String) -> String {
+        token.split(separator: "=", maxSplits: 1).first.map(String.init) ?? token
+    }
+
+    private static func blockedMessage(command: String) -> String {
+        [
+            "bq command is not allowed by ASTRA host-control policy: '\(command)'.",
+            "Allowed bq operations are help/version only: help and version commands, or bare --help, -h, and --version flags.",
+            "Use an explicitly approved BigQuery capability for query, export, load, delete, copy, table mutation, or job operations."
+        ].joined(separator: " ")
     }
 }
 

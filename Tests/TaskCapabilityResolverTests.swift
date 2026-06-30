@@ -365,6 +365,47 @@ struct TaskCapabilityResolverTests {
         #expect(!prompt.contains(#""$JIRA_BASE_URL/rest/api/3/...""#))
     }
 
+    @Test("Docker-routed connector prompt describes bq host control as help-only")
+    func dockerRoutedConnectorPromptDescribesBQHostControlAsHelpOnly() throws {
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+
+        let workspace = Workspace(name: "BigQuery Docker Workspace", primaryPath: "/tmp/bq-docker-workspace")
+        context.insert(workspace)
+
+        let connector = Connector(
+            name: "Analytics BigQuery",
+            serviceType: "gcloud",
+            connectorDescription: "Analytics BigQuery project",
+            baseURL: "",
+            authMethod: "application_default_credentials"
+        )
+        connector.workspace = workspace
+        connector.configKeys = ["GOOGLE_CLOUD_PROJECT"]
+        connector.configValues = ["demo-project"]
+        context.insert(connector)
+
+        let task = AgentTask(
+            title: "Inspect BigQuery",
+            goal: "Inspect BigQuery datasets from a Docker-routed task",
+            workspace: workspace
+        )
+        task.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encode(WorkspaceExecutionEnvironment(
+            id: "image:test",
+            kind: .dockerImage,
+            displayName: "Test Image",
+            image: "astra/test:latest"
+        ))
+        context.insert(task)
+        try context.save()
+
+        let prompt = AgentPromptBuilder.buildPrompt(for: task)
+        #expect(prompt.contains("This task is routed through a Docker workspace executor"))
+        #expect(prompt.contains("Use `mcp__astra_host__bq` only for bq help/version metadata"))
+        #expect(prompt.contains("BigQuery data access is not available through host-control"))
+        #expect(!prompt.contains("For Google Cloud or BigQuery host CLI operations, use `mcp__astra_host__gcloud` or `mcp__astra_host__bq`"))
+    }
+
     @Test("Follow-up prompt preserves namespaced connector manifest")
     func followUpPromptPreservesNamespacedConnectorManifest() throws {
         let container = try makeTaskCapabilityResolverContainer()
