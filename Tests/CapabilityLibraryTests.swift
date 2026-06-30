@@ -3,7 +3,7 @@ import Testing
 @testable import ASTRA
 import ASTRACore
 
-@Suite("Capability Library")
+@Suite("Capability Library", .serialized)
 struct CapabilityLibraryTests {
     @Test("capability directory is isolated by app channel")
     func channelDirectoriesAreIsolated() {
@@ -341,6 +341,57 @@ struct CapabilityLibraryTests {
 
         #expect(ids.contains(allowed.id))
         #expect(!ids.contains(disabled.id))
+    }
+
+    @Test("enabled packages avoids approval store reads without pack review gates")
+    func enabledPackagesAvoidsApprovalStoreReadsWithoutPackReviewGates() {
+        let disabled = makeTestPackage(id: "local.test/disabled", name: "Disabled")
+        let workspace = Workspace(name: "Policy", primaryPath: "/tmp/policy")
+        workspace.enabledCapabilityIDs = [disabled.id]
+        let disabledPolicy = Self.policy(restrictions: [
+            AstraPackPolicyRestriction(
+                id: "disable-local",
+                contributionKind: "capabilityPackage",
+                action: "disableCapability",
+                effect: "restrict",
+                targetID: disabled.id
+            )
+        ])
+        var approvalLoadCount = 0
+        CapabilityRuntimeResourceMatcher.approvalRecordsLoaderForTesting = {
+            approvalLoadCount += 1
+            return []
+        }
+        defer { CapabilityRuntimeResourceMatcher.approvalRecordsLoaderForTesting = nil }
+
+        let packages = CapabilityRuntimeResourceMatcher.enabledPackages(
+            for: workspace,
+            in: [disabled],
+            packPolicy: disabledPolicy
+        )
+
+        #expect(packages.isEmpty)
+        #expect(approvalLoadCount == 0)
+
+        let gated = makeTestPackage(id: "local.test/gated", name: "Gated")
+        workspace.enabledCapabilityIDs = [gated.id]
+        let gatedPolicy = Self.policy(restrictions: [
+            AstraPackPolicyRestriction(
+                id: "review-gated",
+                contributionKind: "capabilityPackage",
+                action: "requireReviewGate",
+                effect: "restrict",
+                targetID: gated.id
+            )
+        ])
+        let gatedPackages = CapabilityRuntimeResourceMatcher.enabledPackages(
+            for: workspace,
+            in: [gated],
+            packPolicy: gatedPolicy
+        )
+
+        #expect(gatedPackages.isEmpty)
+        #expect(approvalLoadCount == 1)
     }
 
     @Test("enabled packages honors pack review gate approvals")

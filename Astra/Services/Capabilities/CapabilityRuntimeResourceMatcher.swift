@@ -2,6 +2,8 @@ import Foundation
 import ASTRACore
 
 enum CapabilityRuntimeResourceMatcher {
+    static var approvalRecordsLoaderForTesting: (() -> [CapabilityApprovalRecord])?
+
     static func packageDefinitions(library: CapabilityLibrary = CapabilityLibrary()) -> [PluginPackage] {
         uniquePackages(cachedInstalledPackages(library: library) + PluginCatalog.builtInPackages)
     }
@@ -126,12 +128,25 @@ enum CapabilityRuntimeResourceMatcher {
         guard packPolicy.affectsCapabilityRuntimeExposure else { return packages }
         let context = CapabilityCatalogPolicyContext.currentUser(
             workspace: workspace,
-            approvalRecords: approvalRecords ?? CapabilityApprovalStore().records(),
+            approvalRecords: resolvedApprovalRecords(approvalRecords, packPolicy: packPolicy),
             packPolicy: packPolicy
         )
         return packages.filter {
             CapabilityCatalogPolicy.decision(for: $0, context: context).canRun
         }
+    }
+
+    private static func resolvedApprovalRecords(
+        _ approvalRecords: [CapabilityApprovalRecord]?,
+        packPolicy: PackResolvedPolicy
+    ) -> [CapabilityApprovalRecord] {
+        if let approvalRecords {
+            return approvalRecords
+        }
+        guard packPolicy.hasReviewGateRules else {
+            return []
+        }
+        return approvalRecordsLoaderForTesting?() ?? CapabilityApprovalStore().records()
     }
 
     private static func directoryFingerprint(for directory: URL) -> DirectoryFingerprint {

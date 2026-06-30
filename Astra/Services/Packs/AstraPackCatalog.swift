@@ -1,7 +1,7 @@
 import Foundation
 import ASTRACore
 
-struct AstraPackCatalogSnapshot: Equatable {
+struct AstraPackCatalogSnapshot: Equatable, Sendable {
     var entries: [AstraPackCatalogEntry]
     var diagnostics: [AstraPackCatalogDiagnostic]
 
@@ -15,8 +15,8 @@ struct AstraPackCatalogEntry: Equatable, Sendable {
     var source: AstraPackSource
 }
 
-struct AstraPackCatalogDiagnostic: Equatable {
-    enum Code: Equatable {
+struct AstraPackCatalogDiagnostic: Equatable, Sendable {
+    enum Code: Equatable, Sendable {
         case unreadableSource
         case malformedManifest
         case invalidManifest

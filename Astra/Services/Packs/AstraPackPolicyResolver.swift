@@ -104,6 +104,10 @@ struct PackResolvedPolicy: Equatable, Sendable {
             || !reviewGateRules.isEmpty
     }
 
+    var hasReviewGateRules: Bool {
+        !reviewGateRules.isEmpty
+    }
+
     func hiddenEvidence(for package: PluginPackage) -> [PackPolicyEvidence] {
         matchingEvidence(hiddenCapabilityRules, package: package)
     }

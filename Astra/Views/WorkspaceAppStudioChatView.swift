@@ -368,7 +368,9 @@ struct WorkspaceAppStudioChatView: View {
             }
             return
         }
-        let snapshot = AstraPackCatalog().load()
+        let snapshot = await Task.detached(priority: .utility) {
+            AstraPackCatalog().load()
+        }.value
         guard !Task.isCancelled else { return }
         let templates = source.templates(in: snapshot)
         await MainActor.run {
