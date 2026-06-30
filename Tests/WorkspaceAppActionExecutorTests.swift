@@ -195,7 +195,9 @@ struct WorkspaceAppActionExecutorTests {
             ("item-eq", "=2+3", "+SUM(A1:A2)"),
             ("item-minus", "-10", "@NOW()"),
             ("item-tab", "\t=2+3", "  =2+3"),
-            ("item-cr", "\r=2+3", "Plain")
+            ("item-cr", "\r=2+3", "Plain"),
+            ("item-tab-text", "\tPlain", "Plain"),
+            ("item-cr-text", "\rPlain", "Plain")
         ]
         for row in rows {
             _ = try WorkspaceAppActionExecutor().execute(
@@ -233,6 +235,10 @@ struct WorkspaceAppActionExecutorTests {
         #expect(!csv.contains("\nitem-tab,\t=2+3,  =2+3\n"))
         #expect(csv.contains("\nitem-cr,\"'\r=2+3\",Plain\n"))
         #expect(!csv.contains("\nitem-cr,\"\r=2+3\",Plain\n"))
+        #expect(csv.contains("\nitem-tab-text,\tPlain,Plain\n"))
+        #expect(!csv.contains("\nitem-tab-text,'\tPlain,Plain\n"))
+        #expect(csv.contains("\nitem-cr-text,\"\rPlain\",Plain\n"))
+        #expect(!csv.contains("\nitem-cr-text,\"'\rPlain\",Plain\n"))
     }
 
     @MainActor

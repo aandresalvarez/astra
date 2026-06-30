@@ -2309,15 +2309,12 @@ private struct WorkspaceAppCSVExportFormatter {
         guard let firstToken = firstSpreadsheetToken(in: value) else {
             return false
         }
-        return firstToken == "\t" || firstToken == "\r" || formulaPrefixes.contains(firstToken)
+        return formulaPrefixes.contains(firstToken)
     }
 
     private static func firstSpreadsheetToken(in value: String) -> Character? {
         for character in value {
-            if character == "\t" || character == "\r" {
-                return character
-            }
-            if character == " " || character == "\n" {
+            if character == " " || character == "\n" || character == "\t" || character == "\r" {
                 continue
             }
             return character
