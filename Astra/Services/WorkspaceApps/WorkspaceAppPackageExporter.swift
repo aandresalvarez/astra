@@ -99,6 +99,12 @@ struct WorkspaceAppPackageExporter {
         }
         do {
             return try manifestStore.loadManifest(app: app, workspace: workspace)
+        } catch WorkspaceAppManifestStoreError.noSafeManifestPath {
+            let databaseURL = manifestURL
+                .deletingLastPathComponent()
+                .appendingPathComponent("data", isDirectory: true)
+                .appendingPathComponent("app.sqlite")
+            throw WorkspaceAppPackageExportError.unsafeExportPath(databaseURL.path)
         } catch {
             throw WorkspaceAppPackageExportError.decodeManifestFailed(String(describing: error))
         }

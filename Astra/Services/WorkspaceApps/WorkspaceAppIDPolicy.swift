@@ -12,6 +12,8 @@ enum WorkspaceAppIDPolicy {
     }
 
     static func isReservedPathComponent(_ value: String) -> Bool {
-        value == "." || value == ".." || value == "exports"
+        value == "."
+            || value == ".."
+            || value.caseInsensitiveCompare("exports") == .orderedSame
     }
 }

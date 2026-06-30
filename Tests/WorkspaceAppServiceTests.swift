@@ -781,6 +781,53 @@ struct WorkspaceAppServiceTests {
     }
 
     @MainActor
+    @Test("manifest store rejects symlinked database paths before exposing loaded locations")
+    func manifestStoreRejectsSymlinkedDatabasePathsBeforeExposingLoadedLocations() throws {
+        let root = try Self.temporaryRoot(prefix: "workspace-app-manifest-database-symlink")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let outside = try Self.temporaryRoot(prefix: "workspace-app-manifest-database-outside")
+        defer { try? FileManager.default.removeItem(at: outside) }
+
+        let appDirectory = root.appendingPathComponent(".astra/apps/enrollment-reconciliation", isDirectory: true)
+        let dataDirectory = appDirectory.appendingPathComponent("data", isDirectory: true)
+        try FileManager.default.createDirectory(at: appDirectory, withIntermediateDirectories: true)
+        try WorkspaceAppService.encodeManifest(Self.reconciliationManifest())
+            .write(to: appDirectory.appendingPathComponent("manifest.json"))
+
+        for unsafeURL in [
+            dataDirectory,
+            dataDirectory.appendingPathComponent("app.sqlite-wal"),
+            dataDirectory.appendingPathComponent("app.sqlite-shm")
+        ] {
+            try? FileManager.default.removeItem(at: dataDirectory)
+            try FileManager.default.createDirectory(at: dataDirectory, withIntermediateDirectories: true)
+            if unsafeURL == dataDirectory {
+                try FileManager.default.removeItem(at: dataDirectory)
+                try FileManager.default.createSymbolicLink(at: dataDirectory, withDestinationURL: outside)
+            } else {
+                try FileManager.default.createSymbolicLink(
+                    at: unsafeURL,
+                    withDestinationURL: outside.appendingPathComponent(unsafeURL.lastPathComponent)
+                )
+            }
+
+            let workspace = Workspace(name: "Apps", primaryPath: root.path)
+            let app = WorkspaceApp(
+                workspaceID: workspace.id,
+                logicalID: "enrollment-reconciliation",
+                name: "Enrollment Reconciliation",
+                manifestRelativePath: ".astra/apps/enrollment-reconciliation/manifest.json",
+                appDirectoryRelativePath: ".astra/apps/enrollment-reconciliation",
+                manifestDigest: "digest"
+            )
+
+            #expect(throws: WorkspaceAppManifestStoreError.noSafeManifestPath("enrollment-reconciliation")) {
+                _ = try WorkspaceAppManifestStore().loadManifest(app: app, workspace: workspace)
+            }
+        }
+    }
+
+    @MainActor
     @Test("duplicateApp fails before copying when the destination app ID cannot resolve safely")
     func duplicateAppFailsBeforeCopyingWhenDestinationAppIDCannotResolveSafely() throws {
         let root = try Self.temporaryRoot(prefix: "workspace-app-duplicate-unsafe")
@@ -899,7 +946,7 @@ struct WorkspaceAppServiceTests {
     @MainActor
     @Test("createApp rejects reserved app storage IDs before writing app files")
     func createAppRejectsReservedPathComponentIDsBeforeWritingAppFiles() throws {
-        for reservedID in [".", "..", "exports"] {
+        for reservedID in [".", "..", "exports", "Exports", "EXPORTS"] {
             let root = URL(fileURLWithPath: NSTemporaryDirectory())
                 .appendingPathComponent("workspace-app-reserved-id-\(UUID().uuidString)", isDirectory: true)
             try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

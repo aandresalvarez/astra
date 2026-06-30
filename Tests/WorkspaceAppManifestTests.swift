@@ -19,15 +19,17 @@ struct WorkspaceAppManifestTests {
 
     @Test("manifest validation reserves internal workspace app directory names")
     func validationReservesInternalWorkspaceAppDirectoryNames() {
-        var manifest = Self.reconciliationManifest()
-        manifest.app.id = "exports"
+        for reservedID in ["exports", "Exports", "EXPORTS"] {
+            var manifest = Self.reconciliationManifest()
+            manifest.app.id = reservedID
 
-        let report = WorkspaceAppManifestValidator.validate(manifest)
+            let report = WorkspaceAppManifestValidator.validate(manifest)
 
-        #expect(!report.isValid)
-        #expect(report.blockers.contains {
-            $0.path == "/app/id" && $0.message.contains("reserved path component")
-        })
+            #expect(!report.isValid)
+            #expect(report.blockers.contains {
+                $0.path == "/app/id" && $0.message.contains("reserved path component")
+            })
+        }
     }
 
     @Test("manifest validation rejects duplicate IDs and unknown requirement references")

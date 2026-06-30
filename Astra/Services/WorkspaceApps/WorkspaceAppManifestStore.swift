@@ -3,12 +3,7 @@ import Foundation
 struct WorkspaceAppManifestLocation: Equatable {
     var manifestURL: URL
     var appDirectoryURL: URL
-
-    var databaseURL: URL {
-        appDirectoryURL
-            .appendingPathComponent("data", isDirectory: true)
-            .appendingPathComponent("app.sqlite")
-    }
+    var databaseURL: URL
 }
 
 struct WorkspaceAppLoadedManifest {
@@ -68,11 +63,19 @@ struct WorkspaceAppManifestStore {
         }
         let data = try Data(contentsOf: manifestURL)
         let manifest = try JSONDecoder().decode(WorkspaceAppManifest.self, from: data)
+        let appDirectoryURL = manifestURL.deletingLastPathComponent()
+        guard let databaseURL = WorkspaceFileLayout.appDatabaseFileURL(
+            appDirectoryURL: appDirectoryURL,
+            workspacePath: workspace.primaryPath
+        ) else {
+            throw WorkspaceAppManifestStoreError.noSafeManifestPath(app.logicalID)
+        }
         return WorkspaceAppLoadedManifest(
             manifest: manifest,
             location: WorkspaceAppManifestLocation(
                 manifestURL: manifestURL,
-                appDirectoryURL: manifestURL.deletingLastPathComponent()
+                appDirectoryURL: appDirectoryURL,
+                databaseURL: databaseURL
             )
         )
     }
