@@ -4543,6 +4543,9 @@ struct LocalModelRuntimeTests {
 
         #expect(!package.contains("mlx-swift-lm"))
         #expect(!package.contains("swift-transformers"))
+        #expect(package.contains("// swift-tools-version: 5.10"))
+        #expect(nativePackage.contains("// swift-tools-version: 5.10"))
+        #expect(!nativePackage.contains("// swift-tools-version: 6.1"))
         #expect(nativePackage.contains("mlx-swift-lm"))
         #expect(nativePackage.contains(".product(name: \"MLX\", package: \"mlx-swift\")"))
         #expect(nativePackage.contains(".product(name: \"MLXVLM\", package: \"mlx-swift-lm\")"))
