@@ -1069,7 +1069,11 @@ struct WorkspaceAppPackageService {
             guard let url = item as? URL else {
                 return nil
             }
-            if (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true {
+            let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+            if !WorkspaceAppPackageEntryPolicy.includesInResourceValidation(
+                isDirectory: values?.isDirectory,
+                isSymbolicLink: values?.isSymbolicLink
+            ) {
                 return nil
             }
             let basePath = packageURL.standardizedFileURL.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))

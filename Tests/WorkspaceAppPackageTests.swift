@@ -588,6 +588,45 @@ struct WorkspaceAppPackageTests {
         })
     }
 
+    @Test("package validation rejects symlink directory package entries")
+    func packageValidationRejectsSymlinkDirectoryPackageEntries() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let packageURL = root.appendingPathComponent("linked-directory.astra-app", isDirectory: true)
+        _ = try WorkspaceAppPackageService().exportPackage(manifest: Self.groceryManifest(), to: packageURL)
+
+        let targetURL = root.appendingPathComponent("outside-directory", isDirectory: true)
+        try FileManager.default.createDirectory(at: targetURL, withIntermediateDirectories: true)
+        let linkPath = "assets/linked-directory"
+        let linkURL = packageURL.appendingPathComponent(linkPath, isDirectory: true)
+        try FileManager.default.createDirectory(at: linkURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: linkURL, withDestinationURL: targetURL)
+
+        let report = WorkspaceAppPackageService().validatePackage(at: packageURL)
+
+        #expect(!report.canInstall)
+        #expect(report.blockers.contains {
+            $0.path == "/\(linkPath)"
+                && $0.message.contains("regular files")
+        })
+    }
+
+    @Test("package entry policy includes symlink directories for non-regular validation")
+    func packageEntryPolicyIncludesSymlinkDirectoriesForNonRegularValidation() {
+        #expect(!WorkspaceAppPackageEntryPolicy.includesInResourceValidation(
+            isDirectory: true,
+            isSymbolicLink: false
+        ))
+        #expect(WorkspaceAppPackageEntryPolicy.includesInResourceValidation(
+            isDirectory: true,
+            isSymbolicLink: true
+        ))
+        #expect(WorkspaceAppPackageEntryPolicy.includesInResourceValidation(
+            isDirectory: false,
+            isSymbolicLink: false
+        ))
+    }
+
     @Test("package validation stops expensive checks after resource budget failure")
     func packageValidationStopsExpensiveChecksAfterResourceBudgetFailure() throws {
         let root = try Self.temporaryRoot()
