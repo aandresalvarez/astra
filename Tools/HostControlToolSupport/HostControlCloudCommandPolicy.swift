@@ -167,7 +167,7 @@ struct HostControlCloudCommandPolicy: Sendable {
         while index < arguments.count {
             let token = arguments[index]
             if token == "--" {
-                return false
+                return true
             }
             guard token.hasPrefix("-") else {
                 index += 1

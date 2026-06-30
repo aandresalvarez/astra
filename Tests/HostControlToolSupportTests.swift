@@ -297,6 +297,12 @@ struct HostControlToolSupportTests {
         let flagsFileError = try #require(flagsFileResult["error"] as? [String: Any])
         #expect((flagsFileError["message"] as? String)?.contains("gcloud does not allow credential or mutating operations") == true)
 
+        let passthroughSeparatorResult = try call(server, id: 18, tool: "gcloud", arguments: [
+            "arguments": ["compute", "instances", "list", "--", "--access-token-file=/tmp/hidden-token"]
+        ])
+        let passthroughSeparatorError = try #require(passthroughSeparatorResult["error"] as? [String: Any])
+        #expect((passthroughSeparatorError["message"] as? String)?.contains("gcloud does not allow credential or mutating operations") == true)
+
         let iamPolicyReadResult = try call(server, id: 8, tool: "gcloud", arguments: [
             "arguments": ["projects", "get-iam-policy", "clinical-project"]
         ])
@@ -371,6 +377,7 @@ struct HostControlToolSupportTests {
         #expect(!hostLog.contains("workflows run list"))
         #expect(!hostLog.contains("scheduler jobs run list"))
         #expect(!hostLog.contains("--flags-file"))
+        #expect(!hostLog.contains("--access-token-file"))
         #expect(!hostLog.contains("get-iam-policy"))
         #expect(!hostLog.contains("--log-http"))
         #expect(!hostLog.contains("--verbosity debug"))
