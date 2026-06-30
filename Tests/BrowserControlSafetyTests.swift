@@ -301,6 +301,28 @@ struct BrowserControlSafetyTests {
         #expect(!source.contains(#"annotateBrowserLoopHint(json: json, action: "replaceText", target: resolvedSelector ?? "")"#))
     }
 
+    @Test("Replacement target inspection refreshes controlled browser metadata")
+    func replacementTargetInspectionRefreshesControlledBrowserMetadata() throws {
+        let repoRoot = URL(filePath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let controllerPath = repoRoot
+            .appendingPathComponent("Astra")
+            .appendingPathComponent("Services")
+            .appendingPathComponent("Browser")
+            .appendingPathComponent("ControlledBrowserController.swift")
+            .path
+        let source = try String(contentsOfFile: controllerPath, encoding: .utf8)
+        let methodStart = try #require(source.range(of: "func replaceTextTargetsInfo(selector: String, find: String, all: Bool) async throws -> String {"))
+        let methodEnd = try #require(source[methodStart.upperBound...].range(of: "\n    }\n\n    func keypress"))
+        let methodSource = source[methodStart.lowerBound..<methodEnd.lowerBound]
+
+        #expect(methodSource.contains("try await refreshPageMetadata()"))
+        let evaluateCall = try #require(methodSource.range(of: "BrowserAutomationScripts.replaceTextTargetsInfoScript"))
+        let metadataRefresh = try #require(methodSource.range(of: "try await refreshPageMetadata()"))
+        let returnValue = try #require(methodSource.range(of: "return value"))
+        #expect(evaluateCall.lowerBound < metadataRefresh.lowerBound)
+        #expect(metadataRefresh.lowerBound < returnValue.lowerBound)
+    }
+
     @Test("Drive open default timeout covers slow Google Drive search results")
     func driveOpenDefaultTimeoutCoversSlowGoogleDriveSearchResults() {
         #expect(GoogleWorkspaceBrowserService.googleDriveOpenDefaultTimeoutSeconds >= 20)
