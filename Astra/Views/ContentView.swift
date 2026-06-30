@@ -243,7 +243,8 @@ struct ContentView: View {
         browserSessionStore.session(
             for: selectedTask?.id,
             pinnedToTask: isBrowserPinnedToTask,
-            enabledBrowserAdapters: enabledBrowserAdapterIDs(for: selectedTask)
+            enabledBrowserAdapters: enabledBrowserAdapterIDs(for: selectedTask),
+            githubReadOnlyMode: githubReadOnlyBrowserMode(for: selectedTask)
         )
     }
 
@@ -257,6 +258,15 @@ struct ContentView: View {
     private func enabledBrowserAdapterIDs(for task: AgentTask?) -> [String] {
         guard let task else { return [] }
         return TaskCapabilityResolver(task: task).enabledBrowserAdapters
+    }
+
+    private func githubReadOnlyBrowserMode(for task: AgentTask?) -> Bool {
+        guard let task else { return false }
+        return HostControlPlaneMCPProjection.enabledToolNames(
+            task: task,
+            environment: DockerExecutionPlanner.resolveEnvironment(for: task),
+            contextText: task.goal
+        ).contains("github")
     }
 
     private var browserPinnedToTaskBinding: Binding<Bool> {
@@ -1586,7 +1596,8 @@ struct ContentView: View {
         let session = browserSessionStore.session(
             for: taskID,
             pinnedToTask: isBrowserPinnedToTask,
-            enabledBrowserAdapters: enabledBrowserAdapterIDs(for: selectedTask)
+            enabledBrowserAdapters: enabledBrowserAdapterIDs(for: selectedTask),
+            githubReadOnlyMode: githubReadOnlyBrowserMode(for: selectedTask)
         )
         guard TaskGeneratedFiles.shouldLoadGeneratedHTMLOnUserOpen(
             currentBrowserURL: session.currentURL,
@@ -1628,7 +1639,8 @@ struct ContentView: View {
             let session = browserSessionStore.session(
                 for: taskID,
                 pinnedToTask: isBrowserPinnedToTask,
-                enabledBrowserAdapters: enabledBrowserAdapterIDs(for: selectedTask)
+                enabledBrowserAdapters: enabledBrowserAdapterIDs(for: selectedTask),
+                githubReadOnlyMode: githubReadOnlyBrowserMode(for: selectedTask)
             )
             session.load(url, source: "generated_file")
             if let taskID {
@@ -1681,7 +1693,8 @@ struct ContentView: View {
             activeWorkspaceCanvasItem == .browser,
             taskID: selectedTask?.id,
             pinnedToTask: isBrowserPinnedToTask,
-            enabledBrowserAdapters: enabledBrowserAdapterIDs(for: selectedTask)
+            enabledBrowserAdapters: enabledBrowserAdapterIDs(for: selectedTask),
+            githubReadOnlyMode: githubReadOnlyBrowserMode(for: selectedTask)
         )
     }
 
@@ -1759,7 +1772,8 @@ struct ContentView: View {
             to: task.id,
             pinnedToTask: isBrowserPinnedToTask,
             isPresented: wasPresented,
-            enabledBrowserAdapters: enabledBrowserAdapterIDs(for: task)
+            enabledBrowserAdapters: enabledBrowserAdapterIDs(for: task),
+            githubReadOnlyMode: githubReadOnlyBrowserMode(for: task)
         )
         guard promoted else { return }
 

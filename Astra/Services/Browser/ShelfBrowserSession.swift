@@ -169,6 +169,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
     private var browserActionLoopCounts: [String: (state: String, count: Int)] = [:]
     private let browserAnalysisCache = BrowserAnalysisCache()
     private var enabledBrowserAdapters: Set<String> = []
+    private var githubReadOnlyMode = false
     private var lastBrowserTrace: [String: Any]?
     private var browserDiagnostics = BrowserDiagnosticsSessionState()
     private var lastPageFingerprint: String?
@@ -381,6 +382,12 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         guard normalized != enabledBrowserAdapters else { return }
         enabledBrowserAdapters = normalized
         browserAnalysisCache.invalidate()
+        publishBridgeState()
+    }
+
+    func setGitHubReadOnlyMode(_ enabled: Bool) {
+        guard githubReadOnlyMode != enabled else { return }
+        githubReadOnlyMode = enabled
         publishBridgeState()
     }
 
@@ -1116,7 +1123,8 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         if let denialReason = BrowserSiteActionPolicy.denialReason(
             route: route,
             currentURL: currentURL,
-            enabledBrowserAdapters: enabledBrowserAdapters
+            enabledBrowserAdapters: enabledBrowserAdapters,
+            githubReadOnlyMode: githubReadOnlyMode
         ) {
             var response: [String: Any] = [
                 "ok": false,

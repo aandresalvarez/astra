@@ -159,6 +159,14 @@ final class AgentRuntimeProcessRunner {
                 runtimeStopMessage: message
             ))
         }
+        if let block = HostControlPlaneRuntimeLaunchGuard.launchBlock(for: plan) {
+            AppLogger.audit(.workerBlocked, category: "Worker", taskID: context.task.id, fields: [
+                "runtime": plan.runtime.rawValue,
+                "reason": block.runtimeStopReason ?? HostControlPlaneRuntimeLaunchGuard.missingHostControlMCPReason,
+                "source": "runtime_launch_preflight"
+            ], level: .error)
+            return .blocked(block)
+        }
         if let block = BrowserBridgeRuntimeLaunchGuard.launchBlock(for: plan) {
             AppLogger.audit(.workerBlocked, category: "Worker", taskID: context.task.id, fields: [
                 "runtime": plan.runtime.rawValue,

@@ -29,6 +29,19 @@ enum HostControlPlaneMCPProjection {
         !enabledToolNames(task: task, environment: environment, contextText: contextText).isEmpty
     }
 
+    static func packageUsesHostControlRuntime(_ package: PluginPackage) -> Bool {
+        package.skills.contains { skill in
+            let text = [
+                skill.name,
+                skill.description,
+                skill.behaviorInstructions
+            ].joined(separator: "\n").lowercased()
+            return text.contains("github")
+                || text.contains("mcp__astra_host__github")
+                || text.contains("astra_host-github")
+        }
+    }
+
     static func supportsHostControlPlane(runtime: AgentRuntimeID) -> Bool {
         AgentRuntimeAdapterRegistry.descriptor(for: runtime).supportsMCPServers
     }
@@ -108,12 +121,15 @@ enum HostControlPlaneMCPProjection {
         taskEnvironment: [String: String] = [:],
         contextText: String = ""
     ) -> [String: String] {
-        guard !enabledToolNames(task: task, environment: environment, contextText: contextText).isEmpty else { return [:] }
+        let allowedTools = enabledToolNames(task: task, environment: environment, contextText: contextText)
+        guard !allowedTools.isEmpty else { return [:] }
         var output: [String: String] = [
             "ASTRA_HOST_CONTROL_GH_EXECUTABLE": detectExecutable("gh"),
             "ASTRA_HOST_CONTROL_GCLOUD_EXECUTABLE": detectExecutable("gcloud"),
             "ASTRA_HOST_CONTROL_BQ_EXECUTABLE": detectExecutable("bq"),
             "ASTRA_HOST_CONTROL_SSH_EXECUTABLE": detectExecutable("ssh", fallback: "/usr/bin/ssh"),
+            "ASTRA_HOST_CONTROL_ALLOWED_TOOLS": allowedTools.joined(separator: ","),
+            "ASTRA_HOST_CONTROL_CURRENT_DIRECTORY": currentDirectory,
             "ASTRA_HOST_CONTROL_TASK_ID": task.id.uuidString,
             "ASTRA_HOST_CONTROL_RUN_ID": runID?.uuidString ?? "run",
             "ASTRA_HOST_CONTROL_DIAGNOSTICS_HOST": diagnosticsHostPath(task: task),
@@ -165,6 +181,8 @@ enum HostControlPlaneMCPProjection {
         "ASTRA_HOST_CONTROL_BQ_EXECUTABLE",
         "ASTRA_HOST_CONTROL_SSH_EXECUTABLE",
         "ASTRA_HOST_CONTROL_ALLOWED_SSH_ALIASES",
+        "ASTRA_HOST_CONTROL_ALLOWED_TOOLS",
+        "ASTRA_HOST_CONTROL_CURRENT_DIRECTORY",
         "ASTRA_HOST_CONTROL_DIAGNOSTICS_HOST",
         "ASTRA_HOST_CONTROL_TASK_ID",
         "ASTRA_HOST_CONTROL_RUN_ID",

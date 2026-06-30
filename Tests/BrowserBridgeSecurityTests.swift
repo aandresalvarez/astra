@@ -227,21 +227,45 @@ struct BrowserBridgeSecurityTests {
             route: .click,
             currentURL: "https://github.com/owner/repo/pull/1",
             enabledBrowserAdapters: enabled
-        )?.contains("GitHub browser adapter is read-only") == true)
+        )?.contains("GitHub browser control is read-only") == true)
         #expect(BrowserSiteActionPolicy.denialReason(
             route: .fill,
             currentURL: "https://github.com/owner/repo/issues/new",
             enabledBrowserAdapters: enabled
-        )?.contains("GitHub browser adapter is read-only") == true)
+        )?.contains("GitHub browser control is read-only") == true)
         #expect(BrowserSiteActionPolicy.denialReason(
             route: .batch,
             currentURL: "https://github.com/owner/repo/actions",
             enabledBrowserAdapters: enabled
-        )?.contains("GitHub browser adapter is read-only") == true)
+        )?.contains("GitHub browser control is read-only") == true)
         #expect(BrowserSiteActionPolicy.denialReason(
             route: .click,
             currentURL: "https://example.com/",
             enabledBrowserAdapters: enabled
+        ) == nil)
+    }
+
+    @Test("GitHub host-control read-only mode blocks mutating browser routes without adapter")
+    func githubHostControlReadOnlyModeBlocksMutatingBrowserRoutesWithoutAdapter() throws {
+        #expect(BrowserSiteActionPolicy.denialReason(
+            route: .snapshot,
+            currentURL: "https://github.com/owner/repo/pull/1",
+            enabledBrowserAdapters: [],
+            githubReadOnlyMode: true
+        ) == nil)
+
+        #expect(BrowserSiteActionPolicy.denialReason(
+            route: .click,
+            currentURL: "https://github.com/owner/repo/pull/1",
+            enabledBrowserAdapters: [],
+            githubReadOnlyMode: true
+        )?.contains("GitHub browser control is read-only") == true)
+
+        #expect(BrowserSiteActionPolicy.denialReason(
+            route: .click,
+            currentURL: "https://github.com/owner/repo/pull/1",
+            enabledBrowserAdapters: [],
+            githubReadOnlyMode: false
         ) == nil)
     }
 

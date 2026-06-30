@@ -2,16 +2,15 @@ import Foundation
 
 enum GitHubHostControlPolicy {
     private static let optionsWithValues: Set<String> = [
-        "-H", "--hostname", "-R", "--repo", "--jq", "-q", "--json", "--template"
+        "-H", "--hostname", "-R", "--repo", "--jq", "-q", "--json", "--template", "-t"
     ]
 
-    private static let deniedFlags: Set<String> = [
-        "--show-token", "-t"
-    ]
+    private static let globallyDeniedFlags: Set<String> = ["--show-token"]
+    private static let authStatusDeniedFlags: Set<String> = ["--show-token", "-t"]
 
     static func denialReason(for arguments: [String]) -> String? {
         let operation = normalizedOperation(arguments)
-        if containsDeniedFlag(arguments) {
+        if containsDeniedFlag(arguments, deniedFlags: globallyDeniedFlags) {
             return denial(operation, reason: "credential and token display flags are not exposed")
         }
 
@@ -29,6 +28,10 @@ enum GitHubHostControlPolicy {
         case "workflow":
             return allow(operation, subcommands: ["list", "view"])
         case "auth":
+            if operation.subcommand == "status",
+               containsDeniedFlag(arguments, deniedFlags: authStatusDeniedFlags) {
+                return denial(operation, reason: "credential and token display flags are not exposed")
+            }
             return allow(operation, subcommands: ["status"])
         case "api":
             return denial(operation, reason: "raw GitHub API access is not an explicit read-only operation")
@@ -84,7 +87,7 @@ enum GitHubHostControlPolicy {
         return tokens
     }
 
-    private static func containsDeniedFlag(_ arguments: [String]) -> Bool {
+    private static func containsDeniedFlag(_ arguments: [String], deniedFlags: Set<String>) -> Bool {
         arguments.contains { token in
             let optionName = token.split(separator: "=", maxSplits: 1).first.map(String.init) ?? token
             return deniedFlags.contains(optionName)

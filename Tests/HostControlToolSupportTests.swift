@@ -75,13 +75,53 @@ struct HostControlToolSupportTests {
         ])
         #expect(try resultText(allowedAuthStatus).contains("ok"))
 
+        let allowedIssueTemplate = try call(server, id: 13, tool: "github", arguments: [
+            "arguments": ["issue", "list", "--json", "number,title", "-t", "{{range .}}{{.number}}{{end}}"]
+        ])
+        #expect(try resultText(allowedIssueTemplate).contains("ok"))
+
         #expect(runner.invocations.map(\.arguments) == [
             ["pr", "view", "123", "--comments"],
             ["--repo", "owner/project", "pr", "view", "123"],
             ["pr", "--repo", "owner/project", "view", "123"],
             ["pr", "--hostname", "github.com", "view", "123"],
-            ["auth", "status", "--hostname", "github.com"]
+            ["auth", "status", "--hostname", "github.com"],
+            ["issue", "list", "--json", "number,title", "-t", "{{range .}}{{.number}}{{end}}"]
         ])
+    }
+
+    @Test("Host control MCP enforces allowed tools and forwards workspace current directory")
+    func hostControlMCPEnforcesAllowedToolsAndForwardsWorkspaceCurrentDirectory() throws {
+        let runner = RecordingHostControlProcessRunner(stdout: "ok")
+        let server = HostControlMCPServer(
+            configuration: HostControlToolConfiguration(
+                githubExecutable: "gh",
+                gcloudExecutable: "gcloud",
+                allowedTools: ["github"],
+                currentDirectory: "/tmp/astra-workspace"
+            ),
+            processRunner: runner
+        )
+
+        let list = try parseJSON(try #require(server.handleLine(#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#)))
+        let listResult = try #require(list["result"] as? [String: Any])
+        let tools = try #require(listResult["tools"] as? [[String: Any]])
+        #expect(tools.compactMap { $0["name"] as? String } == ["github"])
+
+        let denied = try call(server, id: 2, tool: "gcloud", arguments: [
+            "arguments": ["compute", "instances", "list"]
+        ])
+        #expect(errorMessage(denied)?.contains("not enabled for this task") == true)
+        #expect(runner.invocations.isEmpty)
+
+        let allowed = try call(server, id: 3, tool: "github", arguments: [
+            "arguments": ["pr", "view", "123"]
+        ])
+        #expect(try resultText(allowed).contains("ok"))
+        #expect(runner.invocations.last?.currentDirectory == "/tmp/astra-workspace")
+
+        #expect(HostControlToolConfiguration.fromEnvironment([:]).allowedTools == HostControlToolConfiguration.knownToolNames)
+        #expect(HostControlToolConfiguration.fromEnvironment(["ASTRA_HOST_CONTROL_ALLOWED_TOOLS": ""]).allowedTools.isEmpty)
     }
 
     @Test("Host control MCP runs fake host tools and redacts connector secrets")
@@ -373,6 +413,7 @@ private final class RecordingHostControlProcessRunner: HostControlProcessRunning
         var arguments: [String]
         var timeoutSeconds: TimeInterval
         var environment: [String: String]
+        var currentDirectory: String?
     }
 
     private(set) var invocations: [Invocation] = []
@@ -386,13 +427,15 @@ private final class RecordingHostControlProcessRunner: HostControlProcessRunning
         executablePath: String,
         arguments: [String],
         timeoutSeconds: TimeInterval,
-        environment: [String: String]
+        environment: [String: String],
+        currentDirectory: String?
     ) -> HostControlCommandResult {
         invocations.append(Invocation(
             executablePath: executablePath,
             arguments: arguments,
             timeoutSeconds: timeoutSeconds,
-            environment: environment
+            environment: environment,
+            currentDirectory: currentDirectory
         ))
         return HostControlCommandResult(
             command: executablePath,

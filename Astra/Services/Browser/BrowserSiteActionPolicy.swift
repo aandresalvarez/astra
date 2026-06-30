@@ -4,14 +4,16 @@ enum BrowserSiteActionPolicy {
     static func denialReason(
         route: ShelfBrowserBridgeRoute,
         currentURL: String,
-        enabledBrowserAdapters: Set<String>
+        enabledBrowserAdapters: Set<String>,
+        githubReadOnlyMode: Bool = false
     ) -> String? {
-        guard GitHubBrowserAdapter.isEnabled(in: enabledBrowserAdapters),
+        let enforceGitHubReadOnly = githubReadOnlyMode || GitHubBrowserAdapter.isEnabled(in: enabledBrowserAdapters)
+        guard enforceGitHubReadOnly,
               GitHubBrowserAdapter.matches(pageURL: currentURL),
               !route.isAllowedInGitHubReadOnlyContext else {
             return nil
         }
-        return "GitHub browser adapter is read-only. Use ASTRA host-control GitHub MCP for GitHub operations instead of browser actions that can mutate github.com."
+        return "GitHub browser control is read-only. Use ASTRA host-control GitHub MCP for GitHub operations instead of browser actions that can mutate github.com."
     }
 }
 

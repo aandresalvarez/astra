@@ -24,10 +24,16 @@ final class ShelfBrowserSessionStore: ObservableObject {
     /// window closes. Idle, non-active sessions over this cap are torn down.
     private let maxLiveTaskSessions = 6
 
-    func session(for taskID: UUID?, pinnedToTask: Bool, enabledBrowserAdapters: [String]) -> ShelfBrowserSession {
+    func session(
+        for taskID: UUID?,
+        pinnedToTask: Bool,
+        enabledBrowserAdapters: [String],
+        githubReadOnlyMode: Bool = false
+    ) -> ShelfBrowserSession {
         guard pinnedToTask, let taskID else {
             sharedSession.bindToTask(taskID)
             sharedSession.setEnabledBrowserAdapters(enabledBrowserAdapters)
+            sharedSession.setGitHubReadOnlyMode(githubReadOnlyMode)
             return sharedSession
         }
 
@@ -36,12 +42,14 @@ final class ShelfBrowserSessionStore: ObservableObject {
         if let session = taskSessions[taskID] {
             session.bindToTask(taskID)
             session.setEnabledBrowserAdapters(enabledBrowserAdapters)
+            session.setGitHubReadOnlyMode(githubReadOnlyMode)
             return session
         }
 
         let session = ShelfBrowserSession()
         session.bindToTask(taskID)
         session.setEnabledBrowserAdapters(enabledBrowserAdapters)
+        session.setGitHubReadOnlyMode(githubReadOnlyMode)
         taskSessions[taskID] = session
         // Only sweep when the dict actually grew (new task), so the hot
         // `session(for:)` path stays cheap during view updates.
@@ -78,7 +86,8 @@ final class ShelfBrowserSessionStore: ObservableObject {
         to taskID: UUID,
         pinnedToTask: Bool,
         isPresented: Bool,
-        enabledBrowserAdapters: [String] = []
+        enabledBrowserAdapters: [String] = [],
+        githubReadOnlyMode: Bool = false
     ) -> Bool {
         // Don't force-create a shared session just to inspect it: if one was
         // never made, there is no draft page to promote. Short-circuit on the
@@ -92,6 +101,7 @@ final class ShelfBrowserSessionStore: ObservableObject {
 
         existingShared.bindToTask(taskID)
         existingShared.setEnabledBrowserAdapters(enabledBrowserAdapters)
+        existingShared.setGitHubReadOnlyMode(githubReadOnlyMode)
         existingShared.setPresented(isPresented)
         taskSessions[taskID] = existingShared
         lastAccess[taskID] = Date()
@@ -106,7 +116,8 @@ final class ShelfBrowserSessionStore: ObservableObject {
         _ isPresented: Bool,
         taskID: UUID?,
         pinnedToTask: Bool,
-        enabledBrowserAdapters: [String] = []
+        enabledBrowserAdapters: [String] = [],
+        githubReadOnlyMode: Bool = false
     ) {
         // Touch the backing, not the lazy accessor — hiding sessions must never
         // force-create a shared WebView that was never opened.
@@ -123,7 +134,8 @@ final class ShelfBrowserSessionStore: ObservableObject {
         session(
             for: taskID,
             pinnedToTask: pinnedToTask,
-            enabledBrowserAdapters: enabledBrowserAdapters
+            enabledBrowserAdapters: enabledBrowserAdapters,
+            githubReadOnlyMode: githubReadOnlyMode
         ).setPresented(true)
     }
 }

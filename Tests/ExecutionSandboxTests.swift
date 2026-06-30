@@ -854,6 +854,23 @@ struct ExecutionSandboxTests {
         #expect(BrowserBridgeRuntimeLaunchGuard.launchBlock(for: plan) == nil)
     }
 
+    @Test("Host-control launch block fails closed when provider cannot attach MCP server")
+    func hostControlLaunchBlockFailsClosedWhenProviderCannotAttachMCPServer() throws {
+        let plan = makePlan(
+            runtime: .copilotCLI,
+            commandPlannedFields: [
+                "host_control_plane_launch_block_reason": "host_control_plane_unsupported_runtime",
+                "host_control_plane_unsupported_detail": "GitHub Copilot CLI does not support --additional-mcp-config."
+            ]
+        )
+
+        let result = try #require(HostControlPlaneRuntimeLaunchGuard.launchBlock(for: plan))
+
+        #expect(result.exitCode == -1)
+        #expect(result.runtimeStopReason == "host_control_plane_unsupported_runtime")
+        #expect(result.runtimeStopMessage?.contains("additional-mcp-config") == true)
+    }
+
     @Test("Best-effort enforcement falls back when there is no execution path")
     func decisionFallback() {
         let decision = ExecutionSandbox.decide(

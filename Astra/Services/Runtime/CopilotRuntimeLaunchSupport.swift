@@ -10,6 +10,8 @@ struct CopilotMCPLaunchProjection {
     let dockerWorkspaceExecutorSupported: Bool
     let dockerWorkspaceUnsupportedDetail: String
     let hostControlPlaneSupported: Bool
+    let hostControlPlaneUnsupportedDetail: String
+    let hostControlPlaneLaunchBlockReason: String
     let browserBridgeMCPToolSupported: Bool
 
     var readablePaths: [String] {
@@ -103,6 +105,14 @@ struct CopilotMCPLaunchProjection {
             supportsAdditionalMCPConfig: capabilities.supportsAdditionalMCPConfig,
             configURL: configURL
         )
+        let hostControlUnsupportedDetail = unsupportedHostControlPlaneDetail(
+            requiresHostControlPlane: requiresHostControlPlane,
+            supportsAdditionalMCPConfig: capabilities.supportsAdditionalMCPConfig,
+            configURL: configURL
+        )
+        let hostControlLaunchBlockReason = hostControlPlaneSupported
+            ? "none"
+            : HostControlPlaneRuntimeLaunchGuard.missingHostControlMCPReason
 
         return CopilotMCPLaunchProjection(
             servers: servers,
@@ -116,6 +126,8 @@ struct CopilotMCPLaunchProjection {
             dockerWorkspaceExecutorSupported: dockerWorkspaceExecutorSupported,
             dockerWorkspaceUnsupportedDetail: unsupportedDetail,
             hostControlPlaneSupported: hostControlPlaneSupported,
+            hostControlPlaneUnsupportedDetail: hostControlUnsupportedDetail,
+            hostControlPlaneLaunchBlockReason: hostControlLaunchBlockReason,
             browserBridgeMCPToolSupported: browserServerProjected && configURL != nil
         )
     }
@@ -133,6 +145,43 @@ struct CopilotMCPLaunchProjection {
             return "ASTRA could not render the Docker workspace shell MCP config for GitHub Copilot CLI."
         }
         return ""
+    }
+
+    private static func unsupportedHostControlPlaneDetail(
+        requiresHostControlPlane: Bool,
+        supportsAdditionalMCPConfig: Bool,
+        configURL: URL?
+    ) -> String {
+        if !requiresHostControlPlane { return "" }
+        if !supportsAdditionalMCPConfig {
+            return "GitHub Copilot CLI does not support --additional-mcp-config, so ASTRA cannot attach the host-control GitHub MCP server."
+        }
+        if configURL == nil {
+            return "ASTRA could not render the host-control MCP config for GitHub Copilot CLI."
+        }
+        return ""
+    }
+}
+
+enum HostControlPlaneRuntimeLaunchGuard {
+    static let missingHostControlMCPReason = "host_control_plane_unsupported_runtime"
+
+    static func launchBlock(for plan: AgentRuntimeProcessLaunchPlan) -> AgentProcessResult? {
+        guard plan.commandPlannedFields["host_control_plane_launch_block_reason"] == missingHostControlMCPReason else {
+            return nil
+        }
+
+        let detail = plan.commandPlannedFields["host_control_plane_unsupported_detail"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let message = detail?.isEmpty == false
+            ? detail!
+            : "\(plan.runtime.displayName) cannot attach ASTRA's host-control MCP server for this task. Switch to a runtime that supports provider MCP config, then retry."
+        return AgentProcessResult(
+            exitCode: -1,
+            error: message,
+            runtimeStopReason: missingHostControlMCPReason,
+            runtimeStopMessage: message
+        )
     }
 }
 
@@ -220,6 +269,8 @@ enum CopilotLaunchDiagnostics {
             "docker_workspace_mcp_env_key_count": String(mcpProjection.workspaceExecutorEnvironment.count),
             "host_control_plane_tool_count": String(HostControlPlaneMCPProjection.toolNames.count),
             "host_control_plane_supported": String(mcpProjection.hostControlPlaneSupported),
+            "host_control_plane_unsupported_detail": mcpProjection.hostControlPlaneUnsupportedDetail,
+            "host_control_plane_launch_block_reason": mcpProjection.hostControlPlaneLaunchBlockReason,
             "host_control_plane_mcp_env_key_count": String(mcpProjection.hostControlEnvironment.count),
             "docker_workspace_container_env_key_count": String(dockerContainerEnvCount),
             "docker_workspace_credential_projection_count": String(dockerCredentialProjectionCount),

@@ -1080,6 +1080,46 @@ struct TaskCapabilityResolverTests {
         #expect(issues.isEmpty)
     }
 
+    @Test("Runtime integrity checks selected GitHub host-control skill prerequisites")
+    func runtimeIntegrityChecksSelectedGitHubHostControlSkillPrerequisites() throws {
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+        let githubPackage = try #require(PluginCatalog.builtInPackages.first { $0.id == "github-workflow" })
+        let packageSkill = try #require(githubPackage.skills.first)
+
+        let workspace = Workspace(name: "Selected GitHub Workspace", primaryPath: "/tmp/selected-github-workspace")
+        context.insert(workspace)
+
+        let githubSkill = Skill(
+            name: packageSkill.name,
+            allowedTools: packageSkill.allowedTools,
+            disallowedTools: packageSkill.disallowedTools,
+            behaviorInstructions: packageSkill.behaviorInstructions
+        )
+        githubSkill.workspace = workspace
+        context.insert(githubSkill)
+
+        let task = AgentTask(
+            title: "Review PRs",
+            goal: "List GitHub pull requests",
+            workspace: workspace
+        )
+        task.skills = [githubSkill]
+        context.insert(task)
+        try context.save()
+
+        let issues = CapabilityRuntimeIntegrityService.issues(
+            for: task,
+            packages: [githubPackage],
+            checkExecutables: false,
+            prerequisiteStatuses: [CommonCLIPrerequisites.githubAuth.id: .unauthenticated(detail: "not logged in")]
+        )
+
+        #expect(issues.map(\.source) == [.selectedPackageSkill])
+        #expect(issues.map(\.resourceKind) == [.credential])
+        #expect(issues.first?.resourceName == "GitHub login")
+    }
+
     @Test("Runtime integrity ignores stale package skill snapshots")
     func runtimeIntegrityIgnoresStalePackageSkillSnapshots() throws {
         let container = try makeTaskCapabilityResolverContainer()
