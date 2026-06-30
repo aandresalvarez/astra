@@ -669,7 +669,7 @@ final class AgentRuntimeWorker {
         run.executionEnvironmentSnapshotJSON = executionEnvironmentJSON
 
         let prompt = localAgentEnabled
-            ? LocalAgentOrchestrator.buildInitialPrompt(for: task, promptOverride: promptOverride)
+            ? buildLocalAgentPrompt(for: task, promptOverride: promptOverride, recordingMode: recordingMode)
             : (promptOverride ?? buildPrompt(for: task))
         let launchResourcePlan = TaskLaunchResourceResolver.resolve(
             task: task,
@@ -1462,6 +1462,21 @@ final class AgentRuntimeWorker {
             "runtime": selectedRuntime.rawValue,
             "source": "estimated_provider_usage_missing"
         ])
+    }
+
+    @MainActor
+    private func buildLocalAgentPrompt(
+        for task: AgentTask,
+        promptOverride: String?,
+        recordingMode: AgentRuntimeRecordingMode
+    ) -> String {
+        guard recordingMode == .followUp else {
+            return LocalAgentOrchestrator.buildInitialPrompt(for: task, promptOverride: promptOverride)
+        }
+        return LocalAgentOrchestrator.buildFollowUpPrompt(
+            for: task,
+            followUpPrompt: promptOverride ?? ""
+        )
     }
 
     @MainActor

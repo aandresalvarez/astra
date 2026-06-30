@@ -2189,6 +2189,35 @@ struct LocalModelRuntimeTests {
         #expect(!fullPrompt.contains("Do not request disabled Local Agent capabilities"))
     }
 
+    @Test("Local Agent follow-up prompt preserves brokered tool protocol")
+    @MainActor
+    func localAgentFollowUpPromptPreservesBrokeredToolProtocol() {
+        let workspace = Workspace(name: "Prompt Workspace", primaryPath: "/tmp/prompt-workspace")
+        let task = AgentTask(
+            title: "Inspect project",
+            goal: "Read the workspace and summarize next steps",
+            workspace: workspace,
+            runtime: .localMLX
+        )
+        let genericFollowUp = AgentPromptBuilder.buildFreshFollowUpPrompt(
+            message: "Continue with the file audit",
+            task: task
+        )
+
+        let prompt = LocalAgentOrchestrator.buildFollowUpPrompt(
+            for: task,
+            followUpPrompt: genericFollowUp
+        )
+
+        #expect(prompt.contains("Local Agent Follow-up Task:"))
+        #expect(prompt.contains("Use only ASTRA-brokered tools"))
+        #expect(prompt.contains("Local Agent Context:"))
+        #expect(prompt.contains("User's follow-up request:\nContinue with the file audit"))
+        #expect(prompt.contains(#""tool":"workspace.read_file""#))
+        #expect(!prompt.contains("Local Chat can answer from text in the prompt"))
+        #expect(!prompt.contains("Local Agent/tool execution is not enabled yet"))
+    }
+
     @Test("Local Agent beta surface defers browser mutations beyond click and type")
     func localAgentBetaSurfaceDefersBrowserMutationsBeyondClickAndType() throws {
         #expect(LocalAgentBetaToolSurface.readOnlyToolNames.contains("workspace.read_file"))
@@ -3311,6 +3340,9 @@ struct LocalModelRuntimeTests {
         #expect(collectionScript.contains("/tmp/astra-local-mlx-hardware-pro.json"))
         #expect(collectionScript.contains("/tmp/astra-local-mlx-hardware-max.json"))
         #expect(collectionScript.contains("Collecting expected low-memory block evidence without requiring an installed model."))
+        #expect(collectionScript.contains("LOW_MEMORY_MODEL_DIR_CLEANUP"))
+        #expect(collectionScript.contains("mktemp -d"))
+        #expect(collectionScript.contains("Using temporary empty model folder for expected low-memory block evidence:"))
         #expect(collectionScript.contains("swift test --filter localMLXSustainedHardwareValidationEndToEnd"))
         #expect(runbook.contains("script/local_mlx_collect_hardware_evidence.sh --dry-run"))
         #expect(runbook.contains("The dry run prints the detected Gate D tier"))

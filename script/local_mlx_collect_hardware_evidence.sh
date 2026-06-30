@@ -11,6 +11,13 @@ LOW_MEMORY_TIER="0"
 EXPECTED_TIER=""
 REQUIRED_TIER=""
 DRY_RUN="0"
+LOW_MEMORY_MODEL_DIR_CLEANUP=""
+cleanup_low_memory_model_dir() {
+  if [[ -n "$LOW_MEMORY_MODEL_DIR_CLEANUP" ]]; then
+    rm -rf "$LOW_MEMORY_MODEL_DIR_CLEANUP"
+  fi
+}
+trap cleanup_low_memory_model_dir EXIT
 
 tier_label() {
   case "$1" in
@@ -184,6 +191,11 @@ fi
 if [[ "$LOW_MEMORY_TIER" == "1" ]]; then
   echo "This Mac is below the sustained Local MLX memory target."
   echo "Collecting expected low-memory block evidence without requiring an installed model."
+  if [[ ! -d "$MODEL_DIR" ]]; then
+    LOW_MEMORY_MODEL_DIR_CLEANUP="$(mktemp -d "${TMPDIR:-/tmp}/astra-local-mlx-empty-model.XXXXXX")"
+    MODEL_DIR="$LOW_MEMORY_MODEL_DIR_CLEANUP"
+    echo "Using temporary empty model folder for expected low-memory block evidence: $MODEL_DIR"
+  fi
 else
   if [[ ! -x "$HELPER_PATH" ]]; then
     echo "Local MLX helper is not executable: $HELPER_PATH" >&2

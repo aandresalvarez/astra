@@ -295,6 +295,34 @@ final class LocalAgentOrchestrator {
         return parts.joined(separator: "\n\n")
     }
 
+    static func buildFollowUpPrompt(for task: AgentTask, followUpPrompt: String) -> String {
+        let trimmedFollowUpPrompt = localAgentFollowUpContext(from: followUpPrompt)
+        let localAgentContext = trimmedFollowUpPrompt.isEmpty
+            ? "No follow-up context was provided. Continue from the current ASTRA task state."
+            : trimmedFollowUpPrompt
+
+        return """
+        Local Agent Follow-up Task:
+        \(task.goal)
+
+        Use only ASTRA-brokered tools. Do not claim an external action succeeded unless a tool observation proves it.
+
+        Local Agent Tool Broker Preamble:
+        \(systemPrompt(capabilities: .current()))
+
+        Local Agent Context:
+        \(localAgentContext)
+        """
+    }
+
+    private static func localAgentFollowUpContext(from prompt: String) -> String {
+        prompt
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .components(separatedBy: "\n\n")
+            .filter { !$0.hasPrefix("Local Chat Mode:") }
+            .joined(separator: "\n\n")
+    }
+
     func run(
         task: AgentTask,
         run: TaskRun,
