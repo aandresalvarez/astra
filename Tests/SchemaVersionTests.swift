@@ -497,7 +497,7 @@ struct SchemaVersionTests {
         )
 
         let oldContext = try #require(oldContainer?.mainContext)
-        let oldWorkspace = ASTRASchemaV7.Workspace()
+        let oldWorkspace = ASTRASchemaV9.Workspace()
         oldWorkspace.name = "Legacy V9 Profile"
         oldWorkspace.primaryPath = "/tmp/legacy-v9-profile"
         oldContext.insert(oldWorkspace)

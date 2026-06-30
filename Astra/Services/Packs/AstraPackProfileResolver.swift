@@ -86,6 +86,7 @@ enum AstraPackProfileResolver {
         let policy = AstraPackPolicyResolver.resolve(composition: composition)
         var diagnostics: [AstraPackProfileDiagnostic] = []
         var visibleShelfIDs: Set<ShelfID> = hasShelfDefaults ? [] : coreShelfIDs
+        var explicitlyDisabledShelfIDs: Set<ShelfID> = []
         var capabilityPackageIDsByShelfID: [ShelfID: [String]] = [:]
 
         for shelfDefault in composition.shelfDefaults {
@@ -121,6 +122,7 @@ enum AstraPackProfileResolver {
             sourceLabel: "workspace",
             coreDescriptorsByID: coreDescriptorsByID,
             visibleShelfIDs: &visibleShelfIDs,
+            explicitlyDisabledShelfIDs: &explicitlyDisabledShelfIDs,
             diagnostics: &diagnostics
         )
         apply(
@@ -128,6 +130,7 @@ enum AstraPackProfileResolver {
             sourceLabel: "admin",
             coreDescriptorsByID: coreDescriptorsByID,
             visibleShelfIDs: &visibleShelfIDs,
+            explicitlyDisabledShelfIDs: &explicitlyDisabledShelfIDs,
             diagnostics: &diagnostics
         )
 
@@ -142,7 +145,7 @@ enum AstraPackProfileResolver {
         let profileHiddenShelfIDs = packHiddenShelfIDs(
             visibleShelfIDs: visibleShelfIDs,
             descriptorsByID: coreDescriptorsByID
-        )
+        ).union(explicitlyDisabledShelfIDs)
         return AstraPackResolvedProfile(
             visibleShelfIDs: visibleShelfIDs,
             hiddenShelfIDs: profileHiddenShelfIDs,
@@ -160,6 +163,7 @@ enum AstraPackProfileResolver {
         sourceLabel: String,
         coreDescriptorsByID: [ShelfID: ShelfDescriptor],
         visibleShelfIDs: inout Set<ShelfID>,
+        explicitlyDisabledShelfIDs: inout Set<ShelfID>,
         diagnostics: inout [AstraPackProfileDiagnostic]
     ) {
         for rawShelfID in visibilityOverrides.keys.sorted() {
@@ -187,8 +191,10 @@ enum AstraPackProfileResolver {
 
             if requestedVisibility {
                 visibleShelfIDs.insert(shelfID)
+                explicitlyDisabledShelfIDs.remove(shelfID)
             } else {
                 visibleShelfIDs.remove(shelfID)
+                explicitlyDisabledShelfIDs.insert(shelfID)
             }
         }
     }

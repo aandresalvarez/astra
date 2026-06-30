@@ -56,7 +56,7 @@ struct WorkspaceAppTemplatePackCatalog: Equatable {
 
     init(snapshot: AstraPackCatalogSnapshot, enabledPackIDs: Set<String> = []) {
         self.snapshot = snapshot
-        self.enabledPackIDs = enabledPackIDs
+        self.enabledPackIDs = Self.normalizedPackIDs(enabledPackIDs)
     }
 
     var templates: [WorkspaceAppTemplatePackDescriptor] {
@@ -77,18 +77,26 @@ struct WorkspaceAppTemplatePackCatalog: Equatable {
             }
         }
     }
+
+    static func normalizedPackIDs(_ packIDs: Set<String>) -> Set<String> {
+        Set(
+            packIDs
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+        )
+    }
 }
 
 struct WorkspaceAppStudioTemplatePackLoadingSource: Equatable, Sendable {
     var enabledPackIDs: Set<String>
 
     init(enabledPackIDs: Set<String> = []) {
-        self.enabledPackIDs = enabledPackIDs
+        self.enabledPackIDs = WorkspaceAppTemplatePackCatalog.normalizedPackIDs(enabledPackIDs)
     }
 
     @MainActor
     init(workspace: Workspace) {
-        self.enabledPackIDs = Set(workspace.enabledPackIDs)
+        self.enabledPackIDs = WorkspaceAppTemplatePackCatalog.normalizedPackIDs(Set(workspace.enabledPackIDs))
     }
 
     func loadSignature(workspaceID: UUID) -> String {

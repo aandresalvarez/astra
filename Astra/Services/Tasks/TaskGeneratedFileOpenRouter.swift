@@ -6,6 +6,15 @@ enum TaskGeneratedFileOpenRoute: Equatable {
 }
 
 enum TaskGeneratedFileOpenRouter {
+    static func canOpenInShelf(
+        destination: TaskGeneratedFileShelfDestination?,
+        policy: ShelfAvailabilityPolicy,
+        context: ShelfAvailabilityPolicy.Context
+    ) -> Bool {
+        guard let destination else { return false }
+        return policy.canPresent(destination.shelfID, in: context)
+    }
+
     static func route(
         path: String,
         destination: TaskGeneratedFileShelfDestination?,

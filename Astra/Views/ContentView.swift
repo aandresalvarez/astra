@@ -53,7 +53,6 @@ struct NewWorkspaceDraft: Equatable {
 struct ContentView: View {
     @ObservedObject var appUpdateController: AppUpdateController
     let runtime: AppRuntimeController
-    private let packCatalogSnapshot: AstraPackCatalogSnapshot
     @Environment(\.modelContext) private var modelContext
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Query(sort: \Workspace.name) private var workspaces: [Workspace]
@@ -162,7 +161,6 @@ struct ContentView: View {
     init(appUpdateController: AppUpdateController, runtime: AppRuntimeController) {
         self.appUpdateController = appUpdateController
         self.runtime = runtime
-        self.packCatalogSnapshot = AstraPackCatalog().load()
     }
 
     private var effectiveWorkspace: Workspace? {
@@ -319,10 +317,7 @@ struct ContentView: View {
     }
 
     private var shelfAvailabilityPolicy: ShelfAvailabilityPolicy {
-        AstraPackWorkspaceProfileProvider.shelfAvailabilityPolicy(
-            for: effectiveWorkspace,
-            catalogSnapshot: packCatalogSnapshot
-        )
+        AstraPackWorkspaceProfileProvider.shelfAvailabilityPolicy(for: effectiveWorkspace)
     }
 
     private var shelfAvailabilityContext: ShelfAvailabilityPolicy.Context {
@@ -564,6 +559,7 @@ struct ContentView: View {
             onCreateWorkspace: createWorkspace,
             onImportWorkspace: importWorkspace,
             onOpenGeneratedFile: openGeneratedFile,
+            canOpenGeneratedFileInShelf: canOpenGeneratedFileInShelf,
             onOpenWorkspaceFile: openWorkspaceFileInShelf,
             isComposingWorkspaceApp: isComposingWorkspaceApp,
             studioSession: workspaceAppStudioSession,
@@ -1644,6 +1640,10 @@ struct ContentView: View {
         let url = URL(fileURLWithPath: path)
         switch TaskGeneratedFiles.shelfDestination(for: path) {
         case .browser?:
+            guard canOpenGeneratedFileInShelf(.browser) else {
+                NSWorkspace.shared.open(url)
+                return
+            }
             let taskID = selectedTask?.id
             let session = browserSessionStore.session(
                 for: taskID,
@@ -1661,6 +1661,10 @@ struct ContentView: View {
             return
 
         case .files?:
+            guard canOpenGeneratedFileInShelf(.files) else {
+                NSWorkspace.shared.open(url)
+                return
+            }
             let taskID = selectedTask?.id
             selectedTaskPreferredMarkdownPath = path
             selectedTaskHasMarkdownShelfContent = true
@@ -1670,6 +1674,10 @@ struct ContentView: View {
             return
 
         case .query?:
+            guard canOpenGeneratedFileInShelf(.query) else {
+                NSWorkspace.shared.open(url)
+                return
+            }
             querySession.bindToTask(selectedTask?.id)
             selectedTaskPreferredQueryPath = path
             selectedTaskHasQueryShelfContent = true
@@ -1680,6 +1688,14 @@ struct ContentView: View {
         case nil:
             NSWorkspace.shared.open(url)
         }
+    }
+
+    private func canOpenGeneratedFileInShelf(_ destination: TaskGeneratedFileShelfDestination?) -> Bool {
+        TaskGeneratedFileOpenRouter.canOpenInShelf(
+            destination: destination,
+            policy: shelfAvailabilityPolicy,
+            context: shelfAvailabilityContext
+        )
     }
 
     private func openWorkspaceFileInShelf(_ path: String) {
@@ -2908,6 +2924,7 @@ private struct ContentDetailAreaView: View {
     let onCreateWorkspace: () -> Void
     let onImportWorkspace: () -> Void
     let onOpenGeneratedFile: (String) -> Void
+    let canOpenGeneratedFileInShelf: (TaskGeneratedFileShelfDestination?) -> Bool
     let onOpenWorkspaceFile: (String) -> Void
     let isComposingWorkspaceApp: Bool
     @ObservedObject var studioSession: WorkspaceAppStudioSession
@@ -3283,6 +3300,7 @@ private struct ContentDetailAreaView: View {
             onCreateWorkspace: onCreateWorkspace,
             onImportWorkspace: onImportWorkspace,
             onOpenGeneratedFile: onOpenGeneratedFile,
+            canOpenGeneratedFileInShelf: canOpenGeneratedFileInShelf,
             isComposingWorkspaceApp: isComposingWorkspaceApp,
             studioSession: studioSession,
             onStartWorkspaceAppStudio: onStartWorkspaceAppStudio,
@@ -3380,6 +3398,7 @@ private struct ContentDetailContentView: View {
     let onCreateWorkspace: () -> Void
     let onImportWorkspace: () -> Void
     let onOpenGeneratedFile: (String) -> Void
+    let canOpenGeneratedFileInShelf: (TaskGeneratedFileShelfDestination?) -> Bool
     let isComposingWorkspaceApp: Bool
     @ObservedObject var studioSession: WorkspaceAppStudioSession
     let onStartWorkspaceAppStudio: (String?) -> Void
@@ -3431,6 +3450,7 @@ private struct ContentDetailContentView: View {
                     onManageSkills: onManageSkills,
                     onForkTask: onForkTask,
                     onOpenGeneratedFile: onOpenGeneratedFile,
+                    canOpenGeneratedFileInShelf: canOpenGeneratedFileInShelf,
                     onStartMCPInstallReview: onStartMCPInstallReview
                 )
                 .id(task.id)

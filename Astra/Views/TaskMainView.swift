@@ -324,6 +324,7 @@ struct TaskMainView: View {
     var onManageSkills: (() -> Void)?
     var onForkTask: ((AgentTask) -> Void)?
     var onOpenGeneratedFile: ((String) -> Void)?
+    var canOpenGeneratedFileInShelf: (TaskGeneratedFileShelfDestination?) -> Bool = { _ in true }
     var onStartMCPInstallReview: ((MCPInstallChatRequest) -> Void)?
 
     private var availableSkills: [Skill] {
@@ -498,9 +499,10 @@ struct TaskMainView: View {
             }
         }
         .environment(\.openURL, OpenURLAction { url in
+            let destination = TaskGeneratedFiles.shelfDestination(for: url.path)
             guard let route = TaskGeneratedFileOpenRouter.route(
                 fileURL: url,
-                canOpenInShelf: onOpenGeneratedFile != nil
+                canOpenInShelf: onOpenGeneratedFile != nil && canOpenGeneratedFileInShelf(destination)
             ),
                   case let .shelf(path) = route,
                   let onOpenGeneratedFile else {
@@ -930,7 +932,7 @@ struct TaskMainView: View {
     private var canOpenHeaderTextShelfItems: Bool {
         TaskGeneratedFileOpenRouter.canOpenTextShelfItems(
             headerFileItems,
-            canOpenInShelf: onOpenGeneratedFile != nil
+            canOpenInShelf: onOpenGeneratedFile != nil && canOpenGeneratedFileInShelf(.files)
         )
     }
 
@@ -953,7 +955,7 @@ struct TaskMainView: View {
         switch TaskGeneratedFileOpenRouter.route(
             path: path,
             destination: destination,
-            canOpenInShelf: onOpenGeneratedFile != nil
+            canOpenInShelf: onOpenGeneratedFile != nil && canOpenGeneratedFileInShelf(destination)
         ) {
         case let .shelf(path):
             onOpenGeneratedFile?(path)

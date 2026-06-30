@@ -2174,10 +2174,11 @@ enum ASTRASchemaV8: VersionedSchema {
 /// model fields; they live only in the dedicated Keychain-backed vault.
 enum ASTRASchemaV9: VersionedSchema {
     static var versionIdentifier = Schema.Version(9, 0, 0)
+    typealias Workspace = ASTRASchemaV7.Workspace
 
     static var models: [any PersistentModel.Type] {
         [
-            ASTRASchemaV7.Workspace.self,
+            Workspace.self,
             ASTRASchemaV7.AgentTask.self,
             ASTRASchemaV7.TaskRun.self,
             ASTRASchemaV7.TaskEvent.self,

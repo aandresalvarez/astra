@@ -24,6 +24,34 @@ struct AstraPackProfileTests {
         #expect(!profile.hiddenShelfIDs.contains(.appPreview))
     }
 
+    @Test("explicit override can disable non-addressable shelf without pack default")
+    func explicitOverrideCanDisableNonAddressableShelfWithoutPackDefault() {
+        let profile = AstraPackProfileResolver.resolve(
+            enabledPacks: [
+                Self.pack(shelfDefaults: [
+                    Self.shelfDefault(id: "plan")
+                ])
+            ],
+            workspaceShelfVisibilityOverrides: [
+                "app-preview": false
+            ]
+        )
+        let policy = ShelfAvailabilityPolicy(disabledShelfIDs: profile.hiddenShelfIDs)
+        let appStudioContext = ShelfAvailabilityPolicy.Context(
+            hasOpenTaskThread: false,
+            hasWorkspaceContext: true,
+            hasPlanContent: false,
+            hasFilesShelfContent: false,
+            hasQueryShelfContent: false,
+            isComposingWorkspaceApp: true,
+            activeShelfID: .appPreview
+        )
+
+        #expect(!profile.isShelfVisible(.appPreview))
+        #expect(profile.hiddenShelfIDs.contains(.appPreview))
+        #expect(!policy.canPresent(.appPreview, in: appStudioContext))
+    }
+
     @Test("workspace override can enable allowed hidden shelf")
     func workspaceOverrideCanEnableAllowedHiddenShelf() {
         let profile = AstraPackProfileResolver.resolve(

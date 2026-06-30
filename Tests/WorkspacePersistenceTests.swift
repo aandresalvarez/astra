@@ -131,6 +131,26 @@ private func makeRichWorkspace(in context: ModelContext, root: String) throws ->
 
 @Suite("Workspace Persistence v11")
 struct WorkspacePersistenceTests {
+    @Test("shelf visibility overrides normalize persisted keys at the model boundary")
+    @MainActor
+    func shelfVisibilityOverridesNormalizePersistedKeys() {
+        let workspace = Workspace(name: "Shelf Keys", primaryPath: "/tmp/shelf-keys")
+
+        workspace.shelfVisibilityOverrides = [
+            "  browser  ": true,
+            "\nquery\t": false,
+            "   ": true,
+            "": false
+        ]
+
+        #expect(workspace.shelfVisibilityOverrides == [
+            "browser": true,
+            "query": false
+        ])
+        #expect(workspace.shelfVisibilityOverrideIDs == ["browser", "query"])
+        #expect(workspace.shelfVisibilityOverrideValues == [true, false])
+    }
+
     @Test("v11 export and import preserve IDs, profile state, history, artifacts, and redacted credentials")
     @MainActor
     func v11RoundTripPreservesDurableIDs() throws {

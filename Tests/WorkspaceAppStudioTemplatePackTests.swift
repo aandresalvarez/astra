@@ -86,6 +86,30 @@ struct WorkspaceAppStudioTemplatePackTests {
         #expect(descriptor.branding?.displayName == "DevOps")
     }
 
+    @MainActor
+    @Test("enabled pack IDs are normalized from workspace and direct catalog source")
+    func enabledPackIDsAreNormalizedFromWorkspaceAndDirectCatalogSource() throws {
+        let snapshot = Self.snapshot(entries: [
+            Self.entry(
+                packID: "astra.pack.devops",
+                templates: [Self.template(id: "pr-review-board")]
+            )
+        ])
+        let workspace = Self.workspace()
+        workspace.enabledPackIDs = [" astra.pack.devops ", "", "\n\t"]
+
+        let source = WorkspaceAppStudioTemplatePackLoadingSource(workspace: workspace)
+        let catalog = WorkspaceAppTemplatePackCatalog(
+            snapshot: snapshot,
+            enabledPackIDs: [" astra.pack.devops ", "   "]
+        )
+
+        #expect(source.enabledPackIDs == ["astra.pack.devops"])
+        #expect(source.templates(in: snapshot).map(\.packID) == ["astra.pack.devops"])
+        #expect(catalog.enabledPackIDs == ["astra.pack.devops"])
+        #expect(catalog.templates.map(\.packID) == ["astra.pack.devops"])
+    }
+
     @Test("bundled DevOps pack template appears when enabled")
     func devOpsPackTemplateAppearsWhenEnabled() throws {
         let catalog = WorkspaceAppTemplatePackCatalog(
