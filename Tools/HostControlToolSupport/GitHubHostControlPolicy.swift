@@ -5,7 +5,7 @@ enum GitHubHostControlPolicy {
         "-H", "--hostname", "-R", "--repo", "--jq", "-q", "--json", "--template", "-t"
     ]
 
-    private static let globallyDeniedFlags: Set<String> = ["--show-token"]
+    private static let globallyDeniedFlags: Set<String> = ["--show-token", "--web", "-w", "--jq", "-q"]
     private static let authStatusDeniedFlags: Set<String> = ["--show-token", "-t"]
 
     static func denialReason(for arguments: [String]) -> String? {
@@ -29,7 +29,8 @@ enum GitHubHostControlPolicy {
             return allow(operation, subcommands: ["list", "view"])
         case "auth":
             if operation.subcommand == "status",
-               containsDeniedFlag(arguments, deniedFlags: authStatusDeniedFlags) {
+               containsDeniedFlag(arguments, deniedFlags: authStatusDeniedFlags)
+                || containsAuthStatusTokenDisplayShorthand(arguments) {
                 return denial(operation, reason: "credential and token display flags are not exposed")
             }
             return allow(operation, subcommands: ["status"])
@@ -91,6 +92,18 @@ enum GitHubHostControlPolicy {
         arguments.contains { token in
             let optionName = token.split(separator: "=", maxSplits: 1).first.map(String.init) ?? token
             return deniedFlags.contains(optionName)
+        }
+    }
+
+    private static func containsAuthStatusTokenDisplayShorthand(_ arguments: [String]) -> Bool {
+        arguments.contains { token in
+            let optionName = token.split(separator: "=", maxSplits: 1).first.map(String.init) ?? token
+            guard optionName.hasPrefix("-"),
+                  !optionName.hasPrefix("--"),
+                  optionName.count > 2 else {
+                return false
+            }
+            return optionName.dropFirst().contains("t")
         }
     }
 

@@ -237,7 +237,7 @@ struct BrowserBridgeSecurityTests {
             route: .batch,
             currentURL: "https://github.com/owner/repo/actions",
             enabledBrowserAdapters: enabled
-        )?.contains("GitHub browser control is read-only") == true)
+        ) == nil)
         #expect(BrowserSiteActionPolicy.denialReason(
             route: .click,
             currentURL: "https://example.com/",

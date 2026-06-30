@@ -1858,23 +1858,11 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             baseAllowedTools: allowed,
             permissionManifest: context.permissionManifest
         )
-        let providerAllowed = usesDockerWorkspaceExecutor
-            ? DockerWorkspaceMCPProjection.removingNativeShellTools(baseProviderAllowed)
-            : baseProviderAllowed
         let runtimeSupportTools = AgentRuntimeProcessRunner.providerRuntimeSupportToolPermissions(
             for: id,
             permissionManifest: context.permissionManifest
         )
         let baseAskFirstTools = context.permissionManifest?.providerRender.askFirstTools ?? []
-        let askFirstTools = usesDockerWorkspaceExecutor
-            ? DockerWorkspaceMCPProjection.removingNativeShellTools(baseAskFirstTools)
-            : baseAskFirstTools
-        let artifactBootstrapTools = ProviderArtifactBootstrapPolicy.launchTools(
-            task: context.task,
-            permissionPolicy: providerLaunchPermissionPolicy,
-            providerAllowedTools: providerAllowed,
-            askFirstTools: askFirstTools
-        )
         let pathPrefix = AgentRuntimeProcessRunner.pathPrefix(for: context.task, taskEnv: taskEnv)
         let executable = context.executablePath.isEmpty ? CopilotCLIRuntime.detectPath() : context.executablePath
         let providerVersion = CopilotCLIRuntime.versionSummary(executablePath: executable)
@@ -1892,12 +1880,32 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             taskEnvironment: taskEnv,
             capabilities: capabilities
         )
+        let hostControlTools = HostControlPlaneRuntimeLaunchGuard.requiredTools(from: mcpProjection.hostControlEnvironment)
+        let routesControlPlaneThroughMCP = usesDockerWorkspaceExecutor || !hostControlTools.isEmpty
+        let providerAllowed = routesControlPlaneThroughMCP
+            ? DockerWorkspaceMCPProjection.removingNativeShellTools(baseProviderAllowed)
+            : baseProviderAllowed
+        let askFirstTools = routesControlPlaneThroughMCP
+            ? DockerWorkspaceMCPProjection.removingNativeShellTools(baseAskFirstTools)
+            : baseAskFirstTools
+        let artifactBootstrapTools = ProviderArtifactBootstrapPolicy.launchTools(
+            task: context.task,
+            permissionPolicy: providerLaunchPermissionPolicy,
+            providerAllowedTools: providerAllowed,
+            askFirstTools: askFirstTools
+        )
         let browserBridgeMetadata = BrowserBridgeRuntimeLaunchGuard.planMetadata(
             runtime: id,
             environment: taskEnv,
             mcpToolSupported: mcpProjection.browserBridgeMCPToolSupported
         )
         var localToolCommands = AgentRuntimeProcessRunner.copilotLocalToolCommands(for: context.task, contextText: context.contextText)
+        if !hostControlTools.isEmpty {
+            localToolCommands = HostControlPlaneRuntimeLaunchGuard.removingNativeLocalToolCommands(
+                localToolCommands,
+                requiredTools: hostControlTools
+            )
+        }
         if browserBridgeMetadata.isAttached && !mcpProjection.browserBridgeMCPToolSupported {
             localToolCommands.append("astra-browser")
         }

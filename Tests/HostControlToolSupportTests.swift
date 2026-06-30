@@ -28,6 +28,26 @@ struct HostControlToolSupportTests {
         ])
         #expect(errorMessage(deniedAuthTokenDisplayShortFlag)?.contains("does not allow GitHub operation") == true)
 
+        let deniedBundledAuthTokenDisplayShortFlag = try call(server, id: 13, tool: "github", arguments: [
+            "arguments": ["auth", "status", "-at"]
+        ])
+        #expect(errorMessage(deniedBundledAuthTokenDisplayShortFlag)?.contains("does not allow GitHub operation") == true)
+
+        let deniedJQEnvironmentRead = try call(server, id: 14, tool: "github", arguments: [
+            "arguments": ["auth", "status", "--json", "hosts", "--jq", "env"]
+        ])
+        #expect(errorMessage(deniedJQEnvironmentRead)?.contains("does not allow GitHub operation") == true)
+
+        let deniedWebLaunch = try call(server, id: 15, tool: "github", arguments: [
+            "arguments": ["pr", "view", "123", "--web"]
+        ])
+        #expect(errorMessage(deniedWebLaunch)?.contains("does not allow GitHub operation") == true)
+
+        let deniedWebLaunchShortFlag = try call(server, id: 16, tool: "github", arguments: [
+            "arguments": ["repo", "view", "owner/project", "-w"]
+        ])
+        #expect(errorMessage(deniedWebLaunchShortFlag)?.contains("does not allow GitHub operation") == true)
+
         let deniedAPI = try call(server, id: 2, tool: "github", arguments: [
             "arguments": ["api", "--method", "DELETE", "/repos/example/project"]
         ])

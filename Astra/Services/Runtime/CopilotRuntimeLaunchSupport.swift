@@ -196,6 +196,21 @@ enum HostControlPlaneRuntimeLaunchGuard {
         return "host-control MCP server for \(requiredTools.joined(separator: ", "))"
     }
 
+    static func removingNativeLocalToolCommands(_ commands: [String], requiredTools: [String]) -> [String] {
+        let executableNames = nativeExecutableNames(for: requiredTools)
+        guard !executableNames.isEmpty else { return commands }
+        return commands.filter { command in
+            guard let firstToken = command
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .split(separator: " ")
+                .first else {
+                return true
+            }
+            let executable = URL(fileURLWithPath: String(firstToken)).lastPathComponent.lowercased()
+            return !executableNames.contains(executable)
+        }
+    }
+
     private static func normalizedUniqueTools(_ tools: [String]) -> [String] {
         var seen: Set<String> = []
         return tools.compactMap { tool in
@@ -209,6 +224,17 @@ enum HostControlPlaneRuntimeLaunchGuard {
         value?
             .split(separator: ",")
             .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) } ?? []
+    }
+
+    private static func nativeExecutableNames(for requiredTools: [String]) -> Set<String> {
+        Set(normalizedUniqueTools(requiredTools).map { tool in
+            switch tool {
+            case "github":
+                return "gh"
+            default:
+                return tool
+            }
+        })
     }
 
     static func launchBlock(for plan: AgentRuntimeProcessLaunchPlan) -> AgentProcessResult? {

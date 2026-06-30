@@ -72,9 +72,10 @@ extension ShelfBrowserBridgeRoute {
              .doubleClick,
              .fill,
              .keypress,
-             .text,
-             .batch:
+             .text:
             return false
+        case .batch:
+            return true
         }
     }
 
