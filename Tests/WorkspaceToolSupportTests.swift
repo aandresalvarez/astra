@@ -324,10 +324,26 @@ struct WorkspaceToolSupportTests {
             "a=1 cmd=gcloud; $cmd auth list",
             "cmd='gcloud auth list'; $cmd",
             "${cmd:-gcloud} auth list",
+            "part=cl; g${part}oud auth list",
+            "cmd=x; ${cmd:+gcloud} auth list",
+            "${cmd:=gcloud} auth list",
             "env -S 'gcloud auth list'",
+            "env -S '-i gcloud auth list'",
+            "env -S 'FOO=bar gcloud auth list'",
             "env --split-string='gcloud auth list'",
             "exec -a harmless gcloud auth list",
             "eval 'gcloud auth list'",
+            "cmd=gcloud sh -c '$cmd auth list'",
+            "bash -c '$1 auth list' _ gcloud",
+            "bash -c 'exec \"$@\"' _ gcloud auth list",
+            "bash -c $'g\\143loud auth list'",
+            "command printf 'gcloud auth list\\n' | sh",
+            "printf 'gcloud auth list\\n' | env sh",
+            "$(printf gcloud) auth list",
+            "bash -c '$(printf gcloud) auth list'",
+            "g{cl,}oud auth list",
+            "coproc gcloud auth list",
+            "bash -c 'builtin eval gcloud auth list'",
             "python3 -c \"import subprocess; subprocess.run(['bq', 'ls'])\"",
             "python3 -c \"import subprocess; subprocess.run(['gh', 'api', 'repos/owner/repo'])\"",
             "python3 -c \"import subprocess; subprocess.run(('gcloud', 'auth', 'list'))\"",
@@ -337,7 +353,11 @@ struct WorkspaceToolSupportTests {
             "python3 -c \"import subprocess; subprocess.run(r'gcloud auth list', shell=True)\"",
             "python3 -c \"import subprocess; subprocess.run(shell=True, args='gcloud auth list')\"",
             "python3 -c \"import os; os.system('ssh deid-jsn-workbench hostname')\"",
-            "python3 -c \"import os; os.system(f'gcloud auth list')\""
+            "python3 -c \"import os; os.system(f'gcloud auth list')\"",
+            "python3 -c 'import os; os.system(\"\"\"gcloud auth list\"\"\")'",
+            "python3 -c \"import os; os.system('g\\x63loud auth list')\"",
+            "printf '\\147cloud auth list\\n' | sh",
+            "echo -e 'g\\x63loud auth list' | sh"
         ]
 
         for command in commands {
@@ -403,7 +423,8 @@ struct WorkspaceToolSupportTests {
             "command -v gcloud",
             "printf 'ssh\\n'",
             "echo gh api repo data",
-            "awk '/bq/ { print }' README.md"
+            "awk '/bq/ { print }' README.md",
+            "cat <<'EOF'\ngcloud auth list\nEOF"
         ]
 
         for command in commands {
