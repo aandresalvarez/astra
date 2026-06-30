@@ -402,6 +402,27 @@ struct WorkspaceAppPackageTests {
         })
     }
 
+    @Test("package validation rejects malformed data export descriptors")
+    func packageValidationRejectsMalformedDataExportDescriptors() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let packageURL = root.appendingPathComponent("malformed-exports.astra-app", isDirectory: true)
+        _ = try WorkspaceAppPackageService().exportPackage(manifest: Self.groceryManifest(), to: packageURL)
+
+        let exportsURL = packageURL.appendingPathComponent("storage/data/exports.json")
+        try FileManager.default.createDirectory(at: exportsURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data(#"{"path":"storage/data/sample/items.jsonl"}"#.utf8).write(to: exportsURL, options: [.atomic])
+        try Self.rewriteChecksums(at: packageURL)
+
+        let report = WorkspaceAppPackageService().validatePackage(at: packageURL)
+
+        #expect(!report.canInstall)
+        #expect(report.blockers.contains {
+            $0.path == "/storage/data/exports.json"
+                && $0.message.contains("Could not decode data exports")
+        })
+    }
+
     @Test("package validation rejects checksummed symlink resources before hashing")
     func packageValidationRejectsChecksummedSymlinkResourcesBeforeHashing() throws {
         let root = try Self.temporaryRoot()
@@ -436,7 +457,7 @@ struct WorkspaceAppPackageTests {
 
         #expect(!report.canInstall)
         #expect(report.blockers.contains {
-            $0.path == "/checksums.json/\(linkPath)"
+            $0.path == "/\(linkPath)"
                 && $0.message.contains("regular files")
         })
     }
@@ -494,6 +515,68 @@ struct WorkspaceAppPackageTests {
         })
         #expect(!report.blockers.contains {
             $0.path.hasPrefix("/checksums.json/")
+        })
+    }
+
+    @Test("package validation stops expensive checks after file resource budget failure")
+    func packageValidationStopsExpensiveChecksAfterFileResourceBudgetFailure() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let packageURL = root.appendingPathComponent("over-file-budget.astra-app", isDirectory: true)
+        _ = try WorkspaceAppPackageService().exportPackage(manifest: Self.groceryManifest(), to: packageURL)
+
+        let assetURL = packageURL.appendingPathComponent("assets/fixture.json")
+        try FileManager.default.createDirectory(at: assetURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data(#"{"fixture":"\#(String(repeating: "original", count: 20_000))"}"#.utf8).write(to: assetURL, options: [.atomic])
+        try Self.rewriteChecksums(at: packageURL)
+        try Data(#"{"fixture":"\#(String(repeating: "changed", count: 20_000))"}"#.utf8).write(to: assetURL, options: [.atomic])
+
+        var service = WorkspaceAppPackageService()
+        service.resourceReader.budget = WorkspaceAppPackageResourceBudget(
+            maxPackageBytes: 32 * 1_024 * 1_024,
+            maxFileBytes: 64 * 1_024,
+            maxScannedTextFileBytes: 2 * 1_024 * 1_024,
+            maxJSONLRows: 10_000,
+            maxJSONLLineBytes: 256 * 1_024
+        )
+
+        let report = service.validatePackage(at: packageURL)
+
+        #expect(!report.canInstall)
+        #expect(report.blockers.contains {
+            $0.path == "/assets/fixture.json"
+                && $0.message.lowercased().contains("package resource limit")
+        })
+        #expect(!report.blockers.contains {
+            $0.path.hasPrefix("/checksums.json/")
+        })
+    }
+
+    @Test("package validation counts hidden package entries toward resource budgets")
+    func packageValidationCountsHiddenPackageEntriesTowardResourceBudgets() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let packageURL = root.appendingPathComponent("hidden-payload.astra-app", isDirectory: true)
+        _ = try WorkspaceAppPackageService().exportPackage(manifest: Self.groceryManifest(), to: packageURL)
+
+        try Data(String(repeating: "hidden", count: 20_000).utf8)
+            .write(to: packageURL.appendingPathComponent(".payload"), options: [.atomic])
+
+        var service = WorkspaceAppPackageService()
+        service.resourceReader.budget = WorkspaceAppPackageResourceBudget(
+            maxPackageBytes: 32 * 1_024 * 1_024,
+            maxFileBytes: 64 * 1_024,
+            maxScannedTextFileBytes: 2 * 1_024 * 1_024,
+            maxJSONLRows: 10_000,
+            maxJSONLLineBytes: 256 * 1_024
+        )
+
+        let report = service.validatePackage(at: packageURL)
+
+        #expect(!report.canInstall)
+        #expect(report.blockers.contains {
+            $0.path == "/.payload"
+                && $0.message.lowercased().contains("package resource limit")
         })
     }
 

@@ -311,7 +311,8 @@ struct WorkspaceAppPackageService {
             path: "/checksums.json",
             issues: &issues
         )
-        let dataExportPaths = declaredDataExportPaths(in: packageURL)
+        let dataExports = dataExportsForValidation(in: packageURL, issues: &issues)
+        let dataExportPaths = Set(dataExports.map(\.path))
         let resourceBudgetPassed = validateResourceBudget(
             packageURL: packageURL,
             dataExportPaths: dataExportPaths,
@@ -350,7 +351,7 @@ struct WorkspaceAppPackageService {
             validateChecksums(declaredChecksums, packageURL: packageURL, issues: &issues)
             validateAllFilesAreChecksummed(declaredChecksums, packageURL: packageURL, issues: &issues)
         }
-        validateDataExports(package: package, packageURL: packageURL, issues: &issues)
+        validateDataExports(package: package, packageURL: packageURL, exports: dataExports, issues: &issues)
         validateNoForbiddenPortableContent(
             packageURL: packageURL,
             dataExportPaths: dataExportPaths,
@@ -564,7 +565,7 @@ struct WorkspaceAppPackageService {
         manifest: WorkspaceAppManifest,
         workspace: Workspace
     ) throws {
-        guard let exports = decodeDataExports(at: packageURL), !exports.isEmpty else { return }
+        guard let exports = try decodeDataExports(at: packageURL), !exports.isEmpty else { return }
         let databaseURL = URL(fileURLWithPath: WorkspaceFileLayout.appDatabaseFile(
             workspacePath: workspace.primaryPath,
             appID: manifest.app.id
@@ -581,13 +582,13 @@ struct WorkspaceAppPackageService {
         }
     }
 
-    private func decodeDataExports(at packageURL: URL) -> [WorkspaceAppPackageDataExport]? {
+    private func decodeDataExports(at packageURL: URL) throws -> [WorkspaceAppPackageDataExport]? {
         let url = packageURL
             .appendingPathComponent("storage", isDirectory: true)
             .appendingPathComponent("data", isDirectory: true)
             .appendingPathComponent("exports.json")
         guard fileManager.fileExists(atPath: url.path) else { return nil }
-        return try? JSONDecoder().decode(
+        return try JSONDecoder().decode(
             [WorkspaceAppPackageDataExport].self,
             from: resourceReader.data(at: url, relativePath: "/storage/data/exports.json")
         )
@@ -687,10 +688,10 @@ struct WorkspaceAppPackageService {
     private func validateDataExports(
         package: WorkspaceAppPackageManifest?,
         packageURL: URL,
+        exports: [WorkspaceAppPackageDataExport],
         issues: inout [WorkspaceAppPackageValidationReport.Issue]
     ) {
         guard let package else { return }
-        let exports = decodeDataExports(at: packageURL) ?? []
         if package.exportMode == .fullAppExport {
             issues.append(warning(
                 "/package.json/exportMode",
@@ -915,18 +916,23 @@ struct WorkspaceAppPackageService {
             return true
         } catch let error as WorkspaceAppPackageResourceError {
             issues.append(blocker(error.path ?? "/", error.localizedDescription))
-            if case .packageTooLarge = error {
-                return false
-            }
-            return true
+            return false
         } catch {
             issues.append(blocker("/", error.localizedDescription))
             return false
         }
     }
 
-    private func declaredDataExportPaths(in packageURL: URL) -> Set<String> {
-        Set((decodeDataExports(at: packageURL) ?? []).map(\.path))
+    private func dataExportsForValidation(
+        in packageURL: URL,
+        issues: inout [WorkspaceAppPackageValidationReport.Issue]
+    ) -> [WorkspaceAppPackageDataExport] {
+        do {
+            return try decodeDataExports(at: packageURL) ?? []
+        } catch {
+            issues.append(blocker("/storage/data/exports.json", "Could not decode data exports: \(error.localizedDescription)"))
+            return []
+        }
     }
 
     private func portableFilePaths(in packageURL: URL) -> [String] {
@@ -941,7 +947,7 @@ struct WorkspaceAppPackageService {
         guard let enumerator = fileManager.enumerator(
             at: packageURL,
             includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey, .isDirectoryKey],
-            options: [.skipsHiddenFiles]
+            options: []
         ) else {
             return []
         }
