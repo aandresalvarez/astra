@@ -275,6 +275,14 @@ struct HostControlToolSupportTests {
         #expect(limits.clampedTimeout(.nan) == 300)
     }
 
+    @Test("Host control process limits clamp huge finite configured timeout caps")
+    func hostControlProcessLimitsClampHugeFiniteConfiguredTimeoutCaps() {
+        let limits = HostControlProcessLimits(maximumTimeoutSeconds: .greatestFiniteMagnitude, outputByteLimit: 1024)
+
+        #expect(limits.maximumTimeoutSeconds == 86_400)
+        #expect(limits.clampedTimeout(.greatestFiniteMagnitude) == 86_400)
+    }
+
     @Test("Host control default process runner uses server process limits")
     func hostControlDefaultProcessRunnerUsesServerProcessLimits() throws {
         let root = FileManager.default.temporaryDirectory
@@ -530,6 +538,28 @@ struct HostControlToolSupportTests {
             let timeout = try #require(properties["timeout_seconds"] as? [String: Any])
             let description = try #require(timeout["description"] as? String)
             #expect(description.contains("capped at 300 seconds"))
+            #expect(!description.lowercased().contains("nan"))
+        }
+    }
+
+    @Test("Host control tool schemas never describe huge finite timeout caps")
+    func hostControlToolSchemasNeverDescribeHugeFiniteTimeoutCaps() throws {
+        let server = HostControlMCPServer(
+            configuration: HostControlToolConfiguration(githubExecutable: "/usr/bin/gh"),
+            processLimits: HostControlProcessLimits(maximumTimeoutSeconds: .greatestFiniteMagnitude, outputByteLimit: 1024)
+        )
+
+        let list = try parseJSON(try #require(server.handleLine(#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#)))
+        let listResult = try #require(list["result"] as? [String: Any])
+        let tools = try #require(listResult["tools"] as? [[String: Any]])
+
+        for tool in tools {
+            let inputSchema = try #require(tool["inputSchema"] as? [String: Any])
+            let properties = try #require(inputSchema["properties"] as? [String: Any])
+            let timeout = try #require(properties["timeout_seconds"] as? [String: Any])
+            let description = try #require(timeout["description"] as? String)
+            #expect(description.contains("capped at 86400 seconds"))
+            #expect(!description.lowercased().contains("inf"))
             #expect(!description.lowercased().contains("nan"))
         }
     }

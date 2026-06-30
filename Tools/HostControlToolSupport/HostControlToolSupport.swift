@@ -249,6 +249,7 @@ public struct HostControlCommandResult: Equatable, Sendable {
 public struct HostControlProcessLimits: Equatable, Sendable {
     public static let standard = HostControlProcessLimits()
     private static let defaultMaximumTimeoutSeconds: TimeInterval = 300
+    private static let maximumConfigurableTimeoutSeconds: TimeInterval = 24 * 60 * 60
 
     public var maximumTimeoutSeconds: TimeInterval
     public var outputByteLimit: Int
@@ -258,7 +259,7 @@ public struct HostControlProcessLimits: Equatable, Sendable {
         outputByteLimit: Int = 256 * 1024
     ) {
         let finiteMaximum = maximumTimeoutSeconds.isFinite ? maximumTimeoutSeconds : Self.defaultMaximumTimeoutSeconds
-        self.maximumTimeoutSeconds = max(1, finiteMaximum)
+        self.maximumTimeoutSeconds = min(max(1, finiteMaximum), Self.maximumConfigurableTimeoutSeconds)
         self.outputByteLimit = max(1, outputByteLimit)
     }
 
