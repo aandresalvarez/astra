@@ -9,6 +9,7 @@ struct CapabilityCatalogPolicyContext: Equatable {
     var installedPackageIDs: Set<String>
     var enabledPackageIDs: Set<String>
     var approvalRecords: [CapabilityApprovalRecord]
+    var packPolicy: PackResolvedPolicy
 
     init(
         userRoleIDs: Set<String> = [],
@@ -17,7 +18,8 @@ struct CapabilityCatalogPolicyContext: Equatable {
         currentAppVersion: SemanticVersion = SemanticVersion(string: AppBuildInfo.current.version) ?? SemanticVersion(0, 0, 0),
         installedPackageIDs: Set<String> = [],
         enabledPackageIDs: Set<String> = [],
-        approvalRecords: [CapabilityApprovalRecord] = []
+        approvalRecords: [CapabilityApprovalRecord] = [],
+        packPolicy: PackResolvedPolicy = .empty
     ) {
         self.userRoleIDs = Self.normalizedSet(userRoleIDs)
         self.workspaceTags = Self.normalizedSet(workspaceTags)
@@ -26,6 +28,7 @@ struct CapabilityCatalogPolicyContext: Equatable {
         self.installedPackageIDs = installedPackageIDs
         self.enabledPackageIDs = enabledPackageIDs
         self.approvalRecords = approvalRecords
+        self.packPolicy = packPolicy
     }
 
     private static func normalizedSet(_ values: Set<String>) -> Set<String> {
@@ -42,13 +45,17 @@ struct CapabilityCatalogPolicyContext: Equatable {
     static func currentUser(
         workspace: Workspace,
         currentAppVersion: SemanticVersion = SemanticVersion(string: AppBuildInfo.current.version) ?? SemanticVersion(0, 0, 0),
-        approvalRecords: [CapabilityApprovalRecord]
+        approvalRecords: [CapabilityApprovalRecord],
+        packPolicy: PackResolvedPolicy? = nil,
+        packPolicyResolver: (Workspace) -> PackResolvedPolicy = { PackWorkspacePolicyProvider.resolvedPolicy(for: $0) }
     ) -> CapabilityCatalogPolicyContext {
         workspaceUser(
             workspace: workspace,
             isAdmin: true,
             currentAppVersion: currentAppVersion,
-            approvalRecords: approvalRecords
+            approvalRecords: approvalRecords,
+            packPolicy: packPolicy,
+            packPolicyResolver: packPolicyResolver
         )
     }
 
@@ -58,7 +65,9 @@ struct CapabilityCatalogPolicyContext: Equatable {
         workspaceTags: Set<String> = [],
         isAdmin: Bool = false,
         currentAppVersion: SemanticVersion = SemanticVersion(string: AppBuildInfo.current.version) ?? SemanticVersion(0, 0, 0),
-        approvalRecords: [CapabilityApprovalRecord] = []
+        approvalRecords: [CapabilityApprovalRecord] = [],
+        packPolicy: PackResolvedPolicy? = nil,
+        packPolicyResolver: (Workspace) -> PackResolvedPolicy = { PackWorkspacePolicyProvider.resolvedPolicy(for: $0) }
     ) -> CapabilityCatalogPolicyContext {
         CapabilityCatalogPolicyContext(
             userRoleIDs: userRoleIDs,
@@ -67,7 +76,8 @@ struct CapabilityCatalogPolicyContext: Equatable {
             currentAppVersion: currentAppVersion,
             installedPackageIDs: workspace.installedPluginIDSet,
             enabledPackageIDs: Set(workspace.enabledCapabilityIDs),
-            approvalRecords: approvalRecords
+            approvalRecords: approvalRecords,
+            packPolicy: packPolicy ?? packPolicyResolver(workspace)
         )
     }
 }
@@ -85,6 +95,8 @@ enum CapabilityCatalogBlocker: Equatable {
     case missingDependency(String)
     case conflictsWith(String)
     case approvalDigestMismatch
+    case packPolicyRestricted(String)
+    case packPolicyReviewRequired(String)
     case unsafeLocalTool(name: String, reason: String)
     case unsafeConnector(name: String, reason: String)
     case unsafeMCPServer(name: String, reason: String)
@@ -115,6 +127,10 @@ enum CapabilityCatalogBlocker: Equatable {
             return "Capability conflicts with \(conflict)."
         case .approvalDigestMismatch:
             return "Capability contents changed after approval and require review again."
+        case .packPolicyRestricted(let message):
+            return message
+        case .packPolicyReviewRequired(let message):
+            return message
         case .unsafeLocalTool(let name, let reason):
             return "Local tool \(name) is unsafe: \(reason)."
         case .unsafeConnector(let name, let reason):
@@ -129,6 +145,7 @@ enum CapabilityCatalogWarning: Equatable {
     case deprecated
     case highRisk(CapabilityRiskLevel)
     case explicitUserConsentRequired
+    case packPolicyWarning(String)
 
     var message: String {
         switch self {
@@ -138,6 +155,8 @@ enum CapabilityCatalogWarning: Equatable {
             return "Capability is marked \(risk.rawValue) risk."
         case .explicitUserConsentRequired:
             return "Capability requires explicit user consent before use."
+        case .packPolicyWarning(let message):
+            return message
         }
     }
 }
@@ -151,6 +170,7 @@ struct CapabilityCatalogDecision: Equatable {
     var requiresApproval: Bool
     var blockers: [CapabilityCatalogBlocker]
     var warnings: [CapabilityCatalogWarning]
+    var policyEvidence: [PackPolicyEvidence]
 
     var blockerMessages: [String] {
         blockers.map(\.message)
@@ -165,7 +185,7 @@ struct CapabilityCatalogDecision: Equatable {
     var hasNonApprovalBlockers: Bool {
         blockers.contains { blocker in
             switch blocker {
-            case .draftRequiresApproval, .adminApprovalRequired, .approvalDigestMismatch:
+            case .draftRequiresApproval, .adminApprovalRequired, .approvalDigestMismatch, .packPolicyReviewRequired:
                 return false
             default:
                 return true
@@ -185,6 +205,7 @@ enum CapabilityCatalogPolicy {
         var visibilityBlockers: [CapabilityCatalogBlocker] = []
         var operationalBlockers = approvalEvaluation.blockers
         var warnings: [CapabilityCatalogWarning] = []
+        var policyEvidence: [PackPolicyEvidence] = [PackResolvedPolicy.coreFloorEvidence]
 
         if governance.approvalStatus == .blocked {
             operationalBlockers.append(.blockedApprovalStatus)
@@ -301,6 +322,35 @@ enum CapabilityCatalogPolicy {
             }
         }
 
+        let packPolicy = context.packPolicy
+        if packPolicy.hasUnresolvedEnabledPacks {
+            let evidence = packPolicy.unresolvedEnabledPackEvidence
+            operationalBlockers.append(.packPolicyRestricted(packPolicyMessage(from: evidence)))
+            appendUniqueEvidence(evidence, to: &policyEvidence)
+        }
+        let hiddenEvidence = packPolicy.hiddenEvidence(for: package)
+        if !hiddenEvidence.isEmpty {
+            visibilityBlockers.append(.packPolicyRestricted(packPolicyMessage(from: hiddenEvidence)))
+            appendUniqueEvidence(hiddenEvidence, to: &policyEvidence)
+        }
+        let disabledEvidence = packPolicy.disabledEvidence(for: package)
+        if !disabledEvidence.isEmpty {
+            operationalBlockers.append(.packPolicyRestricted(packPolicyMessage(from: disabledEvidence)))
+            appendUniqueEvidence(disabledEvidence, to: &policyEvidence)
+        }
+        let reviewEvidence = packPolicy.reviewGateEvidence(for: package)
+        if !reviewEvidence.isEmpty {
+            appendUniqueEvidence(reviewEvidence, to: &policyEvidence)
+            if !hasApprovedReviewRecord(for: package, context: context) {
+                operationalBlockers.append(.packPolicyReviewRequired(packPolicyMessage(from: reviewEvidence)))
+            }
+        }
+        let warningEvidence = packPolicy.warningEvidence(for: package)
+        for evidence in warningEvidence {
+            warnings.append(.packPolicyWarning(evidence.message))
+        }
+        appendUniqueEvidence(warningEvidence, to: &policyEvidence)
+
         let isVisible = visibilityBlockers.isEmpty
         let blockers = uniqueBlockers(visibilityBlockers + operationalBlockers)
         let canInstall = isVisible && blockers.isEmpty
@@ -317,6 +367,10 @@ enum CapabilityCatalogPolicy {
             || operationalBlockers.contains(.draftRequiresApproval)
             || operationalBlockers.contains(.adminApprovalRequired)
             || operationalBlockers.contains(.approvalDigestMismatch)
+            || operationalBlockers.contains { blocker in
+                if case .packPolicyReviewRequired = blocker { return true }
+                return false
+            }
 
         return CapabilityCatalogDecision(
             governance: governance,
@@ -326,7 +380,8 @@ enum CapabilityCatalogPolicy {
             canRun: canRun,
             requiresApproval: requiresApproval,
             blockers: blockers,
-            warnings: uniqueWarnings(warnings)
+            warnings: uniqueWarnings(warnings),
+            policyEvidence: policyEvidence
         )
     }
 
@@ -449,5 +504,33 @@ enum CapabilityCatalogPolicy {
             unique.append(warning)
         }
         return unique
+    }
+
+    private static func appendUniqueEvidence(
+        _ evidence: [PackPolicyEvidence],
+        to target: inout [PackPolicyEvidence]
+    ) {
+        for entry in evidence where !target.contains(entry) {
+            target.append(entry)
+        }
+    }
+
+    private static func packPolicyMessage(from evidence: [PackPolicyEvidence]) -> String {
+        evidence.first?.message ?? "Capability is restricted by an enabled ASTRA pack policy."
+    }
+
+    private static func hasApprovedReviewRecord(
+        for package: PluginPackage,
+        context: CapabilityCatalogPolicyContext
+    ) -> Bool {
+        guard let digest = try? CapabilityApprovalDigest.digest(for: package) else {
+            return false
+        }
+        return context.approvalRecords.contains {
+            $0.packageID == package.id
+                && $0.packageVersion == package.version
+                && $0.sourceDigest == digest
+                && $0.status == .approved
+        }
     }
 }

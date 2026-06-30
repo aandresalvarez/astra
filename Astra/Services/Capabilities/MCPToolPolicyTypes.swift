@@ -49,6 +49,7 @@ enum MCPToolPolicyDenialReason: String, Sendable, Equatable {
     case missingScope = "missing_scope"
     case generatedAppWriteRequiresNativeApproval = "generated_app_write_requires_native_approval"
     case nativeApprovalRequired = "native_approval_required"
+    case packPolicyNativeApprovalRequired = "pack_policy_native_approval_required"
     case rateLimited = "rate_limited"
 }
 
@@ -57,17 +58,34 @@ struct MCPToolPolicyDecision: Sendable, Equatable {
     var denialReason: MCPToolPolicyDenialReason?
     var access: MCPToolAccessLevel?
     var missingScopes: Set<MCPToolPolicyScope>
+    var policyEvidence: [PackPolicyEvidence]
 
-    static func allow(access: MCPToolAccessLevel) -> MCPToolPolicyDecision {
-        MCPToolPolicyDecision(isAllowed: true, denialReason: nil, access: access, missingScopes: [])
+    static func allow(
+        access: MCPToolAccessLevel,
+        policyEvidence: [PackPolicyEvidence] = []
+    ) -> MCPToolPolicyDecision {
+        MCPToolPolicyDecision(
+            isAllowed: true,
+            denialReason: nil,
+            access: access,
+            missingScopes: [],
+            policyEvidence: policyEvidence
+        )
     }
 
     static func deny(
         _ reason: MCPToolPolicyDenialReason,
         access: MCPToolAccessLevel? = nil,
-        missingScopes: Set<MCPToolPolicyScope> = []
+        missingScopes: Set<MCPToolPolicyScope> = [],
+        policyEvidence: [PackPolicyEvidence] = []
     ) -> MCPToolPolicyDecision {
-        MCPToolPolicyDecision(isAllowed: false, denialReason: reason, access: access, missingScopes: missingScopes)
+        MCPToolPolicyDecision(
+            isAllowed: false,
+            denialReason: reason,
+            access: access,
+            missingScopes: missingScopes,
+            policyEvidence: policyEvidence
+        )
     }
 }
 
@@ -80,6 +98,7 @@ struct MCPToolPolicyRequest: @unchecked Sendable {
     var caller: MCPToolPolicyCaller
     var grantedScopes: Set<MCPToolPolicyScope>
     var nativeApproval: MCPToolNativeApproval?
+    var packPolicy: PackResolvedPolicy
     var now: Date
     var arguments: [String: AnySendable]
 
@@ -92,6 +111,8 @@ struct MCPToolPolicyRequest: @unchecked Sendable {
         caller: MCPToolPolicyCaller,
         grantedScopes: Set<MCPToolPolicyScope>,
         nativeApproval: MCPToolNativeApproval?,
+        packPolicy: PackResolvedPolicy? = nil,
+        packPolicyResolver: (Workspace?) -> PackResolvedPolicy = { PackWorkspacePolicyProvider.resolvedPolicy(for: $0) },
         now: Date,
         arguments: [String: AnySendable] = [:]
     ) {
@@ -103,6 +124,7 @@ struct MCPToolPolicyRequest: @unchecked Sendable {
         self.caller = caller
         self.grantedScopes = grantedScopes
         self.nativeApproval = nativeApproval
+        self.packPolicy = packPolicy ?? packPolicyResolver(workspace)
         self.now = now
         self.arguments = arguments
     }
@@ -120,6 +142,7 @@ struct MCPToolPolicyAuditRecord: Sendable, Equatable {
     var requiredScopes: String
     var missingScopes: String
     var denialReason: String
+    var policyEvidence: String
 
     var fields: [String: String] {
         [
@@ -133,7 +156,8 @@ struct MCPToolPolicyAuditRecord: Sendable, Equatable {
             "granted_scopes": grantedScopes,
             "required_scopes": requiredScopes,
             "missing_scopes": missingScopes,
-            "denial_reason": denialReason
+            "denial_reason": denialReason,
+            "policy_evidence": policyEvidence
         ]
     }
 }

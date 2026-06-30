@@ -913,6 +913,55 @@ struct TaskCapabilityResolverTests {
         #expect(prompt.contains("https://stanfordmed.atlassian.net"))
     }
 
+    @Test("Enabled DevOps pack does not activate GitHub runtime resources")
+    func enabledDevOpsPackDoesNotActivateGitHubRuntimeResources() throws {
+        let manifest = try #require(
+            AstraPackCatalog(localStorageRoot: nil).load().packs.first { $0.id == "astra.pack.devops" }
+        )
+        #expect(manifest.capabilityPackageIDs == ["github-workflow"])
+
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+
+        let workspace = Workspace(name: "DevOps Pack Only", primaryPath: "/tmp/devops-pack-only")
+        workspace.enabledPackIDs = [manifest.id]
+        context.insert(workspace)
+
+        let githubSkill = Skill(
+            name: "GitHub Agent",
+            allowedTools: ["Read", "Bash"],
+            behaviorInstructions: "Use the GitHub CLI for pull request and CI work."
+        )
+        githubSkill.isGlobal = true
+        context.insert(githubSkill)
+
+        let githubTool = LocalTool(
+            name: "gh — GitHub CLI",
+            toolDescription: "Run GitHub CLI commands",
+            toolType: "cli",
+            command: "gh"
+        )
+        githubTool.isGlobal = true
+        context.insert(githubTool)
+
+        let task = AgentTask(
+            title: "Review PR Queue",
+            goal: "Summarize the PR Queue and CI Review app template.",
+            workspace: workspace
+        )
+        context.insert(task)
+        try context.save()
+
+        let resolver = TaskCapabilityResolver(task: task)
+        #expect(resolver.allBehaviorSkills.map(\.name).isEmpty)
+        #expect(resolver.allLocalTools.map(\.command).isEmpty)
+
+        let prompt = AgentPromptBuilder.buildPrompt(for: task)
+        #expect(!prompt.contains("[GitHub Agent]:"))
+        #expect(!prompt.contains("gh — GitHub CLI"))
+        #expect(!prompt.contains("Use the GitHub CLI for pull request and CI work."))
+    }
+
     @Test("Provider launch keeps connector owned by selected skill")
     func providerLaunchKeepsConnectorOwnedBySelectedSkill() throws {
         let container = try makeTaskCapabilityResolverContainer()
@@ -2339,6 +2388,89 @@ struct TaskCapabilityResolverTests {
         #expect(AgentRuntimeProcessRunner.scopedEnvironmentVariables(for: task, contextText: contextText)["ASTRA_BROWSER_URL"] == nil)
     }
 
+    @Test("Pack-hidden browser shelf suppresses runtime browser bridge")
+    func packHiddenBrowserShelfSuppressesRuntimeBrowserBridge() throws {
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+
+        let workspace = Workspace(name: "DevOps Browser Hidden Workspace", primaryPath: "/tmp/devops-browser-hidden")
+        workspace.enabledPackIDs = ["astra.pack.devops"]
+        context.insert(workspace)
+
+        let task = AgentTask(
+            title: "Inspect current browser page",
+            goal: "Use the ASTRA browser to inspect the current page.",
+            workspace: workspace
+        )
+        context.insert(task)
+        try context.save()
+
+        let policy = AstraPackWorkspaceProfileProvider.shelfAvailabilityPolicy(for: workspace)
+        let shelfContext = ShelfAvailabilityPolicy.Context(
+            hasOpenTaskThread: true,
+            hasWorkspaceContext: true,
+            hasPlanContent: false,
+            hasFilesShelfContent: false,
+            hasQueryShelfContent: false,
+            isComposingWorkspaceApp: false,
+            activeShelfID: nil
+        )
+        #expect(!policy.canPresent(.browser, in: shelfContext))
+
+        ShelfBrowserBridgeRegistry.shared.update(
+            endpoint: "http://127.0.0.1:49152",
+            currentURL: "https://example.com/dashboard",
+            currentTitle: "Dashboard",
+            taskID: task.id,
+            isPresented: true,
+            isEnabled: true
+        )
+        defer { ShelfBrowserBridgeRegistry.shared.reset() }
+
+        let contextText = "Use the ASTRA browser to inspect the current page."
+
+        #expect(!TaskCapabilityResolver.shouldExposeBrowserBridge(for: task, contextText: contextText))
+        let scope = TaskCapabilityResolver(task: task).promptScope(contextText: contextText)
+        #expect(!scope.localTools.contains { $0.command == "astra-browser" })
+        #expect(AgentRuntimeProcessRunner.scopedEnvironmentVariables(for: task, contextText: contextText)["ASTRA_BROWSER_URL"] == nil)
+    }
+
+    @Test("Supplied shelf policy controls runtime browser bridge exposure")
+    func suppliedShelfPolicyControlsRuntimeBrowserBridgeExposure() throws {
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+
+        let workspace = Workspace(name: "Browser Policy Workspace", primaryPath: "/tmp/browser-policy")
+        context.insert(workspace)
+        let task = AgentTask(
+            title: "Inspect current browser page",
+            goal: "Use the ASTRA browser to inspect the current page.",
+            workspace: workspace
+        )
+        context.insert(task)
+        try context.save()
+
+        ShelfBrowserBridgeRegistry.shared.update(
+            endpoint: "http://127.0.0.1:49152",
+            currentURL: "https://example.com/dashboard",
+            currentTitle: "Dashboard",
+            taskID: task.id,
+            isPresented: true,
+            isEnabled: true
+        )
+        defer { ShelfBrowserBridgeRegistry.shared.reset() }
+
+        let contextText = "Use the ASTRA browser to inspect the current page."
+        let disabledBrowserPolicy = ShelfAvailabilityPolicy(disabledShelfIDs: [.browser])
+
+        #expect(TaskCapabilityResolver.shouldExposeBrowserBridge(for: task, contextText: contextText))
+        #expect(!TaskCapabilityResolver.shouldExposeBrowserBridge(
+            for: task,
+            contextText: contextText,
+            shelfAvailabilityPolicy: disabledBrowserPolicy
+        ))
+    }
+
     @Test("Browser adapters require runnable catalog policy")
     func browserAdaptersRequireRunnableCatalogPolicy() throws {
         let workspace = Workspace(name: "Draft Browser Workspace", primaryPath: "/tmp/draft-browser-workspace")
@@ -2388,6 +2520,80 @@ struct TaskCapabilityResolverTests {
             packages: [draftPackage]
         )
         #expect(explicitlyBlocked.isEmpty)
+    }
+
+    @Test("Pack capability filters load approval store when package governance can be approval-overridden")
+    func packCapabilityFiltersLoadApprovalStoreWhenPackageGovernanceCanBeApprovalOverridden() throws {
+        let workspace = Workspace(name: "Approved Draft Workspace", primaryPath: "/tmp/approved-draft-workspace")
+        workspace.enabledCapabilityIDs = ["draft-approved-tool"]
+        let draftPackage = PluginPackage(
+            id: "draft-approved-tool",
+            name: "Draft Approved Tool",
+            icon: "terminal",
+            description: "Draft tool approved outside pack policy.",
+            author: "Tests",
+            category: "Tools",
+            tags: [],
+            version: "1.0.0",
+            skills: [],
+            connectors: [],
+            localTools: [
+                PluginLocalTool(
+                    name: "Echo",
+                    description: "Echo",
+                    icon: "terminal",
+                    toolType: "cli",
+                    command: "echo",
+                    arguments: ""
+                )
+            ],
+            templates: [],
+            governance: .localDraft()
+        )
+        let approval = CapabilityApprovalRecord(
+            packageID: draftPackage.id,
+            packageVersion: draftPackage.version,
+            status: .approved,
+            approvedBy: "Security",
+            approvedAt: Date(),
+            reviewNotes: "Reviewed",
+            sourceDigest: try CapabilityApprovalDigest.digest(for: draftPackage)
+        )
+        let packPolicy = AstraPackPolicyResolver.resolve(
+            composition: AstraPackComposition.resolve(packs: [
+                AstraPackManifest(
+                    id: "astra.pack.disables-other-tool",
+                    name: "Disables Other Tool",
+                    version: "1.0.0",
+                    coreAPIVersion: "1.0",
+                    description: "Disables a different package without requiring review gates.",
+                    policyRestrictions: [
+                        AstraPackPolicyRestriction(
+                            id: "disable-other",
+                            contributionKind: "capabilityPackage",
+                            action: "disableCapability",
+                            effect: "restrict",
+                            targetID: "other-tool"
+                        )
+                    ]
+                )
+            ])
+        )
+        var didLoadApprovals = false
+        let enabled = CapabilityRuntimeResourceMatcher.withApprovalRecordsLoaderForTesting({
+            didLoadApprovals = true
+            return [approval]
+        }) {
+            CapabilityRuntimeResourceMatcher.enabledPackages(
+                for: workspace,
+                in: [draftPackage],
+                approvalRecords: nil,
+                packPolicy: packPolicy
+            )
+        }
+
+        #expect(didLoadApprovals)
+        #expect(enabled.map(\.id) == ["draft-approved-tool"])
     }
 
     @Test("Runtime integrity reports unknown browser adapter IDs")

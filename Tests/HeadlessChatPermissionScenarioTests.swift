@@ -289,7 +289,7 @@ extension HeadlessChatScenarioTests {
             model: "gpt-5",
             tokenBudget: 200_000
         )
-        let queue = TaskQueue(poolSize: 1)
+        let queue = TaskQueue.scenarioQueue(poolSize: 1)
         queue.applySettings(
             claudePath: nil,
             copilotPath: copilotPath,
@@ -385,7 +385,7 @@ extension HeadlessChatScenarioTests {
         ))
         try harness.context.save()
 
-        let queue = TaskQueue(poolSize: 1)
+        let queue = TaskQueue.scenarioQueue(poolSize: 1)
         queue.applySettings(
             claudePath: nil,
             copilotPath: copilotPath,
@@ -474,7 +474,7 @@ extension HeadlessChatScenarioTests {
         harness.context.insert(permissionEvent)
         try harness.context.save()
 
-        let queue = TaskQueue(poolSize: 1)
+        let queue = TaskQueue.scenarioQueue(poolSize: 1)
         queue.applySettings(
             claudePath: nil,
             copilotPath: copilotPath,
@@ -555,7 +555,7 @@ extension HeadlessChatScenarioTests {
         ))
         try harness.context.save()
 
-        let queue = TaskQueue(poolSize: 1)
+        let queue = TaskQueue.scenarioQueue(poolSize: 1)
         queue.applySettings(
             claudePath: nil,
             copilotPath: copilotPath,
@@ -618,7 +618,7 @@ extension HeadlessChatScenarioTests {
             model: "claude-sonnet-4-6",
             tokenBudget: 200_000
         )
-        let queue = TaskQueue(poolSize: 1)
+        let queue = TaskQueue.scenarioQueue(poolSize: 1)
         queue.applySettings(
             claudePath: claudePath,
             copilotPath: nil,
@@ -697,7 +697,7 @@ extension HeadlessChatScenarioTests {
             )
         )
 
-        let queue = TaskQueue(poolSize: 1)
+        let queue = TaskQueue.scenarioQueue(poolSize: 1)
         queue.applySettings(
             claudePath: claudePath,
             copilotPath: nil,
@@ -827,7 +827,7 @@ extension HeadlessChatScenarioTests {
         ))
         try harness.context.save()
 
-        let queue = TaskQueue(poolSize: 1)
+        let queue = TaskQueue.scenarioQueue(poolSize: 1)
         queue.applySettings(
             claudePath: claudePath,
             copilotPath: nil,
@@ -901,7 +901,7 @@ extension HeadlessChatScenarioTests {
         ))
         try harness.context.save()
 
-        let queue = TaskQueue(poolSize: 1)
+        let queue = TaskQueue.scenarioQueue(poolSize: 1)
         queue.applySettings(
             claudePath: claudePath,
             copilotPath: nil,
@@ -991,7 +991,7 @@ extension HeadlessChatScenarioTests {
         harness.context.insert(latestEvent)
         try harness.context.save()
 
-        let queue = TaskQueue(poolSize: 1)
+        let queue = TaskQueue.scenarioQueue(poolSize: 1)
         queue.applySettings(
             claudePath: claudePath,
             copilotPath: nil,

@@ -114,6 +114,7 @@ struct ContentView: View {
     @AppStorage("isWorkspaceRightRailVisible") private var isWorkspaceRightRailVisible = true
     @AppStorage(WorkspaceRecoveryService.recoveryNoticeKey) private var recoveryNotice = ""
     @State private var activeWorkspaceCanvasItem: WorkspaceCanvasItem?
+    @State private var pendingAppPreviewPolicyRestore = false
     @State private var browserToolbarEngine = ShelfBrowserEngine.embedded
     // MARK: Sidebar Presentation
     /// The single owner of sidebar visibility — docked column, floating overlay
@@ -144,6 +145,8 @@ struct ContentView: View {
     @State private var selectedTaskPreferredMarkdownPath = ""
     @State private var selectedTaskHasQueryShelfContent = false
     @State private var selectedTaskPreferredQueryPath = ""
+    @State private var cachedShelfAvailabilityPolicy = ShelfAvailabilityPolicy()
+    @State private var cachedShelfAvailabilityPolicySignature = ""
     @State private var rememberedWorkspaceCanvasItemsRaw = WorkspaceCanvasItemPreferenceStore.load()
     /// First-run flag. Flips to true once the user finishes the
     /// onboarding wizard. Exposed via Settings → "Show Onboarding Again"
@@ -338,19 +341,65 @@ struct ContentView: View {
         selectedTask != nil || isComposingTask
     }
 
-    private var hasQueryShelfAffordance: Bool {
-        activeWorkspaceCanvasItem == .query
-            || selectedTaskHasQueryShelfContent
+    private var shelfAvailabilityPolicy: ShelfAvailabilityPolicy {
+        guard cachedShelfAvailabilityPolicySignature == shelfAvailabilityPolicyRefreshSignature else {
+            return loadingShelfAvailabilityPolicy
+        }
+        return cachedShelfAvailabilityPolicy
+    }
+
+    private var loadingShelfAvailabilityPolicy: ShelfAvailabilityPolicy {
+        shelfAvailabilityPolicyWorkspaceHasEnabledPacks
+            ? .loadingForPackEnabledWorkspace()
+            : ShelfAvailabilityPolicy()
+    }
+
+    private var shelfAvailabilityPolicyRefreshSignature: String {
+        guard let workspace = effectiveWorkspace else { return "no-workspace" }
+        let enabledPacks = workspace.enabledPackIDs
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .sorted()
+            .joined(separator: ",")
+        let overrides = workspace.shelfVisibilityOverrides
+            .sorted { $0.key < $1.key }
+            .map { "\($0.key)=\($0.value)" }
+            .joined(separator: ",")
+        return [
+            workspace.id.uuidString,
+            enabledPacks,
+            overrides
+        ].joined(separator: "|")
+    }
+
+    private var shelfAvailabilityPolicyWorkspaceHasEnabledPacks: Bool {
+        effectiveWorkspace?.enabledPackIDs.contains {
+            !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        } ?? false
+    }
+
+    private var shelfAvailabilityContext: ShelfAvailabilityPolicy.Context {
+        ShelfAvailabilityPolicy.Context(
+            hasOpenTaskThread: hasOpenTaskThread,
+            hasWorkspaceContext: effectiveWorkspace != nil,
+            hasPlanContent: hasWorkspaceCanvasContent,
+            hasFilesShelfContent: selectedTaskHasMarkdownShelfContent,
+            hasQueryShelfContent: selectedTaskHasQueryShelfContent,
+            isComposingWorkspaceApp: isComposingWorkspaceApp,
+            activeShelfID: activeWorkspaceCanvasItem?.shelfID
+        )
     }
 
     private var topRightActions: WorkspaceTopRightActions {
-        WorkspaceTopRightActions(
+        let policy = shelfAvailabilityPolicy
+        let context = shelfAvailabilityContext
+        return WorkspaceTopRightActions(
             hasWorkspace: effectiveWorkspace != nil,
-            canShowPlanShelf: hasOpenTaskThread && hasWorkspaceCanvasContent,
-            canShowTextShelf: effectiveWorkspace != nil || activeWorkspaceCanvasItem == .markdown,
-            canShowBrowserShelf: hasOpenTaskThread,
-            canShowQueryShelf: hasOpenTaskThread && hasQueryShelfAffordance,
-            canShowAppPreviewShelf: isComposingWorkspaceApp,
+            canShowPlanShelf: policy.isToolbarAvailable(.plan, in: context),
+            canShowTextShelf: policy.isToolbarAvailable(.files, in: context),
+            canShowBrowserShelf: policy.isToolbarAvailable(.browser, in: context),
+            canShowQueryShelf: policy.isToolbarAvailable(.query, in: context),
+            canShowAppPreviewShelf: policy.isToolbarAvailable(.appPreview, in: context),
             activeCanvasItem: activeWorkspaceCanvasItem,
             browserEngine: browserToolbarEngine,
             isRightRailVisible: isWorkspaceRightRailVisible
@@ -568,6 +617,7 @@ struct ContentView: View {
             onCreateWorkspace: createWorkspace,
             onImportWorkspace: importWorkspace,
             onOpenGeneratedFile: openGeneratedFile,
+            canOpenGeneratedFileInShelf: canOpenGeneratedFileInShelf,
             onOpenWorkspaceFile: openWorkspaceFileInShelf,
             isComposingWorkspaceApp: isComposingWorkspaceApp,
             studioSession: workspaceAppStudioSession,
@@ -614,13 +664,19 @@ struct ContentView: View {
         if let workspace = targetWorkspace ?? effectiveWorkspace {
             workspaceAppStudioSession.reset(for: workspace, existingManifest: existingManifest, initialPrompt: initialPrompt)
         }
-        setActiveWorkspaceCanvasItem(.appPreview, remember: false)
+        let appPreviewItem = WorkspaceCanvasPolicyTransition.itemAfterAppStudioStart(
+            policy: shelfAvailabilityPolicy,
+            context: shelfAvailabilityContext
+        )
+        pendingAppPreviewPolicyRestore = appPreviewItem == nil
+        setActiveWorkspaceCanvasItem(appPreviewItem, remember: false)
     }
 
     /// Leave the Studio without publishing: drop the composer, collapse the preview, cancel gen.
     private func cancelWorkspaceAppStudio() {
         workspaceAppStudioSession.cancelGeneration()
         isComposingWorkspaceApp = false
+        pendingAppPreviewPolicyRestore = false
         if activeWorkspaceCanvasItem == .appPreview {
             setActiveWorkspaceCanvasItem(nil, remember: false)
         }
@@ -628,10 +684,13 @@ struct ContentView: View {
 
     private func toggleAppPreviewCanvas() {
         if activeWorkspaceCanvasItem == .appPreview {
+            pendingAppPreviewPolicyRestore = false
             animatePanelChange {
                 setActiveWorkspaceCanvasItem(nil, remember: false)
             }
         } else {
+            guard canPresentWorkspaceCanvasItem(.appPreview) else { return }
+            pendingAppPreviewPolicyRestore = false
             animatePanelChange {
                 isWorkspaceRightRailVisible = false
                 setActiveWorkspaceCanvasItem(.appPreview, remember: false)
@@ -855,16 +914,8 @@ struct ContentView: View {
             handleSelectedTaskCanvasSignatureChanged()
         }
         .onChange(of: hasOpenTaskThread) {
-            if !hasOpenTaskThread, activeWorkspaceCanvasItem != nil {
-                if activeWorkspaceCanvasItem == .markdown, effectiveWorkspace != nil {
-                    return
-                }
-                // The live preview belongs to the App Studio composer, not a task
-                // thread. "New App" nils the selected task (collapsing the thread)
-                // right after docking .appPreview — don't let that close it.
-                if activeWorkspaceCanvasItem == .appPreview, isComposingWorkspaceApp {
-                    return
-                }
+            if let activeWorkspaceCanvasItem,
+               !canPresentWorkspaceCanvasItem(activeWorkspaceCanvasItem) {
                 animatePanelChange {
                     setActiveWorkspaceCanvasItem(nil, remember: false)
                 }
@@ -875,6 +926,13 @@ struct ContentView: View {
             if hasOpenTaskThread {
                 presentation.handleSelectionCommitted()
             }
+        }
+        .onChange(of: shelfAvailabilityPolicy) {
+            invalidateActiveWorkspaceCanvasItemIfUnavailable(remember: false)
+            restorePendingAppPreviewAfterShelfPolicyLoadIfAvailable()
+        }
+        .task(id: shelfAvailabilityPolicyRefreshSignature) {
+            await refreshShelfAvailabilityPolicy()
         }
         .onChange(of: activeWorkspaceCanvasItem) {
             syncBrowserPresentation()
@@ -1135,13 +1193,8 @@ struct ContentView: View {
 
     private func handleSelectedTaskCanvasSignatureChanged() {
         cachedHasCanvasContent = selectedTask.flatMap { TaskPlanService.reconstruct(for: $0).plan } != nil
-        if !cachedHasCanvasContent, activeWorkspaceCanvasItem == .plan {
-            setActiveWorkspaceCanvasItem(nil, remember: false)
-        }
-        if selectedTask == nil, !isComposingTask, activeWorkspaceCanvasItem == .browser {
-            setActiveWorkspaceCanvasItem(nil, remember: false)
-        }
-        if selectedTask == nil, !isComposingTask, effectiveWorkspace == nil, activeWorkspaceCanvasItem == .markdown {
+        if let activeWorkspaceCanvasItem,
+           !canPresentWorkspaceCanvasItem(activeWorkspaceCanvasItem) {
             setActiveWorkspaceCanvasItem(nil, remember: false)
         }
         refreshMarkdownShelfAvailabilityForSelectedTask()
@@ -1168,6 +1221,7 @@ struct ContentView: View {
     }
 
     private func presentCanvas(_ item: WorkspaceCanvasItem) {
+        guard canPresentWorkspaceCanvasItem(item) else { return }
         animatePanelChange {
             isWorkspaceRightRailVisible = false
             setActiveWorkspaceCanvasItem(item, remember: true)
@@ -1177,7 +1231,10 @@ struct ContentView: View {
     private var workspaceCanvasItemBinding: Binding<WorkspaceCanvasItem?> {
         Binding(
             get: { activeWorkspaceCanvasItem },
-            set: { setActiveWorkspaceCanvasItem($0, remember: true) }
+            set: { item in
+                guard item.map(canPresentWorkspaceCanvasItem) ?? true else { return }
+                setActiveWorkspaceCanvasItem(item, remember: true)
+            }
         )
     }
 
@@ -1224,19 +1281,34 @@ struct ContentView: View {
         setActiveWorkspaceCanvasItem(item, remember: false)
     }
 
-    private func canPresentWorkspaceCanvasItem(_ item: WorkspaceCanvasItem) -> Bool {
-        switch item {
-        case .plan:
-            return hasOpenTaskThread && hasWorkspaceCanvasContent
-        case .markdown:
-            return effectiveWorkspace != nil || selectedTaskHasMarkdownShelfContent || selectedTask != nil || isComposingTask
-        case .browser:
-            return hasOpenTaskThread
-        case .query:
-            return hasOpenTaskThread && hasQueryShelfAffordance
-        case .appPreview:
-            return isComposingWorkspaceApp
+    private func invalidateActiveWorkspaceCanvasItemIfUnavailable(remember: Bool) {
+        let nextItem = WorkspaceCanvasPolicyTransition.itemAfterPolicyChange(
+            currentItem: activeWorkspaceCanvasItem,
+            policy: shelfAvailabilityPolicy,
+            context: shelfAvailabilityContext
+        )
+        guard nextItem != activeWorkspaceCanvasItem else { return }
+        setActiveWorkspaceCanvasItem(nextItem, remember: remember)
+    }
+
+    private func restorePendingAppPreviewAfterShelfPolicyLoadIfAvailable() {
+        guard pendingAppPreviewPolicyRestore else { return }
+        let nextItem = WorkspaceCanvasPolicyTransition.itemAfterPendingAppPreviewPolicyRestore(
+            currentItem: activeWorkspaceCanvasItem,
+            pendingRestore: true,
+            policy: shelfAvailabilityPolicy,
+            context: shelfAvailabilityContext
+        )
+        if nextItem != activeWorkspaceCanvasItem {
+            pendingAppPreviewPolicyRestore = false
+            setActiveWorkspaceCanvasItem(nextItem, remember: false)
+            return
         }
+        if !isComposingWorkspaceApp { pendingAppPreviewPolicyRestore = false }
+    }
+
+    private func canPresentWorkspaceCanvasItem(_ item: WorkspaceCanvasItem) -> Bool {
+        shelfAvailabilityPolicy.canPresent(item.shelfID, in: shelfAvailabilityContext)
     }
 
     private func prepareWorkspaceCanvasItemForPresentation(_ item: WorkspaceCanvasItem, source: String) {
@@ -1275,7 +1347,7 @@ struct ContentView: View {
     }
 
     private func toggleWorkspaceCanvas() {
-        guard hasWorkspaceCanvasContent else {
+        guard canPresentWorkspaceCanvasItem(.plan) else {
             animatePanelChange {
                 if activeWorkspaceCanvasItem == .plan {
                     setActiveWorkspaceCanvasItem(nil, remember: true)
@@ -1293,18 +1365,20 @@ struct ContentView: View {
     }
 
     private func toggleBrowserCanvas() {
-        currentBrowserSession.bindToTask(selectedTask?.id)
         if activeWorkspaceCanvasItem == .browser {
             animatePanelChange {
                 setActiveWorkspaceCanvasItem(nil, remember: true)
             }
         } else {
+            guard canPresentWorkspaceCanvasItem(.browser) else { return }
+            currentBrowserSession.bindToTask(selectedTask?.id)
             loadPreferredGeneratedHTMLForBrowserShelfIfNeeded(source: "browser_shelf_open")
             presentCanvas(.browser)
         }
     }
 
     private func openBrowserCanvas(engine: ShelfBrowserEngine) {
+        guard canPresentWorkspaceCanvasItem(.browser) else { return }
         let session = currentBrowserSession
         session.bindToTask(selectedTask?.id)
         if session.engine != engine {
@@ -1318,7 +1392,7 @@ struct ContentView: View {
     }
 
     private func toggleMarkdownCanvas() {
-        guard effectiveWorkspace != nil || selectedTaskHasMarkdownShelfContent || selectedTask != nil || isComposingTask else {
+        guard canPresentWorkspaceCanvasItem(.markdown) else {
             if activeWorkspaceCanvasItem == .markdown {
                 animatePanelChange {
                     setActiveWorkspaceCanvasItem(nil, remember: true)
@@ -1343,7 +1417,7 @@ struct ContentView: View {
     }
 
     private func toggleQueryCanvas() {
-        guard hasQueryShelfAffordance else {
+        guard canPresentWorkspaceCanvasItem(.query) else {
             if activeWorkspaceCanvasItem == .query {
                 animatePanelChange {
                     setActiveWorkspaceCanvasItem(nil, remember: true)
@@ -1643,10 +1717,30 @@ struct ContentView: View {
         AppLogger.audit(.shelfBrowserPreview, category: "Browser", taskID: taskID, fields: fields)
     }
 
+    @MainActor
+    private func refreshShelfAvailabilityPolicy() async {
+        let signature = shelfAvailabilityPolicyRefreshSignature
+        let workspace = effectiveWorkspace
+        let hasEnabledPacks = shelfAvailabilityPolicyWorkspaceHasEnabledPacks
+        let catalogSnapshot = hasEnabledPacks
+            ? await Task.detached { AstraPackCatalog().load() }.value
+            : nil
+        guard !Task.isCancelled, signature == shelfAvailabilityPolicyRefreshSignature else { return }
+        cachedShelfAvailabilityPolicy = AstraPackWorkspaceProfileProvider.shelfAvailabilityPolicy(
+            for: workspace,
+            catalogSnapshot: catalogSnapshot
+        )
+        cachedShelfAvailabilityPolicySignature = signature
+    }
+
     private func openGeneratedFile(_ path: String) {
         let url = URL(fileURLWithPath: path)
         switch TaskGeneratedFiles.shelfDestination(for: path) {
         case .browser?:
+            guard canOpenGeneratedFileInShelf(.browser) else {
+                NSWorkspace.shared.open(url)
+                return
+            }
             let taskID = selectedTask?.id
             let session = browserSessionStore.session(
                 for: taskID,
@@ -1665,6 +1759,10 @@ struct ContentView: View {
             return
 
         case .files?:
+            guard canOpenGeneratedFileInShelf(.files) else {
+                NSWorkspace.shared.open(url)
+                return
+            }
             let taskID = selectedTask?.id
             selectedTaskPreferredMarkdownPath = path
             selectedTaskHasMarkdownShelfContent = true
@@ -1674,6 +1772,10 @@ struct ContentView: View {
             return
 
         case .query?:
+            guard canOpenGeneratedFileInShelf(.query) else {
+                NSWorkspace.shared.open(url)
+                return
+            }
             querySession.bindToTask(selectedTask?.id)
             selectedTaskPreferredQueryPath = path
             selectedTaskHasQueryShelfContent = true
@@ -1686,9 +1788,25 @@ struct ContentView: View {
         }
     }
 
+    private func canOpenGeneratedFileInShelf(_ destination: TaskGeneratedFileShelfDestination?) -> Bool {
+        TaskGeneratedFileOpenRouter.canOpenInShelf(
+            destination: destination,
+            policy: shelfAvailabilityPolicy,
+            context: shelfAvailabilityContext
+        )
+    }
+
     private func openWorkspaceFileInShelf(_ path: String) {
         let url = URL(fileURLWithPath: path).standardizedFileURL
         let taskID = selectedTask?.id
+        guard canOpenGeneratedFileInShelf(.files) else {
+            NSWorkspace.shared.open(url)
+            AppLogger.audit(.gitChangedFileOpenedInShelf, category: "Git", taskID: taskID, fields: [
+                "path": url.path,
+                "result": FileManager.default.fileExists(atPath: url.path) ? "opened_system" : "missing_system"
+            ], level: FileManager.default.fileExists(atPath: url.path) ? .info : .warning)
+            return
+        }
         selectedTaskPreferredMarkdownPath = url.path
         selectedTaskHasMarkdownShelfContent = true
         let session = markdownSessionStore.session(for: taskID, pinnedToTask: isMarkdownPinnedToTask)
@@ -1798,19 +1916,30 @@ struct ContentView: View {
     }
 
     private func openPlanCanvas(_ task: AgentTask) {
-        if selectedTask?.id == task.id {
-            guard cachedHasCanvasContent else { return }
+        let previousTaskID = selectedTask?.id
+        let currentCachedHasPlanContent = cachedHasCanvasContent
+        let targetHasPlanContent: Bool
+        if previousTaskID == task.id {
+            targetHasPlanContent = currentCachedHasPlanContent
         } else {
-            guard TaskPlanService.reconstruct(for: task).plan != nil else { return }
+            targetHasPlanContent = TaskPlanService.reconstruct(for: task).plan != nil
         }
-        if selectedTask?.id == task.id, activeWorkspaceCanvasItem == .plan {
+        guard targetHasPlanContent else { return }
+
+        if previousTaskID == task.id, activeWorkspaceCanvasItem == .plan {
             animatePanelChange {
                 setActiveWorkspaceCanvasItem(nil, remember: true)
             }
             return
         }
-        if selectedTask?.id != task.id {
+        if previousTaskID != task.id {
             setSelectedTask(task)
+            cachedHasCanvasContent = WorkspacePlanCanvasPresentationTransition.cachedHasPlanContentAfterTargetValidation(
+                previousTaskID: previousTaskID,
+                targetTaskID: task.id,
+                currentCachedHasPlanContent: currentCachedHasPlanContent,
+                targetHasPlanContent: targetHasPlanContent
+            )
         }
         isComposingTask = false
         presentCanvas(.plan)
@@ -2251,6 +2380,7 @@ struct ContentView: View {
         } else {
             isComposingTask = false
         }
+        invalidateActiveWorkspaceCanvasItemIfUnavailable(remember: false)
         persistWorkspaceSelection()
     }
 
@@ -2465,364 +2595,6 @@ struct ContentView: View {
     }
 }
 
-private struct WorkspaceTopRightActions: Equatable {
-    let hasWorkspace: Bool
-    let canShowPlanShelf: Bool
-    let canShowTextShelf: Bool
-    let canShowBrowserShelf: Bool
-    let canShowQueryShelf: Bool
-    let canShowAppPreviewShelf: Bool
-    let activeCanvasItem: WorkspaceCanvasItem?
-    let browserEngine: ShelfBrowserEngine
-    let isRightRailVisible: Bool
-
-    var isPlanShelfVisible: Bool { activeCanvasItem == .plan }
-    var isTextShelfVisible: Bool { activeCanvasItem == .markdown }
-    var isBrowserShelfVisible: Bool { activeCanvasItem == .browser }
-    var isQueryShelfVisible: Bool { activeCanvasItem == .query }
-    var isAppPreviewShelfVisible: Bool { activeCanvasItem == .appPreview }
-
-    var hasShelfControls: Bool {
-        canShowPlanShelf || canShowTextShelf || canShowQueryShelf || canShowBrowserShelf || canShowAppPreviewShelf
-    }
-}
-
-private struct WorkspaceTopRightToolbar: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    let actions: WorkspaceTopRightActions
-    let onToggleBrowser: () -> Void
-    let onOpenBrowserEngine: (ShelfBrowserEngine) -> Void
-    let onTogglePlan: () -> Void
-    let onToggleText: () -> Void
-    let onToggleQuery: () -> Void
-    let onToggleAppPreview: () -> Void
-    let onToggleControlPanel: () -> Void
-
-    @State private var browserMenuAnchor: NSView?
-
-    var body: some View {
-        HStack(spacing: 18) {
-            AstraToolbarCommandCluster {
-                shelfControls
-            }
-            .background(alignment: .leading) {
-                shelfActiveIndicator
-            }
-            .frame(width: shelfClusterWidth, alignment: .trailing)
-            .clipped()
-            .allowsHitTesting(actions.hasShelfControls)
-            .accessibilityHidden(!actions.hasShelfControls)
-            .animation(commandAnimation, value: shelfClusterWidth)
-            .animation(commandAnimation, value: activeShelfIndicator?.key)
-            .fixedSize(horizontal: true, vertical: false)
-            .accessibilityElement(children: .contain)
-            .accessibilityLabel("Shelf controls")
-
-            AstraToolbarContextCommandCluster {
-                toolbarButton(
-                    title: actions.isRightRailVisible ? "Hide Workspace Context" : "Show Workspace Context",
-                    systemImage: "sidebar.right",
-                    isActive: actions.isRightRailVisible,
-                    action: onToggleControlPanel
-                )
-                // Restores the Cmd-Opt-I shortcut that SwiftUI's built-in
-                // `.inspector(isPresented:)` modifier used to provide; we
-                // dropped that modifier when moving to a custom HStack column.
-                .keyboardShortcut("i", modifiers: [.command, .option])
-                .help(actions.isRightRailVisible ? "Hide Workspace Context (⌥⌘I)" : "Show Workspace Context (⌥⌘I)")
-                .accessibilityIdentifier("ControlPanelToolbarButton")
-            }
-            .fixedSize(horizontal: true, vertical: false)
-            .accessibilityElement(children: .contain)
-            .accessibilityLabel("Workspace Context")
-        }
-        .fixedSize(horizontal: true, vertical: false)
-    }
-
-    @ViewBuilder
-    private var shelfControls: some View {
-        if actions.canShowAppPreviewShelf {
-            shelfToolbarButton(
-                title: actions.isAppPreviewShelfVisible ? "Hide Live Preview" : "Show Live Preview",
-                label: "Preview",
-                systemImage: "play.rectangle",
-                isActive: actions.isAppPreviewShelfVisible,
-                action: onToggleAppPreview
-            )
-            .accessibilityLabel("Live preview shelf")
-        }
-
-        if actions.canShowPlanShelf {
-            shelfToolbarButton(
-                title: actions.isPlanShelfVisible ? "Hide Plan Shelf" : "Show Plan Shelf",
-                label: "Plan",
-                systemImage: "list.bullet.clipboard",
-                isActive: actions.isPlanShelfVisible,
-                action: onTogglePlan
-            )
-            .accessibilityLabel("Plan shelf")
-        }
-
-        if actions.canShowTextShelf {
-            shelfToolbarButton(
-                title: actions.isTextShelfVisible ? "Hide Files Shelf" : "Show Files Shelf",
-                label: "Files",
-                systemImage: "folder",
-                isActive: actions.isTextShelfVisible,
-                action: onToggleText
-            )
-            .accessibilityLabel("Files shelf")
-        }
-
-        if actions.canShowQueryShelf {
-            shelfToolbarButton(
-                title: actions.isQueryShelfVisible ? "Hide Query Shelf" : "Show Query Shelf",
-                label: "Query",
-                systemImage: "cylinder.split.1x2",
-                isActive: actions.isQueryShelfVisible,
-                action: onToggleQuery
-            )
-            .accessibilityLabel("Query shelf")
-        }
-
-        if actions.canShowBrowserShelf {
-            browserMenuButton
-                .accessibilityLabel("Browser shelf")
-        }
-    }
-
-    private var browserMenuButton: some View {
-        Button {
-            presentBrowserMenu()
-        } label: {
-            AstraToolbarCommandLabel(
-                systemImage: "globe",
-                text: "Browser",
-                isActive: actions.isBrowserShelfVisible,
-                showsMenuIndicator: true,
-                showsActiveBackground: false
-            )
-        }
-        .buttonStyle(.plain)
-        .fixedSize(horizontal: true, vertical: false)
-        .background {
-            ToolbarMenuAnchorView(anchor: $browserMenuAnchor)
-        }
-        .help("Open Browser Shelf")
-        .accessibilityLabel("Browser shelf mode")
-    }
-
-    private func presentBrowserMenu() {
-        let menu = NSMenu()
-        menu.autoenablesItems = false
-        menu.addItem(
-            ToolbarClosureMenuItem(
-                title: "Open Embedded Browser",
-                systemSymbolName: actions.browserEngine == .embedded ? "checkmark" : "globe"
-            ) {
-                onOpenBrowserEngine(.embedded)
-            }
-        )
-        menu.addItem(
-            ToolbarClosureMenuItem(
-                title: "Open Controlled Browser",
-                systemSymbolName: actions.browserEngine == .controlled ? "checkmark" : "macwindow"
-            ) {
-                onOpenBrowserEngine(.controlled)
-            }
-        )
-
-        if actions.isBrowserShelfVisible {
-            menu.addItem(.separator())
-            menu.addItem(
-                ToolbarClosureMenuItem(
-                    title: "Hide Browser Shelf",
-                    systemSymbolName: "xmark"
-                ) {
-                    onToggleBrowser()
-                }
-            )
-        }
-
-        if let browserMenuAnchor {
-            menu.popUp(
-                positioning: nil,
-                at: NSPoint(x: 0, y: browserMenuAnchor.bounds.minY - 4),
-                in: browserMenuAnchor
-            )
-        } else if let event = NSApp.currentEvent, let view = event.window?.contentView {
-            NSMenu.popUpContextMenu(menu, with: event, for: view)
-        }
-    }
-
-    private var shelfClusterWidth: CGFloat {
-        guard !shelfControlWidths.isEmpty else { return 0 }
-        return shelfControlWidths.reduce(0, +)
-            + (CGFloat(shelfControlWidths.count - 1) * AstraToolbarCommandMetrics.clusterSpacing)
-            + (AstraToolbarCommandMetrics.clusterHorizontalPadding * 2)
-    }
-
-    private var shelfControlWidths: [CGFloat] {
-        var widths: [CGFloat] = []
-        if actions.canShowAppPreviewShelf { widths.append(AstraToolbarCommandMetrics.labeledControlMinWidth) }
-        if actions.canShowPlanShelf { widths.append(AstraToolbarCommandMetrics.labeledControlMinWidth) }
-        if actions.canShowTextShelf { widths.append(AstraToolbarCommandMetrics.labeledControlMinWidth) }
-        if actions.canShowQueryShelf { widths.append(AstraToolbarCommandMetrics.labeledControlMinWidth) }
-        if actions.canShowBrowserShelf { widths.append(AstraToolbarCommandMetrics.labeledMenuControlMinWidth) }
-        return widths
-    }
-
-    private var commandAnimation: Animation? {
-        AstraMotion.toolbarCommand(reduceMotion: reduceMotion)
-    }
-
-    @ViewBuilder
-    private var shelfActiveIndicator: some View {
-        if let activeShelfIndicator {
-            Capsule()
-                .fill(Stanford.lagunita.opacity(AstraToolbarCommandMetrics.activeFillOpacity))
-                .frame(
-                    width: activeShelfIndicator.width,
-                    height: AstraToolbarCommandMetrics.controlHeight
-                )
-                .offset(x: activeShelfIndicator.offset)
-        }
-    }
-
-    private var activeShelfIndicator: ShelfActiveIndicator? {
-        var offset = AstraToolbarCommandMetrics.clusterHorizontalPadding
-
-        if actions.canShowAppPreviewShelf {
-            if actions.isAppPreviewShelfVisible {
-                return ShelfActiveIndicator(key: "appPreview", offset: offset, width: AstraToolbarCommandMetrics.labeledControlMinWidth)
-            }
-            offset += AstraToolbarCommandMetrics.labeledControlMinWidth + AstraToolbarCommandMetrics.clusterSpacing
-        }
-
-        if actions.canShowPlanShelf {
-            if actions.isPlanShelfVisible {
-                return ShelfActiveIndicator(key: "plan", offset: offset, width: AstraToolbarCommandMetrics.labeledControlMinWidth)
-            }
-            offset += AstraToolbarCommandMetrics.labeledControlMinWidth + AstraToolbarCommandMetrics.clusterSpacing
-        }
-
-        if actions.canShowTextShelf {
-            if actions.isTextShelfVisible {
-                return ShelfActiveIndicator(key: "files", offset: offset, width: AstraToolbarCommandMetrics.labeledControlMinWidth)
-            }
-            offset += AstraToolbarCommandMetrics.labeledControlMinWidth + AstraToolbarCommandMetrics.clusterSpacing
-        }
-
-        if actions.canShowQueryShelf {
-            if actions.isQueryShelfVisible {
-                return ShelfActiveIndicator(key: "query", offset: offset, width: AstraToolbarCommandMetrics.labeledControlMinWidth)
-            }
-            offset += AstraToolbarCommandMetrics.labeledControlMinWidth + AstraToolbarCommandMetrics.clusterSpacing
-        }
-
-        if actions.canShowBrowserShelf, actions.isBrowserShelfVisible {
-            return ShelfActiveIndicator(key: "browser", offset: offset, width: AstraToolbarCommandMetrics.labeledMenuControlMinWidth)
-        }
-
-        return nil
-    }
-
-    private func shelfToolbarButton(
-        title: String,
-        label: String,
-        systemImage: String,
-        isActive: Bool,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button(action: action) {
-            AstraToolbarCommandLabel(
-                systemImage: systemImage,
-                text: label,
-                isActive: isActive,
-                showsActiveBackground: false
-            )
-        }
-        .buttonStyle(.plain)
-        .help(title)
-        .accessibilityLabel(title)
-    }
-
-    private func toolbarButton(
-        title: String,
-        label: String? = nil,
-        systemImage: String,
-        isActive: Bool,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button(action: action) {
-            if let label {
-                AstraToolbarCommandLabel(systemImage: systemImage, text: label, isActive: isActive)
-            } else {
-                AstraToolbarCommandIcon(systemImage: systemImage, isActive: isActive)
-            }
-        }
-        .buttonStyle(.plain)
-        .help(title)
-        .accessibilityLabel(title)
-    }
-}
-
-private struct ShelfActiveIndicator: Equatable {
-    let key: String
-    let offset: CGFloat
-    let width: CGFloat
-}
-
-private struct ToolbarMenuAnchorView: NSViewRepresentable {
-    @Binding var anchor: NSView?
-
-    func makeNSView(context: Context) -> NSView {
-        let view = ToolbarMenuAnchorNSView()
-        resolve(view)
-        return view
-    }
-
-    func updateNSView(_ nsView: NSView, context: Context) {
-        resolve(nsView)
-    }
-
-    private func resolve(_ nsView: NSView) {
-        guard anchor == nil || anchor !== nsView else { return }
-        DispatchQueue.main.async {
-            if anchor == nil || anchor !== nsView {
-                anchor = nsView
-            }
-        }
-    }
-}
-
-private final class ToolbarMenuAnchorNSView: NSView {
-    override func hitTest(_ point: NSPoint) -> NSView? {
-        nil
-    }
-}
-
-private final class ToolbarClosureMenuItem: NSMenuItem {
-    private let handler: () -> Void
-
-    init(title: String, systemSymbolName: String, handler: @escaping () -> Void) {
-        self.handler = handler
-        super.init(title: title, action: #selector(performMenuAction), keyEquivalent: "")
-        target = self
-        image = NSImage(systemSymbolName: systemSymbolName, accessibilityDescription: nil)
-    }
-
-    @available(*, unavailable)
-    required init(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
-
-    @objc private func performMenuAction() {
-        handler()
-    }
-}
-
 private struct ContentToolbar: ToolbarContent {
     @ObservedObject var appUpdateController: AppUpdateController
 
@@ -2902,6 +2674,7 @@ private struct ContentDetailAreaView: View {
     let onCreateWorkspace: () -> Void
     let onImportWorkspace: () -> Void
     let onOpenGeneratedFile: (String) -> Void
+    let canOpenGeneratedFileInShelf: (TaskGeneratedFileShelfDestination?) -> Bool
     let onOpenWorkspaceFile: (String) -> Void
     let isComposingWorkspaceApp: Bool
     @ObservedObject var studioSession: WorkspaceAppStudioSession
@@ -3277,6 +3050,7 @@ private struct ContentDetailAreaView: View {
             onCreateWorkspace: onCreateWorkspace,
             onImportWorkspace: onImportWorkspace,
             onOpenGeneratedFile: onOpenGeneratedFile,
+            canOpenGeneratedFileInShelf: canOpenGeneratedFileInShelf,
             isComposingWorkspaceApp: isComposingWorkspaceApp,
             studioSession: studioSession,
             onStartWorkspaceAppStudio: onStartWorkspaceAppStudio,
@@ -3374,6 +3148,7 @@ private struct ContentDetailContentView: View {
     let onCreateWorkspace: () -> Void
     let onImportWorkspace: () -> Void
     let onOpenGeneratedFile: (String) -> Void
+    let canOpenGeneratedFileInShelf: (TaskGeneratedFileShelfDestination?) -> Bool
     let isComposingWorkspaceApp: Bool
     @ObservedObject var studioSession: WorkspaceAppStudioSession
     let onStartWorkspaceAppStudio: (String?) -> Void
@@ -3425,6 +3200,7 @@ private struct ContentDetailContentView: View {
                     onManageSkills: onManageSkills,
                     onForkTask: onForkTask,
                     onOpenGeneratedFile: onOpenGeneratedFile,
+                    canOpenGeneratedFileInShelf: canOpenGeneratedFileInShelf,
                     onStartMCPInstallReview: onStartMCPInstallReview
                 )
                 .id(task.id)
@@ -3467,6 +3243,7 @@ private struct ContentDetailContentView: View {
                 WorkspaceAppStudioChatView(
                     session: studioSession,
                     workspace: workspace,
+                    enabledPackIDs: WorkspaceAppStudioTemplatePackLoadingSource(workspace: workspace).enabledPackIDs,
                     onPublish: onPublishApp,
                     onDraftChanged: onDraftChanged,
                     onCancel: onCancelStudio

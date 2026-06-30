@@ -9,9 +9,26 @@ import SwiftUI
 struct WorkspaceAppStudioChatView: View {
     @ObservedObject var session: WorkspaceAppStudioSession
     let workspace: Workspace
+    let enabledPackIDs: Set<String>
     let onPublish: (_ seedSampleData: Bool) -> Void
     let onDraftChanged: () -> Void
     let onCancel: () -> Void
+
+    init(
+        session: WorkspaceAppStudioSession,
+        workspace: Workspace,
+        enabledPackIDs: Set<String>,
+        onPublish: @escaping (_ seedSampleData: Bool) -> Void,
+        onDraftChanged: @escaping () -> Void,
+        onCancel: @escaping () -> Void
+    ) {
+        self._session = ObservedObject(wrappedValue: session)
+        self.workspace = workspace
+        self.enabledPackIDs = enabledPackIDs
+        self.onPublish = onPublish
+        self.onDraftChanged = onDraftChanged
+        self.onCancel = onCancel
+    }
 
     // Generation provider + model: bound to the same global default the task composer uses,
     // so a provider choice carries across the app and routes generation here too.
@@ -47,6 +64,9 @@ struct WorkspaceAppStudioChatView: View {
         .onAppear {
             applyInitialPromptIfNeeded()
             composerFocused = true
+        }
+        .task(id: templatePackLoadSignature) {
+            await refreshTemplatePacks(loadSignature: templatePackLoadSignature)
         }
         .onChange(of: session.initialPrompt) { _, _ in applyInitialPromptIfNeeded() }
         .onChange(of: inputText) { _, _ in applyInitialPromptIfNeeded() }
@@ -275,6 +295,20 @@ struct WorkspaceAppStudioChatView: View {
         } else if session.draft == nil {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 6) {
+                    let templateChoices = session.availableTemplateChoices
+                    ForEach(templateChoices) { choice in
+                        Button(action: { session.selectTemplate(choice.id) }) {
+                            Label(
+                                choice.title,
+                                systemImage: choice.isSelected ? "checkmark.circle.fill" : choice.iconSystemName
+                            )
+                            .font(Stanford.caption(12))
+                            .lineLimit(1)
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .help(choice.subtitle)
+                    }
                     ForEach(WorkspaceAppArchetype.allCases, id: \.self) { archetype in
                         Button(action: { send(archetype.exampleIntent) }) {
                             Label(archetype.displayName, systemImage: archetype.iconSystemName)
@@ -304,6 +338,47 @@ struct WorkspaceAppStudioChatView: View {
                     .padding(.vertical, 1)
                 }
             }
+        }
+    }
+
+    private var templatePackLoadSignature: String {
+        templatePackLoadingSource.loadSignature(
+            workspaceID: workspace.id,
+            refreshRevision: session.templatePackRefreshRevision
+        )
+    }
+
+    private var templatePackLoadingSource: WorkspaceAppStudioTemplatePackLoadingSource {
+        WorkspaceAppStudioTemplatePackLoadingSource(enabledPackIDs: enabledPackIDs)
+    }
+
+    private func refreshTemplatePacks(loadSignature: String) async {
+        await MainActor.run {
+            session.beginTemplatePackRefresh(signature: loadSignature, isCancelled: Task.isCancelled)
+        }
+        guard !Task.isCancelled else { return }
+        let source = templatePackLoadingSource
+        guard !source.enabledPackIDs.isEmpty else {
+            await MainActor.run {
+                session.configureTemplatePacks(
+                    [],
+                    refreshSignature: loadSignature,
+                    isCancelled: Task.isCancelled
+                )
+            }
+            return
+        }
+        let snapshot = await Task.detached(priority: .utility) {
+            AstraPackCatalog().load()
+        }.value
+        guard !Task.isCancelled else { return }
+        let templates = source.templates(in: snapshot)
+        await MainActor.run {
+            session.configureTemplatePacks(
+                templates,
+                refreshSignature: loadSignature,
+                isCancelled: Task.isCancelled
+            )
         }
     }
 

@@ -252,6 +252,8 @@ struct WorkspaceRightRailView: View {
     @State private var pendingRailDeletion: PendingRailDeletion?
     @State private var approvedCapabilityPackages: [PluginPackage] = PluginCatalog.builtInPackages
     @State private var approvedCapabilityRecords: [CapabilityApprovalRecord] = []
+    @State private var approvedCapabilityPackPolicy = PackResolvedPolicy.empty
+    @State private var approvedCapabilityRefreshID = UUID()
     @State private var capabilityRailSnapshotCache = CapabilityRailSnapshotCache()
     @State private var capabilityError: String?
     @State private var capabilityPrerequisiteStatuses: [String: HealthStatus] = [:]
@@ -276,7 +278,8 @@ struct WorkspaceRightRailView: View {
             globalSkills: globalSkills,
             globalConnectors: globalConnectors,
             globalTools: globalTools,
-            packageDefinitions: approvedCapabilityPackages
+            packageDefinitions: approvedCapabilityPackages,
+            packPolicy: approvedCapabilityPackPolicy
         )
     }
 
@@ -286,7 +289,8 @@ struct WorkspaceRightRailView: View {
         // CapabilityApprovals directory on every body re-evaluation.
         CapabilityCatalogPolicyContext.currentUser(
             workspace: workspace,
-            approvalRecords: approvedCapabilityRecords
+            approvalRecords: approvedCapabilityRecords,
+            packPolicy: approvedCapabilityPackPolicy
         )
     }
 
@@ -520,6 +524,10 @@ struct WorkspaceRightRailView: View {
         .onChange(of: workspace.additionalPaths) {
             checkGitRepositories()
             checkDockerEnvironments()
+        }
+        .onChange(of: workspace.enabledPackIDs) {
+            refreshApprovedCapabilities()
+            rebuildCapabilityRailSnapshot(for: capabilityRailSnapshotSignature)
         }
         .onChange(of: workspace.activeExecutionEnvironmentJSON) {
             checkDockerEnvironments()
@@ -962,6 +970,7 @@ struct WorkspaceRightRailView: View {
             globalTools: globalTools,
             packages: approvedCapabilityPackages,
             approvalRecords: approvedCapabilityRecords,
+            packPolicy: approvedCapabilityPackPolicy,
             prerequisiteStatuses: capabilityPrerequisiteStatuses
         )
     }
@@ -1180,21 +1189,43 @@ struct WorkspaceRightRailView: View {
     }
 
     private func refreshApprovedCapabilities() {
-        // The only synchronous capability-storage scan in this view, run once on
-        // appear rather than on every body re-evaluation. Both the installed
-        // catalog and the approval records are cached into view state and read
-        // back by `capabilities` / `catalogPolicyContext`.
-        let snapshot = PerformanceTelemetry.measure(
-            "workspace_right_rail_capability_load",
-            thresholdMilliseconds: 20
-        ) {
-            (
-                packages: CapabilityLibrary().installedPackages(),
-                records: CapabilityApprovalStore().records()
+        let refreshID = UUID()
+        let enabledPackIDs = workspace.enabledPackIDs
+        approvedCapabilityRefreshID = refreshID
+
+        Task { @MainActor in
+            let snapshot = await Task.detached(priority: .userInitiated) {
+                PerformanceTelemetry.measure(
+                    "workspace_right_rail_capability_load",
+                    thresholdMilliseconds: 20
+                ) {
+                    ApprovedCapabilitiesSnapshot(
+                        packages: CapabilityLibrary().installedPackages(),
+                        records: CapabilityApprovalStore().records(),
+                        packPolicy: PackWorkspacePolicyProvider.resolvedPolicy(enabledPackIDs: enabledPackIDs)
+                    )
+                }
+            }.value
+
+            guard !Task.isCancelled, approvedCapabilityRefreshID == refreshID else { return }
+            let refreshPlan = WorkspaceRightRailApprovedCapabilityRefreshPlan.make(
+                previousPackageIDs: approvedCapabilityPackages.map(\.id),
+                nextPackageIDs: snapshot.packages.map(\.id),
+                previousApprovalRecords: approvedCapabilityRecords,
+                nextApprovalRecords: snapshot.records,
+                previousPolicy: approvedCapabilityPackPolicy,
+                nextPolicy: snapshot.packPolicy
             )
+            approvedCapabilityPackages = snapshot.packages.isEmpty ? PluginCatalog.builtInPackages : snapshot.packages
+            approvedCapabilityRecords = snapshot.records
+            approvedCapabilityPackPolicy = snapshot.packPolicy
+            if refreshPlan.shouldRefreshPrerequisites {
+                refreshCapabilityPrerequisiteStatuses()
+            }
+            if refreshPlan.shouldRebuildSnapshot {
+                rebuildCapabilityRailSnapshot(for: capabilityRailSnapshotSignature)
+            }
         }
-        approvedCapabilityPackages = snapshot.packages.isEmpty ? PluginCatalog.builtInPackages : snapshot.packages
-        approvedCapabilityRecords = snapshot.records
     }
 
     private func refreshCapabilityPrerequisiteStatuses() {
@@ -2288,4 +2319,10 @@ private struct PendingRailDeletion: Identifiable {
     let message: String
     let confirmTitle: String
     let perform: () -> Void
+}
+
+private struct ApprovedCapabilitiesSnapshot: Sendable {
+    var packages: [PluginPackage]
+    var records: [CapabilityApprovalRecord]
+    var packPolicy: PackResolvedPolicy
 }

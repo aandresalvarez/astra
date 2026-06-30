@@ -8,12 +8,12 @@ import ASTRACore
 /// Data safety contract:
 /// - UUIDs are exported for every durable entity so names are display text only.
 /// - Connector credential values are never exported. Only credential key names are written.
-/// - v1-v9 configs remain importable through optional fields and legacy name fallback.
+/// - v1-v10 configs remain importable through optional fields and legacy name fallback.
 enum WorkspaceConfigManager {
 
-    // MARK: - Config Schema (v10)
+    // MARK: - Config Schema (v11)
 
-    static let currentVersion = 10
+    static let currentVersion = 11
 
     enum ScheduleImportTrustPolicy {
         case quarantineEnabledSchedules
@@ -159,6 +159,8 @@ enum WorkspaceConfigManager {
         var enabledGlobalConnectorIDs: [String]?
         var enabledGlobalToolIDs: [String]?
         var enabledCapabilityIDs: [String]?
+        var enabledPackIDs: [String]? = nil
+        var shelfVisibilityOverrides: [String: Bool]? = nil
         var memories: [String]?
         var createdAt: Date?
         var updatedAt: Date?
@@ -446,6 +448,8 @@ enum WorkspaceConfigManager {
             enabledGlobalConnectorIDs: workspace.enabledGlobalConnectorIDs,
             enabledGlobalToolIDs: workspace.enabledGlobalToolIDs,
             enabledCapabilityIDs: workspace.enabledCapabilityIDs,
+            enabledPackIDs: workspace.enabledPackIDs,
+            shelfVisibilityOverrides: workspace.shelfVisibilityOverrides,
             memories: workspace.memories,
             createdAt: workspace.createdAt,
             updatedAt: workspace.updatedAt,
@@ -666,6 +670,8 @@ enum WorkspaceConfigManager {
         workspace.enabledGlobalConnectorIDs = config.enabledGlobalConnectorIDs ?? []
         workspace.enabledGlobalToolIDs = config.enabledGlobalToolIDs ?? []
         workspace.enabledCapabilityIDs = config.enabledCapabilityIDs ?? []
+        workspace.enabledPackIDs = config.enabledPackIDs ?? []
+        workspace.shelfVisibilityOverrides = config.shelfVisibilityOverrides ?? [:]
         workspace.memories = config.memories ?? []
         workspace.isStarred = config.isStarred ?? false
         workspace.activeExecutionEnvironmentJSON = sanitizedExecutionEnvironmentJSON(config.activeExecutionEnvironmentJSON)

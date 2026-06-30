@@ -87,7 +87,8 @@ enum MCPRuntimeProjection {
     static func enabledServers(
         for workspace: Workspace?,
         packages: [PluginPackage],
-        approvalRecords: [CapabilityApprovalRecord]
+        approvalRecords: [CapabilityApprovalRecord],
+        packPolicy: PackResolvedPolicy? = nil
     ) -> [ResolvedServer] {
         guard let workspace else { return [] }
         let enabledPackageIDs = Set(workspace.enabledCapabilityIDs)
@@ -98,7 +99,8 @@ enum MCPRuntimeProjection {
         // package is enabled — use the canonical currentUser factory.
         let context = CapabilityCatalogPolicyContext.currentUser(
             workspace: workspace,
-            approvalRecords: approvalRecords
+            approvalRecords: approvalRecords,
+            packPolicy: packPolicy
         )
 
         let servers = packages

@@ -99,6 +99,7 @@ let package = Package(
                 .copy("Resources/AppIconDev.icns"),
                 .copy("Resources/Capabilities"),
                 .copy("Resources/Fonts"),
+                .copy("Resources/Packs"),
                 .copy("Resources/Tools")
             ]
         ),

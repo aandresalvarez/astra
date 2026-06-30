@@ -5,6 +5,7 @@ import ASTRACore
 @Observable
 final class TaskQueue {
     let poolSize: Int
+    private let workerFactory: @MainActor () -> AgentRuntimeWorker
     private(set) var workers: [AgentRuntimeWorker]
     private(set) var isProcessing = false
     private(set) var isProcessingScheduled = false
@@ -27,9 +28,13 @@ final class TaskQueue {
     private var dispatchedTasks: Set<UUID> = []
 
     @MainActor
-    init(poolSize: Int = 3) {
+    init(
+        poolSize: Int = 3,
+        workerFactory: @escaping @MainActor () -> AgentRuntimeWorker = { AgentRuntimeWorker() }
+    ) {
         self.poolSize = poolSize
-        self.workers = (0..<poolSize).map { _ in AgentRuntimeWorker() }
+        self.workerFactory = workerFactory
+        self.workers = (0..<poolSize).map { _ in workerFactory() }
     }
 
     /// Number of currently busy workers
@@ -629,7 +634,7 @@ final class TaskQueue {
         if newSize > workers.count {
             let toAdd = newSize - workers.count
             for _ in 0..<toAdd {
-                workers.append(AgentRuntimeWorker())
+                workers.append(workerFactory())
             }
             AppLogger.audit(.taskStats, category: "Queue", fields: [
                 "event": "pool_resized",

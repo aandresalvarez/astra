@@ -14,6 +14,11 @@ private func makeWorkspacePersistenceContainer() throws -> ModelContainer {
 private func makeRichWorkspace(in context: ModelContext, root: String) throws -> Workspace {
     let workspace = Workspace(name: "Persistence", primaryPath: root)
     workspace.enabledCapabilityIDs = ["stanford.builder"]
+    workspace.enabledPackIDs = ["astra.pack.devops"]
+    workspace.shelfVisibilityOverrides = [
+        "browser": true,
+        "query": false
+    ]
     workspace.isStarred = true
     workspace.recordInstalledPlugin(id: "stanford.builder", version: "1.0.0")
     context.insert(workspace)
@@ -124,11 +129,31 @@ private func makeRichWorkspace(in context: ModelContext, root: String) throws ->
     return workspace
 }
 
-@Suite("Workspace Persistence v10")
+@Suite("Workspace Persistence v11")
 struct WorkspacePersistenceTests {
-    @Test("v10 export and import preserve IDs, review state, history, artifacts, and redacted credentials")
+    @Test("shelf visibility overrides normalize persisted keys at the model boundary")
     @MainActor
-    func v10RoundTripPreservesDurableIDs() throws {
+    func shelfVisibilityOverridesNormalizePersistedKeys() {
+        let workspace = Workspace(name: "Shelf Keys", primaryPath: "/tmp/shelf-keys")
+
+        workspace.shelfVisibilityOverrides = [
+            "  browser  ": true,
+            "\nquery\t": false,
+            "   ": true,
+            "": false
+        ]
+
+        #expect(workspace.shelfVisibilityOverrides == [
+            "browser": true,
+            "query": false
+        ])
+        #expect(workspace.shelfVisibilityOverrideIDs == ["browser", "query"])
+        #expect(workspace.shelfVisibilityOverrideValues == [true, false])
+    }
+
+    @Test("v11 export and import preserve IDs, profile state, history, artifacts, and redacted credentials")
+    @MainActor
+    func v11RoundTripPreservesDurableIDs() throws {
         let tempRoot = "/tmp/astra_persistence_\(UUID().uuidString)"
         let container = try makeWorkspacePersistenceContainer()
         let context = container.mainContext
@@ -160,6 +185,11 @@ struct WorkspacePersistenceTests {
         #expect(config.tasks?.first?.isDone == true)
         #expect(config.tasks?.first?.unreadAt == sourceTask.unreadAt)
         #expect(config.enabledCapabilityIDs == ["stanford.builder"])
+        #expect(config.enabledPackIDs == ["astra.pack.devops"])
+        #expect(config.shelfVisibilityOverrides == [
+            "browser": true,
+            "query": false
+        ])
 
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
@@ -185,6 +215,11 @@ struct WorkspacePersistenceTests {
         #expect(imported.localTools.first?.originPackageID == "stanford.builder")
         #expect(imported.templates.first?.originPackageID == "stanford.builder")
         #expect(imported.enabledCapabilityIDs == ["stanford.builder"])
+        #expect(imported.enabledPackIDs == ["astra.pack.devops"])
+        #expect(imported.shelfVisibilityOverrides == [
+            "browser": true,
+            "query": false
+        ])
         #expect(imported.installedVersion(of: "stanford.builder") == "1.0.0")
         #expect(imported.tasks.first?.id == workspace.tasks.first?.id)
         #expect(imported.tasks.first?.isPinned == true)
