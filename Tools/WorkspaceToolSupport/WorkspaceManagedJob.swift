@@ -361,12 +361,10 @@ public final class DockerWorkspaceJobManager: WorkspaceJobManaging {
                 pidfile=\(shellQuote(directory + "/pid"))
                 if [ -r "$pidfile" ]; then
                   command_pid="$(cat "$pidfile")"
-                  if [ -n "$command_pid" ] && { kill -0 -"$command_pid" 2>/dev/null || kill -0 "$command_pid" 2>/dev/null; }; then
+                  if [ -n "$command_pid" ] && kill -0 -"$command_pid" 2>/dev/null; then
                     kill -TERM -"$command_pid" 2>/dev/null || true
-                    kill -TERM "$command_pid" 2>/dev/null || true
                     sleep 5
                     kill -KILL -"$command_pid" 2>/dev/null || true
-                    kill -KILL "$command_pid" 2>/dev/null || true
                   fi
                 fi
                 """
@@ -429,19 +427,17 @@ public final class DockerWorkspaceJobManager: WorkspaceJobManaging {
         printf '%s\\n' "$command_pid" > "$pidfile"
         terminate_command_group() {
           grace_seconds="${1:-5}"
-          if kill -0 -"$command_pid" 2>/dev/null || kill -0 "$command_pid" 2>/dev/null; then
+          if kill -0 -"$command_pid" 2>/dev/null; then
             kill -TERM -"$command_pid" 2>/dev/null || true
-            kill -TERM "$command_pid" 2>/dev/null || true
             sleep "$grace_seconds"
             kill -KILL -"$command_pid" 2>/dev/null || true
-            kill -KILL "$command_pid" 2>/dev/null || true
           fi
         }
         timeout_pid=""
         if [ "$timeout_seconds" -gt 0 ]; then
           (
             sleep "$timeout_seconds"
-            if kill -0 "$command_pid" 2>/dev/null; then
+            if kill -0 -"$command_pid" 2>/dev/null; then
               printf '%s\\n' timed_out > "$timeout_marker"
               terminate_command_group 5
             fi

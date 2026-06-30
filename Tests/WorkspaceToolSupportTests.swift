@@ -732,9 +732,15 @@ struct WorkspaceToolSupportTests {
         #expect(logLines.contains("exec -d --workdir /workspace astra-test-job sh -c"))
         #expect(logLines.contains("/workspace/jobs/\(job.jobID)"))
         #expect(logLines.contains("timeout_seconds=7200"))
+        #expect(logLines.contains("if ! command -v setsid >/dev/null 2>&1; then"))
+        #expect(logLines.contains(#""exitCode":127"#))
+        #expect(logLines.contains("process group isolation unavailable"))
         #expect(logLines.contains("setsid sh \"$job_dir/command.sh\" > \"$stdout\" 2> \"$stderr\" &"))
+        #expect(logLines.contains("if kill -0 -\"$command_pid\" 2>/dev/null; then"))
         #expect(logLines.contains("kill -TERM -\"$command_pid\" 2>/dev/null || true"))
         #expect(logLines.contains("kill -KILL -\"$command_pid\" 2>/dev/null || true"))
+        #expect(!logLines.contains("kill -TERM \"$command_pid\" 2>/dev/null || true"))
+        #expect(!logLines.contains("kill -KILL \"$command_pid\" 2>/dev/null || true"))
         #expect(logLines.contains("status=timed_out; code=124"))
 
         try #"{"status":"succeeded","exitCode":0,"completedAt":"2026-06-24T12:00:00Z"}"#
@@ -796,8 +802,11 @@ struct WorkspaceToolSupportTests {
         let logLines = try String(contentsOf: log, encoding: .utf8)
         #expect(logLines.contains("pidfile='/workspace/jobs/\(job.jobID)/pid'"))
         #expect(logLines.contains("command_pid=\"$(cat \"$pidfile\")\""))
+        #expect(logLines.contains("kill -0 -\"$command_pid\" 2>/dev/null"))
         #expect(logLines.contains("kill -TERM -\"$command_pid\" 2>/dev/null || true"))
         #expect(logLines.contains("kill -KILL -\"$command_pid\" 2>/dev/null || true"))
+        #expect(!logLines.contains("kill -TERM \"$command_pid\" 2>/dev/null || true"))
+        #expect(!logLines.contains("kill -KILL \"$command_pid\" 2>/dev/null || true"))
     }
 
     @Test("Docker workspace job manager maps host workspace path before persisting command")
