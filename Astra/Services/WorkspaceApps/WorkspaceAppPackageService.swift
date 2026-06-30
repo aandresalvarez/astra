@@ -312,7 +312,17 @@ struct WorkspaceAppPackageService {
             issues: &issues
         )
         let dataExports = dataExportsForValidation(in: packageURL, issues: &issues)
-        let dataExportPaths = Set(dataExports.map(\.path))
+        validateDataExportTables(
+            package: package,
+            manifest: manifest,
+            exports: dataExports,
+            issues: &issues
+        )
+        let dataExportPaths = dataExportPathsForResourceBudget(
+            package: package,
+            manifest: manifest,
+            exports: dataExports
+        )
         let resourceBudgetPassed = validateResourceBudget(
             packageURL: packageURL,
             dataExportPaths: dataExportPaths,
@@ -351,7 +361,13 @@ struct WorkspaceAppPackageService {
             validateChecksums(declaredChecksums, packageURL: packageURL, issues: &issues)
             validateAllFilesAreChecksummed(declaredChecksums, packageURL: packageURL, issues: &issues)
         }
-        validateDataExports(package: package, packageURL: packageURL, exports: dataExports, issues: &issues)
+        validateDataExports(
+            package: package,
+            manifest: manifest,
+            packageURL: packageURL,
+            exports: dataExports,
+            issues: &issues
+        )
         validateNoForbiddenPortableContent(
             packageURL: packageURL,
             dataExportPaths: dataExportPaths,
@@ -687,6 +703,7 @@ struct WorkspaceAppPackageService {
 
     private func validateDataExports(
         package: WorkspaceAppPackageManifest?,
+        manifest: WorkspaceAppManifest?,
         packageURL: URL,
         exports: [WorkspaceAppPackageDataExport],
         issues: inout [WorkspaceAppPackageValidationReport.Issue]
@@ -705,6 +722,7 @@ struct WorkspaceAppPackageService {
             return
         }
         guard let expectedPolicy = dataPolicy(for: package.exportMode) else { return }
+        let knownTables = Set(manifest?.storage?.tables.map(\.name) ?? [])
         for dataExport in exports {
             guard dataExport.policy == expectedPolicy else {
                 issues.append(blocker("/storage/data/exports.json", "Data export policy does not match package export mode."))
@@ -714,6 +732,9 @@ struct WorkspaceAppPackageService {
                   dataExport.path.hasPrefix("storage/data/\(expectedPolicy.rawValue)/"),
                   dataExport.path.hasSuffix(".jsonl") else {
                 issues.append(blocker("/storage/data/exports.json", "Data export path must stay within the selected storage data folder."))
+                continue
+            }
+            guard knownTables.contains(dataExport.table) else {
                 continue
             }
             let url = packageURL.appendingPathComponent(dataExport.path)
@@ -823,12 +844,14 @@ struct WorkspaceAppPackageService {
         dataExportPaths: Set<String>,
         issues: inout [WorkspaceAppPackageValidationReport.Issue]
     ) {
+        var reportedForbiddenIssues = Set<ForbiddenContentIssue>()
         for path in portableFilePaths(in: packageURL) {
             let relativePath = "/\(path)"
             if path.hasSuffix(".jsonl"), dataExportPaths.contains(path) {
                 validateNoForbiddenJSONLContent(
                     at: packageURL.appendingPathComponent(path),
                     path: relativePath,
+                    reportedForbiddenIssues: &reportedForbiddenIssues,
                     issues: &issues
                 )
             } else if path.hasSuffix(".jsonl") {
@@ -837,7 +860,12 @@ struct WorkspaceAppPackageService {
                         at: packageURL.appendingPathComponent(path),
                         relativePath: relativePath
                     ) { line in
-                        appendForbiddenContentIssues(in: line, path: relativePath, issues: &issues)
+                        appendForbiddenContentIssues(
+                            in: line,
+                            path: relativePath,
+                            reportedForbiddenIssues: &reportedForbiddenIssues,
+                            issues: &issues
+                        )
                     }
                 } catch {
                     issues.append(blocker(relativePath, error.localizedDescription))
@@ -853,7 +881,12 @@ struct WorkspaceAppPackageService {
                     issues.append(blocker(relativePath, error.localizedDescription))
                     continue
                 }
-                appendForbiddenContentIssues(in: text, path: relativePath, issues: &issues)
+                appendForbiddenContentIssues(
+                    in: text,
+                    path: relativePath,
+                    reportedForbiddenIssues: &reportedForbiddenIssues,
+                    issues: &issues
+                )
             }
         }
     }
@@ -861,6 +894,7 @@ struct WorkspaceAppPackageService {
     private func validateNoForbiddenJSONLContent(
         at url: URL,
         path: String,
+        reportedForbiddenIssues: inout Set<ForbiddenContentIssue>,
         issues: inout [WorkspaceAppPackageValidationReport.Issue]
     ) {
         do {
@@ -870,11 +904,21 @@ struct WorkspaceAppPackageService {
                 relativePath: path
             ) { row in
                 for key in row.keys {
-                    appendForbiddenContentIssues(in: key, path: path, issues: &issues)
+                    appendForbiddenContentIssues(
+                        in: key,
+                        path: path,
+                        reportedForbiddenIssues: &reportedForbiddenIssues,
+                        issues: &issues
+                    )
                 }
                 for value in row.values {
                     if case let .text(text) = value {
-                        appendForbiddenContentIssues(in: text, path: path, issues: &issues)
+                        appendForbiddenContentIssues(
+                            in: text,
+                            path: path,
+                            reportedForbiddenIssues: &reportedForbiddenIssues,
+                            issues: &issues
+                        )
                     }
                 }
             }
@@ -886,16 +930,38 @@ struct WorkspaceAppPackageService {
     private func appendForbiddenContentIssues(
         in text: String,
         path: String,
+        reportedForbiddenIssues: inout Set<ForbiddenContentIssue>,
         issues: inout [WorkspaceAppPackageValidationReport.Issue]
     ) {
         let lowercased = text.lowercased()
         let forbiddenKeys = ["api_key", "apikey", "oauth", "password", "secret", "token"]
         if forbiddenKeys.contains(where: { lowercased.contains($0) }) {
-            issues.append(blocker(path, "Package content appears to include credential material."))
+            appendForbiddenContentIssue(
+                path: path,
+                message: "Package content appears to include credential material.",
+                reportedForbiddenIssues: &reportedForbiddenIssues,
+                issues: &issues
+            )
         }
         if text.contains(NSHomeDirectory()) || lowercased.contains("/users/") {
-            issues.append(blocker(path, "Package content appears to include an absolute local path."))
+            appendForbiddenContentIssue(
+                path: path,
+                message: "Package content appears to include an absolute local path.",
+                reportedForbiddenIssues: &reportedForbiddenIssues,
+                issues: &issues
+            )
         }
+    }
+
+    private func appendForbiddenContentIssue(
+        path: String,
+        message: String,
+        reportedForbiddenIssues: inout Set<ForbiddenContentIssue>,
+        issues: inout [WorkspaceAppPackageValidationReport.Issue]
+    ) {
+        let issue = ForbiddenContentIssue(path: path, message: message)
+        guard reportedForbiddenIssues.insert(issue).inserted else { return }
+        issues.append(blocker(path, message))
     }
 
     private func validateResourceBudget(
@@ -933,6 +999,54 @@ struct WorkspaceAppPackageService {
             issues.append(blocker("/storage/data/exports.json", "Could not decode data exports: \(error.localizedDescription)"))
             return []
         }
+    }
+
+    private func validateDataExportTables(
+        package: WorkspaceAppPackageManifest?,
+        manifest: WorkspaceAppManifest?,
+        exports: [WorkspaceAppPackageDataExport],
+        issues: inout [WorkspaceAppPackageValidationReport.Issue]
+    ) {
+        guard let package,
+              dataPolicy(for: package.exportMode) != nil,
+              let manifest else {
+            return
+        }
+        let knownTables = Set(manifest.storage?.tables.map(\.name) ?? [])
+        for dataExport in exports where !knownTables.contains(dataExport.table) {
+            issues.append(blocker(
+                "/storage/data/exports.json",
+                "Data export references unknown storage table '\(dataExport.table)'."
+            ))
+        }
+    }
+
+    private func dataExportPathsForResourceBudget(
+        package: WorkspaceAppPackageManifest?,
+        manifest: WorkspaceAppManifest?,
+        exports: [WorkspaceAppPackageDataExport]
+    ) -> Set<String> {
+        guard let package,
+              let expectedPolicy = dataPolicy(for: package.exportMode),
+              let manifest else {
+            return []
+        }
+        let knownTables = Set(manifest.storage?.tables.map(\.name) ?? [])
+        return Set(exports.compactMap { dataExport in
+            guard dataExport.policy == expectedPolicy,
+                  knownTables.contains(dataExport.table),
+                  isPortableRelativePath(dataExport.path),
+                  dataExport.path.hasPrefix("storage/data/\(expectedPolicy.rawValue)/"),
+                  dataExport.path.hasSuffix(".jsonl") else {
+                return nil
+            }
+            return dataExport.path
+        })
+    }
+
+    private struct ForbiddenContentIssue: Hashable {
+        var path: String
+        var message: String
     }
 
     private func portableFilePaths(in packageURL: URL) -> [String] {

@@ -57,7 +57,12 @@ enum WorkspaceAppPackageResourceError: LocalizedError, Equatable {
 }
 
 struct WorkspaceAppPackageResourceReader {
+    typealias RegularFileSize = @Sendable (_ url: URL, _ relativePath: String) throws -> Int
+
     var budget: WorkspaceAppPackageResourceBudget = .default
+    var regularFileSize: RegularFileSize = { url, relativePath in
+        try WorkspaceAppPackageResourceReader.defaultRegularFileSize(at: url, relativePath: relativePath)
+    }
 
     func validatePackageFiles(
         packageURL: URL,
@@ -67,11 +72,15 @@ struct WorkspaceAppPackageResourceReader {
         var totalBytes = 0
         for path in paths {
             let relativePath = "/\(path)"
-            let size = try regularFileSize(
-                at: packageURL.appendingPathComponent(path),
-                relativePath: relativePath
-            )
-            totalBytes += size
+            let size = try regularFileSize(packageURL.appendingPathComponent(path), relativePath)
+            let updatedTotal = totalBytes.addingReportingOverflow(size)
+            if updatedTotal.overflow {
+                throw WorkspaceAppPackageResourceError.packageTooLarge(
+                    actual: Int.max,
+                    maximum: budget.maxPackageBytes
+                )
+            }
+            totalBytes = updatedTotal.partialValue
             if totalBytes > budget.maxPackageBytes {
                 throw WorkspaceAppPackageResourceError.packageTooLarge(
                     actual: totalBytes,
@@ -96,7 +105,7 @@ struct WorkspaceAppPackageResourceReader {
     }
 
     func data(at url: URL, relativePath: String) throws -> Data {
-        let size = try regularFileSize(at: url, relativePath: relativePath)
+        let size = try regularFileSize(url, relativePath)
         guard size <= budget.maxFileBytes else {
             throw WorkspaceAppPackageResourceError.fileTooLarge(
                 path: relativePath,
@@ -108,7 +117,7 @@ struct WorkspaceAppPackageResourceReader {
     }
 
     func scannedText(at url: URL, relativePath: String) throws -> String {
-        let size = try regularFileSize(at: url, relativePath: relativePath)
+        let size = try regularFileSize(url, relativePath)
         guard size <= budget.maxScannedTextFileBytes else {
             throw WorkspaceAppPackageResourceError.fileTooLarge(
                 path: relativePath,
@@ -123,7 +132,7 @@ struct WorkspaceAppPackageResourceReader {
     }
 
     func digest(at url: URL, relativePath: String) throws -> String {
-        let size = try regularFileSize(at: url, relativePath: relativePath)
+        let size = try regularFileSize(url, relativePath)
         guard size <= budget.maxFileBytes else {
             throw WorkspaceAppPackageResourceError.fileTooLarge(
                 path: relativePath,
@@ -200,7 +209,7 @@ struct WorkspaceAppPackageResourceReader {
         maximumBytes: Int,
         handleLine: (Data) throws -> Void
     ) throws {
-        let size = try regularFileSize(at: url, relativePath: relativePath)
+        let size = try regularFileSize(url, relativePath)
         guard size <= maximumBytes else {
             throw WorkspaceAppPackageResourceError.fileTooLarge(
                 path: relativePath,
@@ -282,7 +291,7 @@ struct WorkspaceAppPackageResourceReader {
         try handleLine(line)
     }
 
-    private func regularFileSize(at url: URL, relativePath: String) throws -> Int {
+    private static func defaultRegularFileSize(at url: URL, relativePath: String) throws -> Int {
         let values = try url.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey, .isSymbolicLinkKey])
         guard values.isSymbolicLink != true, values.isRegularFile == true else {
             throw WorkspaceAppPackageResourceError.nonRegularFile(path: relativePath)

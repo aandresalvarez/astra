@@ -341,6 +341,53 @@ struct WorkspaceAppPackageTests {
         })
     }
 
+    @Test("package validation reports each forbidden JSONL export issue once per file")
+    func packageValidationDeduplicatesForbiddenJSONLExportIssues() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let packageURL = root.appendingPathComponent("duplicate-unsafe-data.astra-app", isDirectory: true)
+        let databaseURL = try Self.groceryDatabase(in: root)
+
+        _ = try WorkspaceAppPackageService().exportPackage(
+            manifest: Self.groceryManifest(),
+            to: packageURL,
+            packageID: "duplicate-unsafe-data",
+            mode: .templatePlusSeedData,
+            appStorageDatabaseURL: databaseURL
+        )
+
+        let dataPath = "storage/data/seed/items.jsonl"
+        let rows = [
+            #"{"api_key":"secret","path":"/Users/alvaro/private.csv"}"#,
+            #"{"token":"secret","home":"/Users/alvaro/other.csv"}"#
+        ]
+        try Data(rows.joined(separator: "\n").utf8)
+            .write(to: packageURL.appendingPathComponent(dataPath), options: [.atomic])
+        let exports = [
+            WorkspaceAppPackageDataExport(
+                table: "items",
+                policy: .seed,
+                path: dataPath,
+                rowCount: rows.count
+            )
+        ]
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        try encoder.encode(exports)
+            .write(to: packageURL.appendingPathComponent("storage/data/exports.json"), options: [.atomic])
+        try Self.rewriteChecksums(at: packageURL)
+
+        let report = WorkspaceAppPackageService().validatePackage(at: packageURL)
+
+        #expect(!report.canInstall)
+        #expect(report.blockers.filter {
+            $0.path == "/\(dataPath)" && $0.message.contains("credential")
+        }.count == 1)
+        #expect(report.blockers.filter {
+            $0.path == "/\(dataPath)" && $0.message.contains("absolute local path")
+        }.count == 1)
+    }
+
     @Test("package validation scans portable JSONL assets as text")
     func packageValidationScansPortableJSONLAssetsAsText() throws {
         let root = try Self.temporaryRoot()
@@ -420,6 +467,62 @@ struct WorkspaceAppPackageTests {
         #expect(report.blockers.contains {
             $0.path == "/storage/data/exports.json"
                 && $0.message.contains("Could not decode data exports")
+        })
+    }
+
+    @Test("package validation rejects exports for unknown manifest tables")
+    func packageValidationRejectsExportsForUnknownManifestTables() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let packageURL = root.appendingPathComponent("unknown-table-data.astra-app", isDirectory: true)
+        let databaseURL = try Self.groceryDatabase(in: root)
+
+        _ = try WorkspaceAppPackageService().exportPackage(
+            manifest: Self.groceryManifest(),
+            to: packageURL,
+            packageID: "unknown-table-data",
+            mode: .templatePlusSeedData,
+            appStorageDatabaseURL: databaseURL
+        )
+
+        let dataPath = "storage/data/seed/shadow.jsonl"
+        let dataURL = packageURL.appendingPathComponent(dataPath)
+        let row = #"{"id":"shadow-1","token":"\#(String(repeating: "unimported", count: 4_000))"}"#
+        try Data(row.utf8)
+            .write(to: dataURL, options: [.atomic])
+        let exports = [
+            WorkspaceAppPackageDataExport(
+                table: "shadow",
+                policy: .seed,
+                path: dataPath,
+                rowCount: 1
+            )
+        ]
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        try encoder.encode(exports)
+            .write(to: packageURL.appendingPathComponent("storage/data/exports.json"), options: [.atomic])
+        try Self.rewriteChecksums(at: packageURL)
+
+        var service = WorkspaceAppPackageService()
+        service.resourceReader.budget = WorkspaceAppPackageResourceBudget(
+            maxPackageBytes: 32 * 1_024 * 1_024,
+            maxFileBytes: 8 * 1_024 * 1_024,
+            maxScannedTextFileBytes: 20 * 1_024,
+            maxJSONLRows: 10_000,
+            maxJSONLLineBytes: 256 * 1_024
+        )
+
+        let report = service.validatePackage(at: packageURL)
+
+        #expect(!report.canInstall)
+        #expect(report.blockers.contains {
+            $0.path == "/storage/data/exports.json"
+                && $0.message.contains("unknown storage table 'shadow'")
+        })
+        #expect(report.blockers.contains {
+            $0.path == "/\(dataPath)"
+                && $0.message.lowercased().contains("package resource limit")
         })
     }
 
@@ -578,6 +681,29 @@ struct WorkspaceAppPackageTests {
             $0.path == "/.payload"
                 && $0.message.lowercased().contains("package resource limit")
         })
+    }
+
+    @Test("package resource budgets treat byte total overflow as over budget")
+    func packageResourceBudgetsTreatByteTotalOverflowAsOverBudget() throws {
+        var reader = WorkspaceAppPackageResourceReader()
+        reader.budget = WorkspaceAppPackageResourceBudget(
+            maxPackageBytes: Int.max,
+            maxFileBytes: Int.max,
+            maxScannedTextFileBytes: Int.max,
+            maxJSONLRows: 10_000,
+            maxJSONLLineBytes: 256 * 1_024
+        )
+        reader.regularFileSize = { _, relativePath in
+            relativePath == "/first.bin" ? Int.max : 1
+        }
+
+        #expect(throws: WorkspaceAppPackageResourceError.packageTooLarge(actual: Int.max, maximum: Int.max)) {
+            try reader.validatePackageFiles(
+                packageURL: URL(fileURLWithPath: "/tmp/nonexistent-package"),
+                paths: ["first.bin", "second.bin"],
+                isScannedTextPath: { _ in false }
+            )
+        }
     }
 
     @Test("package library discovery blocks oversized portable text")
