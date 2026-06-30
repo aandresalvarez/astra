@@ -1,5 +1,10 @@
 import Foundation
 import Testing
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 @testable import WorkspaceToolSupport
 
 @Suite("Workspace Tool Support", .serialized)
@@ -741,6 +746,299 @@ struct WorkspaceToolSupportTests {
         #expect(completed.status == .succeeded)
         #expect(completed.exitCode == 0)
         #expect(manager.tail(jobID: job.jobID, stream: "stdout", lines: 10).text.contains("ok"))
+    }
+
+    @Test("Managed job tail derives log paths from trusted job directory")
+    func managedJobTailDerivesLogPathsFromTrustedJobDirectory() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-workspace-job-store-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let outside = root.appendingPathComponent("host-secret.txt", isDirectory: false)
+        try "HOST_SECRET_FROM_OUTSIDE_JOB_DIR\n".write(to: outside, atomically: true, encoding: .utf8)
+
+        let jobRoot = root.appendingPathComponent("jobs", isDirectory: true)
+        let store = WorkspaceManagedJobStore(rootPath: jobRoot.path)
+        var record = try store.create(
+            command: "printf safe",
+            timeoutSeconds: nil,
+            label: nil,
+            progressProbe: nil,
+            runtime: "docker"
+        )
+        let jobDirectory = jobRoot.appendingPathComponent(record.jobID, isDirectory: true)
+        try "SAFE_STDOUT\n".write(to: jobDirectory.appendingPathComponent("stdout.log"), atomically: true, encoding: .utf8)
+        try "SAFE_STDERR\n".write(to: jobDirectory.appendingPathComponent("stderr.log"), atomically: true, encoding: .utf8)
+
+        record.stdoutLogPath = outside.path
+        record.stderrLogPath = outside.path
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode(record).write(to: jobDirectory.appendingPathComponent("job.json"), options: [.atomic])
+
+        let stdout = try store.tail(jobID: record.jobID, stream: "stdout", lines: 10)
+        let stderr = try store.tail(jobID: record.jobID, stream: "stderr", lines: 10)
+
+        #expect(stdout.text.contains("SAFE_STDOUT"))
+        #expect(stderr.text.contains("SAFE_STDERR"))
+        #expect(!stdout.text.contains("HOST_SECRET_FROM_OUTSIDE_JOB_DIR"))
+        #expect(!stderr.text.contains("HOST_SECRET_FROM_OUTSIDE_JOB_DIR"))
+
+        let stdoutURL = jobDirectory.appendingPathComponent("stdout.log")
+        let stderrURL = jobDirectory.appendingPathComponent("stderr.log")
+        try FileManager.default.removeItem(at: stdoutURL)
+        try FileManager.default.removeItem(at: stderrURL)
+        try FileManager.default.createSymbolicLink(at: stdoutURL, withDestinationURL: outside)
+        try FileManager.default.createSymbolicLink(at: stderrURL, withDestinationURL: outside)
+
+        let symlinkedStdout = try store.tail(jobID: record.jobID, stream: "stdout", lines: 10)
+        let symlinkedStderr = try store.tail(jobID: record.jobID, stream: "stderr", lines: 10)
+
+        #expect(symlinkedStdout.text.isEmpty)
+        #expect(symlinkedStderr.text.isEmpty)
+        #expect(!symlinkedStdout.text.contains("HOST_SECRET_FROM_OUTSIDE_JOB_DIR"))
+        #expect(!symlinkedStderr.text.contains("HOST_SECRET_FROM_OUTSIDE_JOB_DIR"))
+
+        try FileManager.default.removeItem(at: stdoutURL)
+#if canImport(Darwin) || canImport(Glibc)
+        #expect(mkfifo(stdoutURL.path, 0o600) == 0)
+        let fifoStdout = try store.tail(jobID: record.jobID, stream: "stdout", lines: 10)
+        #expect(fifoStdout.text.isEmpty)
+        try FileManager.default.removeItem(at: stdoutURL)
+#endif
+
+        try FileManager.default.linkItem(at: outside, to: stdoutURL)
+        let hardLinkedStdout = try store.tail(jobID: record.jobID, stream: "stdout", lines: 10)
+        #expect(hardLinkedStdout.text.isEmpty)
+        #expect(!hardLinkedStdout.text.contains("HOST_SECRET_FROM_OUTSIDE_JOB_DIR"))
+        try FileManager.default.removeItem(at: stdoutURL)
+
+        try "RACE_SAFE_STDOUT\n".write(to: stdoutURL, atomically: true, encoding: .utf8)
+        let racedOutsideLink = root.appendingPathComponent("raced-stdout-hardlink.log", isDirectory: false)
+        store.afterTrustedRegularFileStatForTesting = { url in
+            guard url.lastPathComponent == "stdout.log" else { return }
+            try? FileManager.default.removeItem(at: racedOutsideLink)
+            try? FileManager.default.linkItem(at: stdoutURL, to: racedOutsideLink)
+        }
+        let racedHardLinkedStdout = try store.tail(jobID: record.jobID, stream: "stdout", lines: 10)
+        store.afterTrustedRegularFileStatForTesting = nil
+        #expect(racedHardLinkedStdout.text.isEmpty)
+        #expect(!racedHardLinkedStdout.text.contains("RACE_SAFE_STDOUT"))
+        try? FileManager.default.removeItem(at: racedOutsideLink)
+        try FileManager.default.removeItem(at: stdoutURL)
+
+        let heartbeatURL = jobDirectory.appendingPathComponent("heartbeat.json")
+        let resultURL = jobDirectory.appendingPathComponent("result.json")
+        let outsideHeartbeat = root.appendingPathComponent("host-heartbeat.json", isDirectory: false)
+        let outsideResult = root.appendingPathComponent("host-result.json", isDirectory: false)
+        try #"{"status":"running","timestamp":"2026-06-24T12:00:00Z"}"#
+            .write(to: outsideHeartbeat, atomically: true, encoding: .utf8)
+        try #"{"status":"succeeded","exitCode":0,"completedAt":"2026-06-24T12:00:00Z","message":"HOST_RESULT_FROM_OUTSIDE_JOB_DIR"}"#
+            .write(to: outsideResult, atomically: true, encoding: .utf8)
+        try FileManager.default.createSymbolicLink(at: heartbeatURL, withDestinationURL: outsideHeartbeat)
+        try FileManager.default.createSymbolicLink(at: resultURL, withDestinationURL: outsideResult)
+
+        let symlinkedRuntimeState = try store.load(jobID: record.jobID)
+        #expect(symlinkedRuntimeState.status == .queued)
+        #expect(symlinkedRuntimeState.lastHeartbeatAt == nil)
+        #expect(symlinkedRuntimeState.message == nil)
+
+        let outsideJobDirectory = root.appendingPathComponent("outside-job-dir", isDirectory: true)
+        try FileManager.default.createDirectory(at: outsideJobDirectory, withIntermediateDirectories: true)
+        try encoder.encode(record).write(to: outsideJobDirectory.appendingPathComponent("job.json"), options: [.atomic])
+        try "HOST_LOG_FROM_SYMLINKED_JOB_DIR\n"
+            .write(to: outsideJobDirectory.appendingPathComponent("stdout.log"), atomically: true, encoding: .utf8)
+        try FileManager.default.removeItem(at: jobDirectory)
+        try FileManager.default.createSymbolicLink(at: jobDirectory, withDestinationURL: outsideJobDirectory)
+
+        #expect(throws: (any Error).self) {
+            _ = try store.load(jobID: record.jobID)
+        }
+        #expect(throws: (any Error).self) {
+            _ = try store.tail(jobID: record.jobID, stream: "stdout", lines: 10)
+        }
+    }
+
+    @Test("Docker workspace job manager rejects symlinked job root before launch")
+    func dockerWorkspaceJobManagerRejectsSymlinkedJobRootBeforeLaunch() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-workspace-job-root-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let hostWorkspace = root.appendingPathComponent("repo", isDirectory: true)
+        try FileManager.default.createDirectory(at: hostWorkspace, withIntermediateDirectories: true)
+        let outsideJobs = root.appendingPathComponent("outside-jobs", isDirectory: true)
+        try FileManager.default.createDirectory(at: outsideJobs, withIntermediateDirectories: true)
+        let jobRoot = root.appendingPathComponent("jobs", isDirectory: true)
+        try FileManager.default.createSymbolicLink(at: jobRoot, withDestinationURL: outsideJobs)
+
+        let docker = root.appendingPathComponent("docker")
+        let log = root.appendingPathComponent("docker.log")
+        let quotedLogPath = log.path.replacingOccurrences(of: "'", with: "'\\''")
+        try """
+        #!/bin/sh
+        printf '%s\\n' "$*" >> '\(quotedLogPath)'
+        exit 0
+        """.write(to: docker, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: docker.path)
+
+        let configuration = WorkspaceToolConfiguration(
+            dockerExecutable: docker.path,
+            image: "astra/workspace:latest",
+            containerName: "astra-test-job-root",
+            workdir: "/workspace",
+            network: "bridge",
+            taskID: "task-root",
+            runID: "run-root",
+            mounts: [
+                WorkspaceDockerMount(hostPath: hostWorkspace.path, containerPath: "/workspace", access: "rw", role: "workspace")
+            ],
+            jobRootHostPath: jobRoot.path,
+            jobRootContainerPath: "/workspace/jobs"
+        )
+        let manager = DockerWorkspaceJobManager(
+            configuration: configuration,
+            executor: DockerWorkspaceCommandExecutor(configuration: configuration)
+        )
+
+        let job = manager.start(command: "printf should-not-run", timeoutSeconds: nil, label: nil, progressProbe: nil)
+
+        #expect(job.status == .failed)
+        #expect(job.message?.contains("Workspace job file is unsafe or unreadable") == true)
+        #expect(!FileManager.default.fileExists(atPath: log.path))
+    }
+
+    @Test("Managed job creation rejects symlinked Astra ancestors")
+    func managedJobCreationRejectsSymlinkedAstraAncestors() throws {
+        for symlinkedAncestor in [".astra", ".astra/tasks"] {
+            let root = FileManager.default.temporaryDirectory
+                .appendingPathComponent("astra-workspace-job-ancestor-\(UUID().uuidString)", isDirectory: true)
+            defer { try? FileManager.default.removeItem(at: root) }
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+            let workspace = root.appendingPathComponent("repo", isDirectory: true)
+            try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
+            let outsideAncestor = root.appendingPathComponent("outside-ancestor", isDirectory: true)
+            try FileManager.default.createDirectory(at: outsideAncestor, withIntermediateDirectories: true)
+
+            let symlinkURL = workspace.appendingPathComponent(symlinkedAncestor, isDirectory: true)
+            try FileManager.default.createDirectory(
+                at: symlinkURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try FileManager.default.createSymbolicLink(at: symlinkURL, withDestinationURL: outsideAncestor)
+
+            let jobRoot = workspace.appendingPathComponent(".astra/tasks/task-ancestor/jobs", isDirectory: true)
+            let store = WorkspaceManagedJobStore(rootPath: jobRoot.path)
+
+            #expect(throws: (any Error).self) {
+                _ = try store.create(
+                    command: "printf should-not-write",
+                    timeoutSeconds: nil,
+                    label: nil,
+                    progressProbe: nil,
+                    runtime: "codex"
+                )
+            }
+            #expect(!FileManager.default.fileExists(atPath: outsideAncestor.appendingPathComponent("task-ancestor").path))
+            #expect(!FileManager.default.fileExists(atPath: outsideAncestor.appendingPathComponent("tasks").path))
+        }
+    }
+
+    @Test("Managed job creation allows symlinked workspace root with trusted Astra tasks chain")
+    func managedJobCreationAllowsSymlinkedWorkspaceRootWithTrustedAstraTasksChain() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-workspace-job-symlink-root-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let realWorkspace = root.appendingPathComponent("real-repo", isDirectory: true)
+        try FileManager.default.createDirectory(at: realWorkspace, withIntermediateDirectories: true)
+        let importedWorkspace = root.appendingPathComponent("imported-repo", isDirectory: true)
+        try FileManager.default.createSymbolicLink(at: importedWorkspace, withDestinationURL: realWorkspace)
+
+        let jobRoot = importedWorkspace.appendingPathComponent(".astra/tasks/task-safe/jobs", isDirectory: true)
+        let store = WorkspaceManagedJobStore(rootPath: jobRoot.path)
+
+        let record = try store.create(
+            command: "printf safe",
+            timeoutSeconds: nil,
+            label: nil,
+            progressProbe: nil,
+            runtime: "codex"
+        )
+
+        let realJobDirectory = realWorkspace
+            .appendingPathComponent(".astra/tasks/task-safe/jobs", isDirectory: true)
+            .appendingPathComponent(record.jobID, isDirectory: true)
+        #expect(record.status == .queued)
+        #expect(FileManager.default.fileExists(atPath: realJobDirectory.appendingPathComponent("command.sh").path))
+        #expect(FileManager.default.fileExists(atPath: realJobDirectory.appendingPathComponent("job.json").path))
+        #expect(try store.load(jobID: record.jobID).jobID == record.jobID)
+    }
+
+    @Test("Managed job path containment handles filesystem root anchors")
+    func managedJobPathContainmentHandlesFilesystemRootAnchors() {
+        #expect(WorkspaceManagedJobPathContainment.isDescendant("/tmp/astra/jobs", of: "/"))
+        #expect(!WorkspaceManagedJobPathContainment.isDescendant("/", of: "/"))
+        #expect(WorkspaceManagedJobPathContainment.relativeComponents(from: "/", to: "/tmp/astra/jobs") == [
+            "tmp",
+            "astra",
+            "jobs"
+        ])
+
+        #expect(WorkspaceManagedJobPathContainment.isDescendant("/tmp/astra/jobs", of: "/tmp/astra"))
+        #expect(!WorkspaceManagedJobPathContainment.isDescendant("/tmp/astra-other/jobs", of: "/tmp/astra"))
+        #expect(WorkspaceManagedJobPathContainment.relativeComponents(from: "/tmp/astra", to: "/tmp/astra/jobs") == [
+            "jobs"
+        ])
+        #expect(WorkspaceManagedJobPathContainment.relativeComponents(from: "/tmp/astra", to: "/tmp/astra-other/jobs").isEmpty)
+    }
+
+    @Test("Managed job lookup reports missing jobs separately from unsafe files")
+    func managedJobLookupReportsMissingJobsSeparatelyFromUnsafeFiles() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-workspace-job-missing-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let jobRoot = root.appendingPathComponent("jobs", isDirectory: true)
+        let store = WorkspaceManagedJobStore(rootPath: jobRoot.path)
+
+        do {
+            _ = try store.load(jobID: "missing-job")
+            Issue.record("Expected missing job lookup to throw")
+        } catch {
+            #expect(error.localizedDescription.contains("Workspace job not found: missing-job"))
+            #expect(!error.localizedDescription.contains("unsafe or unreadable"))
+        }
+
+        let configuration = WorkspaceToolConfiguration(
+            dockerExecutable: "/bin/echo",
+            image: "astra/workspace:latest",
+            containerName: "astra-test-missing-job",
+            workdir: "/workspace",
+            network: "bridge",
+            taskID: "task-missing",
+            runID: "run-missing",
+            mounts: [],
+            jobRootHostPath: jobRoot.path,
+            jobRootContainerPath: "/workspace/jobs"
+        )
+        let manager = DockerWorkspaceJobManager(
+            configuration: configuration,
+            executor: DockerWorkspaceCommandExecutor(configuration: configuration)
+        )
+
+        let status = manager.status(jobID: "missing-job")
+        let tail = manager.tail(jobID: "missing-job", stream: "stdout", lines: 10)
+        #expect(status.status == .failed)
+        #expect(status.message?.contains("Workspace job not found: missing-job") == true)
+        #expect(tail.text.contains("Workspace job not found: missing-job"))
+        #expect(!tail.text.contains("unsafe or unreadable"))
     }
 
     @Test("Docker workspace job manager maps host workspace path before persisting command")
