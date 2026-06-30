@@ -878,7 +878,9 @@ struct WorkspaceAppPackageService {
         var data = Data()
         var buffer = [UInt8](repeating: 0, count: 64 * 1024)
         while true {
-            let count = Darwin.read(descriptor, &buffer, buffer.count)
+            let count = buffer.withUnsafeMutableBytes { rawBuffer in
+                Darwin.read(descriptor, rawBuffer.baseAddress, rawBuffer.count)
+            }
             if count > 0 {
                 data.append(buffer, count: count)
             } else if count == 0 {

@@ -211,6 +211,49 @@ struct WorkspaceAppPackageTests {
         })
     }
 
+    @Test("package validation reads multi-chunk data exports through descriptor buffer")
+    func packageValidationReadsMultiChunkDataExportsThroughDescriptorBuffer() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let packageURL = root.appendingPathComponent("grocery-large-export.astra-app", isDirectory: true)
+        let databaseURL = try Self.groceryDatabase(in: root)
+        _ = try WorkspaceAppPackageService().exportPackage(
+            manifest: Self.groceryManifest(),
+            to: packageURL,
+            packageID: "grocery-large-export",
+            mode: .templatePlusSeedData,
+            appStorageDatabaseURL: databaseURL
+        )
+        let dataPath = "storage/data/seed/items.jsonl"
+        let row: [String: WorkspaceAppStorageValue] = [
+            "id": .text("item-large"),
+            "name": .text(String(repeating: "A", count: 70_000)),
+            "category": .text("Bulk"),
+            "quantity": .integer(1)
+        ]
+        let rowData = try JSONEncoder().encode(row)
+        try rowData.write(to: packageURL.appendingPathComponent(dataPath), options: [.atomic])
+        try Self.writeDataExports(
+            [
+                WorkspaceAppPackageDataExport(
+                    table: "items",
+                    policy: .seed,
+                    path: dataPath,
+                    rowCount: 1
+                )
+            ],
+            to: packageURL
+        )
+
+        let report = WorkspaceAppPackageService().validatePackage(at: packageURL)
+
+        #expect(report.canInstall)
+        #expect(!report.blockers.contains {
+            $0.path == "/storage/data/exports.json"
+                && $0.message.contains("row count")
+        })
+    }
+
     @Test("package validation reports malformed JSON Lines as format errors")
     func packageValidationReportsMalformedJSONLinesAsFormatErrors() throws {
         let root = try Self.temporaryRoot()
