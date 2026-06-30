@@ -58,7 +58,8 @@ struct RemoteMCPGatewaySupportTests {
         let remote = RecordingRemoteMCPClient(tools: [
             ["name": "drive.search", "description": "Search fake Drive files."],
             ["name": "drive.files.delete", "description": "Delete a fake Drive file."],
-            ["name": "drive.files.export", "description": "Export a fake Drive file."]
+            ["name": "drive.files.export", "description": "Export a fake Drive file."],
+            ["description": "Malformed tool without a name."]
         ])
         let gateway = LocalMCPGateway(
             server: descriptor,
@@ -100,7 +101,7 @@ struct RemoteMCPGatewaySupportTests {
             authTokenProvider: StaticGatewayTokenProvider(token: "secret-access-token")
         )
 
-        let call = try parseJSON(try #require(gateway.handleLine(#"{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":" drive.search ","arguments":{"query":"budget"}}}"#)))
+        let call = try parseJSON(try #require(gateway.handleLine(#"{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":" Drive.Search ","arguments":{"query":"budget"}}}"#)))
         let callResult = try #require(call["result"] as? [String: Any])
         #expect(callResult["isError"] as? Bool == false)
         #expect(remote.calledTools == ["drive.search"])

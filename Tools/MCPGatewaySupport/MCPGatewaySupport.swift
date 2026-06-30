@@ -43,23 +43,35 @@ public struct RemoteMCPGatewayToolPolicy: Equatable {
     }
 
     public func allows(_ toolName: String) -> Bool {
-        let tool = Self.normalized(toolName)
-        guard !tool.isEmpty else { return false }
-        if excludedTools.contains(tool) {
+        guard let tool = canonicalToolName(for: toolName) else {
             return false
         }
-        if allowedTools.isEmpty {
-            return true
+        return !tool.isEmpty
+    }
+
+    public func canonicalToolName(for toolName: String) -> String? {
+        let tool = Self.normalized(toolName)
+        guard !tool.isEmpty else { return nil }
+        if excludedTools.contains(tool) {
+            return nil
         }
-        return allowedTools.contains(tool)
+        if allowedTools.isEmpty {
+            return tool
+        }
+        return allowedTools.contains(tool) ? tool : nil
     }
 
     public func filterTools(_ tools: [[String: Any]]) -> [[String: Any]] {
-        tools.filter { tool in
+        tools.compactMap { tool in
             guard let name = tool["name"] as? String else {
-                return allowedTools.isEmpty && excludedTools.isEmpty
+                return nil
             }
-            return allows(name)
+            guard let canonicalName = canonicalToolName(for: name) else {
+                return nil
+            }
+            var normalizedTool = tool
+            normalizedTool["name"] = canonicalName
+            return normalizedTool
         }
     }
 
@@ -204,11 +216,11 @@ public final class LocalMCPGateway {
               let rawToolName = params["name"] as? String else {
             return encodeError(id: id, code: -32602, message: "Unsupported tool")
         }
-        let toolName = rawToolName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !toolName.isEmpty else {
+        let requestedToolName = rawToolName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !requestedToolName.isEmpty else {
             return encodeError(id: id, code: -32602, message: "Unsupported tool")
         }
-        guard toolPolicy.allows(toolName) else {
+        guard let toolName = toolPolicy.canonicalToolName(for: requestedToolName) else {
             return encodeError(id: id, code: -32602, message: "Tool is not allowed by ASTRA gateway policy")
         }
         let arguments = params["arguments"] as? [String: Any] ?? [:]
