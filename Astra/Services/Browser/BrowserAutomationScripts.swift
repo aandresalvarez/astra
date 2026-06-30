@@ -708,7 +708,7 @@ enum BrowserAutomationScripts {
         focusedElement: active ? {
           selector: selectorFor(active),
           tag: active.tagName.toLowerCase(),
-          role: active.getAttribute("role") || "",
+          role: roleFor(active),
           type: active.getAttribute("type") || "",
           label: labelForSnapshot(active),
           name: redactedMetadataForSnapshot(active, active.getAttribute("name") || ""),

@@ -634,6 +634,7 @@ struct BrowserPageSnapshotServiceTests {
         #expect(script.contains("rawSensitiveValues.push(rawValue)"))
         #expect(script.contains("const snapshotSensitiveValues = rawSensitiveValues.concat"))
         #expect(script.contains("text: redactedVisibleText(visibleText(), snapshotSensitiveValues)"))
+        #expect(script.contains("role: roleFor(active)"))
         #expect(script.contains("encodeURIComponent"))
         #expect(script.contains("const formattedDigitPattern = (value) =>"))
         #expect(script.contains("redacted = redacted.replace(pattern,"))
