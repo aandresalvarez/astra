@@ -130,12 +130,19 @@ enum BrowserTextEntryPreflight {
         case "credential_input_blocked", "mfa_input_blocked":
             return true
         default:
-            return false
+            switch string(response["stopReason"]) {
+            case "credential_input_blocked", "mfa_input_blocked":
+                return true
+            default:
+                return false
+            }
         }
     }
 
     static func terminalStopReason(for response: [String: Any]) -> String? {
-        isTerminalBlockResponse(response) ? string(response["error"]) : nil
+        guard isTerminalBlockResponse(response) else { return nil }
+        let error = string(response["error"])
+        return error.isEmpty ? string(response["stopReason"]) : error
     }
 
     private static func sanitizedTarget(_ targetInfo: [String: Any], risk: BrowserRisk) -> [String: Any] {
@@ -151,8 +158,8 @@ enum BrowserTextEntryPreflight {
             "autocomplete": string(targetInfo["autocomplete"]),
             "placeholder": redactText ? "[redacted]" : string(targetInfo["placeholder"]),
             "testID": string(targetInfo["testID"]),
-            "href": string(targetInfo["href"]),
-            "url": string(targetInfo["url"])
+            "href": redactText ? sanitizedSensitiveURL(string(targetInfo["href"])) : string(targetInfo["href"]),
+            "url": redactText ? sanitizedSensitiveURL(string(targetInfo["url"])) : string(targetInfo["url"])
         ]
         if let framePath = targetInfo["framePath"] {
             target["framePath"] = sanitizedFramePath(framePath, redact: redactText)
@@ -194,6 +201,18 @@ enum BrowserTextEntryPreflight {
               let scheme = components.scheme,
               let host = components.host else {
             return "[redacted frame]"
+        }
+        let port = components.port.map { ":\($0)" } ?? ""
+        return "\(scheme)://\(host)\(port)"
+    }
+
+    private static func sanitizedSensitiveURL(_ value: String) -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+        guard let components = URLComponents(string: trimmed),
+              let scheme = components.scheme,
+              let host = components.host else {
+            return "[redacted url]"
         }
         let port = components.port.map { ":\($0)" } ?? ""
         return "\(scheme)://\(host)\(port)"

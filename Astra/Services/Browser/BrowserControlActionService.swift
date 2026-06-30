@@ -46,6 +46,7 @@ enum BrowserControlActionService {
             "selector": object["selector"] as? String ?? "",
             "requestedSelector": object["requestedSelector"] as? String ?? "",
             "label": object["label"] as? String ?? "",
+            "name": object["name"] as? String ?? "",
             "role": object["role"] as? String ?? "",
             "tag": object["tag"] as? String ?? "",
             "type": object["type"] as? String ?? "",

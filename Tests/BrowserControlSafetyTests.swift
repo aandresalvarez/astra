@@ -126,8 +126,8 @@ struct BrowserControlSafetyTests {
                 "type": "password",
                 "placeholder": "enter your secret",
                 "testID": "login-password",
-                "href": "https://example.com/reset-password",
-                "url": "https://example.com/login",
+                "href": "https://example.com/reset-password?token=secret-token#secret",
+                "url": "https://example.com/login?session=secret-token#secret",
                 "framePath": [
                     "https://auth.example.com/challenge?reset_token=secret-token",
                     "Verification code frame"
@@ -136,7 +136,8 @@ struct BrowserControlSafetyTests {
             ]
         ))
         let target = try #require(block["target"] as? [String: Any])
-        #expect(target["href"] as? String == "https://example.com/reset-password")
+        #expect(target["href"] as? String == "https://example.com")
+        #expect(target["url"] as? String == "https://example.com")
         #expect(target["requestedSelector"] as? String == "input[type=password]")
         #expect(target["autocomplete"] as? String == "")
         #expect(target["label"] as? String == "[redacted]")
@@ -159,6 +160,16 @@ struct BrowserControlSafetyTests {
             "ok": false,
             "error": "mfa_input_blocked"
         ]))
+        #expect(BrowserTextEntryPreflight.isTerminalBlockResponse([
+            "ok": false,
+            "stopReason": "credential_input_blocked",
+            "results": []
+        ]))
+        #expect(BrowserTextEntryPreflight.terminalStopReason(for: [
+            "ok": false,
+            "stopReason": "credential_input_blocked",
+            "results": []
+        ]) == "credential_input_blocked")
         #expect(!BrowserTextEntryPreflight.isTerminalBlockResponse([
             "ok": false,
             "error": "target_not_visible"
@@ -184,6 +195,8 @@ struct BrowserControlSafetyTests {
         #expect(insertScript.contains("mfa_input_blocked"))
         #expect(insertScript.contains("autocomplete"))
         #expect(insertScript.contains("nameFor(target)"))
+        #expect(insertScript.contains("href: redactedURL(target.getAttribute(\"href\") || \"\")"))
+        #expect(insertScript.contains("url: redactedURL(location.href)"))
 
         let replaceTargetsScript = BrowserAutomationScripts.replaceTextTargetsInfoScript(selector: "input")
         #expect(replaceTargetsScript.contains("querySelectorAll(selector)"))
@@ -198,6 +211,17 @@ struct BrowserControlSafetyTests {
         )
         #expect(replaceScript.contains("sensitiveBlock(el, \"setValue\")"))
         #expect(replaceScript.contains("return JSON.stringify(blocked)"))
+        #expect(replaceScript.contains("href: redactedURL(el.getAttribute(\"href\") || \"\")"))
+        #expect(replaceScript.contains("url: redactedURL(location.href)"))
+
+        let selectorlessReplaceScript = BrowserAutomationScripts.replaceTextScript(
+            find: "old",
+            replacement: "new",
+            selector: nil,
+            all: true
+        )
+        #expect(selectorlessReplaceScript.contains("const selector = null"))
+        #expect(selectorlessReplaceScript.contains("querySelectorAll(\"input, textarea, [contenteditable=true]\")"))
     }
 
     @Test("Drive open default timeout covers slow Google Drive search results")

@@ -815,6 +815,14 @@ enum BrowserAutomationScripts {
             const error = sensitiveRisk(el);
             if (!error) return null;
             const risk = error === "mfa_input_blocked" ? "mfaInput" : "credentialInput";
+            const redactedURL = (value) => {
+              try {
+                const parsed = new URL(String(value || ""), location.href);
+                return parsed.origin;
+              } catch (_) {
+                return value ? "[redacted url]" : "";
+              }
+            };
             return {
               ok: false,
               error,
@@ -834,8 +842,8 @@ enum BrowserAutomationScripts {
                 autocomplete: el.getAttribute("autocomplete") || "",
                 placeholder: "[redacted]",
                 testID: el.getAttribute("data-testid") || el.getAttribute("data-test") || "",
-                href: el.getAttribute("href") || "",
-                url: location.href
+                href: redactedURL(el.getAttribute("href") || ""),
+                url: redactedURL(location.href)
               }
             };
           };
@@ -1069,6 +1077,14 @@ enum BrowserAutomationScripts {
             ? "credential_input_blocked"
             : (/mfa|2fa|two factor|two-factor|verification code|security code|otp|one-time/.test(sensitiveText) ? "mfa_input_blocked" : "");
           if (sensitiveError) {
+            const redactedURL = (value) => {
+              try {
+                const parsed = new URL(String(value || ""), location.href);
+                return parsed.origin;
+              } catch (_) {
+                return value ? "[redacted url]" : "";
+              }
+            };
             return JSON.stringify({
               ok: false,
               error: sensitiveError,
@@ -1087,8 +1103,8 @@ enum BrowserAutomationScripts {
                 autocomplete: target.getAttribute("autocomplete") || "",
                 placeholder: "[redacted]",
                 testID: target.getAttribute("data-testid") || target.getAttribute("data-test") || "",
-                href: target.getAttribute("href") || "",
-                url: location.href
+                href: redactedURL(target.getAttribute("href") || ""),
+                url: redactedURL(location.href)
               }
             });
           }

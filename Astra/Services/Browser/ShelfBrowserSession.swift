@@ -3500,15 +3500,15 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
     }
 
     private func replaceText(find: String, replacement: String, selector: String?, all: Bool) async throws -> String {
-        let resolvedSelector = selector?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if let blocked = try await blockedReplacementTextEntryResult(find: find, selector: resolvedSelector) {
+        let resolvedSelector = ShelfBrowserCommandNormalization.normalized(selector)
+        if let resolvedSelector, let blocked = try await blockedReplacementTextEntryResult(find: find, selector: resolvedSelector) {
             return try Self.jsonString(blocked)
         }
         if isUsingControlledBrowser {
             let json = try await controlledBrowser.replaceText(find: find, replacement: replacement, selector: resolvedSelector, all: all)
             syncDisplayedStateForEngine()
             publishBridgeState()
-            return try annotateBrowserLoopHint(json: json, action: "replaceText", target: resolvedSelector)
+            return try annotateBrowserLoopHint(json: json, action: "replaceText", target: resolvedSelector ?? "")
         }
         let json = try await evaluateJavaScriptString(BrowserAutomationScripts.replaceTextScript(
             find: find,
@@ -3516,7 +3516,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             selector: resolvedSelector,
             all: all
         ))
-        return try annotateBrowserLoopHint(json: json, action: "replaceText", target: resolvedSelector)
+        return try annotateBrowserLoopHint(json: json, action: "replaceText", target: resolvedSelector ?? "")
     }
 
     private func keypress(key: String, modifiers: [String]) async throws -> String {

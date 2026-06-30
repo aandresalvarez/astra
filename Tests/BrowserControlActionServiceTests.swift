@@ -143,6 +143,7 @@ struct BrowserControlActionServiceTests {
                 "selector": "#save",
                 "requestedSelector": "button.primary",
                 "label": "Password",
+                "name": "current-password",
                 "role": "button",
                 "tag": "button",
                 "type": "password",
@@ -173,6 +174,7 @@ struct BrowserControlActionServiceTests {
         #expect(summary["selector"] as? String == "#save")
         #expect(summary["requestedSelector"] as? String == "button.primary")
         #expect(summary["label"] as? String == "Password")
+        #expect(summary["name"] as? String == "current-password")
         #expect(summary["type"] as? String == "password")
         #expect(summary["autocomplete"] as? String == "current-password")
         #expect(summary["placeholder"] as? String == "Enter password")
