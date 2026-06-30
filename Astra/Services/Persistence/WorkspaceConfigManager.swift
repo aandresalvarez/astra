@@ -736,6 +736,7 @@ enum WorkspaceConfigManager {
             SSHConnectionManager.save(config.sshConnections, workspacePath: config.primaryPath)
         }
 
+        let quarantinedScheduleCount = config.schedules?.filter(\.isEnabled).count ?? 0
         for sc in config.schedules ?? [] {
             let schedule = makeImportedSchedule(from: sc, workspace: workspace)
             modelContext.insert(schedule)
@@ -765,7 +766,7 @@ enum WorkspaceConfigManager {
             connectorCount: workspace.connectors.count,
             localToolCount: workspace.localTools.count,
             taskCount: workspace.tasks.count,
-            quarantinedScheduleCount: config.schedules?.count ?? 0,
+            quarantinedScheduleCount: quarantinedScheduleCount,
             skippedConnectorCount: skippedConnectorCount,
             skippedLocalToolCount: skippedLocalToolCount
         )

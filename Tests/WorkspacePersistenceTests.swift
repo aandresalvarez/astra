@@ -708,13 +708,29 @@ struct WorkspacePersistenceTests {
             path: "/tmp/astra_import_schedule_\(UUID().uuidString)",
             skillID: UUID().uuidString
         )
-        let dueDate = Date(timeIntervalSince1970: 1_777_002_000)
+        let dueDate = Date.distantPast
         config.schedules = [
             WorkspaceConfigManager.ScheduleConfig(
                 id: UUID().uuidString,
-                name: "Untrusted Routine",
+                name: "Enabled Routine",
                 isEnabled: true,
                 goal: "Launch from imported config",
+                templateVariablesJSON: "{}",
+                model: "claude-sonnet-4-6",
+                tokenBudget: 50_000,
+                scheduleType: ScheduleType.once.rawValue,
+                nextFireDate: dueDate,
+                intervalSeconds: 3600,
+                dailyHour: 9,
+                dailyMinute: 0,
+                weeklyDayOfWeek: 2,
+                fireCount: 0
+            ),
+            WorkspaceConfigManager.ScheduleConfig(
+                id: UUID().uuidString,
+                name: "Already Disabled Routine",
+                isEnabled: false,
+                goal: "Already disabled before import",
                 templateVariablesJSON: "{}",
                 model: "claude-sonnet-4-6",
                 tokenBudget: 50_000,
@@ -729,9 +745,11 @@ struct WorkspacePersistenceTests {
         ]
 
         let result = WorkspaceConfigManager.importWorkspaceResult(from: config, modelContext: context)
-        let importedSchedule = try #require(result.workspace.schedules.first)
+        let importedSchedule = try #require(result.workspace.schedules.first { $0.name == "Enabled Routine" })
+        let alreadyDisabled = try #require(result.workspace.schedules.first { $0.name == "Already Disabled Routine" })
 
         #expect(importedSchedule.isEnabled == false)
+        #expect(alreadyDisabled.isEnabled == false)
         #expect(importedSchedule.nextFireDate == dueDate)
         #expect(importedSchedule.goal == "Launch from imported config")
         #expect(result.quarantinedScheduleCount == 1)
