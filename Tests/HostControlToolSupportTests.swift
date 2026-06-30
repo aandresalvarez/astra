@@ -370,6 +370,31 @@ struct HostControlToolSupportTests {
         #expect(Data(result.stdout.utf8).count <= 8)
     }
 
+    @Test("Host control process runner caps decoded output after invalid UTF-8 expansion")
+    func hostControlProcessRunnerCapsDecodedOutputAfterInvalidUTF8Expansion() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-host-invalid-utf8-output-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let invalidByteEscapes = String(repeating: "\\200", count: 64)
+        let executable = try customExecutable(named: "invalid-utf8", root: root, body: """
+        printf '%b' '\(invalidByteEscapes)'
+        exit 0
+        """)
+
+        let result = HostControlProcessRunner(limits: HostControlProcessLimits(maximumTimeoutSeconds: 5, outputByteLimit: 64)).run(
+            executablePath: executable.path,
+            arguments: [],
+            timeoutSeconds: 5,
+            environment: [:]
+        )
+
+        #expect(result.exitCode == 125)
+        #expect(result.stdoutTruncated)
+        #expect(Data(result.stdout.utf8).count <= 64)
+    }
+
     @Test("Host control process runner preserves safe output prefix before truncation marker")
     func hostControlProcessRunnerPreservesSafeOutputPrefixBeforeTruncationMarker() throws {
         let root = FileManager.default.temporaryDirectory
@@ -723,6 +748,21 @@ struct HostControlToolSupportTests {
         #expect(!text.contains("super-secret-token"))
     }
 
+    @Test("Host control short secret prefix scan only checks truncation boundaries")
+    func hostControlShortSecretPrefixScanOnlyChecksTruncationBoundaries() throws {
+        let source = try hostControlToolSource()
+        let prefixScan = try sourceSnippet(
+            startingWith: "    private func appendShortTruncatedSecretPrefixRanges(",
+            endingBefore: "    private static func splitList",
+            in: source
+        )
+
+        #expect(prefixScan.contains("truncatedOutputBoundaries(in: value)"))
+        #expect(!prefixScan.contains("for index in value.indices"))
+        #expect(!prefixScan.contains("Array(value[range])"))
+        #expect(!prefixScan.contains("secret.prefix(length)"))
+    }
+
     @Test("Host control reapplies output caps after secret prefix redaction")
     func hostControlReappliesOutputCapsAfterSecretPrefixRedaction() throws {
         let connectors = """
@@ -789,6 +829,8 @@ struct HostControlToolSupportTests {
         #expect(stdout.utf8.count <= 96)
         #expect(stdout.contains("redacted"))
         #expect(!stdout.contains("pass"))
+        #expect(try #require(response["result"] as? [String: Any])["isError"] as? Bool == true)
+        #expect(try resultText(response).contains("output_truncated: true"))
     }
 
     @Test("Jira truncated response bodies redact secret prefixes and become errors")

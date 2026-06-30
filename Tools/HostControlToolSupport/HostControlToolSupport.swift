@@ -153,27 +153,42 @@ public struct HostControlToolConfiguration: Equatable, Sendable {
     ) {
         guard !value.isEmpty else { return }
         let maximumShortPrefixLength = min(3, secret.count)
-        for index in value.indices {
-            let remainingLength = value.count - index
-            guard remainingLength > 0 else { continue }
-            let candidateMaximumLength = min(maximumShortPrefixLength, remainingLength)
+        for boundary in truncatedOutputBoundaries(in: value) {
+            let candidateMaximumLength = min(maximumShortPrefixLength, boundary)
             for length in stride(from: candidateMaximumLength, through: 1, by: -1) {
-                let range = index..<index + length
-                guard Array(value[range]) == Array(secret.prefix(length)),
-                      isTruncatedOutputBoundary(after: range.upperBound, in: value) else {
-                    continue
-                }
+                let start = boundary - length
+                guard bytes(in: value, at: start, matchPrefixOf: secret, length: length) else { continue }
+                let range = start..<boundary
                 ranges.append(range)
                 break
             }
         }
     }
 
-    private func isTruncatedOutputBoundary(after index: Int, in value: [UInt8]) -> Bool {
-        guard index < value.count else { return true }
+    private func truncatedOutputBoundaries(in value: [UInt8]) -> [Int] {
         let marker = Array("\n[ASTRA truncated ".utf8)
-        guard index + marker.count <= value.count else { return false }
-        return Array(value[index..<index + marker.count]) == marker
+        var boundaries = [value.count]
+        guard value.count >= marker.count else { return boundaries }
+        for index in 0...(value.count - marker.count) where bytes(in: value, at: index, match: marker) {
+            boundaries.append(index)
+        }
+        return boundaries
+    }
+
+    private func bytes(in value: [UInt8], at index: Int, match marker: [UInt8]) -> Bool {
+        guard index >= 0, index + marker.count <= value.count else { return false }
+        for offset in marker.indices where value[index + offset] != marker[offset] {
+            return false
+        }
+        return true
+    }
+
+    private func bytes(in value: [UInt8], at index: Int, matchPrefixOf secret: [UInt8], length: Int) -> Bool {
+        guard index >= 0, length <= secret.count, index + length <= value.count else { return false }
+        for offset in 0..<length where value[index + offset] != secret[offset] {
+            return false
+        }
+        return true
     }
 
     private static func splitList(_ value: String?) -> [String] {
@@ -266,6 +281,37 @@ public struct HostControlProcessLimits: Equatable, Sendable {
     func clampedTimeout(_ requested: TimeInterval) -> TimeInterval {
         let finiteRequest = requested.isFinite ? requested : maximumTimeoutSeconds
         return min(max(1, finiteRequest), maximumTimeoutSeconds)
+    }
+}
+
+private struct HostControlCappedOutput: Equatable {
+    var value: String
+    var truncated: Bool
+}
+
+private enum HostControlOutputCap {
+    static func capped(_ value: String, label: String, byteLimit: Int) -> HostControlCappedOutput {
+        guard value.utf8.count > byteLimit else {
+            return HostControlCappedOutput(value: value, truncated: false)
+        }
+
+        let marker = "\n[ASTRA \(label) output capped after \(byteLimit) bytes]\n"
+        let markerByteCount = min(byteLimit, marker.utf8.count)
+        let prefixByteLimit = max(0, byteLimit - markerByteCount)
+        var capped = String()
+        capped.reserveCapacity(min(value.count, prefixByteLimit))
+        var usedBytes = 0
+
+        for scalar in value.unicodeScalars {
+            let scalarByteCount = scalar.utf8.count
+            guard usedBytes + scalarByteCount <= prefixByteLimit else { break }
+            capped.unicodeScalars.append(scalar)
+            usedBytes += scalarByteCount
+        }
+
+        let remainingBytes = max(0, byteLimit - capped.utf8.count)
+        capped += String(decoding: marker.utf8.prefix(remainingBytes), as: UTF8.self)
+        return HostControlCappedOutput(value: capped, truncated: true)
     }
 }
 
@@ -387,17 +433,21 @@ public final class HostControlProcessRunner: HostControlProcessRunning {
         drainPipe(stdoutReader, into: stdoutBuffer, onLimitExceeded: terminateForOutputLimit)
         drainPipe(stderrReader, into: stderrBuffer, onLimitExceeded: terminateForOutputLimit)
 
-        let outputTruncated = outputLimitExceeded.isSet || stdoutBuffer.isTruncated || stderrBuffer.isTruncated
+        let stdoutOutput = stdoutBuffer.cappedStringValue
+        let stderrOutput = stderrBuffer.cappedStringValue
+        let stdoutTruncated = stdoutBuffer.isTruncated || stdoutOutput.truncated
+        let stderrTruncated = stderrBuffer.isTruncated || stderrOutput.truncated
+        let outputTruncated = outputLimitExceeded.isSet || stdoutTruncated || stderrTruncated
 
         return HostControlCommandResult(
             command: executablePath,
             arguments: arguments,
             exitCode: timedOut ? 124 : outputTruncated ? 125 : process.terminationStatus,
-            stdout: stdoutBuffer.stringValue,
-            stderr: stderrBuffer.stringValue,
+            stdout: stdoutOutput.value,
+            stderr: stderrOutput.value,
             timedOut: timedOut,
-            stdoutTruncated: stdoutBuffer.isTruncated,
-            stderrTruncated: stderrBuffer.isTruncated
+            stdoutTruncated: stdoutTruncated,
+            stderrTruncated: stderrTruncated
         )
     }
 
@@ -850,30 +900,22 @@ public final class HostControlMCPServer {
         let includeSecretFragments = result.stdoutTruncated || result.stderrTruncated || result.timedOut
         let stdout = configuration.redacted(result.stdout, includingSecretFragments: includeSecretFragments)
         let stderr = configuration.redacted(result.stderr, includingSecretFragments: includeSecretFragments)
+        let cappedStdout = cappedRedactedOutput(stdout, label: "stdout")
+        let cappedStderr = cappedRedactedOutput(stderr, label: "stderr")
         return HostControlCommandResult(
             command: result.command,
             arguments: result.arguments,
             exitCode: result.exitCode,
-            stdout: cappedRedactedOutput(stdout, label: "stdout", wasTruncated: result.stdoutTruncated),
-            stderr: cappedRedactedOutput(stderr, label: "stderr", wasTruncated: result.stderrTruncated),
+            stdout: cappedStdout.value,
+            stderr: cappedStderr.value,
             timedOut: result.timedOut,
-            stdoutTruncated: result.stdoutTruncated,
-            stderrTruncated: result.stderrTruncated
+            stdoutTruncated: result.stdoutTruncated || cappedStdout.truncated,
+            stderrTruncated: result.stderrTruncated || cappedStderr.truncated
         )
     }
 
-    private func cappedRedactedOutput(_ value: String, label: String, wasTruncated: Bool) -> String {
-        let bytes = Array(value.utf8)
-        let byteLimit = processLimits.outputByteLimit
-        guard wasTruncated || bytes.count > byteLimit else { return value }
-        guard bytes.count > byteLimit else { return value }
-
-        let marker = Array("\n[ASTRA redacted \(label) output capped after \(byteLimit) bytes]\n".utf8)
-        let markerCount = min(byteLimit, marker.count)
-        let prefixCount = max(0, byteLimit - markerCount)
-        var capped = Array(bytes.prefix(prefixCount))
-        capped.append(contentsOf: marker.prefix(byteLimit - capped.count))
-        return String(decoding: capped, as: UTF8.self)
+    private func cappedRedactedOutput(_ value: String, label: String) -> HostControlCappedOutput {
+        HostControlOutputCap.capped(value, label: "redacted \(label)", byteLimit: processLimits.outputByteLimit)
     }
 
     private func encodeCommandResult(id: Any?, result: HostControlCommandResult) -> String? {
@@ -1112,27 +1154,18 @@ struct JiraHTTPResponse {
         var lines = [
             "status_code: \(statusCode)",
             "body:",
-            formattedBody.isEmpty ? "<empty>" : formattedBody,
+            formattedBody.value.isEmpty ? "<empty>" : formattedBody.value,
             "error:",
             errorMessage.map { configuration.redacted($0, includingSecretFragments: bodyTruncated) } ?? "<empty>"
         ]
-        if bodyTruncated {
+        if bodyTruncated || formattedBody.truncated {
             lines.insert("body_truncated: true", at: 1)
         }
         return lines.joined(separator: "\n")
     }
 
-    private static func cappedRedactedOutput(_ value: String, label: String, byteLimit: Int) -> String {
-        let byteLimit = max(1, byteLimit)
-        let bytes = Array(value.utf8)
-        guard bytes.count > byteLimit else { return value }
-
-        let marker = Array("\n[ASTRA redacted \(label) capped after \(byteLimit) bytes]\n".utf8)
-        let markerCount = min(byteLimit, marker.count)
-        let prefixCount = max(0, byteLimit - markerCount)
-        var capped = Array(bytes.prefix(prefixCount))
-        capped.append(contentsOf: marker.prefix(byteLimit - capped.count))
-        return String(decoding: capped, as: UTF8.self)
+    private static func cappedRedactedOutput(_ value: String, label: String, byteLimit: Int) -> HostControlCappedOutput {
+        HostControlOutputCap.capped(value, label: "redacted \(label)", byteLimit: max(1, byteLimit))
     }
 }
 
@@ -1150,12 +1183,13 @@ private final class BoundedJiraHTTPDelegate: NSObject, URLSessionDataDelegate, @
     }
 
     var response: JiraHTTPResponse {
+        let body = buffer.cappedStringValue
         lock.lock()
         let snapshot = JiraHTTPResponse(
             statusCode: statusCode,
-            body: buffer.stringValue,
+            body: body.value,
             errorMessage: errorMessage,
-            bodyTruncated: bodyTruncated
+            bodyTruncated: bodyTruncated || body.truncated
         )
         lock.unlock()
         return snapshot
@@ -1374,10 +1408,11 @@ private final class BoundedProcessOutput: @unchecked Sendable {
         return snapshot
     }
 
-    var stringValue: String {
+    var cappedStringValue: HostControlCappedOutput {
         lock.lock()
         let snapshot = data
         lock.unlock()
-        return String(data: snapshot, encoding: .utf8) ?? String(decoding: snapshot, as: UTF8.self)
+        let decoded = String(data: snapshot, encoding: .utf8) ?? String(decoding: snapshot, as: UTF8.self)
+        return HostControlOutputCap.capped(decoded, label: label, byteLimit: byteLimit)
     }
 }
