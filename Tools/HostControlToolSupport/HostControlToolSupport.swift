@@ -108,6 +108,8 @@ public struct HostControlToolConfiguration: Equatable, Sendable {
     private func mergedSecretPrefixRanges(in value: [UInt8], secrets: [[UInt8]]) -> [Range<Int>] {
         var ranges: [Range<Int>] = []
         for secret in secrets where secret.count >= 4 {
+            appendShortTruncatedSecretPrefixRanges(in: value, secret: secret, to: &ranges)
+
             var index = 0
             while index + 4 <= value.count {
                 guard value[index] == secret[0],
@@ -142,6 +144,36 @@ public struct HostControlToolConfiguration: Equatable, Sendable {
                 merged.append(range)
             }
         }
+    }
+
+    private func appendShortTruncatedSecretPrefixRanges(
+        in value: [UInt8],
+        secret: [UInt8],
+        to ranges: inout [Range<Int>]
+    ) {
+        guard !value.isEmpty else { return }
+        let maximumShortPrefixLength = min(3, secret.count)
+        for index in value.indices {
+            let remainingLength = value.count - index
+            guard remainingLength > 0 else { continue }
+            let candidateMaximumLength = min(maximumShortPrefixLength, remainingLength)
+            for length in stride(from: candidateMaximumLength, through: 1, by: -1) {
+                let range = index..<index + length
+                guard Array(value[range]) == Array(secret.prefix(length)),
+                      isTruncatedOutputBoundary(after: range.upperBound, in: value) else {
+                    continue
+                }
+                ranges.append(range)
+                break
+            }
+        }
+    }
+
+    private func isTruncatedOutputBoundary(after index: Int, in value: [UInt8]) -> Bool {
+        guard index < value.count else { return true }
+        let marker = Array("\n[ASTRA truncated ".utf8)
+        guard index + marker.count <= value.count else { return false }
+        return Array(value[index..<index + marker.count]) == marker
     }
 
     private static func splitList(_ value: String?) -> [String] {
@@ -795,16 +827,32 @@ public final class HostControlMCPServer {
 
     private func redactedResult(_ result: HostControlCommandResult) -> HostControlCommandResult {
         let includeSecretFragments = result.stdoutTruncated || result.stderrTruncated
+        let stdout = configuration.redacted(result.stdout, includingSecretFragments: includeSecretFragments)
+        let stderr = configuration.redacted(result.stderr, includingSecretFragments: includeSecretFragments)
         return HostControlCommandResult(
             command: result.command,
             arguments: result.arguments,
             exitCode: result.exitCode,
-            stdout: configuration.redacted(result.stdout, includingSecretFragments: includeSecretFragments),
-            stderr: configuration.redacted(result.stderr, includingSecretFragments: includeSecretFragments),
+            stdout: cappedRedactedOutput(stdout, label: "stdout", wasTruncated: result.stdoutTruncated),
+            stderr: cappedRedactedOutput(stderr, label: "stderr", wasTruncated: result.stderrTruncated),
             timedOut: result.timedOut,
             stdoutTruncated: result.stdoutTruncated,
             stderrTruncated: result.stderrTruncated
         )
+    }
+
+    private func cappedRedactedOutput(_ value: String, label: String, wasTruncated: Bool) -> String {
+        guard wasTruncated else { return value }
+        let bytes = Array(value.utf8)
+        let byteLimit = processLimits.outputByteLimit
+        guard bytes.count > byteLimit else { return value }
+
+        let marker = Array("\n[ASTRA redacted \(label) output capped after \(byteLimit) bytes]\n".utf8)
+        let markerCount = min(byteLimit, marker.count)
+        let prefixCount = max(0, byteLimit - markerCount)
+        var capped = Array(bytes.prefix(prefixCount))
+        capped.append(contentsOf: marker.prefix(byteLimit - capped.count))
+        return String(decoding: capped, as: UTF8.self)
     }
 
     private func encodeCommandResult(id: Any?, result: HostControlCommandResult) -> String? {

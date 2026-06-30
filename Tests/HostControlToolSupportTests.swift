@@ -606,6 +606,73 @@ struct HostControlToolSupportTests {
         #expect(!redacted.contains(String(repeating: "s", count: 64)))
     }
 
+    @Test("Host control redacts short secret prefixes at truncation boundaries")
+    func hostControlRedactsShortSecretPrefixesAtTruncationBoundaries() throws {
+        let connectors = """
+        {"connectors":[{"id":"jira-1","alias":"jira","envPrefix":"JIRA_JIRA","name":"Jira","serviceType":"jira","baseURL":"https://example.atlassian.net","authMethod":"basic","env":{"JIRA_API_TOKEN":"JIRA_TOKEN_ENV"},"credentials":{"JIRA_API_TOKEN":"JIRA_TOKEN_ENV"},"config":{}}]}
+        """
+        let runner = CapturingHostControlProcessRunner(result: HostControlCommandResult(
+            command: "/usr/bin/gh",
+            arguments: ["pr", "view", "123"],
+            exitCode: 125,
+            stdout: "visible-prefix:su\n[ASTRA truncated stdout after 17 bytes]\n",
+            stderr: "",
+            stdoutTruncated: true
+        ))
+        let server = HostControlMCPServer(
+            configuration: HostControlToolConfiguration(
+                githubExecutable: "/usr/bin/gh",
+                connectorsJSON: connectors,
+                environment: [
+                    "ASTRA_CONNECTORS": connectors,
+                    "JIRA_TOKEN_ENV": "super-secret-token"
+                ]
+            ),
+            processRunner: runner
+        )
+
+        let response = try call(server, id: 1, tool: "github", arguments: ["arguments": ["pr", "view", "123"]])
+        let text = try resultText(response)
+
+        #expect(text.contains("visible-prefix:[redacted]"))
+        #expect(!text.contains("visible-prefix:su"))
+        #expect(!text.contains("super-secret-token"))
+    }
+
+    @Test("Host control reapplies output caps after secret prefix redaction")
+    func hostControlReappliesOutputCapsAfterSecretPrefixRedaction() throws {
+        let connectors = """
+        {"connectors":[{"id":"jira-1","alias":"jira","envPrefix":"JIRA_JIRA","name":"Jira","serviceType":"jira","baseURL":"https://example.atlassian.net","authMethod":"basic","env":{"JIRA_API_TOKEN":"JIRA_TOKEN_ENV"},"credentials":{"JIRA_API_TOKEN":"JIRA_TOKEN_ENV"},"config":{}}]}
+        """
+        let runner = CapturingHostControlProcessRunner(result: HostControlCommandResult(
+            command: "/usr/bin/gh",
+            arguments: ["pr", "view", "123"],
+            exitCode: 125,
+            stdout: String(repeating: "supe", count: 40),
+            stderr: "",
+            stdoutTruncated: true
+        ))
+        let server = HostControlMCPServer(
+            configuration: HostControlToolConfiguration(
+                githubExecutable: "/usr/bin/gh",
+                connectorsJSON: connectors,
+                environment: [
+                    "ASTRA_CONNECTORS": connectors,
+                    "JIRA_TOKEN_ENV": "super-secret-token"
+                ]
+            ),
+            processRunner: runner,
+            processLimits: HostControlProcessLimits(maximumTimeoutSeconds: 5, outputByteLimit: 96)
+        )
+
+        let response = try call(server, id: 1, tool: "github", arguments: ["arguments": ["pr", "view", "123"]])
+        let stdout = try stdoutSection(in: resultText(response))
+
+        #expect(stdout.utf8.count <= 96)
+        #expect(stdout.contains("redacted"))
+        #expect(!stdout.contains("supe"))
+    }
+
     private func fakeExecutable(named name: String, root: URL, log: URL, stdout: String) throws -> URL {
         let executable = root.appendingPathComponent(name, isDirectory: false)
         let quotedLog = log.path.replacingOccurrences(of: "'", with: "'\\''")
@@ -663,6 +730,12 @@ struct HostControlToolSupportTests {
         let result = try #require(object["result"] as? [String: Any])
         let content = try #require(result["content"] as? [[String: Any]])
         return try #require(content.first?["text"] as? String)
+    }
+
+    private func stdoutSection(in text: String) throws -> String {
+        let start = try #require(text.range(of: "stdout:\n"))
+        let end = try #require(text.range(of: "\nstderr:", range: start.upperBound..<text.endIndex))
+        return String(text[start.upperBound..<end.lowerBound])
     }
 }
 
