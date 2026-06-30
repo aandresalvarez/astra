@@ -86,15 +86,20 @@ struct WorkspaceAppService {
         if appID != manifest.app.id {
             manifest.app.id = appID
         }
-        guard let appDirectoryURL = WorkspaceFileLayout.appDirectoryURL(
-            workspacePath: workspace.primaryPath,
-            appID: appID
-        ) else {
+        guard let dataDirectoryURL = WorkspaceFileLayout.appDataDirectoryURL(
+                workspacePath: workspace.primaryPath,
+                appID: appID
+              ),
+              let manifestURL = WorkspaceFileLayout.appManifestFileURL(
+                workspacePath: workspace.primaryPath,
+                appID: appID
+              ),
+              let databaseURL = WorkspaceFileLayout.appDatabaseFileURL(
+                workspacePath: workspace.primaryPath,
+                appID: appID
+              ) else {
             throw WorkspaceAppServiceError.fileOperationFailed("Could not resolve safe storage path for app '\(appID)'.")
         }
-        let dataDirectoryURL = appDirectoryURL.appendingPathComponent("data", isDirectory: true)
-        let manifestURL = appDirectoryURL.appendingPathComponent("manifest.json")
-        let databaseURL = dataDirectoryURL.appendingPathComponent("app.sqlite")
         try fileManager.createDirectory(at: dataDirectoryURL, withIntermediateDirectories: true)
 
         let manifestData: Data
@@ -198,18 +203,27 @@ struct WorkspaceAppService {
         let report = WorkspaceAppManifestValidator.validate(manifest)
         guard report.isValid else { throw WorkspaceAppServiceError.invalidManifest(report.blockers) }
 
-        let manifestPath = WorkspaceFileLayout.appManifestFile(workspacePath: workspace.primaryPath, appID: app.logicalID)
-        let databasePath = WorkspaceFileLayout.appDatabaseFile(workspacePath: workspace.primaryPath, appID: app.logicalID)
+        guard let dataDirectoryURL = WorkspaceFileLayout.appDataDirectoryURL(
+            workspacePath: workspace.primaryPath,
+            appID: app.logicalID
+        ),
+              let manifestURL = WorkspaceFileLayout.appManifestFileURL(
+                workspacePath: workspace.primaryPath,
+                appID: app.logicalID
+              ),
+              let databaseURL = WorkspaceFileLayout.appDatabaseFileURL(
+                workspacePath: workspace.primaryPath,
+                appID: app.logicalID
+              ) else {
+            throw WorkspaceAppServiceError.fileOperationFailed("Could not resolve safe storage path for app '\(app.logicalID)'.")
+        }
         let manifestData: Data
         do {
             manifestData = try Self.encodeManifest(manifest)
         } catch {
             throw WorkspaceAppServiceError.encodeFailed(String(describing: error))
         }
-        try fileManager.createDirectory(
-            atPath: WorkspaceFileLayout.appDataDirectory(workspacePath: workspace.primaryPath, appID: app.logicalID),
-            withIntermediateDirectories: true
-        )
+        try fileManager.createDirectory(at: dataDirectoryURL, withIntermediateDirectories: true)
         // Migrate the DB FIRST (additive: new tables + ADD COLUMN), THEN write the manifest — so a
         // failed migration never leaves manifest.json describing a schema the database lacks.
         if let storage = manifest.storage {
@@ -228,12 +242,12 @@ struct WorkspaceAppService {
                 )
             }
             do {
-                try storageService.applySchema(storage, databaseURL: URL(fileURLWithPath: databasePath))
+                try storageService.applySchema(storage, databaseURL: databaseURL)
             } catch {
                 throw WorkspaceAppServiceError.storageFailed(String(describing: error))
             }
         }
-        try manifestData.write(to: URL(fileURLWithPath: manifestPath), options: [.atomic])
+        try manifestData.write(to: manifestURL, options: [.atomic])
 
         app.name = manifest.app.name
         app.icon = manifest.app.icon
@@ -309,10 +323,10 @@ struct WorkspaceAppService {
             "result": "updated",
             "workspace_id": workspace.id.uuidString,
             "app_id": app.logicalID,
-            "manifest": URL(fileURLWithPath: manifestPath).lastPathComponent
+            "manifest": manifestURL.lastPathComponent
         ])
 
-        return WorkspaceAppCreationResult(app: app, manifestURL: URL(fileURLWithPath: manifestPath), manifest: manifest)
+        return WorkspaceAppCreationResult(app: app, manifestURL: manifestURL, manifest: manifest)
     }
 
     /// The contract registry for a workspace: the built-ins PLUS the contract families + implementations
@@ -492,10 +506,12 @@ struct WorkspaceAppService {
         manifest.app.id = logicalID
         manifest.app.name = uniqueDisplayName(base: "\(manifest.app.name) Copy", existingNames: try existingNames(in: workspace, modelContext: modelContext))
 
-        let destinationDirectory = URL(fileURLWithPath: WorkspaceFileLayout.appDirectory(
+        guard let destinationDirectory = WorkspaceFileLayout.appDirectoryURL(
             workspacePath: workspace.primaryPath,
             appID: logicalID
-        ), isDirectory: true)
+        ) else {
+            throw WorkspaceAppServiceError.fileOperationFailed("Could not resolve safe storage path for app '\(logicalID)'.")
+        }
         do {
             try fileManager.copyItem(at: sourceDirectory, to: destinationDirectory)
             let manifestData = try Self.encodeManifest(manifest)

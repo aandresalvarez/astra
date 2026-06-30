@@ -547,10 +547,12 @@ struct WorkspaceAppPackageService {
         workspace: Workspace
     ) throws {
         guard let exports = decodeDataExports(at: packageURL), !exports.isEmpty else { return }
-        let databaseURL = URL(fileURLWithPath: WorkspaceFileLayout.appDatabaseFile(
+        guard let databaseURL = WorkspaceFileLayout.appDatabaseFileURL(
             workspacePath: workspace.primaryPath,
             appID: manifest.app.id
-        ))
+        ) else {
+            throw WorkspaceAppServiceError.fileOperationFailed("Could not resolve safe storage path for app '\(manifest.app.id)'.")
+        }
         let tables = Set(manifest.storage?.tables.map(\.name) ?? [])
         for dataExport in exports where tables.contains(dataExport.table) {
             let rows = try readJSONLines(at: packageURL.appendingPathComponent(dataExport.path))

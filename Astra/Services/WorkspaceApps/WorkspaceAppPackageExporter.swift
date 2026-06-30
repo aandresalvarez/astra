@@ -43,13 +43,14 @@ struct WorkspaceAppPackageExporter {
         guard !workspace.primaryPath.isEmpty else {
             throw WorkspaceAppPackageExportError.missingWorkspacePath
         }
+        try validateExportRoot(workspacePath: workspace.primaryPath)
 
         let loaded = try loadManifest(app: app, workspace: workspace)
         let packageURL = try nextPackageURL(appID: app.logicalID, workspacePath: workspace.primaryPath)
         _ = try packageService.exportPackage(
             manifest: loaded.manifest,
             to: packageURL,
-            packageID: "\(app.logicalID).astra-app",
+            packageID: "\(Self.packageDirectoryStem(for: app.logicalID)).astra-app",
             version: version,
             mode: mode,
             appStorageDatabaseURL: loaded.location.databaseURL,
@@ -60,6 +61,16 @@ struct WorkspaceAppPackageExporter {
             throw WorkspaceAppPackageExportError.invalidExport(report)
         }
         return WorkspaceAppPackageExportResult(packageURL: packageURL, validationReport: report)
+    }
+
+    private func validateExportRoot(workspacePath: String) throws {
+        let displayExportRoot = WorkspaceFileLayout.appPackageExportRoot(workspacePath: workspacePath)
+        guard !displayExportRoot.isEmpty else {
+            throw WorkspaceAppPackageExportError.missingWorkspacePath
+        }
+        guard WorkspaceFileLayout.appPackageExportRootURL(workspacePath: workspacePath) != nil else {
+            throw WorkspaceAppPackageExportError.unsafeExportPath(displayExportRoot)
+        }
     }
 
     private func loadManifest(app: WorkspaceApp, workspace: Workspace) throws -> WorkspaceAppLoadedManifest {
@@ -87,17 +98,37 @@ struct WorkspaceAppPackageExporter {
         }
         try fileManager.createDirectory(at: rootURL, withIntermediateDirectories: true)
 
-        let baseName = "\(appID).astra-app"
+        let packageStem = Self.packageDirectoryStem(for: appID)
+        let baseName = "\(packageStem).astra-app"
         let first = rootURL.appendingPathComponent(baseName, isDirectory: true)
         guard fileManager.fileExists(atPath: first.path) else { return first }
 
         var suffix = 2
         while true {
-            let candidate = rootURL.appendingPathComponent("\(appID)-\(suffix).astra-app", isDirectory: true)
+            let candidate = rootURL.appendingPathComponent("\(packageStem)-\(suffix).astra-app", isDirectory: true)
             if !fileManager.fileExists(atPath: candidate.path) {
                 return candidate
             }
             suffix += 1
         }
+    }
+
+    private static func packageDirectoryStem(for appID: String) -> String {
+        let pathNormalized = appID.replacingOccurrences(of: "\\", with: "/")
+        let lastComponent = pathNormalized
+            .split(separator: "/", omittingEmptySubsequences: true)
+            .last
+            .map(String.init) ?? appID
+        let sanitizedScalars = lastComponent.unicodeScalars.map { scalar -> Character in
+            WorkspaceAppIDPolicy.allowedCharacters.contains(scalar) ? Character(scalar) : "-"
+        }
+        let collapsed = String(sanitizedScalars)
+            .split(separator: "-", omittingEmptySubsequences: true)
+            .joined(separator: "-")
+            .trimmingCharacters(in: CharacterSet(charactersIn: ".-_ \n\t\r"))
+        guard WorkspaceAppIDPolicy.isPortableIdentifier(collapsed) else {
+            return "workspace-app"
+        }
+        return collapsed
     }
 }

@@ -244,10 +244,12 @@ struct WorkspaceAppSourceResolver {
         workspace: Workspace,
         input: WorkspaceAppSourceResolutionInput
     ) throws -> WorkspaceAppResolvedSource {
-        let databaseURL = URL(fileURLWithPath: WorkspaceFileLayout.appDatabaseFile(
+        guard let databaseURL = WorkspaceFileLayout.appDatabaseFileURL(
             workspacePath: workspace.primaryPath,
             appID: app.logicalID
-        ))
+        ) else {
+            throw WorkspaceAppSourceResolutionError.storageFailed("Could not resolve safe storage path for app '\(app.logicalID)'.")
+        }
         do {
             let rows = try storageService.records(in: table, databaseURL: databaseURL, limit: input.limit)
             return WorkspaceAppResolvedSource(
