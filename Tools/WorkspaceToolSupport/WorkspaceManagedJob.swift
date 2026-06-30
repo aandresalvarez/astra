@@ -378,13 +378,30 @@ public final class DockerWorkspaceJobManager: WorkspaceJobManaging {
                   [ -r "/proc/$1/cmdline" ] || return 1
                   tr '\\0' ' ' < "/proc/$1/cmdline" 2>/dev/null | grep -F -- "$command_script" >/dev/null 2>&1
                 }
+                process_group_exists() {
+                  group_pid="$1"
+                  safe_pid "$group_pid" || return 1
+                  if [ -n "$kill_bin" ] && "$kill_bin" -0 -"$group_pid" 2>/dev/null; then
+                    return 0
+                  fi
+                  kill -0 -"$group_pid" 2>/dev/null
+                }
+                signal_process_group() {
+                  signal="$1"
+                  group_pid="$2"
+                  safe_pid "$group_pid" || return 0
+                  if [ -n "$kill_bin" ] && "$kill_bin" -"$signal" -"$group_pid" 2>/dev/null; then
+                    return 0
+                  fi
+                  kill -"$signal" -"$group_pid" 2>/dev/null || true
+                }
                 terminate_pid_or_group() {
                   target_pid="$1"
                   safe_pid "$target_pid" || return 0
-                  if [ -n "$kill_bin" ] && "$kill_bin" -0 -"$target_pid" 2>/dev/null; then
-                    "$kill_bin" -TERM -"$target_pid" 2>/dev/null || true
+                  if process_group_exists "$target_pid"; then
+                    signal_process_group TERM "$target_pid"
                     sleep 5
-                    "$kill_bin" -KILL -"$target_pid" 2>/dev/null || true
+                    signal_process_group KILL "$target_pid"
                   elif pid_matches_managed_command "$target_pid" && kill -0 "$target_pid" 2>/dev/null; then
                     kill -TERM "$target_pid" 2>/dev/null || true
                     sleep 5
@@ -479,20 +496,37 @@ public final class DockerWorkspaceJobManager: WorkspaceJobManaging {
           esac
           [ "$1" -gt 1 ] 2>/dev/null
         }
+        process_group_exists() {
+          group_pid="$1"
+          safe_pid "$group_pid" || return 1
+          if [ -n "$kill_bin" ] && "$kill_bin" -0 -"$group_pid" 2>/dev/null; then
+            return 0
+          fi
+          kill -0 -"$group_pid" 2>/dev/null
+        }
+        signal_process_group() {
+          signal="$1"
+          group_pid="$2"
+          safe_pid "$group_pid" || return 0
+          if [ -n "$kill_bin" ] && "$kill_bin" -"$signal" -"$group_pid" 2>/dev/null; then
+            return 0
+          fi
+          kill -"$signal" -"$group_pid" 2>/dev/null || true
+        }
         terminate_command_group() {
           grace_seconds="${1:-5}"
           safe_pid "$command_pid" || return 0
-          if [ -n "$kill_bin" ] && "$kill_bin" -0 -"$command_pid" 2>/dev/null; then
-            "$kill_bin" -TERM -"$command_pid" 2>/dev/null || true
+          if process_group_exists "$command_pid"; then
+            signal_process_group TERM "$command_pid"
             sleep "$grace_seconds"
-            "$kill_bin" -KILL -"$command_pid" 2>/dev/null || true
+            signal_process_group KILL "$command_pid"
           fi
         }
         timeout_pid=""
         if [ "$timeout_seconds" -gt 0 ]; then
           (
             sleep "$timeout_seconds"
-            if [ -n "$kill_bin" ] && "$kill_bin" -0 -"$command_pid" 2>/dev/null; then
+            if process_group_exists "$command_pid"; then
               printf '%s\\n' timed_out > "$timeout_marker"
               terminate_command_group 5
             fi
