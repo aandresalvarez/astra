@@ -1841,7 +1841,9 @@ struct WorkspaceAppActionExecutor {
         case "csv":
             let url = try nextExportURL(directory: directoryURL, table: table, pathExtension: "csv")
             let columns = exportColumns(rows, manifest: manifest, table: table)
-            try csvData(rows: rows, columns: columns).write(to: url, options: .atomic)
+            try WorkspaceAppCSVExportFormatter(columns: columns)
+                .data(rows: rows)
+                .write(to: url, options: .atomic)
             return url
         case "json":
             let url = try nextExportURL(directory: directoryURL, table: table, pathExtension: "json")
@@ -1892,40 +1894,6 @@ struct WorkspaceAppActionExecutor {
             }
         }
         return columns
-    }
-
-    private func csvData(
-        rows: [[String: WorkspaceAppStorageValue]],
-        columns: [String]
-    ) -> Data {
-        let lines = [columns.map(csvField).joined(separator: ",")] + rows.map { row in
-            columns
-                .map { csvField(exportValue(row[$0])) }
-                .joined(separator: ",")
-        }
-        return Data((lines.joined(separator: "\n") + "\n").utf8)
-    }
-
-    private func csvField(_ value: String) -> String {
-        if value.contains(",") || value.contains("\"") || value.contains("\n") || value.contains("\r") {
-            return "\"\(value.replacingOccurrences(of: "\"", with: "\"\""))\""
-        }
-        return value
-    }
-
-    private func exportValue(_ value: WorkspaceAppStorageValue?) -> String {
-        switch value {
-        case .null, nil:
-            ""
-        case .text(let value):
-            value
-        case .integer(let value):
-            "\(value)"
-        case .real(let value):
-            value.formatted(.number.precision(.fractionLength(0...12)))
-        case .bool(let value):
-            value ? "true" : "false"
-        }
     }
 
     private func createTask(
@@ -2295,5 +2263,77 @@ struct WorkspaceAppActionExecutor {
             }
         }
         return fallback
+    }
+}
+
+private struct WorkspaceAppCSVExportFormatter {
+    private static let formulaPrefixes: Set<Character> = ["=", "+", "-", "@"]
+    private let columns: [String]
+
+    init(columns: [String]) {
+        self.columns = columns
+    }
+
+    func data(rows: [[String: WorkspaceAppStorageValue]]) -> Data {
+        let lines = [columns.map(headerField).joined(separator: ",")] + rows.map { row in
+            columns
+                .map { storageField(row[$0]) }
+                .joined(separator: ",")
+        }
+        return Data((lines.joined(separator: "\n") + "\n").utf8)
+    }
+
+    private func headerField(_ rawValue: String) -> String {
+        field(rawValue)
+    }
+
+    private func storageField(_ value: WorkspaceAppStorageValue?) -> String {
+        field(Self.exportValue(value))
+    }
+
+    private func field(_ rawValue: String) -> String {
+        if rawValue.contains(",") || rawValue.contains("\"") || rawValue.contains("\n") || rawValue.contains("\r") {
+            return "\"\(rawValue.replacingOccurrences(of: "\"", with: "\"\""))\""
+        }
+        return rawValue
+    }
+
+    private static func literalizedSpreadsheetText(_ value: String) -> String {
+        guard hasSpreadsheetFormulaPrefix(value) else {
+            return value
+        }
+        return "'\(value)"
+    }
+
+    private static func hasSpreadsheetFormulaPrefix(_ value: String) -> Bool {
+        guard let firstToken = firstSpreadsheetToken(in: value) else {
+            return false
+        }
+        return formulaPrefixes.contains(firstToken)
+    }
+
+    private static func firstSpreadsheetToken(in value: String) -> Character? {
+        for character in value {
+            if character.isWhitespace {
+                continue
+            }
+            return character
+        }
+        return nil
+    }
+
+    private static func exportValue(_ value: WorkspaceAppStorageValue?) -> String {
+        switch value {
+        case .null, nil:
+            ""
+        case .text(let value):
+            literalizedSpreadsheetText(value)
+        case .integer(let value):
+            "\(value)"
+        case .real(let value):
+            value.formatted(.number.precision(.fractionLength(0...12)))
+        case .bool(let value):
+            value ? "true" : "false"
+        }
     }
 }
