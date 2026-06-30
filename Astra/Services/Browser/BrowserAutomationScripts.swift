@@ -356,6 +356,7 @@ enum BrowserAutomationScripts {
           && (rect.width > 0 || rect.height > 0);
       };
       const disabled = (el) => Boolean(el.disabled) || el.getAttribute("aria-disabled") === "true" || el.getAttribute("disabled") !== null;
+      const isContentEditableElement = (el) => Boolean(el) && (el.isContentEditable || String(el.getAttribute("contenteditable") || "").toLowerCase() === "true");
       const roleFor = (el) => {
         const explicit = el.getAttribute("role");
         if (explicit) return explicit;
@@ -363,7 +364,7 @@ enum BrowserAutomationScripts {
         const type = String(el.getAttribute("type") || "").toLowerCase();
         if (tag === "button" || type === "button" || type === "submit") return "button";
         if (tag === "a" && el.href) return "link";
-        if (tag === "input" || tag === "textarea" || el.isContentEditable) return "textbox";
+        if (tag === "input" || tag === "textarea" || isContentEditableElement(el)) return "textbox";
         if (tag === "select") return "combobox";
         return "";
       };
@@ -380,6 +381,32 @@ enum BrowserAutomationScripts {
         if (parentLabel?.innerText) return parentLabel.innerText;
         return "";
       };
+      const valueControlForTextNode = (el) => {
+        let node = el;
+        while (node) {
+          const tag = node.tagName ? node.tagName.toLowerCase() : "";
+          if (tag === "input" || tag === "textarea" || tag === "select" || isContentEditableElement(node)) return node;
+          if (node === document.body) break;
+          node = node.parentElement;
+        }
+        return null;
+      };
+      const sensitiveControlForTextNode = (el) => {
+        const valueControl = valueControlForTextNode(el);
+        if (valueControl && isSensitiveValueControl(valueControl)) return valueControl;
+        const parentLabel = el.closest ? el.closest("label") : null;
+        if (parentLabel?.control && isSensitiveValueControl(parentLabel.control)) return parentLabel.control;
+        let node = el;
+        while (node) {
+          if (node.id) {
+            const labelledControl = document.querySelector("[aria-labelledby~='" + esc(node.id) + "']");
+            if (labelledControl && isSensitiveValueControl(labelledControl)) return labelledControl;
+          }
+          if (node === document.body) break;
+          node = node.parentElement;
+        }
+        return null;
+      };
       const visibleText = () => {
         if (!document.body) return "";
         const pieces = [];
@@ -392,6 +419,7 @@ enum BrowserAutomationScripts {
           if (!text) continue;
           const parent = node.parentElement;
           if (!parent || !visible(parent)) continue;
+          if (sensitiveControlForTextNode(parent)) continue;
           pieces.push(text);
           total += text.length + 1;
         }
@@ -422,6 +450,165 @@ enum BrowserAutomationScripts {
         return String(text).replace(/\\s+/g, " ").trim().slice(0, 160);
       };
       const nameFor = (el) => String(el.getAttribute("name") || "").replace(/\\s+/g, " ").trim().slice(0, 160);
+      const containsAny = (text, needles) => needles.some((needle) => text.includes(needle));
+      const redactedInputValue = "[redacted-sensitive-input]";
+      const sensitiveFieldTerms = \(BrowserSensitiveInputRedactionPolicy.javaScriptArrayLiteral(BrowserSensitiveInputRedactionPolicy.sensitiveFieldTerms, indentation: "      "));
+      const paymentFieldTerms = \(BrowserSensitiveInputRedactionPolicy.javaScriptArrayLiteral(BrowserSensitiveInputRedactionPolicy.paymentFieldTerms, indentation: "      "));
+      const sensitiveAutocompleteTerms = \(BrowserSensitiveInputRedactionPolicy.javaScriptArrayLiteral(BrowserSensitiveInputRedactionPolicy.sensitiveAutocompleteTokens, indentation: "      "));
+      const compactTermsFor = (terms) => terms.map((term) => term.replace(/[^a-z0-9]/g, "")).filter(Boolean);
+      const searchableFieldText = (text) => {
+        const spaced = String(text || "")
+          .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, " ")
+          .trim();
+        return { spaced, compact: spaced.replace(/\\s+/g, "") };
+      };
+      const sensitiveFieldCompactTerms = compactTermsFor(sensitiveFieldTerms);
+      const paymentFieldCompactTerms = compactTermsFor(paymentFieldTerms);
+      const containsSensitiveTerm = (text, terms, compactTerms) => {
+        const searchable = searchableFieldText(text);
+        return containsAny(searchable.spaced, terms)
+          || compactTerms.some((term) => searchable.compact.includes(term));
+      };
+      const isEditablePaymentField = (el) => {
+        const tag = String(el.tagName || "").toLowerCase();
+        const role = String(el.getAttribute("role") || "").toLowerCase();
+        const type = String(el.getAttribute("type") || "").toLowerCase();
+        if (tag === "textarea" || tag === "select") return true;
+        if (role === "textbox" || role === "combobox") return true;
+        if (tag !== "input") return false;
+        return !new Set(["button", "checkbox", "color", "file", "image", "radio", "range", "reset", "submit"]).has(type);
+      };
+      const isSensitiveValueControl = (el) => {
+        const type = String(el.getAttribute("type") || "").toLowerCase();
+        if (type === "password" || type === "hidden") return true;
+        const autocomplete = String(el.getAttribute("autocomplete") || "").toLowerCase();
+        if (containsAny(autocomplete, sensitiveAutocompleteTerms)) return true;
+        const text = [
+          selectorFor(el),
+          labelFor(el),
+          el.getAttribute("name") || "",
+          el.getAttribute("role") || "",
+          el.tagName.toLowerCase(),
+          type,
+          el.getAttribute("placeholder") || "",
+          el.getAttribute("data-testid") || el.getAttribute("data-test") || "",
+          el.href || "",
+          autocomplete
+        ].join(" ");
+        return containsSensitiveTerm(text, sensitiveFieldTerms, sensitiveFieldCompactTerms)
+          || (isEditablePaymentField(el) && containsSensitiveTerm(text, paymentFieldTerms, paymentFieldCompactTerms));
+      };
+      const editableValueFor = (el) => {
+        if (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT") {
+          return String(el.value || "");
+        }
+        if (isContentEditableElement(el)) {
+          return String(el.textContent || "");
+        }
+        return "";
+      };
+      const cssUnescaped = (value) => String(value || "")
+        .replace(/\\\\([0-9a-fA-F]{1,6})\\s?/g, (_, hex) => String.fromCodePoint(parseInt(hex, 16)))
+        .replace(/\\\\(.)/g, "$1");
+      const escapedRegex = (value) => String(value || "").replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&");
+      const compactedSensitiveComparisonValue = (value) => {
+        const compacted = String(value || "").replace(/[^a-zA-Z0-9]/g, "");
+        return /\\d/.test(value) || compacted.length > 20 ? compacted : "";
+      };
+      const percentEncodedVariants = (value) => {
+        const text = String(value || "");
+        if (!text) return [];
+        try {
+          const encoded = encodeURIComponent(text);
+          return encoded === text ? [] : [encoded, encoded.replace(/%20/g, "+")];
+        } catch (_) {
+          return [];
+        }
+      };
+      const sensitiveTextCandidates = (value) => {
+        const trimmed = String(value || "").replace(/\\s+/g, " ").trim();
+        if (!trimmed) return [];
+        const variants = [trimmed];
+        try {
+          const decoded = decodeURIComponent(trimmed);
+          variants.push(decoded);
+        } catch (_) {}
+        variants.push(cssUnescaped(trimmed));
+        try {
+          variants.push(cssUnescaped(decodeURIComponent(trimmed)));
+        } catch (_) {}
+        const encodedVariants = variants.flatMap(percentEncodedVariants);
+        variants.push(...encodedVariants);
+        variants.push(...variants.map(compactedSensitiveComparisonValue));
+        const seen = new Set();
+        return variants
+          .map((candidate) => String(candidate || "").replace(/\\s+/g, " ").trim())
+          .filter((candidate) => candidate && !seen.has(candidate.toLowerCase()) && seen.add(candidate.toLowerCase()));
+      };
+      const shouldRedactVisibleTextValue = (value) => sensitiveTextCandidates(value).some((candidate) => {
+        const digitCount = (candidate.match(/\\d/g) || []).length;
+        return candidate.length >= 4 || digitCount >= 6;
+      });
+      const formattedDigitPattern = (value) => {
+        const raw = String(value || "");
+        const digits = raw.replace(/\\D/g, "");
+        if (digits.length < 6 || /[^0-9\\s-]/.test(raw)) return null;
+        const body = digits.split("").map(escapedRegex).join("[\\\\s-]*");
+        return new RegExp("(^|\\\\D)(" + body + ")(?=\\\\D|$)", "g");
+      };
+      const redactedVisibleText = (text, sensitiveValues) => {
+        let redacted = String(text || "");
+        for (const value of sensitiveValues) {
+          if (!shouldRedactVisibleTextValue(value)) continue;
+          for (const candidate of sensitiveTextCandidates(value).sort((a, b) => b.length - a.length)) {
+            redacted = redacted.replace(new RegExp(escapedRegex(candidate), "gi"), redactedInputValue);
+          }
+          const pattern = formattedDigitPattern(value);
+          if (pattern) {
+            redacted = redacted.replace(pattern, (_, prefix) => prefix + redactedInputValue);
+          }
+        }
+        return redacted;
+      };
+      const metadataValueForSnapshot = (el, rawValue, value) => {
+        const metadata = String(value || "");
+        const sensitiveValue = String(rawValue || "").replace(/\\s+/g, " ").trim();
+        if (!metadata || !sensitiveValue || !isSensitiveValueControl(el)) return metadata;
+        const normalizedMetadata = metadata.replace(/\\s+/g, " ").trim().toLowerCase();
+        const normalizedCSSMetadata = cssUnescaped(metadata).replace(/\\s+/g, " ").trim().toLowerCase();
+        const normalizedValue = sensitiveValue.toLowerCase();
+        const metadataLooksSensitive = containsSensitiveTerm(normalizedMetadata, sensitiveFieldTerms, sensitiveFieldCompactTerms)
+          || containsSensitiveTerm(normalizedCSSMetadata, sensitiveFieldTerms, sensitiveFieldCompactTerms)
+          || (isEditablePaymentField(el)
+            && (containsSensitiveTerm(normalizedMetadata, paymentFieldTerms, paymentFieldCompactTerms)
+              || containsSensitiveTerm(normalizedCSSMetadata, paymentFieldTerms, paymentFieldCompactTerms)));
+        const prefixLength = 8;
+        const valueContainsMetadata = normalizedValue.length >= prefixLength
+          && normalizedMetadata.length >= prefixLength
+          && normalizedValue.includes(normalizedMetadata);
+        const valueContainsCSSMetadata = normalizedValue.length >= prefixLength
+          && normalizedCSSMetadata.length >= prefixLength
+          && normalizedValue.includes(normalizedCSSMetadata);
+        return metadataLooksSensitive
+          || normalizedMetadata.includes(normalizedValue)
+          || normalizedCSSMetadata.includes(normalizedValue)
+          || valueContainsMetadata
+          || valueContainsCSSMetadata
+          ? redactedInputValue
+          : metadata;
+      };
+      const redactedMetadataForSnapshot = (el, value) => metadataValueForSnapshot(el, editableValueFor(el), value);
+      const valueForSnapshot = (el) => {
+        const value = editableValueFor(el).slice(0, 160);
+        if (!value) return "";
+        return isSensitiveValueControl(el) ? redactedInputValue : value;
+      };
+      const labelForSnapshot = (el) => {
+        const label = labelFor(el);
+        return metadataValueForSnapshot(el, editableValueFor(el), label);
+      };
       const frameLabelFor = (frame) => {
         const title = frame.getAttribute("title") || frame.getAttribute("name") || frame.getAttribute("aria-label") || frame.src || selectorFor(frame);
         return String(title || "").replace(/\\s+/g, " ").trim().slice(0, 160);
@@ -472,27 +659,34 @@ enum BrowserAutomationScripts {
         if (av.x !== bv.x) return av.x - bv.x;
         return bv.area - av.area;
       };
-      const controls = allControls()
+      const rawSensitiveValues = [];
+      const visibleControls = allControls()
         .filter((entry) => visible(entry.el))
-        .map((entry) => Object.assign(entry, { viewportInfo: viewportInfoFor(entry.el) }))
+        .map((entry) => Object.assign(entry, { viewportInfo: viewportInfoFor(entry.el) }));
+      for (const entry of visibleControls) {
+        const rawValue = editableValueFor(entry.el);
+        if (rawValue && isSensitiveValueControl(entry.el)) rawSensitiveValues.push(rawValue);
+      }
+      const controls = visibleControls
         .sort(compareViewportOrder)
         .slice(0, 300)
         .map((entry) => {
           const el = entry.el;
+          const rawValue = editableValueFor(el);
           return ({
           selector: selectorFor(el),
           tag: el.tagName.toLowerCase(),
           role: roleFor(el),
           type: el.getAttribute("type") || "",
+          label: labelForSnapshot(el),
+          name: metadataValueForSnapshot(el, rawValue, el.getAttribute("name") || ""),
+          placeholder: metadataValueForSnapshot(el, rawValue, el.getAttribute("placeholder") || ""),
           autocomplete: el.getAttribute("autocomplete") || "",
-          label: labelFor(el),
-          name: nameFor(el),
-          placeholder: el.getAttribute("placeholder") || "",
-          testID: el.getAttribute("data-testid") || el.getAttribute("data-test") || "",
+          testID: metadataValueForSnapshot(el, rawValue, el.getAttribute("data-testid") || el.getAttribute("data-test") || ""),
           disabled: disabled(el),
           actionable: !disabled(el) && visible(el),
-          value: (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT") ? String(el.value || "").slice(0, 160) : "",
-          href: el.href || "",
+          value: rawValue ? (isSensitiveValueControl(el) ? redactedInputValue : rawValue.slice(0, 160)) : "",
+          href: metadataValueForSnapshot(el, rawValue, el.href || ""),
           framePath: entry.framePath,
           shadowDepth: entry.shadowDepth,
           inViewport: entry.viewportInfo.inViewport,
@@ -500,10 +694,12 @@ enum BrowserAutomationScripts {
         });
         });
       const active = document.activeElement && document.activeElement !== document.body ? document.activeElement : null;
+      const activeRawValue = active ? editableValueFor(active) : "";
+      const snapshotSensitiveValues = rawSensitiveValues.concat(activeRawValue && isSensitiveValueControl(active) ? [activeRawValue] : []);
       return JSON.stringify({
         ok: true,
-        url: location.href,
-        title: document.title,
+        url: redactedVisibleText(location.href, snapshotSensitiveValues),
+        title: redactedVisibleText(document.title, snapshotSensitiveValues),
         viewport: {
           width: window.innerWidth,
           height: window.innerHeight,
@@ -512,15 +708,15 @@ enum BrowserAutomationScripts {
         focusedElement: active ? {
           selector: selectorFor(active),
           tag: active.tagName.toLowerCase(),
-          role: active.getAttribute("role") || "",
+          role: roleFor(active),
           type: active.getAttribute("type") || "",
+          label: labelForSnapshot(active),
+          name: redactedMetadataForSnapshot(active, active.getAttribute("name") || ""),
           autocomplete: active.getAttribute("autocomplete") || "",
-          label: labelFor(active),
-          name: nameFor(active),
-          value: (active.tagName === "INPUT" || active.tagName === "TEXTAREA" || active.tagName === "SELECT") ? String(active.value || "").slice(0, 160) : "",
+          value: valueForSnapshot(active),
           bounds: boundsFor(active)
         } : null,
-        text: visibleText(),
+        text: redactedVisibleText(visibleText(), snapshotSensitiveValues),
         controls
       });
     })()
@@ -707,15 +903,120 @@ enum BrowserAutomationScripts {
           const text = \(jsonLiteral(text));
           const clear = \(clear ? "true" : "false");
           const action = clear ? "setValue" : "type";
+          const sensitiveResultTerms = \(BrowserSensitiveInputRedactionPolicy.javaScriptArrayLiteral(BrowserSensitiveInputRedactionPolicy.sensitiveFieldTerms, indentation: "          "));
+          const paymentResultTerms = \(BrowserSensitiveInputRedactionPolicy.javaScriptArrayLiteral(BrowserSensitiveInputRedactionPolicy.paymentFieldTerms, indentation: "          "));
+          const sensitiveAutocompleteTerms = \(BrowserSensitiveInputRedactionPolicy.javaScriptArrayLiteral(BrowserSensitiveInputRedactionPolicy.sensitiveAutocompleteTokens, indentation: "          "));
+          const redactedInputValue = "[redacted-sensitive-input]";
+          const includesAny = (value, terms) => terms.some((term) => value.includes(term));
+          const compactTermsFor = (terms) => terms.map((term) => term.replace(/[^a-z0-9]/g, "")).filter(Boolean);
+          const searchableFieldText = (value) => {
+            const spaced = String(value || "")
+              .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+              .toLowerCase()
+              .replace(/[^a-z0-9]+/g, " ")
+              .trim();
+            return { spaced, compact: spaced.replace(/\\s+/g, "") };
+          };
+          const sensitiveResultCompactTerms = compactTermsFor(sensitiveResultTerms);
+          const paymentResultCompactTerms = compactTermsFor(paymentResultTerms);
+          const containsSensitiveTerm = (text, terms, compactTerms) => {
+            const searchable = searchableFieldText(text);
+            return includesAny(searchable.spaced, terms)
+              || compactTerms.some((term) => searchable.compact.includes(term));
+          };
+          const currentValueFor = (target) => {
+            if (!target) return "";
+            if ("value" in target) return String(target.value || "");
+            if (target.isContentEditable) return String(target.textContent || "");
+            return "";
+          };
+          const isEditablePaymentField = (target) => {
+            const tag = String(target.tagName || "").toLowerCase();
+            const role = roleFor(target).toLowerCase();
+            const type = String(target.getAttribute("type") || "").toLowerCase();
+            if (tag === "textarea" || tag === "select") return true;
+            if (role === "textbox" || role === "combobox") return true;
+            if (tag !== "input") return false;
+            return !new Set(["button", "checkbox", "color", "file", "image", "radio", "range", "reset", "submit"]).has(type);
+          };
+          const sensitiveResultTarget = (target) => {
+            if (!target) return false;
+            const type = String(target.getAttribute("type") || "").toLowerCase();
+            if (type === "password" || type === "hidden") return true;
+            const autocomplete = String(target.getAttribute("autocomplete") || "").toLowerCase();
+            if (includesAny(autocomplete, sensitiveAutocompleteTerms)) return true;
+            const text = [
+              selectorFor(target),
+              labelFor(target),
+              target.getAttribute("name") || "",
+              roleFor(target),
+              target.tagName.toLowerCase(),
+              type,
+              target.getAttribute("placeholder") || "",
+              target.getAttribute("data-testid") || target.getAttribute("data-test") || "",
+              autocomplete
+            ].join(" ");
+            return containsSensitiveTerm(text, sensitiveResultTerms, sensitiveResultCompactTerms)
+              || (isEditablePaymentField(target) && containsSensitiveTerm(text, paymentResultTerms, paymentResultCompactTerms));
+          };
+          const sensitiveResultObject = (result) => {
+            const text = [
+              result.selector || "",
+              result.requestedSelector || "",
+              result.label || "",
+              result.name || "",
+              result.role || "",
+              result.tag || "",
+              result.type || "",
+              result.placeholder || "",
+              result.testID || "",
+              result.href || "",
+              result.autocomplete || ""
+            ].join(" ");
+            return containsSensitiveTerm(text, sensitiveResultTerms, sensitiveResultCompactTerms)
+              || containsSensitiveTerm(text, paymentResultTerms, paymentResultCompactTerms)
+              || sensitiveMetadataCandidate(text);
+          };
+          const cssUnescaped = (value) => String(value || "")
+            .replace(/\\\\([0-9a-fA-F]{1,6})\\s?/g, (_, hex) => String.fromCodePoint(parseInt(hex, 16)))
+            .replace(/\\\\(.)/g, "$1");
+          const sensitiveMetadataCandidate = (value) => {
+            const text = norm(cssUnescaped(value));
+            return text
+              && (containsSensitiveTerm(text, sensitiveResultTerms, sensitiveResultCompactTerms)
+                || containsSensitiveTerm(text, paymentResultTerms, paymentResultCompactTerms));
+          };
+          const redactSensitiveResultMetadata = (value, sensitiveValue) => {
+            const raw = String(value || "");
+            const normalizedValue = norm(sensitiveValue);
+            const normalizedRaw = norm(raw);
+            if (normalizedValue && (
+              normalizedRaw.includes(normalizedValue)
+              || (normalizedValue.length >= 8 && normalizedRaw.length >= 8 && normalizedValue.includes(normalizedRaw))
+            )) return redactedInputValue;
+            return sensitiveMetadataCandidate(raw) ? redactedInputValue : raw;
+          };
+          const redactSensitiveResultTarget = (result, target, value) => {
+            if (!sensitiveResultTarget(target) && !sensitiveResultObject(result)) return result;
+            result.value = redactedInputValue;
+            const normalizedValue = norm(value);
+            if (normalizedValue && norm(result.label).includes(normalizedValue)) {
+              result.label = redactedInputValue;
+            }
+            for (const key of ["selector", "requestedSelector", "label", "name", "placeholder", "testID", "href"]) {
+              if (key in result) result[key] = redactSensitiveResultMetadata(result[key], value);
+            }
+            return result;
+          };
           const target = resolveTarget();
-          if (!target.ok) return JSON.stringify(publicTarget(target));
+          if (!target.ok) return JSON.stringify(redactSensitiveResultTarget(publicTarget(target), target.el, currentValueFor(target.el)));
           const el = target.el;
           \(sensitiveTextEntryPrelude)
           if (!("value" in el) && !el.isContentEditable && el.tagName !== "SELECT") {
             const result = publicTarget(target);
             result.ok = false;
             result.error = "target_not_editable";
-            return JSON.stringify(result);
+            return JSON.stringify(redactSensitiveResultTarget(result, el, currentValueFor(el)));
           }
           const blocked = astraSensitiveBlock(el, action, selector || "", { selectorFor, labelFor, nameFor, roleFor });
           if (blocked) return JSON.stringify(blocked);
@@ -751,7 +1052,7 @@ enum BrowserAutomationScripts {
           result.url = location.href;
           result.value = next.slice(0, 300);
           result.cleared = clear;
-          return JSON.stringify(result);
+          return JSON.stringify(redactSensitiveResultTarget(result, el, currentValueFor(el)));
         })()
         """
     }
@@ -860,7 +1161,7 @@ enum BrowserAutomationScripts {
           return JSON.stringify({
             ok: false,
             error: googleEditor ? "editor_surface_requires_find_replace" : "text_not_found_in_editable_controls",
-            find,
+            findLength: find.length,
             url: location.href,
             hint: googleEditor
               ? "Google editor canvas text is not directly editable through DOM replacement. Open Find and replace, then use astra-browser set-value on the Find and Replace fields by selector."

@@ -1886,12 +1886,12 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         do {
             let json = try await rawSnapshotJSON()
 
-            let result: String
-            if mode == .full && (query ?? "").isEmpty && limit == nil {
-                result = json
-            } else {
-                result = try BrowserPageSnapshotService.compactSnapshot(json: json, mode: mode, query: query, limit: limit)
-            }
+            let result = try BrowserPageSnapshotService.compactSnapshot(
+                json: json,
+                mode: mode,
+                query: query,
+                limit: limit
+            )
             let annotated = try annotateBrowserLoopHint(
                 json: result,
                 action: "snapshot",

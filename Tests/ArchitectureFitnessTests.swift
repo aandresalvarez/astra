@@ -105,6 +105,15 @@ struct ArchitectureFitnessTests {
         }
     }
 
+    @Test("Shelf browser snapshots go through the redaction boundary")
+    func shelfBrowserSnapshotsGoThroughTheRedactionBoundary() throws {
+        let root = try repositoryRoot()
+        let source = try fileText("Astra/Services/Browser/ShelfBrowserSession.swift", root: root)
+
+        #expect(!source.contains("result = json"), "Provider-visible browser snapshots must not bypass BrowserPageSnapshotService.")
+        #expect(source.contains("let result = try BrowserPageSnapshotService.compactSnapshot("))
+    }
+
     @Test("Typed task event constants are categorized explicitly")
     func typedTaskEventConstantsAreCategorizedExplicitly() throws {
         let expectedCategories: [String: TaskEventCategory] = [
