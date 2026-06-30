@@ -326,7 +326,7 @@ final class PluginCatalog {
             author: "ASTRA",
             category: "Integrations",
             tags: ["github", "git", "pull-requests", "issues", "ci"],
-            version: "2.1.3",
+            version: "2.1.4",
             setupGuide: """
             Connect your workspace to GitHub using the GitHub CLI. This \
             capability does not use a stored GitHub connector or token; it \
@@ -359,6 +359,7 @@ final class PluginCatalog {
 
                 COMMON OPERATIONS
                 • List issues: gh issue list --state open --limit 30
+                • Search issues: gh search issues "query terms" --state open --limit 30 --json number,title,state,author,repository,url,createdAt,updatedAt
                 • View issue: gh issue view ISSUE_NUMBER --comments
                 • List recent PRs across repositories: gh search prs --author "@me" --state all --limit 30 --sort updated --order desc --json number,title,state,author,repository,url,createdAt,updatedAt
                 • List PRs in current repo: gh pr list --state open --limit 30
@@ -378,23 +379,14 @@ final class PluginCatalog {
                 • If the user requests a GitHub write, explain that ASTRA's built-in GitHub host-control capability is read-only and that writes require opening GitHub/gh outside ASTRA or a future confirmed-write integration.
                 • Prefer `--json` with `--jq` for structured parsing when available
                 • Do not pipe JSON into `python3 - <<'PY'`; the heredoc consumes stdin, so Python will not receive the command output. If Python parsing is required, write JSON to a temp file first or pass it as an argument.
-                • Prefer `gh search prs` for cross-repository PR searches. If REST search is required, call `gh api /search/issues` with a leading slash.
+                • Prefer `gh search issues` and `gh search prs` for cross-repository searches; raw `gh api` calls are outside this read-only capability.
                 • Include links to issues/PRs in your responses
                 • Never ask the user to paste GitHub credentials when `gh auth login` is the right fix
                 """,
                 environmentKeys: [], environmentValues: []
             )],
             connectors: [],
-            localTools: [
-                PluginLocalTool(
-                    name: "gh — GitHub CLI",
-                    description: "Run GitHub CLI commands (issues, PRs, repos, actions)",
-                    icon: "terminal",
-                    toolType: "cli",
-                    command: "gh",
-                    arguments: ""
-                )
-            ],
+            localTools: [],
             templates: [],
             browserAdapters: [BrowserSiteAdapterID.github],
             prerequisites: [
@@ -405,7 +397,7 @@ final class PluginCatalog {
                 riskLevel: .high,
                 dataAccess: [.workspaceFiles, .externalService, .network, .authenticatedBrowserContent],
                 externalEffects: [.readOnly, .browserNavigation],
-                policyNotes: "GitHub work uses the local gh CLI and authenticated GitHub browser pages for read-only repository, issue, pull request, and Actions inspection. Built-in host-control denies GitHub writes."
+                policyNotes: "GitHub work uses host-control mediated gh commands and authenticated GitHub browser pages for read-only repository, issue, pull request, and Actions inspection. Built-in host-control denies GitHub writes."
             )
         ),
 

@@ -18,6 +18,11 @@ struct HostControlToolSupportTests {
         ])
         #expect(errorMessage(deniedAuth)?.contains("does not allow GitHub operation") == true)
 
+        let deniedAuthTokenDisplay = try call(server, id: 10, tool: "github", arguments: [
+            "arguments": ["auth", "status", "--show-token"]
+        ])
+        #expect(errorMessage(deniedAuthTokenDisplay)?.contains("does not allow GitHub operation") == true)
+
         let deniedAPI = try call(server, id: 2, tool: "github", arguments: [
             "arguments": ["api", "--method", "DELETE", "/repos/example/project"]
         ])
@@ -60,11 +65,17 @@ struct HostControlToolSupportTests {
         ])
         #expect(try resultText(allowedHostnameBetweenCommandAndSubcommand).contains("ok"))
 
+        let allowedAuthStatus = try call(server, id: 11, tool: "github", arguments: [
+            "arguments": ["auth", "status", "--hostname", "github.com"]
+        ])
+        #expect(try resultText(allowedAuthStatus).contains("ok"))
+
         #expect(runner.invocations.map(\.arguments) == [
             ["pr", "view", "123", "--comments"],
             ["--repo", "owner/project", "pr", "view", "123"],
             ["pr", "--repo", "owner/project", "view", "123"],
-            ["pr", "--hostname", "github.com", "view", "123"]
+            ["pr", "--hostname", "github.com", "view", "123"],
+            ["auth", "status", "--hostname", "github.com"]
         ])
     }
 
