@@ -150,7 +150,11 @@ struct WorkspaceAppPackageResourceReader {
     ) throws -> Int {
         let decoder = JSONDecoder()
         var count = 0
-        try readJSONLines(at: url, relativePath: relativePath) { line in
+        try readJSONLines(
+            at: url,
+            relativePath: relativePath,
+            maximumBytes: budget.maxFileBytes
+        ) { line in
             _ = try decoder.decode(type, from: line)
             count += 1
         }
@@ -164,7 +168,11 @@ struct WorkspaceAppPackageResourceReader {
         handleRow: (Value) throws -> Void
     ) throws {
         let decoder = JSONDecoder()
-        try readJSONLines(at: url, relativePath: relativePath) { line in
+        try readJSONLines(
+            at: url,
+            relativePath: relativePath,
+            maximumBytes: budget.maxFileBytes
+        ) { line in
             try handleRow(decoder.decode(type, from: line))
         }
     }
@@ -174,7 +182,11 @@ struct WorkspaceAppPackageResourceReader {
         relativePath: String,
         handleLine: (String) throws -> Void
     ) throws {
-        try readJSONLines(at: url, relativePath: relativePath) { line in
+        try readJSONLines(
+            at: url,
+            relativePath: relativePath,
+            maximumBytes: budget.maxScannedTextFileBytes
+        ) { line in
             guard let text = String(data: line, encoding: .utf8) else {
                 throw WorkspaceAppPackageResourceError.invalidUTF8(path: relativePath)
             }
@@ -185,14 +197,15 @@ struct WorkspaceAppPackageResourceReader {
     private func readJSONLines(
         at url: URL,
         relativePath: String,
+        maximumBytes: Int,
         handleLine: (Data) throws -> Void
     ) throws {
         let size = try regularFileSize(at: url, relativePath: relativePath)
-        guard size <= budget.maxFileBytes else {
+        guard size <= maximumBytes else {
             throw WorkspaceAppPackageResourceError.fileTooLarge(
                 path: relativePath,
                 actual: size,
-                maximum: budget.maxFileBytes
+                maximum: maximumBytes
             )
         }
 

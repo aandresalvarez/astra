@@ -371,8 +371,9 @@ struct WorkspaceAppPackageTests {
         let fixtureURL = packageURL.appendingPathComponent(fixturePath)
         try FileManager.default.createDirectory(at: fixtureURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         try Data(
-            (0..<6_000)
+            ((0..<6_000)
                 .map { #"{"event":"loaded-\#($0)"}"# }
+                + [#"{"event":"loaded","token":"should-not-be-scanned-after-cap"}"#])
                 .joined(separator: "\n")
                 .utf8
         )
@@ -394,6 +395,10 @@ struct WorkspaceAppPackageTests {
         #expect(report.blockers.contains {
             $0.path == "/\(fixturePath)"
                 && $0.message.lowercased().contains("package resource limit")
+        })
+        #expect(!report.blockers.contains {
+            $0.path == "/\(fixturePath)"
+                && $0.message.lowercased().contains("credential material")
         })
     }
 
