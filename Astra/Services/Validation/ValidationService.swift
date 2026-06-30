@@ -50,7 +50,7 @@ enum ValidationCommandPolicy {
     }
 
     private static func containsShellComposition(_ command: String) -> Bool {
-        let disallowedFragments = ["&&", "||", ";", "|", "`", "$(", ">", "<", "\n", "\r"]
+        let disallowedFragments = ["&&", "||", ";", "|", "`", "$(", "=(", ">", "<", "\n", "\r"]
         return disallowedFragments.contains { command.contains($0) }
             || command.contains("&")
     }

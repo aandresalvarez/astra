@@ -153,6 +153,26 @@ struct ValidationServiceTests {
         #expect(await runner.recordedCalls().isEmpty)
     }
 
+    @Test("runTests rejects zsh process substitution before execution")
+    func runTestsRejectsZshProcessSubstitutionBeforeExecution() async throws {
+        let root = "/tmp/astra-validation-process-substitution-\(UUID().uuidString.prefix(8))"
+        let workspace = Workspace(name: "Imported Validation Process Substitution Guard", primaryPath: root)
+        let task = AgentTask(title: "Validate", goal: "Reject imported zsh process substitution", workspace: workspace)
+        task.testCommand = "swift test =(touch should-not-run)"
+        let runner = StubValidationCommandRunner(results: [
+            ValidationCommandResult(exitCode: 0, stdout: "unsafe pass", stderr: "")
+        ])
+
+        let result = await ValidationService.runTests(task: task, commandRunner: runner)
+
+        if case .error(let message) = result {
+            #expect(message.contains("not allowed"))
+        } else {
+            Issue.record("Expected zsh process substitution to be rejected before execution")
+        }
+        #expect(await runner.recordedCalls().isEmpty)
+    }
+
     @Test("runTests rejects no-op commands as validation bypasses")
     func runTestsRejectsNoOpCommandsAsValidationBypasses() async throws {
         let root = "/tmp/astra-validation-noop-\(UUID().uuidString.prefix(8))"
