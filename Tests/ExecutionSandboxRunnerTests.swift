@@ -82,7 +82,8 @@ struct ExecutionSandboxRunnerTests {
         workspacePath: String,
         permissionPolicy: PermissionPolicy = .restricted,
         executionPolicy: AgentRuntimeExecutionPolicy = .default,
-        contextText: String = ""
+        contextText: String = "",
+        launchResourcePlan: TaskLaunchResourcePlan? = nil
     ) -> AgentRuntimeProcessLaunchContext {
         AgentRuntimeProcessLaunchContext(
             prompt: "p",
@@ -94,7 +95,8 @@ struct ExecutionSandboxRunnerTests {
             executionPolicy: executionPolicy,
             permissionManifest: nil,
             timeoutSeconds: 1,
-            contextText: contextText
+            contextText: contextText,
+            launchResourcePlan: launchResourcePlan
         )
     }
 
@@ -328,7 +330,99 @@ struct ExecutionSandboxRunnerTests {
                 return
             }
             #expect(result.exitCode == -1)
-            #expect(result.runtimeStopReason == "git_credential_native_access_unavailable")
+            #expect(result.runtimeStopReason == "credential_native_access_unavailable")
+            #expect(result.runtimeStopMessage?.contains("read-only native path grant") == true)
+        }
+    }
+
+    @Test("sandboxedPlan does not block restricted Codex when Git credential context has no paths")
+    func sandboxedPlanDoesNotBlockRestrictedCodexWhenGitCredentialContextHasNoPaths() {
+        let launchResourcePlan = TaskLaunchResourcePlan(
+            taskID: UUID(),
+            runID: UUID(),
+            runtime: AgentRuntimeID.codexCLI.rawValue,
+            phase: "run",
+            workspacePath: "/tmp/whatever",
+            executionEnvironmentID: WorkspaceExecutionEnvironment.host.id,
+            executionEnvironmentKind: ExecutionEnvironmentKind.host.rawValue,
+            providerPlacement: ExecutionEnvironmentProviderPlacement.host.rawValue,
+            gitCredential: RuntimeGitCredentialResource(
+                readablePaths: [],
+                writablePaths: [],
+                transports: [GitCredentialContextResolver.RemoteTransport.ssh.rawValue],
+                diagnostics: []
+            )
+        )
+
+        withStandardEnforcement(.off) {
+            let runner = AgentRuntimeProcessRunner(gitCredentialContextProvider: { _ in .empty })
+            let outcome = runner.sandboxedPlan(
+                adapter: FakeLaunchAdapter(runtime: .codexCLI, currentDirectory: "/tmp/whatever"),
+                context: makeContext(
+                    workspacePath: "/tmp/whatever",
+                    permissionPolicy: .restricted,
+                    launchResourcePlan: launchResourcePlan
+                )
+            )
+            guard case .plan(let plan) = outcome else {
+                Issue.record("Expected pathless Git credential context to avoid a native path-access block")
+                return
+            }
+            #expect(plan.commandPlannedFields["provider_native_credential_read_path_count"] == "0")
+            #expect(plan.commandPlannedFields["git_provider_native_read_access"] == nil)
+        }
+    }
+
+    @Test("sandboxedPlan blocks restricted Codex when SSH resource grants need native access")
+    func sandboxedPlanBlocksRestrictedCodexSSHResourceCredentialAccess() {
+        let launchResourcePlan = TaskLaunchResourcePlan(
+            taskID: UUID(),
+            runID: UUID(),
+            runtime: AgentRuntimeID.codexCLI.rawValue,
+            phase: "run",
+            workspacePath: "/tmp/whatever",
+            executionEnvironmentID: WorkspaceExecutionEnvironment.host.id,
+            executionEnvironmentKind: ExecutionEnvironmentKind.host.rawValue,
+            providerPlacement: ExecutionEnvironmentProviderPlacement.host.rawValue,
+            hostPathGrants: [
+                RuntimePathGrant(
+                    path: "/tmp/astra-home/.ssh/config",
+                    access: .read,
+                    source: .remoteWorkspace,
+                    reason: "Configured remote workspace SSH aliases require the user's SSH config.",
+                    sensitivity: .credential,
+                    lifetime: .run,
+                    exists: true
+                )
+            ],
+            credentialGrants: [
+                RuntimeCredentialGrant(
+                    label: "Remote workspace SSH",
+                    source: .remoteWorkspace,
+                    reason: "Remote workspace commands use SSH config, identity files, and known-host metadata.",
+                    projectedAsEnvironment: false,
+                    projectedAsFile: true
+                )
+            ],
+            gitCredential: nil
+        )
+
+        withStandardEnforcement(.off) {
+            let runner = AgentRuntimeProcessRunner(gitCredentialContextProvider: { _ in .empty })
+            let outcome = runner.sandboxedPlan(
+                adapter: FakeLaunchAdapter(runtime: .codexCLI, currentDirectory: "/tmp/whatever"),
+                context: makeContext(
+                    workspacePath: "/tmp/whatever",
+                    permissionPolicy: .restricted,
+                    launchResourcePlan: launchResourcePlan
+                )
+            )
+            guard case .blocked(let result) = outcome else {
+                Issue.record("Expected restricted Codex to fail closed for SSH credential path grants")
+                return
+            }
+            #expect(result.exitCode == -1)
+            #expect(result.runtimeStopReason == "credential_native_access_unavailable")
             #expect(result.runtimeStopMessage?.contains("read-only native path grant") == true)
         }
     }

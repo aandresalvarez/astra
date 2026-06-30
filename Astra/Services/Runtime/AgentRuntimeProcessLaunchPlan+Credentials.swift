@@ -84,12 +84,12 @@ extension AgentRuntimeProcessLaunchPlan {
         )
     }
 
-    func unsupportedProviderNativeGitCredentialReadBlock(
-        for context: GitCredentialSandboxContext,
+    func unsupportedProviderNativeCredentialReadBlock(
+        for launchResourcePlan: TaskLaunchResourcePlan,
         permissionPolicy: PermissionPolicy,
         workspaceCommandsRunInsideManagedExecutor: Bool
     ) -> AgentProcessResult? {
-        guard context.needsExternalCredentialAccess,
+        guard launchResourcePlan.needsProviderNativeCredentialReadAccess,
               permissionPolicy != .autonomous,
               runtime == .codexCLI,
               !workspaceCommandsRunInsideManagedExecutor else {
@@ -102,7 +102,7 @@ extension AgentRuntimeProcessLaunchPlan {
         return AgentProcessResult(
             exitCode: -1,
             error: message,
-            runtimeStopReason: "git_credential_native_access_unavailable",
+            runtimeStopReason: "credential_native_access_unavailable",
             runtimeStopMessage: message
         )
     }

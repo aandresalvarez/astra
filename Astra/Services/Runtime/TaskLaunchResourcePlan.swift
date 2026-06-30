@@ -236,6 +236,17 @@ struct TaskLaunchResourcePlan: Codable, Equatable, Sendable {
         })
     }
 
+    var providerNativeCredentialReadablePaths: [String] {
+        uniquePaths(hostPathGrants.compactMap { grant in
+            guard grant.requiresProviderNativeCredentialRead else { return nil }
+            return grant.path
+        })
+    }
+
+    var needsProviderNativeCredentialReadAccess: Bool {
+        !providerNativeCredentialReadablePaths.isEmpty
+    }
+
     var gitCredentialSandboxContext: GitCredentialSandboxContext {
         gitCredential?.sandboxContext ?? .empty
     }
@@ -279,6 +290,7 @@ struct TaskLaunchResourcePlan: Codable, Equatable, Sendable {
                 return nil
             }
         }).count)
+        fields["provider_native_credential_read_path_count"] = String(providerNativeCredentialReadablePaths.count)
         if let gitCredential {
             fields["git_credential_context"] = "true"
             fields["git_credential_readable_path_count"] = String(gitCredential.readablePaths.count)
@@ -394,6 +406,18 @@ struct TaskLaunchResourcePlan: Codable, Equatable, Sendable {
             let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else { return false }
             return seen.insert(trimmed).inserted
+        }
+    }
+}
+
+private extension RuntimePathGrant {
+    var requiresProviderNativeCredentialRead: Bool {
+        guard source == .gitCredential || source == .remoteWorkspace else { return false }
+        switch access {
+        case .read, .readWrite:
+            return true
+        case .write:
+            return false
         }
     }
 }
