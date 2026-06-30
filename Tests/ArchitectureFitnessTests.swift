@@ -1156,6 +1156,18 @@ struct ArchitectureFitnessTests {
         #expect(codeowners.contains("Tests/ArchitectureFitnessTests.swift"))
     }
 
+    @Test("Remote MCP gateway tool policy exposes immutable policy lists")
+    func remoteMCPGatewayToolPolicyExposesImmutablePolicyLists() throws {
+        let root = try repositoryRoot()
+        let source = try fileText("Tools/MCPGatewaySupport/MCPGatewaySupport.swift", root: root)
+        let policy = try extractedStruct(named: "RemoteMCPGatewayToolPolicy", from: source)
+
+        #expect(policy.contains("public let allowedTools: [String]"))
+        #expect(policy.contains("public let excludedTools: [String]"))
+        #expect(!policy.contains("public var allowedTools"))
+        #expect(!policy.contains("public var excludedTools"))
+    }
+
     private func declaredTaskEventTypeConstants() throws -> Set<String> {
         let file = try repositoryRoot().appendingPathComponent("Astra/Models/TaskEventTypes.swift")
         let text = try String(contentsOf: file, encoding: .utf8)

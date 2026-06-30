@@ -93,6 +93,20 @@ struct MCPToolPolicyEngineTests {
         }
     }
 
+    @Test("native policy allowlists are case-insensitive ASTRA permission checks")
+    func nativePolicyAllowlistsAreCaseInsensitive() {
+        let decision = makeEngine().evaluate(
+            request(
+                toolName: " DOCS.GET ",
+                server: googleWorkspaceServer(allowedTools: ["docs.get"]),
+                grantedScopes: [.googleDocsRead]
+            )
+        )
+
+        #expect(decision.isAllowed)
+        #expect(decision.denialReason == nil)
+    }
+
     @Test("unknown tools fail closed even when server wildcard allowlist would otherwise match")
     func unknownToolFailsClosed() {
         let server = googleWorkspaceServer(allowedTools: [], excludedTools: [])

@@ -59,17 +59,21 @@ enum RemoteMCPGatewayProjection {
             serverID: server.id,
             bindingID: binding.id
         )
+        let arguments = [
+            "--package-id", resolved.packageID,
+            "--server-id", server.id,
+            "--endpoint", endpoint,
+            "--access-token-env", accessTokenEnvironmentKey
+        ] + toolPolicyArguments(
+            allowedTools: server.allowedTools,
+            excludedTools: server.excludedTools
+        )
         let gatewayServer = PluginMCPServer(
             id: server.id,
             displayName: server.displayName,
             transport: .stdio,
             command: executablePath,
-            arguments: [
-                "--package-id", resolved.packageID,
-                "--server-id", server.id,
-                "--endpoint", endpoint,
-                "--access-token-env", accessTokenEnvironmentKey
-            ],
+            arguments: arguments,
             environmentKeys: [accessTokenEnvironmentKey],
             connectorBindings: server.connectorBindings,
             allowedTools: server.allowedTools,
@@ -136,6 +140,29 @@ enum RemoteMCPGatewayProjection {
         return String(mapped)
             .split(separator: "_", omittingEmptySubsequences: true)
             .joined(separator: "_")
+    }
+
+    private static func toolPolicyArguments(
+        allowedTools: [String],
+        excludedTools: [String]
+    ) -> [String] {
+        policyArguments(flag: "--allowed-tool", tools: allowedTools)
+            + policyArguments(flag: "--excluded-tool", tools: excludedTools)
+    }
+
+    private static func policyArguments(flag: String, tools: [String]) -> [String] {
+        var arguments: [String] = []
+        for tool in orderedTrimmedToolNames(tools) {
+            arguments += [flag, tool]
+        }
+        return arguments
+    }
+
+    private static func orderedTrimmedToolNames(_ tools: [String]) -> [String] {
+        orderedUnique(tools.compactMap { tool in
+            let trimmed = tool.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        })
     }
 
     private static func gatewayAccessTokenEnvironmentKeys(in arguments: [String]) -> [String] {

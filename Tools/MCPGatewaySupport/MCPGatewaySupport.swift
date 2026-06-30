@@ -11,19 +11,84 @@ public struct RemoteMCPServerDescriptor: Equatable {
     public var transport: Transport
     public var endpoint: URL
     public var connectorBindings: [String]
+    public var allowedTools: [String]
+    public var excludedTools: [String]
 
     public init(
         id: String,
         displayName: String,
         transport: Transport,
         endpoint: URL,
-        connectorBindings: [String] = []
+        connectorBindings: [String] = [],
+        allowedTools: [String] = [],
+        excludedTools: [String] = []
     ) {
         self.id = id
         self.displayName = displayName
         self.transport = transport
         self.endpoint = endpoint
         self.connectorBindings = connectorBindings
+        self.allowedTools = allowedTools
+        self.excludedTools = excludedTools
+    }
+}
+
+public struct RemoteMCPGatewayToolPolicy: Equatable {
+    public let allowedTools: [String]
+    public let excludedTools: [String]
+
+    public init(allowedTools: [String] = [], excludedTools: [String] = []) {
+        self.allowedTools = Self.trimmedUnique(allowedTools)
+        self.excludedTools = Self.trimmedUnique(excludedTools)
+    }
+
+    public func allows(_ toolName: String) -> Bool {
+        guard let tool = canonicalToolName(for: toolName) else {
+            return false
+        }
+        return !tool.isEmpty
+    }
+
+    public func canonicalToolName(for toolName: String) -> String? {
+        let tool = Self.toolKey(toolName)
+        guard !tool.isEmpty else { return nil }
+        if excludedTools.contains(tool) {
+            return nil
+        }
+        if allowedTools.isEmpty {
+            return tool
+        }
+        return allowedTools.contains(tool) ? tool : nil
+    }
+
+    public func filterTools(_ tools: [[String: Any]]) -> [[String: Any]] {
+        tools.compactMap { tool in
+            guard let name = tool["name"] as? String else {
+                return nil
+            }
+            guard let canonicalName = canonicalToolName(for: name) else {
+                return nil
+            }
+            var normalizedTool = tool
+            normalizedTool["name"] = canonicalName
+            return normalizedTool
+        }
+    }
+
+    private static func trimmedUnique(_ tools: [String]) -> [String] {
+        var result: [String] = []
+        for tool in tools {
+            let toolKey = toolKey(tool)
+            if !toolKey.isEmpty && !result.contains(toolKey) {
+                result.append(toolKey)
+            }
+        }
+        return result
+    }
+
+    private static func toolKey(_ value: String) -> String {
+        // MCP tool names are case-sensitive; trim whitespace without folding case.
+        value.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
 
@@ -92,6 +157,7 @@ public final class LocalMCPGateway {
     private let server: RemoteMCPServerDescriptor
     private let remoteClient: RemoteMCPClient
     private let authTokenProvider: MCPGatewayAuthTokenProvider
+    private let toolPolicy: RemoteMCPGatewayToolPolicy
 
     public init(
         server: RemoteMCPServerDescriptor,
@@ -101,6 +167,10 @@ public final class LocalMCPGateway {
         self.server = server
         self.remoteClient = remoteClient
         self.authTokenProvider = authTokenProvider
+        self.toolPolicy = RemoteMCPGatewayToolPolicy(
+            allowedTools: server.allowedTools,
+            excludedTools: server.excludedTools
+        )
     }
 
     public func handleLine(_ line: String) -> String? {
@@ -136,7 +206,7 @@ public final class LocalMCPGateway {
     private func handleToolsList(id: Any?) -> String? {
         do {
             let tools = try remoteClient.listTools(for: server, auth: authContext())
-            return encodeResult(id: id, result: ["tools": tools])
+            return encodeResult(id: id, result: ["tools": toolPolicy.filterTools(tools)])
         } catch {
             return encodeError(id: id, code: -32000, message: "Remote MCP tool discovery failed: \(error.localizedDescription)")
         }
@@ -144,9 +214,15 @@ public final class LocalMCPGateway {
 
     private func handleToolCall(id: Any?, object: [String: Any]) -> String? {
         guard let params = object["params"] as? [String: Any],
-              let toolName = params["name"] as? String,
-              !toolName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+              let rawToolName = params["name"] as? String else {
             return encodeError(id: id, code: -32602, message: "Unsupported tool")
+        }
+        let requestedToolName = rawToolName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !requestedToolName.isEmpty else {
+            return encodeError(id: id, code: -32602, message: "Unsupported tool")
+        }
+        guard let toolName = toolPolicy.canonicalToolName(for: requestedToolName) else {
+            return encodeError(id: id, code: -32602, message: "Tool is not allowed by ASTRA gateway policy")
         }
         let arguments = params["arguments"] as? [String: Any] ?? [:]
         do {
@@ -243,7 +319,9 @@ public enum AstraMCPGatewayToolMain {
             displayName: options.serverID,
             transport: .http,
             endpoint: options.endpoint ?? URL(string: "http://127.0.0.1/astra-mcp-gateway-unconfigured")!,
-            connectorBindings: []
+            connectorBindings: [],
+            allowedTools: options.allowedTools,
+            excludedTools: options.excludedTools
         )
         let gateway = LocalMCPGateway(
             server: descriptor,
@@ -263,6 +341,8 @@ private struct GatewayCommandOptions {
     var serverID: String = "remote"
     var endpoint: URL?
     var accessTokenEnvironmentKey: String = "ASTRA_MCP_GATEWAY_ACCESS_TOKEN"
+    var allowedTools: [String] = []
+    var excludedTools: [String] = []
 
     init(arguments: [String]) {
         var index = 0
@@ -280,6 +360,12 @@ private struct GatewayCommandOptions {
                 index += 2
             case "--access-token-env" where index + 1 < arguments.count:
                 accessTokenEnvironmentKey = arguments[index + 1]
+                index += 2
+            case "--allowed-tool" where index + 1 < arguments.count:
+                allowedTools.append(arguments[index + 1])
+                index += 2
+            case "--excluded-tool" where index + 1 < arguments.count:
+                excludedTools.append(arguments[index + 1])
                 index += 2
             default:
                 index += 1

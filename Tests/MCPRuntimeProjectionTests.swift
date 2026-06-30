@@ -197,6 +197,7 @@ struct MCPRuntimeProjectionTests {
             url: URL(string: "https://mcp.example.com/google")!,
             connectorBindings: ["google-workspace"],
             allowedTools: ["drive.search"],
+            excludedTools: ["drive.files.delete"],
             trustLevel: .high,
             controlPlane: gatewayAuthorizationControlPlane()
         )
@@ -220,7 +221,9 @@ struct MCPRuntimeProjectionTests {
             "--package-id", "google-workspace",
             "--server-id", "google_drive",
             "--endpoint", "https://mcp.example.com/google",
-            "--access-token-env", accessTokenEnv
+            "--access-token-env", accessTokenEnv,
+            "--allowed-tool", "drive.search",
+            "--excluded-tool", "drive.files.delete"
         ])
         let env = try #require(entry["env"] as? [String: String])
         #expect(env[accessTokenEnv] == "${\(accessTokenEnv)}")
@@ -231,6 +234,40 @@ struct MCPRuntimeProjectionTests {
             servers: [resolved],
             availableEnvironment: [accessTokenEnv: "secret-token"]
         ) == ["mcp__google_drive__drive.search"])
+    }
+
+    @Test("Gateway arguments trim tool policies before forwarding and deduping")
+    func gatewayArgumentsTrimToolPoliciesBeforeForwardingAndDeduping() throws {
+        let accessTokenEnv = RemoteMCPGatewayProjection.gatewayAccessTokenEnvironmentKey(
+            packageID: "google-workspace",
+            serverID: "google_drive",
+            bindingID: "auth-header"
+        )
+        let remote = PluginMCPServer(
+            id: "google_drive",
+            displayName: "Google Drive",
+            transport: .http,
+            url: URL(string: "https://mcp.example.com/google")!,
+            connectorBindings: ["google-workspace"],
+            allowedTools: [" drive.search ", "drive.search", "DATA_EXPORT_v2", " DATA_EXPORT_v2 ", "data_export_v2"],
+            excludedTools: [" drive.files.delete ", "drive.files.delete", "Admin.Delete"],
+            trustLevel: .high,
+            controlPlane: gatewayAuthorizationControlPlane()
+        )
+        let resolved = MCPRuntimeProjection.ResolvedServer(packageID: "google-workspace", server: remote)
+        let gatewayResolved = try #require(RemoteMCPGatewayProjection.providerFacingResolvedServer(for: resolved))
+
+        #expect(gatewayResolved.server.arguments == [
+            "--package-id", "google-workspace",
+            "--server-id", "google_drive",
+            "--endpoint", "https://mcp.example.com/google",
+            "--access-token-env", accessTokenEnv,
+            "--allowed-tool", "drive.search",
+            "--allowed-tool", "DATA_EXPORT_v2",
+            "--allowed-tool", "data_export_v2",
+            "--excluded-tool", "drive.files.delete",
+            "--excluded-tool", "Admin.Delete"
+        ])
     }
 
     @Test("Codex config routes credentialed remote MCP through ASTRA gateway")
@@ -247,6 +284,7 @@ struct MCPRuntimeProjectionTests {
             url: URL(string: "https://mcp.example.com/google")!,
             connectorBindings: ["google-workspace"],
             allowedTools: ["drive.search"],
+            excludedTools: ["drive.files.delete"],
             trustLevel: .high,
             controlPlane: gatewayAuthorizationControlPlane()
         )
@@ -263,7 +301,7 @@ struct MCPRuntimeProjectionTests {
         let config = arguments.last ?? ""
         #expect(config.contains("\"google_drive\"={"))
         #expect(config.contains("command=\"\(RemoteMCPGatewayProjection.executablePath)\""))
-        #expect(config.contains("args=[\"--package-id\",\"google-workspace\",\"--server-id\",\"google_drive\",\"--endpoint\",\"https://mcp.example.com/google\",\"--access-token-env\",\"\(accessTokenEnv)\"]"))
+        #expect(config.contains("args=[\"--package-id\",\"google-workspace\",\"--server-id\",\"google_drive\",\"--endpoint\",\"https://mcp.example.com/google\",\"--access-token-env\",\"\(accessTokenEnv)\",\"--allowed-tool\",\"drive.search\",\"--excluded-tool\",\"drive.files.delete\"]"))
         #expect(config.contains("env_vars=[\"\(accessTokenEnv)\"]"))
         #expect(!config.contains("url="))
         #expect(!config.contains("secret-token"))
