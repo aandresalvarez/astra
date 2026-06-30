@@ -270,11 +270,11 @@ private enum WorkspaceManagedJobLogTailReader {
         guard let suffix = readSuffix(path: path, byteLimit: byteLimit) else {
             return ""
         }
-        let text = String(decoding: suffix.data, as: UTF8.self)
-        return lastLines(
-            dropPartialLeadingLineIfNeeded(text, startsInsideLine: suffix.startsInsideLine),
+        let tailData = lastLines(
+            dropPartialLeadingLineIfNeeded(suffix.data, startsInsideLine: suffix.startsInsideLine),
             count: lineLimit
         )
+        return decodeBounded(tailData, byteLimit: byteLimit)
     }
 
     private static func readSuffix(path: String, byteLimit: Int) -> LogSuffix? {
@@ -305,32 +305,58 @@ private enum WorkspaceManagedJobLogTailReader {
         }
     }
 
-    private static func dropPartialLeadingLineIfNeeded(_ text: String, startsInsideLine: Bool) -> String {
-        guard startsInsideLine, let newline = text.firstIndex(of: "\n") else {
-            return text
+    private static func dropPartialLeadingLineIfNeeded(_ data: Data, startsInsideLine: Bool) -> Data {
+        guard startsInsideLine, let newline = data.firstIndex(of: UInt8(ascii: "\n")) else {
+            return data
         }
-        let completeLineSuffix = String(text[text.index(after: newline)...])
-        return completeLineSuffix.isEmpty ? text : completeLineSuffix
+        let completeLineStart = data.index(after: newline)
+        guard completeLineStart < data.endIndex else {
+            return data
+        }
+        return Data(data[completeLineStart...])
     }
 
-    private static func lastLines(_ text: String, count: Int) -> String {
-        var end = text.endIndex
-        if end > text.startIndex, text[text.index(before: end)] == "\n" {
-            end = text.index(before: end)
+    private static func lastLines(_ data: Data, count: Int) -> Data {
+        var end = data.endIndex
+        if end > data.startIndex, data[data.index(before: end)] == UInt8(ascii: "\n") {
+            end = data.index(before: end)
         }
         var remainingNewlines = count
         var cursor = end
-        while cursor > text.startIndex {
-            let previous = text.index(before: cursor)
-            if text[previous] == "\n" {
+        while cursor > data.startIndex {
+            let previous = data.index(before: cursor)
+            if data[previous] == UInt8(ascii: "\n") {
                 remainingNewlines -= 1
                 if remainingNewlines == 0 {
-                    return String(text[text.index(after: previous)..<end])
+                    return Data(data[data.index(after: previous)..<end])
                 }
             }
             cursor = previous
         }
-        return String(text[..<end])
+        return Data(data[..<end])
+    }
+
+    private static func decodeBounded(_ data: Data, byteLimit: Int) -> String {
+        let text = String(decoding: data, as: UTF8.self)
+        guard text.utf8.count > byteLimit else {
+            return text
+        }
+        return suffixFittingUTF8Bytes(text, byteLimit: byteLimit)
+    }
+
+    private static func suffixFittingUTF8Bytes(_ text: String, byteLimit: Int) -> String {
+        guard byteLimit > 0 else {
+            return ""
+        }
+        let utf8 = text.utf8
+        var start = utf8.index(utf8.endIndex, offsetBy: -byteLimit)
+        while start < utf8.endIndex {
+            if let stringStart = String.Index(start, within: text) {
+                return String(text[stringStart...])
+            }
+            utf8.formIndex(after: &start)
+        }
+        return ""
     }
 
     private struct LogSuffix {

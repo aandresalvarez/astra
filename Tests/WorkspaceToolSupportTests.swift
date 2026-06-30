@@ -769,6 +769,31 @@ struct WorkspaceToolSupportTests {
         #expect(tail.text.hasSuffix(String(repeating: "x", count: 64)))
     }
 
+    @Test("Workspace managed job tail bounds decoded invalid UTF-8 expansion")
+    func workspaceManagedJobTailBoundsDecodedInvalidUTF8Expansion() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-workspace-job-tail-invalid-utf8-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let store = WorkspaceManagedJobStore(rootPath: root.path)
+        let job = try store.create(
+            command: "printf invalid-log-bytes",
+            timeoutSeconds: nil,
+            label: nil,
+            progressProbe: nil,
+            runtime: "docker"
+        )
+        var log = Data("older output\n".utf8)
+        log.append(Data(repeating: 0xFF, count: 600_000))
+        try log.write(to: URL(fileURLWithPath: job.stdoutLogPath), options: .atomic)
+
+        let tail = try store.tail(jobID: job.jobID, stream: "stdout", lines: 1)
+
+        #expect(!tail.text.isEmpty)
+        #expect(tail.text.utf8.count <= 64 * 1024)
+        #expect(!tail.text.contains("older output"))
+    }
+
     @Test("Workspace managed job tail keeps bounded suffix when final long line ends with newline")
     func workspaceManagedJobTailKeepsBoundedSuffixForTerminatedFinalLongLine() throws {
         let root = FileManager.default.temporaryDirectory
