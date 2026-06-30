@@ -97,8 +97,8 @@ struct HostControlToolSupportTests {
         #expect(!diagnosticsText.contains("super-secret-token"))
     }
 
-    @Test("Host control SSH rejects remote commands before invoking ssh")
-    func hostControlSSHRejectsRemoteCommandsBeforeInvokingSSH() throws {
+    @Test("Host control SSH rejects command-shaped inputs before invoking ssh")
+    func hostControlSSHRejectsCommandShapedInputsBeforeInvokingSSH() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("astra-host-control-ssh-policy-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -111,14 +111,19 @@ struct HostControlToolSupportTests {
             allowedSSHAliases: ["deid-jsn-workbench"]
         ))
 
-        let response = try call(server, id: 1, tool: "ssh", arguments: [
-            "alias": "deid-jsn-workbench",
-            "remote_command": "hostname && uptime"
-        ])
+        let commandInputs: [[String: Any]] = [
+            ["alias": "deid-jsn-workbench", "remote_command": "hostname && uptime"],
+            ["alias": "deid-jsn-workbench", "command": "hostname && uptime"],
+            ["alias": "deid-jsn-workbench", "cmd": "hostname && uptime"],
+            ["alias": "deid-jsn-workbench", "arguments": ["hostname"]]
+        ]
 
-        let error = try #require(response["error"] as? [String: Any])
-        #expect(error["code"] as? Int == -32602)
-        #expect((error["message"] as? String)?.contains("remote_command is not supported") == true)
+        for (index, arguments) in commandInputs.enumerated() {
+            let response = try call(server, id: index + 1, tool: "ssh", arguments: arguments)
+            let error = try #require(response["error"] as? [String: Any])
+            #expect(error["code"] as? Int == -32602)
+            #expect((error["message"] as? String)?.contains("remote commands are not supported") == true)
+        }
         #expect(!FileManager.default.fileExists(atPath: log.path))
     }
 

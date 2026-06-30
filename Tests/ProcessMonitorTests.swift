@@ -1453,27 +1453,35 @@ struct RuntimePolicyGuardTests {
             providerID: .codexCLI,
             runtimeSupportTools: HostControlPlaneMCPProjection.runtimeSupportToolDescriptors(for: .codexCLI)
         )
-        let monitor = AgentRuntimeWorker.ProcessMonitor(
-            tokenBudget: Int.max,
-            taskID: manifest.taskID,
-            policyGuard: AgentRuntimePolicyGuard(manifest: manifest)
-        )
 
-        let shouldKill = monitor.processEvent(
-            .toolUse(
-                name: HostControlPlaneMCPProjection.providerToolPermission(for: "ssh"),
-                id: "host-control-ssh",
-                input: [
-                    "alias": "deid-jsn-workbench",
-                    "remote_command": "hostname && uptime"
-                ]
-            ),
-            process: nil
-        )
+        for commandKey in ["remote_command", "command", "cmd", "arguments"] {
+            let monitor = AgentRuntimeWorker.ProcessMonitor(
+                tokenBudget: Int.max,
+                taskID: manifest.taskID,
+                policyGuard: AgentRuntimePolicyGuard(manifest: manifest)
+            )
 
-        #expect(shouldKill == true)
-        #expect(monitor.policyViolation == true)
-        #expect(monitor.policyViolationMessage?.contains("unsupported input keys: remote_command") == true)
+            let shouldKill = monitor.processEvent(
+                .toolUse(
+                    name: HostControlPlaneMCPProjection.providerToolPermission(for: "ssh"),
+                    id: "host-control-ssh",
+                    input: [
+                        "alias": "deid-jsn-workbench",
+                        commandKey: "hostname && uptime"
+                    ]
+                ),
+                process: nil
+            )
+
+            #expect(shouldKill == true)
+            #expect(monitor.policyViolation == true)
+            let message = monitor.policyViolationMessage ?? ""
+            #expect(
+                message.contains("unsupported input keys: \(commandKey)")
+                    || message.contains("action-like input outside its safe runtime schema")
+                    || message.contains("action-like input keys outside its safe runtime schema: \(commandKey)")
+            )
+        }
     }
 
     @Test("Docker workspace managed job support allows provider aliases")

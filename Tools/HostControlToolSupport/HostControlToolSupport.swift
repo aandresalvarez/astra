@@ -451,7 +451,7 @@ public final class HostControlMCPServer {
                 message: "ssh alias '\(alias)' is not in ASTRA's configured workspace SSH aliases"
             )
         }
-        if HostControlSSHCommandPolicy.containsRemoteCommand(arguments) {
+        if HostControlSSHCommandPolicy.containsUnsupportedCommandInput(arguments) {
             return encodeError(id: id, code: -32602, message: HostControlSSHCommandPolicy.remoteCommandRejectionMessage)
         }
         let sshArguments = HostControlSSHCommandPolicy.connectionCheckArguments(for: alias)
@@ -760,10 +760,17 @@ public final class HostControlMCPServer {
 
 private enum HostControlSSHCommandPolicy {
     static let remoteCommandRejectionMessage =
-        "ssh remote_command is not supported by ASTRA host control; use a reviewed workspace capability for remote command execution"
+        "ssh remote commands are not supported by ASTRA host control; use a reviewed workspace capability for remote command execution"
 
-    static func containsRemoteCommand(_ arguments: [String: Any]) -> Bool {
-        arguments.keys.contains("remote_command")
+    private static let unsupportedCommandKeys: Set<String> = [
+        "arguments",
+        "cmd",
+        "command",
+        "remote_command"
+    ]
+
+    static func containsUnsupportedCommandInput(_ arguments: [String: Any]) -> Bool {
+        !unsupportedCommandKeys.isDisjoint(with: arguments.keys)
     }
 
     static func connectionCheckArguments(for alias: String) -> [String] {
