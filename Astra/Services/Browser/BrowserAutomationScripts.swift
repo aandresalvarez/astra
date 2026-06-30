@@ -2,7 +2,7 @@ import Foundation
 
 enum BrowserAutomationScripts {
     static let pageReadMessageHandlerName = "astraPageRead"
-    static let defaultEditableSelector = "input, textarea, [contenteditable=true]"
+    static let defaultEditableSelector = "input, textarea, [contenteditable]"
 
     static let debugInstrumentationScript = """
     (() => {
@@ -427,7 +427,7 @@ enum BrowserAutomationScripts {
         return String(title || "").replace(/\\s+/g, " ").trim().slice(0, 160);
       };
       const allControls = () => {
-        const selector = "a, button, input, textarea, select, [role], [contenteditable=true], [tabindex]";
+        const selector = "a, button, input, textarea, select, [role], [contenteditable], [tabindex]";
         const out = [];
         const seen = new Set();
         const collect = (root, depth, framePath) => {
@@ -822,7 +822,7 @@ enum BrowserAutomationScripts {
           const changed = [];
           const candidates = selector
             ? Array.from(document.querySelectorAll(selector))
-            : Array.from(document.querySelectorAll("input, textarea, [contenteditable=true]"));
+            : Array.from(document.querySelectorAll("input, textarea, [contenteditable]"));
           for (const el of candidates) {
             if (!visible(el)) continue;
             const before = "value" in el ? String(el.value || "") : String(el.textContent || "");
@@ -1221,7 +1221,7 @@ enum BrowserAutomationScripts {
             const title = frame.getAttribute("title") || frame.getAttribute("name") || frame.getAttribute("aria-label") || frame.src || selectorFor(frame);
             return String(title || "").replace(/\\s+/g, " ").trim().slice(0, 160);
           };
-          const controlSelector = "a, button, input, textarea, select, [role], [contenteditable=true], [tabindex]";
+          const controlSelector = "a, button, input, textarea, select, [role], [contenteditable], [tabindex]";
           const allControls = () => {
             const out = [];
             const seen = new Set();

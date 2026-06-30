@@ -150,8 +150,8 @@ struct BrowserControlActionServiceTests {
                 "autocomplete": "current-password",
                 "placeholder": "Enter password",
                 "testID": "password-field",
-                "href": "https://example.com/login",
-                "url": "https://example.com",
+                "href": "https://user:secret@example.com/login?token=secret#step",
+                "url": "https://example.com/workspace?session=secret#panel",
                 "bounds": [
                     "x": 10,
                     "y": 20,
@@ -180,9 +180,28 @@ struct BrowserControlActionServiceTests {
         #expect(summary["placeholder"] as? String == "Enter password")
         #expect(summary["testID"] as? String == "password-field")
         #expect(summary["href"] as? String == "https://example.com/login")
-        #expect(summary["url"] as? String == "https://example.com")
+        #expect(summary["url"] as? String == "https://example.com/workspace")
 
         let bounds = try #require(summary["bounds"] as? [String: Any])
         #expect(bounds["width"] as? Int == 100)
+    }
+
+    @Test("actionability summary strips query and fragment from relative URLs")
+    func actionabilitySummaryStripsRelativeURLSecrets() {
+        let started = Date(timeIntervalSince1970: 1_000)
+        let summary = BrowserControlActionService.actionabilityWaitSummary(
+            object: [
+                "href": "/checkout?payment_intent=secret#confirm",
+                "url": "../billing?token=secret#state"
+            ],
+            attempts: 1,
+            stableBoundsSamples: 0,
+            timedOut: true,
+            started: started,
+            now: started
+        )
+
+        #expect(summary["href"] as? String == "/checkout")
+        #expect(summary["url"] as? String == "../billing")
     }
 }

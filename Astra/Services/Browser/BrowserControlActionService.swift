@@ -53,8 +53,8 @@ enum BrowserControlActionService {
             "autocomplete": object["autocomplete"] as? String ?? "",
             "placeholder": object["placeholder"] as? String ?? "",
             "testID": object["testID"] as? String ?? "",
-            "href": object["href"] as? String ?? "",
-            "url": object["url"] as? String ?? ""
+            "href": redactedActionabilityURL(object["href"] as? String),
+            "url": redactedActionabilityURL(object["url"] as? String)
         ]
         if let bounds = object["bounds"] as? [String: Any] {
             summary["bounds"] = bounds
@@ -92,6 +92,26 @@ enum BrowserControlActionService {
         if let number = value as? NSNumber { return number.intValue }
         if let string = value as? String { return Int(string) }
         return nil
+    }
+
+    private static func redactedActionabilityURL(_ value: String?) -> String {
+        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else {
+            return ""
+        }
+        if var components = URLComponents(string: value) {
+            components.user = nil
+            components.password = nil
+            components.query = nil
+            components.fragment = nil
+            if let redacted = components.string, !redacted.isEmpty {
+                return redacted
+            }
+        }
+        let queryIndex = value.firstIndex(of: "?")
+        let fragmentIndex = value.firstIndex(of: "#")
+        let cutoff = [queryIndex, fragmentIndex].compactMap { $0 }.min()
+        guard let cutoff else { return value }
+        return String(value[..<cutoff])
     }
 
     private static func stableHash(_ value: String) -> String {

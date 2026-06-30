@@ -288,7 +288,8 @@ struct BrowserControlSafetyTests {
             all: true
         )
         #expect(selectorlessReplaceScript.contains("const selector = null"))
-        #expect(selectorlessReplaceScript.contains("querySelectorAll(\"input, textarea, [contenteditable=true]\")"))
+        #expect(selectorlessReplaceScript.contains("querySelectorAll(\"input, textarea, [contenteditable]\")"))
+        #expect(!selectorlessReplaceScript.contains("[contenteditable=true]"))
     }
 
     @Test("Google editor replacement preflight preserves find-replace hint")
