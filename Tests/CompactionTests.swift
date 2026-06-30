@@ -494,12 +494,15 @@ struct CompactionTests {
         #expect(remaining.contains { $0.type == "activity.compacted" })
     }
 
-    @Test("Compaction preserves every final response chunk after latest boundary")
-    func preservesEveryFinalResponseChunkAfterLatestBoundary() throws {
+    @Test("Compaction does not preserve unbounded final response chunk streams")
+    func compactionDoesNotPreserveUnboundedFinalResponseChunkStreams() throws {
         let container = try makeCompactionTestContainer()
         let context = container.mainContext
         let task = AgentTask(title: "T", goal: "G")
         let run = TaskRun(task: task)
+        run.output = (0..<40)
+            .map { "Final answer chunk \($0)." }
+            .joined(separator: " ")
         context.insert(task)
         context.insert(run)
 
@@ -511,7 +514,7 @@ struct CompactionTests {
         context.insert(boundary)
 
         var finalChunks: [TaskEvent] = []
-        for index in 0..<6 {
+        for index in 0..<40 {
             let event = TaskEvent(task: task, type: "agent.response", payload: "Final answer chunk \(index).", run: run)
             event.timestamp = Date(timeIntervalSince1970: Double(7 + index))
             finalChunks.append(event)
@@ -529,9 +532,10 @@ struct CompactionTests {
 
         let remaining = try context.fetch(FetchDescriptor<TaskEvent>())
         #expect(!remaining.contains { $0.id == progress.id })
-        #expect(remaining.contains { $0.id == boundary.id })
+        #expect(!remaining.contains { $0.id == boundary.id })
         for event in finalChunks {
-            #expect(remaining.contains { $0.id == event.id })
+            #expect(!remaining.contains { $0.id == event.id })
         }
+        #expect(remaining.contains { $0.type == "activity.compacted" })
     }
 }

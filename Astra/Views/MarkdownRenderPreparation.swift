@@ -8,16 +8,27 @@ enum MarkdownRenderPreparation {
     }
 
     static func joinChunks(_ chunks: [String]) -> String {
-        let joined = chunks
-            .map(normalizedLineEndings)
-            .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-            .reduce(into: "") { result, chunk in
-                guard !result.isEmpty else {
-                    result = chunk
-                    return
-                }
-                result += separatorBetween(result, chunk) + chunk
+        var joined = ""
+        var currentLastNonEmptyLine: String?
+        var hasUnclosedFence = false
+
+        for rawChunk in chunks {
+            let chunk = normalizedLineEndings(rawChunk)
+            guard !chunk.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+
+            if joined.isEmpty {
+                joined = chunk
+            } else {
+                joined += separatorBetween(
+                    leftText: joined,
+                    leftLastNonEmptyLine: currentLastNonEmptyLine,
+                    leftHasUnclosedFence: hasUnclosedFence,
+                    rightText: chunk
+                ) + chunk
             }
+            currentLastNonEmptyLine = lastNonEmptyLine(in: chunk) ?? currentLastNonEmptyLine
+            hasUnclosedFence.toggle(ifOdd: fenceLineCount(in: chunk))
+        }
 
         return prepareForDisplay(joined)
     }
@@ -105,43 +116,46 @@ enum MarkdownRenderPreparation {
         return isTableSeparator(nextLine.trimmingCharacters(in: .whitespaces))
     }
 
-    private static func separatorBetween(_ lhs: String, _ rhs: String) -> String {
-        let lhsLastLine = lastNonEmptyLine(in: lhs)
-        let rhsFirstLine = firstNonEmptyLine(in: rhs)
+    private static func separatorBetween(
+        leftText: String,
+        leftLastNonEmptyLine: String?,
+        leftHasUnclosedFence: Bool,
+        rightText: String
+    ) -> String {
+        let rhsFirstLine = firstNonEmptyLine(in: rightText)
 
-        if hasUnclosedFence(lhs) {
-            return lhs.hasSuffix("\n") ? "" : "\n"
+        if leftHasUnclosedFence {
+            return leftText.hasSuffix("\n") ? "" : "\n"
         }
 
         if let rhsFirstLine, isTableRow(rhsFirstLine) || isTableSeparator(rhsFirstLine) {
-            if let lhsLastLine, isTableRow(lhsLastLine) || isTableSeparator(lhsLastLine) {
-                return lhs.hasSuffix("\n") ? "" : "\n"
+            if let leftLastNonEmptyLine, isTableRow(leftLastNonEmptyLine) || isTableSeparator(leftLastNonEmptyLine) {
+                return leftText.hasSuffix("\n") ? "" : "\n"
             }
-            return lhs.hasSuffix("\n\n") ? "" : lhs.hasSuffix("\n") ? "\n" : "\n\n"
+            return leftText.hasSuffix("\n\n") ? "" : leftText.hasSuffix("\n") ? "\n" : "\n\n"
         }
 
-        if let lhsLastLine, isHeading(lhsLastLine), rhsFirstLine != nil {
-            return lhs.hasSuffix("\n\n") ? "" : lhs.hasSuffix("\n") ? "\n" : "\n\n"
+        if let leftLastNonEmptyLine, isHeading(leftLastNonEmptyLine), rhsFirstLine != nil {
+            return leftText.hasSuffix("\n\n") ? "" : leftText.hasSuffix("\n") ? "\n" : "\n\n"
         }
 
         if let rhsFirstLine, startsBlock(rhsFirstLine) {
-            return lhs.hasSuffix("\n\n") ? "" : lhs.hasSuffix("\n") ? "\n" : "\n\n"
+            return leftText.hasSuffix("\n\n") ? "" : leftText.hasSuffix("\n") ? "\n" : "\n\n"
         }
 
-        guard let last = lhs.last, let first = rhs.first else { return "" }
+        guard let last = leftText.last, let first = rightText.first else { return "" }
         if last.isWhitespace || first.isWhitespace {
             return ""
         }
         return " "
     }
 
-    private static func hasUnclosedFence(_ text: String) -> Bool {
-        let fenceCount = text
+    private static func fenceLineCount(in text: String) -> Int {
+        text
             .components(separatedBy: "\n")
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter(isFenceLine)
             .count
-        return !fenceCount.isMultiple(of: 2)
     }
 
     private static func splitHeadingAndTableHeader(
@@ -314,5 +328,13 @@ enum MarkdownRenderPreparation {
         guard let regex = try? NSRegularExpression(pattern: #"\n{3,}"#) else { return text }
         let range = NSRange(text.startIndex..<text.endIndex, in: text)
         return regex.stringByReplacingMatches(in: text, range: range, withTemplate: "\n\n")
+    }
+}
+
+private extension Bool {
+    mutating func toggle(ifOdd count: Int) {
+        if !count.isMultiple(of: 2) {
+            toggle()
+        }
     }
 }
