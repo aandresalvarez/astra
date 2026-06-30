@@ -386,6 +386,37 @@ struct WorkspaceToolSupportTests {
         #expect(sixDeepSubstitution.errorMessage?.contains("too deeply nested") == false)
     }
 
+    @Test("Workspace command path mapper fails closed on unresolved command variable expansions")
+    func workspaceCommandPathMapperFailsClosedOnUnresolvedCommandVariableExpansions() throws {
+        let configuration = WorkspaceToolConfiguration(
+            dockerExecutable: "docker",
+            image: "astra/workspace:latest",
+            containerName: "astra-test",
+            workdir: "/workspace",
+            network: "bridge",
+            taskID: "task-1",
+            runID: "run-1",
+            mounts: [
+                WorkspaceDockerMount(hostPath: "/tmp/workspace", containerPath: "/workspace", access: "rw", role: "workspace")
+            ],
+            containerEnvironment: [:]
+        )
+
+        let commands = [
+            "export cmd=gcloud; $cmd auth list",
+            "env cmd=gcloud sh -c \"$cmd auth list\""
+        ]
+
+        for command in commands {
+            let resolution = configuration.containerCommand(for: command)
+            #expect(
+                resolution.errorMessage?.contains("shell expansions ASTRA cannot safely evaluate") == true,
+                "Expected opaque expansion rejection for: \(command)"
+            )
+            #expect(resolution.errorMessage?.contains("host control-plane CLI 'opaque shell expansion'") == false)
+        }
+    }
+
     @Test("Workspace command path mapper reports recursive scan depth truthfully")
     func workspaceCommandPathMapperReportsRecursiveScanDepthTruthfully() throws {
         let configuration = WorkspaceToolConfiguration(

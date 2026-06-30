@@ -1820,6 +1820,9 @@ public struct WorkspaceToolConfiguration: Equatable, Sendable {
         guard case .word(let word) = tokens[index] else {
             return ([], false)
         }
+        if shellCommandWordHasOpaqueVariableExpansion(word, variables: variables) {
+            return (resolvedShellWords(word, variables: variables), true)
+        }
         if word.isAmbiguousExpansion || word.value.contains("{") || word.value.contains("}") {
             let resolved = resolvedShellWords(word, variables: variables)
             if word.isAmbiguousExpansion {
@@ -1831,6 +1834,63 @@ public struct WorkspaceToolConfiguration: Equatable, Sendable {
             return (resolved, false)
         }
         return (resolvedShellWords(word, variables: variables), false)
+    }
+
+    private func shellCommandWordHasOpaqueVariableExpansion(
+        _ word: ShellWord,
+        variables: [String: String]
+    ) -> Bool {
+        guard word.allowsVariableExpansion, word.value.contains("$") else {
+            return false
+        }
+        if interpolatedShellWord(word.value, variables: variables) != nil
+            || shellParameterExpansionValue(word.value, variables: variables) != nil {
+            return false
+        }
+        return containsUnresolvedShellVariableReference(word.value, variables: variables)
+    }
+
+    private func containsUnresolvedShellVariableReference(
+        _ value: String,
+        variables: [String: String]
+    ) -> Bool {
+        var cursor = value.startIndex
+        while cursor < value.endIndex {
+            guard value[cursor] == "$" else {
+                cursor = value.index(after: cursor)
+                continue
+            }
+            let next = value.index(after: cursor)
+            guard next < value.endIndex else {
+                return false
+            }
+            if value[next] == "{" {
+                guard let close = value[next...].firstIndex(of: "}") else {
+                    return true
+                }
+                let expression = String(value[cursor...close])
+                if shellParameterExpansionValue(expression, variables: variables) == nil,
+                   shellVariableReferenceName(expression).map({ variables[$0] == nil }) == true {
+                    return true
+                }
+                cursor = value.index(after: close)
+                continue
+            }
+            var end = next
+            while end < value.endIndex,
+                  value[end].isLetter || value[end].isNumber || value[end] == "_" {
+                end = value.index(after: end)
+            }
+            guard end > next else {
+                cursor = next
+                continue
+            }
+            if variables[String(value[next..<end])] == nil {
+                return true
+            }
+            cursor = end
+        }
+        return false
     }
 
     private func resolvedShellWords(_ word: ShellWord, variables: [String: String]) -> [String] {
@@ -1888,7 +1948,7 @@ public struct WorkspaceToolConfiguration: Equatable, Sendable {
         let start = value.index(value.startIndex, offsetBy: 2)
         let end = value.index(before: value.endIndex)
         let body = String(value[start..<end])
-        for marker in [":-", ":=", ":-", "-", "="] {
+        for marker in [":-", ":=", "-", "="] {
             guard let range = body.range(of: marker) else {
                 continue
             }
@@ -1939,6 +1999,13 @@ public struct WorkspaceToolConfiguration: Equatable, Sendable {
     }
 
     private func hostControlPlaneCommandMessage(_ command: WorkspaceControlPlaneCommand) -> String {
+        if command.isOpaqueShellExpansion {
+            return [
+                "workspace command contains shell expansions ASTRA cannot safely evaluate.",
+                "ASTRA is failing closed because the command word may resolve to a host control-plane CLI at runtime.",
+                "Use an explicit container command, or route host capability metadata and credentials through ASTRA's host capability layer."
+            ].joined(separator: "\n")
+        }
         if command.isRecursiveScanDepthLimit {
             return [
                 "workspace command is too deeply nested to prove it avoids host control-plane CLIs.",
@@ -1983,6 +2050,7 @@ private struct WorkspaceControlPlaneCommand {
     var capability: String
     var subcommands: Set<String> = []
     var isRecursiveScanDepthLimit = false
+    var isOpaqueShellExpansion = false
 
     static let recursiveScanDepthLimit = WorkspaceControlPlaneCommand(
         tool: "recursive shell scan depth limit",
@@ -1992,7 +2060,8 @@ private struct WorkspaceControlPlaneCommand {
 
     static let opaqueShellExpansion = WorkspaceControlPlaneCommand(
         tool: "opaque shell expansion",
-        capability: "Host control-plane"
+        capability: "Host control-plane",
+        isOpaqueShellExpansion: true
     )
 
     func matches(_ word: String) -> Bool {
