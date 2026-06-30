@@ -742,7 +742,12 @@ struct WorkspaceToolSupportTests {
         #expect(logLines.contains(#""exitCode":127"#))
         #expect(logLines.contains("process group isolation unavailable"))
         #expect(logLines.contains("\"$setsid_bin\" sh \"$job_dir/command.sh\" > \"$stdout\" 2> \"$stderr\" &"))
-        #expect(logLines.contains("rm -f \"$pidfile\""))
+        #expect(logLines.contains("pid_metadata=\"$job_dir/pid.meta\""))
+        #expect(logLines.contains("rm -f \"$timeout_marker\" \"$pidfile\" \"$pid_metadata\""))
+        #expect(logLines.contains("command_start_time=\"$(proc_start_time \"$command_pid\" || true)\""))
+        #expect(logLines.contains("printf 'mode=setsid-process-group\\n'"))
+        #expect(logLines.contains("printf 'start_time=%s\\n' \"$command_start_time\""))
+        #expect(logLines.contains("rm -f \"$pidfile\" \"$pid_metadata\""))
         #expect(logLines.contains("safe_pid \"$command_pid\" || return 0"))
         #expect(logLines.contains("process_group_exists() {"))
         #expect(logLines.contains("kill -0 -\"$group_pid\" 2>/dev/null"))
@@ -817,6 +822,7 @@ struct WorkspaceToolSupportTests {
 
         let logLines = try String(contentsOf: log, encoding: .utf8)
         #expect(logLines.contains("pidfile='/workspace/jobs/\(job.jobID)/pid'"))
+        #expect(logLines.contains("pid_metadata='/workspace/jobs/\(job.jobID)/pid.meta'"))
         #expect(logLines.contains("command_script='/workspace/jobs/\(job.jobID)/command.sh'"))
         #expect(logLines.contains("kill_bin=\"\""))
         #expect(logLines.contains("for candidate in /bin/kill /usr/bin/kill /usr/local/bin/kill; do"))
@@ -828,6 +834,12 @@ struct WorkspaceToolSupportTests {
         #expect(logLines.contains("cmdline=\"$(tr '\\0' ' ' < \"/proc/$1/cmdline\" 2>/dev/null || cat \"/proc/$1/cmdline\" 2>/dev/null || true)\""))
         #expect(logLines.contains("case \"$cmdline\" in"))
         #expect(logLines.contains("*\"$command_script\"*) return 0"))
+        #expect(logLines.contains("pid_matches_managed_session() {"))
+        #expect(logLines.contains("[ -r \"$pid_metadata\" ] || return 1"))
+        #expect(logLines.contains("[ \"$managed_pid\" = \"$1\" ] || return 1"))
+        #expect(logLines.contains("[ \"$managed_mode\" = \"setsid-process-group\" ] || return 1"))
+        #expect(logLines.contains("current_start_time=\"$(proc_start_time \"$1\" || true)\""))
+        #expect(logLines.contains("[ \"$managed_start_time\" = \"$current_start_time\" ] || return 1"))
         #expect(!logLines.contains("grep -F -- \"$command_script\""))
         #expect(logLines.contains("safe_pid \"$target_pid\" || return 0"))
         #expect(logLines.contains("process_group_exists() {"))
@@ -835,9 +847,10 @@ struct WorkspaceToolSupportTests {
         #expect(logLines.contains("signal_process_group() {"))
         #expect(logLines.contains("\"$kill_bin\" -\"$signal\" -\"$group_pid\" 2>/dev/null"))
         #expect(logLines.contains("kill -\"$signal\" -\"$group_pid\" 2>/dev/null || true"))
-        #expect(logLines.contains("if pid_matches_managed_command \"$target_pid\"; then"))
+        #expect(logLines.contains("if pid_matches_managed_session \"$target_pid\"; then"))
+        #expect(logLines.contains("elif pid_matches_managed_command \"$target_pid\"; then"))
         #expect(logLines.contains("""
-          if pid_matches_managed_command "$target_pid"; then
+          if pid_matches_managed_session "$target_pid"; then
             if process_group_exists "$target_pid"; then
         """))
         #expect(logLines.contains("if process_group_exists \"$target_pid\"; then"))
