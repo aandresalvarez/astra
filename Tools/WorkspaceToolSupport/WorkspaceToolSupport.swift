@@ -399,24 +399,11 @@ public struct WorkspaceToolConfiguration: Equatable, Sendable {
                 }
             case .word(let word):
                 if expectingCommand {
-                    if let assignment = shellAssignment(from: word.value) {
-                        variables[assignment.name] = assignment.value
-                        if assignment.value.contains(" "),
-                           let command = firstHostControlPlaneCommand(
-                               in: assignment.value,
-                               commands: commands,
-                               depth: depth + 1
-                           ) {
-                            return command
-                        }
-                        if assignment.value.contains(" "),
-                           let command = firstControlPlaneCommandAnywhere(
-                               in: shellTokens(in: assignment.value),
-                               commands: commands,
-                               variables: variables
-                           ) {
-                            return command
-                        }
+                    if let assignment = shellAssignment(from: word.value), !word.value.contains(" ") {
+                        variables[assignment.name] = resolvedShellWord(
+                            ShellWord(value: assignment.value, allowsVariableExpansion: word.allowsVariableExpansion),
+                            variables: variables
+                        )
                         index = tokens.index(after: index)
                         continue
                     }
@@ -663,7 +650,7 @@ public struct WorkspaceToolConfiguration: Equatable, Sendable {
                     .flatMap { nextCommandWordIndex(after: $0, in: tokens) }
                 continue
             }
-            if word.value.hasPrefix("--") || sudoShortOptionCluster(word.value) {
+            if word.value.hasPrefix("-") {
                 cursor = nextCommandWordIndex(after: current, in: tokens)
                 continue
             }
@@ -680,15 +667,10 @@ public struct WorkspaceToolConfiguration: Equatable, Sendable {
         [
             "-u", "--user", "-g", "--group", "-h", "--host", "-p", "--prompt",
             "-C", "--close-from", "-D", "--chdir", "-T", "--command-timeout",
-            "-r", "--role", "-t", "--type", "-U", "--other-user"
+            "-r", "--role", "-t", "--type", "-U", "--other-user",
+            "-R", "--chroot"
         ].contains(word)
-    }
-
-    private func sudoShortOptionCluster(_ word: String) -> Bool {
-        guard word.hasPrefix("-"), !word.hasPrefix("--"), word.count > 1 else {
-            return false
-        }
-        return word.dropFirst().allSatisfy { "AbBEHikKlnPSsvV".contains($0) }
+            || word.hasPrefix("--chroot=")
     }
 
     private func isSignedIntegerOption(_ word: String) -> Bool {
@@ -897,6 +879,10 @@ public struct WorkspaceToolConfiguration: Equatable, Sendable {
         var cursor = nextCommandWordIndex(after: index, in: tokens)
         while let current = cursor {
             guard case .word(let word) = tokens[current] else { break }
+            if words.isEmpty, word.value == "--" {
+                cursor = nextCommandWordIndex(after: current, in: tokens)
+                continue
+            }
             words.append(resolvedShellWord(word, variables: variables))
             cursor = nextCommandWordIndex(after: current, in: tokens)
         }
@@ -1013,6 +999,8 @@ public struct WorkspaceToolConfiguration: Equatable, Sendable {
             index = tokens.index(after: index)
         }
         snippets.append(contentsOf: pythonHeredocScripts(in: command))
+        snippets.append(contentsOf: pipedPythonInputScripts(in: command))
+        snippets.append(contentsOf: pipedHeredocPythonInputScripts(in: command))
         return snippets
     }
 
@@ -1199,17 +1187,15 @@ public struct WorkspaceToolConfiguration: Equatable, Sendable {
     }
 
     private func heredocDelimiter(in line: String) -> String? {
-        guard let markerRange = line.range(of: #"<<-?\s*['"]?([A-Za-z0-9_]+)['"]?"#, options: .regularExpression),
-              let regex = try? NSRegularExpression(pattern: #"<<-?\s*['"]?([A-Za-z0-9_]+)['"]?"#) else {
+        guard let regex = try? NSRegularExpression(pattern: #"<<-?\s*(['"]?)([^\s'"]+)\1"#) else {
             return nil
         }
-        let marker = String(line[markerRange])
-        let range = NSRange(marker.startIndex..<marker.endIndex, in: marker)
-        guard let match = regex.firstMatch(in: marker, range: range),
-              let delimiterRange = Range(match.range(at: 1), in: marker) else {
+        let range = NSRange(line.startIndex..<line.endIndex, in: line)
+        guard let match = regex.firstMatch(in: line, range: range),
+              let delimiterRange = Range(match.range(at: 2), in: line) else {
             return nil
         }
-        return String(marker[delimiterRange])
+        return String(line[delimiterRange])
     }
 
     private func ansiCQuotedString(
@@ -1330,6 +1316,17 @@ public struct WorkspaceToolConfiguration: Equatable, Sendable {
     }
 
     private func pipedHeredocShellInputScripts(in command: String) -> [String] {
+        pipedHeredocInputScripts(in: command, consumerMatches: isShellRunner)
+    }
+
+    private func pipedHeredocPythonInputScripts(in command: String) -> [String] {
+        pipedHeredocInputScripts(in: command, consumerMatches: isPythonRunner)
+    }
+
+    private func pipedHeredocInputScripts(
+        in command: String,
+        consumerMatches: (String) -> Bool
+    ) -> [String] {
         let lines = command.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
         var scripts: [String] = []
         var index = lines.startIndex
@@ -1337,7 +1334,7 @@ public struct WorkspaceToolConfiguration: Equatable, Sendable {
             let line = lines[index]
             if line.contains("|"),
                let delimiter = heredocDelimiter(in: line),
-               pipedLineFeedsShell(line) {
+               pipedLine(line, feedsConsumerMatching: consumerMatches) {
                 var body: [String] = []
                 var cursor = lines.index(after: index)
                 while cursor < lines.endIndex {
@@ -1358,7 +1355,10 @@ public struct WorkspaceToolConfiguration: Equatable, Sendable {
         return scripts
     }
 
-    private func pipedLineFeedsShell(_ line: String) -> Bool {
+    private func pipedLine(
+        _ line: String,
+        feedsConsumerMatching consumerMatches: (String) -> Bool
+    ) -> Bool {
         guard let pipe = line.lastIndex(of: "|") else {
             return false
         }
@@ -1368,7 +1368,7 @@ public struct WorkspaceToolConfiguration: Equatable, Sendable {
               case .word(let command) = tokens[commandIndex] else {
             return false
         }
-        return isShellRunner(command.value)
+        return consumerMatches(command.value)
     }
 
     private func normalizedPipedShellInputScripts(in command: String) -> [String] {
@@ -1390,13 +1390,11 @@ public struct WorkspaceToolConfiguration: Equatable, Sendable {
     }
 
     private func heredocShellInputScripts(in command: String) -> [String] {
-        let pattern = #"(?:^|[;&|]\s*)(?:[A-Za-z0-9_./-]*/)?(?:sh|bash|zsh|dash)(?:\s+(?:-[A-Za-z]+|--[^\s]+))*\s+<<-?\s*['"]?([A-Za-z0-9_]+)['"]?[^\n]*\n([\s\S]*?)\n\1(?:\n|$)"#
-        return captureGroup(2, matchesOf: pattern, in: command)
+        heredocInputScripts(in: command, consumerMatches: isShellRunner)
     }
 
     private func pythonHeredocScripts(in command: String) -> [String] {
-        let pattern = #"(?:^|[;&|]\s*)(?:[A-Za-z0-9_./-]*/)?(?:python|python3)(?:\s+(?:-[A-Za-z]+|--[^\s]+))*\s+(?:-\s+)?<<-?\s*['"]?([A-Za-z0-9_]+)['"]?[^\n]*\n([\s\S]*?)\n\1(?:\n|$)"#
-        return captureGroup(2, matchesOf: pattern, in: command)
+        heredocInputScripts(in: command, consumerMatches: isPythonRunner)
     }
 
     private func hereStringShellInputScripts(in command: String) -> [String] {
@@ -1407,9 +1405,97 @@ public struct WorkspaceToolConfiguration: Equatable, Sendable {
     }
 
     private func processSubstitutionShellInputScripts(in command: String) -> [String] {
-        let pattern = #"(?:^|[;&|]\s*)(?:(?:[A-Za-z0-9_./-]*/)?(?:sh|bash|zsh|dash)|source|\.)\s+<\(((?:printf|echo)[\s\S]*?)\)"#
+        let pattern = #"(?:^|[;&|]\s*)(?:(?:[A-Za-z0-9_./-]*/)?(?:sh|bash|zsh|dash)|source|\.)[\s\S]*?<\s*(?:<)?\(((?:printf|echo|cat)[\s\S]*?)\)"#
         return captureGroup(1, matchesOf: pattern, in: command)
             .flatMap { pipedShellPayloadScripts(in: $0) }
+    }
+
+    private func heredocInputScripts(
+        in command: String,
+        consumerMatches: (String) -> Bool
+    ) -> [String] {
+        let lines = command.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        var scripts: [String] = []
+        var index = lines.startIndex
+        while index < lines.endIndex {
+            let line = lines[index]
+            guard let delimiter = heredocDelimiter(in: line),
+                  let marker = line.range(of: "<<"),
+                  commandPrefix(line[..<marker.lowerBound], hasConsumerMatching: consumerMatches) else {
+                index = lines.index(after: index)
+                continue
+            }
+            var body: [String] = []
+            var cursor = lines.index(after: index)
+            while cursor < lines.endIndex {
+                let current = lines[cursor]
+                if current.trimmingCharacters(in: .whitespacesAndNewlines) == delimiter {
+                    break
+                }
+                body.append(current)
+                cursor = lines.index(after: cursor)
+            }
+            if !body.isEmpty {
+                scripts.append(body.joined(separator: "\n"))
+            }
+            index = cursor
+            if index < lines.endIndex {
+                index = lines.index(after: index)
+            }
+        }
+        return scripts
+    }
+
+    private func commandPrefix(
+        _ prefix: Substring,
+        hasConsumerMatching consumerMatches: (String) -> Bool
+    ) -> Bool {
+        let tokens = shellTokens(in: String(prefix))
+        guard let commandIndex = firstCommandIndex(in: tokens),
+              case .word(let command) = tokens[commandIndex] else {
+            return false
+        }
+        return consumerMatches(command.value)
+    }
+
+    private func pipedPythonInputScripts(in command: String) -> [String] {
+        let segments = command.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
+        guard segments.count > 1 else { return [] }
+        var scripts: [String] = []
+        for index in 0..<(segments.count - 1) {
+            let producer = segments[index]
+            let consumer = segments[index + 1]
+            let consumerTokens = shellTokens(in: consumer)
+            guard let consumerIndex = firstCommandIndex(in: consumerTokens),
+                  case .word(let consumerWord) = consumerTokens[consumerIndex],
+                  isPythonRunner(consumerWord.value),
+                  pythonCommandReadsStandardInput(at: consumerIndex, in: consumerTokens) else {
+                continue
+            }
+            scripts.append(contentsOf: pipedShellPayloadScripts(in: producer))
+        }
+        return scripts
+    }
+
+    private func pythonCommandReadsStandardInput(at index: Int, in tokens: [ShellToken]) -> Bool {
+        var cursor = nextCommandWordIndex(after: index, in: tokens)
+        var sawScriptOperand = false
+        while let current = cursor {
+            guard case .word(let word) = tokens[current] else { return false }
+            if word.value == "-c" || word.value.hasPrefix("-c") {
+                return false
+            }
+            if word.value == "-" {
+                return true
+            }
+            if word.value.hasPrefix("-") {
+                cursor = nextCommandWordIndex(after: current, in: tokens)
+                continue
+            }
+            sawScriptOperand = true
+            cursor = nextCommandWordIndex(after: current, in: tokens)
+        }
+        return !sawScriptOperand
     }
 
     private func shellFunctionBodies(in command: String) -> [String] {
@@ -1442,8 +1528,33 @@ public struct WorkspaceToolConfiguration: Equatable, Sendable {
     }
 
     private func heredocBodies(in command: String) -> [String] {
-        let pattern = #"<<-?\s*['"]?([A-Za-z0-9_]+)['"]?[^\n]*\n([\s\S]*?)\n\1(?:\n|$)"#
-        return captureGroup(2, matchesOf: pattern, in: command)
+        let lines = command.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        var bodies: [String] = []
+        var index = lines.startIndex
+        while index < lines.endIndex {
+            guard let delimiter = heredocDelimiter(in: lines[index]) else {
+                index = lines.index(after: index)
+                continue
+            }
+            var body: [String] = []
+            var cursor = lines.index(after: index)
+            while cursor < lines.endIndex {
+                let current = lines[cursor]
+                if current.trimmingCharacters(in: .whitespacesAndNewlines) == delimiter {
+                    break
+                }
+                body.append(current)
+                cursor = lines.index(after: cursor)
+            }
+            if !body.isEmpty {
+                bodies.append(body.joined(separator: "\n"))
+            }
+            index = cursor
+            if index < lines.endIndex {
+                index = lines.index(after: index)
+            }
+        }
+        return bodies
     }
 
     private func shellEchoPayload(from words: [String]) -> String? {
@@ -1602,8 +1713,17 @@ public struct WorkspaceToolConfiguration: Equatable, Sendable {
             + captureGroup(2, matchesOf: keywordAfterShellPattern, in: command)
             + captureGroup(2, matchesOf: osSystemPattern, in: command)
             + captureGroup(2, matchesOf: osSystemTriplePattern, in: command)
-            + captureGroup(1, matchesOf: osSystemEscapedPattern, in: command))
+            + captureGroup(1, matchesOf: osSystemEscapedPattern, in: command)
+            + pythonConcatenatedSystemCommands(in: command))
             .map(decodePythonEscapes)
+    }
+
+    private func pythonConcatenatedSystemCommands(in command: String) -> [String] {
+        let pattern = #"os\s*\.\s*system\s*\(([^\)]*\+[^\)]*)\)"#
+        return captureGroup(1, matchesOf: pattern, in: command).compactMap { expression in
+            let parts = quotedStrings(in: expression)
+            return parts.isEmpty ? nil : parts.joined()
+        }
     }
 
     private func quotedStrings(in text: String) -> [String] {
@@ -1786,7 +1906,10 @@ public struct WorkspaceToolConfiguration: Equatable, Sendable {
                 continue
             }
             if value[next] == "@" {
-                output.append(variables["@"] ?? "")
+                guard let replacement = variables["@"] else {
+                    return nil
+                }
+                output.append(replacement)
                 changed = true
                 cursor = value.index(after: next)
                 continue
@@ -1820,6 +1943,9 @@ public struct WorkspaceToolConfiguration: Equatable, Sendable {
         guard case .word(let word) = tokens[index] else {
             return ([], false)
         }
+        if isShellTestCommandWord(word.value) {
+            return ([word.value], false)
+        }
         if shellCommandWordHasOpaqueVariableExpansion(word, variables: variables) {
             return (resolvedShellWords(word, variables: variables), true)
         }
@@ -1843,9 +1969,11 @@ public struct WorkspaceToolConfiguration: Equatable, Sendable {
         guard word.allowsVariableExpansion, word.value.contains("$") else {
             return false
         }
-        if interpolatedShellWord(word.value, variables: variables) != nil
-            || shellParameterExpansionValue(word.value, variables: variables) != nil {
-            return false
+        if let interpolated = interpolatedShellWord(word.value, variables: variables) {
+            return containsUnresolvedShellVariableReference(interpolated, variables: variables)
+        }
+        if let parameterValue = shellParameterExpansionValue(word.value, variables: variables) {
+            return containsUnresolvedShellVariableReference(parameterValue, variables: variables)
         }
         return containsUnresolvedShellVariableReference(word.value, variables: variables)
     }
@@ -1876,6 +2004,13 @@ public struct WorkspaceToolConfiguration: Equatable, Sendable {
                 cursor = value.index(after: close)
                 continue
             }
+            if value[next] == "@" {
+                if variables["@"] == nil {
+                    return true
+                }
+                cursor = value.index(after: next)
+                continue
+            }
             var end = next
             while end < value.endIndex,
                   value[end].isLetter || value[end].isNumber || value[end] == "_" {
@@ -1891,6 +2026,10 @@ public struct WorkspaceToolConfiguration: Equatable, Sendable {
             cursor = end
         }
         return false
+    }
+
+    private func isShellTestCommandWord(_ word: String) -> Bool {
+        word == "[" || word == "[["
     }
 
     private func resolvedShellWords(_ word: ShellWord, variables: [String: String]) -> [String] {

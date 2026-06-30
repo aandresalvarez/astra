@@ -352,9 +352,21 @@ struct WorkspaceToolSupportTests {
             "g?oud auth list",
             "sudo gcloud auth list",
             "sudo -u root env FOO=bar gcloud auth list",
+            "sudo -b gcloud auth list",
+            "sudo -R /some/root gcloud auth list",
             "gc\\\nloud auth list",
             "bash -c 'gc\\\nloud auth list'",
             "$(printf %s gcloud) auth list",
+            "cmd=gcloud; x=$cmd; $x auth list",
+            "eval -- gcloud auth list",
+            "env sh <<EOF\ngcloud auth list\nEOF",
+            "command sh <<EOF-1\ngcloud auth list\nEOF-1",
+            "env python3 - <<PY\nimport subprocess; subprocess.run(['gcloud', 'auth', 'list'])\nPY",
+            "printf 'import os; os.system(\"gcloud auth list\")\\n' | python3 -",
+            "cat <<PY | python3 -\nimport os; os.system(\"gcloud auth list\")\nPY",
+            "bash < <(echo gcloud auth list)",
+            "source <(cat <<EOF\ngcloud auth list\nEOF\n)",
+            "x() { \"$@\"; }; x gcloud auth list",
             "python3 -c \"import subprocess; subprocess.run(['bq', 'ls'])\"",
             "python3 -c \"import subprocess; subprocess.run(['gh', 'api', 'repos/owner/repo'])\"",
             "python3 -c \"import subprocess; subprocess.run(('gcloud', 'auth', 'list'))\"",
@@ -367,6 +379,7 @@ struct WorkspaceToolSupportTests {
             "python3 -c \"import os; os.system(f'gcloud auth list')\"",
             "python3 -c 'import os; os.system(\"\"\"gcloud auth list\"\"\")'",
             "python3 -c \"import os; os.system('g\\x63loud auth list')\"",
+            "python3 -c 'import os; os.system(\"g\" + \"cloud auth list\")'",
             "printf '\\147cloud auth list\\n' | sh",
             "echo -e 'g\\x63loud auth list' | sh"
         ]
@@ -472,7 +485,10 @@ struct WorkspaceToolSupportTests {
             "printf 'ssh\\n'",
             "echo gh api repo data",
             "awk '/bq/ { print }' README.md",
-            "cat <<'EOF'\ngcloud auth list\nEOF"
+            "cat <<'EOF'\ngcloud auth list\nEOF",
+            "[ -f Package.swift ] && echo ok",
+            "[[ -f Package.swift ]] && echo ok",
+            "PATTERN='gcloud auth list'; grep -R \"$PATTERN\" docs"
         ]
 
         for command in commands {
