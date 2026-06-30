@@ -37,6 +37,7 @@ protocol GoogleOAuthAuthorizationSession {
 enum GoogleOAuthAuthorizationSessionError: LocalizedError, Equatable {
     case missingAuthorizationCode
     case stateMismatch
+    case invalidRedirectURI(String)
     case unsupportedPlatform
 
     var errorDescription: String? {
@@ -45,6 +46,8 @@ enum GoogleOAuthAuthorizationSessionError: LocalizedError, Equatable {
             return "Google did not return an authorization code."
         case .stateMismatch:
             return "Google OAuth state validation failed."
+        case .invalidRedirectURI(let redirectURI):
+            return "Google OAuth redirect URI is not a safe loopback callback: \(redirectURI)"
         case .unsupportedPlatform:
             return "Google OAuth browser authorization is unavailable on this platform."
         }
@@ -86,54 +89,61 @@ protocol GoogleOAuthCallbackReceiving {
 struct LoopbackGoogleOAuthCallbackReceiver: GoogleOAuthCallbackReceiving {
     func receiveCallback(authorizationURL: URL) async throws -> GoogleOAuthCallback {
         guard let redirectURI = Self.redirectURI(from: authorizationURL),
-              let port = GoogleOAuthLoopbackListenerPolicy.port(for: redirectURI),
-              let parameters = GoogleOAuthLoopbackListenerPolicy.parameters(for: redirectURI) else {
-            throw GoogleOAuthAuthorizationSessionError.unsupportedPlatform
+              let bindings = GoogleOAuthLoopbackListenerPolicy.bindings(for: redirectURI) else {
+            throw GoogleOAuthAuthorizationSessionError.invalidRedirectURI(
+                Self.redirectURI(from: authorizationURL)?.absoluteString ?? ""
+            )
         }
-        let listener = try NWListener(using: parameters, on: port)
+        let listeners = try bindings.map { binding in
+            try NWListener(using: binding.parameters, on: binding.port)
+        }
         let queue = DispatchQueue(label: "com.coral.astra.google-oauth-callback")
 
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
-                let state = CallbackState(continuation: continuation, listener: listener)
-                listener.newConnectionHandler = { connection in
-                    connection.start(queue: queue)
-                    connection.receive(minimumIncompleteLength: 1, maximumLength: 65_536) { data, _, _, error in
-                        if let error {
+                let state = CallbackState(continuation: continuation, listeners: listeners)
+                for listener in listeners {
+                    listener.newConnectionHandler = { connection in
+                        connection.start(queue: queue)
+                        connection.receive(minimumIncompleteLength: 1, maximumLength: 65_536) { data, _, _, error in
+                            if let error {
+                                state.resume(.failure(error))
+                                connection.cancel()
+                                return
+                            }
+                            guard let data,
+                                  let request = String(data: data, encoding: .utf8),
+                                  let callback = GoogleOAuthCallbackParser.callback(fromHTTPRequest: request, redirectURI: redirectURI) else {
+                                state.resume(.failure(GoogleOAuthAuthorizationSessionError.missingAuthorizationCode))
+                                connection.cancel()
+                                return
+                            }
+                            let response = """
+                            HTTP/1.1 200 OK\r
+                            Content-Type: text/plain; charset=utf-8\r
+                            Connection: close\r
+                            \r
+                            Google sign-in is complete. You can return to ASTRA.
+                            """
+                            connection.send(content: Data(response.utf8), completion: .contentProcessed { _ in
+                                connection.cancel()
+                            })
+                            state.resume(.success(callback))
+                        }
+                    }
+                    listener.stateUpdateHandler = { stateUpdate in
+                        if case .failed(let error) = stateUpdate {
                             state.resume(.failure(error))
-                            connection.cancel()
-                            return
                         }
-                        guard let data,
-                              let request = String(data: data, encoding: .utf8),
-                              let callback = GoogleOAuthCallbackParser.callback(fromHTTPRequest: request, redirectURI: redirectURI) else {
-                            state.resume(.failure(GoogleOAuthAuthorizationSessionError.missingAuthorizationCode))
-                            connection.cancel()
-                            return
-                        }
-                        let response = """
-                        HTTP/1.1 200 OK\r
-                        Content-Type: text/plain; charset=utf-8\r
-                        Connection: close\r
-                        \r
-                        Google sign-in is complete. You can return to ASTRA.
-                        """
-                        connection.send(content: Data(response.utf8), completion: .contentProcessed { _ in
-                            connection.cancel()
-                        })
-                        state.resume(.success(callback))
                     }
+                    listener.start(queue: queue)
                 }
-                listener.stateUpdateHandler = { stateUpdate in
-                    if case .failed(let error) = stateUpdate {
-                        state.resume(.failure(error))
-                    }
-                }
-                listener.start(queue: queue)
                 NSWorkspace.shared.open(authorizationURL)
             }
         } onCancel: {
-            listener.cancel()
+            for listener in listeners {
+                listener.cancel()
+            }
         }
     }
 
@@ -147,15 +157,27 @@ struct LoopbackGoogleOAuthCallbackReceiver: GoogleOAuthCallbackReceiving {
 }
 
 enum GoogleOAuthLoopbackListenerPolicy {
+    struct Binding {
+        var parameters: NWParameters
+        var port: NWEndpoint.Port
+    }
+
     static func parameters(for redirectURI: URL) -> NWParameters? {
-        guard let host = normalizedLoopbackHost(from: redirectURI),
+        bindings(for: redirectURI)?.first?.parameters
+    }
+
+    static func bindings(for redirectURI: URL) -> [Binding]? {
+        guard let hosts = loopbackHosts(from: redirectURI),
               let port = port(for: redirectURI) else {
             return nil
         }
 
-        let parameters = NWParameters.tcp
-        parameters.requiredLocalEndpoint = .hostPort(host: NWEndpoint.Host(host), port: port)
-        return parameters
+        return hosts.map { host in
+            let parameters = NWParameters.tcp
+            parameters.allowLocalEndpointReuse = true
+            parameters.requiredLocalEndpoint = .hostPort(host: NWEndpoint.Host(host), port: port)
+            return Binding(parameters: parameters, port: port)
+        }
     }
 
     static func port(for redirectURI: URL) -> NWEndpoint.Port? {
@@ -166,15 +188,15 @@ enum GoogleOAuthLoopbackListenerPolicy {
         return NWEndpoint.Port(rawValue: rawPort)
     }
 
-    private static func normalizedLoopbackHost(from redirectURI: URL) -> String? {
+    private static func loopbackHosts(from redirectURI: URL) -> [String]? {
         guard let host = redirectURI.host?.lowercased() else {
             return nil
         }
         switch host {
         case "localhost":
-            return "127.0.0.1"
+            return ["127.0.0.1", "::1"]
         case "127.0.0.1", "::1":
-            return host
+            return [host]
         default:
             return nil
         }
@@ -185,11 +207,11 @@ private final class CallbackState: @unchecked Sendable {
     private let lock = NSLock()
     private var didResume = false
     private let continuation: CheckedContinuation<GoogleOAuthCallback, Error>
-    private let listener: NWListener
+    private let listeners: [NWListener]
 
-    init(continuation: CheckedContinuation<GoogleOAuthCallback, Error>, listener: NWListener) {
+    init(continuation: CheckedContinuation<GoogleOAuthCallback, Error>, listeners: [NWListener]) {
         self.continuation = continuation
-        self.listener = listener
+        self.listeners = listeners
     }
 
     func resume(_ result: Result<GoogleOAuthCallback, Error>) {
@@ -200,7 +222,9 @@ private final class CallbackState: @unchecked Sendable {
         }
         didResume = true
         lock.unlock()
-        listener.cancel()
+        for listener in listeners {
+            listener.cancel()
+        }
         continuation.resume(with: result)
     }
 }
