@@ -258,15 +258,33 @@ struct HostControlToolSupportTests {
         let mutationError = try #require(mutationResult["error"] as? [String: Any])
         #expect((mutationError["message"] as? String)?.contains("gcloud does not allow credential or mutating operations") == true)
 
-        let readResult = try call(server, id: 3, tool: "gcloud", arguments: [
+        let disguisedMutationResult = try call(server, id: 3, tool: "gcloud", arguments: [
+            "arguments": ["compute", "instances", "reset", "list", "--zone=us-central1-a"]
+        ])
+        let disguisedMutationError = try #require(disguisedMutationResult["error"] as? [String: Any])
+        #expect((disguisedMutationError["message"] as? String)?.contains("gcloud does not allow credential or mutating operations") == true)
+
+        let readResult = try call(server, id: 4, tool: "gcloud", arguments: [
             "arguments": ["compute", "instances", "list", "--format=json"]
         ])
         #expect(try resultText(readResult).contains("gcloud:compute instances list --format=json"))
 
+        let filteredReadResult = try call(server, id: 5, tool: "gcloud", arguments: [
+            "arguments": [
+                "--project", "clinical-project",
+                "--filter", "name~worker",
+                "compute", "instances", "list",
+                "--format=json"
+            ]
+        ])
+        #expect(try resultText(filteredReadResult).contains("gcloud:--project clinical-project --filter name~worker compute instances list --format=json"))
+
         let hostLog = try String(contentsOf: log, encoding: .utf8)
         #expect(!hostLog.contains("auth print-access-token"))
         #expect(!hostLog.contains("run deploy"))
+        #expect(!hostLog.contains("compute instances reset list"))
         #expect(hostLog.contains("gcloud compute instances list --format=json"))
+        #expect(hostLog.contains("gcloud --project clinical-project --filter name~worker compute instances list --format=json"))
     }
 
     private func fakeExecutable(named name: String, root: URL, log: URL, stdout: String) throws -> URL {
