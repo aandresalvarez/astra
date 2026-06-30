@@ -153,7 +153,7 @@ public final class WorkspaceManagedJobStore {
         }) else {
             throw WorkspaceManagedJobStoreError.invalidJobID
         }
-        return trimmed
+        return trimmed.lowercased()
     }
 
     public func jobDirectory(jobID: String) throws -> URL {

@@ -806,6 +806,29 @@ struct WorkspaceToolSupportTests {
         #expect(manager.status(jobID: job.jobID).status == .running)
     }
 
+    @Test("Workspace managed job store canonicalizes uppercase job ids")
+    func workspaceManagedJobStoreCanonicalizesUppercaseJobIDs() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-workspace-job-case-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let store = WorkspaceManagedJobStore(rootPath: root.path)
+        let job = try store.create(
+            command: "echo ok",
+            timeoutSeconds: nil,
+            label: nil,
+            progressProbe: nil,
+            runtime: "docker"
+        )
+
+        let loaded = try store.load(jobID: job.jobID.uppercased())
+        #expect(loaded.jobID == job.jobID)
+
+        let cancelled = try store.mark(jobID: job.jobID.uppercased(), status: .cancelled)
+        #expect(cancelled.jobID == job.jobID)
+        #expect(cancelled.status == .cancelled)
+    }
+
     @Test("Docker workspace job manager maps host workspace path before persisting command")
     func dockerWorkspaceJobManagerMapsHostWorkspacePathBeforePersistingCommand() throws {
         let root = FileManager.default.temporaryDirectory
