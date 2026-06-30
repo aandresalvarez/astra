@@ -112,6 +112,47 @@ struct BrowserControlSafetyTests {
         #expect(nameBlock["error"] as? String == "credential_input_blocked")
     }
 
+    @Test("Secret revealing controls remain high risk outside text fields")
+    func secretRevealingControlsRemainHighRiskOutsideTextFields() throws {
+        let showPasswordBlock = try #require(BrowserTextEntryPreflight.blockResponse(
+            action: BrowserActionKind.click.rawValue,
+            targetInfo: [
+                "ok": true,
+                "selector": "button.show-password",
+                "label": "Show password",
+                "role": "button",
+                "tag": "button",
+                "type": "button"
+            ]
+        ))
+        #expect(showPasswordBlock["error"] as? String == "credential_input_blocked")
+
+        let copySecretBlock = try #require(BrowserTextEntryPreflight.blockResponse(
+            action: BrowserActionKind.click.rawValue,
+            targetInfo: [
+                "ok": true,
+                "selector": "button[data-testid='copy-secret']",
+                "label": "Copy secret",
+                "role": "button",
+                "tag": "button",
+                "type": "button"
+            ]
+        ))
+        #expect(copySecretBlock["error"] as? String == "credential_input_blocked")
+
+        #expect(BrowserTextEntryPreflight.blockResponse(
+            action: BrowserActionKind.open.rawValue,
+            targetInfo: [
+                "ok": true,
+                "selector": "a[href='/reset-password']",
+                "label": "Forgot password?",
+                "role": "link",
+                "tag": "a",
+                "href": "https://example.com/reset-password"
+            ]
+        ) == nil)
+    }
+
     @Test("Uninspectable focused frames block raw text entry")
     func uninspectableFocusedFramesBlockRawTextEntry() throws {
         let neutralFrameBlock = try #require(BrowserTextEntryPreflight.blockResponse(
@@ -818,6 +859,8 @@ struct BrowserControlSafetyTests {
         #expect(source.contains(#"CDPKeyDefinition(key: "PageUp", code: "PageUp", virtualKeyCode: 33, text: nil)"#))
         #expect(source.contains(#"case "pagedown":"#))
         #expect(source.contains(#"CDPKeyDefinition(key: "PageDown", code: "PageDown", virtualKeyCode: 34, text: nil)"#))
+        #expect(source.contains(#"case "space", "spacebar":"#))
+        #expect(source.contains(#"CDPKeyDefinition(key: " ", code: "Space", virtualKeyCode: 32, text: " ")"#))
     }
 
     @Test("Google Docs full-document clipboard requires controlled when auto-promote is disabled")

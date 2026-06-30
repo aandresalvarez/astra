@@ -43,7 +43,8 @@ enum BrowserSensitiveControlClassifier {
             || lowerType == "password"
 
         if lowerType == "password"
-            || (isEditableTextEntry && containsAny(text, ["password", "passcode", "secret", "current-password", "new-password"])) {
+            || (isEditableTextEntry && containsAny(text, credentialTextEntryTokens))
+            || isSecretRevealingControl(text: text, isEditableTextEntry: isEditableTextEntry) {
             return .credentialInput
         }
         if isEditableTextEntry,
@@ -86,6 +87,39 @@ enum BrowserSensitiveControlClassifier {
     private static func containsAny(_ text: String, _ tokens: [String]) -> Bool {
         tokens.contains { text.contains($0) }
     }
+
+    private static func isSecretRevealingControl(text: String, isEditableTextEntry: Bool) -> Bool {
+        guard !isEditableTextEntry else { return false }
+        return containsAny(text, secretMaterialTokens) && containsAny(text, secretRevealActionTokens)
+    }
+
+    private static let credentialTextEntryTokens = [
+        "password",
+        "passcode",
+        "secret",
+        "current-password",
+        "new-password"
+    ]
+
+    private static let secretMaterialTokens = [
+        "password",
+        "passcode",
+        "secret",
+        "api key",
+        "apikey",
+        "token",
+        "credential",
+        "recovery code"
+    ]
+
+    private static let secretRevealActionTokens = [
+        "show",
+        "reveal",
+        "copy",
+        "view",
+        "display",
+        "unmask"
+    ]
 
     private static func string(_ value: Any?) -> String {
         if let string = value as? String { return string }

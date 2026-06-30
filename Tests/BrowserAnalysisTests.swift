@@ -112,6 +112,50 @@ struct BrowserAnalysisTests {
         #expect(!link.requiresUserConfirmation)
     }
 
+    @Test("Secret revealing buttons require confirmation without blocking password reset navigation")
+    func secretRevealingButtonsRequireConfirmationWithoutBlockingPasswordResetNavigation() throws {
+        let analysis = BrowserAnalysisBuilder.build(
+            snapshot: Self.sampleSnapshot(controls: [
+                Self.control(
+                    selector: "button.show-password",
+                    tag: "button",
+                    role: "button",
+                    type: "button",
+                    label: "Show password"
+                ),
+                Self.control(
+                    selector: "button[data-testid=copy-secret]",
+                    tag: "button",
+                    role: "button",
+                    type: "button",
+                    label: "Copy secret"
+                ),
+                Self.control(
+                    selector: "a[href='/reset-password']",
+                    tag: "a",
+                    role: "link",
+                    label: "Forgot password?",
+                    href: "https://example.com/reset-password"
+                )
+            ]),
+            backend: "embedded WebKit",
+            engine: "embedded",
+            createdAt: Date(timeIntervalSince1970: 1_000)
+        )
+
+        let showPassword = try #require(analysis.controls.first { $0.label == "Show password" })
+        #expect(showPassword.risk == .credentialInput)
+        #expect(showPassword.requiresUserConfirmation)
+
+        let copySecret = try #require(analysis.controls.first { $0.label == "Copy secret" })
+        #expect(copySecret.risk == .credentialInput)
+        #expect(copySecret.requiresUserConfirmation)
+
+        let resetLink = try #require(analysis.controls.first { $0.label == "Forgot password?" })
+        #expect(resetLink.risk == .navigation)
+        #expect(!resetLink.requiresUserConfirmation)
+    }
+
     @Test("Page snapshot script preserves DOM name separately from label")
     func pageSnapshotScriptPreservesDOMNameSeparatelyFromLabel() {
         let script = BrowserAutomationScripts.snapshotScript
@@ -287,6 +331,51 @@ struct BrowserAnalysisTests {
         #expect(match.usedSelectorFallback == false)
         #expect(match.control.label == "Work email")
         #expect(match.controlRef.source == .dom)
+    }
+
+    @Test("DOM resolver preserves stable selectors and names against live accessibility labels")
+    func domResolverPreservesStableSelectorsAndNamesAgainstLiveAccessibilityLabels() throws {
+        let cached = BrowserAnalysisBuilder.build(
+            snapshot: Self.sampleSnapshot(controls: [
+                Self.control(
+                    selector: "input[name=email]",
+                    tag: "input",
+                    role: "textbox",
+                    label: "Email",
+                    name: "email"
+                )
+            ]),
+            backend: "embedded WebKit",
+            engine: "embedded"
+        )
+        let live = BrowserAnalysisBuilder.build(
+            snapshot: Self.sampleSnapshot(controls: [
+                Self.control(
+                    selector: "input[name=email]",
+                    tag: "input",
+                    role: "textbox",
+                    label: "Primary contact",
+                    name: "email"
+                )
+            ]),
+            backend: "controlled Chromium profile",
+            engine: "controlled",
+            accessibilitySnapshotObject: Self.accessibilitySnapshot(role: "textbox", name: "Primary contact")
+        )
+
+        let cachedControl = try #require(cached.controls.first)
+        let match = try #require(BrowserControlResolver.matchingLiveControl(
+            cachedControl: cachedControl,
+            cachedAnalysis: cached,
+            liveAnalysis: live
+        ))
+
+        #expect(match.strategy == "controlRef")
+        #expect(match.usedSelectorFallback == false)
+        #expect(match.control.selector == "input[name=email]")
+        #expect(match.control.name == "email")
+        #expect(match.control.label == "Primary contact")
+        #expect(match.controlRef.source == .accessibility)
     }
 
     @Test("Control IDs stay stable across state-only changes")

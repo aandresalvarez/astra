@@ -1754,6 +1754,8 @@ final class ControlledBrowserController: ObservableObject {
         switch lower {
         case "enter", "return":
             return CDPKeyDefinition(key: "Enter", code: "Enter", virtualKeyCode: 13, text: "\n")
+        case "space", "spacebar":
+            return CDPKeyDefinition(key: " ", code: "Space", virtualKeyCode: 32, text: " ")
         case "escape", "esc":
             return CDPKeyDefinition(key: "Escape", code: "Escape", virtualKeyCode: 27, text: nil)
         case "tab":

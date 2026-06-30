@@ -633,12 +633,28 @@ enum BrowserControlResolver {
         let liveName = normalized(BrowserControlTargetingPolicy.semanticName(for: liveRef.control, source: liveRef.source))
         let cachedRole = normalized(cachedRef.control.role)
         let liveRole = normalized(liveRef.control.role)
+        let stableDOMIdentityMatches = BrowserControlTargetingPolicy.stableDOMIdentityMatches(
+            cachedControl: cachedControl,
+            liveControl: liveControl
+        )
 
         let roleMatches = cachedRole.isEmpty || liveRole.isEmpty || liveRole.contains(cachedRole) || cachedRole.contains(liveRole)
         let nameMatches = cachedName.isEmpty || liveName == cachedName || liveName.contains(cachedName) || cachedName.contains(liveName)
-        guard roleMatches && nameMatches else { return 0 }
+        guard roleMatches && (nameMatches || stableDOMIdentityMatches) else { return 0 }
 
         var score = 1.0
+        if stableDOMIdentityMatches {
+            score += 40
+        }
+        if !cachedControl.controlID.isEmpty, cachedControl.controlID == liveControl.controlID {
+            score += 80
+        }
+        if !cachedControl.selector.isEmpty, cachedControl.selector == liveControl.selector {
+            score += 45
+        }
+        if !cachedControl.name.isEmpty, cachedControl.name == liveControl.name {
+            score += 25
+        }
         if liveRef.source == cachedRef.source {
             score += 20
         }
