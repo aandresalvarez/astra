@@ -530,6 +530,7 @@ struct TaskContextStateTests {
     func contextCapsuleMarksOptionalOnlyValidationContractPassed() async throws {
         let root = try temporaryRoot()
         defer { try? FileManager.default.removeItem(atPath: root) }
+        try writeMinimalSwiftPackage(at: root)
         let container = try makeTaskContextStateContainer()
         let context = ModelContext(container)
         let workspace = Workspace(name: "Optional Contract Plan", primaryPath: root)
@@ -552,7 +553,7 @@ struct TaskContextStateTests {
                     description: "Advisory proof command passes",
                     method: .command,
                     required: false,
-                    command: "swift build --help"
+                    command: "swift build --package-path \(root)"
                 )
             ])
         )
@@ -576,6 +577,7 @@ struct TaskContextStateTests {
     func contextCapsuleScopesValidationContractOutcomeToCurrentPlan() async throws {
         let root = try temporaryRoot()
         defer { try? FileManager.default.removeItem(atPath: root) }
+        try writeMinimalSwiftPackage(at: root)
         let container = try makeTaskContextStateContainer()
         let context = ModelContext(container)
         let workspace = Workspace(name: "Scoped Contract Plan", primaryPath: root)
@@ -594,7 +596,7 @@ struct TaskContextStateTests {
                     id: "old-proof",
                     description: "Old proof passes",
                     method: .command,
-                    command: "swift build --help"
+                    command: "swift build --package-path \(root)"
                 )
             ])
         )
@@ -610,7 +612,7 @@ struct TaskContextStateTests {
                     id: "new-proof",
                     description: "New proof has not run",
                     method: .command,
-                    command: "swift build --help"
+                    command: "swift build --package-path \(root)"
                 )
             ])
         )
@@ -1605,6 +1607,33 @@ struct TaskContextStateTests {
             .appendingPathComponent("astra-context-state-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         return url.path
+    }
+
+    private func writeMinimalSwiftPackage(at root: String) throws {
+        let package = """
+        // swift-tools-version: 5.9
+        import PackageDescription
+
+        let package = Package(
+            name: "ContextStateValidationFixture",
+            targets: [
+                .executableTarget(name: "ContextStateValidationFixture")
+            ]
+        )
+        """
+        let sources = URL(fileURLWithPath: root)
+            .appendingPathComponent("Sources/ContextStateValidationFixture", isDirectory: true)
+        try FileManager.default.createDirectory(at: sources, withIntermediateDirectories: true)
+        try package.write(
+            to: URL(fileURLWithPath: root).appendingPathComponent("Package.swift"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try #"@main struct ContextStateValidationFixture { static func main() {} }"#.write(
+            to: sources.appendingPathComponent("main.swift"),
+            atomically: true,
+            encoding: .utf8
+        )
     }
 
     private func minimalState(schemaVersion: Int = 2) -> TaskContextState {

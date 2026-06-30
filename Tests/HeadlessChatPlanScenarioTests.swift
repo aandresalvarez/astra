@@ -134,6 +134,7 @@ extension HeadlessChatScenarioTests {
     func approvedPlanCompletionProceedsWhenValidationContractPasses() async throws {
         let harness = try HeadlessChatHarness()
         defer { harness.cleanup() }
+        try Self.writeMinimalSwiftPackage(at: harness.workspaceURL)
 
         let plan = TaskPlanPayload(
             title: "Contract gated plan",
@@ -146,7 +147,7 @@ extension HeadlessChatScenarioTests {
                     id: "proof-command",
                     description: "Proof command passes",
                     method: .command,
-                    command: "swift build --help"
+                    command: "swift build --package-path \(harness.workspaceURL.path)"
                 )
             ])
         )
@@ -1047,5 +1048,30 @@ extension HeadlessChatScenarioTests {
         #expect(task.events.contains { $0.type == "error" && $0.payload.contains("does not map to a scoped runtime permission") })
         #expect(!task.events.contains { $0.type == "permission.approval.requested" })
         #expect(!task.events.contains { $0.type == "error" && $0.payload.contains("idle timeout") })
+    }
+
+    private static func writeMinimalSwiftPackage(at root: URL) throws {
+        let sources = root.appendingPathComponent("Sources/ValidationFixture", isDirectory: true)
+        try FileManager.default.createDirectory(at: sources, withIntermediateDirectories: true)
+        try """
+        // swift-tools-version: 5.9
+        import PackageDescription
+
+        let package = Package(
+            name: "ValidationFixture",
+            targets: [
+                .executableTarget(name: "ValidationFixture")
+            ]
+        )
+        """.write(
+            to: root.appendingPathComponent("Package.swift"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try #"@main struct ValidationFixture { static func main() {} }"#.write(
+            to: sources.appendingPathComponent("main.swift"),
+            atomically: true,
+            encoding: .utf8
+        )
     }
 }

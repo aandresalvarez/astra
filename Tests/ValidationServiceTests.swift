@@ -194,6 +194,26 @@ struct ValidationServiceTests {
         #expect(await runner.recordedCalls().isEmpty)
     }
 
+    @Test("runTests rejects zsh glob execution before execution")
+    func runTestsRejectsZshGlobExecutionBeforeExecution() async throws {
+        let root = "/tmp/astra-validation-glob-qualifier-\(UUID().uuidString.prefix(8))"
+        let workspace = Workspace(name: "Imported Validation Glob Guard", primaryPath: root)
+        let task = AgentTask(title: "Validate", goal: "Reject imported zsh glob execution", workspace: workspace)
+        task.testCommand = "swift test *(e:touch${IFS}/tmp/should-not-run:)"
+        let runner = StubValidationCommandRunner(results: [
+            ValidationCommandResult(exitCode: 0, stdout: "unsafe pass", stderr: "")
+        ])
+
+        let result = await ValidationService.runTests(task: task, commandRunner: runner)
+
+        if case .error(let message) = result {
+            #expect(message.contains("not allowed"))
+        } else {
+            Issue.record("Expected zsh glob execution to be rejected before execution")
+        }
+        #expect(await runner.recordedCalls().isEmpty)
+    }
+
     @Test("runTests rejects no-op commands as validation bypasses")
     func runTestsRejectsNoOpCommandsAsValidationBypasses() async throws {
         let root = "/tmp/astra-validation-noop-\(UUID().uuidString.prefix(8))"
@@ -212,6 +232,27 @@ struct ValidationServiceTests {
             Issue.record("Expected no-op test command to be rejected before execution")
         }
         #expect(await runner.recordedCalls().isEmpty)
+    }
+
+    @Test("runTests rejects swift display-only commands as validation bypasses")
+    func runTestsRejectsSwiftDisplayOnlyCommandsAsValidationBypasses() async throws {
+        let root = "/tmp/astra-validation-swift-help-\(UUID().uuidString.prefix(8))"
+        let workspace = Workspace(name: "Imported Validation Help Guard", primaryPath: root)
+        let task = AgentTask(title: "Validate", goal: "Reject imported help-only validation", workspace: workspace)
+        task.testCommand = "swift test --help"
+        let runner = StubValidationCommandRunner(results: [
+            ValidationCommandResult(exitCode: 0, stdout: "USAGE: swift test", stderr: "")
+        ])
+
+        let result = await ValidationService.runTests(task: task, commandRunner: runner)
+
+        if case .error(let message) = result {
+            #expect(message.contains("not allowed"))
+        } else {
+            Issue.record("Expected swift help command to be rejected before execution")
+        }
+        #expect(await runner.recordedCalls().isEmpty)
+        #expect(!ValidationCommandPolicy.isAllowed("swift build --help"))
     }
 
     @Test("validation contract command assertions use injected runner")
@@ -282,6 +323,7 @@ struct ValidationServiceTests {
     func validationContractCommandPasses() async throws {
         let root = try temporaryRoot()
         defer { try? FileManager.default.removeItem(atPath: root) }
+        try writeMinimalSwiftPackage(at: root)
         let container = try makeValidationServiceContainer()
         let context = ModelContext(container)
         let workspace = Workspace(name: "Validation", primaryPath: root)
@@ -299,7 +341,7 @@ struct ValidationServiceTests {
                     id: "command-pass",
                     description: "Command exits zero",
                     method: .command,
-                    command: "swift build --help"
+                    command: "swift build --package-path \(root)"
                 )
             ])
         )
@@ -481,6 +523,32 @@ struct ValidationServiceTests {
         #expect(ValidationCommandPolicy.isAllowed("pnpm run test"))
         #expect(ValidationCommandPolicy.isAllowed("pnpm run test -- --runInBand"))
         #expect(!ValidationCommandPolicy.isAllowed("pnpm run test:evil"))
+    }
+
+    @Test("validation command policy matches xcodebuild actions by token")
+    func validationCommandPolicyMatchesXcodebuildActionsByToken() {
+        #expect(ValidationCommandPolicy.isAllowed("xcodebuild -project App.xcodeproj build"))
+        #expect(ValidationCommandPolicy.isAllowed("xcodebuild -scheme App test"))
+        #expect(!ValidationCommandPolicy.isAllowed("xcodebuild archive -project test.xcodeproj"))
+        #expect(!ValidationCommandPolicy.isAllowed("xcodebuild -list -project build.xcodeproj"))
+        #expect(!ValidationCommandPolicy.isAllowed("xcodebuild -scheme test"))
+    }
+
+    @Test("validation command policy keeps make to the single test target")
+    func validationCommandPolicyKeepsMakeToSingleTestTarget() {
+        #expect(ValidationCommandPolicy.isAllowed("make test"))
+        #expect(ValidationCommandPolicy.isAllowed("make test -j2 CI=1"))
+        #expect(!ValidationCommandPolicy.isAllowed("make test clean"))
+        #expect(!ValidationCommandPolicy.isAllowed("make build"))
+    }
+
+    @Test("validation command policy preserves file test assertions without allowing no-ops")
+    func validationCommandPolicyPreservesFileTestAssertionsWithoutAllowingNoOps() {
+        #expect(ValidationCommandPolicy.isAllowed("test -f proof.txt"))
+        #expect(ValidationCommandPolicy.isAllowed("[ -f proof.txt ]"))
+        #expect(!ValidationCommandPolicy.isAllowed("test"))
+        #expect(!ValidationCommandPolicy.isAllowed("[ ]"))
+        #expect(!ValidationCommandPolicy.isAllowed("test -f proof.txt; touch should-not-run"))
     }
 
     @Test("validation contract command allowlist blocks python before pytest module")
@@ -1375,6 +1443,33 @@ struct ValidationServiceTests {
             .appendingPathComponent("astra-validation-service-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         return url.path
+    }
+
+    private func writeMinimalSwiftPackage(at root: String) throws {
+        let package = """
+        // swift-tools-version: 5.9
+        import PackageDescription
+
+        let package = Package(
+            name: "ValidationFixture",
+            targets: [
+                .executableTarget(name: "ValidationFixture")
+            ]
+        )
+        """
+        let sources = URL(fileURLWithPath: root)
+            .appendingPathComponent("Sources/ValidationFixture", isDirectory: true)
+        try FileManager.default.createDirectory(at: sources, withIntermediateDirectories: true)
+        try package.write(
+            to: URL(fileURLWithPath: root).appendingPathComponent("Package.swift"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try #"@main struct ValidationFixture { static func main() {} }"#.write(
+            to: sources.appendingPathComponent("main.swift"),
+            atomically: true,
+            encoding: .utf8
+        )
     }
 
     private func fakeCopilotUtility(in root: String, output: String) throws -> URL {

@@ -25,9 +25,13 @@ protocol ValidationCommandRunning: Sendable {
 enum ValidationCommandPolicy {
     static func isAllowed(_ command: String) -> Bool {
         let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let parsedCommand = parseShellCommand(trimmed) else {
+            return false
+        }
+        let tokens = parsedCommand.tokens
         guard !trimmed.isEmpty,
-              !containsShellComposition(trimmed),
-              let root = shellRoot(trimmed)?.lowercased() else {
+              !parsedCommand.containsUnsafeShellSyntax,
+              let root = tokens.first?.lowercased() else {
             return false
         }
 
@@ -38,30 +42,41 @@ enum ValidationCommandPolicy {
             "pnpm",
             "swift",
             "xcodebuild",
-            "make"
+            "make",
+            "test",
+            "["
         ]
         if allowedExactRoots.contains(root) {
-            return commandArgumentsAreValidationOrBuildOnly(root: root, command: trimmed)
+            return commandArgumentsAreValidationOrBuildOnly(root: root, tokens: tokens)
         }
         if root == "python" || root == "python3" {
-            return pythonCommandRunsPytest(root: root, command: trimmed)
+            return pythonCommandRunsPytest(root: root, tokens: tokens)
         }
         return false
     }
 
-    private static func containsShellComposition(_ command: String) -> Bool {
-        let disallowedFragments = ["&&", "||", ";", "|", "`", "$(", "=(", ">", "<", "\n", "\r"]
-        return disallowedFragments.contains { command.contains($0) }
-            || containsUnquotedAmpersand(command)
+    private struct ParsedShellCommand {
+        var tokens: [String]
+        var containsUnsafeShellSyntax: Bool
     }
 
-    private static func containsUnquotedAmpersand(_ command: String) -> Bool {
+    private static func parseShellCommand(_ command: String) -> ParsedShellCommand? {
+        var tokens: [String] = []
+        var current = ""
         var isEscaped = false
         var isInSingleQuote = false
         var isInDoubleQuote = false
+        var containsUnsafeShellSyntax = false
+
+        func finishToken() {
+            guard !current.isEmpty else { return }
+            tokens.append(current)
+            current = ""
+        }
 
         for character in command {
             if isEscaped {
+                current.append(character)
                 isEscaped = false
                 continue
             }
@@ -77,56 +92,132 @@ enum ValidationCommandPolicy {
                 isInDoubleQuote.toggle()
                 continue
             }
-            if character == "&" && !isInSingleQuote && !isInDoubleQuote {
-                return true
+            if character.isWhitespace && !isInSingleQuote && !isInDoubleQuote {
+                finishToken()
+                continue
             }
+            if !isInSingleQuote && !isInDoubleQuote && isUnsafeUnquotedShellCharacter(character) {
+                containsUnsafeShellSyntax = true
+            }
+            current.append(character)
         }
-        return false
+        guard !isEscaped, !isInSingleQuote, !isInDoubleQuote else {
+            return nil
+        }
+        finishToken()
+        return ParsedShellCommand(tokens: tokens, containsUnsafeShellSyntax: containsUnsafeShellSyntax)
     }
 
-    private static func shellRoot(_ command: String) -> String? {
-        command.split(whereSeparator: \.isWhitespace).first.map(String.init)
+    private static func isUnsafeUnquotedShellCharacter(_ character: Character) -> Bool {
+        switch character {
+        case "&", ";", "|", "`", "$", ">", "<", "\n", "\r", "*", "?", "(", ")", "{", "}":
+            return true
+        default:
+            return false
+        }
     }
 
-    private static func shellTokens(_ command: String) -> [String] {
-        command.split(whereSeparator: \.isWhitespace).map(String.init)
-    }
-
-    private static func pythonCommandRunsPytest(root: String, command: String) -> Bool {
-        let tokens = shellTokens(command)
+    private static func pythonCommandRunsPytest(root: String, tokens: [String]) -> Bool {
         guard tokens.count >= 3 else { return false }
         return tokens[0].lowercased() == root &&
             tokens[1] == "-m" &&
             tokens[2] == "pytest"
     }
 
-    private static func commandArgumentsAreValidationOrBuildOnly(root: String, command: String) -> Bool {
+    private static func commandArgumentsAreValidationOrBuildOnly(root: String, tokens: [String]) -> Bool {
         switch root {
         case "swift":
-            return command == "swift test" ||
-                command.hasPrefix("swift test ") ||
-                command == "swift build" ||
-                command.hasPrefix("swift build ")
-        case "xcodebuild":
-            return command.contains(" test") || command.contains(" build")
-        case "pytest":
+            guard tokens.count >= 2,
+                  ["test", "build"].contains(tokens[1]),
+                  !containsDisplayOnlyFlag(tokens.dropFirst(2)) else {
+                return false
+            }
             return true
+        case "xcodebuild":
+            return xcodebuildHasBuildOrTestAction(tokens)
+        case "pytest":
+            return !containsDisplayOnlyFlag(tokens.dropFirst())
         case "npm":
-            return command == "npm test" ||
-                command.hasPrefix("npm test ") ||
-                command == "npm run test" ||
-                command.hasPrefix("npm run test ")
+            return tokens.count >= 2 &&
+                ((tokens[1] == "test") ||
+                 (tokens.count >= 3 && tokens[1] == "run" && tokens[2] == "test"))
         case "yarn", "pnpm":
-            return command == "\(root) test" ||
-                command.hasPrefix("\(root) test ") ||
-                command == "\(root) run test" ||
-                command.hasPrefix("\(root) run test ")
+            return tokens.count >= 2 &&
+                ((tokens[1] == "test") ||
+                 (tokens.count >= 3 && tokens[1] == "run" && tokens[2] == "test"))
         case "make":
-            return command == "make test" ||
-                command.hasPrefix("make test ")
+            return makeRunsOnlyTestTarget(tokens)
+        case "test", "[":
+            return fileTestCommandIsAllowed(root: root, tokens: tokens)
         default:
             return false
         }
+    }
+
+    private static func containsDisplayOnlyFlag<T: Sequence>(_ tokens: T) -> Bool where T.Element == String {
+        let displayOnly = Set(["--help", "-h", "-help", "help", "--version", "-version", "version", "--list-tests"])
+        return tokens.contains { displayOnly.contains($0) }
+    }
+
+    private static func xcodebuildHasBuildOrTestAction(_ tokens: [String]) -> Bool {
+        let optionsWithValues: Set<String> = [
+            "-project", "-workspace", "-scheme", "-destination", "-configuration", "-sdk",
+            "-derivedDataPath", "-resultBundlePath", "-resultBundleVersion",
+            "-clonedSourcePackagesDirPath", "-archivePath", "-only-testing",
+            "-skip-testing", "-testPlan", "-testProductsPath", "-xctestrun", "-toolchain"
+        ]
+        var skipNext = false
+        for token in tokens.dropFirst() {
+            if skipNext {
+                skipNext = false
+                continue
+            }
+            if optionsWithValues.contains(token) {
+                skipNext = true
+                continue
+            }
+            if token == "test" || token == "build" {
+                return true
+            }
+        }
+        return false
+    }
+
+    private static func makeRunsOnlyTestTarget(_ tokens: [String]) -> Bool {
+        guard tokens.count >= 2, tokens[1] == "test" else {
+            return false
+        }
+        return tokens.dropFirst(2).allSatisfy { token in
+            token.hasPrefix("-") || isMakeVariableAssignment(token)
+        }
+    }
+
+    private static func isMakeVariableAssignment(_ token: String) -> Bool {
+        guard let separator = token.firstIndex(of: "="), separator != token.startIndex else {
+            return false
+        }
+        let name = token[..<separator]
+        return name.allSatisfy { character in
+            character.isLetter || character.isNumber || character == "_"
+        }
+    }
+
+    private static func fileTestCommandIsAllowed(root: String, tokens: [String]) -> Bool {
+        let testTokens: ArraySlice<String>
+        if root == "[" {
+            guard tokens.last == "]" else { return false }
+            testTokens = tokens.dropFirst().dropLast()
+        } else {
+            testTokens = tokens.dropFirst()
+        }
+        guard testTokens.count == 2,
+              let operatorToken = testTokens.first,
+              ["-e", "-f", "-d", "-s"].contains(operatorToken),
+              let pathToken = testTokens.last,
+              !pathToken.isEmpty else {
+            return false
+        }
+        return true
     }
 }
 
