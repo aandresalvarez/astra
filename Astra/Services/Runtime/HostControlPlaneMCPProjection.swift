@@ -154,7 +154,7 @@ enum HostControlPlaneMCPProjection {
         case "bq":
             return "Run BigQuery CLI help/version commands on the host through ASTRA without provider Bash."
         case "ssh":
-            return "Run configured workspace SSH aliases on the host through ASTRA without provider Bash."
+            return "Use configured workspace SSH aliases on the host through ASTRA without accepting provider-supplied remote commands."
         case "jira":
             return "Use typed, read-only Jira connector operations through ASTRA's host control-plane bridge."
         default:
@@ -167,7 +167,7 @@ enum HostControlPlaneMCPProjection {
         case "github", "gcloud", "bq":
             return ["arguments", "timeout_seconds"]
         case "ssh":
-            return ["alias", "remote_command", "timeout_seconds"]
+            return ["alias", "timeout_seconds"]
         case "jira":
             return ["operation", "alias", "issue_key", "jql", "max_results", "next_page_token", "timeout_seconds"]
         default:

@@ -457,25 +457,21 @@ public final class HostControlMCPServer {
                 message: "ssh alias '\(alias)' is not in ASTRA's configured workspace SSH aliases"
             )
         }
-        let remoteCommand = clean(arguments["remote_command"] as? String)
-        if let remoteCommand, remoteCommand.contains("\n") {
-            return encodeError(id: id, code: -32602, message: "ssh remote_command must not contain newlines")
+        if HostControlSSHCommandPolicy.containsUnsupportedCommandInput(arguments) {
+            return encodeError(id: id, code: -32602, message: HostControlSSHCommandPolicy.remoteCommandRejectionMessage)
         }
-        var argv = [alias]
-        if let remoteCommand {
-            argv.append(remoteCommand)
-        }
+        let sshArguments = HostControlSSHCommandPolicy.connectionCheckArguments(for: alias)
         let timeout = timeoutSeconds(from: arguments["timeout_seconds"]) ?? 120
         let result = processRunner.run(
             executablePath: configuration.sshExecutable,
-            arguments: argv,
+            arguments: sshArguments,
             timeoutSeconds: timeout,
             environment: configuration.environment
         )
         let redacted = redactedResult(result)
         diagnosticsRecorder?.record(
             toolName: "ssh",
-            summary: "ssh \(alias) \(remoteCommand == nil ? "" : "<remote_command>")",
+            summary: "ssh \(sshArguments.joined(separator: " "))",
             result: redacted
         )
         return encodeCommandResult(id: id, result: redacted)
@@ -679,12 +675,11 @@ public final class HostControlMCPServer {
     private func sshSchema() -> [String: Any] {
         [
             "name": "ssh",
-            "description": "Run a configured workspace SSH alias on the host through ASTRA without provider Bash.",
+            "description": "Check a configured workspace SSH alias from the host using an ASTRA-owned non-interactive no-op. Caller-provided remote commands are not supported.",
             "inputSchema": [
                 "type": "object",
                 "properties": [
-                    "alias": ["type": "string", "description": "Configured SSH Host alias or workspace SSH connection alias."],
-                    "remote_command": ["type": "string", "description": "Optional remote command passed to ssh as one argument."],
+                    "alias": ["type": "string", "description": "Configured SSH Host alias or workspace SSH connection alias to check."],
                     "timeout_seconds": ["type": "number", "description": "Optional command timeout. Defaults to 120 seconds."]
                 ],
                 "required": ["alias"],
@@ -768,6 +763,34 @@ public final class HostControlMCPServer {
             return nil
         }
         return String(data: data, encoding: .utf8)
+    }
+}
+
+private enum HostControlSSHCommandPolicy {
+    static let remoteCommandRejectionMessage =
+        "ssh remote commands are not supported by ASTRA host control; use a reviewed workspace capability for remote command execution"
+
+    private static let unsupportedCommandKeys: Set<String> = [
+        "arguments",
+        "cmd",
+        "command",
+        "remote_command"
+    ]
+
+    static func containsUnsupportedCommandInput(_ arguments: [String: Any]) -> Bool {
+        !unsupportedCommandKeys.isDisjoint(with: arguments.keys)
+    }
+
+    static func connectionCheckArguments(for alias: String) -> [String] {
+        [
+            "-o", "BatchMode=yes",
+            "-o", "RequestTTY=no",
+            "-o", "StdinNull=yes",
+            "-o", "ClearAllForwardings=yes",
+            "--",
+            alias,
+            "true"
+        ]
     }
 }
 

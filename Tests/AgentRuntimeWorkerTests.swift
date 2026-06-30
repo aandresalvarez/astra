@@ -883,6 +883,57 @@ struct BuildPromptTests {
         #expect(prompt.contains("ProxyCommand/IAP"))
         #expect(prompt.contains("Identity file: ~/.ssh/google_compute_engine"))
         #expect(prompt.contains("prefer the alias over the raw hostname"))
+        #expect(prompt.contains("ASTRA host control can check SSH reachability for this alias"))
+        #expect(prompt.contains("Remote command execution requires a reviewed workspace capability"))
+        #expect(!prompt.contains("ssh deid-jsn-workbench '<command>'"))
+        #expect(!prompt.contains("cd /home/jupyter/users/alvaro1_stanford_edu/project && <command>"))
+    }
+
+    @Test("Prompt does not advertise SSH command execution for multiple remote workspaces")
+    func promptDoesNotAdvertiseSSHCommandExecutionForMultipleRemoteWorkspaces() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-prompt-ssh-multiple-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        SSHConnectionManager.save([
+            SSHConnection(
+                name: "dev",
+                host: "dev.example.test",
+                user: "agent",
+                remotePath: "/srv/app",
+                configAlias: "dev-box"
+            ),
+            SSHConnection(
+                name: "staging",
+                host: "staging.example.test",
+                user: "agent",
+                remotePath: "/srv/staging",
+                configAlias: "staging-box"
+            )
+        ], workspacePath: root.path)
+
+        let container = try makeContainer()
+        let ctx = container.mainContext
+        let ws = Workspace(name: "Remote", primaryPath: root.path)
+        ctx.insert(ws)
+        let task = AgentTask(
+            title: "Inspect servers",
+            goal: "Check the remote servers",
+            workspace: ws
+        )
+        ctx.insert(task)
+        try ctx.save()
+
+        let prompt = AgentPromptBuilder.buildPrompt(for: task)
+
+        #expect(prompt.contains("Available SSH Connections:"))
+        #expect(prompt.contains("ssh dev-box"))
+        #expect(prompt.contains("ssh staging-box"))
+        #expect(prompt.contains("ASTRA host control can check SSH reachability for these aliases"))
+        #expect(prompt.contains("Remote command execution requires a reviewed workspace capability"))
+        #expect(!prompt.contains("ssh <alias> '<command>'"))
+        #expect(!prompt.contains("via Bash with ssh"))
     }
 
     @Test("OpenCode prompt steers task state reads to inline context")
