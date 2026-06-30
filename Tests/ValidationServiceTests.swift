@@ -598,6 +598,8 @@ struct ValidationServiceTests {
         #expect(!ValidationCommandPolicy.isAllowed("make build"))
         #expect(!ValidationCommandPolicy.isAllowed("make test '--eval=$(shell touch should-not-run)'"))
         #expect(!ValidationCommandPolicy.isAllowed("make test '-E$(shell touch should-not-run)'"))
+        #expect(!ValidationCommandPolicy.isAllowed("make test 'CI=$(shell touch should-not-run)'"))
+        #expect(!ValidationCommandPolicy.isAllowed("make test 'CI=${shell touch should-not-run}'"))
         #expect(!ValidationCommandPolicy.isAllowed("make test --file=Injected.mk"))
     }
 

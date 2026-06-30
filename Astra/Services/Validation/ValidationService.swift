@@ -235,9 +235,17 @@ enum ValidationCommandPolicy {
             return false
         }
         let name = token[..<separator]
-        return name.allSatisfy { character in
+        guard name.allSatisfy({ character in
             character.isLetter || character.isNumber || character == "_"
+        }) else {
+            return false
         }
+        let value = token[token.index(after: separator)...]
+        return !containsMakeExpansion(value)
+    }
+
+    private static func containsMakeExpansion(_ value: Substring) -> Bool {
+        value.contains("$(") || value.contains("${")
     }
 
     private static func fileTestCommandIsAllowed(root: String, tokens: [String]) -> Bool {
