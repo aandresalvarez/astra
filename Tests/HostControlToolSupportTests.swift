@@ -159,8 +159,14 @@ struct HostControlToolSupportTests {
         let blockedArguments = [
             ["bq", "tables", "show-rows", "project.dataset.table"],
             ["--project", "project", "bq", "tables", "show-rows", "project.dataset.table"],
+            ["--filter", "name~example", "bq", "tables", "show-rows", "project.dataset.table"],
+            ["--limit", "10", "bq", "jobs", "list"],
+            ["--sort-by", "~creationTimestamp", "bq", "jobs", "list"],
+            ["--verbosity", "debug", "bq", "tables", "show-rows", "project.dataset.table"],
             ["alpha", "bq", "tables", "show-rows", "project.dataset.table"],
+            ["--access-token-file", "/tmp/token.json", "alpha", "bq", "tables", "show-rows", "project.dataset.table"],
             ["--format=json", "alpha", "bq", "tables", "show-rows", "project.dataset.table"],
+            ["--page-size", "50", "beta", "bq", "jobs", "list", "--project=project"],
             ["beta", "bq", "jobs", "list", "--project=project"]
         ]
 

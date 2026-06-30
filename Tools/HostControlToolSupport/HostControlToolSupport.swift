@@ -774,13 +774,21 @@ private enum GCloudHostControlPolicy {
     private static let releaseTracks: Set<String> = ["alpha", "beta"]
     private static let globalOptionsWithValues: Set<String> = [
         "--account",
+        "--access-token-file",
+        "--api-endpoint-overrides",
         "--billing-project",
         "--configuration",
+        "--filter",
         "--flags-file",
+        "--flatten",
         "--format",
         "--impersonate-service-account",
+        "--limit",
+        "--page-size",
         "--project",
-        "--trace-token"
+        "--sort-by",
+        "--trace-token",
+        "--verbosity"
     ]
 
     static func rejectionMessage(arguments: [String]) -> String? {
