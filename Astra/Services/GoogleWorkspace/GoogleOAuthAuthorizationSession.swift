@@ -88,10 +88,11 @@ protocol GoogleOAuthCallbackReceiving {
 
 struct LoopbackGoogleOAuthCallbackReceiver: GoogleOAuthCallbackReceiving {
     func receiveCallback(authorizationURL: URL) async throws -> GoogleOAuthCallback {
-        guard let redirectURI = Self.redirectURI(from: authorizationURL),
+        let redirectURI = Self.redirectURI(from: authorizationURL)
+        guard let redirectURI,
               let bindings = GoogleOAuthLoopbackListenerPolicy.bindings(for: redirectURI) else {
             throw GoogleOAuthAuthorizationSessionError.invalidRedirectURI(
-                Self.redirectURI(from: authorizationURL)?.absoluteString ?? ""
+                redirectURI?.absoluteString ?? ""
             )
         }
         let listeners = try bindings.map { binding in
@@ -237,7 +238,7 @@ enum GoogleOAuthCallbackParser {
         let parts = line.split(separator: " ")
         guard parts.count >= 2, parts[0] == "GET" else { return nil }
         let target = String(parts[1])
-        guard let components = URLComponents(string: "\(redirectURI.scheme ?? "http")://\(redirectURI.host ?? "127.0.0.1")\(target)") else {
+        guard let components = callbackTargetComponents(from: target, redirectURI: redirectURI) else {
             return nil
         }
         let query = components.queryItems ?? []
@@ -246,5 +247,41 @@ enum GoogleOAuthCallbackParser {
             return nil
         }
         return GoogleOAuthCallback(code: code, state: state)
+    }
+
+    private static func callbackTargetComponents(from target: String, redirectURI: URL) -> URLComponents? {
+        guard let components = URLComponents(string: target),
+              requestPath(components.percentEncodedPath) == redirectPath(for: redirectURI) else {
+            return nil
+        }
+
+        guard components.scheme != nil || components.host != nil || components.port != nil else {
+            return components
+        }
+
+        guard components.scheme?.lowercased() == redirectURI.scheme?.lowercased(),
+              normalizedHost(components.host) == normalizedHost(redirectURI.host),
+              components.port == redirectURI.port else {
+            return nil
+        }
+        return components
+    }
+
+    private static func redirectPath(for redirectURI: URL) -> String {
+        let path = URLComponents(url: redirectURI, resolvingAgainstBaseURL: false)?.percentEncodedPath ?? ""
+        return requestPath(path)
+    }
+
+    private static func requestPath(_ path: String) -> String {
+        path.isEmpty ? "/" : path
+    }
+
+    private static func normalizedHost(_ host: String?) -> String? {
+        guard var host = host?.lowercased() else { return nil }
+        if host.hasPrefix("["), host.hasSuffix("]") {
+            host.removeFirst()
+            host.removeLast()
+        }
+        return host
     }
 }

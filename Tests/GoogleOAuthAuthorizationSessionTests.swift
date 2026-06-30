@@ -42,6 +42,29 @@ struct GoogleOAuthAuthorizationSessionTests {
         #expect(callback.state == "state-123")
     }
 
+    @Test("loopback parser extracts code and state from explicit IPv6 callback")
+    func loopbackParserExtractsCodeAndStateFromIPv6Callback() throws {
+        let request = "GET /oauth/google/callback?code=auth-code&state=state-123 HTTP/1.1\r\nHost: [::1]:48119\r\n\r\n"
+        let callback = try #require(GoogleOAuthCallbackParser.callback(
+            fromHTTPRequest: request,
+            redirectURI: URL(string: "http://[::1]:48119/oauth/google/callback")!
+        ))
+
+        #expect(callback.code == "auth-code")
+        #expect(callback.state == "state-123")
+    }
+
+    @Test("loopback parser rejects callbacks for a different redirect path")
+    func loopbackParserRejectsDifferentRedirectPath() throws {
+        let request = "GET /wrong/callback?code=auth-code&state=state-123 HTTP/1.1\r\nHost: [::1]:48119\r\n\r\n"
+        let callback = GoogleOAuthCallbackParser.callback(
+            fromHTTPRequest: request,
+            redirectURI: URL(string: "http://[::1]:48119/oauth/google/callback")!
+        )
+
+        #expect(callback == nil)
+    }
+
     @Test("loopback listener parameters bind to the redirect host and port")
     func loopbackListenerParametersBindToRedirectHostAndPort() throws {
         let redirectURI = URL(string: "http://127.0.0.1:48119/oauth/google/callback")!
@@ -76,6 +99,24 @@ struct GoogleOAuthAuthorizationSessionTests {
         #expect(hostsAndPorts.map(\.0) == ["127.0.0.1", "::1"])
         #expect(hostsAndPorts.map(\.1) == [48_119, 48_119])
         #expect(bindings.allSatisfy { $0.parameters.allowLocalEndpointReuse })
+    }
+
+    @Test("loopback listener binds explicit IPv6 redirects to IPv6 loopback")
+    func loopbackListenerBindsExplicitIPv6RedirectsToIPv6Loopback() throws {
+        let redirectURI = URL(string: "http://[::1]:48119/oauth/google/callback")!
+        let bindings = try #require(GoogleOAuthLoopbackListenerPolicy.bindings(for: redirectURI))
+        let binding = try #require(bindings.first)
+        let endpoint = try #require(binding.parameters.requiredLocalEndpoint)
+
+        guard case let .hostPort(host, port) = endpoint else {
+            Issue.record("Expected a required hostPort local endpoint, got \(endpoint)")
+            return
+        }
+
+        #expect(bindings.count == 1)
+        #expect(String(describing: host) == "::1")
+        #expect(port.rawValue == 48_119)
+        #expect(binding.parameters.allowLocalEndpointReuse)
     }
 
     @Test("loopback listener parameters reject non-loopback redirect hosts")
