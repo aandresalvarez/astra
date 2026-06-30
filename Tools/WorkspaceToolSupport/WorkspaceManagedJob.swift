@@ -207,11 +207,31 @@ public final class WorkspaceManagedJobStore {
     }
 
     private func trustedFileData(at url: URL, inside directory: URL) -> Data? {
-        guard trustedRegularFileStat(at: url, inside: directory) != nil else {
+        guard let expectedDirectoryStat = trustedDirectoryStat(at: directory),
+              let expectedFileStat = trustedRegularFileStat(at: url, inside: directory) else {
             return nil
         }
 
-        let fd = open(url.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
+        let directoryFD = open(directory.standardizedFileURL.path, O_RDONLY | O_CLOEXEC | O_DIRECTORY)
+        guard directoryFD >= 0 else {
+            return nil
+        }
+        defer { close(directoryFD) }
+
+        var openedDirectoryStat = stat()
+        guard fstat(directoryFD, &openedDirectoryStat) == 0,
+              sameFile(openedDirectoryStat, expectedDirectoryStat) else {
+            return nil
+        }
+
+        let filename = url.lastPathComponent
+        guard !filename.isEmpty,
+              filename != ".",
+              filename != ".." else {
+            return nil
+        }
+
+        let fd = openat(directoryFD, filename, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
         guard fd >= 0 else {
             return nil
         }
@@ -219,7 +239,8 @@ public final class WorkspaceManagedJobStore {
 
         var statInfo = stat()
         guard fstat(fd, &statInfo) == 0,
-              (statInfo.st_mode & S_IFMT) == S_IFREG else {
+              (statInfo.st_mode & S_IFMT) == S_IFREG,
+              sameFile(statInfo, expectedFileStat) else {
             return nil
         }
 
@@ -231,6 +252,8 @@ public final class WorkspaceManagedJobStore {
                 data.append(buffer, count: bytesRead)
             } else if bytesRead == 0 {
                 break
+            } else if errno == EINTR {
+                continue
             } else {
                 return nil
             }
@@ -258,8 +281,7 @@ public final class WorkspaceManagedJobStore {
         let parentPath = url.deletingLastPathComponent().standardizedFileURL.path
         guard directoryPath.hasPrefix(rootPath + "/"),
               parentPath == directoryPath,
-              isTrustedDirectory(rootURL),
-              isTrustedDirectory(directory) else {
+              isTrustedDirectoryChain(from: rootURL, to: directory) else {
             return nil
         }
 
@@ -272,11 +294,37 @@ public final class WorkspaceManagedJobStore {
     }
 
     private func isTrustedDirectory(_ url: URL) -> Bool {
+        trustedDirectoryStat(at: url) != nil
+    }
+
+    private func trustedDirectoryStat(at url: URL) -> stat? {
         var statInfo = stat()
         guard lstat(url.standardizedFileURL.path, &statInfo) == 0 else {
-            return false
+            return nil
         }
-        return (statInfo.st_mode & S_IFMT) == S_IFDIR
+        guard (statInfo.st_mode & S_IFMT) == S_IFDIR else {
+            return nil
+        }
+        return statInfo
+    }
+
+    private func isTrustedDirectoryChain(from root: URL, to directory: URL) -> Bool {
+        let rootPath = root.standardizedFileURL.path
+        var current = directory.standardizedFileURL
+
+        while current.path != rootPath {
+            guard current.path.hasPrefix(rootPath + "/"),
+                  isTrustedDirectory(current) else {
+                return false
+            }
+            current.deleteLastPathComponent()
+        }
+
+        return isTrustedDirectory(root)
+    }
+
+    private func sameFile(_ lhs: stat, _ rhs: stat) -> Bool {
+        lhs.st_dev == rhs.st_dev && lhs.st_ino == rhs.st_ino
     }
 
     private func trustedFileReadError(path: String) -> Error {

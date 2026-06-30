@@ -1,5 +1,10 @@
 import Foundation
 import Testing
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 @testable import WorkspaceToolSupport
 
 @Suite("Workspace Tool Support", .serialized)
