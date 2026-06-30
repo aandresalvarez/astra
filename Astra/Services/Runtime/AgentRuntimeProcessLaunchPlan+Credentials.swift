@@ -51,12 +51,7 @@ extension AgentRuntimeProcessLaunchPlan {
         var plannedFields = commandPlannedFields
         switch runtime {
         case .codexCLI:
-            let config = "sandbox_permissions=[\"disk-full-read-access\"]"
-            guard !updatedArguments.contains(config) else { return self }
-            let insertIndex = updatedArguments.firstIndex(of: "--skip-git-repo-check")
-                ?? max(0, updatedArguments.count - 1)
-            updatedArguments.insert(contentsOf: ["--config", config], at: insertIndex)
-            plannedFields["git_provider_native_read_access"] = "codex_disk_full_read"
+            return self
         case .copilotCLI:
             guard commandPlannedFields["supports_allow_all_paths"] == "true",
                   !updatedArguments.contains("--allow-all-paths") else {
@@ -86,6 +81,29 @@ extension AgentRuntimeProcessLaunchPlan {
             interactiveAsk: interactiveAsk,
             pathMapper: pathMapper,
             executionEnvironment: executionEnvironment
+        )
+    }
+
+    func unsupportedProviderNativeCredentialReadBlock(
+        for launchResourcePlan: TaskLaunchResourcePlan,
+        permissionPolicy: PermissionPolicy,
+        workspaceCommandsRunInsideManagedExecutor: Bool
+    ) -> AgentProcessResult? {
+        guard launchResourcePlan.needsProviderNativeCredentialReadAccess,
+              permissionPolicy != .autonomous,
+              runtime == .codexCLI,
+              !workspaceCommandsRunInsideManagedExecutor else {
+            return nil
+        }
+
+        let message = """
+        ASTRA blocked this Codex run because the task needs external Git or SSH credentials, but Codex restricted mode does not expose a read-only native path grant for those files. Switch to a runtime with supported path-scoped credential access, use autonomous mode only for a trusted workspace, or move the required credential material into an approved workspace-scoped setup before retrying.
+        """
+        return AgentProcessResult(
+            exitCode: -1,
+            error: message,
+            runtimeStopReason: "credential_native_access_unavailable",
+            runtimeStopMessage: message
         )
     }
 

@@ -95,6 +95,8 @@ struct TaskLaunchResourcePlanTests {
         #expect(plan.gitCredentialSandboxContext.transports.isEmpty)
         #expect(plan.commandPlannedFields["git_credential_context"] == "true")
         #expect(plan.commandPlannedFields["git_credential_transports"] == "")
+        #expect(plan.commandPlannedFields["provider_native_credential_read_path_count"] == "0")
+        #expect(!plan.needsProviderNativeCredentialReadAccess)
         #expect(!plan.credentialGrants.contains { $0.source == .gitCredential })
     }
 
