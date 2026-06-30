@@ -266,17 +266,22 @@ struct WorkspaceToolSupportTests {
             "echo \"$(gcloud auth list --format=json)\"",
             "env TOKEN=$(gcloud auth application-default print-access-token)",
             "sh -c 'gcloud projects list'",
+            "cmd='gcloud auth list'; sh -c \"$cmd\"",
             "sh -c -- 'gcloud projects list'",
             "bash -lc 'gcloud projects list'",
             "bash -lc -- 'gcloud projects list'",
             "dash -c 'gcloud projects list'",
+            "bash -c \"$'gcloud' auth list\"",
             "command gcloud projects list",
+            "command 2>/tmp/e ssh deid-jsn-workbench hostname",
             "exec gcloud auth list",
             "sh -c 'exec gcloud auth list'",
             "sh -c 'echo \"$(gcloud auth list)\"'",
             "env -u FOO gcloud auth list",
+            "env >/tmp/log gcloud auth list",
             "env --unset FOO --chdir /tmp gcloud auth list",
             "env -S'gcloud auth list'",
+            "env -iS'gcloud auth list'",
             "cmd='--split-string=gcloud auth list'; env \"$cmd\"",
             "gh -R owner/repo api repos/owner/repo",
             "gh --repo owner/repo pr view 148",
@@ -289,15 +294,22 @@ struct WorkspaceToolSupportTests {
             "s\\sh deid-jsn-workbench hostname",
             "printf 'gcloud auth list\\n' | sh",
             "printf '%s\\n' 'gcloud auth list' | sh",
+            "printf '%s auth list\\n' gcloud | sh",
             "printf gcloud\\ auth\\ list | sh",
             "echo gcloud auth list | sh",
             "sh <<'EOF'\ngcloud auth list\nEOF",
+            "sh -s <<1\ngcloud auth list\n1",
             "bash -c \"sh <<< 'gcloud auth list'\"",
+            "bash -c 'bash <(printf \"gcloud auth list\\n\")'",
+            "bash -c 'source <(printf \"gcloud auth list\\n\")'",
             ">/tmp/out gcloud auth list",
+            "2>&1 gcloud auth list",
             "2>/tmp/e ssh deid-jsn-workbench hostname",
             "f() { gcloud auth list; }; f",
+            "function f() { gcloud auth list; }; f",
             "if gcloud auth list; then echo ok; fi",
             "while gcloud auth list; do break; done",
+            "case x in x) gcloud auth list;; esac",
             "time -p gcloud auth list",
             "nohup gcloud auth list",
             "nice -n 5 gcloud auth list",
@@ -307,6 +319,7 @@ struct WorkspaceToolSupportTests {
             "cmd=gcloud; $cmd auth list",
             "a=1 cmd=gcloud; $cmd auth list",
             "cmd='gcloud auth list'; $cmd",
+            "${cmd:-gcloud} auth list",
             "env -S 'gcloud auth list'",
             "env --split-string='gcloud auth list'",
             "exec -a harmless gcloud auth list",
@@ -314,15 +327,21 @@ struct WorkspaceToolSupportTests {
             "python3 -c \"import subprocess; subprocess.run(['bq', 'ls'])\"",
             "python3 -c \"import subprocess; subprocess.run(['gh', 'api', 'repos/owner/repo'])\"",
             "python3 -c \"import subprocess; subprocess.run(('gcloud', 'auth', 'list'))\"",
+            "python3 -c \"import subprocess; subprocess.run(args=['gcloud', 'auth', 'list'])\"",
             "python3 -c \"import subprocess; subprocess.run('gcloud auth list', shell=True)\"",
             "python3 -c \"import subprocess; subprocess.run(args='gcloud auth list', shell=True)\"",
+            "python3 -c \"import subprocess; subprocess.run(r'gcloud auth list', shell=True)\"",
             "python3 -c \"import subprocess; subprocess.run(shell=True, args='gcloud auth list')\"",
-            "python3 -c \"import os; os.system('ssh deid-jsn-workbench hostname')\""
+            "python3 -c \"import os; os.system('ssh deid-jsn-workbench hostname')\"",
+            "python3 -c \"import os; os.system(f'gcloud auth list')\""
         ]
 
         for command in commands {
             let resolution = configuration.containerCommand(for: command)
-            #expect(resolution.errorMessage?.contains("host control-plane CLI") == true)
+            #expect(
+                resolution.errorMessage?.contains("host control-plane CLI") == true,
+                "Expected host control-plane rejection for: \(command)"
+            )
         }
 
         let sixDeepSubstitution = configuration.containerCommand(
