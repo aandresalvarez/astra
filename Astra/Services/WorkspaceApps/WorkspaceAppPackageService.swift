@@ -311,7 +311,12 @@ struct WorkspaceAppPackageService {
             path: "/checksums.json",
             issues: &issues
         )
-        let resourceBudgetPassed = validateResourceBudget(packageURL: packageURL, issues: &issues)
+        let dataExportPaths = declaredDataExportPaths(in: packageURL)
+        let resourceBudgetPassed = validateResourceBudget(
+            packageURL: packageURL,
+            dataExportPaths: dataExportPaths,
+            issues: &issues
+        )
 
         if let manifest {
             let manifestReport = WorkspaceAppManifestValidator.validate(manifest)
@@ -348,7 +353,7 @@ struct WorkspaceAppPackageService {
         validateDataExports(package: package, packageURL: packageURL, issues: &issues)
         validateNoForbiddenPortableContent(
             packageURL: packageURL,
-            dataExportPaths: declaredDataExportPaths(in: packageURL),
+            dataExportPaths: dataExportPaths,
             issues: &issues
         )
 
@@ -863,6 +868,9 @@ struct WorkspaceAppPackageService {
                 at: url,
                 relativePath: path
             ) { row in
+                for key in row.keys {
+                    appendForbiddenContentIssues(in: key, path: path, issues: &issues)
+                }
                 for value in row.values {
                     if case let .text(text) = value {
                         appendForbiddenContentIssues(in: text, path: path, issues: &issues)
@@ -891,6 +899,7 @@ struct WorkspaceAppPackageService {
 
     private func validateResourceBudget(
         packageURL: URL,
+        dataExportPaths: Set<String>,
         issues: inout [WorkspaceAppPackageValidationReport.Issue]
     ) -> Bool {
         do {
@@ -898,7 +907,9 @@ struct WorkspaceAppPackageService {
                 packageURL: packageURL,
                 paths: packageEntryPaths(in: packageURL),
                 isScannedTextPath: { path in
-                    path.hasSuffix(".json") || path.hasSuffix(".md")
+                    path.hasSuffix(".json")
+                        || path.hasSuffix(".md")
+                        || (path.hasSuffix(".jsonl") && !dataExportPaths.contains(path))
                 }
             )
             return true
@@ -921,7 +932,8 @@ struct WorkspaceAppPackageService {
     private func portableFilePaths(in packageURL: URL) -> [String] {
         packageEntryPaths(in: packageURL).filter { path in
             let url = packageURL.appendingPathComponent(path)
-            return (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
+            let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+            return values?.isSymbolicLink != true && values?.isRegularFile == true
         }
     }
 

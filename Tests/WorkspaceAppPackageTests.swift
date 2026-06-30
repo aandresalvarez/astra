@@ -301,6 +301,46 @@ struct WorkspaceAppPackageTests {
         #expect(report.canInstall)
     }
 
+    @Test("package validation scans JSONL export keys for credentials")
+    func packageValidationScansJSONLExportKeysForCredentials() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let packageURL = root.appendingPathComponent("credential-key-data.astra-app", isDirectory: true)
+        let databaseURL = try Self.groceryDatabase(in: root)
+
+        _ = try WorkspaceAppPackageService().exportPackage(
+            manifest: Self.groceryManifest(),
+            to: packageURL,
+            packageID: "credential-key-data",
+            mode: .templatePlusSeedData,
+            appStorageDatabaseURL: databaseURL
+        )
+
+        let dataPath = "storage/data/seed/items.jsonl"
+        try Data(#"{"api_key":"abc123"}"#.utf8)
+            .write(to: packageURL.appendingPathComponent(dataPath), options: [.atomic])
+        let exports = [
+            WorkspaceAppPackageDataExport(
+                table: "items",
+                policy: .seed,
+                path: dataPath,
+                rowCount: 1
+            )
+        ]
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        try encoder.encode(exports)
+            .write(to: packageURL.appendingPathComponent("storage/data/exports.json"), options: [.atomic])
+        try Self.rewriteChecksums(at: packageURL)
+
+        let report = WorkspaceAppPackageService().validatePackage(at: packageURL)
+
+        #expect(!report.canInstall)
+        #expect(report.blockers.contains {
+            $0.path == "/\(dataPath)" && $0.message.contains("credential")
+        })
+    }
+
     @Test("package validation scans portable JSONL assets as text")
     func packageValidationScansPortableJSONLAssetsAsText() throws {
         let root = try Self.temporaryRoot()
@@ -318,6 +358,43 @@ struct WorkspaceAppPackageTests {
 
         #expect(report.canInstall)
         #expect(!report.blockers.contains { $0.path == "/docs/fixtures/browser-events.jsonl" })
+    }
+
+    @Test("package validation applies scanned-text cap to portable JSONL assets")
+    func packageValidationAppliesScannedTextCapToPortableJSONLAssets() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let packageURL = root.appendingPathComponent("large-jsonl-fixture.astra-app", isDirectory: true)
+        _ = try WorkspaceAppPackageService().exportPackage(manifest: Self.groceryManifest(), to: packageURL)
+
+        let fixturePath = "docs/fixtures/browser-events.jsonl"
+        let fixtureURL = packageURL.appendingPathComponent(fixturePath)
+        try FileManager.default.createDirectory(at: fixtureURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data(
+            (0..<6_000)
+                .map { #"{"event":"loaded-\#($0)"}"# }
+                .joined(separator: "\n")
+                .utf8
+        )
+        .write(to: fixtureURL, options: [.atomic])
+        try Self.rewriteChecksums(at: packageURL)
+
+        var service = WorkspaceAppPackageService()
+        service.resourceReader.budget = WorkspaceAppPackageResourceBudget(
+            maxPackageBytes: 32 * 1_024 * 1_024,
+            maxFileBytes: 8 * 1_024 * 1_024,
+            maxScannedTextFileBytes: 100_000,
+            maxJSONLRows: 10_000,
+            maxJSONLLineBytes: 256 * 1_024
+        )
+
+        let report = service.validatePackage(at: packageURL)
+
+        #expect(!report.canInstall)
+        #expect(report.blockers.contains {
+            $0.path == "/\(fixturePath)"
+                && $0.message.lowercased().contains("package resource limit")
+        })
     }
 
     @Test("package validation rejects checksummed symlink resources before hashing")
