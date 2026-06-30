@@ -2,28 +2,29 @@ import AppKit
 import Combine
 import Foundation
 import WebKit
-
-enum ShelfBrowserAddress {
-    static func normalizedURL(from input: String) -> URL? {
-        let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return nil }
-
-        if let url = URL(string: trimmed), url.scheme != nil {
-            return url
+extension ShelfBrowserSession {
+    func textEntryPreflightReplacementTargets(selector: String, find: String, all: Bool) async throws -> [String: Any] {
+        let json: String
+        if isUsingControlledBrowser {
+            json = try await controlledBrowser.replaceTextTargetsInfo(selector: selector, find: find, all: all)
+            syncDisplayedStateForEngine()
+            publishBridgeState()
+        } else {
+            json = try await evaluateJavaScriptString(BrowserAutomationScripts.replaceTextTargetsInfoScript(selector: selector, find: find, all: all))
         }
+        return try Self.jsonObject(from: json)
+    }
 
-        let expandedPath = (trimmed as NSString).expandingTildeInPath
-        if expandedPath.hasPrefix("/") {
-            return URL(fileURLWithPath: expandedPath)
+    func textEntryPreflightFocusedTargetInfo() async throws -> [String: Any] {
+        let json: String
+        if isUsingControlledBrowser {
+            json = try await controlledBrowser.focusedTargetInfo()
+            syncDisplayedStateForEngine()
+            publishBridgeState()
+        } else {
+            json = try await evaluateJavaScriptString(BrowserAutomationScripts.focusedTargetInfoScript())
         }
-
-        if trimmed.contains(".") || trimmed.contains(":") || trimmed == "localhost" {
-            return URL(string: "https://\(trimmed)") ?? URL(string: "http://\(trimmed)")
-        }
-
-        var components = URLComponents(string: "https://www.google.com/search")
-        components?.queryItems = [URLQueryItem(name: "q", value: trimmed)]
-        return components?.url
+        return try Self.jsonObject(from: json)
     }
 }
 
@@ -2594,7 +2595,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
 
     private func actionTarget(for control: BrowserControl, controlRef: BrowserControlRef?) -> BrowserControlActionTarget {
         let source = controlRef?.source ?? .dom
-        let semanticName = control.name.isEmpty ? control.label : control.name
+        let semanticName = BrowserControlTargetingPolicy.semanticName(for: control, source: source)
         let hasSemanticAnchor = !semanticName.isEmpty || !control.role.isEmpty || !control.placeholder.isEmpty || !control.testID.isEmpty
         let shouldUseSelector = source == .dom && !control.selector.isEmpty
         let shouldUseCoordinates = !shouldUseSelector && !hasSemanticAnchor
@@ -3127,6 +3128,23 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 placeholder: placeholder,
                 testID: testID
             )
+            if let result = try blockedTextEntryResult(
+                action: action,
+                targetInfo: actionability,
+                attachmentKey: "actionability",
+                logContext: BrowserTextEntryLogContext(
+                    started: started,
+                    action: action,
+                    selector: selector,
+                    label: label,
+                    role: role,
+                    placeholder: placeholder,
+                    testID: testID,
+                    fields: ["clear": String(clear), "text_length": String(text.count)]
+                )
+            ) {
+                return result
+            }
             let beforeSettle = try? await rawSnapshotObject()
 
             let json: String
@@ -3199,7 +3217,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         }
     }
 
-    private func waitForActionableTarget(
+    func waitForActionableTarget(
         selector: String?,
         x: Double?,
         y: Double?,
@@ -3375,7 +3393,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         ]
     }
 
-    private func logBrowserAction(
+    func logBrowserAction(
         phase: String,
         action: String,
         selector: String?,
@@ -3498,22 +3516,26 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
     }
 
     private func replaceText(find: String, replacement: String, selector: String?, all: Bool) async throws -> String {
+        let resolvedSelector = ShelfBrowserCommandNormalization.normalized(selector)
+        if let blocked = try await blockedReplacementTextEntryResult(find: find, selector: resolvedSelector ?? BrowserAutomationScripts.defaultEditableSelector, all: all) {
+            return try Self.jsonString(blocked)
+        }
         if isUsingControlledBrowser {
-            let json = try await controlledBrowser.replaceText(find: find, replacement: replacement, selector: selector, all: all)
+            let json = try await controlledBrowser.replaceText(find: find, replacement: replacement, selector: resolvedSelector, all: all)
             syncDisplayedStateForEngine()
             publishBridgeState()
-            return try annotateBrowserLoopHint(json: json, action: "replaceText", target: selector ?? find)
+            return try annotateBrowserLoopHint(json: json, action: "replaceText", target: resolvedSelector ?? find)
         }
         let json = try await evaluateJavaScriptString(BrowserAutomationScripts.replaceTextScript(
             find: find,
             replacement: replacement,
-            selector: selector,
+            selector: resolvedSelector,
             all: all
         ))
-        return try annotateBrowserLoopHint(json: json, action: "replaceText", target: selector ?? find)
+        return try annotateBrowserLoopHint(json: json, action: "replaceText", target: resolvedSelector ?? find)
     }
 
-    private func keypress(key: String, modifiers: [String]) async throws -> String {
+    private func keypress(key: String, modifiers: [String], skipTextEntryPreflight: Bool = false) async throws -> String {
         let started = Date()
         let safetyDecision = BrowserKeypressSafety.evaluate(
             key: key,
@@ -3521,6 +3543,20 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             currentURL: currentURL,
             isGoogleWorkspaceEditor: isGoogleWorkspaceEditor,
             state: &keypressSafetyState
+        )
+        logBrowserAction(
+            phase: "requested",
+            action: "keypress",
+            selector: nil,
+            label: nil,
+            role: nil,
+            text: nil,
+            placeholder: nil,
+            testID: nil,
+            fields: [
+                "key_length": String(key.count),
+                "modifier_count": String(modifiers.count)
+            ]
         )
         guard safetyDecision.allowed else {
             let result = try Self.jsonString([
@@ -3551,28 +3587,26 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             )
             return result
         }
-        logBrowserAction(
-            phase: "requested",
-            action: "keypress",
-            selector: nil,
-            label: nil,
-            role: nil,
-            text: nil,
-            placeholder: nil,
-            testID: nil,
-            fields: [
-                "key_length": String(key.count),
-                "modifier_count": String(modifiers.count)
-            ]
-        )
+        let preflight = try await keypressTextEntryDispatchValidation(key: key, modifiers: modifiers, started: started, skipTextEntryPreflight: skipTextEntryPreflight)
+        if let result = preflight.blockedResultJSON { return result }
         do {
             let json: String
             if isUsingControlledBrowser {
-                json = try await controlledBrowser.keypress(key: key, modifiers: modifiers)
+                json = try await controlledBrowser.keypress(
+                    key: key,
+                    modifiers: modifiers,
+                    expectedFocusedTargetSignature: preflight.targetSignature,
+                    allowUnboundFocusedTargetDispatch: preflight.allowUnboundFocusedTargetDispatch
+                )
                 syncDisplayedStateForEngine()
                 publishBridgeState()
             } else {
-                json = try await evaluateJavaScriptString(BrowserAutomationScripts.keypressScript(key: key, modifiers: modifiers))
+                json = try await evaluateJavaScriptString(BrowserAutomationScripts.keypressScript(
+                    key: key,
+                    modifiers: modifiers,
+                    expectedFocusedTargetSignature: preflight.targetSignature,
+                    allowUnboundFocusedTargetDispatch: preflight.allowUnboundFocusedTargetDispatch
+                ))
             }
             logBrowserAction(
                 phase: "completed",
@@ -3626,13 +3660,22 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             fields: ["text_length": String(text.count)]
         )
         do {
+            let preflight = try await focusedTextEntryPreflight(
+                action: BrowserActionKind.insertText.rawValue,
+                logContext: BrowserTextEntryLogContext(
+                    started: started,
+                    action: "insertText",
+                    fields: ["text_length": String(text.count)]
+                )
+            )
+            if let result = preflight.blockedResultJSON { return result }
             let json: String
             if isUsingControlledBrowser {
-                json = try await controlledBrowser.insertText(text)
+                json = try await controlledBrowser.insertText(text, expectedFocusedTargetSignature: preflight.targetSignature)
                 syncDisplayedStateForEngine()
                 publishBridgeState()
             } else {
-                json = try await evaluateJavaScriptString(BrowserAutomationScripts.insertTextScript(text))
+                json = try await evaluateJavaScriptString(BrowserAutomationScripts.insertTextScript(text, expectedFocusedTargetSignature: preflight.targetSignature))
             }
             logBrowserAction(
                 phase: "completed",
@@ -4872,7 +4915,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                     "textLength": text.count
                 ]
             }
-            inputJSON = try await keypress(key: "v", modifiers: ["command"])
+            inputJSON = try await keypress(key: "v", modifiers: ["command"], skipTextEntryPreflight: true)
             method = "browser_select_all_paste"
             try await Task.sleep(nanoseconds: 500_000_000)
         } else {
@@ -4959,10 +5002,12 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         pasteboard.clearContents()
         return pasteboard.setString(text, forType: .string)
     }
-
     private func act(_ command: ActCommand) async throws -> [String: Any] {
         var results: [[String: Any]] = []
-
+        func appendActResult(_ result: [String: Any]) -> String? {
+            results.append(result)
+            return BrowserTextEntryPreflight.terminalStopReason(for: result)
+        }
         let setAnalysisID = command.setAnalysisID ?? command.analysisID
         let setControlID = command.setControlID ?? command.controlID
         if let set = command.set,
@@ -4976,7 +5021,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             )
             guard resolved.ok, let control = resolved.currentControl else {
                 results.append(resolved.response.merging(["action": "set"], uniquingKeysWith: { current, _ in current }))
-                return ["ok": false, "results": results]
+                return BrowserTextEntryPreflight.stoppedResponse(results: results)
             }
             let target = actionTarget(for: control, controlRef: resolved.currentControlRef)
             let before = try? await rawSnapshotObject()
@@ -4995,7 +5040,9 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             object["action"] = "set"
             object["matchedControl"] = control.jsonObject(debug: false)
             object["preflight"] = resolved.response
-            results.append(object)
+            if let stopReason = appendActResult(object) {
+                return ["ok": false, "stopReason": stopReason, "results": results]
+            }
         } else if let find = command.find, let set = command.set {
             let matches = try await findControl(query: find, role: command.role, limit: 8)
             let controls = matches["controls"] as? [[String: Any]] ?? []
@@ -5009,12 +5056,14 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 return ["ok": false, "results": results]
             }
             let json = try await type(selector: selector, text: set, clear: true)
-            results.append(try Self.jsonObject(from: json).merging([
+            let result = try Self.jsonObject(from: json).merging([
                 "action": "set",
                 "matchedControl": editable ?? [:]
-            ], uniquingKeysWith: { current, _ in current }))
+            ], uniquingKeysWith: { current, _ in current })
+            if let stopReason = appendActResult(result) {
+                return ["ok": false, "stopReason": stopReason, "results": results]
+            }
         }
-
         let clickAnalysisID = command.clickAnalysisID ?? command.analysisID
         let clickControlID = command.clickControlID ?? command.controlID
         if ShelfBrowserCommandNormalization.normalized(clickAnalysisID) != nil,
@@ -5027,7 +5076,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             )
             guard resolved.ok, let control = resolved.currentControl else {
                 results.append(resolved.response.merging(["action": "click"], uniquingKeysWith: { current, _ in current }))
-                return ["ok": false, "results": results]
+                return BrowserTextEntryPreflight.stoppedResponse(results: results)
             }
             let target = actionTarget(for: control, controlRef: resolved.currentControlRef)
             let before = try? await rawSnapshotObject()
@@ -5057,7 +5106,6 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             )
             results.append(result.merging(["action": "click"], uniquingKeysWith: { current, _ in current }))
         }
-
         if command.waitSaved == true {
             let result = try await waitSaved(
                 timeoutSeconds: command.timeoutSeconds ?? 8,
@@ -5065,26 +5113,27 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             )
             results.append(result.merging(["action": "waitSaved"], uniquingKeysWith: { current, _ in current }))
         }
-
         if let verify = command.verify {
             let result = try await verifyText(verify, absent: false)
             results.append(result.merging(["action": "verify"], uniquingKeysWith: { current, _ in current }))
         }
-
         if let absent = command.absent {
             let result = try await verifyText(absent, absent: true)
             results.append(result.merging(["action": "verifyAbsent"], uniquingKeysWith: { current, _ in current }))
         }
-
         return [
             "ok": !results.isEmpty && results.allSatisfy { Self.boolValue($0["ok"]) },
             "results": results
         ]
     }
-
     private func runBatch(_ command: BatchCommand) async throws -> [String: Any] {
         var results: [[String: Any]] = []
         var stopReason: String?
+        func appendBatchResult(_ result: [String: Any]) -> Bool {
+            results.append(result)
+            stopReason = BrowserTextEntryPreflight.terminalStopReason(for: result)
+            return stopReason != nil
+        }
         batchLoop: for action in command.actions.prefix(20) {
             switch action.normalizedAction {
             case "analyze":
@@ -5284,7 +5333,8 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                     let after = await snapshotAfterActionDelay()
                     addOutcomeFields(to: &object, action: .fill, control: control, before: before, after: after)
                     object["preflight"] = resolved.response
-                    results.append(object.merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
+                    let result = object.merging(["action": action.action], uniquingKeysWith: { current, _ in current })
+                    if appendBatchResult(result) { break batchLoop }
                 } else {
                     let json = try await type(
                         selector: action.normalizedSelector,
@@ -5295,7 +5345,8 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                         placeholder: action.normalizedPlaceholder,
                         testID: action.normalizedTestID
                     )
-                    results.append(try Self.jsonObject(from: json).merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
+                    let result = try Self.jsonObject(from: json).merging(["action": action.action], uniquingKeysWith: { current, _ in current })
+                    if appendBatchResult(result) { break batchLoop }
                 }
             case "setvalue", "set-value", "fill":
                 guard let text = action.text else {
@@ -5330,7 +5381,8 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                     let after = await snapshotAfterActionDelay()
                     addOutcomeFields(to: &object, action: browserAction, control: control, before: before, after: after)
                     object["preflight"] = resolved.response
-                    results.append(object.merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
+                    let result = object.merging(["action": action.action], uniquingKeysWith: { current, _ in current })
+                    if appendBatchResult(result) { break batchLoop }
                 } else {
                     let json = try await type(
                         selector: action.normalizedSelector,
@@ -5341,7 +5393,8 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                         placeholder: action.normalizedPlaceholder,
                         testID: action.normalizedTestID
                     )
-                    results.append(try Self.jsonObject(from: json).merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
+                    let result = try Self.jsonObject(from: json).merging(["action": action.action], uniquingKeysWith: { current, _ in current })
+                    if appendBatchResult(result) { break batchLoop }
                 }
             case "replacetext", "replace-text":
                 guard let find = action.find,
@@ -5382,7 +5435,8 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                     addOutcomeFields(to: &object, action: .setValue, control: matchedControl, before: before, after: after)
                     object["preflight"] = preflight
                 }
-                results.append(object.merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
+                let result = object.merging(["action": action.action], uniquingKeysWith: { current, _ in current })
+                if appendBatchResult(result) { break batchLoop }
             case "findcontrol", "find-control":
                 let result = try await findControl(
                     query: action.query ?? action.label ?? "",
@@ -5523,21 +5577,24 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                     timeoutSeconds: action.timeoutSeconds,
                     intervalMilliseconds: action.intervalMilliseconds
                 ))
-                results.append(result.merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
+                let batchResult = result.merging(["action": action.action], uniquingKeysWith: { current, _ in current })
+                if appendBatchResult(batchResult) { break batchLoop }
             case "keypress":
                 guard let key = action.key else {
                     results.append(["ok": false, "action": action.action, "error": "missing_key"])
                     continue
                 }
                 let json = try await keypress(key: key, modifiers: action.modifiers ?? [])
-                results.append(try Self.jsonObject(from: json).merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
+                let result = try Self.jsonObject(from: json).merging(["action": action.action], uniquingKeysWith: { current, _ in current })
+                if appendBatchResult(result) { break batchLoop }
             case "text", "inserttext":
                 guard let text = action.text else {
                     results.append(["ok": false, "action": action.action, "error": "missing_text"])
                     continue
                 }
                 let json = try await insertText(text)
-                results.append(try Self.jsonObject(from: json).merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
+                let result = try Self.jsonObject(from: json).merging(["action": action.action], uniquingKeysWith: { current, _ in current })
+                if appendBatchResult(result) { break batchLoop }
             case "waitfortext", "wait-text":
                 guard let text = action.text else {
                     results.append(["ok": false, "action": action.action, "error": "missing_text"])
@@ -5571,7 +5628,6 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 results.append(["ok": false, "action": action.action, "error": "unknown_action"])
             }
         }
-
         var response: [String: Any] = [
             "ok": stopReason == nil && results.allSatisfy { Self.boolValue($0["ok"]) },
             "results": results
@@ -5590,7 +5646,6 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         }
         return response
     }
-
     private func evaluateJavaScriptString(_ script: String) async throws -> String {
         try await withCheckedThrowingContinuation { continuation in
             webView.evaluateJavaScript(script) { result, error in
@@ -5606,7 +5661,6 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             }
         }
     }
-
     private static func controlsMatching(_ controls: [[String: Any]], label: String, role: String?) -> [[String: Any]] {
         let normalizedLabel = label.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let normalizedRole = role?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -5629,7 +5683,6 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             controlMatchScore(left, query: normalizedLabel, role: normalizedRole) > controlMatchScore(right, query: normalizedLabel, role: normalizedRole)
         }
     }
-
     static func controlLabelStronglyMatches(_ control: [String: Any], requestedLabel: String) -> Bool {
         let query = normalizedControlLabel(requestedLabel)
         guard !query.isEmpty else { return true }
@@ -5637,7 +5690,6 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             normalizedControlLabel(control[key] as? String) == query
         }
     }
-
     static func mailMutationControlAction(_ control: [String: Any]) -> String? {
         let normalized = normalizedControlLabel([
             control["label"] as? String ?? "",
@@ -5835,7 +5887,6 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         if ["0", "false", "no", "n"].contains(value) { return false }
         return nil
     }
-
     private struct EmbeddedPageReadRequest {
         var frames: [[String: Any]]
         var warnings: [String]

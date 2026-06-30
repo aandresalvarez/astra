@@ -253,7 +253,7 @@ struct BrowserAccessibilitySnapshot {
     }
 
     func matchingNode(for control: BrowserControl) -> BrowserAccessibilityNode? {
-        let controlName = BrowserAnalysisBuilder.normalizedName(control.name.isEmpty ? control.label : control.name)
+        let controlName = BrowserAnalysisBuilder.normalizedName(control.label.isEmpty ? control.name : control.label)
         let controlRole = BrowserAnalysisBuilder.normalizedName(control.role)
         guard !controlName.isEmpty || !controlRole.isEmpty else { return nil }
 
@@ -277,6 +277,7 @@ struct BrowserControl {
     let role: String
     let tag: String
     let type: String
+    let autocomplete: String
     let placeholder: String
     let testID: String
     let value: String
@@ -311,6 +312,7 @@ struct BrowserControl {
             "role": role,
             "tag": tag,
             "type": type,
+            "autocomplete": autocomplete,
             "selector": selector,
             "placeholder": placeholder,
             "testID": testID,
@@ -627,16 +629,32 @@ enum BrowserControlResolver {
         liveControl: BrowserControl,
         liveRef: BrowserControlRef
     ) -> Double {
-        let cachedName = normalized(cachedRef.control.name.isEmpty ? cachedRef.control.label : cachedRef.control.name)
-        let liveName = normalized(liveRef.control.name.isEmpty ? liveRef.control.label : liveRef.control.name)
+        let cachedName = normalized(BrowserControlTargetingPolicy.semanticName(for: cachedRef.control, source: cachedRef.source))
+        let liveName = normalized(BrowserControlTargetingPolicy.semanticName(for: liveRef.control, source: liveRef.source))
         let cachedRole = normalized(cachedRef.control.role)
         let liveRole = normalized(liveRef.control.role)
+        let stableDOMIdentityMatches = BrowserControlTargetingPolicy.stableDOMIdentityMatches(
+            cachedControl: cachedControl,
+            liveControl: liveControl
+        )
 
         let roleMatches = cachedRole.isEmpty || liveRole.isEmpty || liveRole.contains(cachedRole) || cachedRole.contains(liveRole)
         let nameMatches = cachedName.isEmpty || liveName == cachedName || liveName.contains(cachedName) || cachedName.contains(liveName)
-        guard roleMatches && nameMatches else { return 0 }
+        guard roleMatches && (nameMatches || stableDOMIdentityMatches) else { return 0 }
 
         var score = 1.0
+        if stableDOMIdentityMatches {
+            score += 40
+        }
+        if !cachedControl.controlID.isEmpty, cachedControl.controlID == liveControl.controlID {
+            score += 80
+        }
+        if !cachedControl.selector.isEmpty, cachedControl.selector == liveControl.selector {
+            score += 45
+        }
+        if !cachedControl.name.isEmpty, cachedControl.name == liveControl.name {
+            score += 25
+        }
         if liveRef.source == cachedRef.source {
             score += 20
         }
@@ -960,6 +978,7 @@ enum BrowserAnalysisBuilder {
                 string(raw["role"]),
                 string(raw["tag"]),
                 string(raw["type"]),
+                string(raw["autocomplete"]).lowercased(),
                 string(raw["label"]).lowercased(),
                 string(raw["placeholder"]).lowercased(),
                 string(raw["testID"]).lowercased(),
@@ -1011,6 +1030,7 @@ enum BrowserAnalysisBuilder {
         let role = string(raw["role"])
         let tag = string(raw["tag"])
         let type = string(raw["type"])
+        let autocomplete = string(raw["autocomplete"])
         let placeholder = string(raw["placeholder"])
         let testID = string(raw["testID"])
         let value = string(raw["value"])
@@ -1025,9 +1045,11 @@ enum BrowserAnalysisBuilder {
             pageURL: pageURL,
             selector: selector,
             label: label,
+            name: name,
             role: role,
             tag: tag,
             type: type,
+            autocomplete: autocomplete,
             placeholder: placeholder,
             testID: testID,
             href: href
@@ -1075,6 +1097,7 @@ enum BrowserAnalysisBuilder {
             name.lowercased(),
             tag,
             type,
+            autocomplete.lowercased(),
             placeholder.lowercased(),
             testID.lowercased(),
             framePath.joined(separator: ">"),
@@ -1123,6 +1146,7 @@ enum BrowserAnalysisBuilder {
             role: role,
             tag: tag,
             type: type,
+            autocomplete: autocomplete,
             placeholder: placeholder,
             testID: testID,
             value: value,
@@ -1352,42 +1376,45 @@ enum BrowserAnalysisBuilder {
         pageURL: String,
         selector: String,
         label: String,
+        name: String,
         role: String,
         tag: String,
         type: String,
+        autocomplete: String,
         placeholder: String,
         testID: String,
         href: String
     ) -> BrowserRisk {
+        let sharedRisk = BrowserSensitiveControlClassifier.classify(
+            selector: selector,
+            requestedSelector: "",
+            label: label,
+            name: name,
+            role: role,
+            tag: tag,
+            type: type,
+            autocomplete: autocomplete,
+            placeholder: placeholder,
+            testID: testID,
+            href: href,
+            frameFocusUninspectable: false
+        )
+        if sharedRisk != .normal {
+            return sharedRisk
+        }
+
         let text = [
             selector,
             label,
+            name,
             role,
             tag,
             type,
+            autocomplete,
             placeholder,
             testID,
             href
         ].joined(separator: " ").lowercased()
-
-        if type.lowercased() == "password" || containsAny(text, ["password", "passcode", "secret"]) {
-            return .credentialInput
-        }
-        if containsAny(text, ["mfa", "2fa", "two factor", "two-factor", "verification code", "security code", "otp", "one-time"]) {
-            return .mfaInput
-        }
-        if containsAny(text, ["delete", "remove", "destroy", "discard", "revoke", "terminate", "erase"]) {
-            return .destructive
-        }
-        if containsAny(text, ["purchase", "buy now", "place order", "checkout"]) {
-            return .purchase
-        }
-        if containsAny(text, ["pay", "payment", "billing", "credit card", "card number"]) {
-            return .payment
-        }
-        if containsAny(text, ["authorize", "approve", "grant", "allow access", "permission", "consent"]) {
-            return .authorization
-        }
         let lowerTag = tag.lowercased()
         let lowerRole = role.lowercased()
         let isEditable = lowerTag == "input" || lowerTag == "textarea" || lowerRole.contains("textbox")

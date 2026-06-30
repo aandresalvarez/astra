@@ -131,6 +131,43 @@ struct BrowserControlActionTarget {
     let usedSelector: Bool
 }
 
+enum BrowserControlTargetingPolicy {
+    static func semanticName(for control: BrowserControl, source: BrowserControlSource) -> String {
+        if source == .dom {
+            return control.name.isEmpty ? control.label : control.name
+        }
+        return control.label.isEmpty ? control.name : control.label
+    }
+
+    static func stableDOMIdentityMatches(cachedControl: BrowserControl, liveControl: BrowserControl) -> Bool {
+        if !cachedControl.controlID.isEmpty, cachedControl.controlID == liveControl.controlID {
+            return true
+        }
+        guard sameDOMScope(cachedControl, liveControl) else {
+            return false
+        }
+        if !cachedControl.selector.isEmpty, cachedControl.selector == liveControl.selector {
+            return true
+        }
+        if !cachedControl.name.isEmpty, cachedControl.name == liveControl.name, compatibleElementShape(cachedControl, liveControl) {
+            return true
+        }
+        if !cachedControl.testID.isEmpty, cachedControl.testID == liveControl.testID, compatibleElementShape(cachedControl, liveControl) {
+            return true
+        }
+        return false
+    }
+
+    private static func sameDOMScope(_ left: BrowserControl, _ right: BrowserControl) -> Bool {
+        left.framePath == right.framePath && left.shadowDepth == right.shadowDepth
+    }
+
+    private static func compatibleElementShape(_ left: BrowserControl, _ right: BrowserControl) -> Bool {
+        (left.tag.isEmpty || right.tag.isEmpty || left.tag == right.tag)
+            && (left.type.isEmpty || right.type.isEmpty || left.type == right.type)
+    }
+}
+
 struct VerifyTextCommand: Decodable {
     let text: String
     let absent: Bool?

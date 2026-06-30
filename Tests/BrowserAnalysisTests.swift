@@ -53,6 +53,162 @@ struct BrowserAnalysisTests {
         #expect(delete.requiresUserConfirmation)
     }
 
+    @Test("Analyzer classifies name and autocomplete sensitive metadata")
+    func analyzerClassifiesNameAndAutocompleteSensitiveMetadata() throws {
+        let analysis = BrowserAnalysisBuilder.build(
+            snapshot: Self.sampleSnapshot(controls: [
+                Self.control(
+                    selector: "input",
+                    tag: "input",
+                    role: "textbox",
+                    type: "text",
+                    label: "Account",
+                    name: "current-password"
+                ),
+                Self.control(
+                    selector: "#token",
+                    tag: "input",
+                    role: "textbox",
+                    type: "text",
+                    label: "Code",
+                    autocomplete: "one-time-code"
+                )
+            ]),
+            backend: "embedded WebKit",
+            engine: "embedded",
+            createdAt: Date(timeIntervalSince1970: 1_000)
+        )
+
+        let password = try #require(analysis.controls.first { $0.name == "current-password" })
+        #expect(password.risk == .credentialInput)
+        #expect(password.requiresUserConfirmation)
+
+        let otp = try #require(analysis.controls.first { $0.autocomplete == "one-time-code" })
+        #expect(otp.risk == .mfaInput)
+        #expect(otp.jsonObject()["autocomplete"] as? String == "one-time-code")
+    }
+
+    @Test("Password reset links stay navigable")
+    func passwordResetLinksStayNavigable() throws {
+        let analysis = BrowserAnalysisBuilder.build(
+            snapshot: Self.sampleSnapshot(controls: [
+                Self.control(
+                    selector: "a[href='/reset-password']",
+                    tag: "a",
+                    role: "link",
+                    label: "Forgot password?",
+                    name: "Forgot password?",
+                    href: "https://example.com/reset-password"
+                )
+            ]),
+            backend: "embedded WebKit",
+            engine: "embedded",
+            createdAt: Date(timeIntervalSince1970: 1_000)
+        )
+
+        let link = try #require(analysis.controls.first)
+        #expect(link.risk == .navigation)
+        #expect(link.validActions.contains(.open))
+        #expect(!link.requiresUserConfirmation)
+    }
+
+    @Test("Secret revealing buttons require confirmation without blocking password reset navigation")
+    func secretRevealingButtonsRequireConfirmationWithoutBlockingPasswordResetNavigation() throws {
+        let analysis = BrowserAnalysisBuilder.build(
+            snapshot: Self.sampleSnapshot(controls: [
+                Self.control(
+                    selector: "button.show-password",
+                    tag: "button",
+                    role: "button",
+                    type: "button",
+                    label: "Show password"
+                ),
+                Self.control(
+                    selector: "button[data-testid=copy-secret]",
+                    tag: "button",
+                    role: "button",
+                    type: "button",
+                    label: "Copy secret"
+                ),
+                Self.control(
+                    selector: "a[href='/reset-password']",
+                    tag: "a",
+                    role: "link",
+                    label: "Forgot password?",
+                    href: "https://example.com/reset-password"
+                )
+            ]),
+            backend: "embedded WebKit",
+            engine: "embedded",
+            createdAt: Date(timeIntervalSince1970: 1_000)
+        )
+
+        let showPassword = try #require(analysis.controls.first { $0.label == "Show password" })
+        #expect(showPassword.risk == .credentialInput)
+        #expect(showPassword.requiresUserConfirmation)
+
+        let copySecret = try #require(analysis.controls.first { $0.label == "Copy secret" })
+        #expect(copySecret.risk == .credentialInput)
+        #expect(copySecret.requiresUserConfirmation)
+
+        let resetLink = try #require(analysis.controls.first { $0.label == "Forgot password?" })
+        #expect(resetLink.risk == .navigation)
+        #expect(!resetLink.requiresUserConfirmation)
+    }
+
+    @Test("Page snapshot script preserves DOM name separately from label")
+    func pageSnapshotScriptPreservesDOMNameSeparatelyFromLabel() {
+        let script = BrowserAutomationScripts.snapshotScript
+        #expect(script.contains("name: nameFor(el)"))
+        #expect(script.contains("ownerDocument"))
+    }
+
+    @Test("Accessibility matching uses the visible label instead of DOM name")
+    func accessibilityMatchingUsesVisibleLabelInsteadOfDOMName() throws {
+        let analysis = BrowserAnalysisBuilder.build(
+            snapshot: Self.sampleSnapshot(controls: [
+                Self.control(
+                    selector: "input[name=credential-slot]",
+                    tag: "input",
+                    role: "textbox",
+                    label: "Password",
+                    name: "credential-slot"
+                )
+            ]),
+            backend: "controlled Chromium profile",
+            engine: "controlled",
+            accessibilitySnapshotObject: Self.accessibilitySnapshot(role: "textbox", name: "Password")
+        )
+
+        let response = analysis.responseObject(query: nil, full: false, limit: nil, version: .v2)
+        let refs = try #require(response["controlRefs"] as? [[String: Any]])
+        let ref = try #require(refs.first)
+        #expect(ref["source"] as? String == BrowserControlSource.accessibility.rawValue)
+        let evidence = try #require(ref["evidence"] as? [String: Any])
+        #expect(evidence["accessibilityName"] as? String == "Password")
+    }
+
+    @Test("Action targeting prefers visible labels for accessibility controls")
+    func actionTargetingPrefersVisibleLabelsForAccessibilityControls() throws {
+        let analysis = BrowserAnalysisBuilder.build(
+            snapshot: Self.sampleSnapshot(controls: [
+                Self.control(
+                    selector: "input[name=q]",
+                    tag: "input",
+                    role: "textbox",
+                    label: "Search docs",
+                    name: "q"
+                )
+            ]),
+            backend: "controlled Chromium profile",
+            engine: "controlled"
+        )
+        let control = try #require(analysis.controls.first)
+
+        #expect(BrowserControlTargetingPolicy.semanticName(for: control, source: .accessibility) == "Search docs")
+        #expect(BrowserControlTargetingPolicy.semanticName(for: control, source: .dom) == "q")
+    }
+
     @Test("Analyze response is compact by default and full when requested")
     func analyzeResponseCompactAndFull() {
         let controls = (0..<25).map { index in
@@ -144,6 +300,81 @@ struct BrowserAnalysisTests {
         #expect(match.strategy == "accessibility")
         #expect(match.usedSelectorFallback == false)
         #expect(match.control.selector == "#new-save")
+        #expect(match.controlRef.source == .accessibility)
+    }
+
+    @Test("DOM resolver preserves stable DOM names when visible labels change")
+    func domResolverPreservesStableDOMNamesWhenVisibleLabelsChange() throws {
+        let cached = BrowserAnalysisBuilder.build(
+            snapshot: Self.sampleSnapshot(controls: [
+                Self.control(selector: "input[name=email]", tag: "input", role: "textbox", label: "Email", name: "email")
+            ]),
+            backend: "embedded WebKit",
+            engine: "embedded"
+        )
+        let live = BrowserAnalysisBuilder.build(
+            snapshot: Self.sampleSnapshot(controls: [
+                Self.control(selector: "input[name=email]", tag: "input", role: "textbox", label: "Work email", name: "email")
+            ]),
+            backend: "embedded WebKit",
+            engine: "embedded"
+        )
+
+        let cachedControl = try #require(cached.controls.first)
+        let match = try #require(BrowserControlResolver.matchingLiveControl(
+            cachedControl: cachedControl,
+            cachedAnalysis: cached,
+            liveAnalysis: live
+        ))
+
+        #expect(match.strategy == "controlRef")
+        #expect(match.usedSelectorFallback == false)
+        #expect(match.control.label == "Work email")
+        #expect(match.controlRef.source == .dom)
+    }
+
+    @Test("DOM resolver preserves stable selectors and names against live accessibility labels")
+    func domResolverPreservesStableSelectorsAndNamesAgainstLiveAccessibilityLabels() throws {
+        let cached = BrowserAnalysisBuilder.build(
+            snapshot: Self.sampleSnapshot(controls: [
+                Self.control(
+                    selector: "input[name=email]",
+                    tag: "input",
+                    role: "textbox",
+                    label: "Email",
+                    name: "email"
+                )
+            ]),
+            backend: "embedded WebKit",
+            engine: "embedded"
+        )
+        let live = BrowserAnalysisBuilder.build(
+            snapshot: Self.sampleSnapshot(controls: [
+                Self.control(
+                    selector: "input[name=email]",
+                    tag: "input",
+                    role: "textbox",
+                    label: "Primary contact",
+                    name: "email"
+                )
+            ]),
+            backend: "controlled Chromium profile",
+            engine: "controlled",
+            accessibilitySnapshotObject: Self.accessibilitySnapshot(role: "textbox", name: "Primary contact")
+        )
+
+        let cachedControl = try #require(cached.controls.first)
+        let match = try #require(BrowserControlResolver.matchingLiveControl(
+            cachedControl: cachedControl,
+            cachedAnalysis: cached,
+            liveAnalysis: live
+        ))
+
+        #expect(match.strategy == "controlRef")
+        #expect(match.usedSelectorFallback == false)
+        #expect(match.control.selector == "input[name=email]")
+        #expect(match.control.name == "email")
+        #expect(match.control.label == "Primary contact")
         #expect(match.controlRef.source == .accessibility)
     }
 
@@ -544,6 +775,8 @@ struct BrowserAnalysisTests {
         role: String,
         type: String = "",
         label: String,
+        name: String? = nil,
+        autocomplete: String = "",
         value: String = "",
         disabled: Bool = false,
         href: String = "",
@@ -555,7 +788,8 @@ struct BrowserAnalysisTests {
             "role": role,
             "type": type,
             "label": label,
-            "name": label,
+            "name": name ?? label,
+            "autocomplete": autocomplete,
             "placeholder": "",
             "testID": "",
             "disabled": disabled,
@@ -588,6 +822,7 @@ struct BrowserAnalysisTests {
             role: role,
             tag: tag,
             type: "",
+            autocomplete: "",
             placeholder: "",
             testID: "",
             value: "",

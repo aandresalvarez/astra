@@ -653,6 +653,12 @@ final class ControlledBrowserController: ObservableObject {
         return value
     }
 
+    func focusedTargetInfo() async throws -> String {
+        try await ensureLaunched(initialURL: URL(string: "about:blank"))
+        let value = try await evaluate(script: BrowserAutomationScripts.focusedTargetInfoScript())
+        try await refreshPageMetadata()
+        return value
+    }
     func type(
         selector: String?,
         text: String,
@@ -703,19 +709,23 @@ final class ControlledBrowserController: ObservableObject {
         return value
     }
 
-    func keypress(key: String, modifiers: [String]) async throws -> String {
+    func replaceTextTargetsInfo(selector: String, find: String, all: Bool) async throws -> String {
+        try await ensureLaunched(initialURL: URL(string: "about:blank"))
+        let value = try await evaluate(script: BrowserAutomationScripts.replaceTextTargetsInfoScript(selector: selector, find: find, all: all))
+        try await refreshPageMetadata()
+        return value
+    }
+    func keypress(
+        key: String,
+        modifiers: [String],
+        expectedFocusedTargetSignature: String?,
+        allowUnboundFocusedTargetDispatch: Bool = false
+    ) async throws -> String {
         try await ensureLaunched(initialURL: URL(string: "about:blank"))
         let definition = Self.keyDefinition(for: key, modifiers: modifiers)
         let modifierMask = Self.cdpModifierMask(for: modifiers)
 
-        var downParams: [String: Any] = [
-            "type": "rawKeyDown",
-            "key": definition.key,
-            "code": definition.code,
-            "windowsVirtualKeyCode": definition.virtualKeyCode,
-            "nativeVirtualKeyCode": definition.virtualKeyCode,
-            "modifiers": modifierMask
-        ]
+        var downParams: [String: Any] = ["type": "rawKeyDown", "key": definition.key, "code": definition.code, "windowsVirtualKeyCode": definition.virtualKeyCode, "nativeVirtualKeyCode": definition.virtualKeyCode, "modifiers": modifierMask]
         if modifierMask == 0, let text = definition.text {
             downParams["text"] = text
             downParams["unmodifiedText"] = text
@@ -724,54 +734,54 @@ final class ControlledBrowserController: ObservableObject {
         let beforeURL = currentURL
         let beforeTitle = pageTitle
         let webSocketURL = try await currentPageWebSocketURL()
+        var blockedResponse: [String: Any]?
         let settlement = try await ControlledBrowserActionSettlementRunner.run(webSocketURL: webSocketURL) { client in
+            if let blocked = try await Self.validateFocusedTextEntryTarget(
+                action: "keypress",
+                expectedSignature: expectedFocusedTargetSignature,
+                allowUnboundFocusedTargetDispatch: allowUnboundFocusedTargetDispatch,
+                client: client
+            ) {
+                blockedResponse = blocked; return
+            }
             _ = try await client.send(method: "Input.dispatchKeyEvent", params: downParams)
-            _ = try await client.send(method: "Input.dispatchKeyEvent", params: [
-                "type": "keyUp",
-                "key": definition.key,
-                "code": definition.code,
-                "windowsVirtualKeyCode": definition.virtualKeyCode,
-                "nativeVirtualKeyCode": definition.virtualKeyCode,
-                "modifiers": modifierMask
-            ])
+            _ = try await client.send(method: "Input.dispatchKeyEvent", params: ["type": "keyUp", "key": definition.key, "code": definition.code, "windowsVirtualKeyCode": definition.virtualKeyCode, "nativeVirtualKeyCode": definition.virtualKeyCode, "modifiers": modifierMask])
         }
         try? await refreshPageMetadata()
+        if var blockedResponse {
+            blockedResponse["cdpSettlement"] = settlementResult(from: settlement, action: "keypress", beforeURL: beforeURL, beforeTitle: beforeTitle, afterURL: currentURL, afterTitle: pageTitle).jsonObject
+            return try Self.jsonString(blockedResponse)
+        }
         return try Self.jsonString([
             "ok": true,
             "key": definition.key,
             "code": definition.code,
             "modifiers": modifiers,
-            "cdpSettlement": settlementResult(
-                from: settlement,
-                action: "keypress",
-                beforeURL: beforeURL,
-                beforeTitle: beforeTitle,
-                afterURL: currentURL,
-                afterTitle: pageTitle
-            ).jsonObject
+            "cdpSettlement": settlementResult(from: settlement, action: "keypress", beforeURL: beforeURL, beforeTitle: beforeTitle, afterURL: currentURL, afterTitle: pageTitle).jsonObject
         ])
     }
 
-    func insertText(_ text: String) async throws -> String {
+    func insertText(_ text: String, expectedFocusedTargetSignature: String?) async throws -> String {
         try await ensureLaunched(initialURL: URL(string: "about:blank"))
         let beforeURL = currentURL
         let beforeTitle = pageTitle
         let webSocketURL = try await currentPageWebSocketURL()
+        var blockedResponse: [String: Any]?
         let settlement = try await ControlledBrowserActionSettlementRunner.run(webSocketURL: webSocketURL) { client in
+            if let blocked = try await Self.validateFocusedTextEntryTarget(action: "insertText", expectedSignature: expectedFocusedTargetSignature, client: client) {
+                blockedResponse = blocked; return
+            }
             _ = try await client.send(method: "Input.insertText", params: ["text": text])
         }
         try? await refreshPageMetadata()
+        if var blockedResponse {
+            blockedResponse["cdpSettlement"] = settlementResult(from: settlement, action: "insertText", beforeURL: beforeURL, beforeTitle: beforeTitle, afterURL: currentURL, afterTitle: pageTitle).jsonObject
+            return try Self.jsonString(blockedResponse)
+        }
         return try Self.jsonString([
             "ok": true,
             "textLength": text.count,
-            "cdpSettlement": settlementResult(
-                from: settlement,
-                action: "insertText",
-                beforeURL: beforeURL,
-                beforeTitle: beforeTitle,
-                afterURL: currentURL,
-                afterTitle: pageTitle
-            ).jsonObject
+            "cdpSettlement": settlementResult(from: settlement, action: "insertText", beforeURL: beforeURL, beforeTitle: beforeTitle, afterURL: currentURL, afterTitle: pageTitle).jsonObject
         ])
     }
 
@@ -1754,6 +1764,8 @@ final class ControlledBrowserController: ObservableObject {
         switch lower {
         case "enter", "return":
             return CDPKeyDefinition(key: "Enter", code: "Enter", virtualKeyCode: 13, text: "\n")
+        case "space", "spacebar":
+            return CDPKeyDefinition(key: " ", code: "Space", virtualKeyCode: 32, text: " ")
         case "escape", "esc":
             return CDPKeyDefinition(key: "Escape", code: "Escape", virtualKeyCode: 27, text: nil)
         case "tab":
@@ -1762,14 +1774,14 @@ final class ControlledBrowserController: ObservableObject {
             return CDPKeyDefinition(key: "Backspace", code: "Backspace", virtualKeyCode: 8, text: nil)
         case "delete":
             return CDPKeyDefinition(key: "Delete", code: "Delete", virtualKeyCode: 46, text: nil)
-        case "arrowleft", "left":
-            return CDPKeyDefinition(key: "ArrowLeft", code: "ArrowLeft", virtualKeyCode: 37, text: nil)
-        case "arrowup", "up":
-            return CDPKeyDefinition(key: "ArrowUp", code: "ArrowUp", virtualKeyCode: 38, text: nil)
-        case "arrowright", "right":
-            return CDPKeyDefinition(key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39, text: nil)
-        case "arrowdown", "down":
-            return CDPKeyDefinition(key: "ArrowDown", code: "ArrowDown", virtualKeyCode: 40, text: nil)
+        case "arrowleft", "left": return CDPKeyDefinition(key: "ArrowLeft", code: "ArrowLeft", virtualKeyCode: 37, text: nil)
+        case "arrowup", "up": return CDPKeyDefinition(key: "ArrowUp", code: "ArrowUp", virtualKeyCode: 38, text: nil)
+        case "arrowright", "right": return CDPKeyDefinition(key: "ArrowRight", code: "ArrowRight", virtualKeyCode: 39, text: nil)
+        case "arrowdown", "down": return CDPKeyDefinition(key: "ArrowDown", code: "ArrowDown", virtualKeyCode: 40, text: nil)
+        case "home": return CDPKeyDefinition(key: "Home", code: "Home", virtualKeyCode: 36, text: nil)
+        case "end": return CDPKeyDefinition(key: "End", code: "End", virtualKeyCode: 35, text: nil)
+        case "pageup": return CDPKeyDefinition(key: "PageUp", code: "PageUp", virtualKeyCode: 33, text: nil)
+        case "pagedown": return CDPKeyDefinition(key: "PageDown", code: "PageDown", virtualKeyCode: 34, text: nil)
         default:
             break
         }
