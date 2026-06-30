@@ -220,6 +220,72 @@ struct BrowserAnalysisTests {
         #expect(String(describing: response).contains(cardNumber) == false)
     }
 
+    @Test("Analysis keeps payment submit labels visible")
+    func analysisKeepsPaymentSubmitLabelsVisible() throws {
+        let analysis = BrowserAnalysisBuilder.build(
+            snapshot: Self.sampleSnapshot(controls: [
+                Self.control(
+                    selector: "#pay-now",
+                    tag: "input",
+                    role: "button",
+                    type: "submit",
+                    label: "Pay now",
+                    value: "Pay now",
+                    name: "paymentSubmit"
+                )
+            ]),
+            backend: "controlled Chromium profile",
+            engine: "controlled"
+        )
+
+        let response = analysis.responseObject(query: nil, full: true, limit: nil, version: .v2)
+        let controls = try #require(response["controls"] as? [[String: Any]])
+        let control = try #require(controls.first)
+
+        #expect(control["label"] as? String == "Pay now")
+        #expect(control["value"] as? String == "Pay now")
+        #expect(control["risk"] as? String == BrowserRisk.payment.rawValue)
+    }
+
+    @Test("Analysis ambiguity labels use redacted control text")
+    func analysisAmbiguityLabelsUseRedactedControlText() throws {
+        let secret = "MRN-424242"
+        let analysis = BrowserAnalysisBuilder.build(
+            snapshot: Self.sampleSnapshot(controls: [
+                Self.control(
+                    selector: "#mrn-one",
+                    tag: "input",
+                    role: "textbox",
+                    type: "text",
+                    label: secret,
+                    value: secret,
+                    name: secret,
+                    y: 20
+                ),
+                Self.control(
+                    selector: "#mrn-two",
+                    tag: "input",
+                    role: "textbox",
+                    type: "text",
+                    label: secret,
+                    value: secret,
+                    name: secret,
+                    y: 80
+                )
+            ]),
+            backend: "embedded WebKit",
+            engine: "embedded"
+        )
+
+        let response = analysis.responseObject(query: nil, full: true, limit: nil, version: .v2)
+        let ambiguity = try #require(response["ambiguity"] as? [String: Any])
+        let duplicates = try #require(ambiguity["duplicateLabels"] as? [[String: Any]])
+        let duplicate = try #require(duplicates.first)
+
+        #expect(duplicate["label"] as? String == "[redacted-sensitive-input]")
+        #expect(String(describing: response).contains(secret) == false)
+    }
+
     @Test("Analysis response applies autocomplete sensitivity from snapshots")
     func analysisResponseAppliesAutocompleteSensitivityFromSnapshots() throws {
         let secret = "autofill-password-value"

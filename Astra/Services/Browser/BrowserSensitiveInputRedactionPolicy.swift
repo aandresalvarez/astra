@@ -182,7 +182,7 @@ enum BrowserSensitiveInputRedactionPolicy {
         autocomplete: String = "",
         risk: BrowserRisk? = nil
     ) -> Bool {
-        if let risk, [.credentialInput, .mfaInput, .privacySensitive, .payment].contains(risk) {
+        if let risk, [.credentialInput, .mfaInput, .privacySensitive].contains(risk) {
             return true
         }
 
@@ -194,6 +194,9 @@ enum BrowserSensitiveInputRedactionPolicy {
         let lowerAutocomplete = autocomplete.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         if containsAny(lowerAutocomplete, sensitiveAutocompleteTokens) {
             return true
+        }
+        if risk == .payment, !isEditablePaymentField(tag: tag, role: role, type: lowerType) {
+            return false
         }
 
         let text = [
@@ -209,6 +212,32 @@ enum BrowserSensitiveInputRedactionPolicy {
             lowerAutocomplete
         ].joined(separator: " ").lowercased()
         return containsAny(text, sensitiveFieldTerms)
+    }
+
+    private static func isEditablePaymentField(tag: String, role: String, type: String) -> Bool {
+        let lowerTag = tag.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let lowerRole = role.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if ["textarea", "select"].contains(lowerTag) {
+            return true
+        }
+        if lowerRole == "textbox" || lowerRole == "combobox" {
+            return true
+        }
+        guard lowerTag == "input" else {
+            return false
+        }
+        let nonEditableInputTypes: Set<String> = [
+            "button",
+            "checkbox",
+            "color",
+            "file",
+            "image",
+            "radio",
+            "range",
+            "reset",
+            "submit"
+        ]
+        return !nonEditableInputTypes.contains(type)
     }
 
     private static let sensitiveAutocompleteTokens = [

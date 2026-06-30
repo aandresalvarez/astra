@@ -1673,7 +1673,7 @@ enum BrowserAnalysisBuilder {
     }
 
     private static func disambiguationKey(for control: BrowserControl) -> String {
-        var value = control.label.isEmpty ? control.name : control.label
+        var value = control.redactedLabel.isEmpty ? control.redactedName : control.redactedLabel
         let removablePatterns = [
             #"More actions"#,
             #"More info \(Option \+ [^)]+\)"#,

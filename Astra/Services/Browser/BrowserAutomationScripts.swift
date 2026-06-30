@@ -389,6 +389,22 @@ enum BrowserAutomationScripts {
         }
         return null;
       };
+      const sensitiveControlForTextNode = (el) => {
+        const valueControl = valueControlForTextNode(el);
+        if (valueControl && isSensitiveValueControl(valueControl)) return valueControl;
+        const parentLabel = el.closest ? el.closest("label") : null;
+        if (parentLabel?.control && isSensitiveValueControl(parentLabel.control)) return parentLabel.control;
+        let node = el;
+        while (node) {
+          if (node.id) {
+            const labelledControl = document.querySelector("[aria-labelledby~='" + esc(node.id) + "']");
+            if (labelledControl && isSensitiveValueControl(labelledControl)) return labelledControl;
+          }
+          if (node === document.body) break;
+          node = node.parentElement;
+        }
+        return null;
+      };
       const visibleText = () => {
         if (!document.body) return "";
         const pieces = [];
@@ -401,8 +417,7 @@ enum BrowserAutomationScripts {
           if (!text) continue;
           const parent = node.parentElement;
           if (!parent || !visible(parent)) continue;
-          const valueControl = valueControlForTextNode(parent);
-          if (valueControl && isSensitiveValueControl(valueControl)) continue;
+          if (sensitiveControlForTextNode(parent)) continue;
           pieces.push(text);
           total += text.length + 1;
         }
@@ -500,11 +515,7 @@ enum BrowserAutomationScripts {
       };
       const labelForSnapshot = (el) => {
         const label = labelFor(el);
-        const value = editableValueFor(el).replace(/\\s+/g, " ").trim().slice(0, 160);
-        if (value && isSensitiveValueControl(el) && (label === value || label.includes(value))) {
-          return "[redacted-sensitive-input]";
-        }
-        return label;
+        return metadataValueForSnapshot(el, editableValueFor(el), label);
       };
       const frameLabelFor = (frame) => {
         const title = frame.getAttribute("title") || frame.getAttribute("name") || frame.getAttribute("aria-label") || frame.src || selectorFor(frame);
@@ -783,12 +794,30 @@ enum BrowserAutomationScripts {
             ].join(" ").toLowerCase();
             return includesAny(text, sensitiveResultTerms);
           };
+          const cssUnescaped = (value) => String(value || "")
+            .replace(/\\\\([0-9a-fA-F]{1,6})\\s?/g, (_, hex) => String.fromCodePoint(parseInt(hex, 16)))
+            .replace(/\\\\(.)/g, "$1");
+          const sensitiveMetadataCandidate = (value) => {
+            const text = norm(cssUnescaped(value));
+            return text
+              && includesAny(text, sensitiveResultTerms)
+              && (/[0-9]/.test(text) || text.includes("-") || text.includes("_") || text.includes("%") || value.length > 20);
+          };
+          const redactSensitiveResultMetadata = (value, sensitiveValue) => {
+            const raw = String(value || "");
+            const normalizedValue = norm(sensitiveValue);
+            if (normalizedValue && norm(raw).includes(normalizedValue)) return redactedInputValue;
+            return sensitiveMetadataCandidate(raw) ? redactedInputValue : raw;
+          };
           const redactSensitiveResultTarget = (result, target, value) => {
             if (!sensitiveResultTarget(target)) return result;
             result.value = redactedInputValue;
             const normalizedValue = norm(value);
             if (normalizedValue && norm(result.label).includes(normalizedValue)) {
               result.label = redactedInputValue;
+            }
+            for (const key of ["selector", "requestedSelector", "label", "name", "placeholder", "testID", "href"]) {
+              if (key in result) result[key] = redactSensitiveResultMetadata(result[key], value);
             }
             return result;
           };

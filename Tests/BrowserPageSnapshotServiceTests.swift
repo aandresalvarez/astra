@@ -209,15 +209,20 @@ struct BrowserPageSnapshotServiceTests {
         #expect(script.contains("const labelForSnapshot = (el) =>"))
         #expect(script.contains("const editableValueFor = (el) =>"))
         #expect(script.contains("const valueControlForTextNode = (el) =>"))
+        #expect(script.contains("const sensitiveControlForTextNode = (el) =>"))
+        #expect(script.contains("parentLabel?.control && isSensitiveValueControl(parentLabel.control)"))
+        #expect(script.contains("document.querySelector(\"[aria-labelledby~='\" + esc(node.id) + \"']\")"))
         #expect(script.contains("el.isContentEditable"))
         #expect(script.contains("if (node === document.body) break"))
         #expect(script.contains("const redactedMetadataForSnapshot = (el, value) =>"))
         #expect(script.contains("const metadataValueForSnapshot = (el, rawValue, value) =>"))
+        #expect(script.contains("return metadataValueForSnapshot(el, editableValueFor(el), label)"))
         #expect(script.contains("name: metadataValueForSnapshot(el, rawValue, el.getAttribute(\"name\") || \"\")"))
-        #expect(script.contains("valueControl && isSensitiveValueControl(valueControl)"))
+        #expect(script.contains("if (sensitiveControlForTextNode(parent)) continue"))
         #expect(script.contains("\"cc-name\""))
         #expect(script.contains("\"payment\""))
         #expect(script.contains("\"mrn\""))
+        #expect(!script.contains("label === value || label.includes(value)"))
         #expect(!script.contains("name: labelFor(el)"))
     }
 
@@ -307,6 +312,9 @@ struct BrowserPageSnapshotServiceTests {
         #expect(script.contains("const redactSensitiveResultTarget = (result, target, value) =>"))
         #expect(script.contains("if (!target.ok) return JSON.stringify(redactSensitiveResultTarget(publicTarget(target), target.el, currentValueFor(target.el)))"))
         #expect(script.contains("return JSON.stringify(redactSensitiveResultTarget(result, el, currentValueFor(el)))"))
+        #expect(script.contains(#"for (const key of ["selector", "requestedSelector", "label", "name", "placeholder", "testID", "href"])"#))
+        #expect(script.contains("redactSensitiveResultMetadata(result[key], value)"))
+        #expect(script.contains("sensitiveMetadataCandidate(raw) ? redactedInputValue : raw"))
     }
 
     private var snapshotJSON: String {
