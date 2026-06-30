@@ -300,6 +300,38 @@ struct PanelLayoutGeometryTests {
         ) == nil)
     }
 
+    @Test("Pending App Preview restore waits for profile policy to allow Studio preview")
+    func pendingAppPreviewRestoreWaitsForProfilePolicyToAllowStudioPreview() {
+        let context = ShelfAvailabilityPolicy.Context(
+            hasOpenTaskThread: false,
+            hasWorkspaceContext: true,
+            hasPlanContent: false,
+            hasFilesShelfContent: false,
+            hasQueryShelfContent: false,
+            isComposingWorkspaceApp: true,
+            activeShelfID: nil
+        )
+
+        #expect(WorkspaceCanvasPolicyTransition.itemAfterPendingAppPreviewPolicyRestore(
+            currentItem: nil,
+            pendingRestore: true,
+            policy: ShelfAvailabilityPolicy(disabledShelfIDs: [.appPreview]),
+            context: context
+        ) == nil)
+        #expect(WorkspaceCanvasPolicyTransition.itemAfterPendingAppPreviewPolicyRestore(
+            currentItem: nil,
+            pendingRestore: true,
+            policy: ShelfAvailabilityPolicy(),
+            context: context
+        ) == .appPreview)
+        #expect(WorkspaceCanvasPolicyTransition.itemAfterPendingAppPreviewPolicyRestore(
+            currentItem: .browser,
+            pendingRestore: true,
+            policy: ShelfAvailabilityPolicy(),
+            context: context
+        ) == .browser)
+    }
+
     @Test("Target plan presentation seeds cache from the validated target task")
     func targetPlanPresentationSeedsCacheFromValidatedTargetTask() {
         let previousTaskID = UUID()

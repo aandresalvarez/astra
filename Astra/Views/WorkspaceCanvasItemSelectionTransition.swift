@@ -42,4 +42,16 @@ enum WorkspaceCanvasPolicyTransition {
         guard let currentItem else { return nil }
         return policy.canPresent(currentItem.shelfID, in: context) ? currentItem : nil
     }
+
+    static func itemAfterPendingAppPreviewPolicyRestore(
+        currentItem: WorkspaceCanvasItem?,
+        pendingRestore: Bool,
+        policy: ShelfAvailabilityPolicy,
+        context: ShelfAvailabilityPolicy.Context
+    ) -> WorkspaceCanvasItem? {
+        guard pendingRestore else { return currentItem }
+        guard currentItem == nil else { return currentItem }
+        guard context.isComposingWorkspaceApp else { return currentItem }
+        return policy.canPresent(.appPreview, in: context) ? .appPreview : currentItem
+    }
 }

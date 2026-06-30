@@ -114,6 +114,7 @@ struct ContentView: View {
     @AppStorage("isWorkspaceRightRailVisible") private var isWorkspaceRightRailVisible = true
     @AppStorage(WorkspaceRecoveryService.recoveryNoticeKey) private var recoveryNotice = ""
     @State private var activeWorkspaceCanvasItem: WorkspaceCanvasItem?
+    @State private var pendingAppPreviewPolicyRestore = false
     @State private var browserToolbarEngine = ShelfBrowserEngine.embedded
     // MARK: Sidebar Presentation
     /// The single owner of sidebar visibility — docked column, floating overlay
@@ -641,19 +642,19 @@ struct ContentView: View {
         if let workspace = targetWorkspace ?? effectiveWorkspace {
             workspaceAppStudioSession.reset(for: workspace, existingManifest: existingManifest, initialPrompt: initialPrompt)
         }
-        setActiveWorkspaceCanvasItem(
-            WorkspaceCanvasPolicyTransition.itemAfterAppStudioStart(
-                policy: shelfAvailabilityPolicy,
-                context: shelfAvailabilityContext
-            ),
-            remember: false
+        let appPreviewItem = WorkspaceCanvasPolicyTransition.itemAfterAppStudioStart(
+            policy: shelfAvailabilityPolicy,
+            context: shelfAvailabilityContext
         )
+        pendingAppPreviewPolicyRestore = appPreviewItem == nil
+        setActiveWorkspaceCanvasItem(appPreviewItem, remember: false)
     }
 
     /// Leave the Studio without publishing: drop the composer, collapse the preview, cancel gen.
     private func cancelWorkspaceAppStudio() {
         workspaceAppStudioSession.cancelGeneration()
         isComposingWorkspaceApp = false
+        pendingAppPreviewPolicyRestore = false
         if activeWorkspaceCanvasItem == .appPreview {
             setActiveWorkspaceCanvasItem(nil, remember: false)
         }
@@ -661,11 +662,13 @@ struct ContentView: View {
 
     private func toggleAppPreviewCanvas() {
         if activeWorkspaceCanvasItem == .appPreview {
+            pendingAppPreviewPolicyRestore = false
             animatePanelChange {
                 setActiveWorkspaceCanvasItem(nil, remember: false)
             }
         } else {
             guard canPresentWorkspaceCanvasItem(.appPreview) else { return }
+            pendingAppPreviewPolicyRestore = false
             animatePanelChange {
                 isWorkspaceRightRailVisible = false
                 setActiveWorkspaceCanvasItem(.appPreview, remember: false)
@@ -904,6 +907,7 @@ struct ContentView: View {
         }
         .onChange(of: shelfAvailabilityPolicy) {
             invalidateActiveWorkspaceCanvasItemIfUnavailable(remember: false)
+            restorePendingAppPreviewAfterShelfPolicyLoadIfAvailable()
         }
         .task(id: shelfAvailabilityPolicyRefreshSignature) {
             await refreshShelfAvailabilityPolicy()
@@ -1263,6 +1267,22 @@ struct ContentView: View {
         )
         guard nextItem != activeWorkspaceCanvasItem else { return }
         setActiveWorkspaceCanvasItem(nextItem, remember: remember)
+    }
+
+    private func restorePendingAppPreviewAfterShelfPolicyLoadIfAvailable() {
+        guard pendingAppPreviewPolicyRestore else { return }
+        let nextItem = WorkspaceCanvasPolicyTransition.itemAfterPendingAppPreviewPolicyRestore(
+            currentItem: activeWorkspaceCanvasItem,
+            pendingRestore: true,
+            policy: shelfAvailabilityPolicy,
+            context: shelfAvailabilityContext
+        )
+        if nextItem != activeWorkspaceCanvasItem {
+            pendingAppPreviewPolicyRestore = false
+            setActiveWorkspaceCanvasItem(nextItem, remember: false)
+            return
+        }
+        if !isComposingWorkspaceApp { pendingAppPreviewPolicyRestore = false }
     }
 
     private func canPresentWorkspaceCanvasItem(_ item: WorkspaceCanvasItem) -> Bool {
@@ -1755,6 +1775,14 @@ struct ContentView: View {
     private func openWorkspaceFileInShelf(_ path: String) {
         let url = URL(fileURLWithPath: path).standardizedFileURL
         let taskID = selectedTask?.id
+        guard canOpenGeneratedFileInShelf(.files) else {
+            NSWorkspace.shared.open(url)
+            AppLogger.audit(.gitChangedFileOpenedInShelf, category: "Git", taskID: taskID, fields: [
+                "path": url.path,
+                "result": FileManager.default.fileExists(atPath: url.path) ? "opened_system" : "missing_system"
+            ], level: FileManager.default.fileExists(atPath: url.path) ? .info : .warning)
+            return
+        }
         selectedTaskPreferredMarkdownPath = url.path
         selectedTaskHasMarkdownShelfContent = true
         let session = markdownSessionStore.session(for: taskID, pinnedToTask: isMarkdownPinnedToTask)

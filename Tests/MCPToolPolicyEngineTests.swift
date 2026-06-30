@@ -176,6 +176,43 @@ struct MCPToolPolicyEngineTests {
         #expect(audit.records.first?.policyEvidence.contains("docs-read-consent") == true)
     }
 
+    @Test("request pack policy gates MCP server resolution")
+    func requestPackPolicyGatesMCPServerResolution() {
+        let packPolicy = AstraPackPolicyResolver.resolve(
+            composition: AstraPackComposition.resolve(packs: [
+                AstraPackManifest(
+                    id: "astra.pack.blocks-google-mcp",
+                    name: "Blocks Google MCP",
+                    version: "1.0.0",
+                    coreAPIVersion: "1.0",
+                    description: "Disables Google MCP at runtime.",
+                    policyRestrictions: [
+                        AstraPackPolicyRestriction(
+                            id: "disable-google-mcp",
+                            contributionKind: "capabilityPackage",
+                            action: "disableCapability",
+                            effect: "restrict",
+                            targetID: "google-mcp",
+                            message: "Google MCP is disabled for this profile."
+                        )
+                    ]
+                )
+            ])
+        )
+
+        let decision = makeEngine().evaluate(
+            request(
+                toolName: "docs.get",
+                grantedScopes: [.googleDocsRead],
+                packPolicy: packPolicy,
+                packPolicyResolver: { _ in .empty }
+            )
+        )
+
+        #expect(!decision.isAllowed)
+        #expect(decision.denialReason == .workspaceNotEnabled)
+    }
+
     @Test("rate limit denies the third call in the same window and records a denial audit")
     func rateLimitDeniesThirdCall() {
         let audit = RecordingMCPToolPolicyAuditSink()

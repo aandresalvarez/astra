@@ -81,15 +81,22 @@ enum CapabilityRuntimeIntegrityService {
         let availableConnectors = availableConnectors(for: task)
 
         var checks: [(PluginPackage, CapabilityRuntimeIntegrityIssue.Source)] = []
-        for package in packages where runtimeEnabledPackageIDs.contains(package.id) {
-            guard shouldCheckEnabledPackage(
-                package,
-                task: task,
-                scope: requestedScope,
-                resolvedSkills: resolvedSkills,
-                resolvedConnectors: resolvedConnectors,
-                resolvedTools: resolvedTools
-            ) else {
+        for package in packages where rawEnabledPackageIDs.contains(package.id) {
+            if runtimeEnabledPackageIDs.contains(package.id) {
+                guard shouldCheckEnabledPackage(
+                    package,
+                    task: task,
+                    scope: requestedScope,
+                    resolvedSkills: resolvedSkills,
+                    resolvedConnectors: resolvedConnectors,
+                    resolvedTools: resolvedTools
+                ) else {
+                    continue
+                }
+            } else if let policyContext {
+                let decision = CapabilityCatalogPolicy.decision(for: package, context: policyContext)
+                guard shouldReportPolicyDeniedEnabledPackage(decision) else { continue }
+            } else {
                 continue
             }
             checks.append((package, .enabledPackage))
@@ -115,6 +122,9 @@ enum CapabilityRuntimeIntegrityService {
                         name: package.name,
                         message: "catalog policy blocks runtime activation: \(decision.blockerMessages.joined(separator: "; "))"
                     ))
+                    if shouldReportPolicyDeniedEnabledPackage(decision) {
+                        continue
+                    }
                 }
             }
             issues += resourceIssues(
@@ -131,6 +141,18 @@ enum CapabilityRuntimeIntegrityService {
             )
         }
         return issues
+    }
+
+    private static func shouldReportPolicyDeniedEnabledPackage(_ decision: CapabilityCatalogDecision) -> Bool {
+        guard !decision.canRun else { return false }
+        return decision.blockers.contains { blocker in
+            switch blocker {
+            case .packPolicyRestricted:
+                return false
+            default:
+                return true
+            }
+        }
     }
 
     static func summaryFields(for issues: [CapabilityRuntimeIntegrityIssue]) -> [String: String] {

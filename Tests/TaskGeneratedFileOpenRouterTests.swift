@@ -72,6 +72,22 @@ struct TaskGeneratedFileOpenRouterTests {
             policy: policy,
             context: openTask
         ))
+
+        let filesPolicy = ShelfAvailabilityPolicy(disabledShelfIDs: [.files])
+        #expect(!TaskGeneratedFileOpenRouter.canOpenInShelf(
+            destination: .files,
+            policy: filesPolicy,
+            context: openTask
+        ))
+        #expect(TaskGeneratedFileOpenRouter.route(
+            path: "/tmp/report.md",
+            destination: .files,
+            canOpenInShelf: TaskGeneratedFileOpenRouter.canOpenInShelf(
+                destination: .files,
+                policy: filesPolicy,
+                context: openTask
+            )
+        ) == .system(path: "/tmp/report.md"))
     }
 
     @Test("query generated files seed query shelf availability")

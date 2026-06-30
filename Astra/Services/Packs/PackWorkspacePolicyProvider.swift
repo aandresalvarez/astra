@@ -6,8 +6,18 @@ enum PackWorkspacePolicyProvider {
         catalogSnapshot: AstraPackCatalogSnapshot? = nil
     ) -> PackResolvedPolicy {
         guard let workspace else { return .empty }
+        return resolvedPolicy(
+            enabledPackIDs: workspace.enabledPackIDs,
+            catalogSnapshot: catalogSnapshot
+        )
+    }
+
+    static func resolvedPolicy(
+        enabledPackIDs rawEnabledPackIDs: [String],
+        catalogSnapshot: AstraPackCatalogSnapshot? = nil
+    ) -> PackResolvedPolicy {
         let enabledPackIDs = Set(
-            workspace.enabledPackIDs
+            rawEnabledPackIDs
                 .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
                 .filter { !$0.isEmpty }
         )

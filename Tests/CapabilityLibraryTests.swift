@@ -388,40 +388,39 @@ struct CapabilityLibraryTests {
             )
         ])
         var approvalLoadCount = 0
-        CapabilityRuntimeResourceMatcher.approvalRecordsLoaderForTesting = {
+        CapabilityRuntimeResourceMatcher.withApprovalRecordsLoaderForTesting({
             approvalLoadCount += 1
             return []
-        }
-        defer { CapabilityRuntimeResourceMatcher.approvalRecordsLoaderForTesting = nil }
-
-        let packages = CapabilityRuntimeResourceMatcher.enabledPackages(
-            for: workspace,
-            in: [disabled],
-            packPolicy: disabledPolicy
-        )
-
-        #expect(packages.isEmpty)
-        #expect(approvalLoadCount == 0)
-
-        let gated = makeTestPackage(id: "local.test/gated", name: "Gated")
-        workspace.enabledCapabilityIDs = [gated.id]
-        let gatedPolicy = Self.policy(restrictions: [
-            AstraPackPolicyRestriction(
-                id: "review-gated",
-                contributionKind: "capabilityPackage",
-                action: "requireReviewGate",
-                effect: "restrict",
-                targetID: gated.id
+        }) {
+            let packages = CapabilityRuntimeResourceMatcher.enabledPackages(
+                for: workspace,
+                in: [disabled],
+                packPolicy: disabledPolicy
             )
-        ])
-        let gatedPackages = CapabilityRuntimeResourceMatcher.enabledPackages(
-            for: workspace,
-            in: [gated],
-            packPolicy: gatedPolicy
-        )
 
-        #expect(gatedPackages.isEmpty)
-        #expect(approvalLoadCount == 1)
+            #expect(packages.isEmpty)
+            #expect(approvalLoadCount == 0)
+
+            let gated = makeTestPackage(id: "local.test/gated", name: "Gated")
+            workspace.enabledCapabilityIDs = [gated.id]
+            let gatedPolicy = Self.policy(restrictions: [
+                AstraPackPolicyRestriction(
+                    id: "review-gated",
+                    contributionKind: "capabilityPackage",
+                    action: "requireReviewGate",
+                    effect: "restrict",
+                    targetID: gated.id
+                )
+            ])
+            let gatedPackages = CapabilityRuntimeResourceMatcher.enabledPackages(
+                for: workspace,
+                in: [gated],
+                packPolicy: gatedPolicy
+            )
+
+            #expect(gatedPackages.isEmpty)
+            #expect(approvalLoadCount == 1)
+        }
     }
 
     @Test("enabled packages honors pack review gate approvals")

@@ -2298,18 +2298,17 @@ struct TaskCapabilityResolverTests {
             ])
         )
         var didLoadApprovals = false
-        CapabilityRuntimeResourceMatcher.approvalRecordsLoaderForTesting = {
+        let enabled = CapabilityRuntimeResourceMatcher.withApprovalRecordsLoaderForTesting({
             didLoadApprovals = true
             return [approval]
+        }) {
+            CapabilityRuntimeResourceMatcher.enabledPackages(
+                for: workspace,
+                in: [draftPackage],
+                approvalRecords: nil,
+                packPolicy: packPolicy
+            )
         }
-        defer { CapabilityRuntimeResourceMatcher.approvalRecordsLoaderForTesting = nil }
-
-        let enabled = CapabilityRuntimeResourceMatcher.enabledPackages(
-            for: workspace,
-            in: [draftPackage],
-            approvalRecords: nil,
-            packPolicy: packPolicy
-        )
 
         #expect(didLoadApprovals)
         #expect(enabled.map(\.id) == ["draft-approved-tool"])

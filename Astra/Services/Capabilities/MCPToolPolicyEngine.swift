@@ -120,7 +120,8 @@ struct MCPToolPolicyEngine: Sendable {
         MCPRuntimeProjection.enabledServers(
             for: request.workspace,
             packages: request.packages,
-            approvalRecords: request.approvalRecords
+            approvalRecords: request.approvalRecords,
+            packPolicy: request.packPolicy
         )
         .first { normalized($0.server.id) == normalized(request.serverID) }
     }

@@ -376,6 +376,57 @@ struct CapabilityRuntimeIntegrityServiceTests {
         #expect(issues.isEmpty)
     }
 
+    @Test("pack review-gated enabled package reports policy issue")
+    func packReviewGatedEnabledPackageReportsPolicyIssue() throws {
+        let container = try makeRuntimeIntegrityContainer()
+        let context = container.mainContext
+        let package = PluginPackage(
+            id: "runtime-pack-review",
+            name: "Runtime Pack Review",
+            icon: "puzzlepiece.extension",
+            description: "Review gated by pack policy",
+            author: "Tests",
+            category: "Tests",
+            tags: [],
+            version: "1.0.0",
+            skills: [],
+            connectors: [],
+            localTools: [],
+            templates: [],
+            governance: .builtInApproved()
+        )
+        let workspace = Workspace(name: "Runtime Pack Review", primaryPath: "/tmp/runtime-pack-review")
+        workspace.enabledCapabilityIDs = [package.id]
+        context.insert(workspace)
+        let task = AgentTask(title: "Use review-gated package", goal: "Run review-gated capability", workspace: workspace)
+        context.insert(task)
+        try context.save()
+        let packPolicy = runtimePackPolicy(restrictions: [
+            AstraPackPolicyRestriction(
+                id: "review-runtime",
+                contributionKind: "capabilityPackage",
+                action: "requireReviewGate",
+                effect: "restrict",
+                targetID: package.id,
+                message: "Runtime pack review is required."
+            )
+        ])
+
+        let issues = CapabilityRuntimeIntegrityService.issues(
+            for: task,
+            packages: [package],
+            checkExecutables: false,
+            policyContext: CapabilityCatalogPolicyContext.currentUser(
+                workspace: workspace,
+                approvalRecords: [],
+                packPolicy: packPolicy
+            )
+        )
+
+        #expect(issues.map(\.resourceKind) == [.policy])
+        #expect(issues.first?.message.contains("Runtime pack review is required") == true)
+    }
+
     @Test("enabled package with unauthenticated prerequisite blocks runtime activation")
     func enabledPackageWithUnauthenticatedPrerequisiteBlocksRuntimeActivation() throws {
         let container = try makeRuntimeIntegrityContainer()

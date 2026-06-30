@@ -2,7 +2,22 @@ import Foundation
 import ASTRACore
 
 enum CapabilityRuntimeResourceMatcher {
-    static var approvalRecordsLoaderForTesting: (() -> [CapabilityApprovalRecord])?
+    private static var approvalRecordsLoaderForTesting: (() -> [CapabilityApprovalRecord])?
+    private static let approvalRecordsLoaderLock = NSRecursiveLock()
+
+    static func withApprovalRecordsLoaderForTesting<Result>(
+        _ loader: @escaping () -> [CapabilityApprovalRecord],
+        perform: () throws -> Result
+    ) rethrows -> Result {
+        approvalRecordsLoaderLock.lock()
+        let previousLoader = approvalRecordsLoaderForTesting
+        approvalRecordsLoaderForTesting = loader
+        defer {
+            approvalRecordsLoaderForTesting = previousLoader
+            approvalRecordsLoaderLock.unlock()
+        }
+        return try perform()
+    }
 
     static func packageDefinitions(library: CapabilityLibrary = CapabilityLibrary()) -> [PluginPackage] {
         uniquePackages(cachedInstalledPackages(library: library) + PluginCatalog.builtInPackages)
@@ -155,6 +170,8 @@ enum CapabilityRuntimeResourceMatcher {
         guard needsApprovalRecords(packages: packages, packPolicy: packPolicy) else {
             return []
         }
+        approvalRecordsLoaderLock.lock()
+        defer { approvalRecordsLoaderLock.unlock() }
         return approvalRecordsLoaderForTesting?() ?? CapabilityApprovalStore().records()
     }
 
