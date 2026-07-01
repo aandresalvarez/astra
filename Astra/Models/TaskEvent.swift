@@ -17,16 +17,18 @@ final class TaskEvent {
 
     init(task: AgentTask, type: String, payload: String = "", run: TaskRun? = nil,
          agentName: String? = nil, agentId: String? = nil, teamName: String? = nil) {
+        let now = Date()
         self.id = UUID()
         self.task = task
         self.run = run
         self.type = type
         self.payload = payload
-        self.timestamp = Date()
+        self.timestamp = now
         self.agentName = agentName
         self.agentId = agentId
         self.teamName = teamName
         self.category = Self.categoryFor(type: type)
+        task.updatedAt = now
     }
 
     convenience init(task: AgentTask, eventType: TaskEventType, payload: String = "", run: TaskRun? = nil,

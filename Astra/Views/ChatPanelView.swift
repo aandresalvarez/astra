@@ -425,30 +425,18 @@ struct ChatPanelView: View {
     @State private var planGenerationTask: Task<Void, Never>?
     @State private var isApprovedPlanHistoryExpanded = false
     @State private var excludedSkillIDs: Set<UUID> = []
+    @State private var capabilitySnapshot = ComposerCapabilitySnapshot.empty
     @State private var runtimeReadinessStates: [AgentRuntimeID: RuntimeReadinessState] = [:]
     // Random per session; a live-cycling prompt mutated while the user was reading it.
     @State private var newTaskPromptIndex = Int.random(in: 0..<ChatPanelView.newTaskPrompts.count)
     @FocusState private var isComposerFocused: Bool
 
-    @Query(filter: #Predicate<Skill> { $0.isGlobal == true })
-    private var globalSkills: [Skill]
-    @Query(filter: #Predicate<Connector> { $0.isGlobal == true })
-    private var globalConnectors: [Connector]
-    @Query(filter: #Predicate<LocalTool> { $0.isGlobal == true })
-    private var globalTools: [LocalTool]
-
     private var availableSkills: [Skill] {
-        guard let workspace else { return [] }
-        return WorkspaceCapabilities(
-            workspace: workspace,
-            globalSkills: globalSkills,
-            globalConnectors: globalConnectors,
-            globalTools: globalTools
-        ).activeSkills
+        capabilitySnapshot.availableSkills
     }
 
     private var selectedSkills: [Skill] {
-        availableSkills.filter { !excludedSkillIDs.contains($0.id) }
+        capabilitySnapshot.selectedSkills(excluding: excludedSkillIDs)
     }
 
     private var hasInput: Bool {
@@ -759,6 +747,11 @@ struct ChatPanelView: View {
         }
         .navigationTitle(draftTask != nil ? "Draft" : "New Task")
         .navigationSubtitle(workspace?.name ?? "Astra")
+        .background {
+            ComposerCapabilitySnapshotLoader(workspace: workspace) { snapshot in
+                capabilitySnapshot = snapshot
+            }
+        }
         .task(id: runtimeAvailabilitySignature) {
             await refreshRuntimeAvailability()
         }

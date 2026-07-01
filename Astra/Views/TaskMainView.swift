@@ -252,12 +252,6 @@ struct TaskMainView: View {
 
     @Environment(\.modelContext) private var modelContext
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Query(filter: #Predicate<Skill> { $0.isGlobal == true })
-    private var globalSkills: [Skill]
-    @Query(filter: #Predicate<Connector> { $0.isGlobal == true })
-    private var globalConnectors: [Connector]
-    @Query(filter: #Predicate<LocalTool> { $0.isGlobal == true })
-    private var globalTools: [LocalTool]
     @State private var messageText = ""
     @State private var attachedFiles: [String] = []
     @State private var slashSelectedIndex = 0
@@ -319,6 +313,7 @@ struct TaskMainView: View {
     @AppStorage(AppStorageKeys.defaultAgentPolicyLevel) private var defaultAgentPolicyLevelRaw = AgentPolicyLevel.review.rawValue
     @State private var taskPolicyLevelRaw = AgentPolicyLevel.review.rawValue
     @State private var taskSkipPermissions = false
+    @State private var capabilitySnapshot = ComposerCapabilitySnapshot.empty
     @State private var runtimeReadinessStates: [AgentRuntimeID: RuntimeReadinessState] = [:]
     var onMoveToDraft: ((AgentTask) -> Void)?
     var onManageSkills: (() -> Void)?
@@ -328,13 +323,7 @@ struct TaskMainView: View {
     var onStartMCPInstallReview: ((MCPInstallChatRequest) -> Void)?
 
     private var availableSkills: [Skill] {
-        guard let workspace = task.workspace else { return [] }
-        return WorkspaceCapabilities(
-            workspace: workspace,
-            globalSkills: globalSkills,
-            globalConnectors: globalConnectors,
-            globalTools: globalTools
-        ).activeSkills
+        capabilitySnapshot.availableSkills
     }
 
     private func logTaskCapabilityContext(
@@ -595,6 +584,11 @@ struct TaskMainView: View {
         .onChange(of: runtimeModelCacheRevision) {
             deferTaskViewMutation {
                 alignTaskModelWithRuntime()
+            }
+        }
+        .background {
+            ComposerCapabilitySnapshotLoader(workspace: task.workspace) { snapshot in
+                capabilitySnapshot = snapshot
             }
         }
         .background {

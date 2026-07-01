@@ -305,34 +305,7 @@ struct ContentView: View {
     }
 
     private var selectedTaskCanvasSignature: String {
-        guard let selectedTask else { return "none" }
-        // Compute the latest run once (was scanned twice — here and in the
-        // HTML-preview helper). Deliberately exclude `output.count`: it is an
-        // O(output-length) walk that re-runs every body pass while output
-        // streams, and the canvas only reflects file changes, not raw output.
-        let latestRun = selectedTask.runs.max { $0.startedAt < $1.startedAt }
-        let inputSignature = selectedTask.inputs.joined(separator: "|")
-        let htmlPreviewSignature = [
-            selectedTask.status.rawValue,
-            latestRun?.id.uuidString ?? "none",
-            String(latestRun?.fileChangesJSON.count ?? 0)
-        ].joined(separator: "|")
-        let latestRunSignature = [
-            latestRun?.id.uuidString ?? "none",
-            latestRun?.status.rawValue ?? "none",
-            String(Int(latestRun?.startedAt.timeIntervalSince1970 ?? 0)),
-            String(latestRun?.fileChangesJSON.count ?? 0)
-        ].joined(separator: ":")
-        return [
-            selectedTask.id.uuidString,
-            selectedTask.status.rawValue,
-            String(Int(selectedTask.updatedAt.timeIntervalSince1970)),
-            String(selectedTask.events.count),
-            String(selectedTask.runs.count),
-            latestRunSignature,
-            htmlPreviewSignature,
-            inputSignature
-        ].joined(separator: "|")
+        TaskCanvasRefreshSignature(task: selectedTask).rawValue
     }
 
     private var hasWorkspaceCanvasContent: Bool { cachedHasCanvasContent }

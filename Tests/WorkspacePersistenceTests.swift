@@ -159,8 +159,10 @@ struct WorkspacePersistenceTests {
         let context = container.mainContext
         let workspace = try makeRichWorkspace(in: context, root: tempRoot)
         let sourceTask = try #require(workspace.tasks.first)
+        let historicalTaskUpdatedAt = Date(timeIntervalSince1970: 1_700_000_123)
         sourceTask.isPinned = true
         sourceTask.isDone = true
+        sourceTask.updatedAt = historicalTaskUpdatedAt
         try context.save()
 
         let config = try #require(WorkspaceConfigManager.export(workspace: workspace, modelContext: context))
@@ -184,6 +186,7 @@ struct WorkspacePersistenceTests {
         #expect(config.tasks?.first?.isPinned == true)
         #expect(config.tasks?.first?.isDone == true)
         #expect(config.tasks?.first?.unreadAt == sourceTask.unreadAt)
+        #expect(config.tasks?.first?.updatedAt == historicalTaskUpdatedAt)
         #expect(config.enabledCapabilityIDs == ["stanford.builder"])
         #expect(config.enabledPackIDs == ["astra.pack.devops"])
         #expect(config.shelfVisibilityOverrides == [
@@ -224,6 +227,7 @@ struct WorkspacePersistenceTests {
         #expect(imported.tasks.first?.id == workspace.tasks.first?.id)
         #expect(imported.tasks.first?.isPinned == true)
         #expect(imported.tasks.first?.isDone == true)
+        #expect(imported.tasks.first?.updatedAt == historicalTaskUpdatedAt)
         #expect(imported.tasks.first?.unreadAt == sourceTask.unreadAt)
         #expect(imported.tasks.first?.skills.first?.id == workspace.skills.first?.id)
         #expect(imported.tasks.first?.runs.first?.id == workspace.tasks.first?.runs.first?.id)

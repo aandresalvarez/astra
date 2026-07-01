@@ -84,6 +84,7 @@ final class TaskRun {
         var changes = fileChanges
         changes.append(change.translated(using: ExecutionEnvironmentStore.decode(executionEnvironmentSnapshotJSON)))
         fileChangesJSON = TaskEvent.payloadString(changes, fallback: fileChangesJSON)
+        task?.updatedAt = Date()
     }
 }
 
