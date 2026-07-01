@@ -256,6 +256,7 @@ struct MCPRuntimeProjectionTests {
             "--endpoint", "https://drivemcp.googleapis.com/mcp/v1",
             "--access-token-env", accessTokenEnv,
             "--gateway-tool-policy-required",
+            "--allowed-tool", "search_files",
             "--gateway-read-tool", "search_files"
         ])
         let env = try #require(entry["env"] as? [String: String])
@@ -337,6 +338,7 @@ struct MCPRuntimeProjectionTests {
             "--endpoint", "https://drivemcp.googleapis.com/mcp/v1",
             "--access-token-env", accessTokenEnv,
             "--gateway-tool-policy-required",
+            "--allowed-tool", "search_files",
             "--gateway-read-tool", "search_files"
         ])
     }
@@ -362,6 +364,7 @@ struct MCPRuntimeProjectionTests {
         let projected = try #require(RemoteMCPGatewayProjection.providerFacingResolvedServer(for: resolved)?.server)
 
         #expect(projected.arguments.contains("--gateway-tool-policy-required"))
+        #expect(argumentValues(after: "--allowed-tool", in: projected.arguments) == ["search_files"])
         #expect(argumentValues(after: "--gateway-read-tool", in: projected.arguments) == ["search_files"])
         #expect(argumentValues(after: "--gateway-write-tool", in: projected.arguments).isEmpty)
         #expect(!projected.arguments.contains("--gateway-native-approved-tool"))
@@ -390,6 +393,13 @@ struct MCPRuntimeProjectionTests {
         let projected = try #require(RemoteMCPGatewayProjection.providerFacingResolvedServer(for: resolved)?.server)
 
         #expect(projected.arguments.contains("--gateway-tool-policy-required"))
+        #expect(argumentValues(after: "--allowed-tool", in: projected.arguments) == [
+            "download_file_content",
+            "get_file_metadata",
+            "get_file_permissions",
+            "list_recent_files",
+            "read_file_content"
+        ])
         #expect(argumentValues(after: "--gateway-read-tool", in: projected.arguments) == [
             "download_file_content",
             "get_file_metadata",
@@ -427,6 +437,7 @@ struct MCPRuntimeProjectionTests {
 
         let projected = try #require(RemoteMCPGatewayProjection.providerFacingResolvedServer(for: resolved)?.server)
 
+        #expect(argumentValues(after: "--allowed-tool", in: projected.arguments) == ["search_files"])
         #expect(argumentValues(after: "--gateway-read-tool", in: projected.arguments) == ["search_files"])
         #expect(argumentValues(after: "--gateway-write-tool", in: projected.arguments).isEmpty)
         #expect(projected.allowedTools == ["search_files"])
@@ -481,6 +492,7 @@ struct MCPRuntimeProjectionTests {
 
         let projected = try #require(RemoteMCPGatewayProjection.providerFacingResolvedServer(for: resolved)?.server)
 
+        #expect(argumentValues(after: "--allowed-tool", in: projected.arguments) == ["get_event"])
         #expect(argumentValues(after: "--gateway-read-tool", in: projected.arguments) == ["get_event"])
         #expect(argumentValues(after: "--gateway-delete-tool", in: projected.arguments).isEmpty)
         #expect(projected.allowedTools == ["get_event"])
@@ -521,7 +533,7 @@ struct MCPRuntimeProjectionTests {
         let config = arguments.last ?? ""
         #expect(config.contains("\"google_workspace_drive\"={"))
         #expect(config.contains("command=\"\(RemoteMCPGatewayProjection.executablePath)\""))
-        #expect(config.contains("args=[\"--package-id\",\"google-workspace\",\"--server-id\",\"google_workspace_drive\",\"--endpoint\",\"https://drivemcp.googleapis.com/mcp/v1\",\"--access-token-env\",\"\(accessTokenEnv)\",\"--gateway-tool-policy-required\",\"--gateway-read-tool\",\"search_files\"]"))
+        #expect(config.contains("args=[\"--package-id\",\"google-workspace\",\"--server-id\",\"google_workspace_drive\",\"--endpoint\",\"https://drivemcp.googleapis.com/mcp/v1\",\"--access-token-env\",\"\(accessTokenEnv)\",\"--gateway-tool-policy-required\",\"--allowed-tool\",\"search_files\",\"--gateway-read-tool\",\"search_files\"]"))
         #expect(config.contains("env_vars=[\"\(accessTokenEnv)\"]"))
         #expect(!config.contains("url="))
         #expect(!config.contains("secret-token"))

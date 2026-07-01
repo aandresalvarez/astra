@@ -957,6 +957,10 @@ struct WorkspacePersistenceTests {
         let sourceTask = try #require(sourceWorkspace.tasks.first)
         sourceTask.isPinned = true
         sourceTask.isDone = true
+        let sourceSchedule = TaskSchedule(name: "Recovered Routine", goal: "Keep running", workspace: sourceWorkspace)
+        sourceSchedule.isEnabled = true
+        sourceSchedule.nextFireDate = Date.distantFuture
+        sourceContext.insert(sourceSchedule)
         try sourceContext.save()
         let configURL = workspaceFolder.appendingPathComponent(WorkspaceFileLayout.workspaceConfigFileName)
         try WorkspaceConfigManager.exportToFile(workspace: sourceWorkspace, modelContext: sourceContext, url: configURL)
@@ -981,6 +985,7 @@ struct WorkspacePersistenceTests {
         #expect(workspaces.first?.id == sourceWorkspace.id)
         #expect(workspaces.first?.tasks.first?.isPinned == true)
         #expect(workspaces.first?.tasks.first?.isDone == true)
+        #expect(workspaces.first?.schedules.first { $0.name == "Recovered Routine" }?.isEnabled == true)
     }
 
     @Test("automatic recovery skips privacy-sensitive user media folders")

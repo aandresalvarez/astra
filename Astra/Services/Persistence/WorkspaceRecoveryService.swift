@@ -357,7 +357,11 @@ enum WorkspaceRecoveryService {
                 if !configPath.isEmpty, existingPaths.contains(configPath) {
                     continue
                 }
-                let workspace = WorkspaceConfigManager.importWorkspace(from: config, modelContext: modelContext)
+                let workspace = WorkspaceConfigManager.importWorkspace(
+                    from: config,
+                    modelContext: modelContext,
+                    scheduleTrustPolicy: .preserveEnabledState
+                )
                 existingIDs.insert(workspace.id.uuidString)
                 existingPaths.insert(normalizePath(workspace.primaryPath))
                 imported += 1
@@ -395,7 +399,11 @@ enum WorkspaceRecoveryService {
             if !configPath.isEmpty, existingPaths.contains(configPath) {
                 continue
             }
-            let workspace = WorkspaceConfigManager.importWorkspace(from: config, modelContext: modelContext)
+            let workspace = WorkspaceConfigManager.importWorkspace(
+                from: config,
+                modelContext: modelContext,
+                scheduleTrustPolicy: .preserveEnabledState
+            )
             existingIDs.insert(workspace.id.uuidString)
             existingPaths.insert(normalizePath(workspace.primaryPath))
             imported += 1

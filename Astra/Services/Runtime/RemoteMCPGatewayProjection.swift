@@ -139,7 +139,7 @@ enum RemoteMCPGatewayProjection {
 
         var arguments = ["--gateway-tool-policy-required"]
         for toolName in readToolNames {
-            arguments += ["--gateway-read-tool", toolName]
+            arguments += ["--allowed-tool", toolName, "--gateway-read-tool", toolName]
         }
         return GatewayPolicyProjection(
             arguments: arguments,

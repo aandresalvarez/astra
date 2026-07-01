@@ -182,6 +182,24 @@ enum BrowserTextEntryPreflight {
         ]
     }
 
+    static func activationConfirmationResponse(
+        action: String,
+        targetInfo: [String: Any],
+        allowDangerous: Bool
+    ) -> [String: Any]? {
+        let risk = BrowserSensitiveControlClassifier.classify(targetInfo: targetInfo)
+        guard risk.requiresUserConfirmation, !allowDangerous else { return nil }
+
+        return [
+            "ok": false,
+            "error": "dangerous_confirmation_required",
+            "action": action,
+            "summary": "This \(risk.rawValue) action requires explicit user confirmation before execution.",
+            "risk": risk.rawValue,
+            "target": sanitizedTarget(targetInfo, risk: risk)
+        ]
+    }
+
     static func redactedTargetAttachment(for blockedResponse: [String: Any]) -> [String: Any] {
         blockedResponse["target"] as? [String: Any] ?? [:]
     }

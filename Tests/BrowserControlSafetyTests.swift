@@ -168,6 +168,51 @@ struct BrowserControlSafetyTests {
         ) == nil)
     }
 
+    @Test("Raw click activation requires confirmation for secret revealing controls")
+    func rawClickActivationRequiresConfirmationForSecretRevealingControls() throws {
+        let showPasswordBlock = try #require(BrowserTextEntryPreflight.activationConfirmationResponse(
+            action: BrowserActionKind.click.rawValue,
+            targetInfo: [
+                "ok": true,
+                "selector": "button.show-password",
+                "label": "Show password",
+                "role": "button",
+                "tag": "button",
+                "type": "button"
+            ],
+            allowDangerous: false
+        ))
+        #expect(showPasswordBlock["ok"] as? Bool == false)
+        #expect(showPasswordBlock["error"] as? String == "dangerous_confirmation_required")
+        #expect(showPasswordBlock["risk"] as? String == BrowserRisk.credentialInput.rawValue)
+
+        #expect(BrowserTextEntryPreflight.activationConfirmationResponse(
+            action: BrowserActionKind.doubleClick.rawValue,
+            targetInfo: [
+                "ok": true,
+                "selector": "button[data-testid='copy-secret']",
+                "label": "Copy secret",
+                "role": "button",
+                "tag": "button",
+                "type": "button"
+            ],
+            allowDangerous: true
+        ) == nil)
+
+        #expect(BrowserTextEntryPreflight.activationConfirmationResponse(
+            action: BrowserActionKind.open.rawValue,
+            targetInfo: [
+                "ok": true,
+                "selector": "a[href='/reset-password']",
+                "label": "Forgot password?",
+                "role": "link",
+                "tag": "a",
+                "href": "https://example.com/reset-password"
+            ],
+            allowDangerous: false
+        ) == nil)
+    }
+
     @Test("Uninspectable focused frames block raw text entry")
     func uninspectableFocusedFramesBlockRawTextEntry() throws {
         let neutralFrameBlock = try #require(BrowserTextEntryPreflight.blockResponse(
@@ -525,6 +570,36 @@ struct BrowserControlSafetyTests {
         let insertValidation = try #require(insertSource.range(of: "validateFocusedTextEntryTarget"))
         let insertDispatch = try #require(insertSource.range(of: #""Input.insertText""#))
         #expect(insertValidation.lowerBound < insertDispatch.lowerBound)
+    }
+
+    @Test("Raw click and double-click classify sensitive targets before dispatch")
+    func rawClickAndDoubleClickClassifySensitiveTargetsBeforeDispatch() throws {
+        let repoRoot = URL(filePath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let sessionPath = repoRoot
+            .appendingPathComponent("Astra")
+            .appendingPathComponent("Services")
+            .appendingPathComponent("Browser")
+            .appendingPathComponent("ShelfBrowserSession.swift")
+            .path
+        let source = try String(contentsOfFile: sessionPath, encoding: .utf8)
+
+        let clickStart = try #require(source.range(of: "private func click("))
+        let clickEnd = try #require(source[clickStart.upperBound...].range(of: "private func doubleClick("))
+        let clickSource = source[clickStart.lowerBound..<clickEnd.lowerBound]
+        let clickTargetResolution = try #require(clickSource.range(of: "waitForActionableTarget"))
+        let clickPreflight = try #require(clickSource.range(of: "activationConfirmationResponse"))
+        let clickDispatch = try #require(clickSource.range(of: "if isUsingControlledBrowser"))
+        #expect(clickTargetResolution.lowerBound < clickPreflight.lowerBound)
+        #expect(clickPreflight.lowerBound < clickDispatch.lowerBound)
+
+        let doubleClickStart = try #require(source.range(of: "private func doubleClick("))
+        let doubleClickEnd = try #require(source[doubleClickStart.upperBound...].range(of: "private func keypress("))
+        let doubleClickSource = source[doubleClickStart.lowerBound..<doubleClickEnd.lowerBound]
+        let doubleClickTargetResolution = try #require(doubleClickSource.range(of: "waitForActionableTarget"))
+        let doubleClickPreflight = try #require(doubleClickSource.range(of: "activationConfirmationResponse"))
+        let doubleClickDispatch = try #require(doubleClickSource.range(of: "if isUsingControlledBrowser"))
+        #expect(doubleClickTargetResolution.lowerBound < doubleClickPreflight.lowerBound)
+        #expect(doubleClickPreflight.lowerBound < doubleClickDispatch.lowerBound)
     }
 
     @Test("Focused target signatures ignore failed probes and URL query fragments")

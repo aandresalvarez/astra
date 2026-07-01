@@ -2788,6 +2788,9 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 placeholder: placeholder,
                 testID: testID
             )
+            if let blocked = BrowserTextEntryPreflight.activationConfirmationResponse(action: action, targetInfo: actionability, allowDangerous: allowDangerous) {
+                return try Self.jsonString(blocked)
+            }
             let beforeSettle = try? await rawSnapshotObject()
 
             let json: String
@@ -2904,6 +2907,9 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 placeholder: placeholder,
                 testID: testID
             )
+            if let blocked = BrowserTextEntryPreflight.activationConfirmationResponse(action: action, targetInfo: actionability, allowDangerous: allowDangerous) {
+                return try Self.jsonString(blocked)
+            }
             let beforeSettle = try? await rawSnapshotObject()
 
             let json: String
