@@ -3020,7 +3020,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 intervalMilliseconds: intervalMilliseconds
             )
         } else {
-            switch BrowserBridgeNavigationPolicy.openControlNavigation(forHref: control.href) {
+            switch BrowserBridgeNavigationPolicy.openControlNavigation(forHref: control.href, pageURL: pageURL) {
             case .navigate(let url):
                 load(url, source: "bridge_open_control")
                 object = [

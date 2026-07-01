@@ -301,6 +301,7 @@ enum ValidationCommandPolicy {
             "-clonedSourcePackagesDirPath", "-archivePath", "-only-testing",
             "-skip-testing", "-testPlan", "-testProductsPath", "-xctestrun", "-toolchain"
         ]
+        let allowedActions = Set(["test", "build", "build-for-testing", "test-without-building"])
         var skipNext = false
         var hasBuildOrTestAction = false
         for (offset, token) in tokens.dropFirst().enumerated() {
@@ -318,11 +319,29 @@ enum ValidationCommandPolicy {
                 skipNext = true
                 continue
             }
-            if ["test", "build", "build-for-testing", "test-without-building"].contains(token) {
+            if allowedActions.contains(token) {
                 hasBuildOrTestAction = true
+                continue
             }
+            if token.hasPrefix("-") {
+                continue
+            }
+            if isXcodebuildBuildSettingAssignment(token),
+               absolutePathFragments(in: token).allSatisfy({ pathTokenIsScoped($0, workspacePath: workspacePath) }) {
+                continue
+            }
+            return false
         }
         return hasBuildOrTestAction
+    }
+
+    private static func isXcodebuildBuildSettingAssignment(_ token: String) -> Bool {
+        guard let separator = token.firstIndex(of: "="), separator != token.startIndex else {
+            return false
+        }
+        return token[..<separator].allSatisfy { character in
+            character.isLetter || character.isNumber || character == "_"
+        }
     }
 
     private static var xcodebuildPathOptions: Set<String> {
@@ -433,11 +452,26 @@ enum ValidationCommandPolicy {
         workspacePath: String?
     ) -> Bool where T.Element == String {
         tokens.allSatisfy { token in
-            guard token.hasPrefix("/") || token.hasPrefix("~") else {
+            let paths = absolutePathFragments(in: token)
+            guard !paths.isEmpty else {
                 return true
             }
-            return pathTokenIsScoped(token, workspacePath: workspacePath)
+            return paths.allSatisfy { pathTokenIsScoped($0, workspacePath: workspacePath) }
         }
+    }
+
+    private static func absolutePathFragments(in token: String) -> [String] {
+        var fragments: [String] = []
+        if token.hasPrefix("/") || token.hasPrefix("~") {
+            fragments.append(token)
+        }
+        if let separator = token.firstIndex(of: "=") {
+            let value = String(token[token.index(after: separator)...])
+            if value.hasPrefix("/") || value.hasPrefix("~") {
+                fragments.append(value)
+            }
+        }
+        return fragments
     }
 
     private static func pathTokenIsScoped(_ path: String, workspacePath: String?) -> Bool {

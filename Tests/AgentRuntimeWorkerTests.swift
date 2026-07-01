@@ -2106,6 +2106,12 @@ struct ShelfBrowserAddressTests {
         #expect(ShelfBrowserAddress.normalizedURL(from: "outlook.office.com")?.absoluteString == "https://outlook.office.com")
     }
 
+    @Test("normalizes host port addresses as web URLs")
+    func normalizesHostPortAddressesAsWebURLs() {
+        #expect(ShelfBrowserAddress.normalizedURL(from: "localhost:3000")?.absoluteString == "https://localhost:3000")
+        #expect(ShelfBrowserAddress.normalizedURL(from: "127.0.0.1:5173")?.absoluteString == "https://127.0.0.1:5173")
+    }
+
     @Test("normalizes absolute local file paths")
     func normalizesAbsoluteLocalFilePaths() {
         let path = "/tmp/astra preview/index.html"

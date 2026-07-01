@@ -198,6 +198,19 @@ struct BrowserBridgeSecurityTests {
         #expect(url.absoluteString == "https://docs.google.com/document/d/example/edit")
     }
 
+    @Test("Bridge open control navigation resolves relative hrefs against the page URL")
+    func bridgeOpenControlNavigationResolvesRelativeHrefs() throws {
+        let decision = BrowserBridgeNavigationPolicy.openControlNavigation(
+            forHref: "/owner/repo/pull/159",
+            pageURL: "https://github.com/owner/repo/pulls"
+        )
+        guard case let .navigate(url) = decision else {
+            Issue.record("Expected relative web href to navigate, got \(decision)")
+            return
+        }
+        #expect(url.absoluteString == "https://github.com/owner/repo/pull/159")
+    }
+
     @Test("Bridge command router recognizes every published action")
     func bridgeCommandRouterRecognizesEveryPublishedAction() throws {
         let actions = ShelfBrowserBridgeCommandRouter.actionMetadata(

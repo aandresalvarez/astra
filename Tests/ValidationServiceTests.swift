@@ -701,10 +701,28 @@ struct ValidationServiceTests {
             workspacePath: workspaceRoot
         ))
         #expect(!ValidationCommandPolicy.isAllowed("xcodebuild archive -project test.xcodeproj"))
+        #expect(!ValidationCommandPolicy.isAllowed("xcodebuild test archive -project test.xcodeproj"))
         #expect(!ValidationCommandPolicy.isAllowed("xcodebuild -list -project build.xcodeproj"))
         #expect(!ValidationCommandPolicy.isAllowed("xcodebuild -showBuildSettings build"))
         #expect(!ValidationCommandPolicy.isAllowed("xcodebuild -version test"))
         #expect(!ValidationCommandPolicy.isAllowed("xcodebuild -scheme test"))
+    }
+
+    @Test("validation command policy scopes absolute paths inside flag assignments")
+    func validationCommandPolicyScopesAbsolutePathsInsideFlagAssignments() {
+        let workspaceRoot = "/tmp/astra-validation-flags-\(UUID().uuidString)"
+        #expect(ValidationCommandPolicy.isAssertionCommandAllowed(
+            "pytest --junitxml=\(workspaceRoot)/reports/results.xml",
+            workspacePath: workspaceRoot
+        ))
+        #expect(!ValidationCommandPolicy.isAssertionCommandAllowed(
+            "pytest --junitxml=/tmp/outside-results.xml",
+            workspacePath: workspaceRoot
+        ))
+        #expect(!ValidationCommandPolicy.isAssertionCommandAllowed(
+            "pytest report=/tmp/outside-results.xml",
+            workspacePath: workspaceRoot
+        ))
     }
 
     @Test("validation command policy keeps make to the single test target")

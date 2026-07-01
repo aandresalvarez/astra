@@ -321,7 +321,7 @@ public struct WorkspaceToolConfiguration: Equatable, Sendable {
             WorkspaceControlPlaneCommand(
                 tool: "gh",
                 capability: "GitHub",
-                subcommands: ["api", "auth", "issue", "pr", "repo", "search"]
+                subcommands: ["api", "auth", "issue", "pr", "repo", "run", "search", "workflow"]
             ),
             WorkspaceControlPlaneCommand(
                 tool: "jira",
@@ -453,6 +453,15 @@ public struct WorkspaceToolConfiguration: Equatable, Sendable {
                         return command
                     }
                     if let command = findExecControlPlaneCommand(
+                        at: commandIndex,
+                        in: tokens,
+                        commands: commands,
+                        variables: variables,
+                        depth: depth
+                    ) {
+                        return command
+                    }
+                    if let command = xargsControlPlaneCommand(
                         at: commandIndex,
                         in: tokens,
                         commands: commands,
@@ -807,6 +816,86 @@ public struct WorkspaceToolConfiguration: Equatable, Sendable {
             cursor = nextCommandWordIndex(after: current, in: tokens)
         }
         return nil
+    }
+
+    private func xargsControlPlaneCommand(
+        at index: Int,
+        in tokens: [ShellToken],
+        commands: [WorkspaceControlPlaneCommand],
+        variables: [String: String],
+        depth: Int
+    ) -> WorkspaceControlPlaneCommand? {
+        guard case .word(let command) = tokens[index],
+              WorkspaceControlPlaneCommand.normalizedBasename(command.value) == "xargs" else {
+            return nil
+        }
+        guard let utilityIndex = xargsUtilityIndex(after: index, in: tokens) else {
+            return nil
+        }
+        var utilityTokens: [ShellToken] = []
+        var cursor: Int? = utilityIndex
+        while let current = cursor {
+            guard case .word(let word) = tokens[current] else { break }
+            utilityTokens.append(.word(ShellWord(
+                value: resolvedShellWord(word, variables: variables),
+                allowsVariableExpansion: word.allowsVariableExpansion,
+                isAmbiguousExpansion: word.isAmbiguousExpansion
+            )))
+            cursor = nextCommandWordIndex(after: current, in: tokens)
+        }
+        return firstExecutableHostControlPlaneCommand(
+            in: utilityTokens,
+            commands: commands,
+            depth: depth + 1
+        )
+    }
+
+    private func xargsUtilityIndex(after index: Int, in tokens: [ShellToken]) -> Int? {
+        var cursor = nextCommandWordIndex(after: index, in: tokens)
+        while let current = cursor {
+            guard case .word(let word) = tokens[current] else { return nil }
+            if word.value == "--" {
+                return nextCommandWordIndex(after: current, in: tokens)
+            }
+            if xargsOptionConsumesNextOperand(word.value) {
+                cursor = nextCommandWordIndex(after: current, in: tokens)
+                    .flatMap { nextCommandWordIndex(after: $0, in: tokens) }
+                continue
+            }
+            if xargsAttachedOptionConsumesOperand(word.value) || xargsStandaloneOption(word.value) {
+                cursor = nextCommandWordIndex(after: current, in: tokens)
+                continue
+            }
+            if word.value.hasPrefix("-") {
+                cursor = nextCommandWordIndex(after: current, in: tokens)
+                continue
+            }
+            return current
+        }
+        return nil
+    }
+
+    private func xargsOptionConsumesNextOperand(_ word: String) -> Bool {
+        [
+            "-a", "--arg-file", "-d", "--delimiter", "-E", "--eof",
+            "-I", "--replace", "-L", "--max-lines", "-n", "--max-args",
+            "-P", "--max-procs", "-s", "--max-chars"
+        ].contains(word)
+    }
+
+    private func xargsAttachedOptionConsumesOperand(_ word: String) -> Bool {
+        [
+            "--arg-file=", "--delimiter=", "--eof=", "--replace=",
+            "--max-lines=", "--max-args=", "--max-procs=", "--max-chars="
+        ].contains { word.hasPrefix($0) }
+            || word.range(of: #"^-[dEILnPs].+"#, options: .regularExpression) != nil
+    }
+
+    private func xargsStandaloneOption(_ word: String) -> Bool {
+        [
+            "-0", "--null", "-r", "--no-run-if-empty", "-t", "--verbose",
+            "-p", "--interactive", "-o", "--open-tty", "-x", "--exit"
+        ].contains(word)
     }
 
     private func shellRunnerScript(at index: Int, in tokens: [ShellToken], variables: [String: String]) -> String? {

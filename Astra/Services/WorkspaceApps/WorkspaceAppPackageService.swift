@@ -634,12 +634,24 @@ struct WorkspaceAppPackageService {
     }
 
     private func decodeDataExports(at packageURL: URL) throws -> [WorkspaceAppPackageDataExport]? {
+        let path = "storage/data/exports.json"
         do {
-            let data = try readUTF8ContainedPackageFileData(in: packageURL, path: "storage/data/exports.json")
+            try validateDataExportsManifestResourceBudget(in: packageURL, path: path)
+            let data = try readUTF8ContainedPackageFileData(in: packageURL, path: path)
             return try JSONDecoder().decode([WorkspaceAppPackageDataExport].self, from: data)
         } catch WorkspaceAppPackageFileResolutionError.missing {
             return nil
         }
+    }
+
+    private func validateDataExportsManifestResourceBudget(in packageURL: URL, path: String) throws {
+        let descriptor = try openContainedPackageFile(in: packageURL, path: path)
+        close(descriptor)
+        try resourceReader.validatePackageFiles(
+            packageURL: packageURL,
+            paths: [path],
+            isScannedTextPath: { _ in true }
+        )
     }
 
     private func writeJSONLines(
@@ -1069,6 +1081,9 @@ struct WorkspaceAppPackageService {
             return []
         } catch let error as WorkspaceAppPackageFileResolutionError {
             issues.append(dataExportsManifestIssue(for: error))
+            return []
+        } catch let error as WorkspaceAppPackageResourceError {
+            issues.append(blocker(error.path ?? "/storage/data/exports.json", error.localizedDescription))
             return []
         } catch {
             issues.append(blocker("/storage/data/exports.json", "Could not decode data exports: \(error.localizedDescription)"))

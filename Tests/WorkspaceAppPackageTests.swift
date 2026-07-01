@@ -1025,6 +1025,46 @@ struct WorkspaceAppPackageTests {
         })
     }
 
+    @Test("package validation enforces exports manifest resource limits before decoding")
+    func packageValidationEnforcesExportsManifestResourceLimitsBeforeDecoding() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let packageURL = root.appendingPathComponent("oversized-exports-manifest.astra-app", isDirectory: true)
+        let databaseURL = try Self.groceryDatabase(in: root)
+        _ = try WorkspaceAppPackageService().exportPackage(
+            manifest: Self.groceryManifest(),
+            to: packageURL,
+            packageID: "oversized-exports-manifest",
+            mode: .templatePlusSeedData,
+            appStorageDatabaseURL: databaseURL
+        )
+
+        let exportsURL = packageURL.appendingPathComponent("storage/data/exports.json")
+        try Data(String(repeating: "{", count: 20_000).utf8)
+            .write(to: exportsURL, options: [.atomic])
+
+        var service = WorkspaceAppPackageService()
+        service.resourceReader.budget = WorkspaceAppPackageResourceBudget(
+            maxPackageBytes: 32 * 1_024 * 1_024,
+            maxFileBytes: 8 * 1_024,
+            maxScannedTextFileBytes: 2 * 1_024 * 1_024,
+            maxJSONLRows: 10_000,
+            maxJSONLLineBytes: 256 * 1_024
+        )
+
+        let report = service.validatePackage(at: packageURL)
+
+        #expect(!report.canInstall)
+        #expect(report.blockers.contains {
+            $0.path == "/storage/data/exports.json"
+                && $0.message.lowercased().contains("package resource limit")
+        })
+        #expect(!report.blockers.contains {
+            $0.path == "/storage/data/exports.json"
+                && $0.message.contains("Could not decode data exports")
+        })
+    }
+
     @Test("package validation counts hidden package entries toward resource budgets")
     func packageValidationCountsHiddenPackageEntriesTowardResourceBudgets() throws {
         let root = try Self.temporaryRoot()

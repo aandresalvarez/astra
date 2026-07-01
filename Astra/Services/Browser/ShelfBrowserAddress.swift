@@ -5,7 +5,9 @@ enum ShelfBrowserAddress {
         let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
 
-        if let url = URL(string: trimmed), url.scheme != nil {
+        if let url = URL(string: trimmed),
+           let scheme = url.scheme?.lowercased(),
+           ["http", "https", "file", "about"].contains(scheme) {
             return url
         }
 

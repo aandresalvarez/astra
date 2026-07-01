@@ -295,6 +295,8 @@ struct WorkspaceToolSupportTests {
             "gh -R owner/repo api repos/owner/repo",
             "gh --repo owner/repo pr view 148",
             "gh --repo=owner/repo api repos/owner/repo",
+            "gh run cancel 12345",
+            "gh workflow run ci.yml",
             "cmd='gh --repo owner/repo api repos/owner/repo'; $cmd",
             "env -S 'gh --repo owner/repo api repos/owner/repo'",
             "$(ssh deid-jsn-workbench hostname)",
@@ -388,6 +390,7 @@ struct WorkspaceToolSupportTests {
             "python3 -c \"import os; os.system('g\\x63loud auth list')\"",
             "python3 -c 'import os; os.system(\"g\" + \"cloud auth list\")'",
             "printf '\\147cloud auth list\\n' | sh",
+            "printf '159\\n' | xargs gh pr view",
             "echo -e 'g\\x63loud auth list' | sh"
         ]
 
