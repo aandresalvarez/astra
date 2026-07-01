@@ -1031,9 +1031,7 @@ struct TaskThreadSnapshotTrigger: Equatable {
         let latestRun = runs.max { $0.startedAt < $1.startedAt }
         taskID = task.id
         eventCount = events.count
-        visibleEventCount = events.reduce(0) { count, event in
-            Self.highFrequencyEventTypes.contains(event.type) ? count : count + 1
-        }
+        visibleEventCount = Self.visibleEventCount(taskID: task.id, events: events)
         runCount = runs.count
         status = task.status
         latestRunID = latestRun?.id
@@ -1071,6 +1069,60 @@ struct TaskThreadSnapshotTrigger: Equatable {
     private static func outputBucket(for byteCount: Int) -> Int {
         guard byteCount > 0 else { return 0 }
         return ((byteCount - 1) / liveOutputBucketSize) + 1
+    }
+
+    private static let visibleEventCountMemo = TaskThreadVisibleEventCountMemo()
+
+    private static func visibleEventCount(taskID: UUID, events: [TaskEvent]) -> Int {
+        visibleEventCountMemo.count(taskID: taskID, events: events, highFrequencyTypes: highFrequencyEventTypes)
+    }
+
+    static func resetVisibleEventCountMemoForTesting() {
+        visibleEventCountMemo.reset()
+    }
+}
+
+/// Incremental cache for `TaskThreadSnapshotTrigger.visibleEventCount`. The trigger
+/// is rebuilt on every mutation `TaskThreadChangeObserver` observes (every streamed
+/// conversation chunk appends a `TaskEvent` via `AgentEventRecorder`), so a live task
+/// with thousands of events paid an O(n) rescan on every single chunk. `task.events`
+/// only grows by append during a live session (single `@MainActor` writer), so
+/// re-scanning just the events appended since the last call keeps this O(1)
+/// amortized. Falls back to a full rescan whenever that invariant doesn't hold (task
+/// switch, or the count going backwards), which keeps the result correct even if the
+/// assumption is ever violated. Lock-protected (mirrors `WildcardPatternMatcher`)
+/// rather than `@MainActor`-isolated since callers include non-MainActor test code.
+private final class TaskThreadVisibleEventCountMemo: @unchecked Sendable {
+    private let lock = NSLock()
+    private var taskID: UUID?
+    private var scannedCount = 0
+    private var visibleCount = 0
+
+    func count(taskID incomingTaskID: UUID, events: [TaskEvent], highFrequencyTypes: Set<String>) -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        if taskID == incomingTaskID, scannedCount <= events.count {
+            for event in events[scannedCount...] where !highFrequencyTypes.contains(event.type) {
+                visibleCount += 1
+            }
+            scannedCount = events.count
+            return visibleCount
+        }
+        visibleCount = 0
+        for event in events where !highFrequencyTypes.contains(event.type) {
+            visibleCount += 1
+        }
+        taskID = incomingTaskID
+        scannedCount = events.count
+        return visibleCount
+    }
+
+    func reset() {
+        lock.lock()
+        defer { lock.unlock() }
+        taskID = nil
+        scannedCount = 0
+        visibleCount = 0
     }
 }
 

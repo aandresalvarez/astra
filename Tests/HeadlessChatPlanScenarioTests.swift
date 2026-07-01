@@ -401,7 +401,12 @@ extension HeadlessChatScenarioTests {
         defer { harness.cleanup() }
 
         let countFile = harness.rootURL.appendingPathComponent("review-contract-count.txt")
-        let proofURL = harness.rootURL.appendingPathComponent("final-proof.txt")
+        // Validation `.command` assertions are policy-gated to workspace-relative
+        // paths (ValidationCommandPolicy.fileTestPathIsWorkspaceRelative rejects
+        // any path starting with "/") so a plan can't assert against arbitrary
+        // filesystem locations outside its sandbox. The proof file therefore has
+        // to live under the task's workspace, not the harness's outer root.
+        let proofURL = harness.workspaceURL.appendingPathComponent("final-proof.txt")
         let plan = TaskPlanPayload(
             title: "Two step proof plan",
             goal: "Build proof across multiple approvals",
@@ -414,7 +419,7 @@ extension HeadlessChatScenarioTests {
                     id: "final-proof",
                     description: "Final proof exists",
                     method: .command,
-                    command: "test -f \(Self.shQuote(proofURL.path))"
+                    command: "test -f final-proof.txt"
                 )
             ])
         )
@@ -427,7 +432,7 @@ extension HeadlessChatScenarioTests {
             if [ "$count" = "1" ]; then
               printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"ASTRA_EVENT {\\"v\\":1,\\"type\\":\\"plan.step.completed\\",\\"stepID\\":\\"step-1\\",\\"summary\\":\\"Prepared\\"}\\n"}}'
             else
-              touch \(Self.shQuote(proofURL.path))
+              printf 'proof complete' > \(Self.shQuote(proofURL.path))
               printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"ASTRA_EVENT {\\"v\\":1,\\"type\\":\\"plan.step.completed\\",\\"stepID\\":\\"step-2\\",\\"summary\\":\\"Finished\\"}\\n"}}'
             fi
             printf '%s\\n' '{"type":"usage","usage":{"input_tokens":2,"output_tokens":3},"duration_ms":11,"turns":1}'

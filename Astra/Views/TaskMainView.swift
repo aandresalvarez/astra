@@ -4011,7 +4011,7 @@ struct TaskMainView: View {
 
     private var failureReason: String {
         TaskFailureReasonPresentation.reason(
-            errorPayloads: task.events.filter { $0.type == "error" }.map(\.payload),
+            errorPayloads: sortedEvents.filter { $0.type == "error" }.map(\.payload),
             latestExitCode: latestRun?.exitCode
         )
     }

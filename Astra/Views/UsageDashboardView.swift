@@ -15,21 +15,15 @@ enum TimeFilter: String, CaseIterable {
     }
 }
 
-private struct UsageDashboardSummary {
+struct UsageDashboardSummary {
     let tasks: [AgentTask]
     let totalTokens: Int
     let totalCost: Double
     let completedCount: Int
     let failedCount: Int
     let totalRuns: Int
-}
 
-struct UsageDashboardView: View {
-    @Query private var tasks: [AgentTask]
-    @Query private var runs: [TaskRun]
-    @State private var timeFilter: TimeFilter = .allTime
-
-    private var usageSummary: UsageDashboardSummary {
+    static func build(tasks: [AgentTask], runs: [TaskRun], timeFilter: TimeFilter) -> UsageDashboardSummary {
         PerformanceTelemetry.measure(
             "usage_summary_build",
             thresholdMilliseconds: 15,
@@ -75,6 +69,77 @@ struct UsageDashboardView: View {
                 totalRuns: totalRuns
             )
         }
+    }
+}
+
+/// Throttled cache for `UsageDashboardSummary`. `@Query`'s invalidation is coarse:
+/// it re-runs `body` on ANY mutation to a tracked `AgentTask`/`TaskRun`, including
+/// `run.output` appends from every streamed token of any active run anywhere in the
+/// workspace — none of which feed this summary (it only reads `tokensUsed`,
+/// `costUSD`, `status`, `createdAt`, `startedAt`). Recomputing the full walk over
+/// every task/run on each of those invalidations made the dashboard cost scale with
+/// streaming activity, not with dashboard-relevant changes. This coalesces repeat
+/// recomputation to at most once per `minimumInterval` when the task/run counts and
+/// filter haven't changed, so a burst of token updates pays for one full scan
+/// instead of one per token. Lock-protected (mirrors `WildcardPatternMatcher`)
+/// rather than `@State`-driven since it's read directly from `body`, where mutating
+/// `@State` synchronously is unsafe.
+final class UsageDashboardSummaryMemo: @unchecked Sendable {
+    private let lock = NSLock()
+    private var cached: UsageDashboardSummary?
+    private var cachedFilter: TimeFilter?
+    private var cachedTaskCount = -1
+    private var cachedRunCount = -1
+    private var lastComputedAt = Date.distantPast
+    private let minimumInterval: TimeInterval
+
+    init(minimumInterval: TimeInterval) {
+        self.minimumInterval = minimumInterval
+    }
+
+    func summary(tasks: [AgentTask], runs: [TaskRun], timeFilter: TimeFilter) -> UsageDashboardSummary {
+        lock.lock()
+        defer { lock.unlock() }
+        let now = Date()
+        let inputsUnchanged = cachedFilter == timeFilter
+            && cachedTaskCount == tasks.count
+            && cachedRunCount == runs.count
+        if let cached, inputsUnchanged, now.timeIntervalSince(lastComputedAt) < minimumInterval {
+            return cached
+        }
+        let summary = UsageDashboardSummary.build(tasks: tasks, runs: runs, timeFilter: timeFilter)
+        cached = summary
+        cachedFilter = timeFilter
+        cachedTaskCount = tasks.count
+        cachedRunCount = runs.count
+        lastComputedAt = now
+        return summary
+    }
+
+    func resetForTesting() {
+        lock.lock()
+        defer { lock.unlock() }
+        cached = nil
+        cachedFilter = nil
+        cachedTaskCount = -1
+        cachedRunCount = -1
+        lastComputedAt = .distantPast
+    }
+}
+
+struct UsageDashboardView: View {
+    private static let summaryMemo = UsageDashboardSummaryMemo(minimumInterval: 1.0)
+
+    @Query private var tasks: [AgentTask]
+    @Query private var runs: [TaskRun]
+    @State private var timeFilter: TimeFilter = .allTime
+
+    private var usageSummary: UsageDashboardSummary {
+        Self.summaryMemo.summary(tasks: tasks, runs: runs, timeFilter: timeFilter)
+    }
+
+    static func resetSummaryCacheForTesting() {
+        summaryMemo.resetForTesting()
     }
 
     var body: some View {
