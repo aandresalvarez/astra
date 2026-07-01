@@ -48,6 +48,19 @@ struct TaskMainViewCrashRegressionTests {
         #expect(!gitSource.contains(".onChange(of: selectedTask?.id) {\n            viewModel.setup(for: workspace, selectedTask: selectedTask)"))
     }
 
+    @Test("Canvas refresh signatures do not walk live task runs in SwiftUI body")
+    func canvasRefreshSignaturesAvoidLiveRunRelationshipWalks() throws {
+        for path in [
+            "Astra/Views/ContentView.swift",
+            "Astra/Views/WorkspaceCanvasPanelView.swift"
+        ] {
+            let source = try fileText(path)
+            #expect(!source.contains("selectedTask.runs.max"), "\(path) should not sort live task runs from body signatures")
+            #expect(!source.contains("selectedTask.runs.count"), "\(path) should not count live task runs from body signatures")
+            #expect(source.contains("TaskCanvasRefreshSignature"), "\(path) should use the value-snapshot canvas signature")
+        }
+    }
+
     @Test("Container environment picker keeps text from being squeezed by scope badge")
     func containerEnvironmentPickerKeepsTextFromBeingSqueezedByScopeBadge() throws {
         let dockerSource = try fileText("Astra/Views/WorkspaceDockerSectionView.swift")
