@@ -9,72 +9,38 @@ import ASTRACore
 @Suite("TaskThreadSnapshot")
 struct TaskThreadSnapshotTests {
 
-    @Test("Incremental visible-event-count memo matches a full rescan as events stream in")
-    func incrementalVisibleEventCountMatchesFullRescan() {
-        TaskThreadSnapshotTrigger.resetVisibleEventCountMemoForTesting()
-
+    @Test("visibleEventCount excludes high-frequency streaming-delta types and is correct regardless of array order")
+    func visibleEventCountIsCorrectRegardlessOfOrder() {
         let task = makeTask(status: .running)
         let run = TaskRun(task: task)
         task.runs.append(run)
 
         var expectedVisibleCount = 0
         let typeCycle: [String] = ["agent.response", "tool.use", "agent.thinking", "tool.result", "agent.response"]
+        var events: [TaskEvent] = []
 
-        for i in 0..<500 {
+        for i in 0..<200 {
             let type = typeCycle[i % typeCycle.count]
-            task.events.append(makeEvent(task: task, type: type, payload: "chunk \(i)", timestamp: Date(timeIntervalSince1970: Double(i)), run: run))
+            let event = makeEvent(task: task, type: type, payload: "chunk \(i)", timestamp: Date(timeIntervalSince1970: Double(i)), run: run)
+            events.append(event)
             if type != "agent.response" && type != "agent.thinking" {
                 expectedVisibleCount += 1
             }
-
-            // Only re-derive the trigger every few events, like SwiftUI re-evaluating
-            // the observer at irregular points, to exercise both the "one new event"
-            // and "several new events since last call" incremental-scan paths.
-            guard i % 3 == 0 || i == 499 else { continue }
-            let trigger = TaskThreadSnapshotTrigger(task: task)
-            #expect(trigger.eventCount == task.events.count)
-            #expect(trigger.visibleEventCount == expectedVisibleCount)
         }
 
-        TaskThreadSnapshotTrigger.resetVisibleEventCountMemoForTesting()
+        // A plain full scan (no incremental memo, see TaskLiveness's doc comment
+        // for why an incremental scan over this relationship array isn't safe)
+        // must be correct no matter what order SwiftData hands the array back
+        // in — try both the natural order and a shuffled one.
+        task.events = events
+        #expect(TaskThreadSnapshotTrigger(task: task).visibleEventCount == expectedVisibleCount)
+
+        task.events = events.shuffled()
+        #expect(TaskThreadSnapshotTrigger(task: task).visibleEventCount == expectedVisibleCount)
     }
 
-    @Test("Incremental visible-event-count memo recovers correctly after switching tasks")
-    func incrementalVisibleEventCountRecoversAfterTaskSwitch() {
-        TaskThreadSnapshotTrigger.resetVisibleEventCountMemoForTesting()
-
-        let taskA = makeTask(status: .running)
-        let runA = TaskRun(task: taskA)
-        taskA.runs.append(runA)
-        taskA.events.append(makeEvent(task: taskA, type: "tool.use", payload: "a1", timestamp: Date(timeIntervalSince1970: 0), run: runA))
-        taskA.events.append(makeEvent(task: taskA, type: "agent.response", payload: "a2", timestamp: Date(timeIntervalSince1970: 1), run: runA))
-        let triggerA = TaskThreadSnapshotTrigger(task: taskA)
-        #expect(triggerA.visibleEventCount == 1)
-
-        // Switching to a different task must not carry over taskA's scanned-count
-        // state (which would either under- or over-count taskB's events).
-        let taskB = makeTask(status: .running)
-        let runB = TaskRun(task: taskB)
-        taskB.runs.append(runB)
-        for i in 0..<5 {
-            taskB.events.append(makeEvent(task: taskB, type: "tool.use", payload: "b\(i)", timestamp: Date(timeIntervalSince1970: Double(i)), run: runB))
-        }
-        let triggerB = TaskThreadSnapshotTrigger(task: taskB)
-        #expect(triggerB.visibleEventCount == 5)
-
-        // Switching back to taskA must also recover correctly, not resume from
-        // taskB's now-larger scanned count.
-        taskA.events.append(makeEvent(task: taskA, type: "tool.result", payload: "a3", timestamp: Date(timeIntervalSince1970: 2), run: runA))
-        let triggerA2 = TaskThreadSnapshotTrigger(task: taskA)
-        #expect(triggerA2.visibleEventCount == 2)
-
-        TaskThreadSnapshotTrigger.resetVisibleEventCountMemoForTesting()
-    }
-
-    @Test("Incremental visible-event-count memo self-heals when a new event lands before the scan boundary")
-    func incrementalVisibleEventCountSelfHealsOnMidArrayInsertion() {
-        TaskThreadSnapshotTrigger.resetVisibleEventCountMemoForTesting()
-
+    @Test("visibleEventCount reflects events inserted anywhere in the array, not just at the tail")
+    func visibleEventCountReflectsMidArrayInsertion() {
         let task = makeTask(status: .running)
         let run = TaskRun(task: task)
         task.runs.append(run)
@@ -83,31 +49,19 @@ struct TaskThreadSnapshotTests {
         let e2 = makeEvent(task: task, type: "tool.use", payload: "e2", timestamp: Date(timeIntervalSince1970: 1), run: run)
         let e3 = makeEvent(task: task, type: "tool.use", payload: "e3", timestamp: Date(timeIntervalSince1970: 2), run: run)
         task.events = [e1, e2, e3]
+        #expect(TaskThreadSnapshotTrigger(task: task).visibleEventCount == 3)
 
-        let firstTrigger = TaskThreadSnapshotTrigger(task: task)
-        #expect(firstTrigger.visibleEventCount == 3)
-
-        // Simulate `AgentEventRecorder` inserting a new event through the model
-        // context such that the relationship array comes back reordered, landing
-        // the new event BEFORE the previous scan boundary (index 2) instead of
-        // appended at the tail — exactly the case an index-only incremental scan
-        // would silently miscount (it would double-count e3 at the old boundary
-        // and never see e4 at all, since e4 now hides inside the "already
-        // scanned" prefix).
+        // Simulates `AgentEventRecorder` inserting a new event through the model
+        // context such that the relationship array comes back with the new
+        // event landing BEFORE what a naive "new events are appended at the
+        // tail" assumption would expect.
         let e4 = makeEvent(task: task, type: "tool.result", payload: "e4", timestamp: Date(timeIntervalSince1970: 1.5), run: run)
         task.events = [e1, e2, e4, e3]
-
-        let secondTrigger = TaskThreadSnapshotTrigger(task: task)
-        #expect(secondTrigger.eventCount == 4)
-        #expect(secondTrigger.visibleEventCount == 4, "the boundary-identity check must detect the shift and fall back to a full rescan")
-
-        TaskThreadSnapshotTrigger.resetVisibleEventCountMemoForTesting()
+        #expect(TaskThreadSnapshotTrigger(task: task).visibleEventCount == 4)
     }
 
-    @Test("Incremental visible-event-count memo is unaffected by reordering within the already-counted prefix")
-    func incrementalVisibleEventCountUnaffectedByReorderingWithinCountedPrefix() {
-        TaskThreadSnapshotTrigger.resetVisibleEventCountMemoForTesting()
-
+    @Test("Trigger equality is unaffected by reordering alone, only by count/status changes")
+    func triggerEqualityUnaffectedByReorderingAlone() {
         let task = makeTask(status: .running)
         let run = TaskRun(task: task)
         task.runs.append(run)
@@ -116,20 +70,66 @@ struct TaskThreadSnapshotTests {
         let e2 = makeEvent(task: task, type: "agent.response", payload: "e2", timestamp: Date(timeIntervalSince1970: 1), run: run)
         let e3 = makeEvent(task: task, type: "tool.result", payload: "e3", timestamp: Date(timeIntervalSince1970: 2), run: run)
         task.events = [e1, e2, e3]
-        _ = TaskThreadSnapshotTrigger(task: task)
+        let before = TaskThreadSnapshotTrigger(task: task)
 
-        // The last element (the scan boundary) is unchanged, but e1/e2 swapped
-        // places ahead of it — a pure permutation of the already-counted set.
-        // The boundary check passes (same tail element), and since counting by
-        // type doesn't care about order, the incremental path stays correct here.
-        task.events = [e2, e1, e3]
-        let e4 = makeEvent(task: task, type: "tool.use", payload: "e4", timestamp: Date(timeIntervalSince1970: 3), run: run)
-        task.events.append(e4)
+        task.events = [e3, e1, e2]
+        let afterReorderOnly = TaskThreadSnapshotTrigger(task: task)
+        #expect(afterReorderOnly == before, "reordering the same set of events shouldn't change the coarse trigger")
 
-        let trigger = TaskThreadSnapshotTrigger(task: task)
-        #expect(trigger.eventCount == 4)
-        #expect(trigger.visibleEventCount == 3, "e1, e3, e4 are visible; e2 (agent.response) is not")
+        task.events.append(makeEvent(task: task, type: "tool.use", payload: "e4", timestamp: Date(timeIntervalSince1970: 3), run: run))
+        let afterRealChange = TaskThreadSnapshotTrigger(task: task)
+        #expect(afterRealChange != before, "a genuinely new visible event must change the trigger")
+    }
+}
 
-        TaskThreadSnapshotTrigger.resetVisibleEventCountMemoForTesting()
+// MARK: - TaskLiveness
+
+@Suite("TaskLiveness")
+struct TaskLivenessTests {
+
+    @Test("A running task is live")
+    func runningTaskIsLive() {
+        let task = makeTask(status: .running)
+        #expect(TaskLiveness.isLive(task: task))
+    }
+
+    @Test("A queued task is live")
+    func queuedTaskIsLive() {
+        let task = makeTask(status: .queued)
+        #expect(TaskLiveness.isLive(task: task))
+    }
+
+    @Test("A completed task with a running latest run is still live")
+    func completedTaskWithRunningLatestRunIsLive() {
+        let task = makeTask(status: .completed)
+        let run = TaskRun(task: task)
+        run.status = .running
+        run.startedAt = Date(timeIntervalSince1970: 0)
+        task.runs.append(run)
+        #expect(TaskLiveness.isLive(task: task))
+    }
+
+    @Test("A completed task with only completed runs is not live")
+    func completedTaskWithCompletedRunsIsNotLive() {
+        let task = makeTask(status: .completed)
+        let run = TaskRun(task: task)
+        run.status = .completed
+        run.startedAt = Date(timeIntervalSince1970: 0)
+        task.runs.append(run)
+        #expect(!TaskLiveness.isLive(task: task))
+    }
+
+    @Test("Liveness is based on the latest run by startedAt, not array order")
+    func livenessUsesLatestRunByStartedAt() {
+        let task = makeTask(status: .completed)
+        let olderRunning = TaskRun(task: task)
+        olderRunning.status = .running
+        olderRunning.startedAt = Date(timeIntervalSince1970: 0)
+        let newerCompleted = TaskRun(task: task)
+        newerCompleted.status = .completed
+        newerCompleted.startedAt = Date(timeIntervalSince1970: 100)
+        task.runs = [newerCompleted, olderRunning]
+
+        #expect(!TaskLiveness.isLive(task: task), "the latest run by startedAt is completed, so the task isn't live even though an older run is still marked running")
     }
 }

@@ -84,6 +84,21 @@ struct UsageDashboardSummary {
 /// instead of one per token. Lock-protected (mirrors `WildcardPatternMatcher`)
 /// rather than `@State`-driven since it's read directly from `body`, where mutating
 /// `@State` synchronously is unsafe.
+///
+/// This throttle alone can serve a value-only change (tokensUsed/costUSD/status
+/// landing inside the window) stale with nothing to force a follow-up — task/run
+/// counts and the filter don't capture every field the summary reads. An earlier
+/// version tried to have the memo self-report "you got a stale value, wait this
+/// long and re-query" back to the caller, but that signal is ambiguous: the memo
+/// can't tell "this caller is re-checking a value that was already scheduled for
+/// refresh" from "this caller is a genuinely new request that happens to still be
+/// within the window" — both look identical (same inputs, recent
+/// `lastComputedAt`). Rather than chase that ambiguity, `UsageDashboardView`
+/// instead polls at a fixed cadence while anything is live (see
+/// `TaskLiveness.isLive`, `TaskThreadChangeObserver` for the same pattern applied
+/// to the task thread) so this memo just needs to be a plain, unconditional
+/// throttle — eventual consistency comes from the polling cadence, not from this
+/// class trying to self-report staleness.
 final class UsageDashboardSummaryMemo: @unchecked Sendable {
     private let lock = NSLock()
     private var cached: UsageDashboardSummary?
@@ -116,24 +131,6 @@ final class UsageDashboardSummaryMemo: @unchecked Sendable {
         return summary
     }
 
-    /// Task/run counts and the filter don't capture every field the summary
-    /// reads (`tokensUsed`, `costUSD`, `status`) — a value-only change (e.g. a
-    /// run's final token count landing inside the throttle window) is served
-    /// stale by `summary(...)` with nothing to force a follow-up recompute if
-    /// no further mutation happens anywhere else. Returns how long the caller
-    /// should wait before re-querying to pick up that value, or nil if the next
-    /// call would already recompute fresh.
-    func staleRefreshDelay(tasks: [AgentTask], runs: [TaskRun], timeFilter: TimeFilter) -> TimeInterval? {
-        lock.lock()
-        defer { lock.unlock() }
-        guard cached != nil,
-              cachedFilter == timeFilter,
-              cachedTaskCount == tasks.count,
-              cachedRunCount == runs.count else { return nil }
-        let remaining = minimumInterval - Date().timeIntervalSince(lastComputedAt)
-        return remaining > 0 ? remaining : nil
-    }
-
     func resetForTesting() {
         lock.lock()
         defer { lock.unlock() }
@@ -147,14 +144,21 @@ final class UsageDashboardSummaryMemo: @unchecked Sendable {
 
 struct UsageDashboardView: View {
     private static let summaryMemo = UsageDashboardSummaryMemo(minimumInterval: 1.0)
+    private static let livePollIntervalNanoseconds: UInt64 = 1_000_000_000
 
     @Query private var tasks: [AgentTask]
     @Query private var runs: [TaskRun]
     @State private var timeFilter: TimeFilter = .allTime
-    @State private var staleRefreshTick = 0
+    @State private var renderTick = 0
 
     private var usageSummary: UsageDashboardSummary {
         Self.summaryMemo.summary(tasks: tasks, runs: runs, timeFilter: timeFilter)
+    }
+
+    /// Cheap (O(task count), no event scanning) check for whether anything in
+    /// the workspace could still be producing dashboard-relevant updates.
+    private var hasLiveActivity: Bool {
+        tasks.contains { TaskLiveness.isLive(task: $0) }
     }
 
     static func resetSummaryCacheForTesting() {
@@ -162,6 +166,8 @@ struct UsageDashboardView: View {
     }
 
     var body: some View {
+        // Dependency read: bumping renderTick from pollWhileLive() forces this body to re-evaluate.
+        let _ = renderTick
         let summary = usageSummary
 
         ScrollView {
@@ -249,25 +255,24 @@ struct UsageDashboardView: View {
             }
             .padding()
         }
-        .task(id: staleRefreshTick) {
-            await scheduleStaleRefreshIfNeeded()
+        .task(id: hasLiveActivity) {
+            await pollWhileLive()
         }
     }
 
-    /// If `usageSummary` above just served a throttled-stale value, wait out the
-    /// remaining throttle window and bump `staleRefreshTick` to force a fresh
-    /// recompute — otherwise a value-only change (tokensUsed/costUSD/status)
-    /// that lands inside the throttle window would stay stale indefinitely if
-    /// nothing else in the workspace mutates afterward. Re-checks after firing
-    /// since `.task(id:)` restarts on the bump; converges once the memo reports
-    /// no further staleness.
-    private func scheduleStaleRefreshIfNeeded() async {
-        guard let delay = Self.summaryMemo.staleRefreshDelay(tasks: tasks, runs: runs, timeFilter: timeFilter) else {
-            return
+    /// While anything in the workspace is live, periodically forces a fresh
+    /// render so `usageSummary` re-queries the memo — value-only changes
+    /// (tokensUsed/costUSD/status) that land inside the throttle window get
+    /// picked up on the next tick instead of staying stale indefinitely.
+    /// Bounded to zero cost when idle: this loop only runs while
+    /// `hasLiveActivity` is true, and `.task(id:)` doesn't restart it otherwise.
+    @MainActor
+    private func pollWhileLive() async {
+        while hasLiveActivity, !Task.isCancelled {
+            try? await Task.sleep(nanoseconds: Self.livePollIntervalNanoseconds)
+            guard !Task.isCancelled else { return }
+            renderTick += 1
         }
-        try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
-        guard !Task.isCancelled else { return }
-        staleRefreshTick += 1
     }
 
     /// Leading status glyph for a per-task breakdown row, so the list has a

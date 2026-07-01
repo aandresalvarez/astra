@@ -1031,7 +1031,9 @@ struct TaskThreadSnapshotTrigger: Equatable {
         let latestRun = runs.max { $0.startedAt < $1.startedAt }
         taskID = task.id
         eventCount = events.count
-        visibleEventCount = Self.visibleEventCount(taskID: task.id, events: events)
+        visibleEventCount = events.reduce(0) { count, event in
+            Self.highFrequencyEventTypes.contains(event.type) ? count : count + 1
+        }
         runCount = runs.count
         status = task.status
         latestRunID = latestRun?.id
@@ -1070,77 +1072,33 @@ struct TaskThreadSnapshotTrigger: Equatable {
         guard byteCount > 0 else { return 0 }
         return ((byteCount - 1) / liveOutputBucketSize) + 1
     }
-
-    private static let visibleEventCountMemo = TaskThreadVisibleEventCountMemo()
-
-    private static func visibleEventCount(taskID: UUID, events: [TaskEvent]) -> Int {
-        visibleEventCountMemo.count(taskID: taskID, events: events, highFrequencyTypes: highFrequencyEventTypes)
-    }
-
-    static func resetVisibleEventCountMemoForTesting() {
-        visibleEventCountMemo.reset()
-    }
 }
 
-/// Incremental cache for `TaskThreadSnapshotTrigger.visibleEventCount`. The trigger
-/// is rebuilt on every mutation `TaskThreadChangeObserver` observes (every streamed
-/// conversation chunk appends a `TaskEvent` via `AgentEventRecorder`), so a live task
-/// with thousands of events paid an O(n) rescan on every single chunk.
+/// Cheap, task-based liveness check used to gate how often the O(event count)
+/// `TaskThreadSnapshotTrigger` gets rebuilt (see `TaskThreadChangeObserver` in
+/// TaskMainView.swift), without needing to build the trigger itself just to find
+/// out. Mirrors `TaskThreadViewModel.refreshSnapshot`'s inline liveness check
+/// (`status == .running/.queued || latestRunStatus == .running`), reading it
+/// directly off `task`/`task.runs` (O(run count), not O(event count)) instead of
+/// via a constructed trigger.
 ///
-/// `AgentEventRecorder` inserts new `TaskEvent`s through the model context rather
-/// than appending to `task.events` directly, and SwiftData doesn't guarantee that
-/// relationship array's ordering — so the "new events are always at the tail"
-/// assumption an index-only incremental scan would need isn't safe to trust blindly.
-/// Instead of trusting it, this verifies it cheaply on every call: it remembers the
-/// ID of the last element it counted at the scan boundary and only takes the
-/// incremental path if that element is still there. A mid-array insertion or any
-/// reordering that moves the boundary shifts what's at that index, so the ID
-/// mismatches and it falls back to a full rescan — self-healing rather than
-/// silently under- or over-counting. (Reordering *within* the already-counted
-/// prefix doesn't affect the count itself, since counting by type is
-/// order-independent over a fixed set — only the boundary position matters here.)
-/// Lock-protected (mirrors `WildcardPatternMatcher`) rather than `@MainActor`-
-/// isolated since callers include non-MainActor test code.
-private final class TaskThreadVisibleEventCountMemo: @unchecked Sendable {
-    private let lock = NSLock()
-    private var taskID: UUID?
-    private var scannedCount = 0
-    private var lastScannedEventID: UUID?
-    private var visibleCount = 0
-
-    func count(taskID incomingTaskID: UUID, events: [TaskEvent], highFrequencyTypes: Set<String>) -> Int {
-        lock.lock()
-        defer { lock.unlock() }
-        if taskID == incomingTaskID, scannedCount <= events.count, boundaryIsStable(events: events) {
-            for event in events[scannedCount...] where !highFrequencyTypes.contains(event.type) {
-                visibleCount += 1
-            }
-            scannedCount = events.count
-            lastScannedEventID = events.last?.id
-            return visibleCount
-        }
-        visibleCount = 0
-        for event in events where !highFrequencyTypes.contains(event.type) {
-            visibleCount += 1
-        }
-        taskID = incomingTaskID
-        scannedCount = events.count
-        lastScannedEventID = events.last?.id
-        return visibleCount
-    }
-
-    private func boundaryIsStable(events: [TaskEvent]) -> Bool {
-        guard scannedCount > 0 else { return true }
-        return events[scannedCount - 1].id == lastScannedEventID
-    }
-
-    func reset() {
-        lock.lock()
-        defer { lock.unlock() }
-        taskID = nil
-        lastScannedEventID = nil
-        scannedCount = 0
-        visibleCount = 0
+/// An earlier version tried to make the trigger's `visibleEventCount` itself O(1)
+/// amortized via an incremental scan over `task.events`, trusting that new events
+/// only ever land at the tail. That assumption doesn't hold: `AgentEventRecorder`
+/// inserts new `TaskEvent`s through the model context rather than appending to
+/// `task.events` directly, and SwiftData doesn't guarantee that relationship
+/// array's ordering, so an incremental scan (even with a boundary-identity check)
+/// could silently miss a new event inserted ahead of the previously-scanned
+/// region. Rather than chase a provably-correct-but-intricate incremental scheme,
+/// this keeps `visibleEventCount` a plain, always-correct full scan and instead
+/// bounds how often it runs: `TaskThreadChangeObserver` polls at
+/// `livePollIntervalNanoseconds` while `isLive` is true instead of rebuilding the trigger on
+/// every single SwiftData-observed mutation.
+enum TaskLiveness {
+    static func isLive(task: AgentTask) -> Bool {
+        task.status == .running
+            || task.status == .queued
+            || task.runs.max(by: { $0.startedAt < $1.startedAt })?.status == .running
     }
 }
 

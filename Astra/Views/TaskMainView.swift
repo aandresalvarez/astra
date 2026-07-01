@@ -217,20 +217,47 @@ private struct AgentGeneratedFilesListView: View {
 /// streamed token. The triggers' `==` is already coarse (1 KB bucket), so the
 /// callbacks still fire at snapshot granularity. See the UI responsiveness
 /// audit (Cluster 1).
+///
+/// The snapshot trigger specifically is polled rather than watched reactively:
+/// `TaskThreadSnapshotTrigger` is O(event count) to build (it walks `task.events`
+/// to exclude high-frequency streaming-delta types from the count), and reactive
+/// `.onChange` would rebuild it on every single streamed conversation chunk —
+/// O(n) work per chunk, compounding to roughly O(n²) over a long-running task.
+/// Polling at `livePollIntervalNanoseconds` while `TaskLiveness.isLive(task:)` is true (a
+/// cheap, O(run count) check, safe to evaluate every render) bounds that to
+/// O(n) per tick instead, matching `TaskThreadViewModel.liveSnapshotMinimumInterval`'s
+/// cadence for the downstream rebuild it feeds. The generated-files trigger
+/// doesn't have this cost profile (it doesn't scan events), so it stays reactive.
 private struct TaskThreadChangeObserver: View {
     let task: AgentTask
     let generatedFilesLatestRun: TaskRunSnapshot?
     let onSnapshotChange: () -> Void
     let onGeneratedFilesChange: () -> Void
 
+    private static let livePollIntervalNanoseconds: UInt64 = 120_000_000
+
     var body: some View {
         Color.clear
-            .onChange(of: TaskThreadSnapshotTrigger(task: task)) { _, _ in
-                onSnapshotChange()
+            .task(id: TaskLiveness.isLive(task: task)) {
+                await pollSnapshotTriggerWhileLive()
             }
             .onChange(of: TaskGeneratedFilesTrigger(task: task, latestRun: generatedFilesLatestRun)) { _, _ in
                 onGeneratedFilesChange()
             }
+    }
+
+    @MainActor
+    private func pollSnapshotTriggerWhileLive() async {
+        var lastTrigger = TaskThreadSnapshotTrigger(task: task)
+        while TaskLiveness.isLive(task: task), !Task.isCancelled {
+            try? await Task.sleep(nanoseconds: Self.livePollIntervalNanoseconds)
+            guard !Task.isCancelled else { return }
+            let trigger = TaskThreadSnapshotTrigger(task: task)
+            if trigger != lastTrigger {
+                lastTrigger = trigger
+                onSnapshotChange()
+            }
+        }
     }
 }
 
