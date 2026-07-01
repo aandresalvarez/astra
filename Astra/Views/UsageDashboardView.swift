@@ -72,6 +72,18 @@ struct UsageDashboardSummary {
     }
 }
 
+/// Result of `UsageDashboardSummaryMemo.query(...)`: the summary to display, plus
+/// (only for the *first* caller to observe an already-cached value still inside
+/// the throttle window) how long to wait before re-querying to pick up any
+/// value-only change — e.g. `tokensUsed`, `costUSD`, or `status` — that landed
+/// since the cache was populated. `nil` when this call recomputed fresh, or when
+/// a follow-up for the current cache entry has already been reported to an
+/// earlier caller (see `UsageDashboardSummaryMemo.followUpScheduled`).
+struct UsageDashboardSummaryQuery {
+    let summary: UsageDashboardSummary
+    let staleRefreshDelay: TimeInterval?
+}
+
 /// Throttled cache for `UsageDashboardSummary`. `@Query`'s invalidation is coarse:
 /// it re-runs `body` on ANY mutation to a tracked `AgentTask`/`TaskRun`, including
 /// `run.output` appends from every streamed token of any active run anywhere in the
@@ -85,20 +97,20 @@ struct UsageDashboardSummary {
 /// rather than `@State`-driven since it's read directly from `body`, where mutating
 /// `@State` synchronously is unsafe.
 ///
-/// This throttle alone can serve a value-only change (tokensUsed/costUSD/status
-/// landing inside the window) stale with nothing to force a follow-up — task/run
-/// counts and the filter don't capture every field the summary reads. An earlier
-/// version tried to have the memo self-report "you got a stale value, wait this
-/// long and re-query" back to the caller, but that signal is ambiguous: the memo
-/// can't tell "this caller is re-checking a value that was already scheduled for
-/// refresh" from "this caller is a genuinely new request that happens to still be
-/// within the window" — both look identical (same inputs, recent
-/// `lastComputedAt`). Rather than chase that ambiguity, `UsageDashboardView`
-/// instead polls at a fixed cadence while anything is live (see
-/// `TaskLiveness.isLive`, `TaskThreadChangeObserver` for the same pattern applied
-/// to the task thread) so this memo just needs to be a plain, unconditional
-/// throttle — eventual consistency comes from the polling cadence, not from this
-/// class trying to self-report staleness.
+/// This throttle alone can serve a value-only change (tokensUsed/costUSD/status —
+/// e.g. approving a pending-user task, which changes none of the count/filter
+/// fields the cache keys on) stale with nothing to force a follow-up. A prior
+/// version tried gating a *poll loop* on whether any task looked "live"
+/// (`TaskLiveness.isLive`), but that predicate only covers running/queued tasks
+/// with a live run — a `.pendingUser → .completed` transition isn't a liveness
+/// edge at all, so it was never observed by that loop, leaving the Completed/
+/// Failed/token cards stale indefinitely. `query(...)` instead reports the
+/// staleness signal directly, guarded by `followUpScheduled` so at most one
+/// follow-up gets reported per cache entry: the first caller to see a cached
+/// value within the window gets a delay and is responsible for re-querying
+/// after it; every other caller within that same window gets `nil` (a
+/// follow-up is already on its way). Recomputing always resets the flag, so the
+/// next stale read schedules its own follow-up again.
 final class UsageDashboardSummaryMemo: @unchecked Sendable {
     private let lock = NSLock()
     private var cached: UsageDashboardSummary?
@@ -106,21 +118,29 @@ final class UsageDashboardSummaryMemo: @unchecked Sendable {
     private var cachedTaskCount = -1
     private var cachedRunCount = -1
     private var lastComputedAt = Date.distantPast
+    private var followUpScheduled = false
     private let minimumInterval: TimeInterval
 
     init(minimumInterval: TimeInterval) {
         self.minimumInterval = minimumInterval
     }
 
-    func summary(tasks: [AgentTask], runs: [TaskRun], timeFilter: TimeFilter) -> UsageDashboardSummary {
+    func query(tasks: [AgentTask], runs: [TaskRun], timeFilter: TimeFilter) -> UsageDashboardSummaryQuery {
         lock.lock()
         defer { lock.unlock() }
         let now = Date()
         let inputsUnchanged = cachedFilter == timeFilter
             && cachedTaskCount == tasks.count
             && cachedRunCount == runs.count
-        if let cached, inputsUnchanged, now.timeIntervalSince(lastComputedAt) < minimumInterval {
-            return cached
+        if let cached, inputsUnchanged {
+            let remaining = minimumInterval - now.timeIntervalSince(lastComputedAt)
+            if remaining > 0 {
+                if followUpScheduled {
+                    return UsageDashboardSummaryQuery(summary: cached, staleRefreshDelay: nil)
+                }
+                followUpScheduled = true
+                return UsageDashboardSummaryQuery(summary: cached, staleRefreshDelay: remaining)
+            }
         }
         let summary = UsageDashboardSummary.build(tasks: tasks, runs: runs, timeFilter: timeFilter)
         cached = summary
@@ -128,7 +148,8 @@ final class UsageDashboardSummaryMemo: @unchecked Sendable {
         cachedTaskCount = tasks.count
         cachedRunCount = runs.count
         lastComputedAt = now
-        return summary
+        followUpScheduled = false
+        return UsageDashboardSummaryQuery(summary: summary, staleRefreshDelay: nil)
     }
 
     func resetForTesting() {
@@ -139,26 +160,20 @@ final class UsageDashboardSummaryMemo: @unchecked Sendable {
         cachedTaskCount = -1
         cachedRunCount = -1
         lastComputedAt = .distantPast
+        followUpScheduled = false
     }
 }
 
 struct UsageDashboardView: View {
     private static let summaryMemo = UsageDashboardSummaryMemo(minimumInterval: 1.0)
-    private static let livePollIntervalNanoseconds: UInt64 = 1_000_000_000
 
     @Query private var tasks: [AgentTask]
     @Query private var runs: [TaskRun]
     @State private var timeFilter: TimeFilter = .allTime
     @State private var renderTick = 0
 
-    private var usageSummary: UsageDashboardSummary {
-        Self.summaryMemo.summary(tasks: tasks, runs: runs, timeFilter: timeFilter)
-    }
-
-    /// Cheap (O(task count), no event scanning) check for whether anything in
-    /// the workspace could still be producing dashboard-relevant updates.
-    private var hasLiveActivity: Bool {
-        tasks.contains { TaskLiveness.isLive(task: $0) }
+    private var summaryQuery: UsageDashboardSummaryQuery {
+        Self.summaryMemo.query(tasks: tasks, runs: runs, timeFilter: timeFilter)
     }
 
     static func resetSummaryCacheForTesting() {
@@ -166,9 +181,10 @@ struct UsageDashboardView: View {
     }
 
     var body: some View {
-        // Dependency read: bumping renderTick from pollWhileLive() forces this body to re-evaluate.
+        // Dependency read: bumping renderTick from scheduleFollowUp() forces this body to re-evaluate.
         let _ = renderTick
-        let summary = usageSummary
+        let query = summaryQuery
+        let summary = query.summary
 
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
@@ -255,44 +271,19 @@ struct UsageDashboardView: View {
             }
             .padding()
         }
-        .task(id: hasLiveActivity) {
-            guard hasLiveActivity else { return }
-            await pollWhileLive()
-        }
-        .onChange(of: hasLiveActivity) { wasLive, isLiveNow in
-            guard wasLive, !isLiveNow else { return }
-            scheduleFinalCatchUpRefresh()
-        }
-    }
-
-    /// While anything in the workspace is live, periodically forces a fresh
-    /// render so `usageSummary` re-queries the memo — value-only changes
-    /// (tokensUsed/costUSD/status) that land inside the throttle window get
-    /// picked up on the next tick instead of staying stale indefinitely.
-    /// Bounded to zero cost when idle: this loop only runs while
-    /// `hasLiveActivity` is true, and `.task(id:)` doesn't restart it otherwise.
-    @MainActor
-    private func pollWhileLive() async {
-        while hasLiveActivity, !Task.isCancelled {
-            try? await Task.sleep(nanoseconds: Self.livePollIntervalNanoseconds)
-            guard !Task.isCancelled else { return }
-            renderTick += 1
-        }
-    }
-
-    /// `pollWhileLive()` is cancelled the instant `hasLiveActivity` flips false
-    /// (SwiftUI restarts `.task(id:)` for the new id), which can land mid-sleep
-    /// and swallow the one tick that would have caught a value-only change
-    /// landing inside the memo's throttle window right before things went
-    /// idle. Scheduled independently of `.task(id:)`'s lifecycle (a plain
-    /// detached `Task`, not tied to the modifier that just got cancelled) and
-    /// waited out for a full `livePollIntervalNanoseconds` — the same duration
-    /// as the memo's throttle window — so by the time it fires, that window has
-    /// definitely elapsed and the resulting recompute is guaranteed fresh
-    /// rather than served from the same possibly-stale cache entry.
-    private func scheduleFinalCatchUpRefresh() {
-        Task {
-            try? await Task.sleep(nanoseconds: Self.livePollIntervalNanoseconds)
+        // Keyed on whether a follow-up is pending (not on `staleRefreshDelay`
+        // itself, whose exact TimeInterval value differs on every call, which
+        // would restart this task on every render instead of only at genuine
+        // pending/not-pending transitions). `.task(id:)` fires on both the
+        // initial value and later transitions to `true`, so this catches a
+        // stale value from the very first render (e.g. the dashboard reopened
+        // while a prior instance's cache entry is still inside its window) as
+        // well as later ones. `followUpScheduled` inside the memo guarantees
+        // at most one caller ever gets a non-nil delay per cache entry, so
+        // this never schedules a redundant duplicate for the same staleness.
+        .task(id: query.staleRefreshDelay != nil) {
+            guard let delay = query.staleRefreshDelay else { return }
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
             guard !Task.isCancelled else { return }
             renderTick += 1
         }

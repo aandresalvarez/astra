@@ -93,10 +93,10 @@ struct TaskLivenessTests {
         #expect(TaskLiveness.isLive(task: task))
     }
 
-    @Test("A queued task is live")
-    func queuedTaskIsLive() {
+    @Test("A queued task (waiting behind another run) is not live — nothing to poll until it actually starts running")
+    func queuedTaskIsNotLive() {
         let task = makeTask(status: .queued)
-        #expect(TaskLiveness.isLive(task: task))
+        #expect(!TaskLiveness.isLive(task: task))
     }
 
     @Test("A completed task with a running latest run is still live")

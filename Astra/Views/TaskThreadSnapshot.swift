@@ -1077,10 +1077,8 @@ struct TaskThreadSnapshotTrigger: Equatable {
 /// Cheap, task-based liveness check used to gate how often the O(event count)
 /// `TaskThreadSnapshotTrigger` gets rebuilt (see `TaskThreadChangeObserver` in
 /// TaskMainView.swift), without needing to build the trigger itself just to find
-/// out. Mirrors `TaskThreadViewModel.refreshSnapshot`'s inline liveness check
-/// (`status == .running/.queued || latestRunStatus == .running`), reading it
-/// directly off `task`/`task.runs` (O(run count), not O(event count)) instead of
-/// via a constructed trigger.
+/// out. Reads directly off `task`/`task.runs` (O(run count), not O(event count))
+/// instead of via a constructed trigger.
 ///
 /// An earlier version tried to make the trigger's `visibleEventCount` itself O(1)
 /// amortized via an incremental scan over `task.events`, trusting that new events
@@ -1094,10 +1092,20 @@ struct TaskThreadSnapshotTrigger: Equatable {
 /// bounds how often it runs: `TaskThreadChangeObserver` polls at
 /// `livePollIntervalNanoseconds` while `isLive` is true instead of rebuilding the trigger on
 /// every single SwiftData-observed mutation.
+///
+/// Deliberately narrower than `TaskThreadViewModel.refreshSnapshot`'s inline
+/// liveness check (`status == .running/.queued || latestRunStatus == .running`),
+/// which also treats `.queued` as live — that's the right call for deciding
+/// whether the *terminal snapshot cache* applies (a queued task's plan could
+/// still change before its turn), but wrong for deciding whether to *poll*: a
+/// task queued behind another run has no live output or events yet, so polling
+/// it every tick is pure waste until an actual run starts. `isLive` here only
+/// covers `.running` (task or run), leaving `.queued` on the cheap reactive
+/// path (`TaskThreadChangeObserver.reactiveTriggerWhenNotLive`,
+/// `UsageDashboardView`'s query-driven follow-up) until it actually starts running.
 enum TaskLiveness {
     static func isLive(task: AgentTask) -> Bool {
         task.status == .running
-            || task.status == .queued
             || task.runs.max(by: { $0.startedAt < $1.startedAt })?.status == .running
     }
 }
