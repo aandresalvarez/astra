@@ -30,14 +30,110 @@ struct ArchitectureFitnessTests {
             "Diagnostics",
             "Git",
             "GoogleWorkspace",
+            "Packs",
             "Persistence",
             "Runtime",
             "Security",
             "Settings",
+            "Shelves",
             "Tasks",
             "Validation",
             "WorkspaceApps"
         ])
+    }
+
+    @Test("Pack services stay in the Packs service folder")
+    func packServicesStayInPacksServiceFolder() throws {
+        let root = try repositoryRoot()
+        let serviceRoot = root.appendingPathComponent("Astra/Services")
+        let allowedWorkspaceAppPackAdapters: Set<String> = [
+            "Astra/Services/WorkspaceApps/WorkspaceAppTemplatePackCatalog.swift"
+        ]
+        let packServiceFilesOutsidePacks = try swiftFiles(under: serviceRoot)
+            .compactMap { file -> String? in
+                let path = relativePath(for: file, root: root)
+                guard path.contains("/Packs/") == false else { return nil }
+                guard allowedWorkspaceAppPackAdapters.contains(path) == false else { return nil }
+                let text = try String(contentsOf: file, encoding: .utf8)
+                return text.contains("AstraPack") ? path : nil
+            }
+            .sorted()
+
+        #expect(
+            packServiceFilesOutsidePacks.isEmpty,
+            "Pack service files should live under Astra/Services/Packs: \(packServiceFilesOutsidePacks)"
+        )
+    }
+
+    @Test("Pack source discovery goes through the file access broker")
+    func packSourceDiscoveryGoesThroughFileAccessBroker() throws {
+        let root = try repositoryRoot()
+        let relativePath = "Astra/Services/Packs/AstraPackSource.swift"
+        let text = try String(contentsOf: root.appendingPathComponent(relativePath), encoding: .utf8)
+        let forbiddenPatterns = [
+            "fileManager.fileExists(",
+            "FileManager.default.fileExists(",
+            "fileManager.contentsOfDirectory(",
+            "FileManager.default.contentsOfDirectory("
+        ]
+
+        let matches = text
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .enumerated()
+            .compactMap { index, line -> String? in
+                let value = String(line)
+                guard forbiddenPatterns.contains(where: { pattern in value.contains(pattern) }) else { return nil }
+                return "\(relativePath):\(index + 1)"
+            }
+
+        #expect(matches.isEmpty, "Pack source discovery should use HostFileAccessBroker: \(matches)")
+    }
+
+    @Test("Pack shelf schema does not expose dynamic SwiftUI implementation fields")
+    func packShelfSchemaDoesNotExposeDynamicSwiftUIImplementationFields() throws {
+        let root = try repositoryRoot()
+        let relativePath = "ASTRACore/AstraPackManifest.swift"
+        let text = try String(contentsOf: root.appendingPathComponent(relativePath), encoding: .utf8)
+        let forbiddenStoredProperties = [
+            "public var swiftUIViewType",
+            "public var viewImplementation",
+            "public var viewType",
+            "public var modulePath",
+            "public var bundlePath",
+            "public var pluginPath"
+        ]
+
+        let matches = forbiddenStoredProperties.filter { text.contains($0) }
+
+        #expect(
+            matches.isEmpty,
+            "Pack shelf manifests must reference trusted Core shelf IDs, not dynamic SwiftUI implementations: \(matches)"
+        )
+    }
+
+    @Test("Shelf services stay independent of view-layer types")
+    func shelfServicesStayIndependentOfViewLayerTypes() throws {
+        let root = try repositoryRoot()
+        let shelvesRoot = root.appendingPathComponent("Astra/Services/Shelves")
+        let forbiddenSymbols = [
+            "WorkspaceCanvasItem",
+            "PanelLayoutGeometry"
+        ]
+
+        let matches = try swiftFiles(under: shelvesRoot)
+            .flatMap { file -> [String] in
+                let relativePath = relativePath(for: file, root: root)
+                let text = try String(contentsOf: file, encoding: .utf8)
+                return forbiddenSymbols
+                    .filter { text.contains($0) }
+                    .map { "\(relativePath): \($0)" }
+            }
+            .sorted()
+
+        #expect(
+            matches.isEmpty,
+            "Shelf services must not depend on view-layer types; add a view-side adapter or neutral metrics instead: \(matches)"
+        )
     }
 
     @Test("Workspace App Studio stays on the direct session architecture")
@@ -103,6 +199,15 @@ struct ArchitectureFitnessTests {
             #expect(Set(providers).count == providers.count)
             #expect(providers.allSatisfy { allIDs.contains($0) })
         }
+    }
+
+    @Test("Shelf browser snapshots go through the redaction boundary")
+    func shelfBrowserSnapshotsGoThroughTheRedactionBoundary() throws {
+        let root = try repositoryRoot()
+        let source = try fileText("Astra/Services/Browser/ShelfBrowserSession.swift", root: root)
+
+        #expect(!source.contains("result = json"), "Provider-visible browser snapshots must not bypass BrowserPageSnapshotService.")
+        #expect(source.contains("let result = try BrowserPageSnapshotService.compactSnapshot("))
     }
 
     @Test("Typed task event constants are categorized explicitly")
@@ -924,6 +1029,20 @@ struct ArchitectureFitnessTests {
         )
     }
 
+    @Test("Remote MCP gateway trust uses canonical built-in source metadata")
+    func remoteMCPGatewayTrustUsesCanonicalBuiltInSourceMetadata() throws {
+        let root = try repositoryRoot()
+        let policy = try String(
+            contentsOf: root.appendingPathComponent("Astra/Services/Runtime/RemoteMCPGatewayEndpointTrustPolicy.swift"),
+            encoding: .utf8
+        )
+
+        #expect(policy.contains("CapabilitySourceMetadata.builtIn()"))
+        #expect(!policy.contains(#"packageSourceMetadata?.id == "built-in""#))
+        #expect(!policy.contains(#"packageSourceMetadata?.kind == "built-in""#))
+        #expect(!policy.contains(#"packageSourceMetadata?.trustLevel == "built-in""#))
+    }
+
     @Test("Plugin catalog import presentation lives with catalog presentation contracts")
     func pluginCatalogImportPresentationLivesWithCatalogPresentationContracts() throws {
         let root = try repositoryRoot()
@@ -1156,6 +1275,18 @@ struct ArchitectureFitnessTests {
         #expect(codeowners.contains("Tests/ArchitectureFitnessTests.swift"))
     }
 
+    @Test("Remote MCP gateway tool policy exposes immutable policy lists")
+    func remoteMCPGatewayToolPolicyExposesImmutablePolicyLists() throws {
+        let root = try repositoryRoot()
+        let source = try fileText("Tools/MCPGatewaySupport/MCPGatewaySupport.swift", root: root)
+        let policy = try extractedStruct(named: "RemoteMCPGatewayToolPolicy", from: source)
+
+        #expect(policy.contains("public let allowedTools: [String]"))
+        #expect(policy.contains("public let excludedTools: [String]"))
+        #expect(!policy.contains("public var allowedTools"))
+        #expect(!policy.contains("public var excludedTools"))
+    }
+
     private func declaredTaskEventTypeConstants() throws -> Set<String> {
         let file = try repositoryRoot().appendingPathComponent("Astra/Models/TaskEventTypes.swift")
         let text = try String(contentsOf: file, encoding: .utf8)
@@ -1169,18 +1300,7 @@ struct ArchitectureFitnessTests {
     }
 
     private func repositoryRoot() throws -> URL {
-        var candidate = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
-        while true {
-            if FileManager.default.fileExists(atPath: candidate.appendingPathComponent("Package.swift").path),
-               FileManager.default.fileExists(atPath: candidate.appendingPathComponent("Astra").path) {
-                return candidate
-            }
-            let parent = candidate.deletingLastPathComponent()
-            if parent.path == candidate.path {
-                throw ArchitectureFitnessError.repositoryRootNotFound
-            }
-            candidate = parent
-        }
+        try TestRepositoryRoot.resolve()
     }
 
     private func swiftFiles(under root: URL) throws -> [URL] {
@@ -1262,6 +1382,5 @@ struct ArchitectureFitnessTests {
 }
 
 private enum ArchitectureFitnessError: Error {
-    case repositoryRootNotFound
     case sourceSnippetNotFound(String)
 }

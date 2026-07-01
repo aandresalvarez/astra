@@ -253,16 +253,20 @@ struct BrowserAccessibilitySnapshot {
     }
 
     func matchingNode(for control: BrowserControl) -> BrowserAccessibilityNode? {
-        let controlName = BrowserAnalysisBuilder.normalizedName(control.name.isEmpty ? control.label : control.name)
+        let controlNames = [control.name, control.label]
+            .map(BrowserAnalysisBuilder.normalizedName)
+            .filter { !$0.isEmpty }
         let controlRole = BrowserAnalysisBuilder.normalizedName(control.role)
-        guard !controlName.isEmpty || !controlRole.isEmpty else { return nil }
+        guard !controlNames.isEmpty || !controlRole.isEmpty else { return nil }
 
         return nodes.first { node in
             guard !node.ignored else { return false }
             let nodeName = BrowserAnalysisBuilder.normalizedName(node.name)
             let nodeRole = BrowserAnalysisBuilder.normalizedName(node.role)
             let roleMatches = controlRole.isEmpty || nodeRole.isEmpty || nodeRole.contains(controlRole) || controlRole.contains(nodeRole)
-            let nameMatches = controlName.isEmpty || nodeName == controlName || nodeName.contains(controlName) || controlName.contains(nodeName)
+            let nameMatches = controlNames.isEmpty || controlNames.contains { controlName in
+                nodeName == controlName || nodeName.contains(controlName) || controlName.contains(nodeName)
+            }
             return roleMatches && nameMatches && (!nodeName.isEmpty || !nodeRole.isEmpty)
         }
     }
@@ -277,6 +281,7 @@ struct BrowserControl {
     let role: String
     let tag: String
     let type: String
+    let autocomplete: String
     let placeholder: String
     let testID: String
     let value: String
@@ -291,12 +296,48 @@ struct BrowserControl {
     let primaryAction: BrowserActionKind?
     let actionOutcomes: [[String: Any]]
     let risk: BrowserRisk
+    let providerVisibleRedaction: BrowserControlProviderVisibleRedaction
     let confidence: Double
     let rank: Int
     let evidence: [String: Any]
 
     var requiresUserConfirmation: Bool {
         risk.requiresUserConfirmation
+    }
+
+    var providerVisibleValue: String {
+        providerVisibleString("value", fallback: value)
+    }
+
+    var redactedLabel: String {
+        providerVisibleString("label", fallback: label)
+    }
+
+    var redactedName: String {
+        providerVisibleString("name", fallback: name)
+    }
+
+    private var hasSensitiveValue: Bool {
+        providerVisibleRedaction.didRedact || providerVisibleValue == BrowserSensitiveInputRedactionPolicy.redactedInputValue
+    }
+
+    func redactedDisplayText(_ text: String) -> String {
+        guard hasSensitiveValue else { return text }
+        let sensitiveValues = providerVisibleRedaction.sensitiveValues
+        if sensitiveValues.isEmpty {
+            return BrowserSensitiveInputRedactionPolicy.redactedSensitiveMetadataText(text)
+        }
+        let valueRedacted = BrowserSensitiveInputRedactionPolicy.redactedDisplayText(text, sensitiveValues: sensitiveValues)
+        return valueRedacted == text
+            ? BrowserSensitiveInputRedactionPolicy.redactedSensitiveMetadataText(text)
+            : valueRedacted
+    }
+
+    var redactedActionOutcomes: [[String: Any]] {
+        guard hasSensitiveValue else { return actionOutcomes }
+        return actionOutcomes.map { outcome in
+            redactedProviderVisibleValue(outcome) as? [String: Any] ?? outcome
+        }
     }
 
     func supports(_ action: BrowserActionKind) -> Bool {
@@ -306,16 +347,17 @@ struct BrowserControl {
     func jsonObject(debug: Bool = false) -> [String: Any] {
         var object: [String: Any] = [
             "controlID": controlID,
-            "label": label,
-            "name": name,
+            "label": redactedLabel,
+            "name": redactedName,
             "role": role,
             "tag": tag,
             "type": type,
-            "selector": selector,
-            "placeholder": placeholder,
-            "testID": testID,
-            "value": value,
-            "href": href,
+            "selector": redactedDisplayText(selector),
+            "placeholder": redactedDisplayText(placeholder),
+            "autocomplete": autocomplete,
+            "testID": redactedDisplayText(testID),
+            "value": providerVisibleValue,
+            "href": redactedDisplayText(href),
             "framePath": framePath,
             "shadowDepth": shadowDepth,
             "state": disabled ? "disabled" : "enabled",
@@ -325,7 +367,7 @@ struct BrowserControl {
             "bounds": bounds,
             "validActions": validActions.map(\.rawValue),
             "primaryAction": primaryAction?.rawValue ?? "",
-            "actionOutcomes": actionOutcomes,
+            "actionOutcomes": redactedActionOutcomes,
             "risk": risk.rawValue,
             "requiresUserConfirmation": requiresUserConfirmation,
             "confidence": confidence
@@ -333,7 +375,7 @@ struct BrowserControl {
         if debug {
             object["identityHash"] = identityHash
             object["rank"] = rank
-            object["evidence"] = evidence
+            object["evidence"] = redactedEvidence(evidence)
         } else {
             object["evidence"] = [
                 "labelSource": evidence["labelSource"] as? String ?? "computed",
@@ -344,6 +386,25 @@ struct BrowserControl {
         }
         return object
     }
+
+    private func redactedEvidence(_ value: Any) -> Any {
+        redactedProviderVisibleValue(value)
+    }
+
+    private func redactedProviderVisibleValue(_ value: Any) -> Any {
+        guard hasSensitiveValue else { return value }
+        if let string = value as? String {
+            return redactedDisplayText(string)
+        }
+        if let object = value as? [String: Any] {
+            return object.mapValues(redactedProviderVisibleValue)
+        }
+        if let array = value as? [Any] {
+            return array.map(redactedProviderVisibleValue)
+        }
+        return value
+    }
+
 }
 
 struct BrowserControlRef {
@@ -368,7 +429,7 @@ struct BrowserControlRef {
         if let accessibilityNode {
             evidence["accessibilityNodeID"] = accessibilityNode.nodeID
             evidence["accessibilityRole"] = accessibilityNode.role
-            evidence["accessibilityName"] = accessibilityNode.name
+            evidence["accessibilityName"] = control.redactedAccessibilityText(accessibilityNode.name)
         }
 
         var object: [String: Any] = [
@@ -376,10 +437,10 @@ struct BrowserControlRef {
             "controlID": control.controlID,
             "source": source.rawValue,
             "role": control.role,
-            "name": control.name.isEmpty ? control.label : control.name,
-            "label": control.label,
-            "value": control.value,
-            "selectorFallback": control.selector,
+            "name": control.redactedName.isEmpty ? control.redactedLabel : control.redactedName,
+            "label": control.redactedLabel,
+            "value": control.providerVisibleValue,
+            "selectorFallback": control.redactedDisplayText(control.selector),
             "framePath": control.framePath,
             "bounds": control.bounds,
             "state": [
@@ -389,23 +450,24 @@ struct BrowserControlRef {
                 "actionable": control.actionable
             ],
             "context": [
-                "placeholder": control.placeholder,
-                "testID": control.testID,
+                "placeholder": control.redactedDisplayText(control.placeholder),
+                "autocomplete": control.autocomplete,
+                "testID": control.redactedDisplayText(control.testID),
                 "tag": control.tag,
                 "type": control.type,
-                "href": control.href,
+                "href": control.redactedDisplayText(control.href),
                 "shadowDepth": control.shadowDepth
             ],
             "validActions": control.validActions.map(\.rawValue),
             "primaryAction": control.primaryAction?.rawValue ?? "",
-            "actionOutcomes": control.actionOutcomes,
+            "actionOutcomes": control.redactedActionOutcomes,
             "risk": control.risk.rawValue,
             "requiresUserConfirmation": control.requiresUserConfirmation,
             "confidence": control.confidence,
             "evidence": evidence
         ]
         if let accessibilityNode, debug {
-            object["accessibilityNode"] = accessibilityNode.jsonObject
+            object["accessibilityNode"] = control.redactedAccessibilityNodeObject(accessibilityNode)
         }
         return object
     }
@@ -627,16 +689,32 @@ enum BrowserControlResolver {
         liveControl: BrowserControl,
         liveRef: BrowserControlRef
     ) -> Double {
-        let cachedName = normalized(cachedRef.control.name.isEmpty ? cachedRef.control.label : cachedRef.control.name)
-        let liveName = normalized(liveRef.control.name.isEmpty ? liveRef.control.label : liveRef.control.name)
+        let cachedName = normalized(BrowserControlTargetingPolicy.semanticName(for: cachedRef.control, source: cachedRef.source))
+        let liveName = normalized(BrowserControlTargetingPolicy.semanticName(for: liveRef.control, source: liveRef.source))
         let cachedRole = normalized(cachedRef.control.role)
         let liveRole = normalized(liveRef.control.role)
+        let stableDOMIdentityMatches = BrowserControlTargetingPolicy.stableDOMIdentityMatches(
+            cachedControl: cachedControl,
+            liveControl: liveControl
+        )
 
         let roleMatches = cachedRole.isEmpty || liveRole.isEmpty || liveRole.contains(cachedRole) || cachedRole.contains(liveRole)
         let nameMatches = cachedName.isEmpty || liveName == cachedName || liveName.contains(cachedName) || cachedName.contains(liveName)
-        guard roleMatches && nameMatches else { return 0 }
+        guard roleMatches && (nameMatches || stableDOMIdentityMatches) else { return 0 }
 
         var score = 1.0
+        if stableDOMIdentityMatches {
+            score += 40
+        }
+        if !cachedControl.controlID.isEmpty, cachedControl.controlID == liveControl.controlID {
+            score += 80
+        }
+        if !cachedControl.selector.isEmpty, cachedControl.selector == liveControl.selector {
+            score += 45
+        }
+        if !cachedControl.name.isEmpty, cachedControl.name == liveControl.name {
+            score += 25
+        }
         if liveRef.source == cachedRef.source {
             score += 20
         }
@@ -793,16 +871,16 @@ enum BrowserAnalysisBuilder {
         guard let query, !query.isEmpty else { return controls }
         return controls.filter { control in
             [
-                control.label,
-                control.name,
+                control.redactedLabel,
+                control.redactedName,
                 control.role,
                 control.tag,
                 control.type,
-                control.placeholder,
-                control.testID,
-                control.value,
-                control.href,
-                control.selector
+                control.redactedDisplayText(control.placeholder),
+                control.redactedDisplayText(control.testID),
+                control.providerVisibleValue,
+                control.redactedDisplayText(control.href),
+                control.redactedDisplayText(control.selector)
             ].contains { $0.lowercased().contains(query) }
         }
     }
@@ -960,6 +1038,7 @@ enum BrowserAnalysisBuilder {
                 string(raw["role"]),
                 string(raw["tag"]),
                 string(raw["type"]),
+                string(raw["autocomplete"]).lowercased(),
                 string(raw["label"]).lowercased(),
                 string(raw["placeholder"]).lowercased(),
                 string(raw["testID"]).lowercased(),
@@ -1011,9 +1090,10 @@ enum BrowserAnalysisBuilder {
         let role = string(raw["role"])
         let tag = string(raw["tag"])
         let type = string(raw["type"])
+        let autocomplete = string(raw["autocomplete"])
         let placeholder = string(raw["placeholder"])
         let testID = string(raw["testID"])
-        let value = string(raw["value"])
+        let rawValue = string(raw["value"])
         let href = string(raw["href"])
         let framePath = stringArray(raw["framePath"])
         let shadowDepth = int(raw["shadowDepth"]) ?? 0
@@ -1025,9 +1105,11 @@ enum BrowserAnalysisBuilder {
             pageURL: pageURL,
             selector: selector,
             label: label,
+            name: name,
             role: role,
             tag: tag,
             type: type,
+            autocomplete: autocomplete,
             placeholder: placeholder,
             testID: testID,
             href: href
@@ -1075,14 +1157,37 @@ enum BrowserAnalysisBuilder {
             name.lowercased(),
             tag,
             type,
+            autocomplete.lowercased(),
             placeholder.lowercased(),
+            autocomplete.lowercased(),
             testID.lowercased(),
             framePath.joined(separator: ">"),
             String(shadowDepth),
             boundsBucket(bounds)
         ].joined(separator: "\u{1f}")
         let identityHash = stableHash(identitySeed)
-        let slugSource = label.isEmpty ? (role.isEmpty ? tag : role) : label
+        let providerVisibleRedaction = BrowserControlProviderVisibleRedaction(
+            rawControlObject: [
+                "selector": selector,
+                "label": label,
+                "name": name,
+                "role": role,
+                "tag": tag,
+                "type": type,
+                "placeholder": placeholder,
+                "testID": testID,
+                "value": rawValue,
+                "href": href,
+                "autocomplete": autocomplete
+            ],
+            risk: risk
+        )
+        let slugSource = BrowserSensitiveInputRedactionPolicy.controlIDSlugSource(
+            label: label,
+            role: role,
+            tag: tag,
+            redactedLabel: providerVisibleRedaction.object["label"] as? String ?? label
+        )
         let rank = rankControl(
             label: label,
             role: role,
@@ -1123,9 +1228,10 @@ enum BrowserAnalysisBuilder {
             role: role,
             tag: tag,
             type: type,
+            autocomplete: autocomplete,
             placeholder: placeholder,
             testID: testID,
-            value: value,
+            value: rawValue,
             href: href,
             framePath: framePath,
             shadowDepth: shadowDepth,
@@ -1137,6 +1243,7 @@ enum BrowserAnalysisBuilder {
             primaryAction: primaryAction,
             actionOutcomes: actionOutcomes,
             risk: risk,
+            providerVisibleRedaction: providerVisibleRedaction,
             confidence: confidence,
             rank: rank,
             evidence: evidence
@@ -1352,42 +1459,49 @@ enum BrowserAnalysisBuilder {
         pageURL: String,
         selector: String,
         label: String,
+        name: String,
         role: String,
         tag: String,
         type: String,
+        autocomplete: String,
         placeholder: String,
         testID: String,
         href: String
     ) -> BrowserRisk {
+        if let autocompleteRisk = BrowserSensitiveInputRedactionPolicy.riskForAutocomplete(autocomplete) {
+            return autocompleteRisk
+        }
+
+        let sharedRisk = BrowserSensitiveControlClassifier.classify(
+            selector: selector,
+            requestedSelector: "",
+            label: label,
+            name: name,
+            role: role,
+            tag: tag,
+            type: type,
+            autocomplete: autocomplete,
+            placeholder: placeholder,
+            testID: testID,
+            href: href,
+            frameFocusUninspectable: false
+        )
+        if sharedRisk != .normal {
+            return sharedRisk
+        }
+
         let text = [
             selector,
             label,
+            name,
             role,
             tag,
             type,
+            autocomplete,
             placeholder,
             testID,
             href
         ].joined(separator: " ").lowercased()
-
-        if type.lowercased() == "password" || containsAny(text, ["password", "passcode", "secret"]) {
-            return .credentialInput
-        }
-        if containsAny(text, ["mfa", "2fa", "two factor", "two-factor", "verification code", "security code", "otp", "one-time"]) {
-            return .mfaInput
-        }
-        if containsAny(text, ["delete", "remove", "destroy", "discard", "revoke", "terminate", "erase"]) {
-            return .destructive
-        }
-        if containsAny(text, ["purchase", "buy now", "place order", "checkout"]) {
-            return .purchase
-        }
-        if containsAny(text, ["pay", "payment", "billing", "credit card", "card number"]) {
-            return .payment
-        }
-        if containsAny(text, ["authorize", "approve", "grant", "allow access", "permission", "consent"]) {
-            return .authorization
-        }
         let lowerTag = tag.lowercased()
         let lowerRole = role.lowercased()
         let isEditable = lowerTag == "input" || lowerTag == "textarea" || lowerRole.contains("textbox")
@@ -1560,7 +1674,7 @@ enum BrowserAnalysisBuilder {
     }
 
     private static func disambiguationKey(for control: BrowserControl) -> String {
-        var value = control.label.isEmpty ? control.name : control.label
+        var value = control.redactedLabel.isEmpty ? control.redactedName : control.redactedLabel
         let removablePatterns = [
             #"More actions"#,
             #"More info \(Option \+ [^)]+\)"#,

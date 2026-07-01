@@ -34,7 +34,13 @@ enum WorkspaceAppManifestValidator {
         if manifest.schemaVersion < 1 {
             issues.append(blocker("/schemaVersion", "Schema version must be at least 1."))
         }
-        validateIdentifier(manifest.app.id, path: "/app/id", label: "App ID", issues: &issues)
+        validateIdentifier(
+            manifest.app.id,
+            path: "/app/id",
+            label: "App ID",
+            rejectReservedPathComponent: true,
+            issues: &issues
+        )
         if manifest.app.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             issues.append(blocker("/app/name", "App name is required."))
         }
@@ -45,7 +51,8 @@ enum WorkspaceAppManifestValidator {
             issues: &issues
         )
         let storageTables = validateStorage(manifest.storage, issues: &issues)
-        let sourceIDs = validateSources(manifest.sources, requirementIDs: requirementIDs, issues: &issues)
+        let requirementsByID = Dictionary(manifest.requirements.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let sourceIDs = validateSources(manifest.sources, requirementsByID: requirementsByID, issues: &issues)
         let actionIDs = validateActions(
             manifest.actions,
             requirementIDs: requirementIDs,
@@ -183,10 +190,10 @@ enum WorkspaceAppManifestValidator {
         // pipeline/loop, so the MANIFEST must guarantee external effects in those runs are
         // human-gated — the bridge relies on this admission check, not just on the deterministic
         // builders, so a hand/model-authored HTML app can't ship an ungated write.
-        //  - A `pipeline.run` may include `artifact.export` only if a `gate.humanApproval` step
-        //    PRECEDES it. (Export does NOT suspend the pipeline — unlike `task.createAndRun`, which
-        //    suspends and is throttled — so without a prior gate a JS trigger would write a file
-        //    ungated; `artifact.export`'s effect is classified `.read` so the executor won't gate it.)
+        //  - A `pipeline.run` may include an external-effect step only if a `gate.humanApproval`
+        //    step PRECEDES it. The JS bridge can trigger the parent pipeline without minting
+        //    `confirmedApproval`, and `.preApproved` app mode is intentionally not a workflow-level
+        //    human gate for agent launches, connector writes, fan-out, or exports.
         //  - A `loop.run` may not include ANY external-effect step (export / agent task / connector
         //    write): loops execute steps inline with no suspend/approval, so a write would be
         //    re-triggerable without limit.
@@ -211,11 +218,10 @@ enum WorkspaceAppManifestValidator {
                         "An HTML app's loop '\(action.id)' must not run an external-effect step ('\(bad)') — loops execute inline with no approval gate. Use a pipeline with a human-approval gate."
                     ))
                 }
-            } else if let exportIdx = stepTypes.firstIndex(of: "artifact.export"),
-                      !stepTypes[..<exportIdx].contains("gate.humanApproval") {
+            } else if let ungatedStep = firstUngatedExternalEffectStep(in: stepTypes, externalEffectSteps: externalEffectSteps) {
                 issues.append(blocker(
                     "/actions/\(index)/steps",
-                    "An HTML app's pipeline '\(action.id)' exports without a preceding gate.humanApproval step; a JS trigger could write ungated. Add a human-approval gate before the export."
+                    "An HTML app's pipeline '\(action.id)' reaches external-effect step '\(ungatedStep)' without a preceding gate.humanApproval step; a JS trigger could write ungated. Add a human-approval gate before the external effect."
                 ))
             }
         }
@@ -296,6 +302,21 @@ enum WorkspaceAppManifestValidator {
                 "gate.humanApproval", "gate.agentRecommendation", "gate.expression",
                 "pipeline.run", "loop.run", "artifact.export", "notification.show",
                 "rows.reduce", "capability.read"].contains(type)
+    }
+
+    private static func firstUngatedExternalEffectStep(
+        in stepTypes: [String],
+        externalEffectSteps: Set<String>
+    ) -> String? {
+        var hasHumanApprovalGate = false
+        for type in stepTypes {
+            if type == "gate.humanApproval" {
+                hasHumanApprovalGate = true
+            } else if externalEffectSteps.contains(type), !hasHumanApprovalGate {
+                return type
+            }
+        }
+        return nil
     }
 
     /// True if `lowered` contains an `eval(` call or `new Function`. `eval(` is matched only as a
@@ -520,7 +541,7 @@ enum WorkspaceAppManifestValidator {
 
     private static func validateSources(
         _ sources: [WorkspaceAppSource],
-        requirementIDs: Set<String>,
+        requirementsByID: [String: WorkspaceAppRequirement],
         issues: inout [WorkspaceAppManifestValidationReport.Issue]
     ) -> Set<String> {
         var seen = Set<String>()
@@ -533,12 +554,36 @@ enum WorkspaceAppManifestValidator {
                 seen: &seen,
                 issues: &issues
             )
-            if let requirementRef = source.requirementRef,
-               !requirementIDs.contains(requirementRef) {
-                issues.append(blocker("\(path)/requirementRef", "Source references unknown requirement '\(requirementRef)'."))
+            if let requirementRef = source.requirementRef {
+                guard let requirement = requirementsByID[requirementRef] else {
+                    issues.append(blocker("\(path)/requirementRef", "Source references unknown requirement '\(requirementRef)'."))
+                    continue
+                }
+                if requirement.contract == "tabularQuery.read",
+                   isBigQueryRequirement(requirement) {
+                    if source.query?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
+                        issues.append(blocker(
+                            "\(path)/query",
+                            "BigQuery capability.read source '\(source.id)' must not embed SQL in query. Use tableRef so ASTRA owns the bounded native read."
+                        ))
+                    }
+                    if source.tableRef?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false {
+                        issues.append(blocker(
+                            "\(path)/tableRef",
+                            "BigQuery capability.read source '\(source.id)' must declare a structured tableRef before it can be published."
+                        ))
+                    }
+                }
             }
         }
         return seen
+    }
+
+    private static func isBigQueryRequirement(_ requirement: WorkspaceAppRequirement) -> Bool {
+        let providers = [requirement.providerHint, requirement.providerRequired]
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+            .filter { !$0.isEmpty }
+        return providers.isEmpty || providers.contains("bigquery")
     }
 
     private static func validateViews(
@@ -1329,6 +1374,7 @@ enum WorkspaceAppManifestValidator {
         _ value: String,
         path: String,
         label: String,
+        rejectReservedPathComponent: Bool = false,
         issues: inout [WorkspaceAppManifestValidationReport.Issue]
     ) {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1336,9 +1382,11 @@ enum WorkspaceAppManifestValidator {
             issues.append(blocker(path, "\(label) is required."))
             return
         }
-        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
-        if trimmed.rangeOfCharacter(from: allowed.inverted) != nil {
+        if value.rangeOfCharacter(from: WorkspaceAppIDPolicy.allowedCharacters.inverted) != nil {
             issues.append(blocker(path, "\(label) may contain only letters, numbers, dot, underscore, or hyphen."))
+        }
+        if rejectReservedPathComponent && WorkspaceAppIDPolicy.isReservedPathComponent(trimmed) {
+            issues.append(blocker(path, "\(label) may not be a reserved path component."))
         }
     }
 

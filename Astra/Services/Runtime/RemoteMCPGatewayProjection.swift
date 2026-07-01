@@ -27,14 +27,12 @@ enum RemoteMCPGatewayProjection {
         controlPlane: MCPControlPlaneMetadata?
     ) -> [MCPRuntimeBindingDestination] {
         orderedUnique((controlPlane?.runtimeBindings ?? []).compactMap { binding in
-            gatewayAccessTokenBinding(binding) == nil ? nil : binding.destination
+            RemoteMCPGatewayEndpointTrustPolicy.gatewayAccessTokenBinding(binding) == nil ? nil : binding.destination
         })
     }
 
     static func shouldRouteThroughGateway(_ server: PluginMCPServer) -> Bool {
-        server.transport != .stdio
-            && !server.connectorBindings.isEmpty
-            && gatewayAccessTokenBinding(server.controlPlane?.runtimeBindings ?? []) != nil
+        RemoteMCPGatewayEndpointTrustPolicy.isCredentialForwardingGatewayCandidate(server)
     }
 
     static func providerFacingResolvedServer(
@@ -47,7 +45,16 @@ enum RemoteMCPGatewayProjection {
             }
             return resolved
         }
-        guard let binding = gatewayAccessTokenBinding(server.controlPlane?.runtimeBindings ?? []) else {
+        guard RemoteMCPGatewayEndpointTrustPolicy.credentialForwardingEndpointViolation(
+            packageID: resolved.packageID,
+            packageSourceMetadata: resolved.packageSourceMetadata,
+            server: server
+        ) == nil else {
+            return nil
+        }
+        guard let binding = RemoteMCPGatewayEndpointTrustPolicy.gatewayAccessTokenBinding(
+            in: server.controlPlane
+        ) else {
             return nil
         }
         guard let endpoint = server.url?.absoluteString,
@@ -59,6 +66,9 @@ enum RemoteMCPGatewayProjection {
             serverID: server.id,
             bindingID: binding.id
         )
+        guard let gatewayPolicy = gatewayPolicyProjection(for: server) else {
+            return nil
+        }
         let gatewayServer = PluginMCPServer(
             id: server.id,
             displayName: server.displayName,
@@ -69,11 +79,11 @@ enum RemoteMCPGatewayProjection {
                 "--server-id", server.id,
                 "--endpoint", endpoint,
                 "--access-token-env", accessTokenEnvironmentKey
-            ],
+            ] + gatewayPolicy.arguments,
             environmentKeys: [accessTokenEnvironmentKey],
             connectorBindings: server.connectorBindings,
-            allowedTools: server.allowedTools,
-            excludedTools: server.excludedTools,
+            allowedTools: gatewayPolicy.providerAllowedTools,
+            excludedTools: gatewayPolicy.providerExcludedTools,
             resourcesEnabled: server.resourcesEnabled,
             promptsEnabled: server.promptsEnabled,
             trustLevel: server.trustLevel,
@@ -83,6 +93,7 @@ enum RemoteMCPGatewayProjection {
         )
         return MCPRuntimeProjection.ResolvedServer(
             packageID: resolved.packageID,
+            packageSourceMetadata: resolved.packageSourceMetadata,
             server: gatewayServer,
             permittedEnvironmentKeys: [accessTokenEnvironmentKey]
         )
@@ -97,35 +108,133 @@ enum RemoteMCPGatewayProjection {
         }
     }
 
-    private static func gatewayAccessTokenBinding(
-        _ bindings: [MCPRuntimeBindingTemplate]
-    ) -> MCPRuntimeBindingTemplate? {
-        bindings.first { gatewayAccessTokenBinding($0) != nil }
+    private struct GatewayPolicyProjection {
+        var arguments: [String]
+        var providerAllowedTools: [String]
+        var providerExcludedTools: [String]
     }
 
-    private static func gatewayAccessTokenBinding(
-        _ binding: MCPRuntimeBindingTemplate
-    ) -> MCPRuntimeBindingTemplate? {
-        guard binding.destination == .httpHeader,
-              binding.name.trimmingCharacters(in: .whitespacesAndNewlines)
-            .caseInsensitiveCompare("Authorization") == .orderedSame,
-              binding.template.count == 2 else {
-            return nil
+    private static func gatewayPolicyProjection(for server: PluginMCPServer) -> GatewayPolicyProjection? {
+        let policy = gatewayToolPolicy(for: server)
+        guard !policy.accessByToolName.isEmpty else {
+            return GatewayPolicyProjection(
+                arguments: policy.requiresExplicitPolicy ? ["--gateway-tool-policy-required"] : [],
+                providerAllowedTools: server.allowedTools,
+                providerExcludedTools: server.excludedTools
+            )
         }
-        guard binding.template[0].kind == .literal,
-              binding.template[0].literal == "Bearer ",
-              binding.template[0].reference == nil else {
-            return nil
+
+        let allowedToolNames = Set(server.allowedTools.map(normalized).filter { !$0.isEmpty })
+        let excludedToolNames = Set(server.excludedTools.map(normalized).filter { !$0.isEmpty })
+        let selectedRules = policy.accessByToolName.filter { toolName, _ in
+            let normalizedToolName = normalized(toolName)
+            guard !excludedToolNames.contains(normalizedToolName) else { return false }
+            return allowedToolNames.isEmpty || allowedToolNames.contains(normalizedToolName)
         }
-        guard binding.template[1].kind == .reference,
-              binding.template[1].literal == nil,
-              binding.template[1].reference?.kind == .secretRef,
-              binding.template[1].reference?.id.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false else {
-            return nil
+        let readToolNames = selectedRules
+            .filter { _, toolOption in toolOption == "--gateway-read-tool" }
+            .map(\.key)
+            .sorted()
+        guard !readToolNames.isEmpty else { return nil }
+
+        var arguments = ["--gateway-tool-policy-required"]
+        for toolName in readToolNames {
+            arguments += ["--allowed-tool", toolName, "--gateway-read-tool", toolName]
         }
-        return binding
+        return GatewayPolicyProjection(
+            arguments: arguments,
+            providerAllowedTools: readToolNames,
+            providerExcludedTools: []
+        )
     }
 
+    private struct GatewayToolPolicy {
+        var accessByToolName: [String: String]
+        var requiresExplicitPolicy: Bool
+    }
+
+    private static func gatewayToolPolicy(for server: PluginMCPServer) -> GatewayToolPolicy {
+        if let product = GoogleWorkspaceRemoteMCPRegistry.products.first(where: { $0.serverID == server.id }) {
+            return GatewayToolPolicy(
+                accessByToolName: mostRestrictiveGatewayOptions(
+                    product.toolFamilies.map { toolName, family in (toolName, gatewayPolicyOption(for: family)) }
+                ),
+                requiresExplicitPolicy: true
+            )
+        }
+
+        let registryClassifications = server.remoteRegistry?.toolClassifications ?? []
+        guard !registryClassifications.isEmpty else {
+            return GatewayToolPolicy(accessByToolName: [:], requiresExplicitPolicy: false)
+        }
+        return GatewayToolPolicy(
+            accessByToolName: mostRestrictiveGatewayOptions(
+                registryClassifications.map { ($0.toolName, gatewayPolicyOption(for: $0.effect)) }
+            ),
+            requiresExplicitPolicy: true
+        )
+    }
+
+    private static func mostRestrictiveGatewayOptions(_ entries: [(String, String)]) -> [String: String] {
+        let selected = entries.reduce(into: [String: (toolName: String, option: String)]()) { result, entry in
+            let toolName = entry.0.trimmingCharacters(in: .whitespacesAndNewlines)
+            let key = normalized(toolName)
+            guard !key.isEmpty else { return }
+            guard let existing = result[key] else {
+                result[key] = (toolName, entry.1)
+                return
+            }
+            if gatewayPolicyOptionRank(entry.1) > gatewayPolicyOptionRank(existing.option) {
+                result[key] = (toolName, entry.1)
+            }
+        }
+        return Dictionary(uniqueKeysWithValues: selected.values.map { ($0.toolName, $0.option) })
+    }
+
+    private static func gatewayPolicyOptionRank(_ option: String) -> Int {
+        switch option {
+        case "--gateway-read-tool":
+            return 0
+        case "--gateway-write-tool":
+            return 1
+        case "--gateway-send-tool":
+            return 2
+        case "--gateway-delete-tool":
+            return 3
+        case "--gateway-admin-tool":
+            return 4
+        default:
+            return 5
+        }
+    }
+
+    private static func gatewayPolicyOption(for effect: RemoteMCPToolEffect) -> String {
+        switch effect {
+        case .read:
+            return "--gateway-read-tool"
+        case .write:
+            return "--gateway-write-tool"
+        case .send:
+            return "--gateway-send-tool"
+        case .delete:
+            return "--gateway-delete-tool"
+        case .admin:
+            return "--gateway-admin-tool"
+        }
+    }
+
+    private static func gatewayPolicyOption(for family: GoogleWorkspaceRemoteMCPToolFamily) -> String {
+        switch family {
+        case .read, .permissionRead, .download, .availabilityRead:
+            return "--gateway-read-tool"
+        case .draft, .label, .write:
+            return "--gateway-write-tool"
+        case .response:
+            return "--gateway-send-tool"
+        case .delete:
+            return "--gateway-delete-tool"
+        }
+    }
     private static func environmentKeyComponent(_ value: String) -> String {
         let mapped = value.uppercased().unicodeScalars.map { scalar -> Character in
             if CharacterSet.alphanumerics.contains(scalar) {
@@ -136,6 +245,10 @@ enum RemoteMCPGatewayProjection {
         return String(mapped)
             .split(separator: "_", omittingEmptySubsequences: true)
             .joined(separator: "_")
+    }
+
+    private static func normalized(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }
 
     private static func gatewayAccessTokenEnvironmentKeys(in arguments: [String]) -> [String] {

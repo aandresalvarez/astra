@@ -150,6 +150,132 @@ extension TaskThreadSnapshotTests {
         #expect(items.map(\.path) == [report.path])
     }
 
+    @Test("Task file header count excludes workspace-private diagnostics")
+    func taskFileHeaderCountExcludesWorkspacePrivateDiagnostics() throws {
+        let workspace = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-workspace-private-header-\(UUID().uuidString)")
+        let taskFolder = workspace
+            .appendingPathComponent(".astra", isDirectory: true)
+            .appendingPathComponent("tasks", isDirectory: true)
+            .appendingPathComponent("task-1", isDirectory: true)
+        let report = workspace.appendingPathComponent("report.md")
+        let privateState = workspace
+            .appendingPathComponent(".astra", isDirectory: true)
+            .appendingPathComponent("state.json")
+        let privateClaude = workspace
+            .appendingPathComponent(".claude", isDirectory: true)
+            .appendingPathComponent("session.json")
+
+        try FileManager.default.createDirectory(at: taskFolder, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: privateState.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: privateClaude.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try "# Report".write(to: report, atomically: true, encoding: .utf8)
+        try "{}".write(to: privateState, atomically: true, encoding: .utf8)
+        try "{}".write(to: privateClaude, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: workspace) }
+
+        let run = TaskRunSnapshot(input: TaskRunSnapshotInput(run: {
+            let task = makeTask()
+            let run = TaskRun(task: task)
+            for path in [report.path, privateState.path, privateClaude.path] {
+                run.appendFileChange(StoredFileChange(from: FileChange(
+                    path: path,
+                    changeType: .write,
+                    content: nil,
+                    oldString: nil,
+                    newString: nil,
+                    timestamp: Date()
+                )))
+            }
+            return run
+        }()))
+
+        let items = TaskFileIndex.headerItems(
+            runs: [run],
+            generatedFilePaths: [],
+            inputs: [],
+            taskFolder: taskFolder.path,
+            workspacePath: workspace.path
+        )
+
+        #expect(items.map(\.path) == [report.path])
+    }
+
+    @Test("Task file header keeps explicit inputs in workspace-private folders")
+    func taskFileHeaderKeepsExplicitInputsInWorkspacePrivateFolders() throws {
+        let workspace = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-workspace-private-input-\(UUID().uuidString)")
+        let taskFolder = workspace
+            .appendingPathComponent(".astra", isDirectory: true)
+            .appendingPathComponent("tasks", isDirectory: true)
+            .appendingPathComponent("task-1", isDirectory: true)
+        let privateCommand = workspace
+            .appendingPathComponent(".claude", isDirectory: true)
+            .appendingPathComponent("commands", isDirectory: true)
+            .appendingPathComponent("deploy.md")
+        let generatedPrivateState = workspace
+            .appendingPathComponent(".astra", isDirectory: true)
+            .appendingPathComponent("state.json")
+
+        try FileManager.default.createDirectory(at: taskFolder, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: privateCommand.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: generatedPrivateState.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try "# Deploy".write(to: privateCommand, atomically: true, encoding: .utf8)
+        try "{}".write(to: generatedPrivateState, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: workspace) }
+
+        let run = TaskRunSnapshot(input: TaskRunSnapshotInput(run: {
+            let task = makeTask()
+            let run = TaskRun(task: task)
+            run.appendFileChange(StoredFileChange(from: FileChange(
+                path: generatedPrivateState.path,
+                changeType: .write,
+                content: nil,
+                oldString: nil,
+                newString: nil,
+                timestamp: Date()
+            )))
+            return run
+        }()))
+
+        let items = TaskFileIndex.headerItems(
+            runs: [run],
+            generatedFilePaths: [],
+            inputs: [privateCommand.path],
+            taskFolder: taskFolder.path,
+            workspacePath: workspace.path
+        )
+
+        #expect(items.map(\.path) == [privateCommand.path])
+        #expect(items.map(\.source) == ["input"])
+    }
+
+    @Test("Task artifact relative path accepts resolved paths under symlinked roots")
+    func taskArtifactRelativePathAcceptsResolvedPathsUnderSymlinkedRoots() throws {
+        let realRoot = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-real-root-\(UUID().uuidString)")
+        let linkRoot = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-linked-root-\(UUID().uuidString)")
+        let output = realRoot.appendingPathComponent("outputs/result.md")
+        let escapingTarget = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-escape-\(UUID().uuidString).txt")
+        let escapeLink = realRoot.appendingPathComponent("escape.txt")
+
+        try FileManager.default.createDirectory(at: output.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try "# Result".write(to: output, atomically: true, encoding: .utf8)
+        try "secret".write(to: escapingTarget, atomically: true, encoding: .utf8)
+        try FileManager.default.createSymbolicLink(at: linkRoot, withDestinationURL: realRoot)
+        try FileManager.default.createSymbolicLink(at: escapeLink, withDestinationURL: escapingTarget)
+        defer {
+            try? FileManager.default.removeItem(at: linkRoot)
+            try? FileManager.default.removeItem(at: realRoot)
+            try? FileManager.default.removeItem(at: escapingTarget)
+        }
+
+        #expect(TaskOutputArtifactPathPolicy.relativePath(output.path, under: linkRoot.path) == "outputs/result.md")
+        #expect(TaskOutputArtifactPathPolicy.relativePath(escapeLink.path, under: realRoot.path) == nil)
+    }
+
     @Test("Diagnostics index groups hidden runtime files")
     func diagnosticsIndexGroupsHiddenRuntimeFiles() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())

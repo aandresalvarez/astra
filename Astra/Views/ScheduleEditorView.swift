@@ -709,7 +709,7 @@ struct ScheduleEditorView: View {
             ) ?? Date().addingTimeInterval(604800)
         }
 
-        s.isEnabled = true
+        s.isEnabled = ScheduleEditorPersistencePolicy.enabledStateAfterSave(existingIsEnabled: schedule?.isEnabled)
         s.updatedAt = Date()
 
         if schedule == nil {

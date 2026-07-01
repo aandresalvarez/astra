@@ -686,8 +686,13 @@ final class TaskLifecycleCoordinator {
                             config.tasks = freshExport.tasks
                         }
                     }
+                    let scheduleTrustPolicy = scheduleTrustPolicyForConfigReplace(existing: existing, configURL: url)
                     modelContext.delete(existing)
-                    return WorkspaceConfigManager.importWorkspace(from: config, modelContext: modelContext)
+                    return WorkspaceConfigManager.importWorkspace(
+                        from: config,
+                        modelContext: modelContext,
+                        scheduleTrustPolicy: scheduleTrustPolicy
+                    )
                 case .duplicate:
                     var dupConfig = config
                     dupConfig.name = config.name + " (Imported)"
@@ -709,6 +714,15 @@ final class TaskLifecycleCoordinator {
         }
     }
 
+    private func scheduleTrustPolicyForConfigReplace(
+        existing: Workspace,
+        configURL: URL
+    ) -> WorkspaceConfigManager.ScheduleImportTrustPolicy {
+        let configFolderPath = configURL.deletingLastPathComponent().standardizedFileURL.path
+        let existingPath = URL(fileURLWithPath: existing.primaryPath).standardizedFileURL.path
+        return configFolderPath == existingPath ? .preserveEnabledState : .quarantineEnabledSchedules
+    }
+
     func createWorkspaceFromFolder(_ url: URL, existingWorkspaces: [Workspace],
                                    askDuplicateAction: (String, Int) -> DuplicateAction) -> Workspace? {
         let name = url.lastPathComponent
@@ -725,7 +739,11 @@ final class TaskLifecycleCoordinator {
                     exportedConfig.name = name
                     exportedConfig.primaryPath = url.path
                     modelContext.delete(existing)
-                    return WorkspaceConfigManager.importWorkspace(from: exportedConfig, modelContext: modelContext)
+                    return WorkspaceConfigManager.importWorkspace(
+                        from: exportedConfig,
+                        modelContext: modelContext,
+                        scheduleTrustPolicy: .preserveEnabledState
+                    )
                 }
                 modelContext.delete(existing)
                 return insertWorkspaceFromFolder(name: name, path: url.path)

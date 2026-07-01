@@ -1242,14 +1242,16 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
             environment: executionEnvironment,
             currentDirectory: context.workspacePath,
             runID: context.runID,
-            taskEnvironment: taskEnv
+            taskEnvironment: taskEnv,
+            contextText: context.contextText
         )
         if let hostControlServer = HostControlPlaneMCPProjection.resolvedServer(
             task: context.task,
             environment: executionEnvironment,
             currentDirectory: context.workspacePath,
             runID: context.runID,
-            taskEnvironment: taskEnv.merging(hostControlEnvironment) { current, _ in current }
+            taskEnvironment: taskEnv.merging(hostControlEnvironment) { current, _ in current },
+            contextText: context.contextText
         ) {
             mcpServers.append(hostControlServer)
         }
@@ -1286,7 +1288,12 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
             servers: mcpServers,
             availableEnvironment: explicitMCPEnvironment
         )
-        let nativeDeniedTools = Array(Set(mcpDeniedTools + (usesDockerWorkspaceExecutor ? ["Bash"] : []))).sorted()
+        let deniesNativeShellForHostControl = HostControlPlaneMCPProjection.requiresNativeShellDenial(
+            task: context.task,
+            environment: executionEnvironment,
+            contextText: context.contextText
+        )
+        let nativeDeniedTools = Array(Set(mcpDeniedTools + (deniesNativeShellForHostControl ? ["Bash"] : []))).sorted()
         // Live approvals use the stdio control protocol (stream-json input, so
         // the prompt travels over stdin). Resolved before the allow-list so it
         // can decide whether ask-first tools are gated at the provider prompt.
@@ -1851,23 +1858,11 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             baseAllowedTools: allowed,
             permissionManifest: context.permissionManifest
         )
-        let providerAllowed = usesDockerWorkspaceExecutor
-            ? DockerWorkspaceMCPProjection.removingNativeShellTools(baseProviderAllowed)
-            : baseProviderAllowed
         let runtimeSupportTools = AgentRuntimeProcessRunner.providerRuntimeSupportToolPermissions(
             for: id,
             permissionManifest: context.permissionManifest
         )
         let baseAskFirstTools = context.permissionManifest?.providerRender.askFirstTools ?? []
-        let askFirstTools = usesDockerWorkspaceExecutor
-            ? DockerWorkspaceMCPProjection.removingNativeShellTools(baseAskFirstTools)
-            : baseAskFirstTools
-        let artifactBootstrapTools = ProviderArtifactBootstrapPolicy.launchTools(
-            task: context.task,
-            permissionPolicy: providerLaunchPermissionPolicy,
-            providerAllowedTools: providerAllowed,
-            askFirstTools: askFirstTools
-        )
         let pathPrefix = AgentRuntimeProcessRunner.pathPrefix(for: context.task, taskEnv: taskEnv)
         let executable = context.executablePath.isEmpty ? CopilotCLIRuntime.detectPath() : context.executablePath
         let providerVersion = CopilotCLIRuntime.versionSummary(executablePath: executable)
@@ -1885,12 +1880,32 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             taskEnvironment: taskEnv,
             capabilities: capabilities
         )
+        let hostControlTools = HostControlPlaneRuntimeLaunchGuard.requiredTools(from: mcpProjection.hostControlEnvironment)
+        let routesControlPlaneThroughMCP = usesDockerWorkspaceExecutor || !hostControlTools.isEmpty
+        let providerAllowed = routesControlPlaneThroughMCP
+            ? DockerWorkspaceMCPProjection.removingNativeShellTools(baseProviderAllowed)
+            : baseProviderAllowed
+        let askFirstTools = routesControlPlaneThroughMCP
+            ? DockerWorkspaceMCPProjection.removingNativeShellTools(baseAskFirstTools)
+            : baseAskFirstTools
+        let artifactBootstrapTools = ProviderArtifactBootstrapPolicy.launchTools(
+            task: context.task,
+            permissionPolicy: providerLaunchPermissionPolicy,
+            providerAllowedTools: providerAllowed,
+            askFirstTools: askFirstTools
+        )
         let browserBridgeMetadata = BrowserBridgeRuntimeLaunchGuard.planMetadata(
             runtime: id,
             environment: taskEnv,
             mcpToolSupported: mcpProjection.browserBridgeMCPToolSupported
         )
         var localToolCommands = AgentRuntimeProcessRunner.copilotLocalToolCommands(for: context.task, contextText: context.contextText)
+        if !hostControlTools.isEmpty {
+            localToolCommands = HostControlPlaneRuntimeLaunchGuard.removingNativeLocalToolCommands(
+                localToolCommands,
+                requiredTools: hostControlTools
+            )
+        }
         if browserBridgeMetadata.isAttached && !mcpProjection.browserBridgeMCPToolSupported {
             localToolCommands.append("astra-browser")
         }
@@ -2598,6 +2613,12 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
             AntigravityCLIRuntime.diagnosticLogPath(task: context.task, runID: $0)
         }
         let additionalPaths = AgentRuntimeProcessRunner.runtimeAdditionalPaths(for: context.task)
+        let executionEnvironment = DockerExecutionPlanner.resolveEnvironment(for: context.task)
+        let hostControlTools = HostControlPlaneMCPProjection.enabledToolNames(
+            task: context.task,
+            environment: executionEnvironment,
+            contextText: context.contextText
+        )
         let plan = AntigravityCLIRuntime.buildCommand(
             executablePath: executable,
             prompt: context.prompt,
@@ -2611,6 +2632,28 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
             includeAstraToolsPath: AgentRuntimeProcessRunner.hasActiveCLITools(context.task, contextText: context.contextText)
                 || taskEnv["ASTRA_BROWSER_URL"] != nil,
             diagnosticLogPath: diagnosticLogPath
+        )
+        var commandPlannedFields = [
+            "runtime": id.rawValue,
+            "phase": context.phase,
+            "model": model,
+            "provider_model": providerModel,
+            "model_applied": String(modelApplied),
+            "permission_policy": effectivePermissionPolicy.rawValue,
+            "parses_json_lines": String(plan.parsesJSONLines),
+            "additional_paths_count": String(additionalPaths.count),
+            "task_env_count": String(taskEnv.count),
+            "uses_print": String(plan.arguments.contains("--print")),
+            "uses_print_timeout": String(plan.arguments.contains("--print-timeout")),
+            "uses_log_file": String(plan.arguments.contains("--log-file")),
+            "diagnostic_log_configured": String(diagnosticLogPath != nil),
+            "diagnostic_log_path": diagnosticLogPath ?? "",
+            "uses_sandbox": String(plan.arguments.contains("--sandbox")),
+            "uses_dangerously_skip_permissions": String(plan.arguments.contains("--dangerously-skip-permissions"))
+        ]
+        commandPlannedFields.merge(
+            HostControlPlaneRuntimeLaunchGuard.planMetadata(runtime: id, requiredTools: hostControlTools),
+            uniquingKeysWith: { current, _ in current }
         )
 
         return AgentRuntimeProcessLaunchPlan(
@@ -2632,24 +2675,7 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
                 "executable_mtime": AgentRuntimeProcessRunner.fileModificationTimestamp(executable),
                 "provider_home_configured": String(!context.providerHomeDirectory.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             ],
-            commandPlannedFields: [
-                "runtime": id.rawValue,
-                "phase": context.phase,
-                "model": model,
-                "provider_model": providerModel,
-                "model_applied": String(modelApplied),
-                "permission_policy": effectivePermissionPolicy.rawValue,
-                "parses_json_lines": String(plan.parsesJSONLines),
-                "additional_paths_count": String(additionalPaths.count),
-                "task_env_count": String(taskEnv.count),
-                "uses_print": String(plan.arguments.contains("--print")),
-                "uses_print_timeout": String(plan.arguments.contains("--print-timeout")),
-                "uses_log_file": String(plan.arguments.contains("--log-file")),
-                "diagnostic_log_configured": String(diagnosticLogPath != nil),
-                "diagnostic_log_path": diagnosticLogPath ?? "",
-                "uses_sandbox": String(plan.arguments.contains("--sandbox")),
-                "uses_dangerously_skip_permissions": String(plan.arguments.contains("--dangerously-skip-permissions"))
-            ]
+            commandPlannedFields: commandPlannedFields
         )
     }
 

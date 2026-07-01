@@ -14,10 +14,13 @@ enum WorkspaceAppSampleSeeder {
         storageService: WorkspaceAppStorageService = WorkspaceAppStorageService()
     ) {
         guard let storage = manifest.storage, !storage.tables.isEmpty else { return }
-        let databaseURL = URL(fileURLWithPath: WorkspaceFileLayout.appDatabaseFile(
+        guard let databaseURL = WorkspaceFileLayout.appDatabaseFileURL(
             workspacePath: workspacePath,
             appID: appID
-        ))
+        ) else {
+            AppLogger.error("Sample seed skipped: unsafe storage path for \(appID)", category: "WorkspaceApps")
+            return
+        }
         for table in storage.tables {
             let rows = WorkspaceAppDraftPreviewBuilder.defaultSampleRows(for: table, count: rowsPerTable, seed: 0)
             for row in rows {

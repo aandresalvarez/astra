@@ -46,6 +46,33 @@ struct MCPToolPolicyEngine: Sendable {
             )
         }
 
+        if let evidence = request.packPolicy.explicitConsentEvidence(serverID: server.id, toolName: request.toolName) {
+            if case .generatedWorkspaceApp = request.caller {
+                return finish(
+                    .deny(
+                        .packPolicyNativeApprovalRequired,
+                        access: classification.access,
+                        policyEvidence: [PackResolvedPolicy.coreFloorEvidence, evidence]
+                    ),
+                    request: request,
+                    resolved: resolved,
+                    classification: classification
+                )
+            }
+            guard request.nativeApproval != nil else {
+                return finish(
+                    .deny(
+                        .packPolicyNativeApprovalRequired,
+                        access: classification.access,
+                        policyEvidence: [PackResolvedPolicy.coreFloorEvidence, evidence]
+                    ),
+                    request: request,
+                    resolved: resolved,
+                    classification: classification
+                )
+            }
+        }
+
         if classification.access.requiresNativeApproval {
             if case .generatedWorkspaceApp = request.caller {
                 return finish(
@@ -79,14 +106,22 @@ struct MCPToolPolicyEngine: Sendable {
             )
         }
 
-        return finish(.allow(access: classification.access), request: request, resolved: resolved, classification: classification)
+        let policyEvidence = request.packPolicy.explicitConsentEvidence(serverID: server.id, toolName: request.toolName)
+            .map { [PackResolvedPolicy.coreFloorEvidence, $0] } ?? []
+        return finish(
+            .allow(access: classification.access, policyEvidence: policyEvidence),
+            request: request,
+            resolved: resolved,
+            classification: classification
+        )
     }
 
     private func resolvedServer(for request: MCPToolPolicyRequest) -> MCPRuntimeProjection.ResolvedServer? {
         MCPRuntimeProjection.enabledServers(
             for: request.workspace,
             packages: request.packages,
-            approvalRecords: request.approvalRecords
+            approvalRecords: request.approvalRecords,
+            packPolicy: request.packPolicy
         )
         .first { normalized($0.server.id) == normalized(request.serverID) }
     }
@@ -125,7 +160,8 @@ struct MCPToolPolicyEngine: Sendable {
             grantedScopes: scopeList(request.grantedScopes),
             requiredScopes: scopeList(requiredScopes),
             missingScopes: scopeList(missingScopes),
-            denialReason: decision.denialReason?.rawValue ?? "none"
+            denialReason: decision.denialReason?.rawValue ?? "none",
+            policyEvidence: policyEvidenceList(decision.policyEvidence)
         )
     }
 
@@ -149,5 +185,18 @@ struct MCPToolPolicyEngine: Sendable {
 
     private func auditValue(_ value: String) -> String {
         value.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func policyEvidenceList(_ evidence: [PackPolicyEvidence]) -> String {
+        guard !evidence.isEmpty else { return "none" }
+        return evidence.map { entry in
+            [
+                entry.kind.rawValue,
+                entry.packID ?? "core",
+                entry.restrictionID ?? "none",
+                entry.action
+            ].joined(separator: ":")
+        }
+        .joined(separator: ",")
     }
 }

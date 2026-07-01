@@ -39,14 +39,16 @@ struct CodexMCPLaunchProjection {
             environment: executionEnvironment,
             currentDirectory: workspacePath,
             runID: runID,
-            taskEnvironment: taskEnvironment
+            taskEnvironment: taskEnvironment,
+            contextText: contextText
         )
         if let hostControlServer = HostControlPlaneMCPProjection.resolvedServer(
             task: task,
             environment: executionEnvironment,
             currentDirectory: workspacePath,
             runID: runID,
-            taskEnvironment: taskEnvironment.merging(hostControlEnvironment) { current, _ in current }
+            taskEnvironment: taskEnvironment.merging(hostControlEnvironment) { current, _ in current },
+            contextText: contextText
         ) {
             servers.append(hostControlServer)
         }
@@ -77,7 +79,8 @@ struct CodexMCPLaunchProjection {
             usesDockerWorkspaceExecutor: usesDockerWorkspaceExecutor,
             configArguments: configArguments
         )
-        let hostControlPlaneSupported = !usesDockerWorkspaceExecutor
+        let requiresHostControlPlane = !hostControlEnvironment.isEmpty
+        let hostControlPlaneSupported = !requiresHostControlPlane
             || configArguments.containsMCPServerConfig(for: HostControlPlaneMCPProjection.serverID)
 
         return CodexMCPLaunchProjection(

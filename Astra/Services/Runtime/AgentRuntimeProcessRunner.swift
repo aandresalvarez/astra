@@ -114,6 +114,21 @@ final class AgentRuntimeProcessRunner {
                 )
         }
         let environment = DockerExecutionPlanner.resolveEnvironment(for: context.task)
+        if let block = plan.unsupportedProviderNativeCredentialReadBlock(
+            for: launchResourcePlan,
+            permissionPolicy: effectivePermissionPolicy,
+            workspaceCommandsRunInsideManagedExecutor: environment.workspaceCommandsRunInsideContainer
+        ) {
+            AppLogger.audit(.workerBlocked, category: "Worker", taskID: context.task.id, fields: [
+                "runtime": plan.runtime.rawValue,
+                "reason": block.runtimeStopReason ?? "credential_native_access_unavailable",
+                "git_credential_readable_path_count": String(gitCredentialContext.readablePaths.count),
+                "git_credential_writable_path_count": String(gitCredentialContext.writablePaths.count),
+                "git_credential_transports": gitCredentialContext.transports.map(\.rawValue).joined(separator: ","),
+                "provider_native_credential_read_path_count": String(launchResourcePlan.providerNativeCredentialReadablePaths.count)
+            ], level: .error)
+            return .blocked(block)
+        }
         if environment.workspaceCommandsRunInsideContainer,
            (!DockerWorkspaceMCPProjection.supportsHostProviderWorkspaceExecutor(runtime: plan.runtime)
             || plan.commandPlannedFields["docker_workspace_executor_supported"] == "false") {
@@ -158,6 +173,14 @@ final class AgentRuntimeProcessRunner {
                 runtimeStopReason: "execution_environment_unavailable",
                 runtimeStopMessage: message
             ))
+        }
+        if let block = HostControlPlaneRuntimeLaunchGuard.launchBlock(for: plan) {
+            AppLogger.audit(.workerBlocked, category: "Worker", taskID: context.task.id, fields: [
+                "runtime": plan.runtime.rawValue,
+                "reason": block.runtimeStopReason ?? HostControlPlaneRuntimeLaunchGuard.missingHostControlMCPReason,
+                "source": "runtime_launch_preflight"
+            ], level: .error)
+            return .blocked(block)
         }
         if let block = BrowserBridgeRuntimeLaunchGuard.launchBlock(for: plan) {
             AppLogger.audit(.workerBlocked, category: "Worker", taskID: context.task.id, fields: [

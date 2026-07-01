@@ -73,7 +73,7 @@ struct MissionControlPresentationTests {
                     id: "tests",
                     description: "Focused tests pass",
                     method: .command,
-                    command: "false"
+                    command: "swift build --package-path \(root)/missing-package"
                 )
             ])
         )

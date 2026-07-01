@@ -46,7 +46,7 @@ struct WorkspaceAppStudioDraftPersistenceServiceTests {
         let manifest = Self.manifest(named: "Lab Samples")
         let store = SpyJournalStore()
         let session = WorkspaceAppStudioSession(
-            generate: { _, _, _, _, _, _, _ in Self.generationResult(manifest) },
+            generate: { _, _, _, _, _, _, _, _ in Self.generationResult(manifest) },
             verify: Self.noVerify,
             journalStore: store
         )

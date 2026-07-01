@@ -253,12 +253,29 @@ enum GitHubBrowserAdapter {
             return false
         }
         let text = [selector, label, name, role, tag, href].joined(separator: " ").lowercased()
-        return path.contains("/issues/")
-            || path.contains("/pull/")
-            || path.contains("/actions/")
-            || path.contains("/blob/")
-            || path.contains("/tree/")
+        return isEntityPath(path)
             || containsAny(text, ["issue #", "pull request", "checks", "workflow", "commits"])
+    }
+
+    static func isReadOnlyOpenControl(
+        pageURL: String,
+        selector: String,
+        label: String,
+        name: String,
+        role: String,
+        tag: String,
+        href: String
+    ) -> Bool {
+        guard isEntityHref(pageURL: pageURL, href: href) else { return false }
+        return isEntityControl(
+            pageURL: pageURL,
+            selector: selector,
+            label: label,
+            name: name,
+            role: role,
+            tag: tag,
+            href: href
+        )
     }
 
     static func nameHint(from label: String) -> String {
@@ -284,5 +301,28 @@ enum GitHubBrowserAdapter {
 
     private static func containsAny(_ haystack: String, _ needles: [String]) -> Bool {
         needles.contains { haystack.contains($0) }
+    }
+
+    private static func isEntityHref(pageURL: String, href: String) -> Bool {
+        guard matches(pageURL: pageURL) else { return false }
+        let trimmedHref = href.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedHref.isEmpty else { return false }
+        if let components = URLComponents(string: trimmedHref),
+           let host = components.host {
+            return host.lowercased() == "github.com" && isEntityPath(components.path.lowercased())
+        }
+        if trimmedHref.hasPrefix("/") {
+            let path = URLComponents(string: trimmedHref)?.path.lowercased() ?? trimmedHref.lowercased()
+            return isEntityPath(path)
+        }
+        return false
+    }
+
+    private static func isEntityPath(_ path: String) -> Bool {
+        path.contains("/issues/")
+            || path.contains("/pull/")
+            || path.contains("/actions/")
+            || path.contains("/blob/")
+            || path.contains("/tree/")
     }
 }

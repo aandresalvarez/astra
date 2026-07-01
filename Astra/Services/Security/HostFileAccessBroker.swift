@@ -10,6 +10,11 @@ enum HostFileAccessError: Error, Equatable {
     case accessDenied(path: String)
 }
 
+enum HostFileReadBound: Equatable {
+    case prefix
+    case suffix
+}
+
 struct HostFileAccessBroker {
     let fileManager: FileManager
     let homeDirectory: URL
@@ -55,6 +60,29 @@ struct HostFileAccessBroker {
             throw CocoaError(.fileReadNoSuchFile)
         }
         return data
+    }
+
+    func readData(
+        at url: URL,
+        maxBytes: Int,
+        keeping bound: HostFileReadBound,
+        intent: HostFileAccessIntent
+    ) throws -> Data {
+        try requireAccess(to: url, intent: intent)
+        guard maxBytes > 0 else { return Data() }
+
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+
+        switch bound {
+        case .prefix:
+            return try handle.read(upToCount: maxBytes) ?? Data()
+        case .suffix:
+            let endOffset = try handle.seekToEnd()
+            let bytesToRead = min(UInt64(maxBytes), endOffset)
+            try handle.seek(toOffset: endOffset - bytesToRead)
+            return try handle.read(upToCount: Int(bytesToRead)) ?? Data()
+        }
     }
 
     func fileSize(at url: URL, intent: HostFileAccessIntent) -> Int? {

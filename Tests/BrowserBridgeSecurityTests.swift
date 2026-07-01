@@ -159,6 +159,58 @@ struct BrowserBridgeSecurityTests {
         #expect(batch.snapshotLimit == 12)
     }
 
+    @Test("Bridge navigation policy rejects local file targets")
+    func bridgeNavigationPolicyRejectsLocalFileTargets() {
+        #expect(BrowserBridgeNavigationPolicy.normalizedProviderURL(from: "file:///etc/passwd") == nil)
+        #expect(BrowserBridgeNavigationPolicy.normalizedProviderURL(from: "/etc/passwd") == nil)
+        #expect(BrowserBridgeNavigationPolicy.normalizedProviderURL(from: "~/Library/Keychains/login.keychain-db") == nil)
+    }
+
+    @Test("Bridge navigation policy rejects malformed web targets without hosts")
+    func bridgeNavigationPolicyRejectsMalformedWebTargets() {
+        #expect(BrowserBridgeNavigationPolicy.normalizedProviderURL(from: "https:") == nil)
+        #expect(BrowserBridgeNavigationPolicy.normalizedProviderURL(from: "https:///missing-host") == nil)
+    }
+
+    @Test("Bridge navigation policy allows web targets")
+    func bridgeNavigationPolicyAllowsWebTargets() throws {
+        let explicit = try #require(BrowserBridgeNavigationPolicy.normalizedProviderURL(
+            from: "https://docs.google.com/document/d/example/edit"
+        ))
+        let hostname = try #require(BrowserBridgeNavigationPolicy.normalizedProviderURL(from: "outlook.office.com"))
+
+        #expect(explicit.absoluteString == "https://docs.google.com/document/d/example/edit")
+        #expect(hostname.absoluteString == "https://outlook.office.com")
+    }
+
+    @Test("Bridge open control navigation rejects unsafe hrefs before activation fallback")
+    func bridgeOpenControlNavigationRejectsUnsafeHrefsBeforeFallback() throws {
+        #expect(BrowserBridgeNavigationPolicy.openControlNavigation(forHref: "") == .fallbackToActivation)
+        #expect(BrowserBridgeNavigationPolicy.openControlNavigation(forHref: " \n\t ") == .fallbackToActivation)
+        #expect(BrowserBridgeNavigationPolicy.openControlNavigation(forHref: "file:///etc/passwd") == .reject)
+        #expect(BrowserBridgeNavigationPolicy.openControlNavigation(forHref: " file:///etc/passwd ") == .reject)
+
+        let decision = BrowserBridgeNavigationPolicy.openControlNavigation(forHref: "https://docs.google.com/document/d/example/edit")
+        guard case let .navigate(url) = decision else {
+            Issue.record("Expected web href to navigate, got \(decision)")
+            return
+        }
+        #expect(url.absoluteString == "https://docs.google.com/document/d/example/edit")
+    }
+
+    @Test("Bridge open control navigation resolves relative hrefs against the page URL")
+    func bridgeOpenControlNavigationResolvesRelativeHrefs() throws {
+        let decision = BrowserBridgeNavigationPolicy.openControlNavigation(
+            forHref: "/owner/repo/pull/159",
+            pageURL: "https://github.com/owner/repo/pulls"
+        )
+        guard case let .navigate(url) = decision else {
+            Issue.record("Expected relative web href to navigate, got \(decision)")
+            return
+        }
+        #expect(url.absoluteString == "https://github.com/owner/repo/pull/159")
+    }
+
     @Test("Bridge command router recognizes every published action")
     func bridgeCommandRouterRecognizesEveryPublishedAction() throws {
         let actions = ShelfBrowserBridgeCommandRouter.actionMetadata(
@@ -201,6 +253,143 @@ struct BrowserBridgeSecurityTests {
         #expect(ShelfBrowserBridgeCommandRouter.route(method: "GET", path: "/navigate") == nil)
         #expect(ShelfBrowserBridgeCommandRouter.route(method: "GET", path: "/click") == nil)
         #expect(ShelfBrowserBridgeCommandRouter.route(method: "POST", path: "/snapshot") == nil)
+    }
+
+    @Test("GitHub browser adapter allows read routes and blocks mutating routes")
+    func githubBrowserAdapterAllowsReadRoutesAndBlocksMutatingRoutes() throws {
+        let enabled = Set([BrowserSiteAdapterID.github])
+
+        #expect(BrowserSiteActionPolicy.denialReason(
+            route: .snapshot,
+            currentURL: "https://github.com/owner/repo/pull/1",
+            enabledBrowserAdapters: enabled
+        ) == nil)
+        #expect(BrowserSiteActionPolicy.denialReason(
+            route: .readPage,
+            currentURL: "https://github.com/owner/repo/pull/1",
+            enabledBrowserAdapters: enabled
+        ) == nil)
+        #expect(BrowserSiteActionPolicy.denialReason(
+            route: .open,
+            currentURL: "https://github.com/owner/repo/pull/1",
+            enabledBrowserAdapters: enabled
+        ) == nil)
+
+        #expect(BrowserSiteActionPolicy.denialReason(
+            route: .click,
+            currentURL: "https://github.com/owner/repo/pull/1",
+            enabledBrowserAdapters: enabled
+        )?.contains("GitHub browser control is read-only") == true)
+        #expect(BrowserSiteActionPolicy.denialReason(
+            route: .fill,
+            currentURL: "https://github.com/owner/repo/issues/new",
+            enabledBrowserAdapters: enabled
+        )?.contains("GitHub browser control is read-only") == true)
+        #expect(BrowserSiteActionPolicy.denialReason(
+            route: .batch,
+            currentURL: "https://github.com/owner/repo/actions",
+            enabledBrowserAdapters: enabled
+        ) == nil)
+        #expect(BrowserSiteActionPolicy.denialReason(
+            route: .click,
+            currentURL: "https://example.com/",
+            enabledBrowserAdapters: enabled
+        ) == nil)
+    }
+
+    @Test("GitHub read-only open policy allows only entity href controls")
+    func githubReadOnlyOpenPolicyAllowsOnlyEntityHrefControls() throws {
+        let enabled = Set([BrowserSiteAdapterID.github])
+        let entity = Self.browserControl(
+            label: "Pull request #159",
+            href: "https://github.com/owner/repo/pull/159"
+        )
+        let noHref = Self.browserControl(
+            label: "Pull request #159",
+            href: ""
+        )
+        let external = Self.browserControl(
+            label: "Pull request #159",
+            href: "https://example.com/owner/repo/pull/159"
+        )
+
+        #expect(BrowserSiteActionPolicy.openControlDenialResult(
+            action: "open",
+            control: entity,
+            currentURL: "https://github.com/owner/repo/pulls",
+            enabledBrowserAdapters: enabled,
+            githubReadOnlyMode: false
+        ) == nil)
+        #expect(BrowserSiteActionPolicy.openControlDenialResult(
+            action: "open",
+            control: noHref,
+            currentURL: "https://github.com/owner/repo/pulls",
+            enabledBrowserAdapters: enabled,
+            githubReadOnlyMode: false
+        )?["error"] as? String == "site_action_not_allowed")
+        #expect(BrowserSiteActionPolicy.openControlDenialResult(
+            action: "open",
+            control: external,
+            currentURL: "https://github.com/owner/repo/pulls",
+            enabledBrowserAdapters: enabled,
+            githubReadOnlyMode: false
+        )?["error"] as? String == "site_action_not_allowed")
+    }
+
+    @Test("GitHub host-control read-only mode blocks mutating browser routes without adapter")
+    func githubHostControlReadOnlyModeBlocksMutatingBrowserRoutesWithoutAdapter() throws {
+        #expect(BrowserSiteActionPolicy.denialReason(
+            route: .snapshot,
+            currentURL: "https://github.com/owner/repo/pull/1",
+            enabledBrowserAdapters: [],
+            githubReadOnlyMode: true
+        ) == nil)
+
+        #expect(BrowserSiteActionPolicy.denialReason(
+            route: .click,
+            currentURL: "https://github.com/owner/repo/pull/1",
+            enabledBrowserAdapters: [],
+            githubReadOnlyMode: true
+        )?.contains("GitHub browser control is read-only") == true)
+
+        #expect(BrowserSiteActionPolicy.denialReason(
+            route: .click,
+            currentURL: "https://github.com/owner/repo/pull/1",
+            enabledBrowserAdapters: [],
+            githubReadOnlyMode: false
+        ) == nil)
+    }
+
+    @Test("GitHub read-only mode reuses route policy for batch subactions")
+    func githubReadOnlyModeReusesRoutePolicyForBatchSubactions() throws {
+        #expect(BrowserSiteActionPolicy.denialReason(
+            batchAction: "navigate",
+            currentURL: "https://github.com/owner/repo/pull/1",
+            enabledBrowserAdapters: [],
+            githubReadOnlyMode: true
+        ) == nil)
+        #expect(BrowserSiteActionPolicy.denialReason(
+            batchAction: "snapshot",
+            currentURL: "https://github.com/owner/repo/pull/1",
+            enabledBrowserAdapters: [],
+            githubReadOnlyMode: true
+        ) == nil)
+
+        for action in ["click", "double-click", "fill", "set-value", "act", "keypress", "text"] {
+            #expect(BrowserSiteActionPolicy.denialReason(
+                batchAction: action,
+                currentURL: "https://github.com/owner/repo/pull/1",
+                enabledBrowserAdapters: [],
+                githubReadOnlyMode: true
+            )?.contains("GitHub browser control is read-only") == true)
+        }
+
+        #expect(BrowserSiteActionPolicy.denialReason(
+            batchAction: "click",
+            currentURL: "https://example.com/",
+            enabledBrowserAdapters: [],
+            githubReadOnlyMode: true
+        ) == nil)
     }
 
     @Test("Bridge actions response preserves metadata contract")
@@ -265,6 +454,66 @@ struct BrowserBridgeSecurityTests {
         let (data, response) = try await URLSession.shared.data(for: request)
         let statusCode = try #require((response as? HTTPURLResponse)?.statusCode)
         return (statusCode, String(data: data, encoding: .utf8) ?? "")
+    }
+
+    private static func browserControl(label: String, href: String) -> BrowserControl {
+        BrowserControl(
+            controlID: "ctl_test",
+            identityHash: "hash_test",
+            selector: href.isEmpty ? "button[data-test='pull-request']" : "a[href='\(href)']",
+            label: label,
+            name: label,
+            role: href.isEmpty ? "button" : "link",
+            tag: href.isEmpty ? "button" : "a",
+            type: "",
+            autocomplete: "",
+            placeholder: "",
+            testID: "",
+            value: "",
+            href: href,
+            framePath: [],
+            shadowDepth: 0,
+            disabled: false,
+            visible: true,
+            actionable: true,
+            bounds: [
+                "x": 10,
+                "y": 20,
+                "width": 120,
+                "height": 32,
+                "centerX": 70,
+                "centerY": 36
+            ],
+            validActions: [.open],
+            primaryAction: .open,
+            actionOutcomes: [
+                [
+                    "action": BrowserActionKind.open.rawValue,
+                    "semanticAction": BrowserActionKind.open.rawValue,
+                    "expectedOutcome": "githubEntityOpened"
+                ]
+            ],
+            risk: .normal,
+            providerVisibleRedaction: BrowserControlProviderVisibleRedaction(
+                rawControlObject: [
+                    "selector": href.isEmpty ? "button[data-test='pull-request']" : "a[href='\(href)']",
+                    "label": label,
+                    "name": label,
+                    "role": href.isEmpty ? "button" : "link",
+                    "tag": href.isEmpty ? "button" : "a",
+                    "type": "",
+                    "placeholder": "",
+                    "testID": "",
+                    "value": "",
+                    "href": href,
+                    "autocomplete": ""
+                ],
+                risk: .normal
+            ),
+            confidence: 0.99,
+            rank: 1,
+            evidence: [:]
+        )
     }
 
     private func rawHTTP(to baseURL: URL, request: String) throws -> String {

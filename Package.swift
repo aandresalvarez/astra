@@ -99,6 +99,7 @@ let package = Package(
                 .copy("Resources/AppIconDev.icns"),
                 .copy("Resources/Capabilities"),
                 .copy("Resources/Fonts"),
+                .copy("Resources/Packs"),
                 .copy("Resources/Tools")
             ]
         ),
@@ -108,9 +109,20 @@ let package = Package(
             path: "AppExecutable"
         ),
         .testTarget(
+            name: "MCPGatewaySupportTests",
+            dependencies: ["MCPGatewaySupport"],
+            path: "Tests/MCPGatewaySupportTests"
+        ),
+        .testTarget(
             name: "ASTRATests",
             dependencies: ["ASTRA", "ASTRACore", "ASTRAGitContracts", "HostControlToolSupport", "MCPGatewaySupport", "WorkspaceToolSupport"],
-            path: "Tests"
+            path: "Tests",
+            exclude: ["MCPGatewaySupportTests", "MailToolSupportTests"]
+        ),
+        .testTarget(
+            name: "MailToolSupportTests",
+            dependencies: ["MailToolSupport"],
+            path: "Tests/MailToolSupportTests"
         )
     ]
 )

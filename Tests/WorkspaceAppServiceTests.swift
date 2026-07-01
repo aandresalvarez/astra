@@ -5,6 +5,20 @@ import Testing
 
 @Suite("Workspace App Service")
 struct WorkspaceAppServiceTests {
+    private final class RefusingCopyFileManager: FileManager {
+        private(set) var copiedDestinations: [URL] = []
+        private(set) var removedDestinations: [URL] = []
+
+        override func copyItem(at srcURL: URL, to dstURL: URL) throws {
+            copiedDestinations.append(dstURL)
+            throw NSError(domain: "RefusingCopyFileManager", code: 1)
+        }
+
+        override func removeItem(at URL: URL) throws {
+            removedDestinations.append(URL)
+        }
+    }
+
     @Test("manifest encoding preserves native widget specs")
     func manifestEncodingPreservesNativeWidgetSpecs() throws {
         var manifest = Self.reconciliationManifest()
@@ -576,6 +590,290 @@ struct WorkspaceAppServiceTests {
     }
 
     @MainActor
+    @Test("manifest store reads legacy app root stored paths without trusting nonportable IDs")
+    func manifestStoreReadsLegacyAppRootStoredPathsWithoutTrustingNonportableIDs() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("workspace-app-legacy-root-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let workspace = Workspace(name: "Legacy Apps", primaryPath: root.path)
+        let legacyDirectory = root.appendingPathComponent("apps/legacy-reconciliation", isDirectory: true)
+        let manifestURL = legacyDirectory.appendingPathComponent("manifest.json")
+        try FileManager.default.createDirectory(at: legacyDirectory, withIntermediateDirectories: true)
+        try WorkspaceAppService.encodeManifest(Self.reconciliationManifest()).write(to: manifestURL)
+        let app = WorkspaceApp(
+            workspaceID: workspace.id,
+            logicalID: " legacy reconciliation ",
+            name: "Legacy",
+            manifestRelativePath: "apps/legacy-reconciliation/manifest.json",
+            appDirectoryRelativePath: "apps/legacy-reconciliation",
+            manifestDigest: "digest"
+        )
+
+        #expect(WorkspaceFileLayout.appDirectoryURL(workspacePath: workspace.primaryPath, appID: app.logicalID) == nil)
+
+        let loaded = try WorkspaceAppManifestStore().loadManifest(app: app, workspace: workspace)
+
+        #expect(loaded.location.manifestURL.path == manifestURL.path)
+        #expect(loaded.location.appDirectoryURL.path == legacyDirectory.path)
+        #expect(loaded.manifest.app.id == "enrollment-reconciliation")
+    }
+
+    @MainActor
+    @Test("service deletes safely stored legacy app directories for nonportable logical IDs")
+    func serviceDeletesSafelyStoredLegacyAppDirectoryForNonportableLogicalID() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("workspace-app-delete-legacy-root-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let container = try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+        )
+        let context = container.mainContext
+        let workspace = Workspace(name: "Legacy Apps", primaryPath: root.path)
+        context.insert(workspace)
+        let legacyDirectory = root.appendingPathComponent("apps/legacy-reconciliation", isDirectory: true)
+        try FileManager.default.createDirectory(at: legacyDirectory, withIntermediateDirectories: true)
+        try WorkspaceAppService.encodeManifest(Self.reconciliationManifest())
+            .write(to: legacyDirectory.appendingPathComponent("manifest.json"))
+        let app = WorkspaceApp(
+            workspaceID: workspace.id,
+            logicalID: " legacy reconciliation ",
+            name: "Legacy",
+            manifestRelativePath: "apps/legacy-reconciliation/manifest.json",
+            appDirectoryRelativePath: "apps/legacy-reconciliation",
+            manifestDigest: "digest"
+        )
+        context.insert(app)
+        try context.save()
+
+        try WorkspaceAppService().deleteApp(app, in: workspace, modelContext: context)
+
+        #expect(!FileManager.default.fileExists(atPath: legacyDirectory.path))
+        #expect(try context.fetch(FetchDescriptor<WorkspaceApp>()).isEmpty)
+    }
+
+    @Test("layout rejects symlinked app roots and app directory aliases")
+    func layoutRejectsSymlinkedAppRootsAndAliases() throws {
+        let rootSymlinkWorkspace = try Self.temporaryRoot(prefix: "workspace-app-root-symlink")
+        defer { try? FileManager.default.removeItem(at: rootSymlinkWorkspace) }
+        let outsideRoot = try Self.temporaryRoot(prefix: "workspace-app-root-outside")
+        defer { try? FileManager.default.removeItem(at: outsideRoot) }
+
+        let rootSymlink = rootSymlinkWorkspace.appendingPathComponent(".astra/apps", isDirectory: true)
+        try FileManager.default.createDirectory(at: rootSymlink.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(
+            at: outsideRoot.appendingPathComponent("target-app", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createSymbolicLink(at: rootSymlink, withDestinationURL: outsideRoot)
+
+        #expect(WorkspaceFileLayout.appDirectoryURL(workspacePath: rootSymlinkWorkspace.path, appID: "target-app") == nil)
+        #expect(!WorkspaceFileLayout.isContainedAppDirectory(
+            outsideRoot.appendingPathComponent("target-app", isDirectory: true),
+            workspacePath: rootSymlinkWorkspace.path
+        ))
+
+        let aliasWorkspace = try Self.temporaryRoot(prefix: "workspace-app-alias-symlink")
+        defer { try? FileManager.default.removeItem(at: aliasWorkspace) }
+        let appRoot = aliasWorkspace.appendingPathComponent(".astra/apps", isDirectory: true)
+        let existingApp = appRoot.appendingPathComponent("existing-app", isDirectory: true)
+        try FileManager.default.createDirectory(at: existingApp, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(
+            at: appRoot.appendingPathComponent("alias-app", isDirectory: true),
+            withDestinationURL: existingApp
+        )
+
+        #expect(WorkspaceFileLayout.appDirectoryURL(workspacePath: aliasWorkspace.path, appID: "alias-app") == nil)
+    }
+
+    @MainActor
+    @Test("createApp rejects nested data directory symlinks before storage writes")
+    func createAppRejectsNestedDataDirectorySymlinksBeforeStorageWrites() throws {
+        let root = try Self.temporaryRoot(prefix: "workspace-app-data-symlink")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let outside = try Self.temporaryRoot(prefix: "workspace-app-data-outside")
+        defer { try? FileManager.default.removeItem(at: outside) }
+
+        let appDirectory = root.appendingPathComponent(".astra/apps/enrollment-reconciliation", isDirectory: true)
+        try FileManager.default.createDirectory(at: appDirectory, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(
+            at: appDirectory.appendingPathComponent("data", isDirectory: true),
+            withDestinationURL: outside
+        )
+
+        let container = try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+        )
+        let workspace = Workspace(name: "Apps", primaryPath: root.path)
+        container.mainContext.insert(workspace)
+
+        #expect(throws: WorkspaceAppServiceError.self) {
+            _ = try WorkspaceAppService().createApp(
+                manifest: Self.reconciliationManifest(),
+                in: workspace,
+                modelContext: container.mainContext
+            )
+        }
+        #expect(!FileManager.default.fileExists(atPath: outside.appendingPathComponent("app.sqlite").path))
+    }
+
+    @Test("layout rejects SQLite sidecar symlinks before opening app storage")
+    func layoutRejectsSQLiteSidecarSymlinksBeforeOpeningAppStorage() throws {
+        let root = try Self.temporaryRoot(prefix: "workspace-app-sqlite-sidecar-symlink")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let outside = try Self.temporaryRoot(prefix: "workspace-app-sqlite-sidecar-outside")
+        defer { try? FileManager.default.removeItem(at: outside) }
+
+        let dataDirectory = root.appendingPathComponent(".astra/apps/enrollment-reconciliation/data", isDirectory: true)
+        try FileManager.default.createDirectory(at: dataDirectory, withIntermediateDirectories: true)
+        for sidecar in ["app.sqlite-wal", "app.sqlite-shm"] {
+            let sidecarURL = dataDirectory.appendingPathComponent(sidecar)
+            try FileManager.default.createSymbolicLink(
+                at: sidecarURL,
+                withDestinationURL: outside.appendingPathComponent(sidecar)
+            )
+
+            #expect(WorkspaceFileLayout.appDatabaseFileURL(
+                workspacePath: root.path,
+                appID: "enrollment-reconciliation"
+            ) == nil)
+
+            try FileManager.default.removeItem(at: sidecarURL)
+        }
+    }
+
+    @MainActor
+    @Test("manifest store rejects symlinked manifest leaves")
+    func manifestStoreRejectsSymlinkedManifestLeaves() throws {
+        let root = try Self.temporaryRoot(prefix: "workspace-app-manifest-leaf-symlink")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let outside = try Self.temporaryRoot(prefix: "workspace-app-manifest-leaf-outside")
+        defer { try? FileManager.default.removeItem(at: outside) }
+
+        let appDirectory = root.appendingPathComponent(".astra/apps/enrollment-reconciliation", isDirectory: true)
+        let outsideManifest = outside.appendingPathComponent("manifest.json")
+        try FileManager.default.createDirectory(at: appDirectory, withIntermediateDirectories: true)
+        try WorkspaceAppService.encodeManifest(Self.reconciliationManifest()).write(to: outsideManifest)
+        try FileManager.default.createSymbolicLink(
+            at: appDirectory.appendingPathComponent("manifest.json"),
+            withDestinationURL: outsideManifest
+        )
+        let workspace = Workspace(name: "Apps", primaryPath: root.path)
+        let app = WorkspaceApp(
+            workspaceID: workspace.id,
+            logicalID: "enrollment-reconciliation",
+            name: "Enrollment Reconciliation",
+            manifestRelativePath: ".astra/apps/enrollment-reconciliation/manifest.json",
+            appDirectoryRelativePath: ".astra/apps/enrollment-reconciliation",
+            manifestDigest: "digest"
+        )
+
+        #expect(throws: WorkspaceAppManifestStoreError.noSafeManifestPath("enrollment-reconciliation")) {
+            _ = try WorkspaceAppManifestStore().loadManifest(app: app, workspace: workspace)
+        }
+    }
+
+    @MainActor
+    @Test("manifest store rejects symlinked database paths before exposing loaded locations")
+    func manifestStoreRejectsSymlinkedDatabasePathsBeforeExposingLoadedLocations() throws {
+        let root = try Self.temporaryRoot(prefix: "workspace-app-manifest-database-symlink")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let outside = try Self.temporaryRoot(prefix: "workspace-app-manifest-database-outside")
+        defer { try? FileManager.default.removeItem(at: outside) }
+
+        let appDirectory = root.appendingPathComponent(".astra/apps/enrollment-reconciliation", isDirectory: true)
+        let dataDirectory = appDirectory.appendingPathComponent("data", isDirectory: true)
+        try FileManager.default.createDirectory(at: appDirectory, withIntermediateDirectories: true)
+        try WorkspaceAppService.encodeManifest(Self.reconciliationManifest())
+            .write(to: appDirectory.appendingPathComponent("manifest.json"))
+
+        for unsafeURL in [
+            dataDirectory,
+            dataDirectory.appendingPathComponent("app.sqlite-wal"),
+            dataDirectory.appendingPathComponent("app.sqlite-shm")
+        ] {
+            try? FileManager.default.removeItem(at: dataDirectory)
+            try FileManager.default.createDirectory(at: dataDirectory, withIntermediateDirectories: true)
+            if unsafeURL == dataDirectory {
+                try FileManager.default.removeItem(at: dataDirectory)
+                try FileManager.default.createSymbolicLink(at: dataDirectory, withDestinationURL: outside)
+            } else {
+                try FileManager.default.createSymbolicLink(
+                    at: unsafeURL,
+                    withDestinationURL: outside.appendingPathComponent(unsafeURL.lastPathComponent)
+                )
+            }
+
+            let workspace = Workspace(name: "Apps", primaryPath: root.path)
+            let app = WorkspaceApp(
+                workspaceID: workspace.id,
+                logicalID: "enrollment-reconciliation",
+                name: "Enrollment Reconciliation",
+                manifestRelativePath: ".astra/apps/enrollment-reconciliation/manifest.json",
+                appDirectoryRelativePath: ".astra/apps/enrollment-reconciliation",
+                manifestDigest: "digest"
+            )
+
+            #expect(throws: WorkspaceAppManifestStoreError.noSafeManifestPath("enrollment-reconciliation")) {
+                _ = try WorkspaceAppManifestStore().loadManifest(app: app, workspace: workspace)
+            }
+        }
+    }
+
+    @MainActor
+    @Test("duplicateApp fails before copying when the destination app ID cannot resolve safely")
+    func duplicateAppFailsBeforeCopyingWhenDestinationAppIDCannotResolveSafely() throws {
+        let root = try Self.temporaryRoot(prefix: "workspace-app-duplicate-unsafe")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let container = try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+        )
+        let context = container.mainContext
+        let workspace = Workspace(name: "Legacy Apps", primaryPath: root.path)
+        context.insert(workspace)
+
+        let legacyDirectory = root.appendingPathComponent("apps/source-app", isDirectory: true)
+        try FileManager.default.createDirectory(at: legacyDirectory, withIntermediateDirectories: true)
+        var manifest = Self.reconciliationManifest()
+        manifest.app.id = "../../escape"
+        try WorkspaceAppService.encodeManifest(manifest)
+            .write(to: legacyDirectory.appendingPathComponent("manifest.json"))
+        let app = WorkspaceApp(
+            workspaceID: workspace.id,
+            logicalID: " source app ",
+            name: "Legacy",
+            manifestRelativePath: "apps/source-app/manifest.json",
+            appDirectoryRelativePath: "apps/source-app",
+            manifestDigest: "digest"
+        )
+        context.insert(app)
+        try context.save()
+
+        let fileManager = RefusingCopyFileManager()
+        var service = WorkspaceAppService()
+        service.fileManager = fileManager
+
+        do {
+            _ = try service.duplicateApp(app, in: workspace, modelContext: context)
+            Issue.record("Expected unsafe duplicate destination to be rejected before copy.")
+        } catch WorkspaceAppServiceError.fileOperationFailed(let message) {
+            #expect(message.contains("Could not resolve safe storage path"))
+        }
+        #expect(fileManager.copiedDestinations.isEmpty)
+        #expect(fileManager.removedDestinations.isEmpty)
+    }
+
+    @MainActor
     @Test("service deletes app files and related domain records")
     func serviceDeletesAppFilesAndRelatedDomainRecords() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
@@ -643,6 +941,79 @@ struct WorkspaceAppServiceTests {
         #expect(try context.fetch(FetchDescriptor<WorkspaceAppAutomationState>()).isEmpty)
         #expect(try context.fetch(FetchDescriptor<WorkspaceAppRun>()).isEmpty)
         #expect(try context.fetch(FetchDescriptor<WorkspaceAppRunEvent>()).isEmpty)
+    }
+
+    @MainActor
+    @Test("createApp rejects reserved app storage IDs before writing app files")
+    func createAppRejectsReservedPathComponentIDsBeforeWritingAppFiles() throws {
+        for reservedID in [".", "..", "exports", "Exports", "EXPORTS"] {
+            let root = URL(fileURLWithPath: NSTemporaryDirectory())
+                .appendingPathComponent("workspace-app-reserved-id-\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: root) }
+
+            let container = try ModelContainer(
+                for: ASTRASchema.current,
+                migrationPlan: ASTRAMigrationPlan.self,
+                configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+            )
+            let context = container.mainContext
+            let workspace = Workspace(name: "Apps", primaryPath: root.path)
+            context.insert(workspace)
+
+            var manifest = Self.reconciliationManifest()
+            manifest.app.id = reservedID
+
+            do {
+                _ = try WorkspaceAppService().createApp(
+                    manifest: manifest,
+                    in: workspace,
+                    modelContext: context
+                )
+                Issue.record("Expected reserved app id '\(reservedID)' to be rejected.")
+            } catch WorkspaceAppServiceError.invalidManifest(let blockers) {
+                #expect(blockers.contains {
+                    $0.path == "/app/id" && $0.message.contains("reserved path component")
+                })
+            }
+
+            #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent(".astra/manifest.json").path))
+            #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent(".astra/apps/manifest.json").path))
+            #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent(".astra/data/app.sqlite").path))
+            #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent(".astra/apps/data/app.sqlite").path))
+            #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent(".astra/apps/exports/manifest.json").path))
+        }
+    }
+
+    @MainActor
+    @Test("createApp still accepts portable dotted app IDs inside the per-app directory")
+    func createAppAcceptsPortableDottedAppIDsInsidePerAppDirectory() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("workspace-app-dotted-id-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let container = try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+        )
+        let context = container.mainContext
+        let workspace = Workspace(name: "Apps", primaryPath: root.path)
+        context.insert(workspace)
+
+        var manifest = Self.reconciliationManifest()
+        manifest.app.id = "vendor.reconciliation"
+
+        let created = try WorkspaceAppService().createApp(
+            manifest: manifest,
+            in: workspace,
+            modelContext: context
+        )
+
+        #expect(created.app.logicalID == "vendor.reconciliation")
+        #expect(created.manifestURL.path == root.appendingPathComponent(".astra/apps/vendor.reconciliation/manifest.json").path)
+        #expect(FileManager.default.fileExists(atPath: created.manifestURL.path))
     }
 
     @MainActor
@@ -728,7 +1099,7 @@ struct WorkspaceAppServiceTests {
                     id: "latest_candidates",
                     requirementRef: "sourceWarehouse",
                     operation: "runReadOnlyQuery",
-                    query: "SELECT * FROM clinical.enrollment_candidates LIMIT 100"
+                    tableRef: "clinical.enrollment_candidates"
                 ),
                 WorkspaceAppSource(
                     id: "redcap_records",
@@ -770,5 +1141,12 @@ struct WorkspaceAppServiceTests {
                 defaultMode: .readOnly
             )
         )
+    }
+
+    static func temporaryRoot(prefix: String) throws -> URL {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("\(prefix)-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        return root
     }
 }

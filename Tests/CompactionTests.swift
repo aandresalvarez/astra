@@ -493,4 +493,49 @@ struct CompactionTests {
         #expect(remaining.contains { $0.id == finalTwo.id })
         #expect(remaining.contains { $0.type == "activity.compacted" })
     }
+
+    @Test("Compaction does not preserve unbounded final response chunk streams")
+    func compactionDoesNotPreserveUnboundedFinalResponseChunkStreams() throws {
+        let container = try makeCompactionTestContainer()
+        let context = container.mainContext
+        let task = AgentTask(title: "T", goal: "G")
+        let run = TaskRun(task: task)
+        run.output = (0..<40)
+            .map { "Final answer chunk \($0)." }
+            .joined(separator: " ")
+        context.insert(task)
+        context.insert(run)
+
+        let progress = TaskEvent(task: task, type: "agent.response", payload: "Checking progress.", run: run)
+        progress.timestamp = Date(timeIntervalSince1970: 5)
+        context.insert(progress)
+        let boundary = TaskEvent(task: task, type: "tool.result", payload: "Tool finished", run: run)
+        boundary.timestamp = Date(timeIntervalSince1970: 6)
+        context.insert(boundary)
+
+        var finalChunks: [TaskEvent] = []
+        for index in 0..<40 {
+            let event = TaskEvent(task: task, type: "agent.response", payload: "Final answer chunk \(index).", run: run)
+            event.timestamp = Date(timeIntervalSince1970: Double(7 + index))
+            finalChunks.append(event)
+            context.insert(event)
+        }
+
+        for index in 0..<230 {
+            let event = TaskEvent(task: task, type: "agent.response", payload: "filler \(index)")
+            event.timestamp = Date(timeIntervalSince1970: Double(100 + index))
+            context.insert(event)
+        }
+
+        AgentEventCompactor.compactEvents(for: task, modelContext: context)
+        try context.save()
+
+        let remaining = try context.fetch(FetchDescriptor<TaskEvent>())
+        #expect(!remaining.contains { $0.id == progress.id })
+        #expect(!remaining.contains { $0.id == boundary.id })
+        for event in finalChunks {
+            #expect(!remaining.contains { $0.id == event.id })
+        }
+        #expect(remaining.contains { $0.type == "activity.compacted" })
+    }
 }

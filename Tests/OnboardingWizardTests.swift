@@ -111,6 +111,17 @@ struct OnboardingWizardTests {
         #expect(OnboardingCapabilitySetup.installablePackageIDs.isSubset(of: builtInIDs))
     }
 
+    @Test("Workspace capability setup outcome copy matches Jira read-only support")
+    func capabilitySetupOutcomeCopyMatchesJiraReadOnlySupport() {
+        let jira = try! #require(OnboardingCapabilitySetup.configurableOptions.first {
+            $0.packageID == OnboardingCapabilitySetup.jiraPackageID
+        })
+
+        #expect(OnboardingCapabilitySetup.outcomeSubtitle(for: jira) == "Search, read, and summarize Jira tickets")
+        #expect(!OnboardingCapabilitySetup.outcomeSubtitle(for: jira).contains("Create"))
+        #expect(!OnboardingCapabilitySetup.outcomeSubtitle(for: jira).contains("update"))
+    }
+
     @Test("Workspace capability setup persists only known package IDs in display order")
     func capabilitySetupStorageRoundTripsKnownPackages() {
         let rawValue = "redcap-workflow,unknown,gcloud-workflow,jira-workflow"

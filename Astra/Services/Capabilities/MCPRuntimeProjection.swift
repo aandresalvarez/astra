@@ -61,6 +61,7 @@ enum MCPRuntimeProjection {
 
     struct ResolvedServer: Equatable {
         var packageID: String
+        var packageSourceMetadata: CapabilitySourceMetadata?
         var server: PluginMCPServer
         /// Env keys this server may receive, computed against its package's
         /// declared keys. Defaults to all of the server's keys for direct
@@ -69,10 +70,12 @@ enum MCPRuntimeProjection {
 
         init(
             packageID: String,
+            packageSourceMetadata: CapabilitySourceMetadata? = nil,
             server: PluginMCPServer,
             permittedEnvironmentKeys: Set<String>? = nil
         ) {
             self.packageID = packageID
+            self.packageSourceMetadata = packageSourceMetadata
             self.server = server
             self.permittedEnvironmentKeys = permittedEnvironmentKeys ?? Set(server.environmentKeys)
         }
@@ -84,7 +87,8 @@ enum MCPRuntimeProjection {
     static func enabledServers(
         for workspace: Workspace?,
         packages: [PluginPackage],
-        approvalRecords: [CapabilityApprovalRecord]
+        approvalRecords: [CapabilityApprovalRecord],
+        packPolicy: PackResolvedPolicy? = nil
     ) -> [ResolvedServer] {
         guard let workspace else { return [] }
         let enabledPackageIDs = Set(workspace.enabledCapabilityIDs)
@@ -95,7 +99,8 @@ enum MCPRuntimeProjection {
         // package is enabled — use the canonical currentUser factory.
         let context = CapabilityCatalogPolicyContext.currentUser(
             workspace: workspace,
-            approvalRecords: approvalRecords
+            approvalRecords: approvalRecords,
+            packPolicy: packPolicy
         )
 
         let servers = packages
@@ -115,6 +120,7 @@ enum MCPRuntimeProjection {
                     }
                     return ResolvedServer(
                         packageID: package.id,
+                        packageSourceMetadata: package.sourceMetadata,
                         server: server,
                         permittedEnvironmentKeys: Set(server.environmentKeys).subtracting(undeclared)
                     )

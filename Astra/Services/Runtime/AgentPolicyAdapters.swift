@@ -972,10 +972,12 @@ enum AgentPolicyManifestService {
             existingProviderConfigSummary: runtimeAdapter.existingProviderConfigSummary(workspacePath: workspacePath)
         )
         var render = providerPolicyAdapter.render(policy: policy, context: context)
-        render = applyingDockerWorkspaceManifestSupport(
+        render = applyingHostControlPlaneManifestSupport(
             to: render,
+            task: task,
             runtime: runtime,
-            executionEnvironment: executionEnvironment
+            executionEnvironment: executionEnvironment,
+            contextText: contextText
         )
         render.allowedShellPatterns = uniqueStrings(
             render.allowedShellPatterns
@@ -1042,7 +1044,7 @@ enum AgentPolicyManifestService {
             additionalPaths: runtimePaths,
             environmentKeyNames: envKeys,
             credentialLabels: manifestCredentialLabels,
-            mcpServers: dockerAugmentedMCPServers(
+            mcpServers: hostControlPlaneAugmentedMCPServers(
                 base: capabilityPackages.map {
                     TaskCapabilityResolver.enabledMCPServerManifests(
                         for: task.workspace,
@@ -1050,8 +1052,10 @@ enum AgentPolicyManifestService {
                         approvalRecords: approvalRecords ?? CapabilityApprovalStore().records()
                     )
                 } ?? taskCapabilityResolver.enabledMCPServerManifests,
+                task: task,
                 runtime: runtime,
-                executionEnvironment: executionEnvironment
+                executionEnvironment: executionEnvironment,
+                contextText: contextText
             ),
             approvalsGranted: approvals,
             approvalGrants: effectiveGrants
@@ -1088,19 +1092,29 @@ enum AgentPolicyManifestService {
         }
     }
 
-    private static func applyingDockerWorkspaceManifestSupport(
+    private static func applyingHostControlPlaneManifestSupport(
         to render: ProviderPolicyRender,
+        task: AgentTask,
         runtime: AgentRuntimeID,
-        executionEnvironment: WorkspaceExecutionEnvironment
+        executionEnvironment: WorkspaceExecutionEnvironment,
+        contextText: String
     ) -> ProviderPolicyRender {
-        guard DockerWorkspaceMCPProjection.isEnabled(for: executionEnvironment),
-              DockerWorkspaceMCPProjection.supportsHostProviderWorkspaceExecutor(runtime: runtime) else {
+        let usesDockerWorkspaceExecutor = DockerWorkspaceMCPProjection.isEnabled(for: executionEnvironment)
+            && DockerWorkspaceMCPProjection.supportsHostProviderWorkspaceExecutor(runtime: runtime)
+        let hostControlTools = HostControlPlaneMCPProjection.enabledToolNames(
+            task: task,
+            environment: executionEnvironment,
+            contextText: contextText
+        )
+        guard usesDockerWorkspaceExecutor || !hostControlTools.isEmpty else {
             return render
         }
 
         var updated = render
-        updated.allowedTools = DockerWorkspaceMCPProjection.removingNativeShellTools(updated.allowedTools)
-        updated.askFirstTools = DockerWorkspaceMCPProjection.removingNativeShellTools(updated.askFirstTools)
+        if usesDockerWorkspaceExecutor || !hostControlTools.isEmpty {
+            updated.allowedTools = DockerWorkspaceMCPProjection.removingNativeShellTools(updated.allowedTools)
+            updated.askFirstTools = DockerWorkspaceMCPProjection.removingNativeShellTools(updated.askFirstTools)
+        }
         updated.deniedTools = uniqueStrings(updated.deniedTools + ["Bash", "shell"])
         updated.diagnostics.append(PolicyDiagnostic(
             id: "container.host-control-plane-routing",
@@ -1111,11 +1125,13 @@ enum AgentPolicyManifestService {
             remediation: "Enable or repair the relevant capability before asking the provider to use host credentials or host services."
         ))
 
-        for descriptor in DockerWorkspaceMCPProjection.runtimeSupportToolDescriptors(for: runtime)
-            where !updated.runtimeSupportTools.contains(where: { $0.name == descriptor.name }) {
-            updated.runtimeSupportTools.append(descriptor)
+        if usesDockerWorkspaceExecutor {
+            for descriptor in DockerWorkspaceMCPProjection.runtimeSupportToolDescriptors(for: runtime)
+                where !updated.runtimeSupportTools.contains(where: { $0.name == descriptor.name }) {
+                updated.runtimeSupportTools.append(descriptor)
+            }
         }
-        for descriptor in HostControlPlaneMCPProjection.runtimeSupportToolDescriptors(for: runtime)
+        for descriptor in HostControlPlaneMCPProjection.runtimeSupportToolDescriptors(for: runtime, tools: hostControlTools)
             where !updated.runtimeSupportTools.contains(where: { $0.name == descriptor.name }) {
             updated.runtimeSupportTools.append(descriptor)
         }
@@ -1123,19 +1139,28 @@ enum AgentPolicyManifestService {
         return updated
     }
 
-    private static func dockerAugmentedMCPServers(
+    private static func hostControlPlaneAugmentedMCPServers(
         base: [RunPermissionManifest.MCPServer],
+        task: AgentTask,
         runtime: AgentRuntimeID,
-        executionEnvironment: WorkspaceExecutionEnvironment
+        executionEnvironment: WorkspaceExecutionEnvironment,
+        contextText: String
     ) -> [RunPermissionManifest.MCPServer] {
-        guard DockerWorkspaceMCPProjection.isEnabled(for: executionEnvironment),
-              DockerWorkspaceMCPProjection.supportsHostProviderWorkspaceExecutor(runtime: runtime) else {
-            return base
+        let usesDockerWorkspaceExecutor = DockerWorkspaceMCPProjection.isEnabled(for: executionEnvironment)
+            && DockerWorkspaceMCPProjection.supportsHostProviderWorkspaceExecutor(runtime: runtime)
+        let hostControlTools = HostControlPlaneMCPProjection.enabledToolNames(
+            task: task,
+            environment: executionEnvironment,
+            contextText: contextText
+        )
+        var servers = base
+        if usesDockerWorkspaceExecutor {
+            servers.append(DockerWorkspaceMCPProjection.manifestServer())
         }
-        return uniqueMCPServers(base + [
-            DockerWorkspaceMCPProjection.manifestServer(),
-            HostControlPlaneMCPProjection.manifestServer()
-        ])
+        if !hostControlTools.isEmpty {
+            servers.append(HostControlPlaneMCPProjection.manifestServer(allowedTools: hostControlTools))
+        }
+        return uniqueMCPServers(servers)
     }
 
     private static func uniqueMCPServers(
@@ -1216,7 +1241,7 @@ enum AgentPolicyManifestService {
             let command = tool.command.trimmingCharacters(in: .whitespacesAndNewlines)
             return command.isEmpty ? nil : command
         }
-        if !ShelfBrowserBridgeRegistry.shared.environmentVariables(for: task.id).isEmpty {
+        if TaskCapabilityResolver.shouldExposeBrowserBridge(for: task, contextText: contextText) {
             commands.append("astra-browser")
         }
         return Array(Set(commands)).sorted()

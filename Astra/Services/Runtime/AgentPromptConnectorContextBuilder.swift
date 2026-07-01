@@ -14,7 +14,8 @@ enum AgentPromptConnectorContextBuilder {
             connectorDescription(
                 connector: conn,
                 alias: aliasesByID[conn.id] ?? ConnectorRuntimeProjection.alias(for: conn),
-                bindings: bindingsByConnectorID[conn.id] ?? []
+                bindings: bindingsByConnectorID[conn.id] ?? [],
+                dockerRouted: dockerRouted
             )
         }
         guard !connectorDescriptions.isEmpty else { return nil }
@@ -36,7 +37,8 @@ enum AgentPromptConnectorContextBuilder {
     private static func connectorDescription(
         connector: Connector,
         alias: String,
-        bindings: [ConnectorRuntimeProjection.EnvironmentBinding]
+        bindings: [ConnectorRuntimeProjection.EnvironmentBinding],
+        dockerRouted: Bool
     ) -> String {
         let credentialBindings = bindings.filter {
             $0.kind == .credential && !$0.value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -79,7 +81,7 @@ enum AgentPromptConnectorContextBuilder {
                 .joined(separator: ", ")
             desc += "\n  Config env vars: \(rendered)"
         }
-        if let example = connectorRuntimeExample(for: connector, bindings: bindings) {
+        if let example = connectorRuntimeExample(for: connector, alias: alias, bindings: bindings, dockerRouted: dockerRouted) {
             desc += "\n  Runtime example: \(example)"
         }
         desc += "\n  Auth: \(connector.authMethod)"
@@ -89,9 +91,7 @@ enum AgentPromptConnectorContextBuilder {
 
     private static func connectorAPIGuidance(dockerRouted: Bool) -> String {
         if dockerRouted {
-            return """
-            IMPORTANT: This task is routed through a Docker workspace executor. Do not use native host Bash or Docker workspace_shell for host connector APIs. For Jira, use `mcp__astra_host__jira` (or Copilot's `astra_host-jira`) with the projected ASTRA_CONNECTORS credentials. For Google Cloud or BigQuery host CLI operations, use `mcp__astra_host__gcloud` or `mcp__astra_host__bq`. Use workspace_shell only for project commands that belong inside the container image. WebFetch cannot handle SSO, session cookies, or token-based auth headers.
-            """
+            return HostControlPlanePromptGuidance.dockerConnectorAPIGuidance
         }
         return """
         IMPORTANT: To call authenticated APIs, use Bash with curl/python and the env var tokens - NOT WebFetch. \
@@ -101,12 +101,14 @@ enum AgentPromptConnectorContextBuilder {
 
     private static func connectorRuntimeExample(
         for connector: Connector,
-        bindings: [ConnectorRuntimeProjection.EnvironmentBinding]
+        alias: String,
+        bindings: [ConnectorRuntimeProjection.EnvironmentBinding],
+        dockerRouted: Bool
     ) -> String? {
         let serviceType = connector.serviceType.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         switch serviceType {
         case "jira":
-            return jiraRuntimeExample(for: connector, bindings: bindings)
+            return jiraRuntimeExample(for: connector, alias: alias, bindings: bindings, dockerRouted: dockerRouted)
         case "redcap":
             return redcapRuntimeExample(bindings: bindings)
         case "gcloud", "google_cloud", "googlecloud", "gcp":
@@ -118,8 +120,13 @@ enum AgentPromptConnectorContextBuilder {
 
     private static func jiraRuntimeExample(
         for connector: Connector,
-        bindings: [ConnectorRuntimeProjection.EnvironmentBinding]
+        alias: String,
+        bindings: [ConnectorRuntimeProjection.EnvironmentBinding],
+        dockerRouted: Bool
     ) -> String? {
+        if dockerRouted {
+            return #"mcp__astra_host__jira with {"operation":"status","alias":"\#(alias)"}; for reads use {"operation":"search_jql","alias":"\#(alias)","jql":"project = KEY","max_results":1}"#
+        }
         guard let baseURL = runtimeURLBase(
             bindings: bindings,
             logicalNames: ["baseURL", "jiraBaseURL", "url"],

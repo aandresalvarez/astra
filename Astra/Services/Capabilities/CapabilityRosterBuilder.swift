@@ -35,6 +35,10 @@ enum CapabilityRosterBuilder {
     }
 
     private static func invocationHint(for package: PluginPackage) -> String? {
+        if HostControlPlaneMCPProjection.packageUsesHostControlRuntime(package),
+           let skill = package.skills.first {
+            return "the \(skill.name) skill through ASTRA host-control MCP"
+        }
         if let command = package.localTools.first(where: { !$0.command.isEmpty })?.command {
             return "`\(command)` (via the Bash tool)"
         }

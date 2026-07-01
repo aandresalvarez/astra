@@ -38,6 +38,7 @@ struct TaskCapabilityResolver {
     }
 
     var resolver: SkillResolver {
+        let shelfAvailabilityPolicy = WorkspaceShelfRuntimePolicy.resolvedShelfAvailabilityPolicy(for: task.workspace)
         let standaloneTools = allLocalTools.filter { $0.skill == nil }
         let standaloneSnapshots = standaloneTools.map(LocalToolSnapshotConfig.init(localTool:))
         let liveConnectors = allConnectors
@@ -48,7 +49,7 @@ struct TaskCapabilityResolver {
                 .filter { $0.toolType != "mcp" && !$0.command.isEmpty }
                 .map(\.command)
         )
-        if Self.shouldExposeBrowserBridge(for: task) {
+        if Self.shouldExposeBrowserBridge(for: task, shelfAvailabilityPolicy: shelfAvailabilityPolicy) {
             liveCLICommands.insert("astra-browser")
         }
 
@@ -321,15 +322,25 @@ struct TaskCapabilityResolver {
     }
 
     private func makePromptScope(contextText: String, forcePrune: Bool) -> TaskCapabilityPromptScope {
+        let shelfAvailabilityPolicy = WorkspaceShelfRuntimePolicy.resolvedShelfAvailabilityPolicy(for: task.workspace)
         let connectors = allConnectors
         var tools = allLocalTools
-        if Self.shouldExposeBrowserBridge(for: task, contextText: contextText),
+        let enabledPackageIDs = enabledCapabilityPackages().map(\.id)
+        if Self.shouldExposeBrowserBridge(
+            for: task,
+            contextText: contextText,
+            shelfAvailabilityPolicy: shelfAvailabilityPolicy
+        ),
            !tools.contains(where: { $0.command == "astra-browser" }) {
             tools.append(Self.browserBridgeTool())
         }
         let skills = allBehaviorSkills(connectors: connectors)
 
-        let shouldPruneForRuntimeScope = Self.shouldPruneCapabilitiesForTask(task: task, contextText: contextText)
+        let shouldPruneForRuntimeScope = Self.shouldPruneCapabilitiesForTask(
+            task: task,
+            contextText: contextText,
+            shelfAvailabilityPolicy: shelfAvailabilityPolicy
+        )
             || Self.hasRuntimeScopedCapabilities(skills: skills, connectors: connectors, localTools: tools)
 
         guard forcePrune || shouldPruneForRuntimeScope else {
@@ -339,6 +350,7 @@ struct TaskCapabilityResolver {
                 localTools: tools,
                 prunedForBrowserTask: false,
                 excludedSkillNames: [],
+                enabledPackageIDs: enabledPackageIDs,
                 contextText: contextText
             )
         }
@@ -388,6 +400,10 @@ struct TaskCapabilityResolver {
             localTools: includedLocalTools,
             prunedForBrowserTask: true,
             excludedSkillNames: excludedNames,
+            enabledPackageIDs: enabledPackageIDs.filter { packageID in
+                includedSkills.contains { $0.originPackageID == packageID }
+                    || Self.packageID(packageID, matchesTaskText: searchableText)
+            },
             contextText: contextText
         )
     }
@@ -395,9 +411,10 @@ struct TaskCapabilityResolver {
     func resolvedScope(_ scope: TaskCapabilityResolutionScope) -> TaskCapabilityPromptScope {
         switch scope {
         case .fullInventory:
+            let shelfAvailabilityPolicy = WorkspaceShelfRuntimePolicy.resolvedShelfAvailabilityPolicy(for: task.workspace)
             let connectors = allConnectors
             var tools = allLocalTools
-            if Self.shouldExposeBrowserBridge(for: task, contextText: ""),
+            if Self.shouldExposeBrowserBridge(for: task, contextText: "", shelfAvailabilityPolicy: shelfAvailabilityPolicy),
                !tools.contains(where: { $0.command == "astra-browser" }) {
                 tools.append(Self.browserBridgeTool())
             }
@@ -407,6 +424,7 @@ struct TaskCapabilityResolver {
                 localTools: tools,
                 prunedForBrowserTask: false,
                 excludedSkillNames: [],
+                enabledPackageIDs: enabledCapabilityPackages().map(\.id),
                 contextText: ""
             )
         case .providerLaunch(let contextText):
@@ -459,6 +477,7 @@ struct TaskCapabilityResolver {
         localTools: [LocalTool],
         prunedForBrowserTask: Bool,
         excludedSkillNames: [String],
+        enabledPackageIDs: [String],
         contextText: String
     ) -> TaskCapabilityPromptScope {
         let skillIDs = Set(skills.map(\.id))
@@ -521,14 +540,68 @@ struct TaskCapabilityResolver {
             localTools: scopedTools,
             enabledBrowserAdapters: enabledBrowserAdapters,
             prunedForBrowserTask: prunedForBrowserTask,
-            excludedSkillNames: excludedSkillNames
+            excludedSkillNames: excludedSkillNames,
+            enabledPackageIDs: Self.uniqueStrings(enabledPackageIDs)
         )
     }
 
-    private static func shouldPruneCapabilitiesForTask(task: AgentTask, contextText: String) -> Bool {
+    private static func packageID(_ packageID: String, matchesTaskText taskText: String) -> Bool {
+        guard packageID == "github-workflow" else { return false }
+        let tokens = taskTextTokens(taskText)
+        let tokenSet = Set(tokens)
+        if !tokenSet.isDisjoint(with: ["github", "ci", "pr", "prs"]) {
+            return true
+        }
+        return taskTextContainsTokenPhrase(tokens, matching: ["pull", "request"])
+            || taskTextContainsTokenPhrase(tokens, matching: ["pull", "requests"])
+            || taskTextContainsTokenPhrase(tokens, matching: ["workflow", "run"])
+            || taskTextContainsTokenPhrase(tokens, matching: ["workflow", "runs"])
+            || taskTextContainsQualifiedIssueReference(tokens)
+    }
+
+    private static func taskTextTokens(_ taskText: String) -> [String] {
+        normalizedSearchText(taskText).split(separator: " ").map(String.init)
+    }
+
+    private static func taskTextContainsTokenPhrase(_ tokens: [String], matching phrase: [String]) -> Bool {
+        guard !phrase.isEmpty, tokens.count >= phrase.count else { return false }
+        for startIndex in 0...(tokens.count - phrase.count) {
+            if tokens[startIndex..<(startIndex + phrase.count)].elementsEqual(phrase) {
+                return true
+            }
+        }
+        return false
+    }
+
+    private static func taskTextContainsQualifiedIssueReference(_ tokens: [String]) -> Bool {
+        let issueTokens: Set<String> = ["issue", "issues"]
+        for index in tokens.indices where issueTokens.contains(tokens[index]) {
+            let previous = index > tokens.startIndex ? tokens[index - 1] : nil
+            let next = index < tokens.index(before: tokens.endIndex) ? tokens[index + 1] : nil
+            if previous == "gh" || next == "gh" {
+                return true
+            }
+        }
+        return false
+    }
+
+    private static func uniqueStrings(_ values: [String]) -> [String] {
+        var seen: Set<String> = []
+        return values.filter { seen.insert($0).inserted }
+    }
+
+    private static func shouldPruneCapabilitiesForTask(
+        task: AgentTask,
+        contextText: String,
+        shelfAvailabilityPolicy: ShelfAvailabilityPolicy? = nil
+    ) -> Bool {
         let text = searchableTaskText(task: task, contextText: contextText)
         guard !text.isEmpty else { return false }
-        if shouldExposeBrowserBridge(for: task, contextText: contextText),
+        if shouldExposeBrowserBridge(
+            for: task,
+            contextText: contextText,
+            shelfAvailabilityPolicy: shelfAvailabilityPolicy
+        ),
            browserIntentTerms.contains(where: { text.contains($0) }) {
             return true
         }
@@ -561,7 +634,12 @@ struct TaskCapabilityResolver {
         return hasAction && hasTarget
     }
 
-    static func shouldExposeBrowserBridge(for task: AgentTask, contextText: String = "") -> Bool {
+    static func shouldExposeBrowserBridge(
+        for task: AgentTask,
+        contextText: String = "",
+        shelfAvailabilityPolicy: ShelfAvailabilityPolicy? = nil
+    ) -> Bool {
+        guard canPresentBrowserShelf(for: task, shelfAvailabilityPolicy: shelfAvailabilityPolicy) else { return false }
         let state = ShelfBrowserBridgeRegistry.shared.promptState(for: task.id)
         guard state.isExposed else { return false }
         if state.isPresented || state.hasCurrentURL {
@@ -569,6 +647,16 @@ struct TaskCapabilityResolver {
         }
         let text = searchableTaskText(task: task, contextText: contextText)
         return explicitBrowserControlTerms.contains { text.contains($0) }
+    }
+
+    private static func canPresentBrowserShelf(
+        for task: AgentTask,
+        shelfAvailabilityPolicy: ShelfAvailabilityPolicy? = nil
+    ) -> Bool {
+        WorkspaceShelfRuntimePolicy.canPresentBrowserShelf(
+            for: task.workspace,
+            shelfAvailabilityPolicy: shelfAvailabilityPolicy
+        )
     }
 
     private static func browserBridgeTool() -> LocalTool {
@@ -687,11 +775,20 @@ struct TaskCapabilityResolver {
         let normalized = normalizedSearchText(text)
         var tokens = Set<String>()
         for token in normalized.split(separator: " ").map(String.init) {
+            if token == "pr" || token == "prs" {
+                tokens.insert("pr")
+                tokens.insert("prs")
+                continue
+            }
             guard token.count >= 3, !genericCapabilityTokens.contains(token) else { continue }
             tokens.insert(token)
             if token.count > 4, token.hasSuffix("s") {
                 tokens.insert(String(token.dropLast()))
             }
+        }
+        if normalized.contains("pull request") || normalized.contains("pull requests") {
+            tokens.insert("pr")
+            tokens.insert("prs")
         }
         return tokens
     }
@@ -798,6 +895,7 @@ struct TaskCapabilityResolver {
         "develop",
         "doc",
         "document",
+        "docker",
         "download",
         "drive",
         "file",
@@ -861,4 +959,5 @@ struct TaskCapabilityPromptScope {
     let enabledBrowserAdapters: [String]
     let prunedForBrowserTask: Bool
     let excludedSkillNames: [String]
+    let enabledPackageIDs: [String]
 }

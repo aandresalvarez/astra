@@ -4,6 +4,17 @@ import Testing
 
 @Suite("Remote MCP HTTP Client")
 struct RemoteMCPHTTPClientTests {
+    @Test("timeouts reject non-finite and sub-minimum request intervals")
+    func timeoutsRejectNonFiniteAndSubMinimumIntervals() {
+        let minimum = 0.001
+        #expect(RemoteMCPHTTPTimeouts(request: .nan).request == minimum)
+        #expect(RemoteMCPHTTPTimeouts(request: .infinity).request == minimum)
+        #expect(RemoteMCPHTTPTimeouts(request: -.infinity).request == minimum)
+        #expect(RemoteMCPHTTPTimeouts(request: 0).request == minimum)
+        #expect(RemoteMCPHTTPTimeouts(request: -1).request == minimum)
+        #expect(RemoteMCPHTTPTimeouts(request: 3).request == 3)
+    }
+
     @Test("lists tools using JSON RPC and bearer auth")
     func listsTools() throws {
         let transport = RecordingRemoteMCPHTTPTransport(response: .success([
@@ -69,6 +80,34 @@ struct RemoteMCPHTTPClientTests {
             #expect(!error.localizedDescription.contains("access-secret"))
         }
     }
+
+    @Test("URLSession transport cancels stalled remote responses at configured deadline")
+    func urlSessionTransportTimesOutStalledResponses() throws {
+        StalledRemoteMCPURLProtocol.reset()
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [StalledRemoteMCPURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        defer { session.invalidateAndCancel() }
+        let transport = URLSessionRemoteMCPHTTPTransport(
+            session: session,
+            timeouts: RemoteMCPHTTPTimeouts(request: 0.05)
+        )
+
+        let startedAt = Date()
+        do {
+            _ = try transport.postJSON(
+                to: URL(string: "https://mcp.example.test/stalled")!,
+                headers: [:],
+                body: ["jsonrpc": "2.0", "id": 1, "method": "tools/list"]
+            )
+            Issue.record("Expected stalled remote MCP response to time out")
+        } catch RemoteMCPHTTPClient.Error.requestTimedOut {
+            #expect(Date().timeIntervalSince(startedAt) < 1.0)
+            #expect(StalledRemoteMCPURLProtocol.waitForStopLoading(timeout: 1.0))
+        } catch {
+            Issue.record("Expected requestTimedOut, got \(error)")
+        }
+    }
 }
 
 private func descriptor() -> RemoteMCPServerDescriptor {
@@ -108,5 +147,49 @@ private final class RecordingRemoteMCPHTTPTransport: RemoteMCPHTTPTransport {
         case .failure(let statusCode, let body):
             return (statusCode, body)
         }
+    }
+}
+
+private final class StalledRemoteMCPURLProtocol: URLProtocol {
+    private static let lock = NSLock()
+    private static var stopped = false
+
+    static func reset() {
+        lock.lock()
+        stopped = false
+        lock.unlock()
+    }
+
+    static func waitForStopLoading(timeout: TimeInterval) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            lock.lock()
+            let didStop = stopped
+            lock.unlock()
+            if didStop {
+                return true
+            }
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        lock.lock()
+        let didStop = stopped
+        lock.unlock()
+        return didStop
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool {
+        true
+    }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest {
+        request
+    }
+
+    override func startLoading() {}
+
+    override func stopLoading() {
+        Self.lock.lock()
+        Self.stopped = true
+        Self.lock.unlock()
     }
 }

@@ -137,8 +137,8 @@ struct FirstPartyConnectorJiraClassificationTests {
         #expect(outcome.fields["project_count"] == "1")
     }
 
-    @Test("Project missing CREATE_ISSUES reports scoped missing permission")
-    func projectMissingCreateIssues() async {
+    @Test("Project Browse permission authenticates without Create Issues")
+    func projectBrowsePermissionDoesNotRequireCreateIssues() async {
         let tester = JiraConnectorAuthTester(
             connectorID: UUID(),
             baseURL: URL(string: "https://jira.example.com")!,
@@ -151,8 +151,9 @@ struct FirstPartyConnectorJiraClassificationTests {
             ])
         )
         let outcome = await tester.test()
-        #expect(outcome.fields["result"] == "missing_permission")
-        #expect(outcome.fields["permission"] == "CREATE_ISSUES")
+        #expect(outcome.success)
+        #expect(outcome.fields["result"] == "authenticated")
+        #expect(outcome.fields["permission"] == nil)
         #expect(outcome.fields["project_count"] == "1")
     }
 

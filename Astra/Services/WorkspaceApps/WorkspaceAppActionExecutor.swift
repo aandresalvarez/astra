@@ -289,6 +289,7 @@ private struct WorkspaceAppApprovalSuspension: Error {
     let pipelineActionID: String
     let gateStepIndex: Int
     let gateActionID: String
+    let boundRows: [[String: WorkspaceAppStorageValue]]
 }
 
 struct WorkspaceAppActionExecutor {
@@ -540,7 +541,9 @@ struct WorkspaceAppActionExecutor {
             payload: [
                 "pipelineID": .text(suspension.pipelineActionID),
                 "gateID": .text(suspension.gateActionID),
-                "stepIndex": .integer(Int64(suspension.gateStepIndex))
+                "stepIndex": .integer(Int64(suspension.gateStepIndex)),
+                "boundRows": .integer(Int64(suspension.boundRows.count)),
+                "boundRowsJSON": .text(WorkspaceAppApprovalResumeContext.boundRowsPayloadString(suspension.boundRows))
             ],
             modelContext: modelContext
         )
@@ -588,14 +591,25 @@ struct WorkspaceAppActionExecutor {
             )
         }
 
+        let action = try actionSpec(actionID: pipelineID, manifest: manifest)
+        let startIndex = run.pendingStepIndex
+        let resumedBoundRows = WorkspaceAppApprovalResumeContext.pendingBoundRows(
+            for: run,
+            pipelineID: pipelineID,
+            gateID: gateID,
+            stepIndex: startIndex,
+            modelContext: modelContext
+        )
         recorder.recordEvent(
             run: run,
             type: "workspaceApp.approval.confirmed",
-            payload: ["pipelineID": .text(pipelineID), "gateID": .text(gateID)],
+            payload: [
+                "pipelineID": .text(pipelineID),
+                "gateID": .text(gateID),
+                "boundRows": .integer(Int64(resumedBoundRows.count))
+            ],
             modelContext: modelContext
         )
-        let action = try actionSpec(actionID: pipelineID, manifest: manifest)
-        let startIndex = run.pendingStepIndex
         run.status = .running
         do {
             let result = try executePipeline(
@@ -604,11 +618,11 @@ struct WorkspaceAppActionExecutor {
                 workspace: workspace,
                 manifest: manifest,
                 dependencyBindings: dependencyBindings,
-                input: WorkspaceAppActionInput(confirmedApproval: true),
+                input: WorkspaceAppActionInput(confirmedApproval: true, boundRows: resumedBoundRows),
                 run: run,
                 modelContext: modelContext,
                 startIndex: startIndex,
-                initialBoundRows: []
+                initialBoundRows: resumedBoundRows
             )
             run.linkedArtifactPath = result.linkedArtifactPath ?? run.linkedArtifactPath
             run.pendingActionID = nil
@@ -785,10 +799,12 @@ struct WorkspaceAppActionExecutor {
         linkedTaskID: UUID?,
         linkedArtifactPath: String?
     ) {
-        let databaseURL = URL(fileURLWithPath: WorkspaceFileLayout.appDatabaseFile(
+        guard let databaseURL = WorkspaceFileLayout.appDatabaseFileURL(
             workspacePath: workspace.primaryPath,
             appID: app.logicalID
-        ))
+        ) else {
+            throw WorkspaceAppActionExecutionError.storageFailed("Could not resolve safe storage path for app '\(app.logicalID)'.")
+        }
         switch action.type {
         case "appStorage.insert":
             // Fall back to the action's declared table (matching update/delete/query) so an insert
@@ -1213,7 +1229,7 @@ struct WorkspaceAppActionExecutor {
             payload: ["actionID": .text(action.id), "prompt": .text(prompt)],
             modelContext: modelContext
         )
-        return ([], "Approval gate '\(action.id)' confirmed.", nil, nil)
+        return (input.boundRows, "Approval gate '\(action.id)' confirmed.", nil, nil)
     }
 
     private func executeExpressionGate(
@@ -1265,7 +1281,7 @@ struct WorkspaceAppActionExecutor {
             payload: eventPayload,
             modelContext: modelContext
         )
-        return ([], "Expression gate '\(action.id)' passed.", nil, nil)
+        return (input.boundRows, "Expression gate '\(action.id)' passed.", nil, nil)
     }
 
     private func executeAgentRecommendationGate(
@@ -1346,7 +1362,7 @@ struct WorkspaceAppActionExecutor {
             ),
             modelContext: modelContext
         )
-        return ([], "Agent recommendation gate '\(action.id)' accepted '\(decision)'.", nil, nil)
+        return (input.boundRows, "Agent recommendation gate '\(action.id)' accepted '\(decision)'.", nil, nil)
     }
 
     /// Async `capability.read` — a live connector read (network I/O) via `resolveAsync`. Mirrors the
@@ -1543,15 +1559,20 @@ struct WorkspaceAppActionExecutor {
         var summaries: [String] = []
         var linkedTaskID: UUID?
         var linkedArtifactPath: String?
+        var carriesHumanApproval = try hasHumanApprovalGate(before: startIndex, in: action, manifest: manifest)
 
         for (index, stepID) in action.steps.enumerated() {
             guard index >= startIndex else { continue }
             let step = try actionSpec(actionID: stepID, manifest: manifest)
             // B1 output binding: each step sees the previous step's rows.
             var stepInput = input.bindingForward(rows: rows)
-            // Human approval applies ONLY to the gate being resumed (at startIndex); a later
-            // gate.humanApproval step must re-prompt rather than inherit the prior approval.
-            if index > startIndex { stepInput.confirmedApproval = false }
+            stepInput.confirmedApproval = pipelineStepHasApproval(
+                step: step,
+                index: index,
+                startIndex: startIndex,
+                input: input,
+                carriesHumanApproval: carriesHumanApproval
+            )
             // Enforce the step's permission BEFORE any side effect (incl. launching
             // an async agent task), so an unapproved workflow can't queue work.
             try enforcePermission(for: step, app: app, input: stepInput)
@@ -1562,14 +1583,24 @@ struct WorkspaceAppActionExecutor {
                 recorder.recordEvent(
                     run: run,
                     type: "workspaceApp.pipeline.step.awaitingApproval",
-                    payload: ["pipelineID": .text(action.id), "stepID": .text(stepID)],
+                    payload: [
+                        "pipelineID": .text(action.id),
+                        "stepID": .text(stepID),
+                        "stepIndex": .integer(Int64(index)),
+                        "boundRows": .integer(Int64(rows.count)),
+                        "boundRowsJSON": .text(WorkspaceAppApprovalResumeContext.boundRowsPayloadString(rows))
+                    ],
                     modelContext: modelContext
                 )
                 throw WorkspaceAppApprovalSuspension(
                     pipelineActionID: action.id,
                     gateStepIndex: index,
-                    gateActionID: stepID
+                    gateActionID: stepID,
+                    boundRows: rows
                 )
+            }
+            if step.type == "gate.humanApproval", stepInput.confirmedApproval {
+                carriesHumanApproval = true
             }
             // B2: await an async agent step — launch the task and suspend the run
             // until it completes (resumed via WorkspaceAppActionExecutor.resume).
@@ -1677,6 +1708,33 @@ struct WorkspaceAppActionExecutor {
             linkedTaskID,
             linkedArtifactPath
         )
+    }
+
+    private func hasHumanApprovalGate(
+        before stepIndex: Int,
+        in pipeline: WorkspaceAppActionSpec,
+        manifest: WorkspaceAppManifest
+    ) throws -> Bool {
+        guard stepIndex > 0 else { return false }
+        for stepID in pipeline.steps.prefix(stepIndex) {
+            if try actionSpec(actionID: stepID, manifest: manifest).type == "gate.humanApproval" {
+                return true
+            }
+        }
+        return false
+    }
+
+    private func pipelineStepHasApproval(
+        step: WorkspaceAppActionSpec,
+        index: Int,
+        startIndex: Int,
+        input: WorkspaceAppActionInput,
+        carriesHumanApproval: Bool
+    ) -> Bool {
+        if step.type == "gate.humanApproval" {
+            return index == startIndex && input.confirmedApproval
+        }
+        return (index == startIndex && input.confirmedApproval) || carriesHumanApproval
     }
 
     private func executeLoop(
@@ -1827,21 +1885,21 @@ struct WorkspaceAppActionExecutor {
             throw WorkspaceAppActionExecutionError.storageFailed(String(describing: error))
         }
 
-        let directory = WorkspaceFileLayout.appArtifactExportDirectory(
+        guard let directoryURL = WorkspaceFileLayout.appArtifactExportDirectoryURL(
             workspacePath: workspace.primaryPath,
             appID: app.logicalID
-        )
-        guard !directory.isEmpty else {
-            throw WorkspaceAppActionExecutionError.storageFailed("Workspace path is unavailable.")
+        ) else {
+            throw WorkspaceAppActionExecutionError.storageFailed("Could not resolve safe export path for app '\(app.logicalID)'.")
         }
-        let directoryURL = URL(fileURLWithPath: directory, isDirectory: true)
         try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
 
         switch format {
         case "csv":
             let url = try nextExportURL(directory: directoryURL, table: table, pathExtension: "csv")
             let columns = exportColumns(rows, manifest: manifest, table: table)
-            try csvData(rows: rows, columns: columns).write(to: url, options: .atomic)
+            try WorkspaceAppCSVExportFormatter(columns: columns)
+                .data(rows: rows)
+                .write(to: url, options: .atomic)
             return url
         case "json":
             let url = try nextExportURL(directory: directoryURL, table: table, pathExtension: "json")
@@ -1892,40 +1950,6 @@ struct WorkspaceAppActionExecutor {
             }
         }
         return columns
-    }
-
-    private func csvData(
-        rows: [[String: WorkspaceAppStorageValue]],
-        columns: [String]
-    ) -> Data {
-        let lines = [columns.map(csvField).joined(separator: ",")] + rows.map { row in
-            columns
-                .map { csvField(exportValue(row[$0])) }
-                .joined(separator: ",")
-        }
-        return Data((lines.joined(separator: "\n") + "\n").utf8)
-    }
-
-    private func csvField(_ value: String) -> String {
-        if value.contains(",") || value.contains("\"") || value.contains("\n") || value.contains("\r") {
-            return "\"\(value.replacingOccurrences(of: "\"", with: "\"\""))\""
-        }
-        return value
-    }
-
-    private func exportValue(_ value: WorkspaceAppStorageValue?) -> String {
-        switch value {
-        case .null, nil:
-            ""
-        case .text(let value):
-            value
-        case .integer(let value):
-            "\(value)"
-        case .real(let value):
-            value.formatted(.number.precision(.fractionLength(0...12)))
-        case .bool(let value):
-            value ? "true" : "false"
-        }
     }
 
     private func createTask(
@@ -1986,10 +2010,10 @@ struct WorkspaceAppActionExecutor {
         switch binding.source {
         case "table":
             guard let table = binding.table?.trimmingCharacters(in: .whitespacesAndNewlines), !table.isEmpty else { return "" }
-            let databaseURL = URL(fileURLWithPath: WorkspaceFileLayout.appDatabaseFile(
+            guard let databaseURL = WorkspaceFileLayout.appDatabaseFileURL(
                 workspacePath: workspace.primaryPath,
                 appID: app.logicalID
-            ))
+            ) else { return "" }
             rows = (try? storageService.records(in: table, databaseURL: databaseURL, limit: limit)) ?? []
         default:  // "boundRows"
             rows = Array(input.boundRows.prefix(limit))
@@ -2070,10 +2094,10 @@ struct WorkspaceAppActionExecutor {
            let schema = manifest.storage?.tables.first(where: { $0.name == tableName }) {
             let columns = Set(schema.columns.map(\.name))
             let primaryKey = schema.columns.first(where: { $0.primaryKey })?.name
-            let databaseURL = URL(fileURLWithPath: WorkspaceFileLayout.appDatabaseFile(
+            guard let databaseURL = WorkspaceFileLayout.appDatabaseFileURL(
                 workspacePath: workspace.primaryPath,
                 appID: app.logicalID
-            ))
+            ) else { return mapped }
             for row in mapped {
                 var record = row.filter { columns.contains($0.key) }
                 if let primaryKey, record[primaryKey] == nil {
@@ -2295,5 +2319,77 @@ struct WorkspaceAppActionExecutor {
             }
         }
         return fallback
+    }
+}
+
+private struct WorkspaceAppCSVExportFormatter {
+    private static let formulaPrefixes: Set<Character> = ["=", "+", "-", "@"]
+    private let columns: [String]
+
+    init(columns: [String]) {
+        self.columns = columns
+    }
+
+    func data(rows: [[String: WorkspaceAppStorageValue]]) -> Data {
+        let lines = [columns.map(headerField).joined(separator: ",")] + rows.map { row in
+            columns
+                .map { storageField(row[$0]) }
+                .joined(separator: ",")
+        }
+        return Data((lines.joined(separator: "\n") + "\n").utf8)
+    }
+
+    private func headerField(_ rawValue: String) -> String {
+        field(rawValue)
+    }
+
+    private func storageField(_ value: WorkspaceAppStorageValue?) -> String {
+        field(Self.exportValue(value))
+    }
+
+    private func field(_ rawValue: String) -> String {
+        if rawValue.contains(",") || rawValue.contains("\"") || rawValue.contains("\n") || rawValue.contains("\r") {
+            return "\"\(rawValue.replacingOccurrences(of: "\"", with: "\"\""))\""
+        }
+        return rawValue
+    }
+
+    private static func literalizedSpreadsheetText(_ value: String) -> String {
+        guard hasSpreadsheetFormulaPrefix(value) else {
+            return value
+        }
+        return "'\(value)"
+    }
+
+    private static func hasSpreadsheetFormulaPrefix(_ value: String) -> Bool {
+        guard let firstToken = firstSpreadsheetToken(in: value) else {
+            return false
+        }
+        return formulaPrefixes.contains(firstToken)
+    }
+
+    private static func firstSpreadsheetToken(in value: String) -> Character? {
+        for character in value {
+            if character.isWhitespace {
+                continue
+            }
+            return character
+        }
+        return nil
+    }
+
+    private static func exportValue(_ value: WorkspaceAppStorageValue?) -> String {
+        switch value {
+        case .null, nil:
+            ""
+        case .text(let value):
+            literalizedSpreadsheetText(value)
+        case .integer(let value):
+            "\(value)"
+        case .real(let value):
+            value.formatted(.number.precision(.fractionLength(0...12)))
+        case .bool(let value):
+            value ? "true" : "false"
+        }
     }
 }

@@ -14,6 +14,11 @@ private func makeWorkspacePersistenceContainer() throws -> ModelContainer {
 private func makeRichWorkspace(in context: ModelContext, root: String) throws -> Workspace {
     let workspace = Workspace(name: "Persistence", primaryPath: root)
     workspace.enabledCapabilityIDs = ["stanford.builder"]
+    workspace.enabledPackIDs = ["astra.pack.devops"]
+    workspace.shelfVisibilityOverrides = [
+        "browser": true,
+        "query": false
+    ]
     workspace.isStarred = true
     workspace.recordInstalledPlugin(id: "stanford.builder", version: "1.0.0")
     context.insert(workspace)
@@ -124,11 +129,31 @@ private func makeRichWorkspace(in context: ModelContext, root: String) throws ->
     return workspace
 }
 
-@Suite("Workspace Persistence v10")
+@Suite("Workspace Persistence v11")
 struct WorkspacePersistenceTests {
-    @Test("v10 export and import preserve IDs, review state, history, artifacts, and redacted credentials")
+    @Test("shelf visibility overrides normalize persisted keys at the model boundary")
     @MainActor
-    func v10RoundTripPreservesDurableIDs() throws {
+    func shelfVisibilityOverridesNormalizePersistedKeys() {
+        let workspace = Workspace(name: "Shelf Keys", primaryPath: "/tmp/shelf-keys")
+
+        workspace.shelfVisibilityOverrides = [
+            "  browser  ": true,
+            "\nquery\t": false,
+            "   ": true,
+            "": false
+        ]
+
+        #expect(workspace.shelfVisibilityOverrides == [
+            "browser": true,
+            "query": false
+        ])
+        #expect(workspace.shelfVisibilityOverrideIDs == ["browser", "query"])
+        #expect(workspace.shelfVisibilityOverrideValues == [true, false])
+    }
+
+    @Test("v11 export and import preserve IDs, profile state, history, artifacts, and redacted credentials")
+    @MainActor
+    func v11RoundTripPreservesDurableIDs() throws {
         let tempRoot = "/tmp/astra_persistence_\(UUID().uuidString)"
         let container = try makeWorkspacePersistenceContainer()
         let context = container.mainContext
@@ -160,6 +185,11 @@ struct WorkspacePersistenceTests {
         #expect(config.tasks?.first?.isDone == true)
         #expect(config.tasks?.first?.unreadAt == sourceTask.unreadAt)
         #expect(config.enabledCapabilityIDs == ["stanford.builder"])
+        #expect(config.enabledPackIDs == ["astra.pack.devops"])
+        #expect(config.shelfVisibilityOverrides == [
+            "browser": true,
+            "query": false
+        ])
 
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
@@ -185,6 +215,11 @@ struct WorkspacePersistenceTests {
         #expect(imported.localTools.first?.originPackageID == "stanford.builder")
         #expect(imported.templates.first?.originPackageID == "stanford.builder")
         #expect(imported.enabledCapabilityIDs == ["stanford.builder"])
+        #expect(imported.enabledPackIDs == ["astra.pack.devops"])
+        #expect(imported.shelfVisibilityOverrides == [
+            "browser": true,
+            "query": false
+        ])
         #expect(imported.installedVersion(of: "stanford.builder") == "1.0.0")
         #expect(imported.tasks.first?.id == workspace.tasks.first?.id)
         #expect(imported.tasks.first?.isPinned == true)
@@ -214,17 +249,17 @@ struct WorkspacePersistenceTests {
         #expect(imported.tasks.first?.isDone == false)
     }
 
-    @Test("active worktree focus travels with the workspace and re-validates on import")
+    @Test("active worktree focus travels only when it remains inside imported workspace roots")
     @MainActor
     func activeWorkingPathRoundTrips() throws {
         let container = try makeWorkspacePersistenceContainer()
         let context = container.mainContext
 
         let root = "/tmp/astra_active_path_\(UUID().uuidString)"
-        let worktree = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("astra-active-wt-\(UUID().uuidString)", isDirectory: true).path
+        let worktree = URL(fileURLWithPath: root, isDirectory: true)
+            .appendingPathComponent("repo-worktree", isDirectory: true).path
         try FileManager.default.createDirectory(atPath: worktree, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(atPath: worktree) }
+        defer { try? FileManager.default.removeItem(atPath: root) }
 
         let workspace = try makeRichWorkspace(in: context, root: root)
         workspace.activeWorkingPath = worktree
@@ -232,19 +267,237 @@ struct WorkspacePersistenceTests {
         let config = try #require(WorkspaceConfigManager.export(workspace: workspace, modelContext: context))
         #expect(config.activeWorkingPath == worktree)
 
-        // Worktree present on this machine → focus is restored.
+        // Worktree present inside an imported root -> focus is restored.
         let presentContainer = try makeWorkspacePersistenceContainer()
         let present = WorkspaceConfigManager.importWorkspace(from: config, modelContext: presentContainer.mainContext)
         #expect(present.activeWorkingPath == worktree)
         #expect(present.isUsingWorktree == true)
 
-        // Worktree absent (different machine) → focus resets to root.
+        // Worktree absent (different machine) -> focus resets to root.
         var staleConfig = config
         staleConfig.activeWorkingPath = "/gone/\(UUID().uuidString)"
         let absentContainer = try makeWorkspacePersistenceContainer()
         let absent = WorkspaceConfigManager.importWorkspace(from: staleConfig, modelContext: absentContainer.mainContext)
         #expect(absent.activeWorkingPath == nil)
         #expect(absent.isUsingWorktree == false)
+
+        // Existing outside path from imported config -> focus resets to root so
+        // new tasks cannot launch outside imported workspace roots.
+        let outside = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("astra-outside-wt-\(UUID().uuidString)", isDirectory: true).path
+        try FileManager.default.createDirectory(atPath: outside, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: outside) }
+
+        var outsideConfig = config
+        outsideConfig.activeWorkingPath = outside
+        let outsideContainer = try makeWorkspacePersistenceContainer()
+        let outsideContext = outsideContainer.mainContext
+        let imported = WorkspaceConfigManager.importWorkspace(from: outsideConfig, modelContext: outsideContext)
+        let task = AgentTask(title: "Check root", goal: "Stay inside roots", workspace: imported)
+
+        #expect(imported.activeWorkingPath == nil)
+        #expect(imported.isUsingWorktree == false)
+        #expect(task.executionRootPath == nil)
+    }
+
+    @Test("active working path import expands tilde and requires a directory")
+    @MainActor
+    func activeWorkingPathImportStandardizesTildeAndRequiresDirectory() throws {
+        let relativeRoot = ".astra-active-path-\(UUID().uuidString)"
+        let homeRoot = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(relativeRoot, isDirectory: true)
+        let activeDirectory = homeRoot.appendingPathComponent("repo-worktree", isDirectory: true)
+        try FileManager.default.createDirectory(at: activeDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: homeRoot) }
+
+        let config = minimalWorkspaceConfig(
+            name: "Tilde",
+            path: "~/\(relativeRoot)",
+            skillID: UUID().uuidString
+        )
+        var presentConfig = config
+        presentConfig.activeWorkingPath = "~/\(relativeRoot)/repo-worktree"
+
+        let presentContainer = try makeWorkspacePersistenceContainer()
+        let present = WorkspaceConfigManager.importWorkspace(
+            from: presentConfig,
+            modelContext: presentContainer.mainContext
+        )
+        #expect(present.activeWorkingPath == WorkspacePathPresentation.standardizedPath(activeDirectory.path))
+
+        let activeFile = homeRoot.appendingPathComponent("not-a-directory")
+        FileManager.default.createFile(atPath: activeFile.path, contents: Data())
+
+        var fileConfig = config
+        fileConfig.activeWorkingPath = "~/\(relativeRoot)/not-a-directory"
+        let fileContainer = try makeWorkspacePersistenceContainer()
+        let fileImported = WorkspaceConfigManager.importWorkspace(
+            from: fileConfig,
+            modelContext: fileContainer.mainContext
+        )
+        #expect(fileImported.activeWorkingPath == nil)
+    }
+
+    @Test("active working path import accepts canonical containment through symlinks")
+    @MainActor
+    func activeWorkingPathImportUsesCanonicalContainment() throws {
+        let parent = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("astra-canonical-active-\(UUID().uuidString)", isDirectory: true)
+        let realRoot = parent.appendingPathComponent("real", isDirectory: true)
+        let linkRoot = parent.appendingPathComponent("link", isDirectory: true)
+        let activeDirectory = realRoot.appendingPathComponent("repo-worktree", isDirectory: true)
+        try FileManager.default.createDirectory(at: activeDirectory, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: linkRoot, withDestinationURL: realRoot)
+        defer { try? FileManager.default.removeItem(at: parent) }
+
+        var config = minimalWorkspaceConfig(name: "Linked", path: linkRoot.path, skillID: UUID().uuidString)
+        config.activeWorkingPath = activeDirectory.path
+
+        let container = try makeWorkspacePersistenceContainer()
+        let imported = WorkspaceConfigManager.importWorkspace(from: config, modelContext: container.mainContext)
+
+        #expect(imported.activeWorkingPath == WorkspacePathPresentation.standardizedPath(activeDirectory.path))
+        #expect(imported.isUsingWorktree == true)
+    }
+
+    @Test("active working path import treats filesystem root as containing descendants")
+    @MainActor
+    func activeWorkingPathImportHandlesFilesystemRootContainment() throws {
+        let activeDirectory = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("astra-root-contained-active-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: activeDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: activeDirectory) }
+
+        var config = minimalWorkspaceConfig(name: "Root", path: "/", skillID: UUID().uuidString)
+        config.activeWorkingPath = activeDirectory.path
+
+        let container = try makeWorkspacePersistenceContainer()
+        let imported = WorkspaceConfigManager.importWorkspace(from: config, modelContext: container.mainContext)
+
+        #expect(imported.activeWorkingPath == WorkspacePathPresentation.standardizedPath(activeDirectory.path))
+        #expect(imported.isUsingWorktree == true)
+    }
+
+    @Test("active working path import rejects unrelated external git repositories")
+    @MainActor
+    func activeWorkingPathImportRejectsUnrelatedExternalGitRepositories() throws {
+        let parent = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("astra-unrelated-worktree-\(UUID().uuidString)", isDirectory: true)
+        let workspaceRoot = parent.appendingPathComponent("repo", isDirectory: true)
+        let repoGit = workspaceRoot.appendingPathComponent(".git", isDirectory: true)
+        let activeDirectory = parent
+            .appendingPathComponent("other-worktrees", isDirectory: true)
+            .appendingPathComponent("feature", isDirectory: true)
+        let activeGit = activeDirectory.appendingPathComponent(".git", isDirectory: true)
+        try FileManager.default.createDirectory(at: repoGit, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: activeGit, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: parent) }
+
+        var config = minimalWorkspaceConfig(name: "Unrelated", path: workspaceRoot.path, skillID: UUID().uuidString)
+        config.activeWorkingPath = activeDirectory.path
+
+        let container = try makeWorkspacePersistenceContainer()
+        let imported = WorkspaceConfigManager.importWorkspace(from: config, modelContext: container.mainContext)
+
+        #expect(imported.activeWorkingPath == nil)
+        #expect(imported.isUsingWorktree == false)
+    }
+
+    @Test("active working path import accepts git-registered worktrees outside workspace roots")
+    @MainActor
+    func activeWorkingPathImportAllowsRegisteredWorktrees() throws {
+        let parent = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("astra-registered-worktree-\(UUID().uuidString)", isDirectory: true)
+        let workspaceRoot = parent.appendingPathComponent("repo", isDirectory: true)
+        let repoGit = workspaceRoot.appendingPathComponent(".git", isDirectory: true)
+        let worktreeAdmin = repoGit
+            .appendingPathComponent("worktrees", isDirectory: true)
+            .appendingPathComponent("feature", isDirectory: true)
+        let externalWorktree = parent.appendingPathComponent("outside-feature", isDirectory: true)
+        try FileManager.default.createDirectory(at: repoGit, withIntermediateDirectories: true)
+        try writeLinkedWorktree(activeDirectory: externalWorktree, adminDirectory: worktreeAdmin, commonGitDirectory: repoGit)
+        defer { try? FileManager.default.removeItem(at: parent) }
+
+        var config = minimalWorkspaceConfig(name: "Registered", path: workspaceRoot.path, skillID: UUID().uuidString)
+        config.activeWorkingPath = externalWorktree.path
+
+        let container = try makeWorkspacePersistenceContainer()
+        let imported = WorkspaceConfigManager.importWorkspace(from: config, modelContext: container.mainContext)
+
+        #expect(imported.activeWorkingPath == WorkspacePathPresentation.standardizedPath(externalWorktree.path))
+        #expect(imported.isUsingWorktree == true)
+    }
+
+    @Test("active working path import rejects forged worktree gitdir references")
+    @MainActor
+    func activeWorkingPathImportRejectsForgedWorktreeGitdirReferences() throws {
+        let parent = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("astra-forged-worktree-\(UUID().uuidString)", isDirectory: true)
+        let workspaceRoot = parent.appendingPathComponent("repo", isDirectory: true)
+        let repoGit = workspaceRoot.appendingPathComponent(".git", isDirectory: true)
+        let forgedAdmin = repoGit
+            .appendingPathComponent("worktrees", isDirectory: true)
+            .appendingPathComponent("feature", isDirectory: true)
+        let externalWorktree = parent.appendingPathComponent("outside-feature", isDirectory: true)
+        let unrelatedWorktree = parent.appendingPathComponent("other-feature", isDirectory: true)
+        try FileManager.default.createDirectory(at: repoGit, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: externalWorktree, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: unrelatedWorktree, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: forgedAdmin, withIntermediateDirectories: true)
+        try "gitdir: \(forgedAdmin.path)\n".write(
+            to: externalWorktree.appendingPathComponent(".git"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try ".\n".write(
+            to: forgedAdmin.appendingPathComponent("commondir"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try "\(unrelatedWorktree.appendingPathComponent(".git").path)\n".write(
+            to: forgedAdmin.appendingPathComponent("gitdir"),
+            atomically: true,
+            encoding: .utf8
+        )
+        defer { try? FileManager.default.removeItem(at: parent) }
+
+        var config = minimalWorkspaceConfig(name: "Forged", path: workspaceRoot.path, skillID: UUID().uuidString)
+        config.activeWorkingPath = externalWorktree.path
+
+        let container = try makeWorkspacePersistenceContainer()
+        let imported = WorkspaceConfigManager.importWorkspace(from: config, modelContext: container.mainContext)
+
+        #expect(imported.activeWorkingPath == nil)
+        #expect(imported.isUsingWorktree == false)
+    }
+
+    @Test("active working path import resolves linked roots through the common git directory")
+    @MainActor
+    func activeWorkingPathImportResolvesLinkedRootsThroughCommonGitDirectory() throws {
+        let parent = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("astra-linked-root-worktree-\(UUID().uuidString)", isDirectory: true)
+        let commonGit = parent.appendingPathComponent("repo.git", isDirectory: true)
+        let rootWorktree = parent.appendingPathComponent("main", isDirectory: true)
+        let rootAdmin = commonGit
+            .appendingPathComponent("worktrees", isDirectory: true)
+            .appendingPathComponent("main", isDirectory: true)
+        let activeDirectory = parent.appendingPathComponent("feature", isDirectory: true)
+        let activeAdmin = commonGit
+            .appendingPathComponent("worktrees", isDirectory: true)
+            .appendingPathComponent("feature", isDirectory: true)
+        try FileManager.default.createDirectory(at: commonGit, withIntermediateDirectories: true)
+        try writeLinkedWorktree(activeDirectory: rootWorktree, adminDirectory: rootAdmin, commonGitDirectory: commonGit)
+        try writeLinkedWorktree(activeDirectory: activeDirectory, adminDirectory: activeAdmin, commonGitDirectory: commonGit)
+        defer { try? FileManager.default.removeItem(at: parent) }
+
+        var config = minimalWorkspaceConfig(name: "Linked Root", path: rootWorktree.path, skillID: UUID().uuidString)
+        config.activeWorkingPath = activeDirectory.path
+
+        let container = try makeWorkspacePersistenceContainer()
+        let imported = WorkspaceConfigManager.importWorkspace(from: config, modelContext: container.mainContext)
+
+        #expect(imported.activeWorkingPath == WorkspacePathPresentation.standardizedPath(activeDirectory.path))
+        #expect(imported.isUsingWorktree == true)
     }
 
     @Test("import skips unsafe local tool definitions from workspace config")
@@ -464,6 +717,181 @@ struct WorkspacePersistenceTests {
         #expect(importedTask.resolvedRuntimeID == .copilotCLI)
     }
 
+    @Test("imported task shell validation commands keep run-tests intent before durable storage")
+    @MainActor
+    func importedTaskShellValidationCommandsKeepRunTestsIntent() throws {
+        let container = try makeWorkspacePersistenceContainer()
+        let context = container.mainContext
+        var config = minimalWorkspaceConfig(
+            name: "Imported Unsafe Validation",
+            path: "/tmp/astra_import_unsafe_validation_\(UUID().uuidString)",
+            skillID: UUID().uuidString
+        )
+        let now = Date(timeIntervalSince1970: 1_777_001_500)
+        config.tasks = [
+            WorkspaceConfigManager.TaskConfig(
+                id: UUID().uuidString,
+                title: "Imported Unsafe Tests",
+                goal: "Do not persist untrusted shell composition",
+                status: TaskStatus.queued.rawValue,
+                isPinned: nil,
+                isDone: nil,
+                inputs: [],
+                constraints: [],
+                acceptanceCriteria: [],
+                tokenBudget: 25_000,
+                tokensUsed: 0,
+                model: AgentRuntimeAdapterRegistry.defaultModel(for: .claudeCode),
+                runtimeID: AgentRuntimeID.claudeCode.rawValue,
+                costUSD: 0,
+                sessionId: nil,
+                maxTurns: 25,
+                createdAt: now,
+                updatedAt: now,
+                completedAt: nil,
+                unreadAt: nil,
+                isolationStrategy: nil,
+                validationStrategy: ValidationStrategy.runTests.rawValue,
+                testCommand: "swift test; touch should-not-run",
+                draftMessages: nil,
+                chainedGoal: nil,
+                chainedFromID: nil,
+                useAgentTeam: nil,
+                teamSize: nil,
+                teamInstructions: nil,
+                templateID: nil,
+                templateHooksJSON: nil,
+                runs: [],
+                events: [],
+                artifacts: nil,
+                skillIDs: nil,
+                skillNames: [],
+                skillSnapshots: nil
+            )
+        ]
+
+        let imported = WorkspaceConfigManager.importWorkspace(from: config, modelContext: context)
+        let importedTask = try #require(imported.tasks.first)
+
+        #expect(importedTask.validationStrategy == .runTests)
+        #expect(importedTask.testCommand.isEmpty)
+    }
+
+    @Test("imported task empty run-tests commands keep run-tests intent before durable storage")
+    @MainActor
+    func importedTaskEmptyRunTestsCommandsKeepRunTestsIntent() throws {
+        let container = try makeWorkspacePersistenceContainer()
+        let context = container.mainContext
+        var config = minimalWorkspaceConfig(
+            name: "Imported Empty Validation",
+            path: "/tmp/astra_import_empty_validation_\(UUID().uuidString)",
+            skillID: UUID().uuidString
+        )
+        let now = Date(timeIntervalSince1970: 1_777_001_600)
+        config.tasks = [
+            WorkspaceConfigManager.TaskConfig(
+                id: UUID().uuidString,
+                title: "Imported Empty Tests",
+                goal: "Keep the explicit run-tests requirement",
+                status: TaskStatus.queued.rawValue,
+                isPinned: nil,
+                isDone: nil,
+                inputs: [],
+                constraints: [],
+                acceptanceCriteria: [],
+                tokenBudget: 25_000,
+                tokensUsed: 0,
+                model: AgentRuntimeAdapterRegistry.defaultModel(for: .claudeCode),
+                runtimeID: AgentRuntimeID.claudeCode.rawValue,
+                costUSD: 0,
+                sessionId: nil,
+                maxTurns: 25,
+                createdAt: now,
+                updatedAt: now,
+                completedAt: nil,
+                unreadAt: nil,
+                isolationStrategy: nil,
+                validationStrategy: ValidationStrategy.runTests.rawValue,
+                testCommand: "   ",
+                draftMessages: nil,
+                chainedGoal: nil,
+                chainedFromID: nil,
+                useAgentTeam: nil,
+                teamSize: nil,
+                teamInstructions: nil,
+                templateID: nil,
+                templateHooksJSON: nil,
+                runs: [],
+                events: [],
+                artifacts: nil,
+                skillIDs: nil,
+                skillNames: [],
+                skillSnapshots: nil
+            )
+        ]
+
+        let imported = WorkspaceConfigManager.importWorkspace(from: config, modelContext: context)
+        let importedTask = try #require(imported.tasks.first)
+
+        #expect(importedTask.validationStrategy == .runTests)
+        #expect(importedTask.testCommand.isEmpty)
+    }
+
+    @Test("imported task validation preserves allowed test commands")
+    @MainActor
+    func importedTaskValidationPreservesAllowedTestCommands() throws {
+        let container = try makeWorkspacePersistenceContainer()
+        let context = container.mainContext
+        let workspace = try makeRichWorkspace(
+            in: context,
+            root: "/tmp/astra_import_allowed_validation_\(UUID().uuidString)"
+        )
+        let sourceTask = try #require(workspace.tasks.first)
+        sourceTask.validationStrategy = .runTests
+        sourceTask.testCommand = "swift test --filter WorkspacePersistenceTests"
+        try context.save()
+
+        let config = try #require(WorkspaceConfigManager.export(workspace: workspace, modelContext: context))
+        let importedContainer = try makeWorkspacePersistenceContainer()
+        let imported = WorkspaceConfigManager.importWorkspace(
+            from: config,
+            modelContext: importedContainer.mainContext
+        )
+        let importedTask = try #require(imported.tasks.first)
+
+        #expect(importedTask.validationStrategy == .runTests)
+        #expect(importedTask.testCommand == "swift test --filter WorkspacePersistenceTests")
+    }
+
+    @Test("imported task validation clears package paths outside workspace")
+    @MainActor
+    func importedTaskValidationClearsPackagePathsOutsideWorkspace() throws {
+        let container = try makeWorkspacePersistenceContainer()
+        let context = container.mainContext
+        let workspace = try makeRichWorkspace(
+            in: context,
+            root: "/tmp/astra_import_path_validation_\(UUID().uuidString)"
+        )
+        let sourceTask = try #require(workspace.tasks.first)
+        sourceTask.validationStrategy = .runTests
+        sourceTask.testCommand = "swift test --filter WorkspacePersistenceTests"
+        try context.save()
+
+        var config = try #require(WorkspaceConfigManager.export(workspace: workspace, modelContext: context))
+        var tasks = try #require(config.tasks)
+        tasks[0].testCommand = "swift test --package-path /tmp/astra_import_outside_\(UUID().uuidString)"
+        config.tasks = tasks
+        let importedContainer = try makeWorkspacePersistenceContainer()
+        let imported = WorkspaceConfigManager.importWorkspace(
+            from: config,
+            modelContext: importedContainer.mainContext
+        )
+        let importedTask = try #require(imported.tasks.first)
+
+        #expect(importedTask.validationStrategy == .runTests)
+        #expect(importedTask.testCommand.isEmpty)
+    }
+
     @Test("legacy v4 configs use name fallback only when IDs are absent")
     @MainActor
     func legacyV4NameFallback() throws {
@@ -529,6 +957,10 @@ struct WorkspacePersistenceTests {
         let sourceTask = try #require(sourceWorkspace.tasks.first)
         sourceTask.isPinned = true
         sourceTask.isDone = true
+        let sourceSchedule = TaskSchedule(name: "Recovered Routine", goal: "Keep running", workspace: sourceWorkspace)
+        sourceSchedule.isEnabled = true
+        sourceSchedule.nextFireDate = Date.distantFuture
+        sourceContext.insert(sourceSchedule)
         try sourceContext.save()
         let configURL = workspaceFolder.appendingPathComponent(WorkspaceFileLayout.workspaceConfigFileName)
         try WorkspaceConfigManager.exportToFile(workspace: sourceWorkspace, modelContext: sourceContext, url: configURL)
@@ -553,6 +985,7 @@ struct WorkspacePersistenceTests {
         #expect(workspaces.first?.id == sourceWorkspace.id)
         #expect(workspaces.first?.tasks.first?.isPinned == true)
         #expect(workspaces.first?.tasks.first?.isDone == true)
+        #expect(workspaces.first?.schedules.first { $0.name == "Recovered Routine" }?.isEnabled == true)
     }
 
     @Test("automatic recovery skips privacy-sensitive user media folders")
@@ -698,6 +1131,229 @@ struct WorkspacePersistenceTests {
         #expect(result.auditFields["skipped_connector_count"] == "1")
     }
 
+    @Test("imported schedules are quarantined until local re-enable")
+    @MainActor
+    func importedSchedulesAreQuarantinedUntilLocalReenable() throws {
+        let container = try makeWorkspacePersistenceContainer()
+        let context = container.mainContext
+        var config = minimalWorkspaceConfig(
+            name: "Imported Schedule",
+            path: "/tmp/astra_import_schedule_\(UUID().uuidString)",
+            skillID: UUID().uuidString
+        )
+        let dueDate = Date.distantPast
+        config.schedules = [
+            WorkspaceConfigManager.ScheduleConfig(
+                id: UUID().uuidString,
+                name: "Enabled Routine",
+                isEnabled: true,
+                goal: "Launch from imported config",
+                templateVariablesJSON: "{}",
+                model: "claude-sonnet-4-6",
+                tokenBudget: 50_000,
+                scheduleType: ScheduleType.once.rawValue,
+                nextFireDate: dueDate,
+                intervalSeconds: 3600,
+                dailyHour: 9,
+                dailyMinute: 0,
+                weeklyDayOfWeek: 2,
+                fireCount: 0
+            ),
+            WorkspaceConfigManager.ScheduleConfig(
+                id: UUID().uuidString,
+                name: "Already Disabled Routine",
+                isEnabled: false,
+                goal: "Already disabled before import",
+                templateVariablesJSON: "{}",
+                model: "claude-sonnet-4-6",
+                tokenBudget: 50_000,
+                scheduleType: ScheduleType.once.rawValue,
+                nextFireDate: dueDate,
+                intervalSeconds: 3600,
+                dailyHour: 9,
+                dailyMinute: 0,
+                weeklyDayOfWeek: 2,
+                fireCount: 0
+            )
+        ]
+
+        let result = WorkspaceConfigManager.importWorkspaceResult(from: config, modelContext: context)
+        let importedSchedule = try #require(result.workspace.schedules.first { $0.name == "Enabled Routine" })
+        let alreadyDisabled = try #require(result.workspace.schedules.first { $0.name == "Already Disabled Routine" })
+
+        #expect(importedSchedule.isEnabled == false)
+        #expect(alreadyDisabled.isEnabled == false)
+        #expect(importedSchedule.nextFireDate == dueDate)
+        #expect(importedSchedule.goal == "Launch from imported config")
+        #expect(result.quarantinedScheduleCount == 1)
+        #expect(result.auditFields["quarantined_schedule_count"] == "1")
+
+        let scheduler = TaskScheduler()
+        let queue = TaskQueue()
+        scheduler.checkAndFire(modelContext: context, taskQueue: queue)
+        #expect(result.workspace.tasks.filter { $0.originScheduleID == importedSchedule.id }.isEmpty)
+        #expect(queue.hasProcessingLoop == false)
+
+        importedSchedule.isEnabled = true
+        try context.save()
+        #expect(importedSchedule.isEnabled == true)
+    }
+
+    @Test("trusted local schedule reimports preserve enabled state")
+    @MainActor
+    func trustedLocalScheduleReimportsPreserveEnabledState() throws {
+        let container = try makeWorkspacePersistenceContainer()
+        let context = container.mainContext
+        var config = minimalWorkspaceConfig(
+            name: "Trusted Reimport",
+            path: "/tmp/astra_trusted_schedule_\(UUID().uuidString)",
+            skillID: UUID().uuidString
+        )
+        config.schedules = [
+            WorkspaceConfigManager.ScheduleConfig(
+                id: UUID().uuidString,
+                name: "Enabled Local Routine",
+                isEnabled: true,
+                goal: "Keep running after trusted replace",
+                templateVariablesJSON: "{}",
+                model: "claude-sonnet-4-6",
+                tokenBudget: 50_000,
+                scheduleType: ScheduleType.once.rawValue,
+                nextFireDate: Date.distantFuture,
+                intervalSeconds: 3600,
+                dailyHour: 9,
+                dailyMinute: 0,
+                weeklyDayOfWeek: 2,
+                fireCount: 0
+            )
+        ]
+
+        let result = WorkspaceConfigManager.importWorkspaceResult(
+            from: config,
+            modelContext: context,
+            scheduleTrustPolicy: .preserveEnabledState
+        )
+        let importedSchedule = try #require(result.workspace.schedules.first)
+
+        #expect(importedSchedule.isEnabled == true)
+        #expect(result.quarantinedScheduleCount == 0)
+        #expect(result.auditFields["quarantined_schedule_count"] == "0")
+    }
+
+    @Test("folder replace preserves trusted local enabled schedules")
+    @MainActor
+    func folderReplacePreservesTrustedLocalEnabledSchedules() throws {
+        let container = try makeWorkspacePersistenceContainer()
+        let context = container.mainContext
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra_trusted_replace_\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+
+        let workspace = Workspace(name: "Trusted Replace", primaryPath: folder.path)
+        context.insert(workspace)
+        let schedule = TaskSchedule(name: "Enabled Local Routine", goal: "Keep running", workspace: workspace)
+        schedule.isEnabled = true
+        context.insert(schedule)
+        try context.save()
+
+        let coordinator = TaskLifecycleCoordinator(modelContext: context, taskQueue: TaskQueue())
+        let replaced = try #require(coordinator.createWorkspaceFromFolder(
+            folder,
+            existingWorkspaces: [workspace],
+            askDuplicateAction: { _, _ in .replace }
+        ))
+        let replacedSchedule = try #require(replaced.schedules.first)
+
+        #expect(replaced.primaryPath == folder.path)
+        #expect(replacedSchedule.isEnabled == true)
+    }
+
+    @Test("configured folder replace preserves trusted local enabled schedules")
+    @MainActor
+    func configuredFolderReplacePreservesTrustedLocalEnabledSchedules() throws {
+        let container = try makeWorkspacePersistenceContainer()
+        let context = container.mainContext
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra_configured_trusted_replace_\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+
+        let workspace = Workspace(name: "Configured Trusted Replace", primaryPath: folder.path)
+        context.insert(workspace)
+        let schedule = TaskSchedule(name: "Enabled Config Routine", goal: "Keep running", workspace: workspace)
+        schedule.isEnabled = true
+        context.insert(schedule)
+        try context.save()
+
+        let configURL = URL(fileURLWithPath: WorkspaceFileLayout.workspaceConfigFile(for: folder.path))
+        try WorkspaceConfigManager.exportToFile(
+            workspace: workspace,
+            modelContext: context,
+            url: configURL
+        )
+
+        let coordinator = TaskLifecycleCoordinator(modelContext: context, taskQueue: TaskQueue())
+        let replaced = try #require(coordinator.importFromConfig(
+            at: configURL,
+            existingWorkspaces: [workspace],
+            askDuplicateAction: { _, _ in .replace }
+        ))
+        let replacedSchedule = try #require(replaced.schedules.first)
+
+        #expect(replaced.primaryPath == folder.standardizedFileURL.path)
+        #expect(replacedSchedule.isEnabled == true)
+    }
+
+    @Test("external config replace still quarantines enabled schedules")
+    @MainActor
+    func externalConfigReplaceStillQuarantinesEnabledSchedules() throws {
+        let container = try makeWorkspacePersistenceContainer()
+        let context = container.mainContext
+        let localFolder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra_local_replace_\(UUID().uuidString)", isDirectory: true)
+        let externalFolder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra_external_replace_\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: localFolder, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: externalFolder, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: localFolder)
+            try? FileManager.default.removeItem(at: externalFolder)
+        }
+
+        let workspace = Workspace(name: "External Replace", primaryPath: localFolder.path)
+        context.insert(workspace)
+        let schedule = TaskSchedule(name: "Imported External Routine", goal: "Do not auto-arm", workspace: workspace)
+        schedule.isEnabled = true
+        context.insert(schedule)
+        try context.save()
+
+        let configURL = externalFolder.appendingPathComponent(WorkspaceFileLayout.workspaceConfigFileName)
+        try WorkspaceConfigManager.exportToFile(
+            workspace: workspace,
+            modelContext: context,
+            url: configURL
+        )
+
+        let coordinator = TaskLifecycleCoordinator(modelContext: context, taskQueue: TaskQueue())
+        let replaced = try #require(coordinator.importFromConfig(
+            at: configURL,
+            existingWorkspaces: [workspace],
+            askDuplicateAction: { _, _ in .replace }
+        ))
+        let replacedSchedule = try #require(replaced.schedules.first)
+
+        #expect(replaced.primaryPath == externalFolder.standardizedFileURL.path)
+        #expect(replacedSchedule.isEnabled == false)
+    }
+
+    @Test("schedule editor saves preserve existing enabled state")
+    func scheduleEditorSavesPreserveExistingEnabledState() {
+        #expect(ScheduleEditorPersistencePolicy.enabledStateAfterSave(existingIsEnabled: false) == false)
+        #expect(ScheduleEditorPersistencePolicy.enabledStateAfterSave(existingIsEnabled: true) == true)
+        #expect(ScheduleEditorPersistencePolicy.enabledStateAfterSave(existingIsEnabled: nil) == true)
+    }
+
     @Test("auto-export skip launch flags are recognized")
     func autoExportSkipLaunchFlagsAreRecognized() {
         #expect(WorkspacePersistenceCoordinator.shouldSkipAutoExport(
@@ -771,6 +1427,43 @@ struct WorkspacePersistenceTests {
             sshConnections: [],
             exportedAt: Date()
         )
+    }
+
+    private func writeLinkedWorktree(
+        activeDirectory: URL,
+        adminDirectory: URL,
+        commonGitDirectory: URL
+    ) throws {
+        try FileManager.default.createDirectory(at: activeDirectory, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: adminDirectory, withIntermediateDirectories: true)
+        try "gitdir: \(adminDirectory.path)\n".write(
+            to: activeDirectory.appendingPathComponent(".git"),
+            atomically: true,
+            encoding: .utf8
+        )
+        let relativeCommon = relativePath(from: adminDirectory, to: commonGitDirectory)
+        try "\(relativeCommon)\n".write(
+            to: adminDirectory.appendingPathComponent("commondir"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try "\(activeDirectory.appendingPathComponent(".git").path)\n".write(
+            to: adminDirectory.appendingPathComponent("gitdir"),
+            atomically: true,
+            encoding: .utf8
+        )
+    }
+
+    private func relativePath(from directory: URL, to target: URL) -> String {
+        let sourceComponents = directory.standardizedFileURL.pathComponents
+        let targetComponents = target.standardizedFileURL.pathComponents
+        let sharedPrefixCount = zip(sourceComponents, targetComponents)
+            .prefix { $0 == $1 }
+            .count
+        let upward = Array(repeating: "..", count: sourceComponents.count - sharedPrefixCount)
+        let downward = targetComponents.dropFirst(sharedPrefixCount)
+        let components = upward + downward
+        return components.isEmpty ? "." : components.joined(separator: "/")
     }
 
     @Test("workspace support files migrate under hidden astra folder")

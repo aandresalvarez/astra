@@ -4,9 +4,43 @@ import ASTRACore
 enum HostControlPlaneMCPProjection {
     static let serverID = "astra_host"
     static let toolNames = ["github", "gcloud", "bq", "ssh", "jira"]
+    static let githubPackageID = "github-workflow"
 
     static func isEnabled(for environment: WorkspaceExecutionEnvironment) -> Bool {
         DockerWorkspaceMCPProjection.isEnabled(for: environment)
+    }
+
+    static func enabledToolNames(
+        task: AgentTask,
+        environment: WorkspaceExecutionEnvironment,
+        contextText: String = ""
+    ) -> [String] {
+        if isEnabled(for: environment) {
+            return toolNames
+        }
+        let scope = TaskCapabilityResolver(task: task).promptScope(contextText: contextText)
+        return githubCapabilityIsInScope(scope) ? ["github"] : []
+    }
+
+    static func requiresNativeShellDenial(
+        task: AgentTask,
+        environment: WorkspaceExecutionEnvironment,
+        contextText: String = ""
+    ) -> Bool {
+        !enabledToolNames(task: task, environment: environment, contextText: contextText).isEmpty
+    }
+
+    static func packageUsesHostControlRuntime(_ package: PluginPackage) -> Bool {
+        if package.id == githubPackageID {
+            return true
+        }
+        return package.skills.contains { skill in
+            let text = [
+                skill.behaviorInstructions
+            ].joined(separator: "\n").lowercased()
+            return text.contains("mcp__astra_host__github")
+                || text.contains("astra_host-github")
+        }
     }
 
     static func supportsHostControlPlane(runtime: AgentRuntimeID) -> Bool {
@@ -14,8 +48,16 @@ enum HostControlPlaneMCPProjection {
     }
 
     static func runtimeSupportToolDescriptors(for runtime: AgentRuntimeID) -> [ProviderRuntimeSupportToolDescriptor] {
+        runtimeSupportToolDescriptors(for: runtime, tools: toolNames)
+    }
+
+    static func runtimeSupportToolDescriptors(
+        for runtime: AgentRuntimeID,
+        tools requestedTools: [String]
+    ) -> [ProviderRuntimeSupportToolDescriptor] {
         guard supportsHostControlPlane(runtime: runtime) else { return [] }
-        return toolNames.map { tool in
+        let requested = requestedTools.filter { toolNames.contains($0) }
+        return requested.map { tool in
             ProviderRuntimeSupportToolDescriptor(
                 name: providerToolPermission(for: tool),
                 purpose: runtimeSupportPurpose(for: tool),
@@ -27,12 +69,17 @@ enum HostControlPlaneMCPProjection {
     }
 
     static func manifestServer() -> RunPermissionManifest.MCPServer {
-        RunPermissionManifest.MCPServer(
+        manifestServer(allowedTools: toolNames)
+    }
+
+    static func manifestServer(allowedTools requestedTools: [String]) -> RunPermissionManifest.MCPServer {
+        let allowedTools = requestedTools.filter { toolNames.contains($0) }
+        return RunPermissionManifest.MCPServer(
             id: serverID,
             packageID: "astra-builtin",
             displayName: "ASTRA Host Control Plane",
             transport: PluginMCPServer.Transport.stdio.rawValue,
-            allowedTools: toolNames,
+            allowedTools: allowedTools,
             excludedTools: [],
             resourcesEnabled: false,
             promptsEnabled: false,
@@ -45,9 +92,11 @@ enum HostControlPlaneMCPProjection {
         environment: WorkspaceExecutionEnvironment,
         currentDirectory: String,
         runID: UUID?,
-        taskEnvironment: [String: String] = [:]
+        taskEnvironment: [String: String] = [:],
+        contextText: String = ""
     ) -> MCPRuntimeProjection.ResolvedServer? {
-        guard isEnabled(for: environment) else { return nil }
+        let allowedTools = enabledToolNames(task: task, environment: environment, contextText: contextText)
+        guard !allowedTools.isEmpty else { return nil }
         let envKeys = environmentKeys(taskEnvironment: taskEnvironment)
         return MCPRuntimeProjection.ResolvedServer(
             packageID: "astra-builtin",
@@ -58,7 +107,7 @@ enum HostControlPlaneMCPProjection {
                 command: astraHostControlToolPath(),
                 arguments: [],
                 environmentKeys: envKeys,
-                allowedTools: toolNames,
+                allowedTools: allowedTools,
                 trustLevel: .high
             ),
             permittedEnvironmentKeys: Set(envKeys)
@@ -70,14 +119,18 @@ enum HostControlPlaneMCPProjection {
         environment: WorkspaceExecutionEnvironment,
         currentDirectory: String,
         runID: UUID?,
-        taskEnvironment: [String: String] = [:]
+        taskEnvironment: [String: String] = [:],
+        contextText: String = ""
     ) -> [String: String] {
-        guard isEnabled(for: environment) else { return [:] }
+        let allowedTools = enabledToolNames(task: task, environment: environment, contextText: contextText)
+        guard !allowedTools.isEmpty else { return [:] }
         var output: [String: String] = [
             "ASTRA_HOST_CONTROL_GH_EXECUTABLE": detectExecutable("gh"),
             "ASTRA_HOST_CONTROL_GCLOUD_EXECUTABLE": detectExecutable("gcloud"),
             "ASTRA_HOST_CONTROL_BQ_EXECUTABLE": detectExecutable("bq"),
             "ASTRA_HOST_CONTROL_SSH_EXECUTABLE": detectExecutable("ssh", fallback: "/usr/bin/ssh"),
+            "ASTRA_HOST_CONTROL_ALLOWED_TOOLS": allowedTools.joined(separator: ","),
+            "ASTRA_HOST_CONTROL_CURRENT_DIRECTORY": currentDirectory,
             "ASTRA_HOST_CONTROL_TASK_ID": task.id.uuidString,
             "ASTRA_HOST_CONTROL_RUN_ID": runID?.uuidString ?? "run",
             "ASTRA_HOST_CONTROL_DIAGNOSTICS_HOST": diagnosticsHostPath(task: task),
@@ -129,6 +182,8 @@ enum HostControlPlaneMCPProjection {
         "ASTRA_HOST_CONTROL_BQ_EXECUTABLE",
         "ASTRA_HOST_CONTROL_SSH_EXECUTABLE",
         "ASTRA_HOST_CONTROL_ALLOWED_SSH_ALIASES",
+        "ASTRA_HOST_CONTROL_ALLOWED_TOOLS",
+        "ASTRA_HOST_CONTROL_CURRENT_DIRECTORY",
         "ASTRA_HOST_CONTROL_DIAGNOSTICS_HOST",
         "ASTRA_HOST_CONTROL_TASK_ID",
         "ASTRA_HOST_CONTROL_RUN_ID",
@@ -150,13 +205,13 @@ enum HostControlPlaneMCPProjection {
         case "github":
             return "Run GitHub control-plane commands on the host through ASTRA without provider Bash."
         case "gcloud":
-            return "Run Google Cloud control-plane commands on the host through ASTRA without provider Bash."
+            return "Run read-only Google Cloud control-plane commands on the host through ASTRA without provider Bash."
         case "bq":
-            return "Run BigQuery control-plane commands on the host through ASTRA without provider Bash."
+            return "Run BigQuery CLI help/version commands on the host through ASTRA without provider Bash."
         case "ssh":
-            return "Run configured workspace SSH aliases on the host through ASTRA without provider Bash."
+            return "Use configured workspace SSH aliases on the host through ASTRA without accepting provider-supplied remote commands."
         case "jira":
-            return "Use ASTRA-projected Jira connector credentials through the host control-plane bridge."
+            return "Use typed, read-only Jira connector operations through ASTRA's host control-plane bridge."
         default:
             return "Use ASTRA's host control-plane bridge."
         }
@@ -167,9 +222,9 @@ enum HostControlPlaneMCPProjection {
         case "github", "gcloud", "bq":
             return ["arguments", "timeout_seconds"]
         case "ssh":
-            return ["alias", "remote_command", "timeout_seconds"]
+            return ["alias", "timeout_seconds"]
         case "jira":
-            return ["operation", "alias", "method", "path", "body", "timeout_seconds"]
+            return ["operation", "alias", "issue_key", "jql", "max_results", "next_page_token", "timeout_seconds"]
         default:
             return []
         }
@@ -179,6 +234,18 @@ enum HostControlPlaneMCPProjection {
         let allowed = Set(allowedInputKeys(for: tool) + ["cmd"])
         return ProviderRuntimeSupportToolDescriptor.defaultDeniedActionInputKeys.filter {
             !allowed.contains($0)
+        }
+    }
+
+    private static func githubCapabilityIsInScope(_ scope: TaskCapabilityPromptScope) -> Bool {
+        if scope.enabledPackageIDs.contains(githubPackageID) {
+            return true
+        }
+        return scope.behaviorSkills.contains { skill in
+            if skill.originPackageID == githubPackageID {
+                return true
+            }
+            return false
         }
     }
 

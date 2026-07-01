@@ -739,7 +739,8 @@ enum AgentRuntimeLaunchPreflight {
                 environment: executionEnvironment,
                 currentDirectory: TaskWorkspaceAccess(task: task).effectiveWorkspacePath,
                 runID: run.id,
-                taskEnvironment: taskEnv
+                taskEnvironment: taskEnv,
+                contextText: contextText
             ) {
                 mcpServers.append(hostControlServer)
             }

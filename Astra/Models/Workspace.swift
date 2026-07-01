@@ -14,6 +14,9 @@ final class Workspace: Identifiable {
     var enabledGlobalConnectorIDs: [String] = []
     var enabledGlobalToolIDs: [String] = []
     var enabledCapabilityIDs: [String] = []
+    var enabledPackIDs: [String] = []
+    var shelfVisibilityOverrideIDs: [String] = []
+    var shelfVisibilityOverrideValues: [Bool] = []
     var memories: [String] = []
     var installedPluginIDs: [String] = []
     var installedPluginVersions: [String] = []
@@ -61,11 +64,42 @@ final class Workspace: Identifiable {
         self.icon = icon
         self.instructions = instructions
         self.lastUsedSkillNames = []
+        self.enabledPackIDs = []
+        self.shelfVisibilityOverrideIDs = []
+        self.shelfVisibilityOverrideValues = []
         self.isStarred = false
         self.activeWorkingPath = nil
         self.activeExecutionEnvironmentJSON = nil
         self.createdAt = Date()
         self.updatedAt = Date()
+    }
+
+    var shelfVisibilityOverrides: [String: Bool] {
+        get {
+            var overrides: [String: Bool] = [:]
+            for (index, shelfID) in shelfVisibilityOverrideIDs.enumerated() {
+                let normalizedShelfID = shelfID.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !normalizedShelfID.isEmpty, index < shelfVisibilityOverrideValues.count else { continue }
+                overrides[normalizedShelfID] = shelfVisibilityOverrideValues[index]
+            }
+            return overrides
+        }
+        set {
+            let normalizedOverrides = Self.normalizedShelfVisibilityOverrides(newValue)
+            let orderedShelfIDs = normalizedOverrides.keys.sorted()
+            shelfVisibilityOverrideIDs = orderedShelfIDs
+            shelfVisibilityOverrideValues = orderedShelfIDs.map { normalizedOverrides[$0] ?? false }
+        }
+    }
+
+    private static func normalizedShelfVisibilityOverrides(_ overrides: [String: Bool]) -> [String: Bool] {
+        var normalized: [String: Bool] = [:]
+        for rawShelfID in overrides.keys.sorted() {
+            let shelfID = rawShelfID.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !shelfID.isEmpty else { continue }
+            normalized[shelfID] = overrides[rawShelfID] ?? false
+        }
+        return normalized
     }
 
     /// The directory new chats and the Repository panel currently operate in:

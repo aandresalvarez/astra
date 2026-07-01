@@ -595,6 +595,26 @@ struct WorkspaceAppHTMLAppTests {
         #expect(WorkspaceAppManifestValidator.validate(manifest).isValid)
     }
 
+    @Test("Phase 5 gating: an HTML pipeline that launches an agent task WITHOUT a preceding human gate is rejected")
+    func htmlPipelineAgentTaskWithoutGateRejected() {
+        var manifest = htmlManifest()
+        manifest.permissions = WorkspaceAppPermissions(defaultMode: .preApproved)
+        manifest.actions = [
+            WorkspaceAppActionSpec(id: "spawn", type: "task.createAndRun", taskTitle: "x", taskGoal: "y"),
+            WorkspaceAppActionSpec(id: "run", type: "pipeline.run", steps: ["spawn"])
+        ]
+        let report = WorkspaceAppManifestValidator.validate(manifest)
+        #expect(!report.isValid)
+        #expect(report.blockers.contains { $0.message.contains("without a preceding gate.humanApproval") })
+
+        manifest.actions = [
+            WorkspaceAppActionSpec(id: "approve", type: "gate.humanApproval", approvalPrompt: "ok?", approvalDecisions: ["approve", "reject"]),
+            WorkspaceAppActionSpec(id: "spawn", type: "task.createAndRun", taskTitle: "x", taskGoal: "y"),
+            WorkspaceAppActionSpec(id: "run", type: "pipeline.run", steps: ["approve", "spawn"])
+        ]
+        #expect(WorkspaceAppManifestValidator.validate(manifest).isValid)
+    }
+
     @Test("Phase 5 gating: branch/fan-out primitives can't be declared (no indirect ungated export)")
     func htmlAppBranchAndFanOutRejected() {
         // gate.branch would let `pipeline.run -> gate.branch -> artifact.export` reach an ungated

@@ -17,43 +17,23 @@ enum WorkspaceCanvasItem: String, Equatable {
     case appPreview
 
     var minWidth: CGFloat {
-        switch self {
-        case .plan: 400
-        case .markdown: PanelLayoutGeometry.filesShelfMinReadableWidth
-        case .browser: PanelLayoutGeometry.browserShelfMinWidth
-        case .query: 460
-        case .appPreview: 440
-        }
+        descriptor.minWidth
     }
     var idealWidth: CGFloat {
-        switch self {
-        case .plan: 520
-        case .markdown: 620
-        case .browser: 440
-        case .query: 640
-        case .appPreview: 560
-        }
+        descriptor.idealWidth
     }
     var maxWidth: CGFloat {
-        switch self {
-        case .plan: 1040
-        case .markdown: 980
-        case .browser: 1120
-        case .query: 1180
-        case .appPreview: 1120
-        }
+        descriptor.maxWidth
     }
     var title: String {
-        switch self {
-        case .plan: "Plan"
-        case .markdown: "Files"
-        case .browser: "Browser"
-        case .query: "Query"
-        case .appPreview: "Live preview"
-        }
+        descriptor.title
     }
     var closesWhenDraggedBelowMinimum: Bool {
-        self == .markdown
+        descriptor.closesWhenDraggedBelowMinimum
+    }
+
+    private var descriptor: ShelfDescriptor {
+        CoreShelfRegistry.requiredDescriptor(for: shelfID)
     }
 }
 

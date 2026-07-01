@@ -2,18 +2,43 @@ import Foundation
 import ASTRACore
 
 enum CapabilityRuntimeResourceMatcher {
+    private static var approvalRecordsLoaderForTesting: (() -> [CapabilityApprovalRecord])?
+    private static let approvalRecordsLoaderLock = NSRecursiveLock()
+
+    static func withApprovalRecordsLoaderForTesting<Result>(
+        _ loader: @escaping () -> [CapabilityApprovalRecord],
+        perform: () throws -> Result
+    ) rethrows -> Result {
+        approvalRecordsLoaderLock.lock()
+        let previousLoader = approvalRecordsLoaderForTesting
+        approvalRecordsLoaderForTesting = loader
+        defer {
+            approvalRecordsLoaderForTesting = previousLoader
+            approvalRecordsLoaderLock.unlock()
+        }
+        return try perform()
+    }
+
     static func packageDefinitions(library: CapabilityLibrary = CapabilityLibrary()) -> [PluginPackage] {
         uniquePackages(cachedInstalledPackages(library: library) + PluginCatalog.builtInPackages)
     }
 
     static func enabledPackages(
         for workspace: Workspace?,
-        library: CapabilityLibrary = CapabilityLibrary()
+        library: CapabilityLibrary = CapabilityLibrary(),
+        approvalRecords: [CapabilityApprovalRecord]? = nil,
+        packPolicy: PackResolvedPolicy? = nil
     ) -> [PluginPackage] {
         guard let workspace else { return [] }
         let enabledIDs = Set(workspace.enabledCapabilityIDs)
         guard !enabledIDs.isEmpty else { return [] }
-        return packageDefinitions(library: library).filter { enabledIDs.contains($0.id) }
+        return packPolicyAllowedPackages(
+            packageDefinitions(library: library).filter { enabledIDs.contains($0.id) },
+            workspace: workspace,
+            approvalRecords: approvalRecords,
+            packPolicy: packPolicy,
+            resolvePackPolicyIfNeeded: true
+        )
     }
 
     /// Resolves enabled packages from an already-loaded definition list, without
@@ -25,13 +50,21 @@ enum CapabilityRuntimeResourceMatcher {
     /// Built-ins are merged in so the result matches `packageDefinitions()`.
     static func enabledPackages(
         for workspace: Workspace?,
-        in definitions: [PluginPackage]
+        in definitions: [PluginPackage],
+        approvalRecords: [CapabilityApprovalRecord]? = nil,
+        packPolicy: PackResolvedPolicy? = nil
     ) -> [PluginPackage] {
         guard let workspace else { return [] }
         let enabledIDs = Set(workspace.enabledCapabilityIDs)
         guard !enabledIDs.isEmpty else { return [] }
-        return uniquePackages(definitions + PluginCatalog.builtInPackages)
-            .filter { enabledIDs.contains($0.id) }
+        return packPolicyAllowedPackages(
+            uniquePackages(definitions + PluginCatalog.builtInPackages)
+                .filter { enabledIDs.contains($0.id) },
+            workspace: workspace,
+            approvalRecords: approvalRecords,
+            packPolicy: packPolicy,
+            resolvePackPolicyIfNeeded: false
+        )
     }
 
     static func skillMatches(_ pluginSkill: PluginSkill, skill: Skill) -> Bool {
@@ -99,6 +132,56 @@ enum CapabilityRuntimeResourceMatcher {
         cacheLock.unlock()
 
         return packages
+    }
+
+    private static func packPolicyAllowedPackages(
+        _ packages: [PluginPackage],
+        workspace: Workspace,
+        approvalRecords: [CapabilityApprovalRecord]?,
+        packPolicy suppliedPackPolicy: PackResolvedPolicy?,
+        resolvePackPolicyIfNeeded: Bool
+    ) -> [PluginPackage] {
+        guard !packages.isEmpty else { return [] }
+        let packPolicy = suppliedPackPolicy
+            ?? (resolvePackPolicyIfNeeded ? PackWorkspacePolicyProvider.resolvedPolicy(for: workspace) : .empty)
+        guard packPolicy.affectsCapabilityRuntimeExposure else { return packages }
+        let context = CapabilityCatalogPolicyContext.currentUser(
+            workspace: workspace,
+            approvalRecords: resolvedApprovalRecords(
+                approvalRecords,
+                packages: packages,
+                packPolicy: packPolicy
+            ),
+            packPolicy: packPolicy
+        )
+        return packages.filter {
+            CapabilityCatalogPolicy.decision(for: $0, context: context).canRun
+        }
+    }
+
+    private static func resolvedApprovalRecords(
+        _ approvalRecords: [CapabilityApprovalRecord]?,
+        packages: [PluginPackage],
+        packPolicy: PackResolvedPolicy
+    ) -> [CapabilityApprovalRecord] {
+        if let approvalRecords {
+            return approvalRecords
+        }
+        guard needsApprovalRecords(packages: packages, packPolicy: packPolicy) else {
+            return []
+        }
+        approvalRecordsLoaderLock.lock()
+        defer { approvalRecordsLoaderLock.unlock() }
+        return approvalRecordsLoaderForTesting?() ?? CapabilityApprovalStore().records()
+    }
+
+    private static func needsApprovalRecords(packages: [PluginPackage], packPolicy: PackResolvedPolicy) -> Bool {
+        if packPolicy.hasReviewGateRules {
+            return true
+        }
+        return packages.contains { package in
+            package.governance.approvalStatus != .approved
+        }
     }
 
     private static func directoryFingerprint(for directory: URL) -> DirectoryFingerprint {

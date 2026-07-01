@@ -44,7 +44,6 @@ enum CodexCLIRuntime {
         providerHomeDirectory: String = "",
         pathPrefix: [String] = [],
         includeAstraToolsPath: Bool = false,
-        allowExternalFileReadsForSSH: Bool = false,
         mcpConfigArguments: [String] = [],
         resumeSessionID: String? = nil
     ) -> CodexCLICommandPlan {
@@ -65,9 +64,6 @@ enum CodexCLIRuntime {
             ]
             args += mcpConfigArguments
             args += codexResumePermissionArguments(policy: permissionPolicy)
-            if allowExternalFileReadsForSSH, permissionPolicy != .autonomous {
-                args += ["--config", "sandbox_permissions=[\"disk-full-read-access\"]"]
-            }
             args.append("--skip-git-repo-check")
             args.append(trimmedResumeSessionID)
         } else {
@@ -87,9 +83,6 @@ enum CodexCLIRuntime {
             }
 
             args += codexPermissionArguments(policy: permissionPolicy)
-            if allowExternalFileReadsForSSH, permissionPolicy != .autonomous {
-                args += ["--config", "sandbox_permissions=[\"disk-full-read-access\"]"]
-            }
             args.append("--skip-git-repo-check")
         }
         args.append(prompt)

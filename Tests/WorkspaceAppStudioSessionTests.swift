@@ -19,7 +19,7 @@ struct WorkspaceAppStudioSessionTests {
         init(_ results: [WorkspaceAppStudioGenerationResult]) { self.results = results }
 
         var generate: WorkspaceAppStudioGenerate {
-            { [self] intent, _, _, existing, _, providers, _ in
+            { [self] intent, _, _, existing, _, providers, _, _ in
                 calls.append((intent, existing, providers))
                 return results[min(calls.count - 1, results.count - 1)]
             }
@@ -319,7 +319,7 @@ struct WorkspaceAppStudioSessionTests {
             WorkspaceAppStudioVerification(status: .verified, headline: "Verified — I ran your change.",
                                            detail: "items has 1 row.", autoExercise: nil, scenario: nil)
         }
-        let s = WorkspaceAppStudioSession(generate: { _, _, _, _, _, _, _ in Self.result(Self.validManifest) }, verify: verifyStub)
+        let s = WorkspaceAppStudioSession(generate: { _, _, _, _, _, _, _, _ in Self.result(Self.validManifest) }, verify: verifyStub)
         await submitTurn(s, "track groceries", ws)
         #expect(s.isVerifying == false)                                  // cleared when done
         #expect(s.messages.last?.text.contains("Verified") == true)     // verdict surfaced
@@ -339,7 +339,7 @@ struct WorkspaceAppStudioSessionTests {
             permissions: WorkspaceAppPermissions(defaultMode: .draftOnly),
             html: "<main>1+1</main>"
         )
-        let s = WorkspaceAppStudioSession(generate: { _, _, _, _, _, _, _ in Self.result(pureUI) }, verify: verifyStub)
+        let s = WorkspaceAppStudioSession(generate: { _, _, _, _, _, _, _, _ in Self.result(pureUI) }, verify: verifyStub)
         await submitTurn(s, "a calculator", ws)
         #expect(verifyCalled == false)   // the guard short-circuits before the verify seam
     }
@@ -351,7 +351,7 @@ struct WorkspaceAppStudioSessionTests {
             WorkspaceAppStudioVerification(status: .failed, headline: "I ran the app and an action failed.",
                                            detail: "Delete: boom", autoExercise: nil, scenario: nil)
         }
-        let s = WorkspaceAppStudioSession(generate: { _, _, _, _, _, _, _ in Self.result(Self.validManifest) }, verify: verifyStub)
+        let s = WorkspaceAppStudioSession(generate: { _, _, _, _, _, _, _, _ in Self.result(Self.validManifest) }, verify: verifyStub)
         await submitTurn(s, "track groceries", ws)
         #expect(s.messages.last?.text.contains("tell me what to fix") == true)
         #expect(s.canPublish == true)   // the validator passed; verification is not a publish gate
@@ -460,7 +460,7 @@ struct WorkspaceAppStudioSessionTests {
         // a real interactive UI was already showing before the (slow) model returned.
         var modelHTML = Self.validManifest
         modelHTML.html = "<main><button onclick=\"void 0\">Go</button></main><script>1;</script>"
-        let stub: WorkspaceAppStudioGenerate = { _, _, _, _, _, _, _ in
+        let stub: WorkspaceAppStudioGenerate = { _, _, _, _, _, _, _, _ in
             draftDuringGeneration = sessionRef?.draft
             return Self.result(modelHTML)
         }
@@ -485,7 +485,7 @@ struct WorkspaceAppStudioSessionTests {
         let ws = workspace()
         var sessionRef: WorkspaceAppStudioSession?
         var draftDuringGeneration: WorkspaceAppStudioDraft?
-        let stub: WorkspaceAppStudioGenerate = { _, _, _, _, _, _, _ in
+        let stub: WorkspaceAppStudioGenerate = { _, _, _, _, _, _, _, _ in
             draftDuringGeneration = sessionRef?.draft
             return Self.result(Self.validManifest)
         }
@@ -513,7 +513,7 @@ struct WorkspaceAppStudioSessionTests {
         var buildingDuringFirst = false
         var buildingDuringRefine = false
         var call = 0
-        let stub: WorkspaceAppStudioGenerate = { _, _, _, _, _, _, _ in
+        let stub: WorkspaceAppStudioGenerate = { _, _, _, _, _, _, _, _ in
             call += 1
             if call == 1 { buildingDuringFirst = sessionRef?.isBuildingFirstDraft ?? false }
             else { buildingDuringRefine = sessionRef?.isBuildingFirstDraft ?? false }
@@ -571,7 +571,7 @@ struct WorkspaceAppStudioSessionTests {
             events: [StudioGenerationEvent(kind: .generation, intent: "earlier turn", origin: "model",
                                            accepted: true, blockerCount: 0, manifestDigest: "d1")]
         )
-        let s = WorkspaceAppStudioSession(generate: { _, _, _, _, _, _, _ in Self.result(Self.validManifest) },
+        let s = WorkspaceAppStudioSession(generate: { _, _, _, _, _, _, _, _ in Self.result(Self.validManifest) },
                                           verify: Self.noVerify, journalStore: spy)
         s.reset(for: ws, existingManifest: Self.validManifest)
         #expect(s.messages.count == 2)
@@ -584,7 +584,7 @@ struct WorkspaceAppStudioSessionTests {
     func editTurnRecordsAndPersists() async {
         let ws = workspace()
         let spy = JournalStoreSpy()
-        let s = WorkspaceAppStudioSession(generate: { _, _, _, _, _, _, _ in Self.result(Self.validManifest) },
+        let s = WorkspaceAppStudioSession(generate: { _, _, _, _, _, _, _, _ in Self.result(Self.validManifest) },
                                           verify: Self.noVerify, journalStore: spy)
         s.reset(for: ws, existingManifest: Self.validManifest)     // empty journal → greeting, target set
         await s.submit("add an owner field", workspace: ws,
@@ -603,7 +603,7 @@ struct WorkspaceAppStudioSessionTests {
     func newAppBuffersJournal() async {
         let ws = workspace()
         let spy = JournalStoreSpy()
-        let s = WorkspaceAppStudioSession(generate: { _, _, _, _, _, _, _ in Self.result(Self.validManifest) },
+        let s = WorkspaceAppStudioSession(generate: { _, _, _, _, _, _, _, _ in Self.result(Self.validManifest) },
                                           verify: Self.noVerify, journalStore: spy)
         s.reset(for: ws)   // new app → no on-disk target
         await s.submit("track lab samples", workspace: ws,
@@ -619,7 +619,7 @@ struct WorkspaceAppStudioSessionTests {
     func refinementRecordsEvent() async {
         let ws = workspace()
         let spy = JournalStoreSpy()
-        let s = WorkspaceAppStudioSession(generate: { _, _, _, _, _, _, _ in Self.result(Self.validManifest) },
+        let s = WorkspaceAppStudioSession(generate: { _, _, _, _, _, _, _, _ in Self.result(Self.validManifest) },
                                           verify: Self.noVerify, journalStore: spy)
         await s.submit("track groceries", workspace: ws,
                        runtimeID: TaskExecutionDefaults.runtime.rawValue,
@@ -688,7 +688,7 @@ struct WorkspaceAppStudioSessionTests {
     func staleCompletionIsDiscarded() async {
         let ws = workspace()
         var session: WorkspaceAppStudioSession?
-        let stub: WorkspaceAppStudioGenerate = { _, _, _, _, _, _, _ in
+        let stub: WorkspaceAppStudioGenerate = { _, _, _, _, _, _, _, _ in
             // Simulate the user leaving the Studio (or switching workspaces) mid-generation.
             session?.cancelGeneration()
             return Self.result(Self.validManifest)
@@ -712,7 +712,7 @@ struct WorkspaceAppStudioSessionTests {
     func resetInvalidatesInFlight() async {
         let ws = workspace()
         var session: WorkspaceAppStudioSession?
-        let stub: WorkspaceAppStudioGenerate = { _, _, _, _, _, _, _ in
+        let stub: WorkspaceAppStudioGenerate = { _, _, _, _, _, _, _, _ in
             session?.reset(for: ws)  // a brand-new conversation started mid-flight
             return Self.result(Self.validManifest)
         }

@@ -88,15 +88,25 @@ struct PluginCatalogBuiltInTests {
         let package = try #require(PluginCatalog.builtInPackages.first { $0.id == "jira-workflow" })
         let skill = try #require(package.skills.first)
 
-        #expect(package.version == "2.0.3")
+        #expect(package.version == "2.0.7")
+        #expect(package.description.contains("Docker host-control"))
+        #expect(package.description.contains("non-Docker"))
+        #expect(package.governance.externalEffects.contains(.externalAPIWrite))
+        #expect(package.governance.externalEffects.contains(.ticketMutation))
+        #expect(package.governance.policyNotes.contains("non-Docker"))
+        #expect(skill.behaviorInstructions.contains("DOCKER HOST-CONTROL RUNS"))
+        #expect(skill.behaviorInstructions.contains("First verify auth with operation status"))
+        #expect(skill.behaviorInstructions.contains("For configured projects, use operation search_jql"))
+        #expect(skill.behaviorInstructions.contains("NON-DOCKER REST RUNS"))
         #expect(skill.behaviorInstructions.contains("/rest/api/3/mypermissions?permissions=BROWSE_PROJECTS"))
+        #expect(!skill.behaviorInstructions.contains("/rest/api/3/myself"))
+        #expect(!skill.behaviorInstructions.contains("CREATE_ISSUES"))
+        #expect(skill.behaviorInstructions.contains("operation search_jql"))
+        #expect(skill.behaviorInstructions.contains("next_page_token"))
         #expect(skill.behaviorInstructions.contains("/rest/api/3/search/jql?jql="))
-        #expect(!skill.behaviorInstructions.contains("/rest/api/3/search?jql="))
-        #expect(skill.behaviorInstructions.contains("First verify auth with /rest/api/3/mypermissions"))
-        #expect(skill.behaviorInstructions.contains("Use /rest/api/3/myself only as a fallback"))
         #expect(!skill.behaviorInstructions.contains("If /myself returns 401/403, stop"))
-        #expect(skill.behaviorInstructions.contains("Do not call /rest/api/3/permissions"))
-        #expect(skill.behaviorInstructions.contains("Only recommend generating a new API token when both permission and fallback auth probes return 401/403"))
+        #expect(skill.behaviorInstructions.contains("Do not request raw method, path, or body inputs"))
+        #expect(skill.behaviorInstructions.contains("Do not create, update, comment on, transition, delete"))
     }
 
     @Test("Security auditor bundled capability version matches fallback catalog")
@@ -153,6 +163,20 @@ struct PluginCatalogBuiltInTests {
         #expect(package.mcpServers.allSatisfy { $0.environmentKeys.isEmpty })
     }
 
+    @Test("DevOps pack references only known capability packages")
+    func devOpsPackReferencesOnlyKnownCapabilities() throws {
+        let manifest = try Self.bundledDevOpsPackManifest()
+        let referencedIDs = Set(
+            manifest.capabilityPackageIDs
+                + manifest.shelfDefaults.flatMap(\.capabilityPackageIDs)
+                + manifest.appTemplates.flatMap(\.capabilityPackageIDs)
+        )
+        let knownIDs = Set(PluginCatalog.builtInPackages.map(\.id))
+
+        #expect(referencedIDs == ["github-workflow"])
+        #expect(referencedIDs.isSubset(of: knownIDs))
+    }
+
     @Test("Built-in packages all have valid versions")
     func builtInVersionsValid() {
         for pkg in PluginCatalog.builtInPackages {
@@ -165,5 +189,10 @@ struct PluginCatalogBuiltInTests {
     func builtInUniqueIDs() {
         let ids = PluginCatalog.builtInPackages.map(\.id)
         #expect(Set(ids).count == ids.count)
+    }
+
+    private static func bundledDevOpsPackManifest() throws -> AstraPackManifest {
+        let snapshot = AstraPackCatalog(localStorageRoot: nil).load()
+        return try #require(snapshot.packs.first { $0.id == "astra.pack.devops" })
     }
 }

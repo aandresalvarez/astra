@@ -53,6 +53,162 @@ struct BrowserAnalysisTests {
         #expect(delete.requiresUserConfirmation)
     }
 
+    @Test("Analyzer classifies name and autocomplete sensitive metadata")
+    func analyzerClassifiesNameAndAutocompleteSensitiveMetadata() throws {
+        let analysis = BrowserAnalysisBuilder.build(
+            snapshot: Self.sampleSnapshot(controls: [
+                Self.control(
+                    selector: "input",
+                    tag: "input",
+                    role: "textbox",
+                    type: "text",
+                    label: "Account",
+                    name: "current-password"
+                ),
+                Self.control(
+                    selector: "#token",
+                    tag: "input",
+                    role: "textbox",
+                    type: "text",
+                    label: "Code",
+                    autocomplete: "one-time-code"
+                )
+            ]),
+            backend: "embedded WebKit",
+            engine: "embedded",
+            createdAt: Date(timeIntervalSince1970: 1_000)
+        )
+
+        let password = try #require(analysis.controls.first { $0.name == "current-password" })
+        #expect(password.risk == .credentialInput)
+        #expect(password.requiresUserConfirmation)
+
+        let otp = try #require(analysis.controls.first { $0.autocomplete == "one-time-code" })
+        #expect(otp.risk == .mfaInput)
+        #expect(otp.jsonObject()["autocomplete"] as? String == "one-time-code")
+    }
+
+    @Test("Password reset links stay navigable")
+    func passwordResetLinksStayNavigable() throws {
+        let analysis = BrowserAnalysisBuilder.build(
+            snapshot: Self.sampleSnapshot(controls: [
+                Self.control(
+                    selector: "a[href='/reset-password']",
+                    tag: "a",
+                    role: "link",
+                    label: "Forgot password?",
+                    name: "Forgot password?",
+                    href: "https://example.com/reset-password"
+                )
+            ]),
+            backend: "embedded WebKit",
+            engine: "embedded",
+            createdAt: Date(timeIntervalSince1970: 1_000)
+        )
+
+        let link = try #require(analysis.controls.first)
+        #expect(link.risk == .navigation)
+        #expect(link.validActions.contains(.open))
+        #expect(!link.requiresUserConfirmation)
+    }
+
+    @Test("Secret revealing buttons require confirmation without blocking password reset navigation")
+    func secretRevealingButtonsRequireConfirmationWithoutBlockingPasswordResetNavigation() throws {
+        let analysis = BrowserAnalysisBuilder.build(
+            snapshot: Self.sampleSnapshot(controls: [
+                Self.control(
+                    selector: "button.show-password",
+                    tag: "button",
+                    role: "button",
+                    type: "button",
+                    label: "Show password"
+                ),
+                Self.control(
+                    selector: "button[data-testid=copy-secret]",
+                    tag: "button",
+                    role: "button",
+                    type: "button",
+                    label: "Copy secret"
+                ),
+                Self.control(
+                    selector: "a[href='/reset-password']",
+                    tag: "a",
+                    role: "link",
+                    label: "Forgot password?",
+                    href: "https://example.com/reset-password"
+                )
+            ]),
+            backend: "embedded WebKit",
+            engine: "embedded",
+            createdAt: Date(timeIntervalSince1970: 1_000)
+        )
+
+        let showPassword = try #require(analysis.controls.first { $0.label == "Show password" })
+        #expect(showPassword.risk == .credentialInput)
+        #expect(showPassword.requiresUserConfirmation)
+
+        let copySecret = try #require(analysis.controls.first { $0.label == "Copy secret" })
+        #expect(copySecret.risk == .credentialInput)
+        #expect(copySecret.requiresUserConfirmation)
+
+        let resetLink = try #require(analysis.controls.first { $0.label == "Forgot password?" })
+        #expect(resetLink.risk == .navigation)
+        #expect(!resetLink.requiresUserConfirmation)
+    }
+
+    @Test("Page snapshot script preserves DOM name separately from label")
+    func pageSnapshotScriptPreservesDOMNameSeparatelyFromLabel() {
+        let script = BrowserAutomationScripts.snapshotScript
+        #expect(script.contains(#"name: metadataValueForSnapshot(el, rawValue, el.getAttribute("name") || "")"#))
+        #expect(script.contains("ownerDocument"))
+    }
+
+    @Test("Accessibility matching uses the visible label instead of DOM name")
+    func accessibilityMatchingUsesVisibleLabelInsteadOfDOMName() throws {
+        let analysis = BrowserAnalysisBuilder.build(
+            snapshot: Self.sampleSnapshot(controls: [
+                Self.control(
+                    selector: "input[name=q]",
+                    tag: "input",
+                    role: "textbox",
+                    label: "Search",
+                    name: "q"
+                )
+            ]),
+            backend: "controlled Chromium profile",
+            engine: "controlled",
+            accessibilitySnapshotObject: Self.accessibilitySnapshot(role: "textbox", name: "Search")
+        )
+
+        let response = analysis.responseObject(query: nil, full: false, limit: nil, version: .v2)
+        let refs = try #require(response["controlRefs"] as? [[String: Any]])
+        let ref = try #require(refs.first)
+        #expect(ref["source"] as? String == BrowserControlSource.accessibility.rawValue)
+        let evidence = try #require(ref["evidence"] as? [String: Any])
+        #expect(evidence["accessibilityName"] as? String == "Search")
+    }
+
+    @Test("Action targeting prefers visible labels for accessibility controls")
+    func actionTargetingPrefersVisibleLabelsForAccessibilityControls() throws {
+        let analysis = BrowserAnalysisBuilder.build(
+            snapshot: Self.sampleSnapshot(controls: [
+                Self.control(
+                    selector: "input[name=q]",
+                    tag: "input",
+                    role: "textbox",
+                    label: "Search docs",
+                    name: "q"
+                )
+            ]),
+            backend: "controlled Chromium profile",
+            engine: "controlled"
+        )
+        let control = try #require(analysis.controls.first)
+
+        #expect(BrowserControlTargetingPolicy.semanticName(for: control, source: .accessibility) == "Search docs")
+        #expect(BrowserControlTargetingPolicy.semanticName(for: control, source: .dom) == "q")
+    }
+
     @Test("Analyze response is compact by default and full when requested")
     func analyzeResponseCompactAndFull() {
         let controls = (0..<25).map { index in
@@ -71,6 +227,512 @@ struct BrowserAnalysisTests {
         #expect(compact["omittedControlCount"] as? Int == 5)
         #expect(full["returnedControlCount"] as? Int == 25)
         #expect(full["omittedControlCount"] as? Int == 0)
+    }
+
+    @Test("Analysis response redacts sensitive control values")
+    func analysisResponseRedactsSensitiveControlValues() throws {
+        let analysis = BrowserAnalysisBuilder.build(
+            snapshot: Self.sampleSnapshot(controls: [
+                Self.control(
+                    selector: "input[name=password]",
+                    tag: "input",
+                    role: "textbox",
+                    type: "password",
+                    label: "Password",
+                    value: "correct-horse-battery-staple"
+                ),
+                Self.control(
+                    selector: "input[name=otp]",
+                    tag: "input",
+                    role: "textbox",
+                    type: "text",
+                    label: "One-time verification code",
+                    value: "123456"
+                ),
+                Self.control(
+                    selector: "input[name=email]",
+                    tag: "input",
+                    role: "textbox",
+                    type: "email",
+                    label: "Email",
+                    value: "alvaro@example.com"
+                )
+            ]),
+            backend: "embedded WebKit",
+            engine: "embedded"
+        )
+
+        let response = analysis.responseObject(query: nil, full: true, limit: nil, version: .v2)
+        let controls = try #require(response["controls"] as? [[String: Any]])
+        let refs = try #require(response["controlRefs"] as? [[String: Any]])
+        let password = try #require(controls.first { $0["risk"] as? String == BrowserRisk.credentialInput.rawValue })
+        let mfa = try #require(refs.first { $0["risk"] as? String == BrowserRisk.mfaInput.rawValue })
+        let email = try #require(controls.first { $0["label"] as? String == "Email" })
+
+        #expect(password["value"] as? String == "[redacted-sensitive-input]")
+        #expect(mfa["value"] as? String == "[redacted-sensitive-input]")
+        #expect(email["value"] as? String == "alvaro@example.com")
+        #expect(String(describing: response).contains("correct-horse-battery-staple") == false)
+        #expect(String(describing: response).contains("123456") == false)
+    }
+
+    @Test("Analysis debug response redacts value-derived labels and accessibility names")
+    func analysisDebugResponseRedactsValueDerivedLabelsAndAccessibilityNames() throws {
+        let secret = "MRN-424242"
+        let analysis = BrowserAnalysisBuilder.build(
+            snapshot: Self.sampleSnapshot(controls: [
+                Self.control(
+                    selector: "textarea[data-secret='MRN-424242']",
+                    tag: "textarea",
+                    role: "textbox",
+                    label: secret,
+                    value: secret,
+                    name: secret,
+                    placeholder: "Paste \(secret)",
+                    testID: secret,
+                    href: "https://example.com/patient/\(secret)"
+                )
+            ]),
+            backend: "controlled Chromium profile",
+            engine: "controlled",
+            accessibilitySnapshotObject: Self.accessibilitySnapshot(role: "textbox", name: secret)
+        )
+
+        let response = analysis.responseObject(query: nil, full: true, limit: nil, debug: true, version: .v2)
+        let controls = try #require(response["controls"] as? [[String: Any]])
+        let control = try #require(controls.first)
+        let refs = try #require(response["controlRefs"] as? [[String: Any]])
+        let ref = try #require(refs.first)
+        let context = try #require(ref["context"] as? [String: Any])
+        let evidence = try #require(ref["evidence"] as? [String: Any])
+        let accessibilityNode = try #require(ref["accessibilityNode"] as? [String: Any])
+
+        #expect(control["selector"] as? String == "[redacted-sensitive-input]")
+        #expect(control["label"] as? String == "[redacted-sensitive-input]")
+        #expect(control["name"] as? String == "[redacted-sensitive-input]")
+        #expect((control["controlID"] as? String)?.contains(secret.lowercased()) == false)
+        #expect(control["placeholder"] as? String == "[redacted-sensitive-input]")
+        #expect(control["testID"] as? String == "[redacted-sensitive-input]")
+        #expect(control["href"] as? String == "[redacted-sensitive-input]")
+        #expect((ref["controlID"] as? String)?.contains(secret.lowercased()) == false)
+        #expect(ref["selectorFallback"] as? String == "[redacted-sensitive-input]")
+        #expect(ref["label"] as? String == "[redacted-sensitive-input]")
+        #expect(ref["name"] as? String == "[redacted-sensitive-input]")
+        #expect(context["placeholder"] as? String == "[redacted-sensitive-input]")
+        #expect(context["testID"] as? String == "[redacted-sensitive-input]")
+        #expect(context["href"] as? String == "[redacted-sensitive-input]")
+        #expect(evidence["accessibilityName"] as? String == "[redacted-sensitive-input]")
+        #expect(accessibilityNode["name"] as? String == "[redacted-sensitive-input]")
+        #expect(String(describing: response).contains(secret) == false)
+    }
+
+    @Test("Analysis response redacts sensitive action outcome URLs")
+    func analysisResponseRedactsSensitiveActionOutcomeURLs() throws {
+        let href = "https://example.com/reset?token=abc123"
+        let analysis = BrowserAnalysisBuilder.build(
+            snapshot: Self.sampleSnapshot(controls: [
+                Self.control(
+                    selector: "a[href*='token']",
+                    tag: "a",
+                    role: "link",
+                    label: "Reset token",
+                    href: href
+                )
+            ]),
+            backend: "controlled Chromium profile",
+            engine: "controlled"
+        )
+
+        let response = analysis.responseObject(query: nil, full: true, limit: nil, version: .v2)
+        let controls = try #require(response["controls"] as? [[String: Any]])
+        let control = try #require(controls.first)
+        let controlOutcomes = try #require(control["actionOutcomes"] as? [[String: Any]])
+        let controlOutcome = try #require(controlOutcomes.first)
+        let refs = try #require(response["controlRefs"] as? [[String: Any]])
+        let ref = try #require(refs.first)
+        let refOutcomes = try #require(ref["actionOutcomes"] as? [[String: Any]])
+        let refOutcome = try #require(refOutcomes.first)
+
+        #expect(control["href"] as? String == "[redacted-sensitive-input]")
+        #expect(controlOutcome["href"] as? String == "[redacted-sensitive-input]")
+        #expect(refOutcome["href"] as? String == "[redacted-sensitive-input]")
+        #expect(String(describing: response).contains(href) == false)
+    }
+
+    @Test("Analysis response redacts empty sensitive metadata and accessibility")
+    func analysisResponseRedactsEmptySensitiveMetadataAndAccessibility() throws {
+        let analysis = BrowserAnalysisBuilder.build(
+            snapshot: Self.sampleSnapshot(controls: [
+                Self.control(
+                    selector: "#mrn",
+                    tag: "input",
+                    role: "textbox",
+                    type: "text",
+                    label: "MRN",
+                    value: "",
+                    name: "medical_record_number",
+                    placeholder: "Medical record number"
+                )
+            ]),
+            backend: "controlled Chromium profile",
+            engine: "controlled",
+            accessibilitySnapshotObject: Self.accessibilitySnapshot(role: "textbox", name: "MRN")
+        )
+
+        let response = analysis.responseObject(query: nil, full: true, limit: nil, debug: true, version: .v2)
+        let controls = try #require(response["controls"] as? [[String: Any]])
+        let control = try #require(controls.first)
+        let refs = try #require(response["controlRefs"] as? [[String: Any]])
+        let ref = try #require(refs.first)
+        let context = try #require(ref["context"] as? [String: Any])
+        let evidence = try #require(ref["evidence"] as? [String: Any])
+        let accessibilityNode = try #require(ref["accessibilityNode"] as? [String: Any])
+
+        #expect(control["selector"] as? String == "[redacted-sensitive-input]")
+        #expect(control["label"] as? String == "[redacted-sensitive-input]")
+        #expect(control["name"] as? String == "[redacted-sensitive-input]")
+        #expect(control["placeholder"] as? String == "[redacted-sensitive-input]")
+        #expect(ref["selectorFallback"] as? String == "[redacted-sensitive-input]")
+        #expect(ref["label"] as? String == "[redacted-sensitive-input]")
+        #expect(ref["name"] as? String == "[redacted-sensitive-input]")
+        #expect(context["placeholder"] as? String == "[redacted-sensitive-input]")
+        #expect(evidence["accessibilityName"] as? String == "[redacted-sensitive-input]")
+        #expect(accessibilityNode["name"] as? String == "[redacted-sensitive-input]")
+        #expect(String(describing: response).contains("medical_record_number") == false)
+    }
+
+    @Test("Analysis response does not use sensitive pre-redacted labels in control IDs")
+    func analysisResponseDoesNotUseSensitivePreRedactedLabelsInControlIDs() throws {
+        let sensitiveLabel = "MRN-424242"
+        let analysis = BrowserAnalysisBuilder.build(
+            snapshot: Self.sampleSnapshot(controls: [
+                Self.control(
+                    selector: "#patient-mrn",
+                    tag: "input",
+                    role: "textbox",
+                    type: "text",
+                    label: sensitiveLabel,
+                    value: "[redacted-sensitive-input]",
+                    name: "api_token_sk_live_123"
+                )
+            ]),
+            backend: "controlled Chromium profile",
+            engine: "controlled"
+        )
+
+        let internalControl = try #require(analysis.controls.first)
+        let response = analysis.responseObject(query: nil, full: true, limit: nil, version: .v2)
+        let controls = try #require(response["controls"] as? [[String: Any]])
+        let control = try #require(controls.first)
+        let refs = try #require(response["controlRefs"] as? [[String: Any]])
+        let ref = try #require(refs.first)
+
+        #expect(internalControl.selector == "#patient-mrn")
+        #expect(control["label"] as? String == "[redacted-sensitive-input]")
+        #expect(control["name"] as? String == "[redacted-sensitive-input]")
+        #expect((control["controlID"] as? String)?.contains("mrn") == false)
+        #expect((control["controlID"] as? String)?.contains("424242") == false)
+        #expect((ref["controlID"] as? String)?.contains("api_token") == false)
+        #expect(String(describing: response).contains(sensitiveLabel) == false)
+        #expect(String(describing: response).contains("api_token_sk_live_123") == false)
+    }
+
+    @Test("Analysis query filtering uses provider-visible redacted fields")
+    func analysisQueryFilteringUsesProviderVisibleRedactedFields() throws {
+        let secret = "ghp_secret_token"
+        let analysis = BrowserAnalysisBuilder.build(
+            snapshot: Self.sampleSnapshot(controls: [
+                Self.control(
+                    selector: "#api-token",
+                    tag: "input",
+                    role: "textbox",
+                    type: "text",
+                    label: "API token",
+                    value: secret,
+                    name: "api_token"
+                )
+            ]),
+            backend: "controlled Chromium profile",
+            engine: "controlled"
+        )
+
+        let response = analysis.responseObject(query: secret, full: true, limit: nil, version: .v2)
+        let controls = try #require(response["controls"] as? [[String: Any]])
+        let refs = try #require(response["controlRefs"] as? [[String: Any]])
+
+        #expect(controls.isEmpty)
+        #expect(refs.isEmpty)
+    }
+
+    @Test("Analysis response redacts cardholder and generic payment values")
+    func analysisResponseRedactsCardholderAndGenericPaymentValues() throws {
+        let cardholder = "Maya Private"
+        let cardNumber = "4111111111111111"
+        let analysis = BrowserAnalysisBuilder.build(
+            snapshot: Self.sampleSnapshot(controls: [
+                Self.control(
+                    selector: "#cc-name",
+                    tag: "input",
+                    role: "textbox",
+                    type: "text",
+                    label: "Name on card",
+                    value: cardholder,
+                    autocomplete: "cc-name",
+                    name: "cc-name"
+                ),
+                Self.control(
+                    selector: "#payment-method",
+                    tag: "input",
+                    role: "textbox",
+                    type: "text",
+                    label: "Payment method",
+                    value: cardNumber,
+                    name: "paymentMethod"
+                )
+            ]),
+            backend: "controlled Chromium profile",
+            engine: "controlled"
+        )
+
+        let response = analysis.responseObject(query: nil, full: true, limit: nil, version: .v2)
+        let controls = try #require(response["controls"] as? [[String: Any]])
+        let refs = try #require(response["controlRefs"] as? [[String: Any]])
+
+        #expect(controls.compactMap { $0["value"] as? String } == [
+            "[redacted-sensitive-input]",
+            "[redacted-sensitive-input]"
+        ])
+        #expect(refs.compactMap { $0["value"] as? String } == [
+            "[redacted-sensitive-input]",
+            "[redacted-sensitive-input]"
+        ])
+        #expect(controls.compactMap { $0["risk"] as? String } == [
+            BrowserRisk.payment.rawValue,
+            BrowserRisk.payment.rawValue
+        ])
+        #expect(String(describing: response).contains(cardholder) == false)
+        #expect(String(describing: response).contains(cardNumber) == false)
+    }
+
+    @Test("Analysis keeps payment submit labels visible")
+    func analysisKeepsPaymentSubmitLabelsVisible() throws {
+        let analysis = BrowserAnalysisBuilder.build(
+            snapshot: Self.sampleSnapshot(controls: [
+                Self.control(
+                    selector: "#pay-now",
+                    tag: "input",
+                    role: "button",
+                    type: "submit",
+                    label: "Pay now",
+                    value: "Pay now",
+                    name: "paymentSubmit"
+                )
+            ]),
+            backend: "controlled Chromium profile",
+            engine: "controlled"
+        )
+
+        let response = analysis.responseObject(query: nil, full: true, limit: nil, version: .v2)
+        let controls = try #require(response["controls"] as? [[String: Any]])
+        let control = try #require(controls.first)
+
+        #expect(control["label"] as? String == "Pay now")
+        #expect(control["value"] as? String == "Pay now")
+        #expect(control["risk"] as? String == BrowserRisk.payment.rawValue)
+    }
+
+    @Test("Analysis redacts editable payment risk values")
+    func analysisRedactsEditablePaymentRiskValues() throws {
+        let analysis = BrowserAnalysisBuilder.build(
+            snapshot: Self.sampleSnapshot(controls: [
+                Self.control(
+                    selector: "#payeeAccount",
+                    tag: "input",
+                    role: "textbox",
+                    type: "text",
+                    label: "Pay",
+                    value: "acct-12345",
+                    name: "payeeAccount"
+                )
+            ]),
+            backend: "controlled Chromium profile",
+            engine: "controlled"
+        )
+
+        let response = analysis.responseObject(query: nil, full: true, limit: nil, version: .v2)
+        let controls = try #require(response["controls"] as? [[String: Any]])
+        let control = try #require(controls.first)
+
+        #expect(control["risk"] as? String == BrowserRisk.payment.rawValue)
+        #expect(control["value"] as? String == "[redacted-sensitive-input]")
+    }
+
+    @Test("Analysis ambiguity labels use redacted control text")
+    func analysisAmbiguityLabelsUseRedactedControlText() throws {
+        let secret = "MRN-424242"
+        let analysis = BrowserAnalysisBuilder.build(
+            snapshot: Self.sampleSnapshot(controls: [
+                Self.control(
+                    selector: "#mrn-one",
+                    tag: "input",
+                    role: "textbox",
+                    type: "text",
+                    label: secret,
+                    value: secret,
+                    name: secret,
+                    y: 20
+                ),
+                Self.control(
+                    selector: "#mrn-two",
+                    tag: "input",
+                    role: "textbox",
+                    type: "text",
+                    label: secret,
+                    value: secret,
+                    name: secret,
+                    y: 80
+                )
+            ]),
+            backend: "embedded WebKit",
+            engine: "embedded"
+        )
+
+        let response = analysis.responseObject(query: nil, full: true, limit: nil, version: .v2)
+        let ambiguity = try #require(response["ambiguity"] as? [String: Any])
+        let duplicates = try #require(ambiguity["duplicateLabels"] as? [[String: Any]])
+        let duplicate = try #require(duplicates.first)
+
+        #expect(duplicate["label"] as? String == "[redacted-sensitive-input]")
+        #expect(String(describing: response).contains(secret) == false)
+    }
+
+    @Test("Analysis response applies autocomplete sensitivity from snapshots")
+    func analysisResponseAppliesAutocompleteSensitivityFromSnapshots() throws {
+        let secret = "autofill-password-value"
+        let analysis = BrowserAnalysisBuilder.build(
+            snapshot: Self.sampleSnapshot(controls: [
+                Self.control(
+                    selector: "#login",
+                    tag: "input",
+                    role: "textbox",
+                    type: "text",
+                    label: "Login",
+                    value: secret,
+                    autocomplete: "current-password",
+                    name: "login"
+                )
+            ]),
+            backend: "controlled Chromium profile",
+            engine: "controlled"
+        )
+
+        let response = analysis.responseObject(query: nil, full: true, limit: nil, version: .v2)
+        let controls = try #require(response["controls"] as? [[String: Any]])
+        let control = try #require(controls.first)
+        let refs = try #require(response["controlRefs"] as? [[String: Any]])
+        let ref = try #require(refs.first)
+
+        #expect(control["value"] as? String == "[redacted-sensitive-input]")
+        #expect(control["autocomplete"] as? String == "current-password")
+        #expect(control["risk"] as? String == BrowserRisk.credentialInput.rawValue)
+        #expect(control["requiresUserConfirmation"] as? Bool == true)
+        #expect(ref["value"] as? String == "[redacted-sensitive-input]")
+        #expect(((ref["context"] as? [String: Any])?["autocomplete"] as? String) == "current-password")
+        #expect(String(describing: response).contains(secret) == false)
+    }
+
+    @Test("Username passkey autocomplete does not force credential risk")
+    func usernamePasskeyAutocompleteDoesNotForceCredentialRisk() throws {
+        let analysis = BrowserAnalysisBuilder.build(
+            snapshot: Self.sampleSnapshot(controls: [
+                Self.control(
+                    selector: "input[name=username]",
+                    tag: "input",
+                    role: "textbox",
+                    type: "text",
+                    label: "Username",
+                    value: "alvaro@example.com",
+                    autocomplete: "username webauthn",
+                    name: "username"
+                )
+            ]),
+            backend: "controlled Chromium profile",
+            engine: "controlled"
+        )
+
+        let response = analysis.responseObject(query: nil, full: true, limit: nil, version: .v2)
+        let controls = try #require(response["controls"] as? [[String: Any]])
+        let control = try #require(controls.first)
+
+        #expect(control["value"] as? String == "alvaro@example.com")
+        #expect(control["risk"] as? String == BrowserRisk.normal.rawValue)
+        #expect(control["requiresUserConfirmation"] as? Bool == false)
+    }
+
+    @Test("Analysis debug response redacts accessibility values when DOM value is already redacted")
+    func analysisDebugResponseRedactsAccessibilityValuesWhenDOMValueIsAlreadyRedacted() throws {
+        let secret = "still-in-ax-tree-secret"
+        let analysis = BrowserAnalysisBuilder.build(
+            snapshot: Self.sampleSnapshot(controls: [
+                Self.control(
+                    selector: "#password",
+                    tag: "input",
+                    role: "textbox",
+                    type: "password",
+                    label: "Password",
+                    value: "[redacted-sensitive-input]"
+                )
+            ]),
+            backend: "controlled Chromium profile",
+            engine: "controlled",
+            accessibilitySnapshotObject: Self.accessibilitySnapshot(role: "textbox", name: "Password", value: secret)
+        )
+
+        let response = analysis.responseObject(query: nil, full: true, limit: nil, debug: true, version: .v2)
+        let refs = try #require(response["controlRefs"] as? [[String: Any]])
+        let ref = try #require(refs.first)
+        let evidence = try #require(ref["evidence"] as? [String: Any])
+        let accessibilityNode = try #require(ref["accessibilityNode"] as? [String: Any])
+
+        #expect(ref["label"] as? String == "[redacted-sensitive-input]")
+        #expect(evidence["accessibilityName"] as? String == "[redacted-sensitive-input]")
+        #expect(accessibilityNode["name"] as? String == "[redacted-sensitive-input]")
+        #expect(accessibilityNode["value"] as? String == "[redacted-sensitive-input]")
+        #expect(String(describing: response).contains(secret) == false)
+    }
+
+    @Test("Analysis debug response redacts accessibility text when DOM value is already redacted")
+    func analysisDebugResponseRedactsAccessibilityTextWhenDOMValueIsAlreadyRedacted() throws {
+        let secret = "still-in-ax-name-secret"
+        let accessibilityName = "Password \(secret)"
+        let analysis = BrowserAnalysisBuilder.build(
+            snapshot: Self.sampleSnapshot(controls: [
+                Self.control(
+                    selector: "#password",
+                    tag: "input",
+                    role: "textbox",
+                    type: "password",
+                    label: "Password",
+                    value: "[redacted-sensitive-input]",
+                    name: "password"
+                )
+            ]),
+            backend: "controlled Chromium profile",
+            engine: "controlled",
+            accessibilitySnapshotObject: Self.accessibilitySnapshot(role: "textbox", name: accessibilityName, value: secret)
+        )
+
+        let response = analysis.responseObject(query: nil, full: true, limit: nil, debug: true, version: .v2)
+        let refs = try #require(response["controlRefs"] as? [[String: Any]])
+        let ref = try #require(refs.first)
+        let evidence = try #require(ref["evidence"] as? [String: Any])
+        let accessibilityNode = try #require(ref["accessibilityNode"] as? [String: Any])
+
+        #expect(evidence["accessibilityName"] as? String == "[redacted-sensitive-input]")
+        #expect(accessibilityNode["name"] as? String == "[redacted-sensitive-input]")
+        #expect(accessibilityNode["description"] as? String != secret)
+        #expect(accessibilityNode["value"] as? String == "[redacted-sensitive-input]")
+        #expect(String(describing: response).contains(secret) == false)
     }
 
     @Test("V2 response adds semantic control refs without changing default response")
@@ -145,6 +807,105 @@ struct BrowserAnalysisTests {
         #expect(match.usedSelectorFallback == false)
         #expect(match.control.selector == "#new-save")
         #expect(match.controlRef.source == .accessibility)
+    }
+
+    @Test("DOM resolver preserves stable DOM names when visible labels change")
+    func domResolverPreservesStableDOMNamesWhenVisibleLabelsChange() throws {
+        let cached = BrowserAnalysisBuilder.build(
+            snapshot: Self.sampleSnapshot(controls: [
+                Self.control(selector: "input[name=email]", tag: "input", role: "textbox", label: "Email", name: "email")
+            ]),
+            backend: "embedded WebKit",
+            engine: "embedded"
+        )
+        let live = BrowserAnalysisBuilder.build(
+            snapshot: Self.sampleSnapshot(controls: [
+                Self.control(selector: "input[name=email]", tag: "input", role: "textbox", label: "Work email", name: "email")
+            ]),
+            backend: "embedded WebKit",
+            engine: "embedded"
+        )
+
+        let cachedControl = try #require(cached.controls.first)
+        let match = try #require(BrowserControlResolver.matchingLiveControl(
+            cachedControl: cachedControl,
+            cachedAnalysis: cached,
+            liveAnalysis: live
+        ))
+
+        #expect(match.strategy == "controlRef")
+        #expect(match.usedSelectorFallback == false)
+        #expect(match.control.label == "Work email")
+        #expect(match.controlRef.source == .dom)
+    }
+
+    @Test("DOM resolver preserves stable selectors and names against live accessibility labels")
+    func domResolverPreservesStableSelectorsAndNamesAgainstLiveAccessibilityLabels() throws {
+        let cached = BrowserAnalysisBuilder.build(
+            snapshot: Self.sampleSnapshot(controls: [
+                Self.control(
+                    selector: "input[name=email]",
+                    tag: "input",
+                    role: "textbox",
+                    label: "Email",
+                    name: "email"
+                )
+            ]),
+            backend: "embedded WebKit",
+            engine: "embedded"
+        )
+        let live = BrowserAnalysisBuilder.build(
+            snapshot: Self.sampleSnapshot(controls: [
+                Self.control(
+                    selector: "input[name=email]",
+                    tag: "input",
+                    role: "textbox",
+                    label: "Primary contact",
+                    name: "email"
+                )
+            ]),
+            backend: "controlled Chromium profile",
+            engine: "controlled",
+            accessibilitySnapshotObject: Self.accessibilitySnapshot(role: "textbox", name: "Primary contact")
+        )
+
+        let cachedControl = try #require(cached.controls.first)
+        let match = try #require(BrowserControlResolver.matchingLiveControl(
+            cachedControl: cachedControl,
+            cachedAnalysis: cached,
+            liveAnalysis: live
+        ))
+
+        #expect(match.strategy == "controlRef")
+        #expect(match.usedSelectorFallback == false)
+        #expect(match.control.selector == "input[name=email]")
+        #expect(match.control.name == "email")
+        #expect(match.control.label == "Primary contact")
+        #expect(match.controlRef.source == .accessibility)
+    }
+
+    @Test("Accessibility matching considers label when name is technical")
+    func accessibilityMatchingConsidersLabelWhenNameIsTechnical() throws {
+        let analysis = BrowserAnalysisBuilder.build(
+            snapshot: Self.sampleSnapshot(controls: [
+                Self.control(
+                    selector: "input[name=q]",
+                    tag: "input",
+                    role: "textbox",
+                    label: "Search",
+                    name: "q"
+                )
+            ]),
+            backend: "controlled Chromium profile",
+            engine: "controlled",
+            accessibilitySnapshotObject: Self.accessibilitySnapshot(role: "textbox", name: "Search")
+        )
+
+        let response = analysis.responseObject(query: nil, full: false, limit: nil, version: .v2)
+        let refs = try #require(response["controlRefs"] as? [[String: Any]])
+        let firstRef = try #require(refs.first)
+
+        #expect(firstRef["source"] as? String == BrowserControlSource.accessibility.rawValue)
     }
 
     @Test("Control IDs stay stable across state-only changes")
@@ -523,7 +1284,7 @@ struct BrowserAnalysisTests {
         ]
     }
 
-    private static func accessibilitySnapshot(role: String, name: String) -> [String: Any] {
+    private static func accessibilitySnapshot(role: String, name: String, value: String = "") -> [String: Any] {
         [
             "nodeCount": 1,
             "nodes": [
@@ -532,7 +1293,11 @@ struct BrowserAnalysisTests {
                     "backendDOMNodeId": "42",
                     "ignored": false,
                     "role": ["value": role],
-                    "name": ["value": name]
+                    "name": ["value": name],
+                    "value": ["value": value],
+                    "properties": [
+                        ["name": "value", "value": ["value": value]]
+                    ]
                 ]
             ]
         ]
@@ -545,6 +1310,10 @@ struct BrowserAnalysisTests {
         type: String = "",
         label: String,
         value: String = "",
+        autocomplete: String = "",
+        name: String? = nil,
+        placeholder: String = "",
+        testID: String = "",
         disabled: Bool = false,
         href: String = "",
         y: Int = 20
@@ -555,9 +1324,10 @@ struct BrowserAnalysisTests {
             "role": role,
             "type": type,
             "label": label,
-            "name": label,
-            "placeholder": "",
-            "testID": "",
+            "name": name ?? label,
+            "placeholder": placeholder,
+            "autocomplete": autocomplete,
+            "testID": testID,
             "disabled": disabled,
             "actionable": !disabled,
             "value": value,
@@ -588,6 +1358,7 @@ struct BrowserAnalysisTests {
             role: role,
             tag: tag,
             type: "",
+            autocomplete: "",
             placeholder: "",
             testID: "",
             value: "",
@@ -615,6 +1386,22 @@ struct BrowserAnalysisTests {
                 ]
             ],
             risk: .normal,
+            providerVisibleRedaction: BrowserControlProviderVisibleRedaction(
+                rawControlObject: [
+                    "selector": selector,
+                    "label": label,
+                    "name": label,
+                    "role": role,
+                    "tag": tag,
+                    "type": "",
+                    "placeholder": "",
+                    "testID": "",
+                    "value": "",
+                    "href": "",
+                    "autocomplete": ""
+                ],
+                risk: .normal
+            ),
             confidence: 0.99,
             rank: 100,
             evidence: [:]

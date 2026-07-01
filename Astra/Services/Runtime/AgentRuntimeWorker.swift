@@ -8,6 +8,7 @@ final class AgentRuntimeWorker {
     private var cancellationRequested = false
     private var runtimeConfiguration = AgentRuntimeConfiguration()
     private let processRunner: AgentRuntimeProcessRunner
+    private let providerSettingsSnapshotProvider: () -> ProviderSettingsSnapshot
     var budgetEnforcementModeOverride: BudgetEnforcementMode?
 
     private var currentBudgetEnforcementMode: BudgetEnforcementMode {
@@ -56,8 +57,14 @@ final class AgentRuntimeWorker {
     }
 
     var defaultAgentPolicyLevelRaw: String = AgentPolicyLevel.review.rawValue
-    @MainActor init(processRunner: AgentRuntimeProcessRunner = AgentRuntimeProcessRunner()) {
+    @MainActor init(
+        processRunner: AgentRuntimeProcessRunner = AgentRuntimeProcessRunner(),
+        providerSettingsSnapshotProvider: @escaping () -> ProviderSettingsSnapshot = {
+            RuntimeSettingsSnapshotStore.providerSnapshot()
+        }
+    ) {
         self.processRunner = processRunner
+        self.providerSettingsSnapshotProvider = providerSettingsSnapshotProvider
         AppLogger.audit(.workerStarted, category: "Worker", fields: [
             "phase": "initialized",
             "default_runtime": defaultRuntimeID.rawValue,
@@ -1171,7 +1178,7 @@ final class AgentRuntimeWorker {
     // MARK: - Private
 
     private func runtimeReadinessConfiguration(for runtime: AgentRuntimeID) -> RuntimeReadinessConfiguration {
-        let providerSnapshot = RuntimeSettingsSnapshotStore.providerSnapshot()
+        let providerSnapshot = providerSettingsSnapshotProvider()
         return RuntimeReadinessConfiguration(
             runtime: runtime,
             providerSettings: runtimeConfiguration.configuredProviderSettings,

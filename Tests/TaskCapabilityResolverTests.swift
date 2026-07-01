@@ -365,6 +365,144 @@ struct TaskCapabilityResolverTests {
         #expect(!prompt.contains(#""$JIRA_BASE_URL/rest/api/3/...""#))
     }
 
+    @Test("Docker-routed connector prompt describes bq host control as help-only")
+    func dockerRoutedConnectorPromptDescribesBQHostControlAsHelpOnly() throws {
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+
+        let workspace = Workspace(name: "BigQuery Docker Workspace", primaryPath: "/tmp/bq-docker-workspace")
+        context.insert(workspace)
+
+        let connector = Connector(
+            name: "Analytics BigQuery",
+            serviceType: "gcloud",
+            connectorDescription: "Analytics BigQuery project",
+            baseURL: "",
+            authMethod: "application_default_credentials"
+        )
+        connector.workspace = workspace
+        connector.configKeys = ["GOOGLE_CLOUD_PROJECT"]
+        connector.configValues = ["demo-project"]
+        context.insert(connector)
+
+        let task = AgentTask(
+            title: "Inspect BigQuery",
+            goal: "Inspect BigQuery datasets from a Docker-routed task",
+            workspace: workspace
+        )
+        task.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encode(WorkspaceExecutionEnvironment(
+            id: "image:test",
+            kind: .dockerImage,
+            displayName: "Test Image",
+            image: "astra/test:latest"
+        ))
+        context.insert(task)
+        try context.save()
+
+        let prompt = AgentPromptBuilder.buildPrompt(for: task)
+        #expect(prompt.contains("This task is routed through a Docker workspace executor"))
+        #expect(prompt.contains("Use `mcp__astra_host__bq` only for bq help/version metadata"))
+        #expect(prompt.contains("BigQuery data access is not available through host-control"))
+        #expect(!prompt.contains("For Google Cloud or BigQuery host CLI operations, use `mcp__astra_host__gcloud` or `mcp__astra_host__bq`"))
+    }
+
+    @Test("Docker routed Jira prompt suppresses raw REST runtime examples")
+    func dockerRoutedJiraPromptSuppressesRawRESTRuntimeExamples() throws {
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+
+        let workspace = Workspace(name: "Docker Jira Workspace", primaryPath: "/tmp/docker-jira-workspace")
+        context.insert(workspace)
+
+        let connector = Connector(
+            name: "Jira",
+            serviceType: "jira",
+            connectorDescription: "Jira REST API",
+            baseURL: "https://jira.example.atlassian.net",
+            authMethod: "basic"
+        )
+        connector.workspace = workspace
+        connector.configKeys = ["JIRA_BASE_URL", "JIRA_EMAIL", "JIRA_API_TOKEN"]
+        connector.configValues = ["https://jira.example.atlassian.net", "person@example.edu", "token"]
+        context.insert(connector)
+
+        let task = AgentTask(
+            title: "Read Jira",
+            goal: "Read Jira issues in Docker",
+            workspace: workspace
+        )
+        task.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encode(WorkspaceExecutionEnvironment(
+            id: "image:workspace",
+            kind: .dockerImage,
+            displayName: "Workspace Image",
+            image: "astra/workspace:latest"
+        ))
+        context.insert(task)
+        try context.save()
+
+        let prompt = AgentPromptBuilder.buildPrompt(for: task)
+
+        #expect(prompt.contains("mcp__astra_host__jira"))
+        #expect(prompt.contains(#""operation":"status""#))
+        #expect(prompt.contains(#""operation":"search_jql""#))
+        #expect(!prompt.contains("Runtime example: curl"))
+        #expect(!prompt.contains("/rest/api/3/mypermissions"))
+    }
+
+    @Test("Docker routed Jira prompt includes connector alias in runtime examples")
+    func dockerRoutedJiraPromptIncludesConnectorAliasInRuntimeExamples() throws {
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+
+        let workspace = Workspace(name: "Docker Multi Jira Workspace", primaryPath: "/tmp/docker-multi-jira-workspace")
+        context.insert(workspace)
+
+        let eng = Connector(
+            name: "Eng Jira",
+            serviceType: "jira",
+            connectorDescription: "Engineering Jira",
+            baseURL: "https://eng.example.atlassian.net",
+            authMethod: "basic"
+        )
+        eng.workspace = workspace
+        eng.configKeys = ["JIRA_BASE_URL", "JIRA_EMAIL", "JIRA_API_TOKEN"]
+        eng.configValues = ["https://eng.example.atlassian.net", "eng@example.edu", "eng-token"]
+        context.insert(eng)
+
+        let ops = Connector(
+            name: "Ops Jira",
+            serviceType: "jira",
+            connectorDescription: "Operations Jira",
+            baseURL: "https://ops.example.atlassian.net",
+            authMethod: "basic"
+        )
+        ops.workspace = workspace
+        ops.configKeys = ["JIRA_BASE_URL", "JIRA_EMAIL", "JIRA_API_TOKEN"]
+        ops.configValues = ["https://ops.example.atlassian.net", "ops@example.edu", "ops-token"]
+        context.insert(ops)
+
+        let task = AgentTask(
+            title: "Compare Jira",
+            goal: "Read Jira issues in Docker from both sites",
+            workspace: workspace
+        )
+        task.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encode(WorkspaceExecutionEnvironment(
+            id: "image:workspace",
+            kind: .dockerImage,
+            displayName: "Workspace Image",
+            image: "astra/workspace:latest"
+        ))
+        context.insert(task)
+        try context.save()
+
+        let prompt = AgentPromptBuilder.buildPrompt(for: task)
+
+        #expect(prompt.contains(#"Runtime example: mcp__astra_host__jira with {"operation":"status","alias":"eng_jira"}"#))
+        #expect(prompt.contains(#"Runtime example: mcp__astra_host__jira with {"operation":"status","alias":"ops_jira"}"#))
+        #expect(prompt.contains(#"{"operation":"search_jql","alias":"eng_jira","jql":"project = KEY","max_results":1}"#))
+        #expect(prompt.contains(#"{"operation":"search_jql","alias":"ops_jira","jql":"project = KEY","max_results":1}"#))
+    }
+
     @Test("Follow-up prompt preserves namespaced connector manifest")
     func followUpPromptPreservesNamespacedConnectorManifest() throws {
         let container = try makeTaskCapabilityResolverContainer()
@@ -775,6 +913,55 @@ struct TaskCapabilityResolverTests {
         #expect(prompt.contains("https://stanfordmed.atlassian.net"))
     }
 
+    @Test("Enabled DevOps pack does not activate GitHub runtime resources")
+    func enabledDevOpsPackDoesNotActivateGitHubRuntimeResources() throws {
+        let manifest = try #require(
+            AstraPackCatalog(localStorageRoot: nil).load().packs.first { $0.id == "astra.pack.devops" }
+        )
+        #expect(manifest.capabilityPackageIDs == ["github-workflow"])
+
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+
+        let workspace = Workspace(name: "DevOps Pack Only", primaryPath: "/tmp/devops-pack-only")
+        workspace.enabledPackIDs = [manifest.id]
+        context.insert(workspace)
+
+        let githubSkill = Skill(
+            name: "GitHub Agent",
+            allowedTools: ["Read", "Bash"],
+            behaviorInstructions: "Use the GitHub CLI for pull request and CI work."
+        )
+        githubSkill.isGlobal = true
+        context.insert(githubSkill)
+
+        let githubTool = LocalTool(
+            name: "gh — GitHub CLI",
+            toolDescription: "Run GitHub CLI commands",
+            toolType: "cli",
+            command: "gh"
+        )
+        githubTool.isGlobal = true
+        context.insert(githubTool)
+
+        let task = AgentTask(
+            title: "Review PR Queue",
+            goal: "Summarize the PR Queue and CI Review app template.",
+            workspace: workspace
+        )
+        context.insert(task)
+        try context.save()
+
+        let resolver = TaskCapabilityResolver(task: task)
+        #expect(resolver.allBehaviorSkills.map(\.name).isEmpty)
+        #expect(resolver.allLocalTools.map(\.command).isEmpty)
+
+        let prompt = AgentPromptBuilder.buildPrompt(for: task)
+        #expect(!prompt.contains("[GitHub Agent]:"))
+        #expect(!prompt.contains("gh — GitHub CLI"))
+        #expect(!prompt.contains("Use the GitHub CLI for pull request and CI work."))
+    }
+
     @Test("Provider launch keeps connector owned by selected skill")
     func providerLaunchKeepsConnectorOwnedBySelectedSkill() throws {
         let container = try makeTaskCapabilityResolverContainer()
@@ -1043,32 +1230,24 @@ struct TaskCapabilityResolverTests {
         #expect(issues.first?.resourceName == "Jira")
     }
 
-    @Test("Runtime integrity still blocks live package skill missing browser adapter")
-    func runtimeIntegrityBlocksLivePackageSkillMissingBrowserAdapter() throws {
+    @Test("Runtime integrity does not require GitHub browser adapter for host-control package")
+    func runtimeIntegrityDoesNotRequireGitHubBrowserAdapterForHostControlPackage() throws {
         let container = try makeTaskCapabilityResolverContainer()
         let context = container.mainContext
         let githubPackage = try #require(PluginCatalog.builtInPackages.first { $0.id == "github-workflow" })
+        let packageSkill = try #require(githubPackage.skills.first)
 
         let workspace = Workspace(name: "GitHub Workspace", primaryPath: "/tmp/github-workspace")
         context.insert(workspace)
 
         let githubSkill = Skill(
-            name: "GitHub Agent",
-            allowedTools: ["Read", "Bash"],
-            behaviorInstructions: "Use GitHub CLI."
+            name: packageSkill.name,
+            allowedTools: packageSkill.allowedTools,
+            disallowedTools: packageSkill.disallowedTools,
+            behaviorInstructions: packageSkill.behaviorInstructions
         )
         githubSkill.workspace = workspace
         context.insert(githubSkill)
-
-        let githubTool = LocalTool(
-            name: "gh - GitHub CLI",
-            toolDescription: "Run GitHub CLI commands",
-            toolType: "cli",
-            command: "gh"
-        )
-        githubTool.workspace = workspace
-        githubTool.skill = githubSkill
-        context.insert(githubTool)
 
         let task = AgentTask(
             title: "Use GitHub",
@@ -1085,9 +1264,47 @@ struct TaskCapabilityResolverTests {
             checkExecutables: false
         )
 
+        #expect(issues.isEmpty)
+    }
+
+    @Test("Runtime integrity checks selected GitHub host-control skill prerequisites")
+    func runtimeIntegrityChecksSelectedGitHubHostControlSkillPrerequisites() throws {
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+        let githubPackage = try #require(PluginCatalog.builtInPackages.first { $0.id == "github-workflow" })
+        let packageSkill = try #require(githubPackage.skills.first)
+
+        let workspace = Workspace(name: "Selected GitHub Workspace", primaryPath: "/tmp/selected-github-workspace")
+        context.insert(workspace)
+
+        let githubSkill = Skill(
+            name: packageSkill.name,
+            allowedTools: packageSkill.allowedTools,
+            disallowedTools: packageSkill.disallowedTools,
+            behaviorInstructions: packageSkill.behaviorInstructions
+        )
+        githubSkill.workspace = workspace
+        context.insert(githubSkill)
+
+        let task = AgentTask(
+            title: "Review PRs",
+            goal: "List GitHub pull requests",
+            workspace: workspace
+        )
+        task.skills = [githubSkill]
+        context.insert(task)
+        try context.save()
+
+        let issues = CapabilityRuntimeIntegrityService.issues(
+            for: task,
+            packages: [githubPackage],
+            checkExecutables: false,
+            prerequisiteStatuses: [CommonCLIPrerequisites.githubAuth.id: .unauthenticated(detail: "not logged in")]
+        )
+
         #expect(issues.map(\.source) == [.selectedPackageSkill])
-        #expect(issues.map(\.resourceKind) == [.browserAdapter])
-        #expect(issues.first?.resourceName == BrowserSiteAdapterID.github)
+        #expect(issues.map(\.resourceKind) == [.credential])
+        #expect(issues.first?.resourceName == "GitHub login")
     }
 
     @Test("Runtime integrity ignores stale package skill snapshots")
@@ -1462,6 +1679,77 @@ struct TaskCapabilityResolverTests {
         #expect(AgentRuntimeProcessRunner.hasActiveCLITools(task, contextText: followUpContext))
     }
 
+    @Test("Provider launch context activates GitHub package for terminal PR abbreviations")
+    func providerLaunchContextActivatesGitHubPackageForTerminalPRAbbreviations() throws {
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+        let (workspace, githubPackage) = try makeGitHubEnabledWorkspace(in: context, name: "github-pr-abbreviation-scope")
+
+        let task = AgentTask(
+            title: "Bake a cake",
+            goal: "Bake a chocolate sponge cake and write the recipe",
+            workspace: workspace
+        )
+        context.insert(task)
+        try context.save()
+
+        let terminalPluralContext = "Review PRs"
+        let scope = TaskCapabilityResolver(task: task)
+            .resolvedScope(.providerLaunch(contextText: terminalPluralContext))
+        #expect(scope.enabledPackageIDs.contains(githubPackage.id))
+        #expect(HostControlPlaneMCPProjection.enabledToolNames(
+            task: task,
+            environment: .host,
+            contextText: terminalPluralContext
+        ) == ["github"])
+    }
+
+    @Test("GitHub package intent ignores ci substrings and generic UI issues")
+    func githubPackageIntentIgnoresCISubstringsAndGenericUIIssues() throws {
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+        let (workspace, githubPackage) = try makeGitHubEnabledWorkspace(in: context, name: "github-token-scope")
+
+        let unrelatedTasks = [
+            AgentTask(
+                title: "Fix special case",
+                goal: "Fix the special-case regression in local validation",
+                workspace: workspace
+            ),
+            AgentTask(
+                title: "Fix UI issue",
+                goal: "Fix a UI issue in the settings screen",
+                workspace: workspace
+            )
+        ]
+        let ciTask = AgentTask(
+            title: "Review CI",
+            goal: "Review the CI failure for this branch",
+            workspace: workspace
+        )
+        for task in unrelatedTasks + [ciTask] {
+            context.insert(task)
+        }
+        try context.save()
+
+        for task in unrelatedTasks {
+            let scope = TaskCapabilityResolver(task: task)
+                .resolvedScope(.providerLaunch(contextText: task.goal))
+            #expect(!scope.enabledPackageIDs.contains(githubPackage.id), "Unexpected GitHub activation for: \(task.goal)")
+            #expect(HostControlPlaneMCPProjection.enabledToolNames(
+                task: task,
+                environment: .host,
+                contextText: task.goal
+            ).isEmpty)
+        }
+
+        #expect(HostControlPlaneMCPProjection.enabledToolNames(
+            task: ciTask,
+            environment: .host,
+            contextText: ciTask.goal
+        ) == ["github"])
+    }
+
     @Test("A pruned-but-existing enabled capability is not a launch failure")
     func prunedEnabledCapabilityIsNotALaunchFailure() throws {
         let container = try makeTaskCapabilityResolverContainer()
@@ -1500,6 +1788,57 @@ struct TaskCapabilityResolverTests {
         #expect(!issues.contains { $0.resourceKind == .localTool })
     }
 
+    @Test("Provider launch checks Google Drive browser package by product intent")
+    func providerLaunchChecksGoogleDriveBrowserPackageByProductIntent() throws {
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+        let package = PluginPackage(
+            id: "local-google-drive-browser",
+            name: "Google Drive Browser",
+            icon: "folder.badge.gearshape",
+            description: "Adds Google Drive browser policy checks",
+            author: "ASTRA",
+            category: "Browser",
+            tags: ["google-drive"],
+            version: "1.0.0",
+            skills: [],
+            connectors: [],
+            localTools: [],
+            templates: [],
+            browserAdapters: [BrowserSiteAdapterID.googleDrive],
+            governance: .localDraft()
+        )
+
+        let workspace = Workspace(name: "Google Drive Integrity", primaryPath: "/tmp/google-drive-integrity")
+        workspace.enabledCapabilityIDs = [package.id]
+        context.insert(workspace)
+
+        let task = AgentTask(
+            title: "Read Drive file",
+            goal: "read a Google Drive file",
+            workspace: workspace
+        )
+        context.insert(task)
+        try context.save()
+
+        let issues = CapabilityRuntimeIntegrityService.issues(
+            for: task,
+            packages: [package],
+            checkExecutables: false,
+            policyContext: CapabilityCatalogPolicyContext.workspaceUser(
+                workspace: workspace,
+                currentAppVersion: SemanticVersion(1, 0, 0)
+            ),
+            scope: .providerLaunch(contextText: task.goal)
+        )
+
+        #expect(issues.contains {
+            $0.packageID == package.id &&
+                $0.resourceKind == CapabilityRuntimeIntegrityIssue.ResourceKind.policy &&
+                $0.message.contains("catalog policy blocks runtime activation")
+        })
+    }
+
     @Test("Capability roster advertises enabled capabilities with an invocation hint")
     func capabilityRosterAdvertisesEnabledCapabilities() throws {
         let container = try makeTaskCapabilityResolverContainer()
@@ -1511,7 +1850,9 @@ struct TaskCapabilityResolverTests {
 
         let roster = try #require(CapabilityRosterBuilder.roster(for: workspace))
         #expect(roster.contains("GitHub"))
-        #expect(roster.contains("`gh`"))
+        // GitHub capability now routes through the GitHub Agent skill (host-control MCP),
+        // not a direct `gh` Bash command, so the invocation hint reflects the skill path.
+        #expect(roster.contains("GitHub Agent"))
         // Awareness must instruct the agent to surface, not silently skip, gaps.
         #expect(roster.lowercased().contains("do not silently skip"))
     }
@@ -2093,6 +2434,89 @@ struct TaskCapabilityResolverTests {
         #expect(AgentRuntimeProcessRunner.scopedEnvironmentVariables(for: task, contextText: contextText)["ASTRA_BROWSER_URL"] == nil)
     }
 
+    @Test("Pack-hidden browser shelf suppresses runtime browser bridge")
+    func packHiddenBrowserShelfSuppressesRuntimeBrowserBridge() throws {
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+
+        let workspace = Workspace(name: "DevOps Browser Hidden Workspace", primaryPath: "/tmp/devops-browser-hidden")
+        workspace.enabledPackIDs = ["astra.pack.devops"]
+        context.insert(workspace)
+
+        let task = AgentTask(
+            title: "Inspect current browser page",
+            goal: "Use the ASTRA browser to inspect the current page.",
+            workspace: workspace
+        )
+        context.insert(task)
+        try context.save()
+
+        let policy = AstraPackWorkspaceProfileProvider.shelfAvailabilityPolicy(for: workspace)
+        let shelfContext = ShelfAvailabilityPolicy.Context(
+            hasOpenTaskThread: true,
+            hasWorkspaceContext: true,
+            hasPlanContent: false,
+            hasFilesShelfContent: false,
+            hasQueryShelfContent: false,
+            isComposingWorkspaceApp: false,
+            activeShelfID: nil
+        )
+        #expect(!policy.canPresent(.browser, in: shelfContext))
+
+        ShelfBrowserBridgeRegistry.shared.update(
+            endpoint: "http://127.0.0.1:49152",
+            currentURL: "https://example.com/dashboard",
+            currentTitle: "Dashboard",
+            taskID: task.id,
+            isPresented: true,
+            isEnabled: true
+        )
+        defer { ShelfBrowserBridgeRegistry.shared.reset() }
+
+        let contextText = "Use the ASTRA browser to inspect the current page."
+
+        #expect(!TaskCapabilityResolver.shouldExposeBrowserBridge(for: task, contextText: contextText))
+        let scope = TaskCapabilityResolver(task: task).promptScope(contextText: contextText)
+        #expect(!scope.localTools.contains { $0.command == "astra-browser" })
+        #expect(AgentRuntimeProcessRunner.scopedEnvironmentVariables(for: task, contextText: contextText)["ASTRA_BROWSER_URL"] == nil)
+    }
+
+    @Test("Supplied shelf policy controls runtime browser bridge exposure")
+    func suppliedShelfPolicyControlsRuntimeBrowserBridgeExposure() throws {
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+
+        let workspace = Workspace(name: "Browser Policy Workspace", primaryPath: "/tmp/browser-policy")
+        context.insert(workspace)
+        let task = AgentTask(
+            title: "Inspect current browser page",
+            goal: "Use the ASTRA browser to inspect the current page.",
+            workspace: workspace
+        )
+        context.insert(task)
+        try context.save()
+
+        ShelfBrowserBridgeRegistry.shared.update(
+            endpoint: "http://127.0.0.1:49152",
+            currentURL: "https://example.com/dashboard",
+            currentTitle: "Dashboard",
+            taskID: task.id,
+            isPresented: true,
+            isEnabled: true
+        )
+        defer { ShelfBrowserBridgeRegistry.shared.reset() }
+
+        let contextText = "Use the ASTRA browser to inspect the current page."
+        let disabledBrowserPolicy = ShelfAvailabilityPolicy(disabledShelfIDs: [.browser])
+
+        #expect(TaskCapabilityResolver.shouldExposeBrowserBridge(for: task, contextText: contextText))
+        #expect(!TaskCapabilityResolver.shouldExposeBrowserBridge(
+            for: task,
+            contextText: contextText,
+            shelfAvailabilityPolicy: disabledBrowserPolicy
+        ))
+    }
+
     @Test("Browser adapters require runnable catalog policy")
     func browserAdaptersRequireRunnableCatalogPolicy() throws {
         let workspace = Workspace(name: "Draft Browser Workspace", primaryPath: "/tmp/draft-browser-workspace")
@@ -2142,6 +2566,80 @@ struct TaskCapabilityResolverTests {
             packages: [draftPackage]
         )
         #expect(explicitlyBlocked.isEmpty)
+    }
+
+    @Test("Pack capability filters load approval store when package governance can be approval-overridden")
+    func packCapabilityFiltersLoadApprovalStoreWhenPackageGovernanceCanBeApprovalOverridden() throws {
+        let workspace = Workspace(name: "Approved Draft Workspace", primaryPath: "/tmp/approved-draft-workspace")
+        workspace.enabledCapabilityIDs = ["draft-approved-tool"]
+        let draftPackage = PluginPackage(
+            id: "draft-approved-tool",
+            name: "Draft Approved Tool",
+            icon: "terminal",
+            description: "Draft tool approved outside pack policy.",
+            author: "Tests",
+            category: "Tools",
+            tags: [],
+            version: "1.0.0",
+            skills: [],
+            connectors: [],
+            localTools: [
+                PluginLocalTool(
+                    name: "Echo",
+                    description: "Echo",
+                    icon: "terminal",
+                    toolType: "cli",
+                    command: "echo",
+                    arguments: ""
+                )
+            ],
+            templates: [],
+            governance: .localDraft()
+        )
+        let approval = CapabilityApprovalRecord(
+            packageID: draftPackage.id,
+            packageVersion: draftPackage.version,
+            status: .approved,
+            approvedBy: "Security",
+            approvedAt: Date(),
+            reviewNotes: "Reviewed",
+            sourceDigest: try CapabilityApprovalDigest.digest(for: draftPackage)
+        )
+        let packPolicy = AstraPackPolicyResolver.resolve(
+            composition: AstraPackComposition.resolve(packs: [
+                AstraPackManifest(
+                    id: "astra.pack.disables-other-tool",
+                    name: "Disables Other Tool",
+                    version: "1.0.0",
+                    coreAPIVersion: "1.0",
+                    description: "Disables a different package without requiring review gates.",
+                    policyRestrictions: [
+                        AstraPackPolicyRestriction(
+                            id: "disable-other",
+                            contributionKind: "capabilityPackage",
+                            action: "disableCapability",
+                            effect: "restrict",
+                            targetID: "other-tool"
+                        )
+                    ]
+                )
+            ])
+        )
+        var didLoadApprovals = false
+        let enabled = CapabilityRuntimeResourceMatcher.withApprovalRecordsLoaderForTesting({
+            didLoadApprovals = true
+            return [approval]
+        }) {
+            CapabilityRuntimeResourceMatcher.enabledPackages(
+                for: workspace,
+                in: [draftPackage],
+                approvalRecords: nil,
+                packPolicy: packPolicy
+            )
+        }
+
+        #expect(didLoadApprovals)
+        #expect(enabled.map(\.id) == ["draft-approved-tool"])
     }
 
     @Test("Runtime integrity reports unknown browser adapter IDs")

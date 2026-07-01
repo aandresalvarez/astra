@@ -8,12 +8,35 @@ import ASTRACore
 /// Data safety contract:
 /// - UUIDs are exported for every durable entity so names are display text only.
 /// - Connector credential values are never exported. Only credential key names are written.
-/// - v1-v9 configs remain importable through optional fields and legacy name fallback.
+/// - v1-v10 configs remain importable through optional fields and legacy name fallback.
 enum WorkspaceConfigManager {
 
-    // MARK: - Config Schema (v10)
+    // MARK: - Config Schema (v11)
 
-    static let currentVersion = 10
+    static let currentVersion = 11
+
+    enum ScheduleImportTrustPolicy {
+        case quarantineEnabledSchedules
+        case preserveEnabledState
+
+        func enabledState(for config: ScheduleConfig) -> Bool {
+            switch self {
+            case .quarantineEnabledSchedules:
+                false
+            case .preserveEnabledState:
+                config.isEnabled
+            }
+        }
+
+        func quarantinedScheduleCount(in schedules: [ScheduleConfig]?) -> Int {
+            switch self {
+            case .quarantineEnabledSchedules:
+                schedules?.filter(\.isEnabled).count ?? 0
+            case .preserveEnabledState:
+                0
+            }
+        }
+    }
 
     struct WorkspaceConfigExportResult {
         enum Status: String {
@@ -93,6 +116,7 @@ enum WorkspaceConfigManager {
         var connectorCount: Int
         var localToolCount: Int
         var taskCount: Int
+        var quarantinedScheduleCount: Int
         var skippedConnectorCount: Int
         var skippedLocalToolCount: Int
 
@@ -108,6 +132,7 @@ enum WorkspaceConfigManager {
                 "connector_count": String(connectorCount),
                 "local_tool_count": String(localToolCount),
                 "task_count": String(taskCount),
+                "quarantined_schedule_count": String(quarantinedScheduleCount),
                 "skipped_connector_count": String(skippedConnectorCount),
                 "skipped_local_tool_count": String(skippedLocalToolCount)
             ]
@@ -134,6 +159,8 @@ enum WorkspaceConfigManager {
         var enabledGlobalConnectorIDs: [String]?
         var enabledGlobalToolIDs: [String]?
         var enabledCapabilityIDs: [String]?
+        var enabledPackIDs: [String]? = nil
+        var shelfVisibilityOverrides: [String: Bool]? = nil
         var memories: [String]?
         var createdAt: Date?
         var updatedAt: Date?
@@ -421,6 +448,8 @@ enum WorkspaceConfigManager {
             enabledGlobalConnectorIDs: workspace.enabledGlobalConnectorIDs,
             enabledGlobalToolIDs: workspace.enabledGlobalToolIDs,
             enabledCapabilityIDs: workspace.enabledCapabilityIDs,
+            enabledPackIDs: workspace.enabledPackIDs,
+            shelfVisibilityOverrides: workspace.shelfVisibilityOverrides,
             memories: workspace.memories,
             createdAt: workspace.createdAt,
             updatedAt: workspace.updatedAt,
@@ -608,12 +637,24 @@ enum WorkspaceConfigManager {
     }
 
     /// Create a new Workspace + Skills + Connectors + Tools + Templates from a config.
-    static func importWorkspace(from config: WorkspaceConfig, modelContext: ModelContext) -> Workspace {
-        importWorkspaceResult(from: config, modelContext: modelContext).workspace
+    static func importWorkspace(
+        from config: WorkspaceConfig,
+        modelContext: ModelContext,
+        scheduleTrustPolicy: ScheduleImportTrustPolicy = .quarantineEnabledSchedules
+    ) -> Workspace {
+        importWorkspaceResult(
+            from: config,
+            modelContext: modelContext,
+            scheduleTrustPolicy: scheduleTrustPolicy
+        ).workspace
     }
 
     /// Create a new Workspace + Skills + Connectors + Tools + Templates from a config.
-    static func importWorkspaceResult(from config: WorkspaceConfig, modelContext: ModelContext) -> WorkspaceConfigImportResult {
+    static func importWorkspaceResult(
+        from config: WorkspaceConfig,
+        modelContext: ModelContext,
+        scheduleTrustPolicy: ScheduleImportTrustPolicy = .quarantineEnabledSchedules
+    ) -> WorkspaceConfigImportResult {
         let workspace = Workspace(
             name: config.name,
             primaryPath: config.primaryPath,
@@ -629,20 +670,16 @@ enum WorkspaceConfigManager {
         workspace.enabledGlobalConnectorIDs = config.enabledGlobalConnectorIDs ?? []
         workspace.enabledGlobalToolIDs = config.enabledGlobalToolIDs ?? []
         workspace.enabledCapabilityIDs = config.enabledCapabilityIDs ?? []
+        workspace.enabledPackIDs = config.enabledPackIDs ?? []
+        workspace.shelfVisibilityOverrides = config.shelfVisibilityOverrides ?? [:]
         workspace.memories = config.memories ?? []
         workspace.isStarred = config.isStarred ?? false
         workspace.activeExecutionEnvironmentJSON = sanitizedExecutionEnvironmentJSON(config.activeExecutionEnvironmentJSON)
-        // Only restore the worktree focus when the worktree actually exists on
-        // this machine; otherwise reset to root so new chats don't pin to a
-        // path that isn't here.
-        if let active = config.activeWorkingPath,
-           !active.isEmpty,
-           active != config.primaryPath,
-           FileManager.default.fileExists(atPath: active) {
-            workspace.activeWorkingPath = active
-        } else {
-            workspace.activeWorkingPath = nil
-        }
+        workspace.activeWorkingPath = importedActiveWorkingPath(
+            config.activeWorkingPath,
+            primaryPath: config.primaryPath,
+            additionalPaths: config.additionalPaths
+        )
         if let refs = config.installedPlugins {
             workspace.installedPluginIDs = refs.map(\.id)
             workspace.installedPluginVersions = refs.map(\.version)
@@ -734,8 +771,9 @@ enum WorkspaceConfigManager {
             SSHConnectionManager.save(config.sshConnections, workspacePath: config.primaryPath)
         }
 
+        let quarantinedScheduleCount = scheduleTrustPolicy.quarantinedScheduleCount(in: config.schedules)
         for sc in config.schedules ?? [] {
-            let schedule = makeSchedule(from: sc, workspace: workspace)
+            let schedule = makeImportedSchedule(from: sc, workspace: workspace, trustPolicy: scheduleTrustPolicy)
             modelContext.insert(schedule)
         }
 
@@ -763,6 +801,7 @@ enum WorkspaceConfigManager {
             connectorCount: workspace.connectors.count,
             localToolCount: workspace.localTools.count,
             taskCount: workspace.tasks.count,
+            quarantinedScheduleCount: quarantinedScheduleCount,
             skippedConnectorCount: skippedConnectorCount,
             skippedLocalToolCount: skippedLocalToolCount
         )
@@ -1319,7 +1358,11 @@ enum WorkspaceConfigManager {
         )
     }
 
-    private static func makeSchedule(from config: ScheduleConfig, workspace: Workspace) -> TaskSchedule {
+    private static func makeImportedSchedule(
+        from config: ScheduleConfig,
+        workspace: Workspace,
+        trustPolicy: ScheduleImportTrustPolicy
+    ) -> TaskSchedule {
         let schedule = TaskSchedule(
             name: config.name,
             goal: config.goal,
@@ -1333,7 +1376,7 @@ enum WorkspaceConfigManager {
         if let id = config.id.flatMap(UUID.init(uuidString:)) {
             schedule.id = id
         }
-        schedule.isEnabled = config.isEnabled
+        schedule.isEnabled = trustPolicy.enabledState(for: config)
         schedule.templateID = config.templateID.flatMap(UUID.init(uuidString:))
         schedule.templateVariablesJSON = config.templateVariablesJSON
         schedule.routineDescription = config.routineDescription ?? schedule.routineDescription
@@ -1509,10 +1552,13 @@ enum WorkspaceConfigManager {
         if let value = config.isolationStrategy {
             task.isolationStrategy = IsolationStrategy(rawValue: value) ?? .sameDirectory
         }
-        if let value = config.validationStrategy {
-            task.validationStrategy = ValidationStrategy(rawValue: value) ?? .manual
-        }
-        task.testCommand = config.testCommand ?? ""
+        let validation = importedValidationConfiguration(
+            strategy: config.validationStrategy,
+            testCommand: config.testCommand,
+            workspacePath: workspace.primaryPath
+        )
+        task.validationStrategy = validation.strategy
+        task.testCommand = validation.testCommand
         task.draftMessages = config.draftMessages ?? ""
         task.chainedGoal = config.chainedGoal ?? ""
         if let id = config.chainedFromID {
@@ -1613,6 +1659,23 @@ enum WorkspaceConfigManager {
             artifact.createdAt = ac.createdAt
             modelContext.insert(artifact)
         }
+    }
+
+    private static func importedValidationConfiguration(
+        strategy rawStrategy: String?,
+        testCommand rawCommand: String?,
+        workspacePath: String?
+    ) -> (strategy: ValidationStrategy, testCommand: String) {
+        let strategy = rawStrategy.flatMap(ValidationStrategy.init(rawValue:)) ?? .manual
+        let command = rawCommand?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+        guard strategy == .runTests else {
+            return (strategy, command)
+        }
+        guard ValidationCommandPolicy.isRunTestsCommandAllowed(command, workspacePath: workspacePath) else {
+            return (.runTests, "")
+        }
+        return (.runTests, command)
     }
 
     private static func linkSkills(
@@ -1721,6 +1784,184 @@ enum WorkspaceConfigManager {
     private static func appendUnique(_ value: String, to values: inout [String]) {
         guard !values.contains(value) else { return }
         values.append(value)
+    }
+
+    private static func importedActiveWorkingPath(
+        _ activeWorkingPath: String?,
+        primaryPath: String,
+        additionalPaths: [String],
+        fileManager: FileManager = .default
+    ) -> String? {
+        guard let active = activeWorkingPath,
+              !active.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return nil
+        }
+
+        let activePath = WorkspacePathPresentation.standardizedPath(active)
+        guard !activePath.isEmpty,
+              isExistingDirectory(activePath, fileManager: fileManager),
+              let canonicalActive = canonicalPath(activePath) else {
+            return nil
+        }
+
+        let primary = WorkspacePathPresentation.standardizedPath(primaryPath)
+        guard canonicalActive != canonicalPath(primary) else {
+            return nil
+        }
+
+        let workspaceRootPaths = ([primaryPath] + additionalPaths)
+            .map(WorkspacePathPresentation.standardizedPath)
+            .filter { !$0.isEmpty }
+        let canonicalWorkspaceRoots = workspaceRootPaths.compactMap(canonicalPath)
+
+        if canonicalWorkspaceRoots.contains(where: { isPath(canonicalActive, insideOrEqualTo: $0) }) {
+            return activePath
+        }
+        if isRegisteredWorktree(activePath, attachedTo: workspaceRootPaths, fileManager: fileManager) {
+            return activePath
+        }
+
+        return nil
+    }
+
+    private static func isExistingDirectory(_ path: String, fileManager: FileManager) -> Bool {
+        var isDirectory = ObjCBool(false)
+        return fileManager.fileExists(atPath: path, isDirectory: &isDirectory) && isDirectory.boolValue
+    }
+
+    private static func canonicalPath(_ path: String) -> String? {
+        ExecutionSandbox.canonicalize(path)
+    }
+
+    private struct GitDirectoryLayout {
+        let gitDirectory: String
+        let commonDirectory: String
+    }
+
+    private static func isRegisteredWorktree(
+        _ activePath: String,
+        attachedTo workspaceRootPaths: [String],
+        fileManager: FileManager
+    ) -> Bool {
+        guard let activeLayout = gitDirectoryLayout(for: activePath, fileManager: fileManager),
+              worktreeAdminDirectory(activeLayout.gitDirectory, pointsBackTo: activePath, fileManager: fileManager) else {
+            return false
+        }
+
+        return workspaceRootPaths.contains { rootPath in
+            guard let rootLayout = gitDirectoryLayout(for: rootPath, fileManager: fileManager),
+                  activeLayout.commonDirectory == rootLayout.commonDirectory else {
+                return false
+            }
+            let worktreesDirectory = URL(fileURLWithPath: rootLayout.commonDirectory, isDirectory: true)
+                .appendingPathComponent("worktrees", isDirectory: true)
+                .path
+            return activeLayout.gitDirectory != activeLayout.commonDirectory
+                && isPath(activeLayout.gitDirectory, insideOrEqualTo: worktreesDirectory)
+        }
+    }
+
+    private static func gitDirectoryLayout(for path: String, fileManager: FileManager) -> GitDirectoryLayout? {
+        guard let gitDirectory = gitDirectoryReference(for: path, fileManager: fileManager),
+              isExistingDirectory(gitDirectory, fileManager: fileManager) else {
+            return nil
+        }
+        let commonDirectory = commonGitDirectory(for: gitDirectory, fileManager: fileManager) ?? gitDirectory
+        guard isExistingDirectory(commonDirectory, fileManager: fileManager) else {
+            return nil
+        }
+        return GitDirectoryLayout(gitDirectory: gitDirectory, commonDirectory: commonDirectory)
+    }
+
+    private static func commonGitDirectory(for gitDirectory: String, fileManager: FileManager) -> String? {
+        let commonDirPath = URL(fileURLWithPath: gitDirectory, isDirectory: true)
+            .appendingPathComponent("commondir")
+            .path
+        guard let data = fileManager.contents(atPath: commonDirPath),
+              let raw = String(data: data, encoding: .utf8) else {
+            return nil
+        }
+        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty else { return nil }
+        let resolved = value.hasPrefix("/")
+            ? value
+            : URL(fileURLWithPath: gitDirectory, isDirectory: true)
+                .appendingPathComponent(value)
+                .standardizedFileURL
+                .path
+        return canonicalPath(resolved)
+    }
+
+    private static func worktreeAdminDirectory(
+        _ gitDirectory: String,
+        pointsBackTo activePath: String,
+        fileManager: FileManager
+    ) -> Bool {
+        let pointerPath = URL(fileURLWithPath: gitDirectory, isDirectory: true)
+            .appendingPathComponent("gitdir")
+            .path
+        guard let data = fileManager.contents(atPath: pointerPath),
+              let raw = String(data: data, encoding: .utf8) else {
+            return false
+        }
+        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty else { return false }
+        let resolved = value.hasPrefix("/")
+            ? value
+            : URL(fileURLWithPath: gitDirectory, isDirectory: true)
+                .appendingPathComponent(value)
+                .standardizedFileURL
+                .path
+        guard let canonicalGitFile = canonicalPath(resolved),
+              let canonicalActive = canonicalPath(activePath) else {
+            return false
+        }
+        let pointedWorktree = (canonicalGitFile as NSString).lastPathComponent == ".git"
+            ? (canonicalGitFile as NSString).deletingLastPathComponent
+            : canonicalGitFile
+        return pointedWorktree == canonicalActive
+    }
+
+    private static func gitDirectoryReference(for path: String, fileManager: FileManager) -> String? {
+        let gitPath = URL(fileURLWithPath: path, isDirectory: true)
+            .appendingPathComponent(".git")
+            .path
+        var isDirectory = ObjCBool(false)
+        guard fileManager.fileExists(atPath: gitPath, isDirectory: &isDirectory) else {
+            return nil
+        }
+        if isDirectory.boolValue {
+            return canonicalPath(gitPath)
+        }
+        guard let data = fileManager.contents(atPath: gitPath),
+              let text = String(data: data, encoding: .utf8) else {
+            return nil
+        }
+        let prefix = "gitdir:"
+        guard let line = text.split(whereSeparator: \.isNewline).first,
+              line.lowercased().hasPrefix(prefix) else {
+            return nil
+        }
+        let rawReference = line.dropFirst(prefix.count).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !rawReference.isEmpty else { return nil }
+        let referencePath: String
+        if rawReference.hasPrefix("/") {
+            referencePath = rawReference
+        } else {
+            referencePath = URL(fileURLWithPath: path, isDirectory: true)
+                .appendingPathComponent(rawReference)
+                .standardizedFileURL
+                .path
+        }
+        return canonicalPath(referencePath)
+    }
+
+    private static func isPath(_ path: String, insideOrEqualTo root: String) -> Bool {
+        guard !path.isEmpty, !root.isEmpty else { return false }
+        if root == "/" {
+            return path.hasPrefix("/")
+        }
+        return path == root || path.hasPrefix(root + "/")
     }
 }
 

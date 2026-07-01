@@ -237,6 +237,12 @@ struct OpenCodeCLIRuntimeAdapter: AgentRuntimeAdapter {
         let model = AgentRuntimeProcessRunner.model(context.task.model, for: id)
         let providerModel = OpenCodeCLIRuntime.resolvedModelName(model)
         let additionalPaths = AgentRuntimeProcessRunner.runtimeAdditionalPaths(for: context.task)
+        let executionEnvironment = DockerExecutionPlanner.resolveEnvironment(for: context.task)
+        let hostControlTools = HostControlPlaneMCPProjection.enabledToolNames(
+            task: context.task,
+            environment: executionEnvironment,
+            contextText: context.contextText
+        )
         let plan = OpenCodeCLIRuntime.buildCommand(
             executablePath: executable,
             prompt: context.prompt,
@@ -252,6 +258,25 @@ struct OpenCodeCLIRuntimeAdapter: AgentRuntimeAdapter {
                 contextText: context.contextText
             )
                 || taskEnv["ASTRA_BROWSER_URL"] != nil
+        )
+        var commandPlannedFields = [
+            "runtime": id.rawValue,
+            "phase": context.phase,
+            "model": model,
+            "provider_model": providerModel,
+            "permission_policy": effectivePermissionPolicy.rawValue,
+            "parses_json_lines": String(plan.parsesJSONLines),
+            "additional_paths_count": String(additionalPaths.count),
+            "task_env_count": String(taskEnv.count),
+            "uses_run": String(plan.arguments.contains("run")),
+            "uses_json_format": String(plan.arguments.contains("json")),
+            "uses_dir": String(plan.arguments.contains("--dir")),
+            "uses_model": String(plan.arguments.contains("--model")),
+            "uses_dangerous_skip_permissions": String(plan.arguments.contains("--dangerously-skip-permissions"))
+        ]
+        commandPlannedFields.merge(
+            HostControlPlaneRuntimeLaunchGuard.planMetadata(runtime: id, requiredTools: hostControlTools),
+            uniquingKeysWith: { current, _ in current }
         )
 
         return AgentRuntimeProcessLaunchPlan(
@@ -273,21 +298,7 @@ struct OpenCodeCLIRuntimeAdapter: AgentRuntimeAdapter {
                 "executable_mtime": AgentRuntimeProcessRunner.fileModificationTimestamp(executable),
                 "provider_home_configured": String(!context.providerHomeDirectory.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             ],
-            commandPlannedFields: [
-                "runtime": id.rawValue,
-                "phase": context.phase,
-                "model": model,
-                "provider_model": providerModel,
-                "permission_policy": effectivePermissionPolicy.rawValue,
-                "parses_json_lines": String(plan.parsesJSONLines),
-                "additional_paths_count": String(additionalPaths.count),
-                "task_env_count": String(taskEnv.count),
-                "uses_run": String(plan.arguments.contains("run")),
-                "uses_json_format": String(plan.arguments.contains("json")),
-                "uses_dir": String(plan.arguments.contains("--dir")),
-                "uses_model": String(plan.arguments.contains("--model")),
-                "uses_dangerous_skip_permissions": String(plan.arguments.contains("--dangerously-skip-permissions"))
-            ]
+            commandPlannedFields: commandPlannedFields
         )
     }
 
