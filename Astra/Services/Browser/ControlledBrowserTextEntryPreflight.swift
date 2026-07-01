@@ -11,7 +11,7 @@ extension ControlledBrowserController {
             return nil
         }
         let targetInfo = try await focusedTextEntryTargetInfo(client: client)
-        if var blocked = BrowserTextEntryPreflight.blockResponse(action: action, targetInfo: targetInfo) {
+        if var blocked = BrowserTextEntryPreflight.textEntryBlockResponse(action: action, targetInfo: targetInfo) {
             blocked["focusedTarget"] = BrowserTextEntryPreflight.redactedTargetAttachment(for: blocked)
             return blocked
         }

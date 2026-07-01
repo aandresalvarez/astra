@@ -176,7 +176,7 @@ extension ShelfBrowserSession {
         attachmentKey: String,
         logContext: BrowserTextEntryLogContext
     ) throws -> String? {
-        guard var blocked = BrowserTextEntryPreflight.blockResponse(action: action, targetInfo: targetInfo) else {
+        guard var blocked = BrowserTextEntryPreflight.textEntryBlockResponse(action: action, targetInfo: targetInfo) else {
             return nil
         }
         blocked[attachmentKey] = BrowserTextEntryPreflight.redactedTargetAttachment(for: blocked)

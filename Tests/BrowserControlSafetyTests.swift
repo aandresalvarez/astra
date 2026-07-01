@@ -279,12 +279,33 @@ struct BrowserControlSafetyTests {
         #expect(target["autocomplete"] as? String == "[redacted]")
         #expect(target["label"] as? String == "[redacted]")
         #expect(target["placeholder"] as? String == "[redacted]")
+        #expect(target["testID"] as? String == "[redacted-sensitive-input]")
         #expect(target["value"] == nil)
         #expect(target["framePath"] as? [String] == [
             "https://auth.example.com",
             "[redacted frame]"
         ])
         #expect(BrowserTextEntryPreflight.redactedTargetAttachment(for: block)["value"] == nil)
+    }
+
+    @Test("Raw text entry requires confirmation for dangerous targets")
+    func rawTextEntryRequiresConfirmationForDangerousTargets() throws {
+        let blocked = try #require(BrowserTextEntryPreflight.textEntryBlockResponse(
+            action: BrowserActionKind.setValue.rawValue,
+            targetInfo: [
+                "ok": true,
+                "selector": "input[name='credit-card-number']",
+                "label": "Credit card number",
+                "role": "textbox",
+                "tag": "input",
+                "type": "text",
+                "autocomplete": "cc-number"
+            ]
+        ))
+
+        #expect(blocked["ok"] as? Bool == false)
+        #expect(blocked["error"] as? String == "dangerous_confirmation_required")
+        #expect(blocked["risk"] as? String == BrowserRisk.payment.rawValue)
     }
 
     @Test("Text entry block responses are terminal for browser batches")
@@ -307,6 +328,10 @@ struct BrowserControlSafetyTests {
             "stopReason": "credential_input_blocked",
             "results": []
         ]) == "credential_input_blocked")
+        #expect(BrowserTextEntryPreflight.isTerminalBlockResponse([
+            "ok": false,
+            "error": "dangerous_confirmation_required"
+        ]))
         let stopped = BrowserTextEntryPreflight.stoppedResponse(results: [[
             "ok": false,
             "action": "set",
@@ -956,6 +981,8 @@ struct BrowserControlSafetyTests {
     func modifiedEditingKeypressesRequireSensitiveTextEntryPreflight() {
         #expect(BrowserKeypressSafety.requiresTextEntryPreflight(key: "Backspace", modifiers: ["command"]))
         #expect(BrowserKeypressSafety.requiresTextEntryPreflight(key: "Delete", modifiers: ["control"]))
+        #expect(BrowserKeypressSafety.requiresTextEntryPreflight(key: "a", modifiers: ["command"]))
+        #expect(BrowserKeypressSafety.requiresTextEntryPreflight(key: "c", modifiers: ["control"]))
         #expect(BrowserKeypressSafety.requiresTextEntryPreflight(key: "x", modifiers: ["command"]))
         #expect(BrowserKeypressSafety.requiresTextEntryPreflight(key: "v", modifiers: ["command"]))
         #expect(!BrowserKeypressSafety.requiresTextEntryPreflight(key: "l", modifiers: ["command"]))

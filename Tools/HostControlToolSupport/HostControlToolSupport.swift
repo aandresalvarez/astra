@@ -1412,8 +1412,16 @@ public final class HostControlMCPServer {
     }
 
     private func stringArray(_ value: Any?) -> [String]? {
+        if let strings = value as? [String] {
+            return strings
+        }
         guard let values = value as? [Any] else { return nil }
-        return values.compactMap { $0 as? String }
+        var strings: [String] = []
+        for value in values {
+            guard let string = value as? String else { return nil }
+            strings.append(string)
+        }
+        return strings
     }
 
     private func validateArguments(_ values: [String]) -> Bool {

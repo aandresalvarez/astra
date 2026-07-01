@@ -58,6 +58,11 @@ struct HostControlToolSupportTests {
         ])
         #expect(try errorMessage(deniedAttachedJQEnvironmentRead).contains("does not allow GitHub operation"))
 
+        let deniedMixedArgumentTypes = try call(server, id: 19, tool: "github", arguments: [
+            "arguments": ["pr", "view", 123]
+        ])
+        #expect(try errorMessage(deniedMixedArgumentTypes).contains("arguments array"))
+
         let deniedAPI = try call(server, id: 2, tool: "github", arguments: [
             "arguments": ["api", "--method", "DELETE", "/repos/example/project"]
         ])

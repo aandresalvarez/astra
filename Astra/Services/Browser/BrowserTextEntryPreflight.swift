@@ -154,6 +154,13 @@ enum BrowserSensitiveControlClassifier {
 }
 
 enum BrowserTextEntryPreflight {
+    static func textEntryBlockResponse(action: String, targetInfo: [String: Any]) -> [String: Any]? {
+        if let blocked = blockResponse(action: action, targetInfo: targetInfo) {
+            return blocked
+        }
+        return activationConfirmationResponse(action: action, targetInfo: targetInfo, allowDangerous: false)
+    }
+
     static func blockResponse(action: String, targetInfo: [String: Any]) -> [String: Any]? {
         let risk = BrowserSensitiveControlClassifier.classify(targetInfo: targetInfo)
         let code: String
@@ -223,11 +230,11 @@ enum BrowserTextEntryPreflight {
     static func isTerminalBlockResponse(_ response: [String: Any]) -> Bool {
         guard isExplicitFalse(response["ok"]) else { return false }
         switch string(response["error"]) {
-        case "credential_input_blocked", "mfa_input_blocked", "focused_frame_uninspectable", "text_entry_target_changed", "text_entry_target_not_bound":
+        case "credential_input_blocked", "mfa_input_blocked", "focused_frame_uninspectable", "text_entry_target_changed", "text_entry_target_not_bound", "dangerous_confirmation_required":
             return true
         default:
             switch string(response["stopReason"]) {
-            case "credential_input_blocked", "mfa_input_blocked", "focused_frame_uninspectable", "text_entry_target_changed", "text_entry_target_not_bound":
+            case "credential_input_blocked", "mfa_input_blocked", "focused_frame_uninspectable", "text_entry_target_changed", "text_entry_target_not_bound", "dangerous_confirmation_required":
                 return true
             default:
                 return false
@@ -311,7 +318,7 @@ enum BrowserTextEntryPreflight {
             "type": string(targetInfo["type"]),
             "autocomplete": redactText ? "[redacted]" : string(targetInfo["autocomplete"]),
             "placeholder": redactText ? "[redacted]" : string(targetInfo["placeholder"]),
-            "testID": string(targetInfo["testID"]),
+            "testID": redactText ? "[redacted-sensitive-input]" : string(targetInfo["testID"]),
             "href": redactText ? sanitizedSensitiveURL(string(targetInfo["href"])) : string(targetInfo["href"]),
             "url": redactText ? sanitizedSensitiveURL(string(targetInfo["url"])) : string(targetInfo["url"])
         ]

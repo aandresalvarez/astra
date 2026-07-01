@@ -501,6 +501,8 @@ public struct WorkspaceToolConfiguration: Equatable, Sendable {
             return nextWordIndex(after: index, in: tokens) ?? index
         case "nice":
             return niceCommandIndex(after: index, in: tokens) ?? index
+        case "setsid":
+            return setsidCommandIndex(after: index, in: tokens) ?? index
         case "timeout":
             return timeoutCommandIndex(after: index, in: tokens) ?? index
         default:
@@ -645,6 +647,25 @@ public struct WorkspaceToolConfiguration: Equatable, Sendable {
 
     private func timeoutOptionConsumesNextOperand(_ word: String) -> Bool {
         ["-k", "--kill-after", "-s", "--signal"].contains(word)
+    }
+
+    private func setsidCommandIndex(after index: Int, in tokens: [ShellToken]) -> Int? {
+        var cursor = nextCommandWordIndex(after: index, in: tokens)
+        while let current = cursor {
+            guard case .word(let word) = tokens[current] else { return nil }
+            if word.value == "--" {
+                return nextCommandWordIndex(after: current, in: tokens)
+            }
+            if word.value == "--help" || word.value == "--version" || word.value == "-h" || word.value == "-V" {
+                return nil
+            }
+            if word.value.hasPrefix("-") {
+                cursor = nextCommandWordIndex(after: current, in: tokens)
+                continue
+            }
+            return current
+        }
+        return nil
     }
 
     private func sudoCommandIndex(after index: Int, in tokens: [ShellToken]) -> Int? {

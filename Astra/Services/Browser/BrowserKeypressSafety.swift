@@ -120,6 +120,6 @@ enum BrowserKeypressSafety {
     ]
 
     private static let modifiedEditingKeys: Set<String> = textEditingKeys.union([
-        "v", "x"
+        "a", "c", "v", "x"
     ])
 }

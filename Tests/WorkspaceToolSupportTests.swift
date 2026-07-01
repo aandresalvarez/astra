@@ -324,6 +324,7 @@ struct WorkspaceToolSupportTests {
             "time -p gcloud auth list",
             "nohup gcloud auth list",
             "nice -n 5 gcloud auth list",
+            "setsid gh pr view 159",
             "timeout 1 gcloud auth list",
             "echo $(echo $(echo $(echo $(echo $(echo $(gcloud auth list))))))",
             "/usr/bin/env gcloud auth list",

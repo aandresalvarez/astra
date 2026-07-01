@@ -300,6 +300,14 @@ struct WorkspaceAppPackageService {
 
     func validatePackage(at packageURL: URL) -> WorkspaceAppPackageValidationReport {
         var issues: [WorkspaceAppPackageValidationReport.Issue] = []
+        guard validateStructuralResourceBudget(packageURL: packageURL, issues: &issues) else {
+            return WorkspaceAppPackageValidationReport(
+                package: nil,
+                manifest: nil,
+                issues: issues,
+                installState: .blocked
+            )
+        }
         let package: WorkspaceAppPackageManifest? = decode(
             WorkspaceAppPackageManifest.self,
             at: packageURL.appendingPathComponent("package.json"),
@@ -713,6 +721,9 @@ struct WorkspaceAppPackageService {
         } catch WorkspaceAppPackageFileResolutionError.invalidEncoding {
             issues.append(blocker(path, "Package file \(relativePath) must be valid UTF-8."))
             return nil
+        } catch let error as WorkspaceAppPackageResourceError {
+            issues.append(blocker(error.path ?? path, error.localizedDescription))
+            return nil
         } catch {
             issues.append(blocker(path, "Could not decode required package file \(relativePath): \(error.localizedDescription)"))
             return nil
@@ -1065,6 +1076,51 @@ struct WorkspaceAppPackageService {
         }
     }
 
+    private func validateStructuralResourceBudget(
+        packageURL: URL,
+        issues: inout [WorkspaceAppPackageValidationReport.Issue]
+    ) -> Bool {
+        var totalBytes = 0
+        for path in packageEntryPaths(in: packageURL) {
+            let url = packageURL.appendingPathComponent(path)
+            let values: URLResourceValues
+            do {
+                values = try url.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey, .isSymbolicLinkKey])
+            } catch {
+                issues.append(blocker("/\(path)", error.localizedDescription))
+                return false
+            }
+            guard values.isRegularFile == true, values.isSymbolicLink != true else {
+                continue
+            }
+            let size = values.fileSize ?? 0
+            let updatedTotal = totalBytes.addingReportingOverflow(size)
+            if updatedTotal.overflow || updatedTotal.partialValue > resourceReader.budget.maxPackageBytes {
+                issues.append(blocker(
+                    "/",
+                    WorkspaceAppPackageResourceError.packageTooLarge(
+                        actual: updatedTotal.overflow ? Int.max : updatedTotal.partialValue,
+                        maximum: resourceReader.budget.maxPackageBytes
+                    ).localizedDescription
+                ))
+                return false
+            }
+            totalBytes = updatedTotal.partialValue
+            if size > resourceReader.budget.maxFileBytes {
+                issues.append(blocker(
+                    "/\(path)",
+                    WorkspaceAppPackageResourceError.fileTooLarge(
+                        path: "/\(path)",
+                        actual: size,
+                        maximum: resourceReader.budget.maxFileBytes
+                    ).localizedDescription
+                ))
+                return false
+            }
+        }
+        return true
+    }
+
     private func dataExportsForValidation(
         package: WorkspaceAppPackageManifest?,
         manifest: WorkspaceAppManifest?,
@@ -1278,6 +1334,14 @@ struct WorkspaceAppPackageService {
         let descriptor = try openContainedPackageFile(in: packageURL, path: path)
         defer { close(descriptor) }
 
+        let relativePath = path.hasPrefix("/") ? path : "/\(path)"
+        let maximumBytes = resourceReader.budget.maxFileBytes
+        try validateContainedPackageFileSize(
+            descriptor: descriptor,
+            relativePath: relativePath,
+            maximumBytes: maximumBytes
+        )
+
         var data = Data()
         var buffer = [UInt8](repeating: 0, count: 64 * 1024)
         while true {
@@ -1285,12 +1349,39 @@ struct WorkspaceAppPackageService {
                 Darwin.read(descriptor, rawBuffer.baseAddress, rawBuffer.count)
             }
             if count > 0 {
+                let updatedCount = data.count.addingReportingOverflow(count)
+                if updatedCount.overflow || updatedCount.partialValue > maximumBytes {
+                    throw WorkspaceAppPackageResourceError.fileTooLarge(
+                        path: relativePath,
+                        actual: updatedCount.overflow ? Int.max : updatedCount.partialValue,
+                        maximum: maximumBytes
+                    )
+                }
                 data.append(buffer, count: count)
             } else if count == 0 {
                 return data
             } else if errno != EINTR {
                 throw WorkspaceAppPackageFileResolutionError.invalidPath
             }
+        }
+    }
+
+    private func validateContainedPackageFileSize(
+        descriptor: Int32,
+        relativePath: String,
+        maximumBytes: Int
+    ) throws {
+        var statBuffer = stat()
+        guard fstat(descriptor, &statBuffer) == 0 else {
+            throw WorkspaceAppPackageFileResolutionError.invalidPath
+        }
+        let size = Int(statBuffer.st_size)
+        guard size <= maximumBytes else {
+            throw WorkspaceAppPackageResourceError.fileTooLarge(
+                path: relativePath,
+                actual: size,
+                maximum: maximumBytes
+            )
         }
     }
 
