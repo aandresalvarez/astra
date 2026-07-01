@@ -101,6 +101,26 @@ struct GoogleOAuthAuthorizationSessionTests {
         #expect(bindings.allSatisfy { $0.parameters.allowLocalEndpointReuse })
     }
 
+    @Test("loopback listener failure policy tolerates one localhost family failing")
+    func loopbackListenerFailurePolicyToleratesOneLocalhostFamilyFailing() {
+        var policy = GoogleOAuthLoopbackListenerFailurePolicy(listenerCount: 2)
+        let firstFailureIsTerminal = policy.recordFailure(listenerID: 1)
+        let duplicateFailureIsTerminal = policy.recordFailure(listenerID: 1)
+        let secondFamilyFailureIsTerminal = policy.recordFailure(listenerID: 0)
+
+        #expect(!firstFailureIsTerminal)
+        #expect(!duplicateFailureIsTerminal)
+        #expect(secondFamilyFailureIsTerminal)
+    }
+
+    @Test("loopback listener failure policy fails explicit single binding immediately")
+    func loopbackListenerFailurePolicyFailsSingleBindingImmediately() {
+        var policy = GoogleOAuthLoopbackListenerFailurePolicy(listenerCount: 1)
+        let failureIsTerminal = policy.recordFailure(listenerID: 0)
+
+        #expect(failureIsTerminal)
+    }
+
     @Test("loopback listener binds explicit IPv6 redirects to IPv6 loopback")
     func loopbackListenerBindsExplicitIPv6RedirectsToIPv6Loopback() throws {
         let redirectURI = URL(string: "http://[::1]:48119/oauth/google/callback")!

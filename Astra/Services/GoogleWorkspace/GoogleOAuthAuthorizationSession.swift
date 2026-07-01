@@ -103,7 +103,7 @@ struct LoopbackGoogleOAuthCallbackReceiver: GoogleOAuthCallbackReceiving {
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 let state = CallbackState(continuation: continuation, listeners: listeners)
-                for listener in listeners {
+                for (listenerID, listener) in listeners.enumerated() {
                     listener.newConnectionHandler = { connection in
                         connection.start(queue: queue)
                         connection.receive(minimumIncompleteLength: 1, maximumLength: 65_536) { data, _, _, error in
@@ -134,7 +134,7 @@ struct LoopbackGoogleOAuthCallbackReceiver: GoogleOAuthCallbackReceiving {
                     }
                     listener.stateUpdateHandler = { stateUpdate in
                         if case .failed(let error) = stateUpdate {
-                            state.resume(.failure(error))
+                            state.listenerFailed(listenerID, error: error)
                         }
                     }
                     listener.start(queue: queue)
@@ -204,15 +204,34 @@ enum GoogleOAuthLoopbackListenerPolicy {
     }
 }
 
+struct GoogleOAuthLoopbackListenerFailurePolicy: Sendable, Equatable {
+    private let listenerCount: Int
+    private var failedListenerIDs: Set<Int> = []
+
+    init(listenerCount: Int) {
+        self.listenerCount = max(0, listenerCount)
+    }
+
+    mutating func recordFailure(listenerID: Int) -> Bool {
+        guard listenerID >= 0, listenerID < listenerCount else {
+            return false
+        }
+        failedListenerIDs.insert(listenerID)
+        return listenerCount > 0 && failedListenerIDs.count == listenerCount
+    }
+}
+
 private final class CallbackState: @unchecked Sendable {
     private let lock = NSLock()
     private var didResume = false
+    private var listenerFailurePolicy: GoogleOAuthLoopbackListenerFailurePolicy
     private let continuation: CheckedContinuation<GoogleOAuthCallback, Error>
     private let listeners: [NWListener]
 
     init(continuation: CheckedContinuation<GoogleOAuthCallback, Error>, listeners: [NWListener]) {
         self.continuation = continuation
         self.listeners = listeners
+        self.listenerFailurePolicy = GoogleOAuthLoopbackListenerFailurePolicy(listenerCount: listeners.count)
     }
 
     func resume(_ result: Result<GoogleOAuthCallback, Error>) {
@@ -227,6 +246,24 @@ private final class CallbackState: @unchecked Sendable {
             listener.cancel()
         }
         continuation.resume(with: result)
+    }
+
+    func listenerFailed(_ listenerID: Int, error: Error) {
+        lock.lock()
+        guard !didResume else {
+            lock.unlock()
+            return
+        }
+        guard listenerFailurePolicy.recordFailure(listenerID: listenerID) else {
+            lock.unlock()
+            return
+        }
+        didResume = true
+        lock.unlock()
+        for listener in listeners {
+            listener.cancel()
+        }
+        continuation.resume(throwing: error)
     }
 }
 

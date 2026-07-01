@@ -54,6 +54,32 @@ struct WorkspaceAppPackageTests {
         #expect(!report.blockers.contains { $0.path == "/storage/data/exports.json" })
     }
 
+    @Test("data package validation requires an exports manifest for storage tables")
+    func dataPackageValidationRequiresExportsManifestForStorageTables() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let packageURL = root.appendingPathComponent("grocery-seed-missing-exports.astra-app", isDirectory: true)
+        let databaseURL = try Self.groceryDatabase(in: root)
+
+        _ = try WorkspaceAppPackageService().exportPackage(
+            manifest: Self.groceryManifest(),
+            to: packageURL,
+            packageID: "grocery-seed-missing-exports",
+            mode: .templatePlusSeedData,
+            appStorageDatabaseURL: databaseURL
+        )
+        try FileManager.default.removeItem(at: packageURL.appendingPathComponent("storage/data/exports.json"))
+        try Self.rewriteChecksums(at: packageURL)
+
+        let report = WorkspaceAppPackageService().validatePackage(at: packageURL)
+
+        #expect(!report.canInstall)
+        #expect(report.blockers.contains {
+            $0.path == "/storage/data/exports.json"
+                && $0.message.contains("file is missing")
+        })
+    }
+
     @Test("seed data export writes portable typed storage records")
     func seedDataExportWritesPortableTypedStorageRecords() throws {
         let root = try Self.temporaryRoot()

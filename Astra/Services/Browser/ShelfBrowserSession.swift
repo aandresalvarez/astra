@@ -2407,7 +2407,13 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 )
             )
         }
-
+        if actionKind == .open,
+           let denial = BrowserSiteActionPolicy.openControlDenialResult(
+            action: actionKind.rawValue, control: currentControl, currentURL: currentURL,
+            enabledBrowserAdapters: enabledBrowserAdapters, githubReadOnlyMode: githubReadOnlyMode
+        ) {
+            return BrowserPreflightExecution(ok: false, cachedControl: cachedControl, currentControl: currentControl, currentControlRef: controlMatch.controlRef, resolutionStrategy: controlMatch.strategy, response: denial)
+        }
         if [.fill, .setValue, .insertText].contains(actionKind), currentControl.risk == .credentialInput {
             return BrowserPreflightExecution(
                 ok: false,

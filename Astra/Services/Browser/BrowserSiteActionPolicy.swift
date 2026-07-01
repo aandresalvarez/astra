@@ -9,8 +9,7 @@ enum BrowserSiteActionPolicy {
         enabledBrowserAdapters: Set<String>,
         githubReadOnlyMode: Bool = false
     ) -> String? {
-        let enforceGitHubReadOnly = githubReadOnlyMode || GitHubBrowserAdapter.isEnabled(in: enabledBrowserAdapters)
-        guard enforceGitHubReadOnly,
+        guard enforcesGitHubReadOnly(githubReadOnlyMode: githubReadOnlyMode, enabledBrowserAdapters: enabledBrowserAdapters),
               GitHubBrowserAdapter.matches(pageURL: currentURL),
               !route.isAllowedInGitHubReadOnlyContext else {
             return nil
@@ -66,6 +65,53 @@ enum BrowserSiteActionPolicy {
         return denialPayload(action: action, reason: reason, includeRecoveryHints: false)
     }
 
+    static func openControlDenialResult(
+        action: String,
+        control: BrowserControl,
+        currentURL: String,
+        enabledBrowserAdapters: Set<String>,
+        githubReadOnlyMode: Bool
+    ) -> [String: Any]? {
+        guard let reason = openControlDenialReason(
+            control: control,
+            currentURL: currentURL,
+            enabledBrowserAdapters: enabledBrowserAdapters,
+            githubReadOnlyMode: githubReadOnlyMode
+        ) else { return nil }
+        return denialPayload(action: action, reason: reason, includeRecoveryHints: false)
+    }
+
+    private static func openControlDenialReason(
+        control: BrowserControl,
+        currentURL: String,
+        enabledBrowserAdapters: Set<String>,
+        githubReadOnlyMode: Bool
+    ) -> String? {
+        guard enforcesGitHubReadOnly(githubReadOnlyMode: githubReadOnlyMode, enabledBrowserAdapters: enabledBrowserAdapters),
+              GitHubBrowserAdapter.matches(pageURL: currentURL) else {
+            return nil
+        }
+        guard GitHubBrowserAdapter.isReadOnlyOpenControl(
+            pageURL: currentURL,
+            selector: control.selector,
+            label: control.label,
+            name: control.name,
+            role: control.role,
+            tag: control.tag,
+            href: control.href
+        ) else {
+            return gitHubReadOnlyDenialReason
+        }
+        return nil
+    }
+
+    private static func enforcesGitHubReadOnly(
+        githubReadOnlyMode: Bool,
+        enabledBrowserAdapters: Set<String>
+    ) -> Bool {
+        githubReadOnlyMode || GitHubBrowserAdapter.isEnabled(in: enabledBrowserAdapters)
+    }
+
     private static func denialPayload(
         action: String? = nil,
         reason: String,
@@ -102,7 +148,8 @@ extension ShelfBrowserBridgeRoute {
              .verifyText,
              .waitForText,
              .waitForSelector,
-             .navigate:
+             .navigate,
+             .open:
             return true
         case .preflight,
              .type,
@@ -118,7 +165,6 @@ extension ShelfBrowserBridgeRoute {
              .googleDocsReplaceDocument,
              .googleDriveOpen,
              .act,
-             .open,
              .click,
              .doubleClick,
              .fill,

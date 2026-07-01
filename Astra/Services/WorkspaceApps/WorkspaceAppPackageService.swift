@@ -318,7 +318,12 @@ struct WorkspaceAppPackageService {
             path: "/checksums.json",
             issues: &issues
         )
-        let dataExports = dataExportsForValidation(in: packageURL, issues: &issues)
+        let dataExports = dataExportsForValidation(
+            package: package,
+            manifest: manifest,
+            in: packageURL,
+            issues: &issues
+        )
         validateDataExportTables(
             package: package,
             manifest: manifest,
@@ -1049,11 +1054,19 @@ struct WorkspaceAppPackageService {
     }
 
     private func dataExportsForValidation(
+        package: WorkspaceAppPackageManifest?,
+        manifest: WorkspaceAppManifest?,
         in packageURL: URL,
         issues: inout [WorkspaceAppPackageValidationReport.Issue]
     ) -> [WorkspaceAppPackageDataExport] {
         do {
-            return try decodeDataExports(at: packageURL) ?? []
+            if let exports = try decodeDataExports(at: packageURL) {
+                return exports
+            }
+            if requiresDataExportsManifest(package: package, manifest: manifest) {
+                issues.append(dataExportsManifestIssue(for: .missing))
+            }
+            return []
         } catch let error as WorkspaceAppPackageFileResolutionError {
             issues.append(dataExportsManifestIssue(for: error))
             return []
@@ -1061,6 +1074,17 @@ struct WorkspaceAppPackageService {
             issues.append(blocker("/storage/data/exports.json", "Could not decode data exports: \(error.localizedDescription)"))
             return []
         }
+    }
+
+    private func requiresDataExportsManifest(
+        package: WorkspaceAppPackageManifest?,
+        manifest: WorkspaceAppManifest?
+    ) -> Bool {
+        guard let package,
+              dataPolicy(for: package.exportMode) != nil else {
+            return false
+        }
+        return manifest?.storage?.tables.isEmpty == false
     }
 
     private func dataExportsManifestIssue(
