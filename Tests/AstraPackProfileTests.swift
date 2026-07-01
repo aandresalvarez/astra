@@ -173,6 +173,40 @@ struct AstraPackProfileTests {
         #expect(policy.canPresent(.appPreview, in: openTask))
     }
 
+    @Test("workspace profile provider fails closed when enabled packs are unresolved")
+    @MainActor
+    func workspaceProfileProviderFailsClosedWhenEnabledPacksAreUnresolved() {
+        let workspace = Workspace(name: "Missing Pack Policy", primaryPath: "/tmp/missing-pack-policy")
+        workspace.enabledPackIDs = ["astra.pack.missing"]
+        let catalog = AstraPackCatalogSnapshot(entries: [], diagnostics: [])
+        let profile = AstraPackWorkspaceProfileProvider.resolvedProfile(
+            for: workspace,
+            catalogSnapshot: catalog
+        )
+        let policy = AstraPackWorkspaceProfileProvider.shelfAvailabilityPolicy(
+            for: workspace,
+            catalogSnapshot: catalog
+        )
+        let openTask = ShelfAvailabilityPolicy.Context(
+            hasOpenTaskThread: true,
+            hasWorkspaceContext: true,
+            hasPlanContent: true,
+            hasFilesShelfContent: true,
+            hasQueryShelfContent: true,
+            isComposingWorkspaceApp: true,
+            activeShelfID: .query
+        )
+
+        #expect(profile.policy.unresolvedEnabledPackIDs == ["astra.pack.missing"])
+        #expect(profile.visibleShelfIDs.isEmpty)
+        #expect(profile.hiddenShelfIDs.isSuperset(of: Set([.plan, .files, .browser, .query])))
+        #expect(!policy.canPresent(.plan, in: openTask))
+        #expect(!policy.canPresent(.files, in: openTask))
+        #expect(!policy.canPresent(.browser, in: openTask))
+        #expect(!policy.canPresent(.query, in: openTask))
+        #expect(policy.canPresent(.appPreview, in: openTask))
+    }
+
     @Test("workspace profile provider preserves catalog source ordering")
     @MainActor
     func workspaceProfileProviderPreservesCatalogSourceOrdering() {

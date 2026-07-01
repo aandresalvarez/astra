@@ -4,6 +4,7 @@ enum GitHubHostControlPolicy {
     private static let optionsWithValues: Set<String> = [
         "-H", "--hostname", "-R", "--repo", "--jq", "-q", "--json", "--template", "-t"
     ]
+    private static let shortOptionsWithValues: Set<Character> = ["H", "R", "q", "t"]
 
     private static let globallyDeniedFlags: Set<String> = ["--show-token", "--web", "-w", "--jq", "-q"]
     private static let authStatusDeniedFlags: Set<String> = ["--show-token", "-t"]
@@ -91,8 +92,30 @@ enum GitHubHostControlPolicy {
     private static func containsDeniedFlag(_ arguments: [String], deniedFlags: Set<String>) -> Bool {
         arguments.contains { token in
             let optionName = token.split(separator: "=", maxSplits: 1).first.map(String.init) ?? token
-            return deniedFlags.contains(optionName)
+            if deniedFlags.contains(optionName) {
+                return true
+            }
+            return containsDeniedShortOption(in: optionName, deniedFlags: deniedFlags)
         }
+    }
+
+    private static func containsDeniedShortOption(in optionName: String, deniedFlags: Set<String>) -> Bool {
+        guard optionName.hasPrefix("-"),
+              !optionName.hasPrefix("--"),
+              optionName.count > 2 else {
+            return false
+        }
+
+        for character in optionName.dropFirst() {
+            let shortFlag = "-\(character)"
+            if deniedFlags.contains(shortFlag) {
+                return true
+            }
+            if shortOptionsWithValues.contains(character) {
+                return false
+            }
+        }
+        return false
     }
 
     private static func containsAuthStatusTokenDisplayShorthand(_ arguments: [String]) -> Bool {

@@ -235,9 +235,16 @@ enum AstraPackWorkspaceProfileProvider {
         managedShelfVisibilityOverrides: [String: Bool] = AstraPackManagedProfileOverrides.shelfVisibilityOverrides(),
         coreDescriptors: [ShelfDescriptor] = CoreShelfRegistry.allDescriptors
     ) -> AstraPackResolvedProfile {
-        AstraPackProfileResolver.resolve(
+        let resolution = enabledPackResolution(for: workspace, catalogSnapshot: catalogSnapshot)
+        if !resolution.unresolvedPackIDs.isEmpty {
+            return unresolvedEnabledPackProfile(
+                unresolvedPackIDs: resolution.unresolvedPackIDs,
+                coreDescriptors: coreDescriptors
+            )
+        }
+        return AstraPackProfileResolver.resolve(
             coreDescriptors: coreDescriptors,
-            enabledPackEntries: enabledPackEntries(for: workspace, catalogSnapshot: catalogSnapshot),
+            enabledPackEntries: resolution.entries,
             workspaceShelfVisibilityOverrides: workspace?.shelfVisibilityOverrides ?? [:],
             adminShelfVisibilityOverrides: managedShelfVisibilityOverrides
         )
@@ -261,19 +268,54 @@ enum AstraPackWorkspaceProfileProvider {
         )
     }
 
-    private static func enabledPackEntries(
+    private struct EnabledPackResolution {
+        var entries: [AstraPackCatalogEntry]
+        var unresolvedPackIDs: Set<String>
+    }
+
+    private static func enabledPackResolution(
         for workspace: Workspace?,
         catalogSnapshot: AstraPackCatalogSnapshot?
-    ) -> [AstraPackCatalogEntry] {
-        guard let workspace else { return [] }
+    ) -> EnabledPackResolution {
+        guard let workspace else {
+            return EnabledPackResolution(entries: [], unresolvedPackIDs: [])
+        }
         let enabledPackIDs = Set(
             workspace.enabledPackIDs
                 .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
                 .filter { !$0.isEmpty }
         )
-        guard !enabledPackIDs.isEmpty else { return [] }
+        guard !enabledPackIDs.isEmpty else {
+            return EnabledPackResolution(entries: [], unresolvedPackIDs: [])
+        }
         let snapshot = catalogSnapshot ?? AstraPackCatalog().load()
-        return snapshot.entries.filter { enabledPackIDs.contains($0.manifest.id) }
+        let entries = snapshot.entries.filter { enabledPackIDs.contains($0.manifest.id) }
+        let resolvedPackIDs = Set(entries.map { $0.manifest.id.trimmingCharacters(in: .whitespacesAndNewlines) })
+        return EnabledPackResolution(
+            entries: entries,
+            unresolvedPackIDs: enabledPackIDs.subtracting(resolvedPackIDs)
+        )
+    }
+
+    private static func unresolvedEnabledPackProfile(
+        unresolvedPackIDs: Set<String>,
+        coreDescriptors: [ShelfDescriptor]
+    ) -> AstraPackResolvedProfile {
+        let packAddressableShelfIDs = Set(
+            coreDescriptors
+                .filter(\.isPackAddressable)
+                .map(\.id)
+        )
+        return AstraPackResolvedProfile(
+            visibleShelfIDs: [],
+            hiddenShelfIDs: packAddressableShelfIDs,
+            vocabulary: AstraPackProfileResolver.coreVocabulary,
+            branding: nil,
+            capabilityPackageIDsByShelfID: [:],
+            policy: PackResolvedPolicy.unresolvedEnabledPacks(unresolvedPackIDs),
+            diagnostics: [],
+            compositionDiagnostics: []
+        )
     }
 }
 

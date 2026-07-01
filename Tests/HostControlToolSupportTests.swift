@@ -48,6 +48,16 @@ struct HostControlToolSupportTests {
         ])
         #expect(try errorMessage(deniedWebLaunchShortFlag).contains("does not allow GitHub operation"))
 
+        let deniedBundledWebLaunchShortFlag = try call(server, id: 17, tool: "github", arguments: [
+            "arguments": ["pr", "view", "123", "-cw"]
+        ])
+        #expect(try errorMessage(deniedBundledWebLaunchShortFlag).contains("does not allow GitHub operation"))
+
+        let deniedAttachedJQEnvironmentRead = try call(server, id: 18, tool: "github", arguments: [
+            "arguments": ["pr", "view", "123", "--json", "number", "-qenv"]
+        ])
+        #expect(try errorMessage(deniedAttachedJQEnvironmentRead).contains("does not allow GitHub operation"))
+
         let deniedAPI = try call(server, id: 2, tool: "github", arguments: [
             "arguments": ["api", "--method", "DELETE", "/repos/example/project"]
         ])
