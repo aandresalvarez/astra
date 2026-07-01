@@ -92,6 +92,8 @@ struct WorkspaceDetailView: View {
                         .padding(.vertical, 4)
                     }
 
+                    WorkspacePackSettingsSection(workspace: workspace)
+
                     // Primary Path
                     GroupBox("Working Directory") {
                         VStack(alignment: .leading, spacing: 8) {

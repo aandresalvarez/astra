@@ -15,3 +15,8 @@ Authoring and architecture references from the repository root:
 
 The canonical bundled example is `devops-pack.json` with supporting assets under
 `devops/`.
+
+To inspect or enable packs in the app, open a workspace and use
+`Workspace Settings > Packs`. Local development packs are loaded from
+`~/Library/Application Support/AstraDev/Packs` and can be reloaded from that
+settings section without rebuilding the app.

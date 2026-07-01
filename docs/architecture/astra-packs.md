@@ -17,6 +17,29 @@ shelf implementations, and policy enforcement.
 - Keep pack behavior inspectable through JSON manifests, tests, and durable
   workspace state.
 
+## Current Implementation Surface
+
+This branch ships the first complete v1 pack path:
+
+- `AstraPackManifest` in `ASTRACore` defines the JSON schema.
+- `AstraPackCatalog` loads built-in packs from `Astra/Resources/Packs` and
+  local packs from channel-specific ASTRA-managed storage.
+- `AstraPackManifestValidator` rejects malformed manifests, unknown shelf
+  references, duplicate IDs, and policy-widening attempts.
+- `AstraPackComposition`, `AstraPackProfileResolver`, and
+  `AstraPackPolicyResolver` compose multiple enabled packs into shelf,
+  vocabulary, branding, and restrict-only policy state.
+- `Workspace.enabledPackIDs` and `Workspace.shelfVisibilityOverrides` persist
+  pack state and round-trip through `.astra-workspace.json`.
+- `Workspace Settings > Packs` is the user-facing control surface for enabling,
+  disabling, reloading, and inspecting packs.
+- `WorkspaceAppTemplatePackCatalog` exposes pack App Studio templates only for
+  packs enabled on the current workspace.
+
+The bundled `astra.pack.devops` pack is the canonical example. It defaults the
+Plan and Files shelves, contributes the PR / CI Review App Studio template
+metadata, references `github-workflow`, and keeps `policyRestrictions` empty.
+
 ## Ownership Boundaries
 
 Core owns:
@@ -71,6 +94,35 @@ The manifest is loaded by `AstraPackCatalog`, validated by
 `AstraPackProfileResolver`, and projected into App Studio template selection by
 `WorkspaceAppTemplatePackCatalog`.
 
+The pack inspector uses `WorkspacePackSettingsPresentation` to summarize each
+catalog entry into source, version, shelves, templates, capability references,
+and policy status. Missing enabled pack IDs remain visible in the settings UI so
+the user can identify and disable stale workspace configuration.
+
+## User Control Surface
+
+Use the app UI when validating packs manually:
+
+1. Open a workspace.
+2. Open Workspace Settings.
+3. Find the Packs section below General Instructions.
+4. Use the toggle beside a pack to enable or disable it for that workspace.
+5. Use the reload icon after adding or editing local pack manifests.
+
+The Packs section shows:
+
+- the enabled/available count
+- each pack source, version, description, and icon
+- shelf defaults
+- App Studio templates
+- capability package references
+- policy restriction summary
+- catalog diagnostics for malformed or unreadable packs
+
+Toggling a pack writes `Workspace.enabledPackIDs`, updates the workspace
+timestamp, and schedules the normal workspace auto-export path. It does not
+enable runtime capabilities.
+
 ## Allowed Versus Enabled Resources
 
 Packs distinguish three states:
@@ -90,6 +142,11 @@ not expose the GitHub Agent, the `gh` CLI, browser adapters, MCP servers, or
 credentials. Runtime resources still require explicit capability enablement and
 the normal capability policy gates.
 
+Local development note: in the development channel, local packs live under
+`~/Library/Application Support/AstraDev/Packs`. In the production channel they
+live under `~/Library/Application Support/Astra/Packs`. Put one pack manifest
+JSON file per pack in that directory, then reload the Packs section.
+
 ## Shelf Model
 
 Pack shelf defaults are profile preferences for ASTRA-owned native shelves.
@@ -108,6 +165,12 @@ V1 rules:
 
 This keeps ASTRA free to refactor shelf UI while preserving a stable pack
 profile contract.
+
+If a vertical needs a completely new shelf with new functionality, build it as a
+Core-owned native shelf first. Follow
+`docs/architecture/native-shelf-development.md`, then expose the trusted shelf
+through `shelfDefaults` only after registry, availability, policy, and non-grant
+tests pass.
 
 ## Policy Model
 
@@ -189,7 +252,7 @@ The migration loop should be:
 Every pack change should include a focused validation loop:
 
 ```bash
-swift test --filter 'AstraPackCatalogTests|AstraPackManifestValidatorTests|AstraPackProfileTests|WorkspaceAppStudioTemplatePackTests|TaskCapabilityResolverTests'
+swift test --filter 'AstraPackCatalogTests|AstraPackManifestValidatorTests|AstraPackProfileTests|WorkspaceAppStudioTemplatePackTests|WorkspacePackSettingsPresentationTests|TaskCapabilityResolverTests'
 git diff --check
 ```
 
@@ -209,6 +272,8 @@ Regression tests should prove:
 - shelf defaults resolve only to trusted native shelves
 - policy restrictions cannot widen access
 - App Studio template metadata remains provenance only
+- the workspace settings presentation exposes enough detail for inspection and
+  keeps missing enabled pack IDs visible for cleanup
 
 ## Architecture Invariants
 
@@ -219,3 +284,19 @@ Regression tests should prove:
 - Native shelf implementations are trusted Core code.
 - App Studio still validates generated app manifests.
 - A workspace with no enabled packs keeps existing ASTRA behavior.
+
+## Continuing The Pack Platform
+
+When adding a new vertical, keep the work in this order:
+
+1. Define or reuse Core-owned capabilities, shelf descriptors, and App Studio
+   template contracts.
+2. Add a pack manifest that references those owners declaratively.
+3. Add catalog, validator, profile, policy, template, and non-grant tests.
+4. Verify the pack through Workspace Settings and App Studio in `ASTRA Dev`.
+5. Only broaden Core APIs when the pack schema cannot express the behavior
+   without executable code or hidden conditionals.
+
+Do not add vertical-specific branches in runtime, task launch, permission, or
+provider code. If a vertical needs more power, first model that power as a Core
+capability or trusted native extension, then let the pack reference it.

@@ -19,8 +19,29 @@ After writing JSON:
 
 - Run the manifest through `AstraPackManifestValidator` via tests.
 - Add or update catalog/profile/template/runtime non-grant tests.
+- Open `ASTRA Dev`, reload `Workspace Settings > Packs`, and inspect the pack
+  row before relying on it in App Studio.
 - Run `git diff --check`.
 - Run `./script/build_and_run.sh --verify` for bundled pack changes.
+
+## Enable And Inspect A Pack
+
+Packs are workspace-scoped. To inspect one manually:
+
+1. Open the workspace in `ASTRA Dev`.
+2. Open Workspace Settings.
+3. Use the Packs section below General Instructions.
+4. Click the reload icon if you added or edited a local manifest.
+5. Toggle the pack on for that workspace.
+
+The row should show source, version, description, shelf defaults, App Studio
+templates, capability package references, and policy summary. If a workspace
+references a pack ID that is no longer installed, the row remains visible as a
+missing pack so the user can turn it off.
+
+Pack toggles write `Workspace.enabledPackIDs` and auto-export through the normal
+workspace configuration path. They do not write `enabledCapabilityIDs`, install
+capabilities, or grant runtime resources.
 
 ## Minimal Manifest
 
@@ -122,6 +143,11 @@ Do not add implementation fields such as:
 Those fields are not part of v1. Packs may select trusted native shelves, not
 load shelf code.
 
+If a vertical needs a new full-functionality shelf, do not add implementation
+fields to the pack. Build the shelf in Core first by following
+`docs/architecture/native-shelf-development.md`. After Core registers the shelf
+as pack-addressable, the pack can reference the shelf ID in `shelfDefaults`.
+
 ## App Studio Templates
 
 Templates are visible only when the pack is enabled:
@@ -218,6 +244,24 @@ Astra/Resources/Packs/
 supporting files under a pack-specific folder. The JSON manifest is still the
 only v1 source of behavior.
 
+## Local Pack Layout
+
+Local packs are loaded from ASTRA-managed app support storage:
+
+```text
+Development: ~/Library/Application Support/AstraDev/Packs
+Production:  ~/Library/Application Support/Astra/Packs
+```
+
+Add one manifest JSON file per pack directly in the channel's `Packs`
+directory. The catalog reads `.json` files from that directory and ignores
+hidden files. Local packs are useful for vertical experimentation because they
+can be reloaded from `Workspace Settings > Packs` without rebuilding the app.
+
+Use bundled packs for examples that ship with ASTRA Core. Use local packs for
+workspace or fork-specific validation before deciding whether a pack belongs in
+the repository.
+
 ## DevOps Example
 
 The DevOps pack demonstrates:
@@ -238,7 +282,7 @@ boundary.
 For a bundled pack:
 
 ```bash
-swift test --filter 'AstraPackCatalogTests|PluginCatalogTests|AstraPackProfileTests|WorkspaceAppStudioTemplatePackTests|TaskCapabilityResolverTests'
+swift test --filter 'AstraPackCatalogTests|PluginCatalogTests|AstraPackProfileTests|WorkspaceAppStudioTemplatePackTests|WorkspacePackSettingsPresentationTests|TaskCapabilityResolverTests'
 git diff --check
 ./script/build_and_run.sh --verify
 ```
@@ -256,8 +300,16 @@ Each pack should have tests that cover:
 - validator failures for invalid IDs or policy widening
 - profile resolution and shelf visibility
 - template visibility when enabled and hidden when disabled
+- settings presentation details and missing-pack cleanup
 - known capability package references
 - no runtime resource activation from pack enablement alone
+
+Manual validation should include:
+
+- the pack appears in `Workspace Settings > Packs`
+- toggling the pack changes only workspace pack state
+- App Studio shows pack templates only when the pack is enabled
+- referenced capabilities still require explicit capability enablement
 
 ## Migrating Fork Customizations
 
