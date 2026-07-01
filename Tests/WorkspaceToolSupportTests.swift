@@ -348,6 +348,8 @@ struct WorkspaceToolSupportTests {
             "bash -c '$(printf gcloud) auth list'",
             "g{cl,}oud auth list",
             "coproc gcloud auth list",
+            "`printf gh` pr view 1",
+            "\"`printf gh`\" pr view 1",
             "bash -c 'builtin eval gcloud auth list'",
             "cat <<'EOF' | sh\ngcloud auth list\nEOF",
             "cat <<EOF | bash\ngcloud auth list\nEOF",
@@ -422,7 +424,8 @@ struct WorkspaceToolSupportTests {
 
         let commands = [
             "export cmd=gcloud; $cmd auth list",
-            "env cmd=gcloud sh -c \"$cmd auth list\""
+            "env cmd=gcloud sh -c \"$cmd auth list\"",
+            "`unresolved_command` pr view 1"
         ]
 
         for command in commands {

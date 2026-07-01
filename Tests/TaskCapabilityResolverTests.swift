@@ -1704,6 +1704,52 @@ struct TaskCapabilityResolverTests {
         ) == ["github"])
     }
 
+    @Test("GitHub package intent ignores ci substrings and generic UI issues")
+    func githubPackageIntentIgnoresCISubstringsAndGenericUIIssues() throws {
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+        let (workspace, githubPackage) = try makeGitHubEnabledWorkspace(in: context, name: "github-token-scope")
+
+        let unrelatedTasks = [
+            AgentTask(
+                title: "Fix special case",
+                goal: "Fix the special-case regression in local validation",
+                workspace: workspace
+            ),
+            AgentTask(
+                title: "Fix UI issue",
+                goal: "Fix a UI issue in the settings screen",
+                workspace: workspace
+            )
+        ]
+        let ciTask = AgentTask(
+            title: "Review CI",
+            goal: "Review the CI failure for this branch",
+            workspace: workspace
+        )
+        for task in unrelatedTasks + [ciTask] {
+            context.insert(task)
+        }
+        try context.save()
+
+        for task in unrelatedTasks {
+            let scope = TaskCapabilityResolver(task: task)
+                .resolvedScope(.providerLaunch(contextText: task.goal))
+            #expect(!scope.enabledPackageIDs.contains(githubPackage.id), "Unexpected GitHub activation for: \(task.goal)")
+            #expect(HostControlPlaneMCPProjection.enabledToolNames(
+                task: task,
+                environment: .host,
+                contextText: task.goal
+            ).isEmpty)
+        }
+
+        #expect(HostControlPlaneMCPProjection.enabledToolNames(
+            task: ciTask,
+            environment: .host,
+            contextText: ciTask.goal
+        ) == ["github"])
+    }
+
     @Test("A pruned-but-existing enabled capability is not a launch failure")
     func prunedEnabledCapabilityIsNotALaunchFailure() throws {
         let container = try makeTaskCapabilityResolverContainer()

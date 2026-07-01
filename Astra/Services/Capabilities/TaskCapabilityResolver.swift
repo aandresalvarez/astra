@@ -547,18 +547,42 @@ struct TaskCapabilityResolver {
 
     private static func packageID(_ packageID: String, matchesTaskText taskText: String) -> Bool {
         guard packageID == "github-workflow" else { return false }
-        if ["github", "pull request", "pull requests", "issue", "issues", "ci", "workflow run"].contains(where: {
-            taskText.contains($0)
-        }) {
+        let tokens = taskTextTokens(taskText)
+        let tokenSet = Set(tokens)
+        if !tokenSet.isDisjoint(with: ["github", "ci", "pr", "prs"]) {
             return true
         }
-        return taskTextContainsToken(taskText, matching: ["pr", "prs"])
+        return taskTextContainsTokenPhrase(tokens, matching: ["pull", "request"])
+            || taskTextContainsTokenPhrase(tokens, matching: ["pull", "requests"])
+            || taskTextContainsTokenPhrase(tokens, matching: ["workflow", "run"])
+            || taskTextContainsTokenPhrase(tokens, matching: ["workflow", "runs"])
+            || taskTextContainsQualifiedIssueReference(tokens)
     }
 
-    private static func taskTextContainsToken(_ taskText: String, matching expectedTokens: Set<String>) -> Bool {
-        taskText
-            .split { !$0.isLetter && !$0.isNumber }
-            .contains { expectedTokens.contains(String($0)) }
+    private static func taskTextTokens(_ taskText: String) -> [String] {
+        normalizedSearchText(taskText).split(separator: " ").map(String.init)
+    }
+
+    private static func taskTextContainsTokenPhrase(_ tokens: [String], matching phrase: [String]) -> Bool {
+        guard !phrase.isEmpty, tokens.count >= phrase.count else { return false }
+        for startIndex in 0...(tokens.count - phrase.count) {
+            if tokens[startIndex..<(startIndex + phrase.count)].elementsEqual(phrase) {
+                return true
+            }
+        }
+        return false
+    }
+
+    private static func taskTextContainsQualifiedIssueReference(_ tokens: [String]) -> Bool {
+        let issueTokens: Set<String> = ["issue", "issues"]
+        for index in tokens.indices where issueTokens.contains(tokens[index]) {
+            let previous = index > tokens.startIndex ? tokens[index - 1] : nil
+            let next = index < tokens.index(before: tokens.endIndex) ? tokens[index + 1] : nil
+            if previous == "gh" || next == "gh" {
+                return true
+            }
+        }
+        return false
     }
 
     private static func uniqueStrings(_ values: [String]) -> [String] {

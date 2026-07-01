@@ -1080,6 +1080,20 @@ public struct WorkspaceToolConfiguration: Equatable, Sendable {
                     }
                     index = command.index(after: next)
                     continue
+                } else if activeQuote != .single,
+                          character == "`",
+                          let extracted = backtickCommand(in: command, start: next) {
+                    if let output = simpleCommandSubstitutionOutput(
+                        in: extracted.command,
+                        substitutionDepth: substitutionDepth + 1
+                    ) {
+                        current.append(output)
+                    } else {
+                        isAmbiguousExpansion = true
+                        current.append("``")
+                    }
+                    index = extracted.end
+                    continue
                 } else {
                     current.append(character)
                 }
@@ -1109,6 +1123,19 @@ public struct WorkspaceToolConfiguration: Equatable, Sendable {
                 } else {
                     isAmbiguousExpansion = true
                     current.append("$()")
+                }
+                index = extracted.end
+                continue
+            } else if character == "`",
+                      let extracted = backtickCommand(in: command, start: next) {
+                if let output = simpleCommandSubstitutionOutput(
+                    in: extracted.command,
+                    substitutionDepth: substitutionDepth + 1
+                ) {
+                    current.append(output)
+                } else {
+                    isAmbiguousExpansion = true
+                    current.append("``")
                 }
                 index = extracted.end
                 continue
