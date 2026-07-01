@@ -289,6 +289,7 @@ private struct WorkspaceAppApprovalSuspension: Error {
     let pipelineActionID: String
     let gateStepIndex: Int
     let gateActionID: String
+    let boundRows: [[String: WorkspaceAppStorageValue]]
 }
 
 struct WorkspaceAppActionExecutor {
@@ -540,7 +541,9 @@ struct WorkspaceAppActionExecutor {
             payload: [
                 "pipelineID": .text(suspension.pipelineActionID),
                 "gateID": .text(suspension.gateActionID),
-                "stepIndex": .integer(Int64(suspension.gateStepIndex))
+                "stepIndex": .integer(Int64(suspension.gateStepIndex)),
+                "boundRows": .integer(Int64(suspension.boundRows.count)),
+                "boundRowsJSON": .text(WorkspaceAppApprovalResumeContext.boundRowsPayloadString(suspension.boundRows))
             ],
             modelContext: modelContext
         )
@@ -588,14 +591,25 @@ struct WorkspaceAppActionExecutor {
             )
         }
 
+        let action = try actionSpec(actionID: pipelineID, manifest: manifest)
+        let startIndex = run.pendingStepIndex
+        let resumedBoundRows = WorkspaceAppApprovalResumeContext.pendingBoundRows(
+            for: run,
+            pipelineID: pipelineID,
+            gateID: gateID,
+            stepIndex: startIndex,
+            modelContext: modelContext
+        )
         recorder.recordEvent(
             run: run,
             type: "workspaceApp.approval.confirmed",
-            payload: ["pipelineID": .text(pipelineID), "gateID": .text(gateID)],
+            payload: [
+                "pipelineID": .text(pipelineID),
+                "gateID": .text(gateID),
+                "boundRows": .integer(Int64(resumedBoundRows.count))
+            ],
             modelContext: modelContext
         )
-        let action = try actionSpec(actionID: pipelineID, manifest: manifest)
-        let startIndex = run.pendingStepIndex
         run.status = .running
         do {
             let result = try executePipeline(
@@ -604,11 +618,11 @@ struct WorkspaceAppActionExecutor {
                 workspace: workspace,
                 manifest: manifest,
                 dependencyBindings: dependencyBindings,
-                input: WorkspaceAppActionInput(confirmedApproval: true),
+                input: WorkspaceAppActionInput(confirmedApproval: true, boundRows: resumedBoundRows),
                 run: run,
                 modelContext: modelContext,
                 startIndex: startIndex,
-                initialBoundRows: []
+                initialBoundRows: resumedBoundRows
             )
             run.linkedArtifactPath = result.linkedArtifactPath ?? run.linkedArtifactPath
             run.pendingActionID = nil
@@ -1215,7 +1229,7 @@ struct WorkspaceAppActionExecutor {
             payload: ["actionID": .text(action.id), "prompt": .text(prompt)],
             modelContext: modelContext
         )
-        return ([], "Approval gate '\(action.id)' confirmed.", nil, nil)
+        return (input.boundRows, "Approval gate '\(action.id)' confirmed.", nil, nil)
     }
 
     private func executeExpressionGate(
@@ -1267,7 +1281,7 @@ struct WorkspaceAppActionExecutor {
             payload: eventPayload,
             modelContext: modelContext
         )
-        return ([], "Expression gate '\(action.id)' passed.", nil, nil)
+        return (input.boundRows, "Expression gate '\(action.id)' passed.", nil, nil)
     }
 
     private func executeAgentRecommendationGate(
@@ -1348,7 +1362,7 @@ struct WorkspaceAppActionExecutor {
             ),
             modelContext: modelContext
         )
-        return ([], "Agent recommendation gate '\(action.id)' accepted '\(decision)'.", nil, nil)
+        return (input.boundRows, "Agent recommendation gate '\(action.id)' accepted '\(decision)'.", nil, nil)
     }
 
     /// Async `capability.read` — a live connector read (network I/O) via `resolveAsync`. Mirrors the
@@ -1569,13 +1583,20 @@ struct WorkspaceAppActionExecutor {
                 recorder.recordEvent(
                     run: run,
                     type: "workspaceApp.pipeline.step.awaitingApproval",
-                    payload: ["pipelineID": .text(action.id), "stepID": .text(stepID)],
+                    payload: [
+                        "pipelineID": .text(action.id),
+                        "stepID": .text(stepID),
+                        "stepIndex": .integer(Int64(index)),
+                        "boundRows": .integer(Int64(rows.count)),
+                        "boundRowsJSON": .text(WorkspaceAppApprovalResumeContext.boundRowsPayloadString(rows))
+                    ],
                     modelContext: modelContext
                 )
                 throw WorkspaceAppApprovalSuspension(
                     pipelineActionID: action.id,
                     gateStepIndex: index,
-                    gateActionID: stepID
+                    gateActionID: stepID,
+                    boundRows: rows
                 )
             }
             if step.type == "gate.humanApproval", stepInput.confirmedApproval {

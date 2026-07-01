@@ -914,6 +914,97 @@ struct WorkspaceAppActionExecutorTests {
     }
 
     @MainActor
+    @Test("approval resume preserves bound rows from async task output")
+    func approvalResumePreservesBoundRowsFromAsyncTaskOutput() throws {
+        let fixture = try Self.makePublishedApp(permissionMode: .preApproved)
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        _ = try WorkspaceAppActionExecutor().execute(
+            actionID: "addItem",
+            app: fixture.app,
+            workspace: fixture.workspace,
+            manifest: fixture.manifest,
+            input: WorkspaceAppActionInput(
+                table: "items",
+                record: ["id": .text("item-1"), "name": .text("Apples"), "category": .text("Produce")]
+            ),
+            modelContext: fixture.context
+        )
+
+        var manifest = fixture.manifest
+        manifest.actions.append(WorkspaceAppActionSpec(
+            id: "awaitApprovalBindingPipeline",
+            type: "pipeline.run",
+            label: "Await Approval Binding Pipeline",
+            steps: ["runReviewTask", "approvalGate", "updateItem"]
+        ))
+
+        let suspended = try WorkspaceAppActionExecutor().execute(
+            actionID: "awaitApprovalBindingPipeline",
+            app: fixture.app,
+            workspace: fixture.workspace,
+            manifest: manifest,
+            modelContext: fixture.context
+        )
+        #expect(suspended.run.status == .waiting)
+        #expect(suspended.run.pendingActionID == "awaitApprovalBindingPipeline")
+        #expect(suspended.run.pendingStepIndex == 1)
+
+        let waitingForApproval = try WorkspaceAppActionExecutor().resume(
+            run: suspended.run,
+            app: fixture.app,
+            workspace: fixture.workspace,
+            manifest: manifest,
+            taskOutputRows: [[
+                "id": .text("item-1"),
+                "name": .text("FromApprovedTask"),
+                "category": .text("Produce")
+            ]],
+            modelContext: fixture.context
+        )
+        #expect(waitingForApproval.run.status == .waiting)
+        #expect(waitingForApproval.run.pendingApprovalActionID == "approvalGate")
+        #expect(waitingForApproval.run.pendingStepIndex == 1)
+
+        var events = try fixture.context.fetch(FetchDescriptor<WorkspaceAppRunEvent>())
+            .filter { $0.runID == suspended.run.id }
+        #expect(events.contains {
+            $0.type == "workspaceApp.run.awaitingApproval"
+                && $0.payload.contains("\"boundRows\":1")
+                && $0.payload.contains("boundRowsJSON")
+                && $0.payload.contains("FromApprovedTask")
+        })
+
+        let approved = try WorkspaceAppActionExecutor().resumeWithApproval(
+            run: waitingForApproval.run,
+            approved: true,
+            app: fixture.app,
+            workspace: fixture.workspace,
+            manifest: manifest,
+            modelContext: fixture.context
+        )
+        #expect(approved.run.status == .completed)
+        #expect(approved.run.pendingApprovalActionID == nil)
+        #expect(approved.outputSummary.contains("updateItem: Updated 1 record in items."))
+
+        let rows = try WorkspaceAppStorageService().records(
+            in: "items",
+            databaseURL: URL(fileURLWithPath: WorkspaceFileLayout.appDatabaseFile(
+                workspacePath: fixture.workspace.primaryPath,
+                appID: fixture.app.logicalID
+            )),
+            limit: 100
+        )
+        #expect(rows.first?["name"] == .text("FromApprovedTask"))
+
+        events = try fixture.context.fetch(FetchDescriptor<WorkspaceAppRunEvent>())
+            .filter { $0.runID == suspended.run.id }
+        #expect(events.contains {
+            $0.type == "workspaceApp.approval.confirmed"
+                && $0.payload.contains("\"boundRows\":1")
+        })
+    }
+
+    @MainActor
     @Test("resumption service resumes a waiting run when its task completes (B2)")
     func resumptionServiceResumesWaitingRun() throws {
         let fixture = try Self.makePublishedApp(permissionMode: .preApproved)
