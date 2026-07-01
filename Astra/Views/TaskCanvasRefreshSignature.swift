@@ -17,7 +17,6 @@ struct TaskCanvasRefreshSignature: Equatable, Hashable, Sendable, CustomStringCo
             task.id.uuidString,
             task.status.rawValue,
             String(task.updatedAt.timeIntervalSince1970),
-            String(task.events.count),
             Self.joinFields(task.inputs),
             task.title,
             task.goal,

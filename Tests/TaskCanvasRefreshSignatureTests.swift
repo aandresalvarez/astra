@@ -22,8 +22,8 @@ struct TaskCanvasRefreshSignatureTests {
         #expect(TaskCanvasRefreshSignature(task: task) != original)
     }
 
-    @Test("Signature changes when task input and event counts change")
-    func signatureTracksTaskInputsAndEvents() {
+    @Test("Signature changes when task inputs, events, and file changes update the scalar token")
+    func signatureTracksScalarTaskRefreshToken() {
         let task = AgentTask(title: "Build report", goal: "Generate HTML")
         task.updatedAt = Date(timeIntervalSince1970: 100)
         let original = TaskCanvasRefreshSignature(task: task)
@@ -34,5 +34,18 @@ struct TaskCanvasRefreshSignatureTests {
         let withInput = TaskCanvasRefreshSignature(task: task)
         task.events.append(TaskEvent(task: task, type: "tool.use", payload: "Write"))
         #expect(TaskCanvasRefreshSignature(task: task) != withInput)
+
+        let withEvent = TaskCanvasRefreshSignature(task: task)
+        let run = TaskRun(task: task)
+        task.runs.append(run)
+        run.appendFileChange(StoredFileChange(
+            path: "/tmp/report.html",
+            changeType: "Write",
+            content: "<html></html>",
+            oldString: nil,
+            newString: nil,
+            timestamp: Date()
+        ))
+        #expect(TaskCanvasRefreshSignature(task: task) != withEvent)
     }
 }

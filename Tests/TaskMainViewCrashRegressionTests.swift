@@ -48,8 +48,8 @@ struct TaskMainViewCrashRegressionTests {
         #expect(!gitSource.contains(".onChange(of: selectedTask?.id) {\n            viewModel.setup(for: workspace, selectedTask: selectedTask)"))
     }
 
-    @Test("Canvas refresh signatures do not walk live task runs in SwiftUI body")
-    func canvasRefreshSignaturesAvoidLiveRunRelationshipWalks() throws {
+    @Test("Canvas refresh signatures do not walk live task relationships in SwiftUI body")
+    func canvasRefreshSignaturesAvoidLiveRelationshipWalks() throws {
         for path in [
             "Astra/Views/ContentView.swift",
             "Astra/Views/WorkspaceCanvasPanelView.swift"
@@ -59,6 +59,22 @@ struct TaskMainViewCrashRegressionTests {
             #expect(!source.contains("selectedTask.runs.count"), "\(path) should not count live task runs from body signatures")
             #expect(source.contains("TaskCanvasRefreshSignature"), "\(path) should use the value-snapshot canvas signature")
         }
+
+        let signatureSource = try fileText("Astra/Views/TaskCanvasRefreshSignature.swift")
+        #expect(!signatureSource.contains("task.events.count"), "Canvas refresh signatures should use scalar task tokens, not live event relationship counts")
+        #expect(!signatureSource.contains("task.runs"), "Canvas refresh signatures should not walk live run relationships")
+    }
+
+    @Test("Composer capability snapshot loader reacts to approval changes without name-heavy signatures")
+    func composerCapabilitySnapshotLoaderAvoidsStaleApprovalAndNameHeavySignatures() throws {
+        let source = try fileText("Astra/Views/ComposerCapabilitySnapshot.swift")
+
+        #expect(source.contains(".onReceive(NotificationCenter.default.publisher(for: .capabilityApprovalsChanged))"))
+        #expect(source.contains("approvalRefreshID = UUID()"))
+        #expect(source.contains("withTaskCancellationHandler"))
+        #expect(source.contains("loadTask.cancel()"))
+        #expect(source.contains("revisionSignature(for skill: Skill)"))
+        #expect(!source.contains("\\($0.id.uuidString):\\($0.name)"))
     }
 
     @Test("Composer capability work stays out of large SwiftUI body views")
