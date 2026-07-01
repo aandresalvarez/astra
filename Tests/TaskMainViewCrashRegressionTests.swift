@@ -61,6 +61,21 @@ struct TaskMainViewCrashRegressionTests {
         }
     }
 
+    @Test("Composer capability work stays out of large SwiftUI body views")
+    func composerCapabilityWorkStaysOutOfLargeSwiftUIBodyViews() throws {
+        for path in [
+            "Astra/Views/ChatPanelView.swift",
+            "Astra/Views/TaskMainView.swift"
+        ] {
+            let source = try fileText(path)
+            #expect(!source.contains("@Query(filter: #Predicate<Skill> { $0.isGlobal == true })"), "\(path) should not own global skill queries")
+            #expect(!source.contains("@Query(filter: #Predicate<Connector> { $0.isGlobal == true })"), "\(path) should not own global connector queries")
+            #expect(!source.contains("@Query(filter: #Predicate<LocalTool> { $0.isGlobal == true })"), "\(path) should not own global tool queries")
+            #expect(!source.contains("WorkspaceCapabilities("), "\(path) should not resolve capabilities from render-time computed properties")
+            #expect(source.contains("ComposerCapabilitySnapshotLoader"), "\(path) should consume cached composer capability snapshots")
+        }
+    }
+
     @Test("Container environment picker keeps text from being squeezed by scope badge")
     func containerEnvironmentPickerKeepsTextFromBeingSqueezedByScopeBadge() throws {
         let dockerSource = try fileText("Astra/Views/WorkspaceDockerSectionView.swift")

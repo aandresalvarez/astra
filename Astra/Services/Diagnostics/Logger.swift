@@ -264,6 +264,8 @@ enum AppLogCategory {
 enum LogSanitizer {
     private static let maxMessageLength = 600
     private static let maxFieldLength = 120
+    private static let regexCacheLock = NSLock()
+    private static var regexCache: [String: NSRegularExpression] = [:]
 
     static func sanitize(_ text: String, maxLength: Int = maxMessageLength) -> String {
         var output = text
@@ -336,9 +338,38 @@ enum LogSanitizer {
     }
 
     private static func replace(pattern: String, in text: String, with replacement: String) -> String {
-        guard let regex = try? NSRegularExpression(pattern: pattern) else { return text }
+        guard let regex = compiledRegex(for: pattern) else { return text }
         let range = NSRange(text.startIndex..<text.endIndex, in: text)
         return regex.stringByReplacingMatches(in: text, range: range, withTemplate: replacement)
+    }
+
+    private static func compiledRegex(for pattern: String) -> NSRegularExpression? {
+        regexCacheLock.lock()
+        if let cached = regexCache[pattern] {
+            regexCacheLock.unlock()
+            return cached
+        }
+        regexCacheLock.unlock()
+
+        guard let compiled = try? NSRegularExpression(pattern: pattern) else { return nil }
+
+        regexCacheLock.lock()
+        let regex = regexCache[pattern] ?? compiled
+        regexCache[pattern] = regex
+        regexCacheLock.unlock()
+        return regex
+    }
+
+    static var compiledRegexCountForTesting: Int {
+        regexCacheLock.lock()
+        defer { regexCacheLock.unlock() }
+        return regexCache.count
+    }
+
+    static func resetRegexCacheForTesting() {
+        regexCacheLock.lock()
+        regexCache.removeAll()
+        regexCacheLock.unlock()
     }
 }
 
