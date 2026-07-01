@@ -50,8 +50,17 @@ struct UsageDashboardSummaryMemoTests {
         }
     }
 
-    @Test("Only the first caller within a window gets a stale delay; later callers in the same window get nil")
-    func onlyFirstStaleCallerGetsDelay() {
+    @Test("Every caller within a stale window gets its own delay, independent of other callers")
+    func everyStaleCallerGetsItsOwnDelay() {
+        // Regression test: an earlier version deduplicated with a
+        // `followUpScheduled` flag so only the first caller in a window got a
+        // delay. That's a real bug for multiple open dashboard windows sharing
+        // this process-wide memo: if the window that "claimed" the follow-up
+        // closes before its delayed re-query fires, every other window's
+        // caller also saw the flag set and got nil, so nothing ever refreshed
+        // them. Each caller must independently be told to follow up, since the
+        // memo has no way to know whether whoever claimed it first is still
+        // around to act on it.
         let memo = UsageDashboardSummaryMemo(minimumInterval: 60)
         let task = makeTask(status: .completed, tokensUsed: 100, costUSD: 1.0)
         let run = TaskRun(task: task)
@@ -59,14 +68,14 @@ struct UsageDashboardSummaryMemoTests {
         _ = memo.query(tasks: [task], runs: [run], timeFilter: .allTime)
         task.tokensUsed = 999
 
-        let firstStaleCaller = memo.query(tasks: [task], runs: [run], timeFilter: .allTime)
-        #expect(firstStaleCaller.staleRefreshDelay != nil, "the first caller to observe staleness must be told to schedule a follow-up")
+        // Simulates two independent dashboard windows observing the same
+        // stale cache entry (e.g. window A, then window B, each re-rendering
+        // due to the same underlying mutation).
+        let windowA = memo.query(tasks: [task], runs: [run], timeFilter: .allTime)
+        #expect(windowA.staleRefreshDelay != nil, "window A must be told to schedule its own follow-up")
 
-        let secondStaleCaller = memo.query(tasks: [task], runs: [run], timeFilter: .allTime)
-        #expect(secondStaleCaller.staleRefreshDelay == nil, "a follow-up is already scheduled, so a second caller shouldn't schedule a redundant one")
-
-        let thirdStaleCaller = memo.query(tasks: [task], runs: [run], timeFilter: .allTime)
-        #expect(thirdStaleCaller.staleRefreshDelay == nil, "still no redundant follow-up while one remains pending")
+        let windowB = memo.query(tasks: [task], runs: [run], timeFilter: .allTime)
+        #expect(windowB.staleRefreshDelay != nil, "window B must ALSO be told to schedule its own follow-up, even though window A already saw a delay — window A might close before its follow-up fires")
     }
 
     @Test("A task/run count change always forces a recompute and resets the follow-up flag")

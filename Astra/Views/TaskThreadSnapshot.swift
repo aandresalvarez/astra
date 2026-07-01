@@ -1099,14 +1099,31 @@ struct TaskThreadSnapshotTrigger: Equatable {
 /// whether the *terminal snapshot cache* applies (a queued task's plan could
 /// still change before its turn), but wrong for deciding whether to *poll*: a
 /// task queued behind another run has no live output or events yet, so polling
-/// it every tick is pure waste until an actual run starts. `isLive` here only
-/// covers `.running` (task or run), leaving `.queued` on the cheap reactive
-/// path (`TaskThreadChangeObserver.reactiveTriggerWhenNotLive`,
-/// `UsageDashboardView`'s query-driven follow-up) until it actually starts running.
+/// it every tick is pure waste until an actual run starts.
+///
+/// Requires *both* `task.status == .running` *and* the latest run's status ==
+/// `.running` — either alone is insufficient:
+/// - `task.status` alone: `sendConversationMessage` can optimistically set
+///   `.running` before `taskQueue.continueSession` has actually acquired a
+///   worker/resource lock (it can sit in `waitForResourceLock` first), so
+///   `task.status == .running` doesn't guarantee any run has started producing
+///   events yet.
+/// - run status alone: `AgentInteractivePermissionChannel` sets
+///   `task.status = .pendingUser` for a permission prompt while leaving
+///   `run.status == .running` until the user decides — the run is still
+///   "open" but nothing is streaming while it waits on the user, so treating
+///   that run status alone as live would poll a large history every tick for
+///   as long as the prompt goes unanswered.
+/// Both conditions together correctly exclude `.queued`, the pre-lock-
+/// acquisition window, and a pending-user permission pause, leaving all of
+/// them on the cheap reactive path
+/// (`TaskThreadChangeObserver.reactiveTriggerWhenNotLive`,
+/// `UsageDashboardView`'s query-driven follow-up) until a run is actually
+/// running.
 enum TaskLiveness {
     static func isLive(task: AgentTask) -> Bool {
         task.status == .running
-            || task.runs.max(by: { $0.startedAt < $1.startedAt })?.status == .running
+            && task.runs.max(by: { $0.startedAt < $1.startedAt })?.status == .running
     }
 }
 

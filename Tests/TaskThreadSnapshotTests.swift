@@ -87,10 +87,26 @@ struct TaskThreadSnapshotTests {
 @Suite("TaskLiveness")
 struct TaskLivenessTests {
 
-    @Test("A running task is live")
-    func runningTaskIsLive() {
+    @Test("A running task with a running latest run is live")
+    func runningTaskWithRunningRunIsLive() {
         let task = makeTask(status: .running)
+        let run = TaskRun(task: task)
+        run.status = .running
+        run.startedAt = Date(timeIntervalSince1970: 0)
+        task.runs.append(run)
         #expect(TaskLiveness.isLive(task: task))
+    }
+
+    @Test("A running task with no runs yet is not live — task.status alone doesn't guarantee a run has actually started")
+    func runningTaskWithNoRunsIsNotLive() {
+        // Regression test: sendConversationMessage can optimistically set
+        // task.status = .running before taskQueue.continueSession has
+        // actually acquired a worker/resource lock (it can sit in
+        // waitForResourceLock first). Treating task.status == .running alone
+        // as live polled a large history every tick during that whole wait,
+        // even though no run — and so no new content — exists yet.
+        let task = makeTask(status: .running)
+        #expect(!TaskLiveness.isLive(task: task))
     }
 
     @Test("A queued task (waiting behind another run) is not live — nothing to poll until it actually starts running")
@@ -99,14 +115,30 @@ struct TaskLivenessTests {
         #expect(!TaskLiveness.isLive(task: task))
     }
 
-    @Test("A completed task with a running latest run is still live")
-    func completedTaskWithRunningLatestRunIsLive() {
+    @Test("A pending-user task with a still-running latest run is not live — a permission pause isn't streaming")
+    func pendingUserTaskWithRunningRunIsNotLive() {
+        // Regression test: AgentInteractivePermissionChannel sets
+        // task.status = .pendingUser for a permission prompt while leaving
+        // run.status == .running until the user decides. Treating the run's
+        // status alone as live re-polled a large event history every tick for
+        // as long as the prompt went unanswered, even though the provider is
+        // paused and nothing is actually streaming.
+        let task = makeTask(status: .pendingUser)
+        let run = TaskRun(task: task)
+        run.status = .running
+        run.startedAt = Date(timeIntervalSince1970: 0)
+        task.runs.append(run)
+        #expect(!TaskLiveness.isLive(task: task))
+    }
+
+    @Test("A completed task with a running latest run is not live — task.status must also say running")
+    func completedTaskWithRunningLatestRunIsNotLive() {
         let task = makeTask(status: .completed)
         let run = TaskRun(task: task)
         run.status = .running
         run.startedAt = Date(timeIntervalSince1970: 0)
         task.runs.append(run)
-        #expect(TaskLiveness.isLive(task: task))
+        #expect(!TaskLiveness.isLive(task: task))
     }
 
     @Test("A completed task with only completed runs is not live")
@@ -121,7 +153,7 @@ struct TaskLivenessTests {
 
     @Test("Liveness is based on the latest run by startedAt, not array order")
     func livenessUsesLatestRunByStartedAt() {
-        let task = makeTask(status: .completed)
+        let task = makeTask(status: .running)
         let olderRunning = TaskRun(task: task)
         olderRunning.status = .running
         olderRunning.startedAt = Date(timeIntervalSince1970: 0)

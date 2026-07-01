@@ -73,12 +73,11 @@ struct UsageDashboardSummary {
 }
 
 /// Result of `UsageDashboardSummaryMemo.query(...)`: the summary to display, plus
-/// (only for the *first* caller to observe an already-cached value still inside
-/// the throttle window) how long to wait before re-querying to pick up any
+/// how long the *caller* should wait before re-querying to pick up any
 /// value-only change — e.g. `tokensUsed`, `costUSD`, or `status` — that landed
-/// since the cache was populated. `nil` when this call recomputed fresh, or when
-/// a follow-up for the current cache entry has already been reported to an
-/// earlier caller (see `UsageDashboardSummaryMemo.followUpScheduled`).
+/// since the cache was populated. `nil` when this call recomputed fresh (nothing
+/// to follow up on yet); a positive interval when serving an already-cached
+/// value that's still inside the throttle window.
 struct UsageDashboardSummaryQuery {
     let summary: UsageDashboardSummary
     let staleRefreshDelay: TimeInterval?
@@ -99,18 +98,23 @@ struct UsageDashboardSummaryQuery {
 ///
 /// This throttle alone can serve a value-only change (tokensUsed/costUSD/status —
 /// e.g. approving a pending-user task, which changes none of the count/filter
-/// fields the cache keys on) stale with nothing to force a follow-up. A prior
-/// version tried gating a *poll loop* on whether any task looked "live"
-/// (`TaskLiveness.isLive`), but that predicate only covers running/queued tasks
-/// with a live run — a `.pendingUser → .completed` transition isn't a liveness
-/// edge at all, so it was never observed by that loop, leaving the Completed/
-/// Failed/token cards stale indefinitely. `query(...)` instead reports the
-/// staleness signal directly, guarded by `followUpScheduled` so at most one
-/// follow-up gets reported per cache entry: the first caller to see a cached
-/// value within the window gets a delay and is responsible for re-querying
-/// after it; every other caller within that same window gets `nil` (a
-/// follow-up is already on its way). Recomputing always resets the flag, so the
-/// next stale read schedules its own follow-up again.
+/// fields the cache keys on) stale with nothing to force a follow-up. `query(...)`
+/// reports the staleness signal directly so every caller that observes a
+/// cache-hit-inside-the-window can schedule its own re-query.
+///
+/// This memo is a process-wide singleton (`UsageDashboardView.summaryMemo`) shared
+/// by every open dashboard instance, but each caller's returned delay is only ever
+/// acted on by *that specific caller* — this used to be deduplicated with a
+/// `followUpScheduled` flag so only the first caller in a window got a non-nil
+/// delay, but that dedup was itself a bug: the flag has no idea whether the
+/// caller that "claimed" a follow-up is still around to act on it. If that
+/// dashboard window closes before its delayed re-query fires, every other
+/// (still-open) window's caller also sees `followUpScheduled == true` and gets
+/// `nil`, so nothing ever refreshes them — stale indefinitely. Reporting a delay
+/// to every eligible caller instead means multiple open windows each schedule
+/// their own follow-up; only the first to fire pays the actual rebuild cost
+/// (`inputsUnchanged` + elapsed check below still caps that to once per window),
+/// the rest just read the by-then-fresh cache.
 final class UsageDashboardSummaryMemo: @unchecked Sendable {
     private let lock = NSLock()
     private var cached: UsageDashboardSummary?
@@ -118,7 +122,6 @@ final class UsageDashboardSummaryMemo: @unchecked Sendable {
     private var cachedTaskCount = -1
     private var cachedRunCount = -1
     private var lastComputedAt = Date.distantPast
-    private var followUpScheduled = false
     private let minimumInterval: TimeInterval
 
     init(minimumInterval: TimeInterval) {
@@ -135,10 +138,6 @@ final class UsageDashboardSummaryMemo: @unchecked Sendable {
         if let cached, inputsUnchanged {
             let remaining = minimumInterval - now.timeIntervalSince(lastComputedAt)
             if remaining > 0 {
-                if followUpScheduled {
-                    return UsageDashboardSummaryQuery(summary: cached, staleRefreshDelay: nil)
-                }
-                followUpScheduled = true
                 return UsageDashboardSummaryQuery(summary: cached, staleRefreshDelay: remaining)
             }
         }
@@ -148,7 +147,6 @@ final class UsageDashboardSummaryMemo: @unchecked Sendable {
         cachedTaskCount = tasks.count
         cachedRunCount = runs.count
         lastComputedAt = now
-        followUpScheduled = false
         return UsageDashboardSummaryQuery(summary: summary, staleRefreshDelay: nil)
     }
 
@@ -160,7 +158,6 @@ final class UsageDashboardSummaryMemo: @unchecked Sendable {
         cachedTaskCount = -1
         cachedRunCount = -1
         lastComputedAt = .distantPast
-        followUpScheduled = false
     }
 }
 
@@ -271,32 +268,24 @@ struct UsageDashboardView: View {
             }
             .padding()
         }
-        // Schedules the follow-up via a plain detached `scheduleFollowUp` Task,
-        // not a `.task(id:)`-bound one — `followUpScheduled` inside the memo
-        // guarantees only one render per cache entry ever sees a non-nil delay,
-        // but every OTHER render in that same window sees nil, and keying a
-        // `.task(id:)` on "is a follow-up pending" would flip that id back to
-        // false on each of those, cancelling the already-scheduled sleep before
-        // it fires. `.task { }` here has no `id:`, so it isn't restarted by
-        // those later renders — it runs once per view appearance, catching a
-        // delay that's already present on the very first query (e.g. the
-        // dashboard reopened while a prior instance's cache entry is still
-        // inside its window). `.onChange` catches later transitions (`.task {
-        // }` alone wouldn't fire again for those, and `.onChange` alone
-        // wouldn't fire for a delay present from the start).
-        .task {
-            if let delay = query.staleRefreshDelay {
-                scheduleFollowUp(after: delay)
-            }
-        }
-        .onChange(of: query.staleRefreshDelay) { _, newDelay in
-            guard let newDelay else { return }
-            scheduleFollowUp(after: newDelay)
-        }
-    }
-
-    private func scheduleFollowUp(after delay: TimeInterval) {
-        Task {
+        // Keyed on whether a follow-up is pending (not on `staleRefreshDelay`
+        // itself, whose exact TimeInterval value differs on every call, which
+        // would restart this task on every render instead of only at genuine
+        // pending/not-pending transitions). Since the memo no longer dedupes
+        // across callers (see `UsageDashboardSummaryMemo`'s doc comment), every
+        // render within a stale window reports a non-nil delay, so this id
+        // stays `true` continuously for the window's duration — `.task(id:)`
+        // only restarts on an actual id *change*, so the sleep scheduled by the
+        // first `true` render simply keeps running through the later ones,
+        // waking at `lastComputedAt + minimumInterval` regardless of which
+        // call's `remaining` estimate it happened to capture (they all target
+        // the same instant, since `lastComputedAt` doesn't move until an
+        // actual recompute happens). `.task(id:)` also fires for the *initial*
+        // id value, so this catches a delay already present on the very first
+        // query (e.g. the dashboard reopened while the memo's cache entry is
+        // still inside its window) without needing a separate check.
+        .task(id: query.staleRefreshDelay != nil) {
+            guard let delay = query.staleRefreshDelay else { return }
             try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
             guard !Task.isCancelled else { return }
             renderTick += 1
