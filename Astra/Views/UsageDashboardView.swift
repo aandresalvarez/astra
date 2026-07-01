@@ -116,6 +116,24 @@ final class UsageDashboardSummaryMemo: @unchecked Sendable {
         return summary
     }
 
+    /// Task/run counts and the filter don't capture every field the summary
+    /// reads (`tokensUsed`, `costUSD`, `status`) — a value-only change (e.g. a
+    /// run's final token count landing inside the throttle window) is served
+    /// stale by `summary(...)` with nothing to force a follow-up recompute if
+    /// no further mutation happens anywhere else. Returns how long the caller
+    /// should wait before re-querying to pick up that value, or nil if the next
+    /// call would already recompute fresh.
+    func staleRefreshDelay(tasks: [AgentTask], runs: [TaskRun], timeFilter: TimeFilter) -> TimeInterval? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard cached != nil,
+              cachedFilter == timeFilter,
+              cachedTaskCount == tasks.count,
+              cachedRunCount == runs.count else { return nil }
+        let remaining = minimumInterval - Date().timeIntervalSince(lastComputedAt)
+        return remaining > 0 ? remaining : nil
+    }
+
     func resetForTesting() {
         lock.lock()
         defer { lock.unlock() }
@@ -133,6 +151,7 @@ struct UsageDashboardView: View {
     @Query private var tasks: [AgentTask]
     @Query private var runs: [TaskRun]
     @State private var timeFilter: TimeFilter = .allTime
+    @State private var staleRefreshTick = 0
 
     private var usageSummary: UsageDashboardSummary {
         Self.summaryMemo.summary(tasks: tasks, runs: runs, timeFilter: timeFilter)
@@ -230,6 +249,25 @@ struct UsageDashboardView: View {
             }
             .padding()
         }
+        .task(id: staleRefreshTick) {
+            await scheduleStaleRefreshIfNeeded()
+        }
+    }
+
+    /// If `usageSummary` above just served a throttled-stale value, wait out the
+    /// remaining throttle window and bump `staleRefreshTick` to force a fresh
+    /// recompute — otherwise a value-only change (tokensUsed/costUSD/status)
+    /// that lands inside the throttle window would stay stale indefinitely if
+    /// nothing else in the workspace mutates afterward. Re-checks after firing
+    /// since `.task(id:)` restarts on the bump; converges once the memo reports
+    /// no further staleness.
+    private func scheduleStaleRefreshIfNeeded() async {
+        guard let delay = Self.summaryMemo.staleRefreshDelay(tasks: tasks, runs: runs, timeFilter: timeFilter) else {
+            return
+        }
+        try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+        guard !Task.isCancelled else { return }
+        staleRefreshTick += 1
     }
 
     /// Leading status glyph for a per-task breakdown row, so the list has a

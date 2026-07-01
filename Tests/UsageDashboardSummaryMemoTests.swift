@@ -91,6 +91,57 @@ struct UsageDashboardSummaryMemoTests {
         #expect(second.totalTokens == 250)
     }
 
+    @Test("staleRefreshDelay reports a wait when a value-only mutation was served stale")
+    func staleRefreshDelayReportsWaitForValueOnlyMutation() {
+        let memo = UsageDashboardSummaryMemo(minimumInterval: 60)
+        let task = makeTask(status: .completed, tokensUsed: 100, costUSD: 1.0)
+        let run = TaskRun(task: task)
+
+        _ = memo.summary(tasks: [task], runs: [run], timeFilter: .allTime)
+
+        // No delay expected yet: nothing has been read as stale.
+        task.tokensUsed = 999
+        let delay = memo.staleRefreshDelay(tasks: [task], runs: [run], timeFilter: .allTime)
+        #expect(delay != nil, "a same-shape, in-window query should report a pending stale value to refresh")
+        if let delay {
+            #expect(delay > 0 && delay <= 60)
+        }
+    }
+
+    @Test("staleRefreshDelay is nil once inputs actually changed, since the next call recomputes fresh")
+    func staleRefreshDelayIsNilWhenInputsChanged() {
+        let memo = UsageDashboardSummaryMemo(minimumInterval: 60)
+        let task = makeTask(status: .completed, tokensUsed: 100, costUSD: 1.0)
+        let run = TaskRun(task: task)
+        _ = memo.summary(tasks: [task], runs: [run], timeFilter: .allTime)
+
+        let task2 = makeTask(status: .completed, tokensUsed: 50, costUSD: 0.5)
+        let run2 = TaskRun(task: task2)
+        let delay = memo.staleRefreshDelay(tasks: [task, task2], runs: [run, run2], timeFilter: .allTime)
+        #expect(delay == nil, "a count change means the next summary() call recomputes on its own, no scheduled refresh needed")
+    }
+
+    @Test("staleRefreshDelay is nil once the throttle window has already elapsed")
+    func staleRefreshDelayIsNilAfterThrottleWindowElapses() async {
+        let memo = UsageDashboardSummaryMemo(minimumInterval: 0.02)
+        let task = makeTask(status: .completed, tokensUsed: 100, costUSD: 1.0)
+        let run = TaskRun(task: task)
+        _ = memo.summary(tasks: [task], runs: [run], timeFilter: .allTime)
+
+        try? await Task.sleep(nanoseconds: 40_000_000)
+        let delay = memo.staleRefreshDelay(tasks: [task], runs: [run], timeFilter: .allTime)
+        #expect(delay == nil, "once the window elapsed, the next summary() call recomputes on its own")
+    }
+
+    @Test("staleRefreshDelay is nil before anything has ever been computed")
+    func staleRefreshDelayIsNilBeforeFirstComputation() {
+        let memo = UsageDashboardSummaryMemo(minimumInterval: 60)
+        let task = makeTask(status: .completed, tokensUsed: 100, costUSD: 1.0)
+        let run = TaskRun(task: task)
+        let delay = memo.staleRefreshDelay(tasks: [task], runs: [run], timeFilter: .allTime)
+        #expect(delay == nil)
+    }
+
     @Test("resetForTesting clears cached state so the next call recomputes unconditionally")
     func resetForTestingClearsCachedState() {
         let memo = UsageDashboardSummaryMemo(minimumInterval: 60)

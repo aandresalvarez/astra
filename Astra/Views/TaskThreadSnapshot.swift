@@ -1085,27 +1085,38 @@ struct TaskThreadSnapshotTrigger: Equatable {
 /// Incremental cache for `TaskThreadSnapshotTrigger.visibleEventCount`. The trigger
 /// is rebuilt on every mutation `TaskThreadChangeObserver` observes (every streamed
 /// conversation chunk appends a `TaskEvent` via `AgentEventRecorder`), so a live task
-/// with thousands of events paid an O(n) rescan on every single chunk. `task.events`
-/// only grows by append during a live session (single `@MainActor` writer), so
-/// re-scanning just the events appended since the last call keeps this O(1)
-/// amortized. Falls back to a full rescan whenever that invariant doesn't hold (task
-/// switch, or the count going backwards), which keeps the result correct even if the
-/// assumption is ever violated. Lock-protected (mirrors `WildcardPatternMatcher`)
-/// rather than `@MainActor`-isolated since callers include non-MainActor test code.
+/// with thousands of events paid an O(n) rescan on every single chunk.
+///
+/// `AgentEventRecorder` inserts new `TaskEvent`s through the model context rather
+/// than appending to `task.events` directly, and SwiftData doesn't guarantee that
+/// relationship array's ordering — so the "new events are always at the tail"
+/// assumption an index-only incremental scan would need isn't safe to trust blindly.
+/// Instead of trusting it, this verifies it cheaply on every call: it remembers the
+/// ID of the last element it counted at the scan boundary and only takes the
+/// incremental path if that element is still there. A mid-array insertion or any
+/// reordering that moves the boundary shifts what's at that index, so the ID
+/// mismatches and it falls back to a full rescan — self-healing rather than
+/// silently under- or over-counting. (Reordering *within* the already-counted
+/// prefix doesn't affect the count itself, since counting by type is
+/// order-independent over a fixed set — only the boundary position matters here.)
+/// Lock-protected (mirrors `WildcardPatternMatcher`) rather than `@MainActor`-
+/// isolated since callers include non-MainActor test code.
 private final class TaskThreadVisibleEventCountMemo: @unchecked Sendable {
     private let lock = NSLock()
     private var taskID: UUID?
     private var scannedCount = 0
+    private var lastScannedEventID: UUID?
     private var visibleCount = 0
 
     func count(taskID incomingTaskID: UUID, events: [TaskEvent], highFrequencyTypes: Set<String>) -> Int {
         lock.lock()
         defer { lock.unlock() }
-        if taskID == incomingTaskID, scannedCount <= events.count {
+        if taskID == incomingTaskID, scannedCount <= events.count, boundaryIsStable(events: events) {
             for event in events[scannedCount...] where !highFrequencyTypes.contains(event.type) {
                 visibleCount += 1
             }
             scannedCount = events.count
+            lastScannedEventID = events.last?.id
             return visibleCount
         }
         visibleCount = 0
@@ -1114,13 +1125,20 @@ private final class TaskThreadVisibleEventCountMemo: @unchecked Sendable {
         }
         taskID = incomingTaskID
         scannedCount = events.count
+        lastScannedEventID = events.last?.id
         return visibleCount
+    }
+
+    private func boundaryIsStable(events: [TaskEvent]) -> Bool {
+        guard scannedCount > 0 else { return true }
+        return events[scannedCount - 1].id == lastScannedEventID
     }
 
     func reset() {
         lock.lock()
         defer { lock.unlock() }
         taskID = nil
+        lastScannedEventID = nil
         scannedCount = 0
         visibleCount = 0
     }
