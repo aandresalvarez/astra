@@ -23,6 +23,24 @@ enum AgentRuntimeRunPersistence {
             durationMs: run.completedAt.map { Int($0.timeIntervalSince(run.startedAt) * 1000) }
         )
         TaskContextStateManager.recordTurn(task: task, run: run, message: message)
+
+        // Tier 2 objective re-assessment: opt-in, background-only, and gated by
+        // its own deterministic trigger predicate (turn/hash/staleness) so it
+        // never runs on every turn even when the setting is on. Never awaited
+        // here -- this must stay off the render/refresh path (INVARIANTS #2).
+        if UserDefaults.standard.bool(forKey: AppStorageKeys.objectiveDriftDetectionEnabled) {
+            Task { @MainActor in
+                await ObjectiveAssessmentService.assessIfNeeded(task: task)
+            }
+        } else {
+            // Setting is off: drop any stale assessment left over from when it
+            // was previously enabled so follow-up framing reverts to Tier-1-only
+            // behavior immediately, per the Settings copy's "failures leave
+            // existing behavior unchanged" contract. Synchronous and cheap (a
+            // no-op when nothing is persisted); see
+            // ObjectiveAssessmentService.clearAssessmentIfDriftDetectionDisabled.
+            ObjectiveAssessmentService.clearAssessmentIfDriftDetectionDisabled(task: task)
+        }
     }
 
     static func finalizeAndPersist(

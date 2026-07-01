@@ -209,6 +209,7 @@ struct TaskContextState: Codable, Sendable, Equatable {
     /// Recent follow-up user messages, kept close to as-typed, so mid-conversation
     /// instructions survive past the transcript window (first message excluded).
     var standingInstructions: [ContextFact]?
+    var objectiveAssessment: ObjectiveAssessment?
     var turns: [Turn]
     var updatedAt: String
 }
@@ -308,6 +309,7 @@ enum TaskContextStateManager {
         let existing = TaskContextStateRecovery.recoverState(taskFolder: folder, taskID: task.id)
         var state = existing ?? initialState(for: task)
         updateDerivedFields(&state, task: task, latestRun: latestRun(for: task))
+        reconcileActiveObjectiveWithAssessmentPivot(&state, task: task)
         // No-op refresh (common on task open) — skip the encode + two file writes. See perf audit.
         guard existing != state else { return }
         state.updatedAt = timestamp(Date())
@@ -468,6 +470,7 @@ enum TaskContextStateManager {
         appendSourcePointerList("Verification evidence", state.verification.evidence, to: &lines, limit: 4)
         appendArtifactReferences(state.artifacts, to: &lines, limit: 6)
         appendLatestHandoff(state.latestHandoff, to: &lines)
+        appendObjectiveAssessment(state.objectiveAssessment, to: &lines)
         appendCorrectiveWork(state.correctiveWork, to: &lines, limit: 5)
         if let next = state.nextLikelyAction, !next.isEmpty {
             lines.append("- Next likely action: \(boundedInline(next, maxCharacters: 320))")
@@ -565,6 +568,7 @@ enum TaskContextStateManager {
         appendMarkdownVerification(state.verification, to: &parts)
         appendMarkdownArtifacts(state.artifacts, to: &parts)
         appendMarkdownHandoff(state.latestHandoff, to: &parts)
+        appendMarkdownObjectiveAssessment(state.objectiveAssessment, to: &parts)
         appendMarkdownCorrectiveWork(state.correctiveWork, to: &parts)
         if let next = state.nextLikelyAction, !next.isEmpty {
             parts.append("")
