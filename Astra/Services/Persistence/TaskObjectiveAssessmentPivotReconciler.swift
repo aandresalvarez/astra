@@ -1,18 +1,32 @@
 import Foundation
 
 /// Reconciles a persisted Tier 2 (utility-model) objective assessment against
-/// Tier 1's deterministic resolver on every `refresh()`, in two ways:
+/// Tier 1's deterministic resolver on every `refresh()`, in three ways:
 ///
-///  1. If Tier 1 now finds a newer explicit objective marker
-///     (`activeObjectiveResolution(...).supersedesOriginalGoal`), any
-///     persisted `objectiveAssessment` is dropped entirely. An explicit user
-///     override always wins over an older, now-stale Tier 2 verdict, and
-///     nothing else invalidates a persisted assessment once
+///  1. If Tier 1 now finds a newer, more authoritative signal -- either an
+///     explicit objective marker (`activeObjectiveResolution(...)
+///     .supersedesOriginalGoal`) or an approved/executing/completed plan
+///     whose goal has already reconciled to something other than `task.goal`
+///     (`activeObjectiveResolution(...).objective != task.goal`, which the
+///     `supersedesOriginalGoal` flag alone does not catch -- that flag is
+///     hardcoded `false` on the plan-reconciliation path even though the
+///     resolved objective genuinely changed) -- any persisted
+///     `objectiveAssessment` is dropped entirely. A durable Tier 1 signal
+///     always wins over an older, now-stale Tier 2 verdict, and nothing else
+///     invalidates a persisted assessment once
 ///     `ObjectiveAssessmentTrigger.shouldAssess` stops re-running Tier 2 after
-///     an explicit marker appears (adversarial finding: an explicit correction
-///     must not keep surfacing an earlier drift episode via either the
-///     Thread Intent line or the raw "Objective assessment" block).
-///  2. Otherwise, a still-valid `superseded` verdict's `currentObjective` is
+///     such a signal appears (adversarial findings: an explicit correction,
+///     or a plan approved after an earlier drift episode, must not keep
+///     surfacing that earlier pivot via either the Thread Intent line or the
+///     raw "Objective assessment" block).
+///  2. If the opt-in "Objective Drift Detection" setting is off, any
+///     persisted assessment is also dropped here -- covering the one-turn
+///     gap between the user disabling the setting and
+///     `AgentRuntimeRunPersistence.recordSessionTurn`'s own (write-side)
+///     cleanup running for a completed turn (adversarial finding: the
+///     thread-state refresh must not keep applying a stale pivot for a
+///     prompt built while the setting reads as off).
+///  3. Otherwise, a still-valid `superseded` verdict's `currentObjective` is
 ///     copied into `state.currentObjective` / `state.objective.currentObjective`.
 ///     Without this, `updateDerivedFields` computes `currentObjective` purely
 ///     from Tier 1's resolver, which never looks at `objectiveAssessment` at
@@ -34,13 +48,22 @@ extension TaskContextStateManager {
     static func reconcileActiveObjectiveWithAssessmentPivot(_ state: inout TaskContextState, task: AgentTask) {
         guard let assessment = state.objectiveAssessment else { return }
 
-        let hasNewerExplicitMarker = activeObjectiveResolution(
+        guard UserDefaults.standard.bool(forKey: AppStorageKeys.objectiveDriftDetectionEnabled) else {
+            state.objectiveAssessment = nil
+            return
+        }
+
+        let resolution = activeObjectiveResolution(
             for: task,
             planState: TaskPlanService.reconstruct(for: task),
             startingRequest: state.startingRequest,
             approvedGoal: state.approvedGoal
-        ).supersedesOriginalGoal
-        guard !hasNewerExplicitMarker else {
+        )
+        let goal = task.goal.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedObjective = resolution.objective.trimmingCharacters(in: .whitespacesAndNewlines)
+        let tier1HasMovedPastOriginalGoal = resolution.supersedesOriginalGoal
+            || (!resolvedObjective.isEmpty && resolvedObjective.caseInsensitiveCompare(goal) != .orderedSame)
+        guard !tier1HasMovedPastOriginalGoal else {
             state.objectiveAssessment = nil
             return
         }
@@ -52,5 +75,27 @@ extension TaskContextStateManager {
         }
         state.currentObjective = pivotObjective
         state.objective.currentObjective = pivotObjective
+    }
+
+    /// Whether the "Current objective" Thread Intent line would just repeat
+    /// text that's already been demoted to background framing earlier in the
+    /// SAME follow-up prompt by `FollowUpIntroSectionProvider` (Tier 1
+    /// `.delivered`, or Tier 2 `original_satisfied` with no distinct pivot --
+    /// `superseded` is excluded because `reconcileActiveObjectiveWithAssessmentPivot`
+    /// above already rewrites `currentObjective` to the pivoted text in that
+    /// case, so it no longer matches `task.goal`). Scoped to prompt rendering
+    /// only: `state.currentObjective` itself is left untouched, so unrelated
+    /// consumers (Mission Control, the markdown capsule export) keep showing
+    /// the retrospective objective for a finished thread, which is correct
+    /// there (adversarial finding: only the live provider prompt must avoid
+    /// asserting a demoted goal as still "current").
+    @MainActor
+    static func shouldSuppressRedundantCurrentObjectiveLine(state: TaskContextState, task: AgentTask) -> Bool {
+        let currentObjective = state.objective.currentObjective.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !currentObjective.isEmpty else { return false }
+        let goal = task.goal.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard currentObjective.caseInsensitiveCompare(goal) == .orderedSame else { return false }
+        return originalGoalDelivery(for: task) == .delivered
+            || state.objectiveAssessment?.verdict == "original_satisfied"
     }
 }

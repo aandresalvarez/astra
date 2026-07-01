@@ -202,15 +202,21 @@ enum AgentPromptBuilder {
     /// `ObjectiveAssessmentTrigger.shouldAssess` will not re-run Tier 2 once an
     /// explicit marker is present, so nothing else invalidates it here).
     ///
-    /// Disabling the opt-in "Objective Drift Detection" setting is handled
-    /// separately: `AgentRuntimeRunPersistence.recordSessionTurn` clears any
-    /// persisted `objectiveAssessment` the next time a turn is recorded while
-    /// the setting is off (adversarial finding: setting-off previously left a
-    /// stale verdict on disk indefinitely), so by the time this reads the
-    /// capsule there is nothing stale left to gate on here.
+    /// Also checks the opt-in "Objective Drift Detection" setting directly
+    /// rather than relying solely on the write side
+    /// (`AgentRuntimeRunPersistence.recordSessionTurn`, which only clears a
+    /// stale assessment when a turn *finishes* recording): this section
+    /// provider runs while building the prompt for the turn that follows the
+    /// user disabling the setting, before that write-side cleanup has had a
+    /// chance to run for this turn, so an independent read-side check is
+    /// required to avoid a one-turn window where a stale pivot still demotes
+    /// the original goal (adversarial finding).
     private static func followUpTier2ObjectivePivot(
         for task: AgentTask
     ) -> (verdict: String, currentObjective: String?)? {
+        guard UserDefaults.standard.bool(forKey: AppStorageKeys.objectiveDriftDetectionEnabled) else {
+            return nil
+        }
         let folder = TaskWorkspaceAccess(task: task).taskFolder
         guard !folder.isEmpty,
               let assessment = TaskContextStateManager.load(taskFolder: folder)?.objectiveAssessment,

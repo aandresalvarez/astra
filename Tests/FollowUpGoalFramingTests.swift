@@ -71,6 +71,18 @@ struct FollowUpGoalFramingTests {
 
     @Test("superseded Tier 2 verdict demotes the original goal and surfaces a divergence note")
     func supersededVerdictDemotesOriginalGoalWithDivergenceNote() throws {
+        let defaults = UserDefaults.standard
+        let key = AppStorageKeys.objectiveDriftDetectionEnabled
+        let original = defaults.object(forKey: key) as? Bool
+        defaults.set(true, forKey: key)
+        defer {
+            if let original {
+                defaults.set(original, forKey: key)
+            } else {
+                defaults.removeObject(forKey: key)
+            }
+        }
+
         let container = try makeFollowUpGoalFramingContainer()
         let context = container.mainContext
         let root = try Self.temporaryRoot(name: "superseded")
@@ -119,6 +131,18 @@ struct FollowUpGoalFramingTests {
 
     @Test("a newer explicit objective marker invalidates a stale superseded Tier 2 verdict")
     func explicitObjectiveMarkerInvalidatesStaleSupersededVerdict() throws {
+        let defaults = UserDefaults.standard
+        let key = AppStorageKeys.objectiveDriftDetectionEnabled
+        let original = defaults.object(forKey: key) as? Bool
+        defaults.set(true, forKey: key)
+        defer {
+            if let original {
+                defaults.set(original, forKey: key)
+            } else {
+                defaults.removeObject(forKey: key)
+            }
+        }
+
         let container = try makeFollowUpGoalFramingContainer()
         let context = container.mainContext
         let root = try Self.temporaryRoot(name: "explicit-marker-invalidates")
@@ -197,6 +221,111 @@ struct FollowUpGoalFramingTests {
         #expect(deliveredPrompt.contains("background context only"))
         #expect(deliveredPrompt.contains("do not re-address unless the user asks"))
         #expect(deliveredPrompt.contains("Transparency note:"))
+    }
+
+    @Test("a persisted Tier 2 pivot is ignored when Objective Drift Detection is off")
+    func persistedPivotIgnoredWhenDriftDetectionDisabled() throws {
+        let defaults = UserDefaults.standard
+        let key = AppStorageKeys.objectiveDriftDetectionEnabled
+        let original = defaults.object(forKey: key) as? Bool
+        defaults.set(false, forKey: key)
+        defer {
+            if let original {
+                defaults.set(original, forKey: key)
+            } else {
+                defaults.removeObject(forKey: key)
+            }
+        }
+
+        let container = try makeFollowUpGoalFramingContainer()
+        let context = container.mainContext
+        let root = try Self.temporaryRoot(name: "toggle-off-read-path")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let workspace = Workspace(name: "Toggle Off Read Path", primaryPath: root)
+        let task = AgentTask(title: "Running thread", goal: "Write the onboarding guide", workspace: workspace)
+        task.status = .running
+        context.insert(workspace)
+        context.insert(task)
+        try context.save()
+
+        let folder = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
+        TaskContextStateManager.refresh(task: task)
+        var state = try #require(TaskContextStateManager.load(taskFolder: folder))
+        state.objectiveAssessment = TaskContextState.ObjectiveAssessment(
+            verdict: "superseded",
+            currentObjective: "Rework the CSV exporter instead",
+            assessedAtTurn: 4,
+            inputHash: "hash-toggle-off-read-path"
+        )
+        TaskContextStateManager.saveState(state, taskFolder: folder, taskID: task.id)
+
+        // Regression guard (adversarial finding): the read path must check the
+        // setting itself rather than rely solely on write-side cleanup landing
+        // in time -- this simulates the one-turn window where a stale pivot is
+        // still on disk while the setting already reads as off.
+        let prompt = AgentPromptBuilder.buildFreshFollowUpPrompt(message: "Thanks, one more thing", task: task)
+        #expect(prompt.contains("Goal: Write the onboarding guide"))
+        #expect(prompt.contains("- Current objective: Write the onboarding guide"))
+        #expect(!prompt.contains("Rework the CSV exporter instead"))
+        #expect(!prompt.contains("superseded"))
+    }
+
+    @Test("an approved plan with a different goal invalidates a stale Tier 2 pivot")
+    func approvedPlanGoalInvalidatesStaleSupersededVerdict() throws {
+        let defaults = UserDefaults.standard
+        let key = AppStorageKeys.objectiveDriftDetectionEnabled
+        let original = defaults.object(forKey: key) as? Bool
+        defaults.set(true, forKey: key)
+        defer {
+            if let original {
+                defaults.set(original, forKey: key)
+            } else {
+                defaults.removeObject(forKey: key)
+            }
+        }
+
+        let container = try makeFollowUpGoalFramingContainer()
+        let context = container.mainContext
+        let root = try Self.temporaryRoot(name: "approved-plan-invalidates")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let workspace = Workspace(name: "Approved Plan Invalidates", primaryPath: root)
+        let task = AgentTask(title: "Running thread", goal: "Write the onboarding guide", workspace: workspace)
+        task.status = .running
+        context.insert(workspace)
+        context.insert(task)
+        try context.save()
+
+        let folder = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
+        TaskContextStateManager.refresh(task: task)
+        var state = try #require(TaskContextStateManager.load(taskFolder: folder))
+        // An earlier, informal-drift Tier 2 pivot from before any plan existed.
+        state.objectiveAssessment = TaskContextState.ObjectiveAssessment(
+            verdict: "superseded",
+            currentObjective: "An earlier, now-stale drift-episode objective",
+            assessedAtTurn: 2,
+            inputHash: "hash-before-plan-approved"
+        )
+        TaskContextStateManager.saveState(state, taskFolder: folder, taskID: task.id)
+
+        // The thread later moves into an approved, durable plan with its own,
+        // different goal -- reconciled by Tier 1 without ever going through an
+        // explicit "your goal is..." marker message, so `supersedesOriginalGoal`
+        // stays false on this path (adversarial finding: the reconciler must not
+        // rely on that flag alone to detect Tier 1 has already moved on, or it
+        // re-overwrites a freshly-correct plan-reconciled objective with stale
+        // Tier 2 text on every subsequent refresh).
+        let plan = TaskPlanPayload(
+            title: "Onboarding v2",
+            goal: "Ship the redesigned onboarding flow",
+            steps: [TaskPlanPayloadStep(id: "s1", title: "Do work")]
+        )
+        TaskPlanService.recordCreated(plan, task: task, modelContext: context)
+        TaskPlanService.recordApproved(plan, task: task, modelContext: context)
+
+        let prompt = AgentPromptBuilder.buildFreshFollowUpPrompt(message: "Thanks, one more thing", task: task)
+
+        #expect(!prompt.contains("An earlier, now-stale drift-episode objective"))
+        #expect(prompt.contains("- Current objective: Ship the redesigned onboarding flow"))
     }
 
     private static func temporaryRoot(name: String) throws -> String {

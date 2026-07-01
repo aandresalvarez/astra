@@ -174,6 +174,25 @@ enum ObjectiveAssessmentService {
             ], level: .warning)
             return
         }
+
+        // Two turns can each schedule an unawaited assessment before either
+        // resolves; re-loading `stateToSave` above already picks up whatever
+        // is freshest on disk for every OTHER field, but the assessment
+        // itself must also be ordered explicitly -- otherwise a call started
+        // at an earlier turn that simply takes longer to return can overwrite
+        // a newer turn's already-persisted verdict with stale, out-of-order
+        // input (adversarial finding). `assessedAtTurn` is a stable ordering
+        // key regardless of which call actually finishes first.
+        if let alreadyPersisted = stateToSave.objectiveAssessment,
+           alreadyPersisted.assessedAtTurn > parsed.assessedAtTurn {
+            AppLogger.audit(.contextStateUpdated, category: "Worker", taskID: task.id, fields: [
+                "operation": "objective_assessment",
+                "result": "discarded_stale_race",
+                "attempted_turn": String(parsed.assessedAtTurn),
+                "already_persisted_turn": String(alreadyPersisted.assessedAtTurn)
+            ], level: .debug)
+            return
+        }
         stateToSave.objectiveAssessment = parsed
         TaskContextStateManager.saveState(stateToSave, taskFolder: folder, taskID: task.id)
 
@@ -271,7 +290,16 @@ enum ObjectiveAssessmentService {
     private static func resolvedUtilityRuntime(defaults: UserDefaults = .standard) -> AgentUtilityRuntimeConfiguration {
         let defaultRuntimeID = defaults.string(forKey: AppStorageKeys.defaultRuntimeID) ?? TaskExecutionDefaults.runtime.rawValue
         let runtime = AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: defaultRuntimeID)
-        let model = defaults.string(forKey: AppStorageKeys.validationModel) ?? TaskExecutionDefaults.model
+        // Falls back to the same literal default SettingsView's Utility Model
+        // control and `TaskLifecycleCoordinator
+        // .backfillGeneratedThreadTitles` use for this exact key, NOT
+        // `TaskExecutionDefaults.model` (the larger, general task-execution
+        // model) -- on a fresh install, before Settings has ever been opened,
+        // this key is absent from `UserDefaults` and the fallback is what
+        // actually runs (adversarial finding: using the task model here
+        // defeats the point of a cheap/fast "Utility Model" for this
+        // background check).
+        let model = defaults.string(forKey: AppStorageKeys.validationModel) ?? "claude-haiku-4-5-20251001"
         var providerSettings = RuntimeProviderSettingsStore.settings(defaults: defaults)
         if providerSettings.executablePath(for: .claudeCode).isEmpty {
             providerSettings.setExecutablePath(RuntimePathResolver.detectClaudePath(), for: .claudeCode)
@@ -291,30 +319,45 @@ enum ObjectiveAssessmentService {
 
     // MARK: - Recent user messages
 
-    /// Recent, substantive (non-filler) user follow-up messages, excluding the
-    /// very first conversation message (which is the original goal itself).
+    /// Recent, substantive (non-filler) user follow-up messages, excluding any
+    /// message that just restates the original goal verbatim.
+    ///
+    /// This does NOT drop the first `user.message`/planning-chat event by
+    /// position (unlike `TaskActiveObjectiveResolver.swift`'s
+    /// `latestObjectiveOverride`, a pre-existing, out-of-scope-for-this-PR
+    /// helper that assumes it): an initial provider run logs its start as a
+    /// `task.started` event, not `user.message` (see
+    /// `AgentRuntimeWorker.executeRuntimeSession`'s default `startEventType`),
+    /// so in the common case the FIRST `user.message` event is already the
+    /// user's first genuine follow-up, not a restatement of `task.goal` --
+    /// dropping it by position silently discarded exactly the first
+    /// substantive pivot after a long initial run (adversarial finding).
+    /// Excluding by exact content match instead correctly skips a
+    /// restatement wherever one actually occurs (e.g. a planning-chat flow
+    /// that does log the original ask as a `user.message`-typed event) while
+    /// never discarding real follow-up content.
+    ///
     /// Kept private/local rather than reusing
     /// `TaskActiveObjectiveResolver.swift`'s private helpers, matching the
     /// established pattern of defining independent file-scope helpers with
     /// distinct names to avoid cross-file collisions.
     @MainActor
     private static func assessmentRecentUserMessages(for task: AgentTask, limit: Int = 4) -> [String] {
+        let goal = task.goal.trimmingCharacters(in: .whitespacesAndNewlines)
         let userMessages = task.events
             .filter { $0.type == "user.message" || $0.type == TaskPlanConversationEventTypes.userMessage }
             .sorted { $0.timestamp < $1.timestamp }
-        guard userMessages.count > 1 else { return [] }
 
-        let candidates = userMessages
-            .dropFirst()
-            .compactMap { event -> String? in
-                let text = assessmentBoundedInline(event.payload, maxCharacters: 400)
-                guard !text.isEmpty,
-                      !assessmentIsLowSignal(text),
-                      !TaskContextStateManager.isGeneratedResumeInstruction(text) else {
-                    return nil
-                }
-                return text
+        let candidates = userMessages.compactMap { event -> String? in
+            let text = assessmentBoundedInline(event.payload, maxCharacters: 400)
+            guard !text.isEmpty,
+                  !(!goal.isEmpty && text.caseInsensitiveCompare(goal) == .orderedSame),
+                  !assessmentIsLowSignal(text),
+                  !TaskContextStateManager.isGeneratedResumeInstruction(text) else {
+                return nil
             }
+            return text
+        }
         return Array(candidates.suffix(limit))
     }
 

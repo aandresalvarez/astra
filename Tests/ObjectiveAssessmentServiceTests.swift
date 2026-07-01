@@ -273,6 +273,130 @@ struct ObjectiveAssessmentServiceTests {
         #expect(reloaded.objectiveAssessment == nil)
     }
 
+    // MARK: - Race safety: out-of-order writes don't clobber a newer verdict
+
+    @Test("a slower, earlier-turn assessment does not clobber a newer already-persisted verdict")
+    func staleOutOfOrderAssessmentDoesNotOverwriteNewer() async throws {
+        let fixture = try makeReadyToAssessFixture(named: "race-guard")
+        defer { fixture.cleanup() }
+
+        // Simulate a faster, LATER-turn assessment that already landed while
+        // this (earlier-turn) call was still in flight (adversarial finding:
+        // two turns can each schedule an unawaited assessment before either
+        // resolves).
+        var state = try #require(TaskContextStateManager.load(taskFolder: fixture.folder))
+        state.objectiveAssessment = TaskContextState.ObjectiveAssessment(
+            verdict: "superseded",
+            currentObjective: "The genuinely newer objective",
+            assessedAtTurn: fixture.turnCountBeforeAssessment + 50,
+            inputHash: "hash-from-a-later-turn"
+        )
+        TaskContextStateManager.saveState(state, taskFolder: fixture.folder, taskID: fixture.task.id)
+
+        await ObjectiveAssessmentService.assessIfNeeded(
+            task: fixture.task,
+            utilityRuntime: fixture.utilityRuntime
+        ) { _, _, _ in
+            AgentUtilityRunResult(
+                exitCode: 0,
+                output: #"{"verdict":"superseded","currentObjective":"A stale, out-of-order objective"}"#,
+                error: ""
+            )
+        }
+
+        let after = try #require(TaskContextStateManager.load(taskFolder: fixture.folder))
+        // The newer, already-persisted verdict must survive untouched.
+        #expect(after.objectiveAssessment?.currentObjective == "The genuinely newer objective")
+        #expect(after.objectiveAssessment?.assessedAtTurn == fixture.turnCountBeforeAssessment + 50)
+    }
+
+    // MARK: - The sole early follow-up must not be dropped as a goal restatement
+
+    @Test("the sole early follow-up is not dropped as if it were the original goal restated")
+    func firstGenuineFollowUpIsNotDroppedByPosition() async throws {
+        // In production, an initial provider run logs `task.started` (not
+        // `user.message`) for the goal, so the FIRST `user.message` event is
+        // often the user's first genuine follow-up. Regression guard: this
+        // must not be treated as "the original goal restated" and silently
+        // dropped just because it happens to be first (adversarial finding).
+        let root = try temporaryRoot(name: "first-followup-not-dropped")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let container = try makeObjectiveAssessmentServiceContainer()
+        let context = ModelContext(container)
+        let workspace = Workspace(name: "First Follow-up", primaryPath: root)
+        let task = AgentTask(title: "First follow-up", goal: "Ship the release notes", workspace: workspace)
+        context.insert(workspace)
+        context.insert(task)
+
+        // No "restates the goal" event at all -- mirrors the direct-execution
+        // task-creation flow, where the goal is never logged as a
+        // `user.message`.
+        for index in 0..<6 {
+            let run = TaskRun(task: task)
+            run.status = .completed
+            run.stopReason = "completed"
+            run.output = "progress \(index)"
+            run.completedAt = Date()
+            context.insert(run)
+            TaskContextStateManager.recordTurn(task: task, run: run, message: "progress \(index)")
+        }
+        // The ONLY user.message event in the whole thread -- a genuine,
+        // distinct follow-up, not a restatement of the goal.
+        let onlyFollowUp = TaskEvent(
+            task: task,
+            type: "user.message",
+            payload: "Actually, let's scrap that and rework the CSV exporter instead"
+        )
+        onlyFollowUp.timestamp = Date(timeIntervalSince1970: 100)
+        context.insert(onlyFollowUp)
+        try context.save()
+
+        var callCount = 0
+        await ObjectiveAssessmentService.assessIfNeeded(
+            task: task,
+            utilityRuntime: AgentUtilityRuntimeConfiguration(runtime: .claudeCode, model: "claude-haiku-4-5-20251001")
+        ) { _, _, _ in
+            callCount += 1
+            return AgentUtilityRunResult(exitCode: 0, output: #"{"verdict":"original_active"}"#, error: "")
+        }
+
+        #expect(callCount == 1)
+    }
+
+    // MARK: - Default utility model must not fall back to the task model
+
+    @Test("resolves the utility model default when Settings has never set validationModel")
+    func defaultUtilityModelFallsBackToHaikuNotTaskModel() async throws {
+        let fixture = try makeReadyToAssessFixture(named: "default-utility-model")
+        defer { fixture.cleanup() }
+
+        let defaults = UserDefaults.standard
+        let key = AppStorageKeys.validationModel
+        let original = defaults.object(forKey: key)
+        defaults.removeObject(forKey: key)
+        defer {
+            if let original {
+                defaults.set(original, forKey: key)
+            } else {
+                defaults.removeObject(forKey: key)
+            }
+        }
+
+        var observedModel: String?
+        // No `utilityRuntime:` override -- forces resolution from
+        // `UserDefaults` (adversarial finding: on a fresh install, before
+        // Settings has ever been opened, this must not fall back to the
+        // larger, general task-execution model).
+        await ObjectiveAssessmentService.assessIfNeeded(task: fixture.task) { _, _, configuration in
+            observedModel = configuration.model
+            return AgentUtilityRunResult(exitCode: 0, output: #"{"verdict":"original_active"}"#, error: "")
+        }
+
+        #expect(observedModel != nil)
+        #expect(observedModel != TaskExecutionDefaults.model)
+        #expect(observedModel == "claude-haiku-4-5-20251001")
+    }
+
     // MARK: - Fixture
 
     private struct AssessmentFixture {

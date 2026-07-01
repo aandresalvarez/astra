@@ -429,7 +429,7 @@ enum TaskContextStateManager {
         if !state.objective.startingRequest.isEmpty {
             lines.append("- Starting request: \(boundedInline(state.objective.startingRequest, maxCharacters: 240))")
         }
-        if !state.objective.currentObjective.isEmpty {
+        if !state.objective.currentObjective.isEmpty, !MainActor.assumeIsolated({ shouldSuppressRedundantCurrentObjectiveLine(state: state, task: task) }) {
             lines.append("- Current objective: \(boundedInline(state.objective.currentObjective, maxCharacters: 320))")
         }
         if let approvedGoal = state.objective.approvedGoal, !approvedGoal.isEmpty {
