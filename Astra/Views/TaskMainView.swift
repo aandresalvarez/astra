@@ -218,16 +218,33 @@ private struct AgentGeneratedFilesListView: View {
 /// callbacks still fire at snapshot granularity. See the UI responsiveness
 /// audit (Cluster 1).
 ///
-/// The snapshot trigger specifically is polled rather than watched reactively:
-/// `TaskThreadSnapshotTrigger` is O(event count) to build (it walks `task.events`
-/// to exclude high-frequency streaming-delta types from the count), and reactive
-/// `.onChange` would rebuild it on every single streamed conversation chunk —
-/// O(n) work per chunk, compounding to roughly O(n²) over a long-running task.
-/// Polling at `livePollIntervalNanoseconds` while `TaskLiveness.isLive(task:)` is true (a
-/// cheap, O(run count) check, safe to evaluate every render) bounds that to
-/// O(n) per tick instead, matching `TaskThreadViewModel.liveSnapshotMinimumInterval`'s
-/// cadence for the downstream rebuild it feeds. The generated-files trigger
-/// doesn't have this cost profile (it doesn't scan events), so it stays reactive.
+/// The snapshot trigger specifically is polled rather than watched reactively
+/// *while live*: `TaskThreadSnapshotTrigger` is O(event count) to build (it
+/// walks `task.events` to exclude high-frequency streaming-delta types from the
+/// count), and reactive `.onChange` would rebuild it on every single streamed
+/// conversation chunk — O(n) work per chunk, compounding to roughly O(n²) over a
+/// long-running task. Polling at `livePollIntervalNanoseconds` while
+/// `TaskLiveness.isLive(task:)` is true (a cheap, O(run count) check, safe to
+/// evaluate every render) bounds that to O(n) per tick instead, matching
+/// `TaskThreadViewModel.liveSnapshotMinimumInterval`'s cadence for the
+/// downstream rebuild it feeds.
+///
+/// A poll-only design has a gap, though: `.task(id:)` is cancelled the instant
+/// `isLive` flips (SwiftUI restarts it for the new id), which can land mid-sleep
+/// and skip the one comparison that would have caught that exact transition —
+/// so a task finishing its last event right as it goes terminal, or a draft
+/// task's first event right as it goes live, can be swallowed. And a task that
+/// stays non-live the whole time (e.g. editing a draft's messages) would never
+/// poll at all, missing its own — infrequent, so individually cheap — mutations
+/// entirely.
+///
+/// `reactiveTriggerWhenNotLive` closes both gaps with one `.onChange`: it's
+/// `nil` while live (so watching it costs only the cheap `isLive` check, no
+/// event scan, during a live session) and a real trigger otherwise, so it fires
+/// exactly once at each live↔non-live transition (nil↔value) *and* stays live
+/// (pun intended) as the reactive path for a task that's never live at all —
+/// this is the same reactive `.onChange` the whole file used before, just
+/// scoped to skip the expensive build while polling already has it covered.
 private struct TaskThreadChangeObserver: View {
     let task: AgentTask
     let generatedFilesLatestRun: TaskRunSnapshot?
@@ -236,9 +253,17 @@ private struct TaskThreadChangeObserver: View {
 
     private static let livePollIntervalNanoseconds: UInt64 = 120_000_000
 
+    private var reactiveTriggerWhenNotLive: TaskThreadSnapshotTrigger? {
+        TaskLiveness.isLive(task: task) ? nil : TaskThreadSnapshotTrigger(task: task)
+    }
+
     var body: some View {
         Color.clear
+            .onChange(of: reactiveTriggerWhenNotLive) { _, _ in
+                onSnapshotChange()
+            }
             .task(id: TaskLiveness.isLive(task: task)) {
+                guard TaskLiveness.isLive(task: task) else { return }
                 await pollSnapshotTriggerWhileLive()
             }
             .onChange(of: TaskGeneratedFilesTrigger(task: task, latestRun: generatedFilesLatestRun)) { _, _ in

@@ -256,7 +256,12 @@ struct UsageDashboardView: View {
             .padding()
         }
         .task(id: hasLiveActivity) {
+            guard hasLiveActivity else { return }
             await pollWhileLive()
+        }
+        .onChange(of: hasLiveActivity) { wasLive, isLiveNow in
+            guard wasLive, !isLiveNow else { return }
+            scheduleFinalCatchUpRefresh()
         }
     }
 
@@ -269,6 +274,24 @@ struct UsageDashboardView: View {
     @MainActor
     private func pollWhileLive() async {
         while hasLiveActivity, !Task.isCancelled {
+            try? await Task.sleep(nanoseconds: Self.livePollIntervalNanoseconds)
+            guard !Task.isCancelled else { return }
+            renderTick += 1
+        }
+    }
+
+    /// `pollWhileLive()` is cancelled the instant `hasLiveActivity` flips false
+    /// (SwiftUI restarts `.task(id:)` for the new id), which can land mid-sleep
+    /// and swallow the one tick that would have caught a value-only change
+    /// landing inside the memo's throttle window right before things went
+    /// idle. Scheduled independently of `.task(id:)`'s lifecycle (a plain
+    /// detached `Task`, not tied to the modifier that just got cancelled) and
+    /// waited out for a full `livePollIntervalNanoseconds` — the same duration
+    /// as the memo's throttle window — so by the time it fires, that window has
+    /// definitely elapsed and the resulting recompute is guaranteed fresh
+    /// rather than served from the same possibly-stale cache entry.
+    private func scheduleFinalCatchUpRefresh() {
+        Task {
             try? await Task.sleep(nanoseconds: Self.livePollIntervalNanoseconds)
             guard !Task.isCancelled else { return }
             renderTick += 1
