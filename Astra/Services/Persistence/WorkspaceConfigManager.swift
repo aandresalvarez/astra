@@ -1644,6 +1644,7 @@ enum WorkspaceConfigManager {
             event.category = ec.category
             modelContext.insert(event)
         }
+        task.updatedAt = config.updatedAt
 
         for ac in config.artifacts ?? [] {
             let artifact = Artifact(
