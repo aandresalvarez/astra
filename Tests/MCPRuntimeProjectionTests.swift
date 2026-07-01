@@ -341,8 +341,8 @@ struct MCPRuntimeProjectionTests {
         ])
     }
 
-    @Test("Gateway projection includes policy classifications for Google Workspace tools")
-    func gatewayProjectionIncludesPolicyClassificationsForGoogleWorkspaceTools() throws {
+    @Test("Gateway projection withholds mutating Google Workspace tools until native approval replay exists")
+    func gatewayProjectionWithholdsMutatingGoogleWorkspaceToolsUntilNativeApprovalReplayExists() throws {
         let remote = PluginMCPServer(
             id: "google_workspace_drive",
             displayName: "Google Workspace Drive",
@@ -363,8 +363,9 @@ struct MCPRuntimeProjectionTests {
 
         #expect(projected.arguments.contains("--gateway-tool-policy-required"))
         #expect(argumentValues(after: "--gateway-read-tool", in: projected.arguments) == ["search_files"])
-        #expect(argumentValues(after: "--gateway-write-tool", in: projected.arguments) == ["copy_file", "create_file"])
+        #expect(argumentValues(after: "--gateway-write-tool", in: projected.arguments).isEmpty)
         #expect(!projected.arguments.contains("--gateway-native-approved-tool"))
+        #expect(projected.allowedTools == ["search_files"])
     }
 
     @Test("Gateway projection subtracts excluded tools from wildcard policy")
@@ -396,7 +397,14 @@ struct MCPRuntimeProjectionTests {
             "list_recent_files",
             "read_file_content"
         ])
-        #expect(argumentValues(after: "--gateway-write-tool", in: projected.arguments) == ["copy_file", "create_file"])
+        #expect(argumentValues(after: "--gateway-write-tool", in: projected.arguments).isEmpty)
+        #expect(projected.allowedTools == [
+            "download_file_content",
+            "get_file_metadata",
+            "get_file_permissions",
+            "list_recent_files",
+            "read_file_content"
+        ])
     }
 
     @Test("Gateway projection canonicalizes allowlist casing before selecting built-in classifications")
@@ -407,7 +415,7 @@ struct MCPRuntimeProjectionTests {
             transport: .http,
             url: URL(string: "https://drivemcp.googleapis.com/mcp/v1")!,
             connectorBindings: ["google-workspace"],
-            allowedTools: ["Create_File", "create_file"],
+            allowedTools: ["Search_Files", "Create_File", "create_file"],
             trustLevel: .restricted,
             controlPlane: gatewayAuthorizationControlPlane()
         )
@@ -419,11 +427,12 @@ struct MCPRuntimeProjectionTests {
 
         let projected = try #require(RemoteMCPGatewayProjection.providerFacingResolvedServer(for: resolved)?.server)
 
-        #expect(argumentValues(after: "--gateway-read-tool", in: projected.arguments).isEmpty)
-        #expect(argumentValues(after: "--gateway-write-tool", in: projected.arguments) == ["create_file"])
+        #expect(argumentValues(after: "--gateway-read-tool", in: projected.arguments) == ["search_files"])
+        #expect(argumentValues(after: "--gateway-write-tool", in: projected.arguments).isEmpty)
+        #expect(projected.allowedTools == ["search_files"])
     }
 
-    @Test("Gateway projection stays fail closed when allowlist selects no classified tools")
+    @Test("Gateway projection drops servers when allowlist selects no deliverable tools")
     func gatewayProjectionRequiresPolicyWhenAllowlistSelectsNoClassifiedTools() throws {
         let remote = PluginMCPServer(
             id: "google_workspace_drive",
@@ -441,11 +450,7 @@ struct MCPRuntimeProjectionTests {
             server: remote
         )
 
-        let projected = try #require(RemoteMCPGatewayProjection.providerFacingResolvedServer(for: resolved)?.server)
-
-        #expect(projected.arguments.contains("--gateway-tool-policy-required"))
-        #expect(argumentValues(after: "--gateway-read-tool", in: projected.arguments).isEmpty)
-        #expect(argumentValues(after: "--gateway-write-tool", in: projected.arguments).isEmpty)
+        #expect(RemoteMCPGatewayProjection.providerFacingResolvedServer(for: resolved) == nil)
     }
 
     @Test("Gateway projection prefers built-in Google classifications over package metadata")
@@ -456,7 +461,7 @@ struct MCPRuntimeProjectionTests {
             transport: .http,
             url: URL(string: "https://calendarmcp.googleapis.com/mcp/v1")!,
             connectorBindings: ["google-workspace"],
-            allowedTools: ["delete_event"],
+            allowedTools: ["get_event", "delete_event"],
             trustLevel: .restricted,
             remoteRegistry: RemoteMCPServerRegistryMetadata(
                 registryID: "google-workspace",
@@ -476,8 +481,9 @@ struct MCPRuntimeProjectionTests {
 
         let projected = try #require(RemoteMCPGatewayProjection.providerFacingResolvedServer(for: resolved)?.server)
 
-        #expect(argumentValues(after: "--gateway-read-tool", in: projected.arguments).isEmpty)
-        #expect(argumentValues(after: "--gateway-delete-tool", in: projected.arguments) == ["delete_event"])
+        #expect(argumentValues(after: "--gateway-read-tool", in: projected.arguments) == ["get_event"])
+        #expect(argumentValues(after: "--gateway-delete-tool", in: projected.arguments).isEmpty)
+        #expect(projected.allowedTools == ["get_event"])
     }
 
     @Test("Codex config routes credentialed remote MCP through ASTRA gateway")

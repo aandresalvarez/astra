@@ -35,6 +35,25 @@ struct WorkspaceAppPackageTests {
         #expect(report.installState == .needsPermissionReview)
     }
 
+    @Test("template package validation treats missing data exports manifest as empty")
+    func templatePackageValidationTreatsMissingDataExportsManifestAsEmpty() throws {
+        let root = try Self.temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let packageURL = root.appendingPathComponent("grocery-template.astra-app", isDirectory: true)
+
+        _ = try WorkspaceAppPackageService().exportPackage(
+            manifest: Self.groceryManifest(),
+            to: packageURL
+        )
+
+        #expect(!FileManager.default.fileExists(atPath: packageURL.appendingPathComponent("storage/data/exports.json").path))
+
+        let report = WorkspaceAppPackageService().validatePackage(at: packageURL)
+
+        #expect(report.canInstall)
+        #expect(!report.blockers.contains { $0.path == "/storage/data/exports.json" })
+    }
+
     @Test("seed data export writes portable typed storage records")
     func seedDataExportWritesPortableTypedStorageRecords() throws {
         let root = try Self.temporaryRoot()

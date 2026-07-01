@@ -882,6 +882,8 @@ struct CapabilityLibraryTests {
         #expect(github?.skills.first?.behaviorInstructions.contains("gh search prs --author \"@me\"") == false)
         #expect(github?.skills.first?.behaviorInstructions.contains("Do not pipe JSON into `python3 - <<'PY'`") == true)
         #expect(github?.skills.first?.behaviorInstructions.contains("gh api /search/issues") == false)
+        #expect(github?.skills.first?.behaviorInstructions.contains("do not use `--jq` or `-q`") == true)
+        #expect(github?.skills.first?.behaviorInstructions.contains("Prefer `--json` with `--jq`") == false)
         #expect(github?.skills.first?.behaviorInstructions.contains("This capability is read-only") == true)
         #expect(github?.skills.first?.behaviorInstructions.contains("gh issue create") == false)
         #expect(github?.skills.first?.behaviorInstructions.contains("gh pr comment") == false)

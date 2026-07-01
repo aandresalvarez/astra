@@ -384,7 +384,7 @@ final class PluginCatalog {
                 RULES
                 • This capability is read-only. Do not create issues, post comments, merge PRs, trigger workflows, or call raw mutating GitHub APIs.
                 • If the user requests a GitHub write, explain that ASTRA's built-in GitHub host-control capability is read-only and that writes require opening GitHub outside ASTRA or a future confirmed-write integration.
-                • Prefer `--json` with `--jq` for structured parsing when available
+                • Use `--json` for structured output; do not use `--jq` or `-q` because ASTRA's host-control GitHub broker rejects jq filters.
                 • Do not pipe JSON into `python3 - <<'PY'`; the heredoc consumes stdin, so Python will not receive the command output. If Python parsing is required, write JSON to a temp file first or pass it as an argument.
                 • Prefer the brokered `search issues` and `search prs` operations for cross-repository searches; raw GitHub API calls are outside this read-only capability.
                 • Include links to issues/PRs in your responses

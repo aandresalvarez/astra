@@ -66,6 +66,9 @@ enum RemoteMCPGatewayProjection {
             serverID: server.id,
             bindingID: binding.id
         )
+        guard let gatewayPolicy = gatewayPolicyProjection(for: server) else {
+            return nil
+        }
         let gatewayServer = PluginMCPServer(
             id: server.id,
             displayName: server.displayName,
@@ -76,11 +79,11 @@ enum RemoteMCPGatewayProjection {
                 "--server-id", server.id,
                 "--endpoint", endpoint,
                 "--access-token-env", accessTokenEnvironmentKey
-            ] + gatewayPolicyArguments(for: server),
+            ] + gatewayPolicy.arguments,
             environmentKeys: [accessTokenEnvironmentKey],
             connectorBindings: server.connectorBindings,
-            allowedTools: server.allowedTools,
-            excludedTools: server.excludedTools,
+            allowedTools: gatewayPolicy.providerAllowedTools,
+            excludedTools: gatewayPolicy.providerExcludedTools,
             resourcesEnabled: server.resourcesEnabled,
             promptsEnabled: server.promptsEnabled,
             trustLevel: server.trustLevel,
@@ -105,10 +108,20 @@ enum RemoteMCPGatewayProjection {
         }
     }
 
-    private static func gatewayPolicyArguments(for server: PluginMCPServer) -> [String] {
+    private struct GatewayPolicyProjection {
+        var arguments: [String]
+        var providerAllowedTools: [String]
+        var providerExcludedTools: [String]
+    }
+
+    private static func gatewayPolicyProjection(for server: PluginMCPServer) -> GatewayPolicyProjection? {
         let policy = gatewayToolPolicy(for: server)
         guard !policy.accessByToolName.isEmpty else {
-            return policy.requiresExplicitPolicy ? ["--gateway-tool-policy-required"] : []
+            return GatewayPolicyProjection(
+                arguments: policy.requiresExplicitPolicy ? ["--gateway-tool-policy-required"] : [],
+                providerAllowedTools: server.allowedTools,
+                providerExcludedTools: server.excludedTools
+            )
         }
 
         let allowedToolNames = Set(server.allowedTools.map(normalized).filter { !$0.isEmpty })
@@ -118,25 +131,21 @@ enum RemoteMCPGatewayProjection {
             guard !excludedToolNames.contains(normalizedToolName) else { return false }
             return allowedToolNames.isEmpty || allowedToolNames.contains(normalizedToolName)
         }
-        guard !selectedRules.isEmpty else { return ["--gateway-tool-policy-required"] }
+        let readToolNames = selectedRules
+            .filter { _, toolOption in toolOption == "--gateway-read-tool" }
+            .map(\.key)
+            .sorted()
+        guard !readToolNames.isEmpty else { return nil }
 
         var arguments = ["--gateway-tool-policy-required"]
-        for option in [
-            "--gateway-read-tool",
-            "--gateway-write-tool",
-            "--gateway-send-tool",
-            "--gateway-delete-tool",
-            "--gateway-admin-tool"
-        ] {
-            let toolNames = selectedRules
-                .filter { _, toolOption in toolOption == option }
-                .map(\.key)
-                .sorted()
-            for toolName in toolNames {
-                arguments += [option, toolName]
-            }
+        for toolName in readToolNames {
+            arguments += ["--gateway-read-tool", toolName]
         }
-        return arguments
+        return GatewayPolicyProjection(
+            arguments: arguments,
+            providerAllowedTools: readToolNames,
+            providerExcludedTools: []
+        )
     }
 
     private struct GatewayToolPolicy {
