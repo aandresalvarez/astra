@@ -271,18 +271,32 @@ struct UsageDashboardView: View {
             }
             .padding()
         }
-        // Keyed on whether a follow-up is pending (not on `staleRefreshDelay`
-        // itself, whose exact TimeInterval value differs on every call, which
-        // would restart this task on every render instead of only at genuine
-        // pending/not-pending transitions). `.task(id:)` fires on both the
-        // initial value and later transitions to `true`, so this catches a
-        // stale value from the very first render (e.g. the dashboard reopened
-        // while a prior instance's cache entry is still inside its window) as
-        // well as later ones. `followUpScheduled` inside the memo guarantees
-        // at most one caller ever gets a non-nil delay per cache entry, so
-        // this never schedules a redundant duplicate for the same staleness.
-        .task(id: query.staleRefreshDelay != nil) {
-            guard let delay = query.staleRefreshDelay else { return }
+        // Schedules the follow-up via a plain detached `scheduleFollowUp` Task,
+        // not a `.task(id:)`-bound one — `followUpScheduled` inside the memo
+        // guarantees only one render per cache entry ever sees a non-nil delay,
+        // but every OTHER render in that same window sees nil, and keying a
+        // `.task(id:)` on "is a follow-up pending" would flip that id back to
+        // false on each of those, cancelling the already-scheduled sleep before
+        // it fires. `.task { }` here has no `id:`, so it isn't restarted by
+        // those later renders — it runs once per view appearance, catching a
+        // delay that's already present on the very first query (e.g. the
+        // dashboard reopened while a prior instance's cache entry is still
+        // inside its window). `.onChange` catches later transitions (`.task {
+        // }` alone wouldn't fire again for those, and `.onChange` alone
+        // wouldn't fire for a delay present from the start).
+        .task {
+            if let delay = query.staleRefreshDelay {
+                scheduleFollowUp(after: delay)
+            }
+        }
+        .onChange(of: query.staleRefreshDelay) { _, newDelay in
+            guard let newDelay else { return }
+            scheduleFollowUp(after: newDelay)
+        }
+    }
+
+    private func scheduleFollowUp(after delay: TimeInterval) {
+        Task {
             try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
             guard !Task.isCancelled else { return }
             renderTick += 1
