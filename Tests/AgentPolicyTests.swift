@@ -297,8 +297,10 @@ struct AgentPolicyTests {
         #expect(render.allowedTools == ["glob", "grep", "view"])
         #expect(!render.allowedTools.contains("fetch_copilot_cli_documentation"))
         #expect(!render.allowedTools.contains("report_intent"))
-        #expect(!render.generatedConfigPreview.contains("fetch_copilot_cli_documentation"))
-        #expect(!render.generatedConfigPreview.contains("report_intent"))
+        #expect(render.cliArgumentsSummary.contains("fetch_copilot_cli_documentation"))
+        #expect(render.cliArgumentsSummary.contains("report_intent"))
+        #expect(render.generatedConfigPreview.contains("fetch_copilot_cli_documentation"))
+        #expect(render.generatedConfigPreview.contains("report_intent"))
     }
 
     @Test("Observed policy events decode old JSON without input keys")
@@ -1382,6 +1384,10 @@ struct RunPermissionManifestTests {
         #expect(supportToolNames == ["fetch_copilot_cli_documentation", "report_intent"])
         #expect(!manifest.providerRender.allowedTools.contains("fetch_copilot_cli_documentation"))
         #expect(!manifest.providerRender.allowedTools.contains("report_intent"))
+        #expect(manifest.providerRender.cliArgumentsSummary.contains("fetch_copilot_cli_documentation"))
+        #expect(manifest.providerRender.cliArgumentsSummary.contains("report_intent"))
+        #expect(manifest.providerRender.generatedConfigPreview.contains("fetch_copilot_cli_documentation"))
+        #expect(manifest.providerRender.generatedConfigPreview.contains("report_intent"))
         #expect(manifest.approvalsGranted.isEmpty)
         #expect(manifest.approvalGrants.isEmpty)
         #expect(!manifest.providerRender.allowedShellPatterns.contains(#"echo "$ASTRA_CONNECTORS" | head -50"#))
@@ -1857,6 +1863,45 @@ struct RunPermissionManifestTests {
         )
 
         #expect(manifest.credentialLabels.contains("git:credential-context:read-only"))
+        #expect(manifest.providerRender.diagnostics.contains { $0.id == "git.credential-projection" })
+    }
+
+    @MainActor
+    @Test("Copilot Git credential path access is represented in preflight render evidence")
+    func copilotGitCredentialPathAccessIsRepresentedInPreflightRenderEvidence() throws {
+        let container = try makeAgentPolicyContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Copilot Git Projection", primaryPath: "/tmp/astra-copilot-git-projection")
+        let task = AgentTask(title: "Git Projection", goal: "Pull latest from GitHub", workspace: workspace, runtime: .copilotCLI)
+        let run = TaskRun(task: task)
+        context.insert(workspace)
+        context.insert(task)
+        context.insert(run)
+
+        let manifest = AgentPolicyManifestService.recordPreflightManifest(
+            task: task,
+            run: run,
+            runtime: .copilotCLI,
+            model: "gpt-5",
+            workspacePath: workspace.primaryPath,
+            phase: "run",
+            permissionPolicy: .restricted,
+            executionPolicy: .default,
+            defaultPolicyLevelRaw: AgentPolicyLevel.review.rawValue,
+            providerCapabilities: AgentRuntimePolicyCapabilities(copilotCLI: CopilotCLICapabilities(helpText: """
+            --allow-tool
+            --allow-all-paths
+            --output-format
+            --stream
+            --no-ask-user
+            """)),
+            contextText: "git pull origin main",
+            modelContext: context
+        )
+
+        #expect(manifest.credentialLabels.contains("git:credential-context:read-only"))
+        #expect(manifest.providerRender.cliArgumentsSummary.contains("--allow-all-paths"))
+        #expect(manifest.providerRender.generatedConfigPreview.contains("--allow-all-paths"))
         #expect(manifest.providerRender.diagnostics.contains { $0.id == "git.credential-projection" })
     }
 

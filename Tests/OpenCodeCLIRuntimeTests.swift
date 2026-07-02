@@ -45,7 +45,8 @@ struct OpenCodeCLIRuntimeTests {
             timeoutSeconds: 60,
             taskEnvironment: ["ASTRA_TASK_ID": "task-1"],
             pathPrefix: ["/tmp/tools"],
-            includeAstraToolsPath: true
+            includeAstraToolsPath: true,
+            permissionArguments: ProviderPolicyRender.openCodeLaunchPermissionArguments(policy: .restricted)
         )
 
         #expect(plan.executablePath == "/opt/opencode")
@@ -83,7 +84,8 @@ struct OpenCodeCLIRuntimeTests {
             additionalPaths: [codeRepository.path],
             permissionPolicy: .restricted,
             timeoutSeconds: 60,
-            taskEnvironment: [:]
+            taskEnvironment: [:],
+            permissionArguments: ProviderPolicyRender.openCodeLaunchPermissionArguments(policy: .restricted)
         )
 
         let dirIndex = try #require(plan.arguments.firstIndex(of: "--dir"))
@@ -115,7 +117,8 @@ struct OpenCodeCLIRuntimeTests {
             additionalPaths: [otherRepository.path],
             permissionPolicy: .restricted,
             timeoutSeconds: 60,
-            taskEnvironment: [:]
+            taskEnvironment: [:],
+            permissionArguments: ProviderPolicyRender.openCodeLaunchPermissionArguments(policy: .restricted)
         )
 
         let dirIndex = try #require(plan.arguments.firstIndex(of: "--dir"))
@@ -133,7 +136,8 @@ struct OpenCodeCLIRuntimeTests {
             additionalPaths: [],
             permissionPolicy: .restricted,
             timeoutSeconds: 60,
-            taskEnvironment: [:]
+            taskEnvironment: [:],
+            permissionArguments: ProviderPolicyRender.openCodeLaunchPermissionArguments(policy: .restricted)
         )
 
         let dirIndex = try #require(plan.arguments.firstIndex(of: "--dir"))
@@ -157,7 +161,8 @@ struct OpenCodeCLIRuntimeTests {
             additionalPaths: [" ", additionalDirectory.path],
             permissionPolicy: .restricted,
             timeoutSeconds: 60,
-            taskEnvironment: [:]
+            taskEnvironment: [:],
+            permissionArguments: ProviderPolicyRender.openCodeLaunchPermissionArguments(policy: .restricted)
         )
 
         let dirIndex = try #require(plan.arguments.firstIndex(of: "--dir"))

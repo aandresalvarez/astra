@@ -175,7 +175,11 @@ struct CodexCLIRuntimeTests {
             taskEnvironment: ["ASTRA_TASK_ID": "task-1"],
             providerHomeDirectory: "/tmp/codex-home",
             pathPrefix: ["/tmp/tools"],
-            includeAstraToolsPath: true
+            includeAstraToolsPath: true,
+            permissionArguments: ProviderPolicyRender.codexLaunchPermissionArguments(
+                policy: .restricted,
+                resumingNativeSession: false
+            )
         )
 
         #expect(plan.executablePath == "/opt/codex")
@@ -271,7 +275,11 @@ struct CodexCLIRuntimeTests {
             permissionPolicy: .restricted,
             timeoutSeconds: 60,
             taskEnvironment: [:],
-            resumeSessionID: "thread-abc-123"
+            resumeSessionID: "thread-abc-123",
+            permissionArguments: ProviderPolicyRender.codexLaunchPermissionArguments(
+                policy: .restricted,
+                resumingNativeSession: true
+            )
         )
 
         #expect(plan.arguments.starts(with: ["exec", "resume", "--json"]))
@@ -331,7 +339,11 @@ struct CodexCLIRuntimeTests {
             additionalPaths: [],
             permissionPolicy: .autonomous,
             timeoutSeconds: 60,
-            taskEnvironment: [:]
+            taskEnvironment: [:],
+            permissionArguments: ProviderPolicyRender.codexLaunchPermissionArguments(
+                policy: .autonomous,
+                resumingNativeSession: false
+            )
         )
 
         #expect(plan.arguments.contains("--sandbox") == false)

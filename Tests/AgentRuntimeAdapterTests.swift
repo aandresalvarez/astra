@@ -1,7 +1,14 @@
 import Foundation
+import SwiftData
 import Testing
 @testable import ASTRA
 import ASTRACore
+
+private func makeAgentRuntimeAdapterContainer() throws -> ModelContainer {
+    let schema = ASTRASchema.current
+    let config = ModelConfiguration(isStoredInMemoryOnly: true)
+    return try ModelContainer(for: schema, migrationPlan: ASTRAMigrationPlan.self, configurations: [config])
+}
 
 @Suite("Agent Runtime Adapters", .serialized)
 struct AgentRuntimeAdapterTests {
@@ -220,10 +227,6 @@ struct AgentRuntimeAdapterTests {
         )
 
         let enriched = plan.addingGitCredentialContext(gitContext)
-            .enablingProviderNativeGitCredentialReads(
-                for: gitContext,
-                permissionPolicy: .restricted
-            )
 
         #expect(enriched.pathMapper == mapper)
         #expect(enriched.executionEnvironment == environment)
@@ -867,6 +870,277 @@ struct AgentRuntimeAdapterTests {
         #expect(plan.environment["PATH"]?.contains(".runtime-bin") == true)
     }
 
+    @Test("Codex launch permission flags come from persisted provider render")
+    @MainActor
+    func codexLaunchPermissionFlagsComeFromPersistedProviderRender() throws {
+        let workspace = Workspace(name: "Codex Render", primaryPath: "/tmp/astra-codex-render")
+        let task = AgentTask(
+            title: "Codex render",
+            goal: "Check policy wiring",
+            workspace: workspace,
+            model: "gpt-5.5",
+            runtime: .codexCLI
+        )
+        let manifestFlag = "--manifest-render-owned-permission-flag"
+        let executionFlag = "--execution-render-should-not-win"
+        let manifestRender = ProviderPolicyRender(
+            providerID: .codexCLI,
+            adapterVersion: 1,
+            policyLevel: .review,
+            configOwnership: .generated,
+            permissionMode: PermissionPolicy.restricted.rawValue,
+            allowedTools: [],
+            runtimeSupportTools: [],
+            askFirstTools: [],
+            deniedTools: [],
+            allowedShellPatterns: [],
+            askFirstShellPatterns: [],
+            deniedShellPatterns: [],
+            allowedURLPatterns: [],
+            deniedURLPatterns: [],
+            cliArgumentsSummary: [manifestFlag],
+            settingsSummary: "test",
+            generatedConfigPreview: manifestFlag,
+            enforcementTiers: [.providerNative, .astraBrokered],
+            diagnostics: [],
+            usesBroadProviderPermissions: false
+        )
+        let executionRender = ProviderPolicyRender(
+            providerID: .codexCLI,
+            adapterVersion: 1,
+            policyLevel: .review,
+            configOwnership: .generated,
+            permissionMode: PermissionPolicy.restricted.rawValue,
+            allowedTools: [],
+            runtimeSupportTools: [],
+            askFirstTools: [],
+            deniedTools: [],
+            allowedShellPatterns: [],
+            askFirstShellPatterns: [],
+            deniedShellPatterns: [],
+            allowedURLPatterns: [],
+            deniedURLPatterns: [],
+            cliArgumentsSummary: [executionFlag],
+            settingsSummary: "test",
+            generatedConfigPreview: executionFlag,
+            enforcementTiers: [.providerNative, .astraBrokered],
+            diagnostics: [],
+            usesBroadProviderPermissions: false
+        )
+        let manifest = RunPermissionManifest(
+            taskID: task.id,
+            runID: UUID(),
+            phase: "test",
+            providerID: .codexCLI,
+            providerVersion: nil,
+            model: "gpt-5.5",
+            policyLevel: .review,
+            policyScope: .builtInDefault,
+            providerRender: manifestRender,
+            workspacePath: workspace.primaryPath,
+            additionalPaths: [],
+            environmentKeyNames: [],
+            credentialLabels: [],
+            approvalsGranted: [],
+            approvalGrants: []
+        )
+
+        let plan = AgentRuntimeAdapterRegistry
+            .adapter(for: .codexCLI)
+            .makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext(
+                prompt: "hello",
+                task: task,
+                workspacePath: workspace.primaryPath,
+                executablePath: "/bin/codex-not-present",
+                providerHomeDirectory: "/tmp/astra-codex-home",
+                permissionPolicy: .restricted,
+                executionPolicy: .default.applyingProviderRender(executionRender),
+                permissionManifest: manifest,
+                timeoutSeconds: 30
+            ))
+
+        #expect(plan.arguments.contains(manifestFlag))
+        #expect(!plan.arguments.contains(executionFlag))
+    }
+
+    @Test("Copilot launch permission flags follow manifest render when execution policy disagrees")
+    @MainActor
+    func copilotLaunchPermissionFlagsFollowManifestRenderWhenExecutionPolicyDisagrees() throws {
+        let workspaceURL = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-copilot-render-contract-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: workspaceURL) }
+        try FileManager.default.createDirectory(at: workspaceURL, withIntermediateDirectories: true)
+        let copilotPath = try Self.writeFakeCopilotExecutable(in: workspaceURL)
+
+        let workspace = Workspace(name: "Copilot Render", primaryPath: workspaceURL.path)
+        let task = AgentTask(
+            title: "Copilot render",
+            goal: "explain who you are",
+            workspace: workspace,
+            model: "gpt-5.3-codex",
+            runtime: .copilotCLI
+        )
+        let manifestPermissionArguments = ProviderPolicyRender.copilotLaunchPermissionArguments(
+            policy: .restricted,
+            allowedTools: ["read"],
+            capabilities: CopilotCLICapabilities(helpText: Self.fakeCopilotHelpText()),
+            localToolCommands: [],
+            runtimeSupportTools: Self.copilotRuntimeSupportToolPermissions(),
+            allowAllPathsForSSHConnections: false
+        )
+        let manifest = Self.copilotManifest(
+            task: task,
+            workspacePath: workspace.primaryPath,
+            allowedTools: ["read"],
+            askFirstTools: [],
+            cliArgumentsSummary: manifestPermissionArguments
+        )
+        let executionRender = ProviderPolicyRender(
+            providerID: .copilotCLI,
+            adapterVersion: 1,
+            policyLevel: .review,
+            configOwnership: .generated,
+            permissionMode: PermissionPolicy.restricted.rawValue,
+            allowedTools: ["Write"],
+            runtimeSupportTools: CopilotPolicyAdapter().runtimeSupportTools,
+            askFirstTools: [],
+            deniedTools: [],
+            allowedShellPatterns: [],
+            askFirstShellPatterns: [],
+            deniedShellPatterns: [],
+            allowedURLPatterns: [],
+            deniedURLPatterns: [],
+            cliArgumentsSummary: [],
+            settingsSummary: "test",
+            generatedConfigPreview: "",
+            enforcementTiers: [.providerNative, .astraBrokered],
+            diagnostics: [],
+            usesBroadProviderPermissions: false
+        )
+
+        let plan = AgentRuntimeAdapterRegistry
+            .adapter(for: .copilotCLI)
+            .makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext(
+                prompt: "hello",
+                task: task,
+                workspacePath: workspace.primaryPath,
+                executablePath: copilotPath,
+                providerHomeDirectory: workspaceURL.appendingPathComponent("copilot-home", isDirectory: true).path,
+                permissionPolicy: .restricted,
+                executionPolicy: .default.applyingProviderRender(executionRender),
+                permissionManifest: manifest,
+                timeoutSeconds: 30
+            ))
+
+        let allowedEntries = Set(Self.argumentValues(after: "--allow-tool", in: plan.arguments))
+        #expect(allowedEntries.contains("view"))
+        #expect(allowedEntries.contains("grep"))
+        #expect(allowedEntries.contains("glob"))
+        #expect(!allowedEntries.contains("write"))
+        #expect(manifest.providerRender.cliArgumentsSummary == manifestPermissionArguments)
+        #expect(Self.copilotPermissionArguments(in: plan.arguments) == manifest.providerRender.cliArgumentsSummary)
+        #expect(manifest.providerRender.generatedConfigPreview == manifestPermissionArguments.joined(separator: " "))
+    }
+
+    @Test("Claude live approvals withhold manifest ask-first tools when execution policy disagrees")
+    @MainActor
+    func claudeLiveApprovalsWithholdManifestAskFirstToolsWhenExecutionPolicyDisagrees() throws {
+        let workspaceURL = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-claude-render-contract-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: workspaceURL) }
+        try FileManager.default.createDirectory(at: workspaceURL, withIntermediateDirectories: true)
+
+        let workspace = Workspace(name: "Claude Render", primaryPath: workspaceURL.path)
+        let task = AgentTask(
+            title: "Claude render",
+            goal: "explain who you are",
+            workspace: workspace,
+            model: "claude-sonnet-4-6",
+            runtime: .claudeCode
+        )
+        let manifestRender = ProviderPolicyRender(
+            providerID: .claudeCode,
+            adapterVersion: 1,
+            policyLevel: .review,
+            configOwnership: .generated,
+            permissionMode: PermissionPolicy.restricted.rawValue,
+            allowedTools: ["Read"],
+            runtimeSupportTools: [],
+            askFirstTools: ["Write"],
+            deniedTools: [],
+            allowedShellPatterns: [],
+            askFirstShellPatterns: [],
+            deniedShellPatterns: [],
+            allowedURLPatterns: [],
+            deniedURLPatterns: [],
+            cliArgumentsSummary: [],
+            settingsSummary: "test",
+            generatedConfigPreview: "",
+            enforcementTiers: [.providerNative, .astraBrokered],
+            diagnostics: [],
+            usesBroadProviderPermissions: false
+        )
+        let executionRender = ProviderPolicyRender(
+            providerID: .claudeCode,
+            adapterVersion: 1,
+            policyLevel: .review,
+            configOwnership: .generated,
+            permissionMode: PermissionPolicy.restricted.rawValue,
+            allowedTools: ["Read", "Write"],
+            runtimeSupportTools: [],
+            askFirstTools: [],
+            deniedTools: [],
+            allowedShellPatterns: [],
+            askFirstShellPatterns: [],
+            deniedShellPatterns: [],
+            allowedURLPatterns: [],
+            deniedURLPatterns: [],
+            cliArgumentsSummary: [],
+            settingsSummary: "test",
+            generatedConfigPreview: "",
+            enforcementTiers: [.providerNative, .astraBrokered],
+            diagnostics: [],
+            usesBroadProviderPermissions: false
+        )
+        let manifest = RunPermissionManifest(
+            taskID: task.id,
+            runID: UUID(),
+            phase: "test",
+            providerID: .claudeCode,
+            providerVersion: nil,
+            model: "claude-sonnet-4-6",
+            policyLevel: .review,
+            policyScope: .builtInDefault,
+            providerRender: manifestRender,
+            workspacePath: workspace.primaryPath,
+            additionalPaths: [],
+            environmentKeyNames: [],
+            credentialLabels: [],
+            approvalsGranted: [],
+            approvalGrants: []
+        )
+
+        let plan = AgentRuntimeAdapterRegistry
+            .adapter(for: .claudeCode)
+            .makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext(
+                prompt: "hello",
+                task: task,
+                workspacePath: workspace.primaryPath,
+                executablePath: "/bin/claude",
+                providerHomeDirectory: "",
+                permissionPolicy: .restricted,
+                executionPolicy: .default.applyingProviderRender(executionRender),
+                permissionManifest: manifest,
+                timeoutSeconds: 30,
+                liveApprovalsEnabled: true
+            ))
+
+        let visibleToolsIndex = try #require(plan.arguments.firstIndex(of: "--tools"))
+        #expect(plan.arguments[visibleToolsIndex + 1] == "Read,Write")
+        let allowedTools = Set(Self.argumentValues(after: "--allowedTools", in: plan.arguments))
+        #expect(allowedTools == ["Read"])
+    }
+
     @Test("Copilot launch audit separates task and runtime support tools")
     @MainActor
     func copilotLaunchAuditSeparatesTaskAndRuntimeSupportTools() {
@@ -879,6 +1153,14 @@ struct AgentRuntimeAdapterTests {
             runtime: .copilotCLI
         )
         let supportTools = CopilotPolicyAdapter().runtimeSupportTools
+        let permissionArguments = ProviderPolicyRender.copilotLaunchPermissionArguments(
+            policy: .restricted,
+            allowedTools: ["read"],
+            capabilities: CopilotCLICapabilities(helpText: Self.fakeCopilotHelpText()),
+            localToolCommands: [],
+            runtimeSupportTools: Self.copilotRuntimeSupportToolPermissions(),
+            allowAllPathsForSSHConnections: false
+        )
         let providerRender = ProviderPolicyRender(
             providerID: .copilotCLI,
             adapterVersion: 1,
@@ -894,9 +1176,9 @@ struct AgentRuntimeAdapterTests {
             deniedShellPatterns: [],
             allowedURLPatterns: [],
             deniedURLPatterns: [],
-            cliArgumentsSummary: [],
+            cliArgumentsSummary: permissionArguments,
             settingsSummary: "test",
-            generatedConfigPreview: "",
+            generatedConfigPreview: permissionArguments.joined(separator: " "),
             enforcementTiers: [.providerNative, .astraBrokered],
             diagnostics: [],
             usesBroadProviderPermissions: false
@@ -1598,7 +1880,16 @@ struct AgentRuntimeAdapterTests {
                 providerHomeDirectory: root.appendingPathComponent("copilot-home", isDirectory: true).path,
                 permissionPolicy: .restricted,
                 executionPolicy: .default,
-                permissionManifest: nil,
+                permissionManifest: Self.copilotManifest(
+                    task: task,
+                    workspacePath: workspace.primaryPath,
+                    allowedTools: ["Read"]
+                        + DockerWorkspaceMCPProjection.toolNames.map {
+                            DockerWorkspaceMCPProjection.providerToolPermission(for: $0)
+                        }
+                        + [HostControlPlaneMCPProjection.providerToolPermission(for: "gcloud")],
+                    askFirstTools: []
+                ),
                 timeoutSeconds: 30,
                 runID: runID
             ))
@@ -1805,7 +2096,15 @@ struct AgentRuntimeAdapterTests {
                 providerHomeDirectory: root.appendingPathComponent("copilot-home", isDirectory: true).path,
                 permissionPolicy: .autonomous,
                 executionPolicy: .default,
-                permissionManifest: nil,
+                permissionManifest: Self.copilotManifest(
+                    task: task,
+                    workspacePath: workspace.primaryPath,
+                    allowedTools: ["Read"]
+                        + DockerWorkspaceMCPProjection.toolNames.map {
+                            DockerWorkspaceMCPProjection.providerToolPermission(for: $0)
+                        },
+                    askFirstTools: []
+                ),
                 timeoutSeconds: 30,
                 runID: UUID(uuidString: "7F2F42AD-F221-49A7-AC04-4434F0F03881")
             ))
@@ -1822,6 +2121,86 @@ struct AgentRuntimeAdapterTests {
         #expect(availableTools.contains("astra_workspace-workspace_shell"))
         #expect(!availableTools.contains(DockerWorkspaceMCPProjection.providerToolPermission))
         #expect(!availableTools.contains("bash"))
+    }
+
+    @Test("Copilot Docker Auto preflight manifest persists restricted launch flags")
+    @MainActor
+    func copilotDockerAutoPreflightManifestPersistsRestrictedLaunchFlags() throws {
+        let container = try makeAgentRuntimeAdapterContainer()
+        let context = container.mainContext
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-copilot-docker-auto-preflight-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let copilotPath = try Self.writeFakeCopilotExecutable(in: root)
+
+        let workspace = Workspace(name: "Docker Auto Preflight", primaryPath: root.path)
+        let task = AgentTask(
+            title: "Inspect dbt",
+            goal: "Check dbt in the configured Docker image",
+            workspace: workspace,
+            model: "gpt-5",
+            runtime: .copilotCLI
+        )
+        let shellSkill = Skill(name: "Shell", allowedTools: ["Read", "Bash"])
+        shellSkill.workspace = workspace
+        task.skills = [shellSkill]
+        task.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encode(WorkspaceExecutionEnvironment(
+            id: "image:workspace",
+            kind: .dockerImage,
+            displayName: "Workspace Image",
+            image: "astra/workspace:latest"
+        ))
+        let run = TaskRun(task: task)
+        context.insert(workspace)
+        context.insert(shellSkill)
+        context.insert(task)
+        context.insert(run)
+
+        let manifest = AgentPolicyManifestService.recordPreflightManifest(
+            task: task,
+            run: run,
+            runtime: .copilotCLI,
+            model: "gpt-5",
+            workspacePath: workspace.primaryPath,
+            phase: "run",
+            permissionPolicy: .autonomous,
+            executionPolicy: .default,
+            defaultPolicyLevelRaw: AgentPolicyLevel.autonomous.rawValue,
+            providerCapabilities: AgentRuntimePolicyCapabilities(copilotCLI: CopilotCLICapabilities(helpText: """
+            --allow-all --allow-all-tools --allow-all-paths --allow-all-urls --allow-tool TOOL --available-tools=TOOLS --excluded-tools=TOOLS --output-format=FORMAT --stream=MODE --no-ask-user --effort LEVEL --additional-mcp-config CONFIG
+            """)),
+            modelContext: context
+        )
+
+        let plan = AgentRuntimeAdapterRegistry
+            .adapter(for: .copilotCLI)
+            .makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext(
+                prompt: "check dbt",
+                task: task,
+                workspacePath: workspace.primaryPath,
+                executablePath: copilotPath,
+                providerHomeDirectory: root.appendingPathComponent("copilot-home", isDirectory: true).path,
+                permissionPolicy: .autonomous,
+                executionPolicy: .default,
+                permissionManifest: manifest,
+                timeoutSeconds: 30,
+                runID: UUID(uuidString: "C0D1A170-F1A6-4F51-95A7-AC04F0F03881")
+            ))
+
+        #expect(manifest.providerRender.permissionMode == PermissionPolicy.restricted.rawValue)
+        #expect(!manifest.providerRender.cliArgumentsSummary.contains("--allow-all"))
+        #expect(!manifest.providerRender.cliArgumentsSummary.contains("--allow-all-tools"))
+        #expect(!manifest.providerRender.allowedTools.contains("*"))
+        #expect(AgentRuntimePolicyGuard(manifest: manifest).disposition(
+            toolName: "bash",
+            command: "echo outside-docker"
+        ) == .denied)
+        #expect(plan.commandPlannedFields["docker_workspace_executor"] == "true")
+        #expect(plan.commandPlannedFields["permission_policy"] == PermissionPolicy.restricted.rawValue)
+        #expect(!plan.arguments.contains("--allow-all"))
+        #expect(!plan.arguments.contains("--allow-all-tools"))
+        #expect(Self.copilotPermissionArguments(in: plan.arguments) == manifest.providerRender.cliArgumentsSummary)
     }
 
     @Test("Adapters own provider stream parsing")
@@ -1944,7 +2323,12 @@ struct AgentRuntimeAdapterTests {
                 providerHomeDirectory: root.appendingPathComponent("copilot-home").path,
                 permissionPolicy: .restricted,
                 executionPolicy: .default,
-                permissionManifest: nil,
+                permissionManifest: Self.copilotManifest(
+                    task: task,
+                    workspacePath: workspace.primaryPath,
+                    allowedTools: ["Read", BrowserBridgeMCPProjection.providerToolPermission],
+                    askFirstTools: []
+                ),
                 timeoutSeconds: 30,
                 phase: "run",
                 contextText: "Use the browser shelf to inspect the current page."
@@ -1996,7 +2380,12 @@ struct AgentRuntimeAdapterTests {
                 providerHomeDirectory: root.appendingPathComponent("copilot-home").path,
                 permissionPolicy: .restricted,
                 executionPolicy: .default,
-                permissionManifest: nil,
+                permissionManifest: Self.copilotManifest(
+                    task: task,
+                    workspacePath: workspace.primaryPath,
+                    allowedTools: ["Read", BrowserBridgeMCPProjection.providerToolPermission],
+                    askFirstTools: []
+                ),
                 timeoutSeconds: 30,
                 phase: "run",
                 contextText: "Use the browser shelf to inspect the current page."
@@ -2318,15 +2707,34 @@ struct AgentRuntimeAdapterTests {
         task: AgentTask,
         workspacePath: String,
         allowedTools: [String],
-        askFirstTools: [String]
+        askFirstTools: [String],
+        cliArgumentsSummary: [String] = []
     ) -> RunPermissionManifest {
+        let manifestAllowedTools = Array(Set(
+            allowedTools + ProviderArtifactBootstrapPolicy.launchTools(
+                task: task,
+                permissionPolicy: .restricted,
+                providerAllowedTools: allowedTools,
+                askFirstTools: askFirstTools
+            )
+        )).sorted()
+        let manifestPermissionArguments = cliArgumentsSummary.isEmpty
+            ? ProviderPolicyRender.copilotLaunchPermissionArguments(
+                policy: .restricted,
+                allowedTools: manifestAllowedTools,
+                capabilities: CopilotCLICapabilities(helpText: Self.fakeCopilotHelpText()),
+                localToolCommands: [],
+                runtimeSupportTools: Self.copilotRuntimeSupportToolPermissions(),
+                allowAllPathsForSSHConnections: false
+            )
+            : cliArgumentsSummary
         let providerRender = ProviderPolicyRender(
             providerID: .copilotCLI,
             adapterVersion: 1,
             policyLevel: .review,
             configOwnership: .generated,
             permissionMode: PermissionPolicy.restricted.rawValue,
-            allowedTools: allowedTools,
+            allowedTools: manifestAllowedTools,
             runtimeSupportTools: CopilotPolicyAdapter().runtimeSupportTools,
             askFirstTools: askFirstTools,
             deniedTools: [],
@@ -2335,9 +2743,9 @@ struct AgentRuntimeAdapterTests {
             deniedShellPatterns: [],
             allowedURLPatterns: [],
             deniedURLPatterns: [],
-            cliArgumentsSummary: [],
+            cliArgumentsSummary: manifestPermissionArguments,
             settingsSummary: "test",
-            generatedConfigPreview: "",
+            generatedConfigPreview: manifestPermissionArguments.joined(separator: " "),
             enforcementTiers: [.providerNative, .astraBrokered],
             diagnostics: [],
             usesBroadProviderPermissions: false
@@ -2366,12 +2774,11 @@ struct AgentRuntimeAdapterTests {
         supportsAdditionalMCPConfig: Bool = true
     ) throws -> String {
         let url = directory.appendingPathComponent("copilot")
-        let mcpConfigHelp = supportsAdditionalMCPConfig ? " --additional-mcp-config CONFIG" : ""
         let script = """
         #!/bin/sh
         if [ "$1" = "help" ]; then
           cat <<'HELP'
-        --allow-tool TOOL --available-tools=TOOLS --excluded-tools=TOOLS --output-format=FORMAT --stream=MODE --no-ask-user --effort LEVEL\(mcpConfigHelp)
+        \(fakeCopilotHelpText(supportsAdditionalMCPConfig: supportsAdditionalMCPConfig))
         HELP
           exit 0
         fi
@@ -2386,10 +2793,28 @@ struct AgentRuntimeAdapterTests {
         return url.path
     }
 
+    private static func fakeCopilotHelpText(supportsAdditionalMCPConfig: Bool = true) -> String {
+        let mcpConfigHelp = supportsAdditionalMCPConfig ? " --additional-mcp-config CONFIG" : ""
+        return "--allow-tool TOOL --available-tools=TOOLS --excluded-tools=TOOLS --output-format=FORMAT --stream=MODE --no-ask-user --effort LEVEL\(mcpConfigHelp)"
+    }
+
     private static func argumentValues(after flag: String, in arguments: [String]) -> [String] {
         guard let index = arguments.firstIndex(of: flag) else { return [] }
         let start = arguments.index(after: index)
         guard start < arguments.endIndex else { return [] }
         return Array(arguments[start...].prefix { !$0.hasPrefix("--") })
+    }
+
+    private static func copilotPermissionArguments(in arguments: [String]) -> [String] {
+        guard let flagIndex = arguments.firstIndex(of: "--allow-tool") else { return [] }
+        let endIndex = arguments[flagIndex...].firstIndex(of: "--available-tools") ?? arguments.endIndex
+        return Array(arguments[flagIndex..<endIndex])
+    }
+
+    private static func copilotRuntimeSupportToolPermissions() -> [String] {
+        CopilotPolicyAdapter().runtimeSupportTools.compactMap { descriptor in
+            let permission = descriptor.providerNativePermission?.trimmingCharacters(in: .whitespacesAndNewlines)
+            return permission?.isEmpty == false ? permission : nil
+        }.sorted()
     }
 }

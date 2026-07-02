@@ -288,17 +288,21 @@ struct CopilotPolicyAdapter: ProviderPolicyAdapter {
             ))
         }
 
+        let runtimeSupportToolNames = copilotRuntimeSupportToolNames(runtimeSupportTools)
         let args = CopilotCLIRuntime.copilotPermissionArguments(
             policy: permissionPolicy,
             allowedTools: allowedTools,
             localToolCommands: localToolCommands,
+            runtimeSupportTools: runtimeSupportToolNames,
             supportsAllowAll: capabilities.supportsAllowAll,
             supportsAllowAllTools: capabilities.supportsAllowAllTools,
             supportsAllowAllPaths: capabilities.supportsAllowAllPaths,
             supportsAllowAllURLs: capabilities.supportsAllowAllURLs,
             requiresAllowAllToolsForPrompt: capabilities.requiresAllowAllToolsForPrompt
         )
-        let providerAllowedTools = copilotAllowedTools(from: args, fallback: allowedTools)
+        let providerAllowedTools = copilotAllowedTools(from: args, fallback: allowedTools).filter {
+            !runtimeSupportToolNames.contains($0)
+        }
 
         return ProviderPolicyRender(
             providerID: providerID,
@@ -979,9 +983,18 @@ enum AgentPolicyManifestService {
             executionEnvironment: executionEnvironment,
             contextText: contextText
         )
+        render = applyingArtifactBootstrapManifestSupport(to: render, task: task)
         render.allowedShellPatterns = uniqueStrings(
             render.allowedShellPatterns
                 + runtimeSupportAllowedShellPatterns(environmentKeyNames: envKeys)
+        )
+        render = refreshingCopilotLaunchArgumentEvidence(
+            to: render,
+            providerCapabilities: providerCapabilities,
+            localToolCommands: context.localToolCommands,
+            task: task,
+            executionEnvironment: executionEnvironment,
+            contextText: contextText
         )
         render.diagnostics = providerPolicyAdapter.validate(render: render, context: context)
         if shouldProjectGitCredentials(task: task, contextText: contextText) {
@@ -1115,6 +1128,20 @@ enum AgentPolicyManifestService {
             updated.allowedTools = DockerWorkspaceMCPProjection.removingNativeShellTools(updated.allowedTools)
             updated.askFirstTools = DockerWorkspaceMCPProjection.removingNativeShellTools(updated.askFirstTools)
         }
+        if usesDockerWorkspaceExecutor {
+            updated.allowedTools = uniqueStrings(
+                updated.allowedTools + DockerWorkspaceMCPProjection.toolNames.map {
+                    DockerWorkspaceMCPProjection.providerToolPermission(for: $0)
+                }
+            )
+        }
+        if !hostControlTools.isEmpty {
+            updated.allowedTools = uniqueStrings(
+                updated.allowedTools + hostControlTools.map {
+                    HostControlPlaneMCPProjection.providerToolPermission(for: $0)
+                }
+            )
+        }
         updated.deniedTools = uniqueStrings(updated.deniedTools + ["Bash", "shell"])
         updated.diagnostics.append(PolicyDiagnostic(
             id: "container.host-control-plane-routing",
@@ -1137,6 +1164,101 @@ enum AgentPolicyManifestService {
         }
         updated.runtimeSupportTools.sort { $0.name < $1.name }
         return updated
+    }
+
+    private static func applyingArtifactBootstrapManifestSupport(
+        to render: ProviderPolicyRender,
+        task: AgentTask
+    ) -> ProviderPolicyRender {
+        let permissionPolicy = PermissionPolicy(rawValue: render.permissionMode) ?? .restricted
+        let launchTools = ProviderArtifactBootstrapPolicy.launchTools(
+            task: task,
+            permissionPolicy: permissionPolicy,
+            providerAllowedTools: render.allowedTools,
+            askFirstTools: render.askFirstTools
+        )
+        guard !launchTools.isEmpty else { return render }
+        var updated = render
+        updated.allowedTools = uniqueStrings(updated.allowedTools + launchTools)
+        return updated
+    }
+
+    @MainActor
+    private static func refreshingCopilotLaunchArgumentEvidence(
+        to render: ProviderPolicyRender,
+        providerCapabilities: AgentRuntimePolicyCapabilities,
+        localToolCommands: [String],
+        task: AgentTask,
+        executionEnvironment: WorkspaceExecutionEnvironment,
+        contextText: String
+    ) -> ProviderPolicyRender {
+        guard render.providerID == .copilotCLI else { return render }
+        let hostControlTools = HostControlPlaneMCPProjection.enabledToolNames(
+            task: task,
+            environment: executionEnvironment,
+            contextText: contextText
+        )
+        let scopedLocalToolCommands = hostControlTools.isEmpty
+            ? localToolCommands
+            : HostControlPlaneRuntimeLaunchGuard.removingNativeLocalToolCommands(
+                localToolCommands,
+                requiredTools: hostControlTools
+            )
+        let shouldAllowAllPaths = shouldProjectGitCredentials(task: task, contextText: contextText)
+            || AgentRuntimeProcessRunner.hasWorkspaceSSHConnections(for: task)
+        var updated = render
+        let launchPermissionPolicy = AgentRuntimeProviderLaunchPolicy.permissionPolicy(
+            runtime: render.providerID,
+            effectivePermissionPolicy: PermissionPolicy(rawValue: render.permissionMode) ?? .restricted,
+            executionEnvironment: executionEnvironment
+        )
+        updated.permissionMode = launchPermissionPolicy.rawValue
+        let args = copilotLaunchPermissionArguments(
+            render: updated,
+            providerCapabilities: providerCapabilities,
+            localToolCommands: scopedLocalToolCommands,
+            allowAllPaths: shouldAllowAllPaths
+        )
+        let runtimeSupportToolNames = Set(updated.runtimeSupportTools.flatMap {
+            [$0.name, $0.providerNativePermission ?? ""]
+        }.map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }.filter { !$0.isEmpty })
+        updated.allowedTools = uniqueStrings(
+            copilotAllowedTools(from: args, fallback: updated.allowedTools).filter {
+                let normalized = $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                return normalized != "*" && !runtimeSupportToolNames.contains(normalized)
+            }
+        )
+        updated.cliArgumentsSummary = summarizeCopilotArguments(args)
+        updated.generatedConfigPreview = args.joined(separator: " ")
+        updated.usesBroadProviderPermissions = copilotUsesBroadProviderPermissions(args)
+        return updated
+    }
+
+    private static func copilotLaunchPermissionArguments(
+        render: ProviderPolicyRender,
+        providerCapabilities: AgentRuntimePolicyCapabilities,
+        localToolCommands: [String],
+        allowAllPaths: Bool
+    ) -> [String] {
+        let policy = PermissionPolicy(rawValue: render.permissionMode) ?? .restricted
+        var args = CopilotCLIRuntime.copilotPermissionArguments(
+            policy: policy,
+            allowedTools: render.allowedTools,
+            localToolCommands: localToolCommands,
+            runtimeSupportTools: copilotRuntimeSupportToolNames(render.runtimeSupportTools),
+            supportsAllowAll: providerCapabilities.supportsAllowAll,
+            supportsAllowAllTools: providerCapabilities.supportsAllowAllTools,
+            supportsAllowAllPaths: providerCapabilities.supportsAllowAllPaths,
+            supportsAllowAllURLs: providerCapabilities.supportsAllowAllURLs,
+            requiresAllowAllToolsForPrompt: providerCapabilities.requiresAllowAllToolsForPrompt
+        )
+        if allowAllPaths,
+           policy != .autonomous,
+           providerCapabilities.supportsAllowAllPaths,
+           !args.contains("--allow-all-paths") {
+            args.append("--allow-all-paths")
+        }
+        return args
     }
 
     private static func hostControlPlaneAugmentedMCPServers(
@@ -1501,20 +1623,13 @@ private func diagnostics(for policy: AgentPolicy, context: PolicyRenderContext) 
 }
 
 private func summarizeCopilotArguments(_ args: [String]) -> [String] {
-    guard !args.isEmpty else { return [] }
-    var summary: [String] = []
-    var index = 0
-    while index < args.count {
-        let arg = args[index]
-        if arg == "--allow-tool" {
-            let values = args[(index + 1)..<args.count].filter { !$0.hasPrefix("--") }
-            summary.append("--allow-tool \(values.count) entries")
-            break
-        }
-        summary.append(arg)
-        index += 1
-    }
-    return summary
+    args
+}
+
+private func copilotRuntimeSupportToolNames(
+    _ descriptors: [ProviderRuntimeSupportToolDescriptor]
+) -> [String] {
+    Array(Set(descriptors.map(\.name).filter { !$0.isEmpty })).sorted()
 }
 
 private func copilotAllowedTools(from args: [String], fallback: [String]) -> [String] {

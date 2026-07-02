@@ -1359,7 +1359,7 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
         if usesArtifactBootstrapProfile {
             args += ["--effort", "low"]
         }
-        args += effectivePermissionPolicy.cliArguments
+        args += context.requiredProviderPolicyRender(for: id).claudeLaunchPermissionArguments()
         AgentRuntimeProcessRunner.ensureSubAgentPermissions(
             at: context.workspacePath,
             policy: effectivePermissionPolicy,
@@ -1850,9 +1850,11 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
         )
         let executionEnvironment = DockerExecutionPlanner.resolveEnvironment(for: context.task)
         let usesDockerWorkspaceExecutor = DockerWorkspaceMCPProjection.isEnabled(for: executionEnvironment)
-        let providerLaunchPermissionPolicy = usesDockerWorkspaceExecutor && effectivePermissionPolicy == .autonomous
-            ? PermissionPolicy.restricted
-            : effectivePermissionPolicy
+        let providerLaunchPermissionPolicy = AgentRuntimeProviderLaunchPolicy.permissionPolicy(
+            runtime: id,
+            effectivePermissionPolicy: effectivePermissionPolicy,
+            executionEnvironment: executionEnvironment
+        )
         let baseProviderAllowed = AgentRuntimeProcessRunner.providerAllowedTools(
             for: id,
             baseAllowedTools: allowed,
@@ -1888,7 +1890,7 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
         let askFirstTools = routesControlPlaneThroughMCP
             ? DockerWorkspaceMCPProjection.removingNativeShellTools(baseAskFirstTools)
             : baseAskFirstTools
-        let artifactBootstrapTools = ProviderArtifactBootstrapPolicy.launchTools(
+        let artifactBootstrapTools = ProviderArtifactBootstrapPolicy.persistedLaunchTools(
             task: context.task,
             permissionPolicy: providerLaunchPermissionPolicy,
             providerAllowedTools: providerAllowed,
@@ -1918,6 +1920,7 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
         for (key, value) in mcpProjection.hostControlEnvironment {
             launchTaskEnv[key] = value
         }
+        let permissionArguments = context.requiredProviderPolicyRender(for: id).copilotLaunchPermissionArguments()
         let plan = CopilotCLIRuntime.buildCommand(
             executablePath: executable,
             prompt: context.prompt,
@@ -1940,7 +1943,7 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             askFirstTools: surfacedAskFirstTools,
             additionalMCPConfigPaths: mcpProjection.configURL.map { [$0.path] } ?? [],
             reasoningEffort: artifactBootstrapTools.isEmpty ? nil : "none",
-            allowAllPathsForSSHConnections: AgentRuntimeProcessRunner.hasWorkspaceSSHConnections(for: context.task)
+            permissionArguments: permissionArguments
         )
         let directoriesToCreate = CopilotCLIRuntime.directoriesToCreate(
             copilotHome: context.providerHomeDirectory,
@@ -1957,6 +1960,12 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
         let dockerContainerEnvCount = DockerExecutionPlanner
             .credentialProjectionEnvironment(environment: executionEnvironment)
             .count
+        let artifactBootstrapToolNames = Set(artifactBootstrapTools.map {
+            ProviderArtifactBootstrapPolicy.normalizedToolName($0)
+        })
+        let taskProviderAllowed = providerAllowed.filter { tool in
+            !artifactBootstrapToolNames.contains(ProviderArtifactBootstrapPolicy.normalizedToolName(tool))
+        }
         let commandPlannedFields = CopilotLaunchDiagnostics.commandPlannedFields(
             id: id,
             phase: context.phase,
@@ -1964,7 +1973,7 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             plan: plan,
             capabilities: capabilities,
             effectivePermissionPolicy: providerLaunchPermissionPolicy,
-            providerAllowed: providerAllowed,
+            providerAllowed: taskProviderAllowed,
             baseProviderAllowed: baseProviderAllowed,
             providerLaunchAllowed: providerLaunchAllowed,
             runtimeSupportTools: runtimeSupportTools,
@@ -2062,14 +2071,9 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
         toolMode: AgentUtilityToolMode
     ) async -> AgentUtilityRunResult {
         let configuredPath = configuration.executablePath(for: id)
-        let executable = configuredPath.isEmpty
-            ? CopilotCLIRuntime.detectPath()
-            : configuredPath
-        let copilotHome = configuration.homeDirectory(for: id).isEmpty
-            ? CopilotCLIRuntime.channelHome()
-            : configuration.homeDirectory(for: id)
-        // Share terminal auth (~/.copilot) like the main launch path so Copilot
-        // helper prompts stay authenticated after a plain `copilot` /login.
+        let executable = configuredPath.isEmpty ? CopilotCLIRuntime.detectPath() : configuredPath
+        let configuredHome = configuration.homeDirectory(for: id)
+        let copilotHome = configuredHome.isEmpty ? CopilotCLIRuntime.channelHome() : configuredHome
         let userHome = FileManager.default.homeDirectoryForCurrentUser.path
         let copilotStateHome = CopilotCLIRuntime.defaultHome(userHome: userHome)
         let capabilities = CopilotCLIRuntime.capabilities(executablePath: executable)
@@ -2088,7 +2092,11 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             copilotHome: copilotHome,
             copilotStateHome: copilotStateHome,
             userHome: userHome,
-            disableCustomInstructions: true
+            disableCustomInstructions: true,
+            permissionArguments: ProviderPolicyRender.copilotUtilityLaunchPermissionArguments(
+                allowedTools: allowedTools,
+                capabilities: capabilities
+            )
         )
 
         try? FileManager.default.createDirectory(atPath: copilotHome, withIntermediateDirectories: true)
@@ -2631,7 +2639,8 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
             pathPrefix: pathPrefix,
             includeAstraToolsPath: AgentRuntimeProcessRunner.hasActiveCLITools(context.task, contextText: context.contextText)
                 || taskEnv["ASTRA_BROWSER_URL"] != nil,
-            diagnosticLogPath: diagnosticLogPath
+            diagnosticLogPath: diagnosticLogPath,
+            permissionArguments: context.requiredProviderPolicyRender(for: id).antigravityLaunchPermissionArguments()
         )
         var commandPlannedFields = [
             "runtime": id.rawValue,
@@ -2770,7 +2779,8 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
             permissionPolicy: .restricted,
             timeoutSeconds: configuration.timeoutSeconds,
             taskEnvironment: [:],
-            providerHomeDirectory: configuration.homeDirectory(for: id)
+            providerHomeDirectory: configuration.homeDirectory(for: id),
+            permissionArguments: ProviderPolicyRender.antigravityLaunchPermissionArguments(policy: .restricted)
         )
 
         let process = Process()

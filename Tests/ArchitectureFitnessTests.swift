@@ -377,6 +377,34 @@ struct ArchitectureFitnessTests {
         #expect(matches.isEmpty, "New raw stop reason assignments should stay behind runtime/completion/persistence boundaries: \(matches)")
     }
 
+    @Test("Launch command builders require render-derived permission arguments")
+    func launchCommandBuildersRequireRenderDerivedPermissionArguments() throws {
+        let root = try repositoryRoot()
+        let checkedFiles = [
+            "Astra/Services/Runtime/AntigravityCLIRuntime.swift",
+            "Astra/Services/Runtime/CodexCLIRuntime.swift",
+            "Astra/Services/Runtime/CopilotCLIRuntime.swift",
+            "Astra/Services/Runtime/CursorCLIRuntime.swift",
+            "Astra/Services/Runtime/OpenCodeCLIRuntime.swift"
+        ]
+
+        let violations = try checkedFiles.flatMap { relativePath -> [String] in
+            let text = try fileText(relativePath, root: root)
+            let forbiddenPatterns = [
+                "permissionArguments: [String]? = nil",
+                "permissionArguments ??"
+            ]
+            return forbiddenPatterns.compactMap { pattern in
+                text.contains(pattern) ? "\(relativePath): \(pattern)" : nil
+            }
+        }
+
+        #expect(
+            violations.isEmpty,
+            "Launch builders must receive permission args derived from a persisted ProviderPolicyRender: \(violations)"
+        )
+    }
+
     @Test("Implicit host file scans go through the file access broker")
     func implicitHostFileScansGoThroughFileAccessBroker() throws {
         let root = try repositoryRoot()

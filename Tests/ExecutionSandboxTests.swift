@@ -616,7 +616,15 @@ struct ExecutionSandboxTests {
             copilotHome: providerHome,
             copilotStateHome: copilotStateHome,
             userHome: userHome,
-            providerEnvironment: ["HOME": "/tmp/provider-home"]
+            providerEnvironment: ["HOME": "/tmp/provider-home"],
+            permissionArguments: ProviderPolicyRender.copilotLaunchPermissionArguments(
+                policy: .autonomous,
+                allowedTools: [],
+                capabilities: CopilotCLICapabilities(helpText: "--output-format=FORMAT --stream=MODE --no-ask-user --allow-all"),
+                localToolCommands: [],
+                runtimeSupportTools: [],
+                allowAllPathsForSSHConnections: false
+            )
         )
         let plan = makePlan(
             runtime: .copilotCLI,

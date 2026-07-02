@@ -239,7 +239,8 @@ struct CursorCLIRuntimeAdapter: AgentRuntimeAdapter {
                 context.task,
                 contextText: context.contextText
             )
-                || taskEnv["ASTRA_BROWSER_URL"] != nil
+                || taskEnv["ASTRA_BROWSER_URL"] != nil,
+            permissionArguments: context.requiredProviderPolicyRender(for: id).cursorLaunchPermissionArguments()
         )
         var commandPlannedFields = [
             "runtime": id.rawValue,
@@ -354,7 +355,8 @@ struct CursorCLIRuntimeAdapter: AgentRuntimeAdapter {
             additionalPaths: [],
             permissionPolicy: permissionPolicy,
             timeoutSeconds: configuration.timeoutSeconds,
-            taskEnvironment: [:]
+            taskEnvironment: [:],
+            permissionArguments: ProviderPolicyRender.cursorLaunchPermissionArguments(policy: permissionPolicy)
         )
 
         let process = Process()
