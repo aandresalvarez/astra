@@ -273,4 +273,50 @@ struct OriginalGoalDeliveryTests {
 
         #expect(TaskContextStateManager.originalGoalDelivery(for: task) == .active)
     }
+
+    @Test("manual task approval is delivered even after status resets to running")
+    func manuallyApprovedTaskIsDeliveredAfterStatusResets() throws {
+        // Mirrors TaskLifecycleCoordinator.approveTask: sets task.status =
+        // .completed and records a "task.approved" event, with no plan or
+        // validation-contract event at all (the common plan-less review case).
+        let container = try makeOriginalGoalDeliveryContainer()
+        let context = container.mainContext
+        let task = AgentTask(title: "Manually approved thread", goal: "Answer a quick question")
+        task.status = .completed
+        context.insert(task)
+        context.insert(TaskEvent(
+            task: task,
+            eventType: TaskEventTypes.Task.approved,
+            payload: "Task approved by user."
+        ))
+
+        // Sending a follow-up message resets task.status to .running
+        // (TaskMainView.sendConversationMessage) before the next prompt is
+        // built -- the manual approval event is the only durable evidence
+        // left that the original goal was already delivered (adversarial
+        // finding).
+        task.status = .running
+
+        #expect(TaskContextStateManager.originalGoalDelivery(for: task) == .delivered)
+    }
+
+    @Test("a runtime permission approval event alone is not mistaken for manual completion")
+    func runtimePermissionApprovalIsNotMistakenForCompletion() throws {
+        // approveSimilarRuntimePermissionForTask / approveRuntimePermissionAndContinue
+        // record the SAME "task.approved" event type but leave task.status ==
+        // .running -- the payload wording is the only thing distinguishing
+        // this from a genuine completion approval.
+        let container = try makeOriginalGoalDeliveryContainer()
+        let context = container.mainContext
+        let task = AgentTask(title: "Permission-only thread", goal: "Answer a quick question")
+        task.status = .running
+        context.insert(task)
+        context.insert(TaskEvent(
+            task: task,
+            eventType: TaskEventTypes.Task.approved,
+            payload: "Runtime permission approved by user. Continuing with one-time expanded provider permissions."
+        ))
+
+        #expect(TaskContextStateManager.originalGoalDelivery(for: task) == .active)
+    }
 }

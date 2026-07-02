@@ -10,7 +10,14 @@ private func makeObjectiveAssessmentServiceContainer() throws -> ModelContainer 
     return try ModelContainer(for: schema, migrationPlan: ASTRAMigrationPlan.self, configurations: [config])
 }
 
-@Suite("Objective assessment service")
+// Serialized: several tests mutate `UserDefaults.standard` for
+// `AppStorageKeys.objectiveDriftDetectionEnabled` / `validationModel` (with
+// save/restore), and `disablingDriftDetectionMidFlightDiscardsInFlightResult`
+// mutates the flag from inside an in-flight `await`, so these tests must not
+// run concurrently with each other -- matches the same convention already
+// used by Tests/LoggerTests.swift and Tests/AgentPolicyTests.swift's
+// `RunPermissionManifestTests` for the identical hazard.
+@Suite("Objective assessment service", .serialized)
 @MainActor
 struct ObjectiveAssessmentServiceTests {
     // MARK: - Success path

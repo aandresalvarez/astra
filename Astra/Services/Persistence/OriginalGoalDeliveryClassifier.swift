@@ -41,6 +41,10 @@ extension TaskContextStateManager {
             return .delivered
         }
 
+        if originalGoalHasManualApproval(task: task) {
+            return .delivered
+        }
+
         return .active
     }
 }
@@ -76,6 +80,29 @@ private func originalGoalHasVerifiedCompletion(task: AgentTask) -> Bool {
     }
 
     return false
+}
+
+/// Returns true when the task has ever recorded a genuine user-initiated
+/// "mark this task done" approval (`TaskEventTypes.Task.approved`,
+/// `TaskLifecycleCoordinator.approveTask`), as opposed to the same event type
+/// recorded when the user merely grants a runtime tool permission mid-run
+/// (`approveSimilarRuntimePermissionForTask` / `approveRuntimePermissionAndContinue`,
+/// which leave `task.status == .running`, not `.completed`). The two are
+/// distinguished only by payload text -- there is no separate event type or
+/// planID to scope by -- mirroring the same disambiguation already used in
+/// `TaskThreadSnapshot.isRuntimePermissionApprovalEvent`. Intentionally
+/// unscoped to "the current plan" (unlike the contract-outcome checks above):
+/// the payload carries no planID, and a manual whole-task approval is a
+/// whole-task signal, consistent with the unscoped `task.status` check at the
+/// top of `originalGoalDelivery(for:)`. Adversarial finding: without this, a
+/// task the user explicitly approved/completed -- with no plan-lifecycle or
+/// validation-contract event to otherwise prove it -- reads as `.active`
+/// again the moment a follow-up message resets `task.status` to `.running`.
+private func originalGoalHasManualApproval(task: AgentTask) -> Bool {
+    task.events.contains {
+        $0.type == TaskEventTypes.Task.approved.rawValue
+            && !$0.payload.localizedCaseInsensitiveContains("runtime permission approved")
+    }
 }
 
 private func deliveryIsValidationEvent(_ event: TaskEvent) -> Bool {
