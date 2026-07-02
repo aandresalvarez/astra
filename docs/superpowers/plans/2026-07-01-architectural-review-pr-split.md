@@ -1115,9 +1115,33 @@ Land PR 22 once P0s are closed, or split it into smaller cleanup PRs if any dele
 
 ## Final Readiness Checklist
 
-- [ ] Every PR has one owner boundary and one primary invariant.
-- [ ] Every PR has at least one focused regression or fitness test that would have failed before the change.
-- [ ] No PR combines persistence schema changes with unrelated UI refactors.
-- [ ] No PR combines runtime credential egress with unrelated provider UI work.
-- [ ] No PR updates broad line budgets without shrinking, splitting, or explicitly allow-listing the file.
-- [ ] Remote PR reports separate local validation, unresolved review threads, remote checks, and review-required blockers.
+- [x] Every PR has one owner boundary and one primary invariant.
+- [x] Every PR has at least one focused regression or fitness test that would have failed before the change.
+- [x] No PR combines persistence schema changes with unrelated UI refactors.
+- [x] No PR combines runtime credential egress with unrelated provider UI work.
+- [x] No PR updates broad line budgets without shrinking, splitting, or explicitly allow-listing the file.
+- [x] Remote PR reports separate local validation, unresolved review threads, remote checks, and review-required blockers.
+
+## Live PR Audit (2026-07-02)
+
+**Foundation exposure:** PRs 1-10 are carried by draft PR #176,
+`alvaro/arch-review-all-remaining-gaps` into `main`. This keeps the original
+foundation branch reviewable before the PR11-PR22 stack.
+
+**Stack exposure:** PRs 11-22 are exposed as draft PRs #164 through #175, each
+stacked on the previous architectural-review branch. All twelve stacked PRs
+report `mergeStateStatus: CLEAN` and zero unresolved review threads.
+
+**Remote checks:** PRs #164 through #176 all report `Focused Swift tests:
+SUCCESS` and `Whitespace: SUCCESS`. `Full Swift test suite` is skipped by the
+current CI workflow for these draft PRs; full local suite coverage is recorded
+in the relevant implementation evidence blocks and at the stack tip.
+
+**Review blockers:** PR #176 targets `main` and correctly reports
+`reviewDecision: REVIEW_REQUIRED` / `mergeStateStatus: BLOCKED` until owner
+review. PRs #164 through #175 are stacked on branch bases and report no
+review-required decision, no unresolved review threads, and clean merge state.
+
+**Stack-tip validation:** The PR22 tip (`736a781`) passed local full
+`swift test` with 4,400 tests, `git diff --check`, `script/precommit.sh`, and
+`script/prepush.sh`, then remote Focused Swift and Whitespace on PR #175.
