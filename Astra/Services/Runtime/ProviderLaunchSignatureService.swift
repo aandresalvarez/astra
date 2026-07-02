@@ -101,7 +101,7 @@ enum ProviderLaunchSignatureService {
             policyLevel: manifest.policyLevel.rawValue,
             policyScope: manifest.policyScope.rawValue,
             providerAdapterVersion: manifest.providerRender.adapterVersion,
-            permissionMode: manifest.providerRender.permissionMode,
+            permissionMode: manifest.providerRender.permissionMode.rawValue,
             allowedTools: canonicalStrings(manifest.providerRender.allowedTools),
             askFirstTools: canonicalStrings(manifest.providerRender.askFirstTools),
             deniedTools: canonicalStrings(manifest.providerRender.deniedTools),

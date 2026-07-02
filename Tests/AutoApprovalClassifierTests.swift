@@ -13,7 +13,7 @@ struct AutoApprovalClassifierTests {
             adapterVersion: 1,
             policyLevel: .review,
             configOwnership: .generated,
-            permissionMode: PermissionPolicy.restricted.rawValue,
+            permissionMode: .restricted,
             allowedTools: ["Read", "Glob", "Grep"],
             runtimeSupportTools: [],
             askFirstTools: ["Bash", "Edit", "Write", "WebFetch"],
@@ -132,7 +132,7 @@ struct AutoApprovalClassifierTests {
         // command outside the scope. Routing through the guard catches it.
         let render = ProviderPolicyRender(
             providerID: .claudeCode, adapterVersion: 1, policyLevel: .custom,
-            configOwnership: .generated, permissionMode: PermissionPolicy.restricted.rawValue,
+            configOwnership: .generated, permissionMode: .restricted,
             allowedTools: ["Bash"], runtimeSupportTools: [],
             askFirstTools: [], deniedTools: [],
             allowedShellPatterns: ["git status *"], askFirstShellPatterns: [],

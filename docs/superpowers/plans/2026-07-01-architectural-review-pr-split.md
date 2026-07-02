@@ -1009,6 +1009,20 @@ script/precommit.sh
 script/prepush.sh
 ```
 
+**Implementation evidence (2026-07-02):**
+
+- Added typed `RunPhase` values for runtime launch, preflight, audit, budget, persistence, and manifest boundaries while preserving the existing single-string JSON encoding for `run`, `resume`, and `approved_plan`.
+- Added typed `ProviderPermissionMode` and `ProviderPolicyModeResolver` so rich `AgentPolicy` remains authoritative until the final provider CLI projection. Locked Codex runs now render read-only provider sandbox arguments, while one-run approved write tools widen only that launch to restricted.
+- Replaced provider message literals with `ProviderMessages`, keeping existing provider-specific copy while centralizing completion, failure, timeout, max-turn, start, and missing-executable wording.
+- Added `AgentRuntimeProcessRunning` and changed `AgentRuntimeWorker` to depend on the protocol instead of the concrete `AgentRuntimeProcessRunner`.
+- Updated policy, adapter, process-runner, queue, UI preview, launch signature, and manifest fixture tests to use typed provider modes instead of raw permission-mode strings.
+- Red/green evidence:
+  - `swift test --filter AgentRuntimeProgressTimeoutPolicyTests` failed before implementation because `RunPhase` did not exist, then passed with five runtime vocabulary tests.
+  - `swift test --filter CodexCLIRuntimeTests` failed before implementation because `ProviderPermissionMode` did not exist, then passed after locked Codex render stayed read-only.
+  - `swift test --filter AgentRuntimeProgressTimeoutPolicyTests/providerMessagesCentralizeRuntimeCopy` failed before `ProviderMessages` existed, then passed after adapters used the shared vocabulary.
+  - `swift test --filter AgentRuntimeProgressTimeoutPolicyTests/agentRuntimeWorkerDependsOnProcessRunnerProtocol` failed while the worker stored `AgentRuntimeProcessRunner` directly, then passed after the protocol seam was added.
+- Validation passed: `swift test --filter AgentRuntimeProgressTimeoutPolicyTests`; `swift test --filter AgentPolicyTests`; `swift test --filter AgentRuntimeAdapterTests`; `swift test --filter AgentRuntimeWorkerTests`; adjacent checks `swift test --filter AgentRuntimeExecutionPolicyTests` and `swift test --filter QueueLockTests`; full `swift test` passed with 4,412 tests.
+
 ## PR 22: Hygiene and Drift Guardrails
 
 **Root cause:** Dead code, stale docs, line-budget escapees, duplicate declarations, non-atomic JSON writes, and source-text tests let architecture drift hide outside the current guardrails.

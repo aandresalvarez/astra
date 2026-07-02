@@ -21,7 +21,7 @@ struct AgentRuntimeLaunchPreflightResult: Sendable, Equatable {
     }
 
     var status: Status
-    var phase: String
+    var phase: RunPhase
     var reason: String?
     var detail: String?
     var auditFields: [String: String]
@@ -53,13 +53,13 @@ enum AgentRuntimeLaunchPreflight {
     static func prepareTaskFolderForLaunchResult(
         _ task: AgentTask,
         modelContext: ModelContext,
-        phase: String
+        phase: RunPhase
     ) -> AgentRuntimeLaunchPreflightResult {
         do {
             let folder = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
             let fields = [
                 "event": "task_folder_prepared",
-                "phase": phase,
+                "phase": phase.rawValue,
                 "folder_available": String(!folder.isEmpty),
                 "result": AgentRuntimeLaunchPreflightResult.Status.taskFolderPrepared.rawValue
             ]
@@ -75,7 +75,7 @@ enum AgentRuntimeLaunchPreflight {
             let reason = "task_folder_create_failed"
             let fields = [
                 "reason": reason,
-                "phase": phase,
+                "phase": phase.rawValue,
                 "error_type": String(describing: type(of: error)),
                 "error_description": error.localizedDescription,
                 "result": AgentRuntimeLaunchPreflightResult.Status.taskFolderCreateFailed.rawValue
@@ -102,7 +102,7 @@ enum AgentRuntimeLaunchPreflight {
     static func prepareTaskFolderForLaunch(
         _ task: AgentTask,
         modelContext: ModelContext,
-        phase: String
+        phase: RunPhase
     ) -> Bool {
         prepareTaskFolderForLaunchResult(task, modelContext: modelContext, phase: phase).didPass
     }
@@ -111,7 +111,7 @@ enum AgentRuntimeLaunchPreflight {
         task: AgentTask,
         run: TaskRun,
         modelContext: ModelContext,
-        phase: String,
+        phase: RunPhase,
         contextText: String,
         executionPolicy: AgentRuntimeExecutionPolicy = .default,
         capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot? = nil,
@@ -161,7 +161,7 @@ enum AgentRuntimeLaunchPreflight {
                 task: task,
                 scope: .providerLaunch(contextText: contextText)
             )
-            warningFields["phase"] = phase
+            warningFields["phase"] = phase.rawValue
             warningFields["result"] = "credentials_missing"
             warningFields["connector_names"] = CapabilityAudit.compactNames(missingCredentials.map(\.connector.name))
             warningFields["missing_key_names"] = missingCredentials
@@ -190,7 +190,7 @@ enum AgentRuntimeLaunchPreflight {
             scope: .providerLaunch(contextText: contextText)
         )
         preflightFields["trace_id"] = traceID
-        preflightFields["phase"] = phase
+        preflightFields["phase"] = phase.rawValue
         preflightFields["preflight_connector_count"] = String(connectors.count)
         AppLogger.audit(.capabilityChatContext, category: "Worker", taskID: task.id, fields: preflightFields, level: .debug, fieldMaxLength: 240)
 
@@ -204,7 +204,7 @@ enum AgentRuntimeLaunchPreflight {
             let resultFields = [
                 "source": "task_preflight",
                 "trace_id": traceID,
-                "phase": phase,
+                "phase": phase.rawValue,
                 "workspace_id": task.workspace?.id.uuidString ?? "none",
                 "result": "preflight_passed",
                 "diagnostic_result": AgentRuntimeLaunchPreflightResult.Status.connectorPreflightPassed.rawValue,
@@ -225,7 +225,7 @@ enum AgentRuntimeLaunchPreflight {
 
         var fields = issue.auditFields
         fields["trace_id"] = traceID
-        fields["phase"] = phase
+        fields["phase"] = phase.rawValue
         fields["diagnostic_result"] = AgentRuntimeLaunchPreflightResult.Status.connectorPreflightFailed.rawValue
         AppLogger.audit(.connectorTested, category: "Worker", taskID: task.id, fields: fields, level: .error)
 
@@ -256,7 +256,7 @@ enum AgentRuntimeLaunchPreflight {
         task: AgentTask,
         run: TaskRun,
         modelContext: ModelContext,
-        phase: String,
+        phase: RunPhase,
         credentialLabel: String
     ) -> AgentRuntimeLaunchPreflightResult {
         let request = PermissionRequest.credential(label: credentialLabel)
@@ -270,7 +270,7 @@ enum AgentRuntimeLaunchPreflight {
         )
         let fields: [String: String] = [
             "source": "connector_credential_egress",
-            "phase": phase,
+            "phase": phase.rawValue,
             "runtime": task.resolvedRuntimeID.rawValue,
             "credential_label": credentialLabel,
             "diagnostic_result": AgentRuntimeLaunchPreflightResult.Status.connectorCredentialApprovalRequired.rawValue,
@@ -302,7 +302,7 @@ enum AgentRuntimeLaunchPreflight {
         task: AgentTask,
         run: TaskRun,
         modelContext: ModelContext,
-        phase: String,
+        phase: RunPhase,
         contextText: String,
         executionPolicy: AgentRuntimeExecutionPolicy = .default,
         capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot? = nil,
@@ -324,14 +324,14 @@ enum AgentRuntimeLaunchPreflight {
         task: AgentTask,
         run: TaskRun,
         modelContext: ModelContext,
-        phase: String,
+        phase: RunPhase,
         runtime: AgentRuntimeID
     ) -> AgentRuntimeLaunchPreflightResult {
         let buildInfo = AppBuildInfo.current
         var fields = buildInfo.auditFields
         fields.merge([
             "source": "remote_workspace_preflight",
-            "phase": phase,
+            "phase": phase.rawValue,
             "runtime": runtime.rawValue,
             "diagnostic_result": AgentRuntimeLaunchPreflightResult.Status.remoteWorkspacePreflightPassed.rawValue
         ]) { _, new in new }
@@ -408,7 +408,7 @@ enum AgentRuntimeLaunchPreflight {
         task: AgentTask,
         run: TaskRun,
         modelContext: ModelContext,
-        phase: String,
+        phase: RunPhase,
         runtime: AgentRuntimeID
     ) -> Bool {
         preflightRemoteWorkspaceBeforeLaunchResult(
@@ -424,13 +424,13 @@ enum AgentRuntimeLaunchPreflight {
         task: AgentTask,
         run: TaskRun,
         modelContext: ModelContext,
-        phase: String,
+        phase: RunPhase,
         report: RuntimeReadinessReport
     ) -> AgentRuntimeLaunchPreflightResult {
         let blockedChecks = report.checks.filter { $0.state == .blocked }
         var fields: [String: String] = [
             "source": "runtime_readiness_preflight",
-            "phase": phase,
+            "phase": phase.rawValue,
             "runtime": task.resolvedRuntimeID.rawValue,
             "readiness_state": report.state.rawValue,
             "blocked_check_count": String(blockedChecks.count)
@@ -472,7 +472,7 @@ enum AgentRuntimeLaunchPreflight {
         task: AgentTask,
         run: TaskRun,
         modelContext: ModelContext,
-        phase: String,
+        phase: RunPhase,
         configuration: RuntimeReadinessConfiguration,
         readinessService: RuntimeReadinessService = RuntimeReadinessService()
     ) async -> Bool {
@@ -490,7 +490,7 @@ enum AgentRuntimeLaunchPreflight {
         task: AgentTask,
         run: TaskRun,
         modelContext: ModelContext,
-        phase: String,
+        phase: RunPhase,
         codeDirectory: String,
         homeDirectoryPath: String = FileManager.default.homeDirectoryForCurrentUser.path,
         fileManager: FileManager = .default
@@ -502,7 +502,7 @@ enum AgentRuntimeLaunchPreflight {
             fileManager: fileManager
         )
         var fields = report.auditFields
-        fields["phase"] = phase
+        fields["phase"] = phase.rawValue
         fields["runtime"] = task.resolvedRuntimeID.rawValue
         fields["diagnostic_result"] = report.shouldBlockLaunch
             ? AgentRuntimeLaunchPreflightResult.Status.credentialProjectionFailed.rawValue
@@ -525,7 +525,7 @@ enum AgentRuntimeLaunchPreflight {
                 fileManager: fileManager
             )
             fields = report.auditFields
-            fields["phase"] = phase
+            fields["phase"] = phase.rawValue
             fields["runtime"] = task.resolvedRuntimeID.rawValue
             fields["auto_projected_credentials"] = "true"
             fields["diagnostic_result"] = report.shouldBlockLaunch
@@ -626,13 +626,13 @@ enum AgentRuntimeLaunchPreflight {
         task: AgentTask,
         run: TaskRun,
         modelContext: ModelContext,
-        phase: String,
+        phase: RunPhase,
         imageAvailabilityChecker: any DockerImageAvailabilityChecking = DockerImageInventoryService()
     ) async -> AgentRuntimeLaunchPreflightResult {
         let environment = DockerExecutionPlanner.resolveEnvironment(for: task)
         var fields: [String: String] = [
             "source": "docker_image_availability_preflight",
-            "phase": phase,
+            "phase": phase.rawValue,
             "runtime": task.resolvedRuntimeID.rawValue,
             "execution_environment_kind": environment.kind.rawValue,
             "execution_environment_id": environment.id,
@@ -730,7 +730,7 @@ enum AgentRuntimeLaunchPreflight {
         task: AgentTask,
         run: TaskRun,
         modelContext: ModelContext,
-        phase: String
+        phase: RunPhase
     ) async -> Bool {
         await preflightDockerImageBeforeLaunchResult(
             task: task,
@@ -744,7 +744,7 @@ enum AgentRuntimeLaunchPreflight {
         task: AgentTask,
         run: TaskRun,
         modelContext: ModelContext,
-        phase: String,
+        phase: RunPhase,
         codeDirectory: String
     ) -> Bool {
         preflightCredentialProjectionBeforeLaunchResult(
@@ -760,7 +760,7 @@ enum AgentRuntimeLaunchPreflight {
         task: AgentTask,
         run: TaskRun,
         modelContext: ModelContext,
-        phase: String,
+        phase: RunPhase,
         contextText: String = "",
         prerequisiteStatuses: [String: HealthStatus] = [:],
         capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot? = nil,
@@ -790,7 +790,7 @@ enum AgentRuntimeLaunchPreflight {
             scope: .providerLaunch(contextText: contextText)
         )
         fields.merge(AppBuildInfo.current.auditFields) { _, new in new }
-        fields["phase"] = phase
+        fields["phase"] = phase.rawValue
         fields["result"] = issues.isEmpty ? "passed" : "missing_resources"
         for (key, value) in CapabilityRuntimeIntegrityService.summaryFields(for: issues) {
             fields[key] = value
@@ -905,7 +905,7 @@ enum AgentRuntimeLaunchPreflight {
         task: AgentTask,
         run: TaskRun,
         modelContext: ModelContext,
-        phase: String,
+        phase: RunPhase,
         contextText: String = "",
         preflightCache: PreflightCache = PreflightCache(),
         capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot? = nil
@@ -979,7 +979,7 @@ enum AgentRuntimeLaunchPreflight {
         task: AgentTask,
         run: TaskRun,
         modelContext: ModelContext,
-        phase: String,
+        phase: RunPhase,
         contextText: String = "",
         capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot? = nil
     ) -> Bool {

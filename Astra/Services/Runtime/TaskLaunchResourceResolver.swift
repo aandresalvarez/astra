@@ -9,7 +9,7 @@ enum TaskLaunchResourceResolver {
         task: AgentTask,
         runID: UUID?,
         runtime: AgentRuntimeID,
-        phase: String,
+        phase: RunPhase,
         prompt: String,
         contextText: String,
         workspacePath: String,

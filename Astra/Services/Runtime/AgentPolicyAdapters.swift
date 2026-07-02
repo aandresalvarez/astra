@@ -72,7 +72,8 @@ struct ClaudePolicyAdapter: ProviderPolicyAdapter {
     }
 
     func render(policy: AgentPolicy, context: PolicyRenderContext) -> ProviderPolicyRender {
-        let permissionPolicy = PermissionPolicy.fromAgentPolicyLevel(policy.level)
+        let permissionMode = ProviderPolicyModeResolver.mode(for: policy, runtime: providerID)
+        let permissionPolicy = PermissionPolicy(providerMode: permissionMode)
         let baseAllowedTools = policy.providerAllowedTools(requestedTools: context.requestedAllowedTools)
         let allowedTools = PolicyLocalToolGrants.addClaudeShellGrants(
             to: baseAllowedTools,
@@ -118,7 +119,7 @@ struct ClaudePolicyAdapter: ProviderPolicyAdapter {
             adapterVersion: adapterVersion,
             policyLevel: policy.level,
             configOwnership: context.providerConfigOwnership,
-            permissionMode: permissionPolicy.rawValue,
+            permissionMode: permissionMode,
             allowedTools: allowedTools,
             runtimeSupportTools: runtimeSupportTools,
             askFirstTools: policy.askFirstTools,
@@ -262,7 +263,8 @@ struct CopilotPolicyAdapter: ProviderPolicyAdapter {
     }
 
     func render(policy: AgentPolicy, context: PolicyRenderContext) -> ProviderPolicyRender {
-        let permissionPolicy = PermissionPolicy.fromAgentPolicyLevel(policy.level)
+        let permissionMode = ProviderPolicyModeResolver.mode(for: policy, runtime: providerID)
+        let permissionPolicy = PermissionPolicy(providerMode: permissionMode)
         let allowedTools = policy.providerAllowedTools(requestedTools: context.requestedAllowedTools)
         let localToolCommands = PolicyLocalToolGrants.shouldGrantLocalToolCommands(allowedTools: allowedTools)
             ? context.localToolCommands
@@ -309,7 +311,7 @@ struct CopilotPolicyAdapter: ProviderPolicyAdapter {
             adapterVersion: adapterVersion,
             policyLevel: policy.level,
             configOwnership: .generated,
-            permissionMode: permissionPolicy.rawValue,
+            permissionMode: permissionMode,
             allowedTools: providerAllowedTools,
             runtimeSupportTools: runtimeSupportTools,
             askFirstTools: policy.askFirstTools,
@@ -383,7 +385,8 @@ struct AntigravityPolicyAdapter: ProviderPolicyAdapter {
     }
 
     func render(policy: AgentPolicy, context: PolicyRenderContext) -> ProviderPolicyRender {
-        let permissionPolicy = PermissionPolicy.fromAgentPolicyLevel(policy.level)
+        let permissionMode = ProviderPolicyModeResolver.mode(for: policy, runtime: providerID)
+        let permissionPolicy = PermissionPolicy(providerMode: permissionMode)
         let args = AntigravityCLIRuntime.antigravityPermissionArguments(policy: permissionPolicy)
         var diagnostics = diagnostics(for: policy, context: context)
         diagnostics = diagnostics.map { diagnostic in
@@ -424,7 +427,7 @@ struct AntigravityPolicyAdapter: ProviderPolicyAdapter {
             adapterVersion: adapterVersion,
             policyLevel: policy.level,
             configOwnership: .generated,
-            permissionMode: permissionPolicy.rawValue,
+            permissionMode: permissionMode,
             allowedTools: permissionPolicy == .autonomous ? ["*"] : [],
             runtimeSupportTools: runtimeSupportTools,
             askFirstTools: policy.askFirstTools,
@@ -475,7 +478,8 @@ struct CodexPolicyAdapter: ProviderPolicyAdapter {
     }
 
     func render(policy: AgentPolicy, context: PolicyRenderContext) -> ProviderPolicyRender {
-        let permissionPolicy = PermissionPolicy.fromAgentPolicyLevel(policy.level)
+        let permissionMode = ProviderPolicyModeResolver.mode(for: policy, runtime: providerID)
+        let permissionPolicy = PermissionPolicy(providerMode: permissionMode)
         let args = CodexCLIRuntime.codexPermissionArguments(policy: permissionPolicy)
         var diagnostics = diagnostics(for: policy, context: context)
 
@@ -503,7 +507,7 @@ struct CodexPolicyAdapter: ProviderPolicyAdapter {
             adapterVersion: adapterVersion,
             policyLevel: policy.level,
             configOwnership: .generated,
-            permissionMode: permissionPolicy.rawValue,
+            permissionMode: permissionMode,
             allowedTools: permissionPolicy == .autonomous ? ["*"] : [],
             runtimeSupportTools: runtimeSupportTools,
             askFirstTools: policy.askFirstTools,
@@ -556,7 +560,8 @@ struct CursorPolicyAdapter: ProviderPolicyAdapter {
     }
 
     func render(policy: AgentPolicy, context: PolicyRenderContext) -> ProviderPolicyRender {
-        let permissionPolicy = PermissionPolicy.fromAgentPolicyLevel(policy.level)
+        let permissionMode = ProviderPolicyModeResolver.mode(for: policy, runtime: providerID)
+        let permissionPolicy = PermissionPolicy(providerMode: permissionMode)
         let args = CursorCLIRuntime.cursorPermissionArguments(policy: permissionPolicy)
         var diagnostics = diagnostics(for: policy, context: context)
 
@@ -584,7 +589,7 @@ struct CursorPolicyAdapter: ProviderPolicyAdapter {
             adapterVersion: adapterVersion,
             policyLevel: policy.level,
             configOwnership: .generated,
-            permissionMode: permissionPolicy.rawValue,
+            permissionMode: permissionMode,
             allowedTools: permissionPolicy == .autonomous ? ["*"] : [],
             runtimeSupportTools: runtimeSupportTools,
             askFirstTools: policy.askFirstTools,
@@ -635,7 +640,8 @@ struct OpenCodePolicyAdapter: ProviderPolicyAdapter {
     }
 
     func render(policy: AgentPolicy, context: PolicyRenderContext) -> ProviderPolicyRender {
-        let permissionPolicy = PermissionPolicy.fromAgentPolicyLevel(policy.level)
+        let permissionMode = ProviderPolicyModeResolver.mode(for: policy, runtime: providerID)
+        let permissionPolicy = PermissionPolicy(providerMode: permissionMode)
         let args = OpenCodeCLIRuntime.permissionArguments(policy: permissionPolicy)
         let allowedTools = policy.providerAllowedTools(requestedTools: context.requestedAllowedTools)
         var diagnostics = diagnostics(for: policy, context: context)
@@ -664,7 +670,7 @@ struct OpenCodePolicyAdapter: ProviderPolicyAdapter {
             adapterVersion: adapterVersion,
             policyLevel: policy.level,
             configOwnership: .generated,
-            permissionMode: permissionPolicy.rawValue,
+            permissionMode: permissionMode,
             allowedTools: permissionPolicy == .autonomous ? ["*"] : allowedTools,
             runtimeSupportTools: runtimeSupportTools,
             askFirstTools: policy.askFirstTools,
@@ -906,7 +912,7 @@ enum AgentPolicyManifestService {
         runtime: AgentRuntimeID,
         model: String,
         workspacePath: String,
-        phase: String,
+        phase: RunPhase,
         permissionPolicy: PermissionPolicy,
         executionPolicy: AgentRuntimeExecutionPolicy,
         defaultPolicyLevelRaw: String,
@@ -1091,7 +1097,7 @@ enum AgentPolicyManifestService {
         )
         insertManifestEvent(manifest, type: preflightEventType, task: task, run: run, modelContext: modelContext)
         AppLogger.audit(.runtimeCommandPlanned, category: "Worker", taskID: task.id, fields: [
-            "phase": phase,
+            "phase": phase.rawValue,
             "runtime": runtime.rawValue,
             "policy_level": resolution.level.rawValue,
             "policy_scope": manifest.policyScope.rawValue,
@@ -1188,7 +1194,7 @@ enum AgentPolicyManifestService {
         to render: ProviderPolicyRender,
         task: AgentTask
     ) -> ProviderPolicyRender {
-        let permissionPolicy = PermissionPolicy(rawValue: render.permissionMode) ?? .restricted
+        let permissionPolicy = PermissionPolicy(providerMode: render.permissionMode)
         let launchTools = ProviderArtifactBootstrapPolicy.launchTools(
             task: task,
             permissionPolicy: permissionPolicy,
@@ -1227,12 +1233,12 @@ enum AgentPolicyManifestService {
         let shouldAllowAllPaths = shouldProjectGitCredentials(task: task, contextText: contextText)
             || AgentRuntimeProcessRunner.hasWorkspaceSSHConnections(for: task)
         var updated = render
-        let launchPermissionPolicy = AgentRuntimeProviderLaunchPolicy.permissionPolicy(
+        let launchPermissionMode = AgentRuntimeProviderLaunchPolicy.mode(
             runtime: render.providerID,
-            effectivePermissionPolicy: PermissionPolicy(rawValue: render.permissionMode) ?? .restricted,
+            effectiveProviderMode: render.permissionMode,
             executionEnvironment: executionEnvironment
         )
-        updated.permissionMode = launchPermissionPolicy.rawValue
+        updated.permissionMode = launchPermissionMode
         let args = copilotLaunchPermissionArguments(
             render: updated,
             providerCapabilities: providerCapabilities,
@@ -1260,7 +1266,7 @@ enum AgentPolicyManifestService {
         localToolCommands: [String],
         allowAllPaths: Bool
     ) -> [String] {
-        let policy = PermissionPolicy(rawValue: render.permissionMode) ?? .restricted
+        let policy = PermissionPolicy(providerMode: render.permissionMode)
         var args = CopilotCLIRuntime.copilotPermissionArguments(
             policy: policy,
             allowedTools: render.allowedTools,
@@ -1464,7 +1470,7 @@ enum AgentPolicyManifestService {
             approvals.append("permission_grants:\(providerGrants.sorted().joined(separator: ","))")
         }
         if executionPolicy.permissionPolicyOverride != nil {
-            approvals.append("permission_mode:\(render.permissionMode)")
+            approvals.append("permission_mode:\(render.permissionMode.rawValue)")
         }
         return approvals
     }

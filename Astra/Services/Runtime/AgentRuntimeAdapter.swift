@@ -106,10 +106,10 @@ protocol AgentRuntimeProcessLaunchPlanning {
         promptOverride: String?,
         startPayload: String,
         sessionMessage: String?,
-        phase: String
+        phase: RunPhase
     ) -> String
-    func shouldCheckWorkspaceDirectory(phase: String) -> Bool
-    func shouldPrepareIsolation(phase: String) -> Bool
+    func shouldCheckWorkspaceDirectory(phase: RunPhase) -> Bool
+    func shouldPrepareIsolation(phase: RunPhase) -> Bool
     @MainActor
     func makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext) -> AgentRuntimeProcessLaunchPlan
 }
@@ -155,20 +155,20 @@ protocol AgentRuntimePostRunDiagnostics {
     var id: AgentRuntimeID { get }
     var descriptor: AgentRuntimeDescriptor { get }
 
-    func shouldValidateSuccessfulRun(phase: String) -> Bool
-    func requiresVisibleResultForSuccessfulRun(phase: String) -> Bool
-    func manualCompletionPayload(phase: String) -> String
-    func failurePayloadPrefix(phase: String, exitCode: Int) -> String
-    func timeoutPayload(phase: String, timeoutSeconds: TimeInterval) -> String
-    func maxTurnsPayload(phase: String, task: AgentTask) -> String
-    func shouldClearStaleSessionOnFailure(phase: String, result: AgentProcessResult) -> Bool
-    func performsPostRunFollowUps(phase: String) -> Bool
+    func shouldValidateSuccessfulRun(phase: RunPhase) -> Bool
+    func requiresVisibleResultForSuccessfulRun(phase: RunPhase) -> Bool
+    func manualCompletionPayload(phase: RunPhase) -> String
+    func failurePayloadPrefix(phase: RunPhase, exitCode: Int) -> String
+    func timeoutPayload(phase: RunPhase, timeoutSeconds: TimeInterval) -> String
+    func maxTurnsPayload(phase: RunPhase, task: AgentTask) -> String
+    func shouldClearStaleSessionOnFailure(phase: RunPhase, result: AgentProcessResult) -> Bool
+    func performsPostRunFollowUps(phase: RunPhase) -> Bool
     func sessionTurnMessage(
         task: AgentTask,
         promptOverride: String?,
         startPayload: String?,
         sessionMessage: String?,
-        phase: String
+        phase: RunPhase
     ) -> String
     @MainActor
     func recordPostProcessEvents(context: AgentRuntimePostProcessContext)
@@ -177,7 +177,7 @@ protocol AgentRuntimePostRunDiagnostics {
         snapshot: AgentRuntimeStreamTelemetrySnapshot,
         task: AgentTask,
         run: TaskRun,
-        phase: String,
+        phase: RunPhase,
         exitCode: Int
     )
 }
@@ -231,11 +231,11 @@ extension AgentRuntimeProcessLaunchPlanning {
     }
 
     func missingExecutableMessage(executablePath: String) -> String {
-        "\(id.displayName) CLI not found at '\(executablePath)'. Check Settings."
+        ProviderMessages.missingExecutableAtPath(providerName: id.displayName, executablePath: executablePath)
     }
 
     func defaultStartEventPayload(task: AgentTask) -> String {
-        "Agent started working on: \(task.goal)"
+        ProviderMessages.start(providerName: nil, goal: task.goal)
     }
 
     func connectorPreflightContextText(
@@ -243,17 +243,17 @@ extension AgentRuntimeProcessLaunchPlanning {
         promptOverride _: String?,
         startPayload _: String,
         sessionMessage: String?,
-        phase _: String
+        phase _: RunPhase
     ) -> String {
         sessionMessage ?? task.goal
     }
 
-    func shouldCheckWorkspaceDirectory(phase _: String) -> Bool {
+    func shouldCheckWorkspaceDirectory(phase _: RunPhase) -> Bool {
         true
     }
 
-    func shouldPrepareIsolation(phase: String) -> Bool {
-        phase == "run"
+    func shouldPrepareIsolation(phase: RunPhase) -> Bool {
+        phase == .run
     }
 }
 
@@ -264,39 +264,35 @@ extension AgentRuntimePolicyRendering {
 }
 
 extension AgentRuntimePostRunDiagnostics {
-    func shouldValidateSuccessfulRun(phase: String) -> Bool {
-        phase == "run"
+    func shouldValidateSuccessfulRun(phase: RunPhase) -> Bool {
+        phase == .run
     }
 
-    func requiresVisibleResultForSuccessfulRun(phase _: String) -> Bool {
+    func requiresVisibleResultForSuccessfulRun(phase _: RunPhase) -> Bool {
         false
     }
 
-    func manualCompletionPayload(phase: String) -> String {
-        phase == "resume" ? "Follow-up completed." : "Agent finished."
+    func manualCompletionPayload(phase: RunPhase) -> String {
+        ProviderMessages.manualCompletion(providerName: nil, phase: phase)
     }
 
-    func failurePayloadPrefix(phase: String, exitCode: Int) -> String {
-        phase == "resume" ? "Follow-up failed (exit \(exitCode))." : "Agent exited with code \(exitCode)."
+    func failurePayloadPrefix(phase: RunPhase, exitCode: Int) -> String {
+        ProviderMessages.failurePrefix(providerName: nil, phase: phase, exitCode: exitCode)
     }
 
-    func timeoutPayload(phase: String, timeoutSeconds: TimeInterval) -> String {
-        let label = phase == "resume" ? "Resume" : "Task"
-        return "\(label) idle timeout - no output for \(Int(timeoutSeconds))s. Process killed."
+    func timeoutPayload(phase _: RunPhase, timeoutSeconds: TimeInterval) -> String {
+        ProviderMessages.timeout(phase: .run, timeoutSeconds: timeoutSeconds)
     }
 
-    func maxTurnsPayload(phase: String, task: AgentTask) -> String {
-        if phase == "resume" {
-            return "Max turns reached (\(task.maxTurns)) during resume. Process killed."
-        }
-        return "Max turns reached (\(task.maxTurns)). Process killed."
+    func maxTurnsPayload(phase _: RunPhase, task: AgentTask) -> String {
+        ProviderMessages.maxTurns(phase: .run, maxTurns: task.maxTurns)
     }
 
-    func shouldClearStaleSessionOnFailure(phase: String, result: AgentProcessResult) -> Bool {
+    func shouldClearStaleSessionOnFailure(phase: RunPhase, result: AgentProcessResult) -> Bool {
         false
     }
 
-    func performsPostRunFollowUps(phase _: String) -> Bool {
+    func performsPostRunFollowUps(phase _: RunPhase) -> Bool {
         false
     }
 
@@ -305,7 +301,7 @@ extension AgentRuntimePostRunDiagnostics {
         promptOverride _: String?,
         startPayload _: String?,
         sessionMessage: String?,
-        phase _: String
+        phase _: RunPhase
     ) -> String {
         sessionMessage ?? task.goal
     }
@@ -319,7 +315,7 @@ extension AgentRuntimePostRunDiagnostics {
         snapshot _: AgentRuntimeStreamTelemetrySnapshot,
         task _: AgentTask,
         run _: TaskRun,
-        phase _: String,
+        phase _: RunPhase,
         exitCode _: Int
     ) {
     }
@@ -637,7 +633,7 @@ struct AgentRuntimeProcessLaunchContext {
     let executionPolicy: AgentRuntimeExecutionPolicy
     let permissionManifest: RunPermissionManifest?
     let timeoutSeconds: TimeInterval
-    let phase: String
+    let phase: RunPhase
     let contextText: String
     let nativeContinuationSessionID: String?
     let runID: UUID?
@@ -655,7 +651,7 @@ struct AgentRuntimeProcessLaunchContext {
         executionPolicy: AgentRuntimeExecutionPolicy,
         permissionManifest: RunPermissionManifest?,
         timeoutSeconds: TimeInterval,
-        phase: String = "run",
+        phase: RunPhase = .run,
         contextText: String = "",
         nativeContinuationSessionID: String? = nil,
         runID: UUID? = nil,
@@ -1062,17 +1058,17 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
     // Claude Code includes runtime context in billed input, so low budgets need the launch overhead.
     let budgetProfile = AgentRuntimeBudgetProfile(runtime: .claudeCode, launchOverheadTokens: 120_000)
 
-    func shouldCheckWorkspaceDirectory(phase: String) -> Bool {
-        phase == "run"
+    func shouldCheckWorkspaceDirectory(phase: RunPhase) -> Bool {
+        phase == .run
     }
 
-    func shouldClearStaleSessionOnFailure(phase: String, result: AgentProcessResult) -> Bool {
-        guard phase == "resume" else { return false }
+    func shouldClearStaleSessionOnFailure(phase: RunPhase, result: AgentProcessResult) -> Bool {
+        guard phase == .resume else { return false }
         return result.error?.contains("session") == true || result.error?.contains("not found") == true
     }
 
-    func performsPostRunFollowUps(phase: String) -> Bool {
-        phase == "run"
+    func performsPostRunFollowUps(phase: RunPhase) -> Bool {
+        phase == .run
     }
 
     func policyAdapter(runtimeCapabilities _: AgentRuntimePolicyCapabilities) -> any ProviderPolicyAdapter {
@@ -1414,7 +1410,7 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
             ],
             commandPlannedFields: [
                 "runtime": id.rawValue,
-                "phase": context.phase,
+                "phase": context.phase.rawValue,
                 "model": model,
                 "provider_model": AgentRuntimeProcessRunner.translatedModelForProvider(model),
                 "permission_policy": effectivePermissionPolicy.rawValue,
@@ -1775,11 +1771,15 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
     }
 
     func missingExecutableMessage(executablePath _: String) -> String {
-        "GitHub Copilot CLI not found. Install with `brew install copilot-cli` or `npm install -g @github/copilot`, then authenticate with `copilot`."
+        ProviderMessages.missingExecutable(
+            providerName: "GitHub Copilot",
+            installAction: "Install with `brew install copilot-cli` or `npm install -g @github/copilot`",
+            authAction: "authenticate with `copilot`."
+        )
     }
 
     func defaultStartEventPayload(task: AgentTask) -> String {
-        "Copilot started working on: \(task.goal)"
+        ProviderMessages.start(providerName: "Copilot", goal: task.goal)
     }
 
     func connectorPreflightContextText(
@@ -1787,12 +1787,12 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
         promptOverride: String?,
         startPayload: String,
         sessionMessage _: String?,
-        phase _: String
+        phase _: RunPhase
     ) -> String {
         promptOverride ?? startPayload
     }
 
-    func shouldPrepareIsolation(phase _: String) -> Bool {
+    func shouldPrepareIsolation(phase _: RunPhase) -> Bool {
         true
     }
 
@@ -1800,24 +1800,24 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
         AgentRuntimePolicyCapabilities(copilotCLI: CopilotCLIRuntime.capabilities(executablePath: executablePath))
     }
 
-    func shouldValidateSuccessfulRun(phase _: String) -> Bool {
+    func shouldValidateSuccessfulRun(phase _: RunPhase) -> Bool {
         true
     }
 
-    func manualCompletionPayload(phase _: String) -> String {
-        "Copilot finished."
+    func manualCompletionPayload(phase _: RunPhase) -> String {
+        ProviderMessages.manualCompletion(providerName: "Copilot", phase: .run)
     }
 
-    func failurePayloadPrefix(phase _: String, exitCode: Int) -> String {
-        "Copilot exited with code \(exitCode)."
+    func failurePayloadPrefix(phase _: RunPhase, exitCode: Int) -> String {
+        ProviderMessages.failurePrefix(providerName: "Copilot", phase: .run, exitCode: exitCode)
     }
 
-    func timeoutPayload(phase _: String, timeoutSeconds: TimeInterval) -> String {
-        "Task idle timeout - no output for \(Int(timeoutSeconds))s. Process killed."
+    func timeoutPayload(phase _: RunPhase, timeoutSeconds: TimeInterval) -> String {
+        ProviderMessages.timeout(phase: .run, timeoutSeconds: timeoutSeconds)
     }
 
-    func maxTurnsPayload(phase _: String, task: AgentTask) -> String {
-        "Max turns reached (\(task.maxTurns)). Process killed."
+    func maxTurnsPayload(phase _: RunPhase, task: AgentTask) -> String {
+        ProviderMessages.maxTurns(phase: .run, maxTurns: task.maxTurns)
     }
 
     func sessionTurnMessage(
@@ -1825,7 +1825,7 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
         promptOverride: String?,
         startPayload: String?,
         sessionMessage _: String?,
-        phase _: String
+        phase _: RunPhase
     ) -> String {
         promptOverride == nil ? task.goal : (startPayload ?? task.goal)
     }
@@ -2213,14 +2213,14 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
         snapshot: AgentRuntimeStreamTelemetrySnapshot,
         task: AgentTask,
         run: TaskRun,
-        phase: String,
+        phase: RunPhase,
         exitCode: Int
     ) {
         AgentRuntimeStreamDiagnostics.logCopilotStreamTelemetry(
             snapshot: snapshot,
             task: task,
             run: run,
-            phase: phase,
+            phase: phase.rawValue,
             exitCode: exitCode
         )
     }
@@ -2377,11 +2377,15 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
     }
 
     func missingExecutableMessage(executablePath _: String) -> String {
-        "Google Antigravity CLI not found. Install it from the official setup docs, then run `agy` once to authenticate."
+        ProviderMessages.missingExecutable(
+            providerName: "Google Antigravity",
+            installAction: "Install it from the official setup docs",
+            authAction: "run `agy` once to authenticate."
+        )
     }
 
     func defaultStartEventPayload(task: AgentTask) -> String {
-        "Antigravity started working on: \(task.goal)"
+        ProviderMessages.start(providerName: "Antigravity", goal: task.goal)
     }
 
     func connectorPreflightContextText(
@@ -2389,37 +2393,37 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
         promptOverride: String?,
         startPayload: String,
         sessionMessage _: String?,
-        phase _: String
+        phase _: RunPhase
     ) -> String {
         promptOverride ?? startPayload
     }
 
-    func shouldPrepareIsolation(phase _: String) -> Bool {
+    func shouldPrepareIsolation(phase _: RunPhase) -> Bool {
         true
     }
 
-    func shouldValidateSuccessfulRun(phase _: String) -> Bool {
+    func shouldValidateSuccessfulRun(phase _: RunPhase) -> Bool {
         true
     }
 
-    func requiresVisibleResultForSuccessfulRun(phase _: String) -> Bool {
+    func requiresVisibleResultForSuccessfulRun(phase _: RunPhase) -> Bool {
         true
     }
 
-    func manualCompletionPayload(phase _: String) -> String {
-        "Antigravity finished."
+    func manualCompletionPayload(phase _: RunPhase) -> String {
+        ProviderMessages.manualCompletion(providerName: "Antigravity", phase: .run)
     }
 
-    func failurePayloadPrefix(phase _: String, exitCode: Int) -> String {
-        "Antigravity exited with code \(exitCode)."
+    func failurePayloadPrefix(phase _: RunPhase, exitCode: Int) -> String {
+        ProviderMessages.failurePrefix(providerName: "Antigravity", phase: .run, exitCode: exitCode)
     }
 
-    func timeoutPayload(phase _: String, timeoutSeconds: TimeInterval) -> String {
-        "Task idle timeout - no output for \(Int(timeoutSeconds))s. Process killed."
+    func timeoutPayload(phase: RunPhase, timeoutSeconds: TimeInterval) -> String {
+        ProviderMessages.timeout(phase: phase, timeoutSeconds: timeoutSeconds)
     }
 
-    func maxTurnsPayload(phase _: String, task: AgentTask) -> String {
-        "Max turns reached (\(task.maxTurns)). Process killed."
+    func maxTurnsPayload(phase: RunPhase, task: AgentTask) -> String {
+        ProviderMessages.maxTurns(phase: phase, maxTurns: task.maxTurns)
     }
 
     func sessionTurnMessage(
@@ -2427,7 +2431,7 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
         promptOverride: String?,
         startPayload: String?,
         sessionMessage _: String?,
-        phase _: String
+        phase _: RunPhase
     ) -> String {
         promptOverride == nil ? task.goal : (startPayload ?? task.goal)
     }
@@ -2553,7 +2557,7 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
         )
         var commandPlannedFields = [
             "runtime": id.rawValue,
-            "phase": context.phase,
+            "phase": context.phase.rawValue,
             "model": model,
             "provider_model": providerModel,
             "model_applied": String(modelApplied),

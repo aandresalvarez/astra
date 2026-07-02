@@ -485,12 +485,29 @@ public struct ProviderRuntimeSupportToolDescriptor: Codable, Equatable, Sendable
     ]
 }
 
+public enum ProviderPermissionMode: String, Codable, Equatable, Sendable, CaseIterable {
+    case autonomous
+    case restricted
+    case interactive
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let rawValue = try container.decode(String.self)
+        self = ProviderPermissionMode(rawValue: rawValue) ?? .restricted
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
+}
+
 public struct ProviderPolicyRender: Codable, Equatable, Sendable {
     public var providerID: AgentRuntimeID
     public var adapterVersion: Int
     public var policyLevel: AgentPolicyLevel
     public var configOwnership: PolicyConfigOwnership
-    public var permissionMode: String
+    public var permissionMode: ProviderPermissionMode
     public var allowedTools: [String]
     public var runtimeSupportTools: [ProviderRuntimeSupportToolDescriptor]
     public var askFirstTools: [String]
@@ -535,7 +552,7 @@ public struct ProviderPolicyRender: Codable, Equatable, Sendable {
         adapterVersion: Int,
         policyLevel: AgentPolicyLevel,
         configOwnership: PolicyConfigOwnership,
-        permissionMode: String,
+        permissionMode: ProviderPermissionMode,
         allowedTools: [String],
         runtimeSupportTools: [ProviderRuntimeSupportToolDescriptor] = [],
         askFirstTools: [String] = [],
@@ -580,7 +597,7 @@ public struct ProviderPolicyRender: Codable, Equatable, Sendable {
         adapterVersion = try container.decode(Int.self, forKey: .adapterVersion)
         policyLevel = try container.decode(AgentPolicyLevel.self, forKey: .policyLevel)
         configOwnership = try container.decode(PolicyConfigOwnership.self, forKey: .configOwnership)
-        permissionMode = try container.decode(String.self, forKey: .permissionMode)
+        permissionMode = try container.decode(ProviderPermissionMode.self, forKey: .permissionMode)
         allowedTools = try container.decode([String].self, forKey: .allowedTools)
         runtimeSupportTools = try container.decodeIfPresent([ProviderRuntimeSupportToolDescriptor].self, forKey: .runtimeSupportTools) ?? []
         askFirstTools = try container.decodeIfPresent([String].self, forKey: .askFirstTools) ?? []
@@ -962,7 +979,7 @@ public struct RunPermissionManifest: Codable, Equatable, Sendable, Identifiable 
     public var createdAt: Date
     public var taskID: UUID
     public var runID: UUID
-    public var phase: String
+    public var phase: RunPhase
     public var providerID: AgentRuntimeID
     public var providerVersion: String?
     public var model: String
@@ -1009,7 +1026,7 @@ public struct RunPermissionManifest: Codable, Equatable, Sendable, Identifiable 
         createdAt: Date = Date(),
         taskID: UUID,
         runID: UUID,
-        phase: String,
+        phase: RunPhase,
         providerID: AgentRuntimeID,
         providerVersion: String?,
         model: String,
@@ -1059,7 +1076,7 @@ public struct RunPermissionManifest: Codable, Equatable, Sendable, Identifiable 
         self.createdAt = try container.decode(Date.self, forKey: .createdAt)
         self.taskID = try container.decode(UUID.self, forKey: .taskID)
         self.runID = try container.decode(UUID.self, forKey: .runID)
-        self.phase = try container.decode(String.self, forKey: .phase)
+        self.phase = try container.decode(RunPhase.self, forKey: .phase)
         self.providerID = try container.decode(AgentRuntimeID.self, forKey: .providerID)
         self.providerVersion = try container.decodeIfPresent(String.self, forKey: .providerVersion)
         self.model = try container.decode(String.self, forKey: .model)

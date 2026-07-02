@@ -35,7 +35,7 @@ enum AgentRuntimeBudgetPolicy {
         task: AgentTask,
         run: TaskRun,
         modelContext: ModelContext,
-        phase: String,
+        phase: RunPhase,
         runtime: AgentRuntimeID,
         budgetEnforcementMode: BudgetEnforcementMode
     ) -> Bool {
@@ -57,7 +57,7 @@ enum AgentRuntimeBudgetPolicy {
         let isLaunchOverheadFloor = tokenBudget <= launchOverhead && promptTokens <= tokenBudget
 
         let fields = [
-            "phase": phase,
+            "phase": phase.rawValue,
             "reason": "prompt_budget_estimate_exceeded",
             "estimated_input_tokens": String(estimatedInputTokens),
             "prompt_estimate_tokens": String(promptTokens),
@@ -131,7 +131,7 @@ enum AgentRuntimeBudgetPolicy {
         task: AgentTask,
         run: TaskRun,
         modelContext: ModelContext,
-        phase: String,
+        phase: RunPhase,
         budgetEnforcementMode: BudgetEnforcementMode
     ) {
         guard AgentRuntimeBudgetSnapshot(task: task).hasEnabledBudget else { return }
@@ -156,7 +156,7 @@ enum AgentRuntimeBudgetPolicy {
             run: run
         ))
         AppLogger.audit(.workerBudgetExceeded, category: "Worker", taskID: task.id, fields: [
-            "phase": phase,
+            "phase": phase.rawValue,
             "reason": reason,
             "tokens_used": String(task.tokensUsed),
             "token_budget": String(task.tokenBudget)

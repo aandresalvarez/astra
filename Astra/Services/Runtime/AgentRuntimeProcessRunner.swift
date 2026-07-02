@@ -27,6 +27,35 @@ private final class AgentUtilityScopedProcessRunState: @unchecked Sendable {
     }
 }
 
+protocol AgentRuntimeProcessRunning: AnyObject {
+    func cancel()
+
+    @MainActor
+    func runRuntimeProcess(
+        adapter: any AgentRuntimeProcessLaunchPlanning & AgentRuntimeProcessEventParsing,
+        prompt: String,
+        task: AgentTask,
+        workspacePath: String,
+        executablePath: String,
+        homeDirectory: String,
+        permissionPolicy: PermissionPolicy,
+        executionPolicy: AgentRuntimeExecutionPolicy,
+        permissionManifest: RunPermissionManifest?,
+        budgetEnforcementMode: BudgetEnforcementMode,
+        timeoutSeconds: TimeInterval,
+        phase: RunPhase,
+        contextText: String,
+        nativeContinuationSessionID: String?,
+        runID: UUID?,
+        launchResourcePlan: TaskLaunchResourcePlan?,
+        capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot?,
+        liveApprovalsEnabled: Bool,
+        noSemanticProgressTimeoutSeconds: TimeInterval?,
+        onInteractiveAsk: ((AgentInteractiveAskRequest) async -> InteractiveAskOutcome)?,
+        onLine: @escaping (String, Bool) -> Void
+    ) async -> AgentProcessResult
+}
+
 final class AgentRuntimeProcessRunner {
     typealias SandboxSettingsProvider = @MainActor (PermissionPolicy) -> ExecutionSandboxSettings
     typealias GitCredentialContextProvider = @MainActor (AgentRuntimeProcessLaunchContext) -> GitCredentialSandboxContext
@@ -399,7 +428,7 @@ final class AgentRuntimeProcessRunner {
         permissionManifest: RunPermissionManifest? = nil,
         budgetEnforcementMode: BudgetEnforcementMode = .configuredDefault,
         timeoutSeconds: TimeInterval,
-        phase: String = "run",
+        phase: RunPhase = .run,
         contextText: String = "",
         nativeContinuationSessionID: String? = nil,
         runID: UUID? = nil,
@@ -953,7 +982,7 @@ final class AgentRuntimeProcessRunner {
 
     @MainActor
     static func environment(
-        phase: String,
+        phase: RunPhase,
         task: AgentTask,
         taskEnv: [String: String],
         includeClaudeTeamFlag: Bool
@@ -975,7 +1004,7 @@ final class AgentRuntimeProcessRunner {
         )
         if !taskEnv.isEmpty {
             AppLogger.audit(.workerEnvironmentInjected, category: "Worker", taskID: task.id, fields: [
-                "phase": phase,
+                "phase": phase.rawValue,
                 "env_count": String(taskEnv.count)
             ])
         }
@@ -1374,7 +1403,7 @@ final class AgentRuntimeProcessRunner {
     ) -> [String] {
         guard let permissionManifest,
               permissionManifest.providerID == runtime,
-              permissionManifest.providerRender.permissionMode == PermissionPolicy.restricted.rawValue else {
+              permissionManifest.providerRender.permissionMode == .restricted else {
             return []
         }
 
@@ -1437,3 +1466,5 @@ final class AgentRuntimeProcessRunner {
         }
     }
 }
+
+extension AgentRuntimeProcessRunner: AgentRuntimeProcessRunning {}

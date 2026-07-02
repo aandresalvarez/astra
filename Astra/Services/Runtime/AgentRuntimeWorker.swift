@@ -7,7 +7,7 @@ final class AgentRuntimeWorker {
     private(set) var isRunning = false
     private var cancellationRequested = false
     private var runtimeConfiguration = AgentRuntimeConfiguration()
-    private let processRunner: AgentRuntimeProcessRunner
+    private let processRunner: any AgentRuntimeProcessRunning
     private let providerSettingsSnapshotProvider: () -> ProviderSettingsSnapshot
     var budgetEnforcementModeOverride: BudgetEnforcementMode?
 
@@ -58,7 +58,7 @@ final class AgentRuntimeWorker {
 
     var defaultAgentPolicyLevelRaw: String = AgentPolicyLevel.review.rawValue
     @MainActor init(
-        processRunner: AgentRuntimeProcessRunner = AgentRuntimeProcessRunner(),
+        processRunner: any AgentRuntimeProcessRunning = AgentRuntimeProcessRunner(),
         providerSettingsSnapshotProvider: @escaping () -> ProviderSettingsSnapshot = {
             RuntimeSettingsSnapshotStore.providerSnapshot()
         }
@@ -431,7 +431,7 @@ final class AgentRuntimeWorker {
         startEventType: String = "task.started",
         startEventPayload: String? = nil,
         sessionMessage: String? = nil,
-        auditPhase: String = "run",
+        auditPhase: RunPhase = .run,
         recordingMode: AgentRuntimeRecordingMode = .initial,
         executionPolicy: AgentRuntimeExecutionPolicy = .default
     ) async {
@@ -441,10 +441,10 @@ final class AgentRuntimeWorker {
             "status": task.status.rawValue,
             "model": task.model,
             "runtime": selectedRuntime.rawValue,
-            "phase": auditPhase,
+            "phase": auditPhase.rawValue,
             "workspace_id": task.workspace?.id.uuidString ?? "none"
         ])
-        if auditPhase == "resume" {
+        if auditPhase == .resume {
             AppLogger.audit(.taskResumed, category: "Worker", taskID: task.id, fields: [
                 "mode": task.sessionId == nil ? "fresh_follow_up" : "session_follow_up",
                 "runtime": selectedRuntime.rawValue,
@@ -681,7 +681,11 @@ final class AgentRuntimeWorker {
         )
         let policyRenderer = AgentRuntimeAdapterRegistry.policyRenderer(for: selectedRuntime)
         let providerCapabilities = policyRenderer.policyCapabilities(executablePath: launchSettings.executablePath)
-        let runPermissionPolicy = effectivePermissionPolicy(for: task, executionPolicy: executionPolicy)
+        let runPermissionPolicy = effectivePermissionPolicy(
+            for: task,
+            selectedRuntime: selectedRuntime,
+            executionPolicy: executionPolicy
+        )
         let manifest = AgentPolicyManifestService.recordPreflightManifest(
             task: task,
             run: run,
@@ -724,7 +728,7 @@ final class AgentRuntimeWorker {
             modelContext: modelContext
         )
         let nativeContinuationSessionID = nativeContinuationDecision.sessionID
-        if auditPhase == "resume" {
+        if auditPhase == .resume {
             AppLogger.audit(.taskResumed, category: "Worker", taskID: task.id, fields: [
                 "mode": task.sessionId == nil ? "fresh_follow_up" : "session_follow_up",
                 "runtime": selectedRuntime.rawValue,
@@ -904,7 +908,7 @@ final class AgentRuntimeWorker {
                 runtime: selectedRuntime,
                 task: task,
                 run: run,
-                phase: auditPhase,
+                phase: auditPhase.rawValue,
                 exitCode: result.exitCode
             )
         }
@@ -925,14 +929,14 @@ final class AgentRuntimeWorker {
                 .runtimeFailureDiagnostic,
                 category: "Worker",
                 taskID: task.id,
-                fields: failureDiagnostic.auditFields(phase: auditPhase, stream: streamSnapshot),
+                fields: failureDiagnostic.auditFields(phase: auditPhase.rawValue, stream: streamSnapshot),
                 level: .error
             )
         }
         AppLogger.audit(.workerExited, category: "Worker", taskID: task.id, fields: [
             "exit_code": String(result.exitCode),
             "runtime": selectedRuntime.rawValue,
-            "phase": auditPhase,
+            "phase": auditPhase.rawValue,
             "terminated_after_terminal_progress": String(result.terminatedAfterTerminalProgress)
         ], level: processSucceeded ? .info : .warning)
 
@@ -1157,7 +1161,7 @@ final class AgentRuntimeWorker {
             )
         )
 
-        if auditPhase == "run",
+        if auditPhase == .run,
            task.status == .completed,
            runtimeAdapter.performsPostRunFollowUps(phase: auditPhase),
            !task.chainedGoal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -1212,7 +1216,7 @@ final class AgentRuntimeWorker {
         run: TaskRun,
         modelContext: ModelContext,
         result: AgentProcessResult,
-        phase: String
+        phase: RunPhase
     ) -> Bool {
         let visibleOutput = !run.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         let visibleFileResult = TaskDeliverableExpectation.hasRunScopedArtifact(for: task, run: run)
@@ -1244,7 +1248,7 @@ final class AgentRuntimeWorker {
         modelContext.insert(event)
         var auditFields = [
             "runtime": runtimeAdapter.id.rawValue,
-            "phase": phase,
+            "phase": phase.rawValue,
             "exit_code": String(result.exitCode),
             "run_output_chars": String(run.output.count),
             "file_changes": String(run.fileChanges.count),
@@ -1414,7 +1418,7 @@ final class AgentRuntimeWorker {
     }
 
     @MainActor
-    private func logContextPromptDiagnostics(for task: AgentTask, prompt: String, phase: String) {
+    private func logContextPromptDiagnostics(for task: AgentTask, prompt: String, phase: RunPhase) {
         AppLogger.audit(
             .contextPromptDiagnostics,
             category: "Worker",
@@ -1422,7 +1426,7 @@ final class AgentRuntimeWorker {
             fields: TaskContextStateManager.promptDiagnosticsFields(
                 task: task,
                 prompt: prompt,
-                phase: phase
+                phase: phase.rawValue
             ),
             level: .debug
         )
@@ -1549,7 +1553,7 @@ final class AgentRuntimeWorker {
         task: AgentTask,
         run: TaskRun,
         modelContext: ModelContext,
-        phase: String
+        phase: RunPhase
     ) -> Bool {
         let blockedDiagnostics = manifest.providerRender.diagnostics.filter { $0.severity == .blocked }
         guard !blockedDiagnostics.isEmpty else { return true }
@@ -1580,7 +1584,7 @@ final class AgentRuntimeWorker {
         )
         AppLogger.audit(.workerBlocked, category: "Worker", taskID: task.id, fields: [
             "reason": "policy_blocked",
-            "phase": phase,
+            "phase": phase.rawValue,
             "blocked_diagnostics": String(blockedDiagnostics.count),
             "policy_level": manifest.policyLevel.rawValue,
             "runtime": manifest.providerID.rawValue
@@ -1613,7 +1617,7 @@ final class AgentRuntimeWorker {
     private func alignTaskModelWithSelectedRuntime(
         _ task: AgentTask,
         selectedRuntime: AgentRuntimeID,
-        phase: String
+        phase: RunPhase
     ) {
         let resolution = RuntimeModelAvailability.resolveModel(task.model, for: selectedRuntime)
         var fields = resolution.diagnosticFields(phase: phase)
@@ -1635,7 +1639,7 @@ final class AgentRuntimeWorker {
     private func clearMismatchedProviderSessionIfNeeded(
         for task: AgentTask,
         selectedRuntime: AgentRuntimeID,
-        phase: String
+        phase: RunPhase
     ) {
         guard let sessionID = task.sessionId?.trimmingCharacters(in: .whitespacesAndNewlines),
               !sessionID.isEmpty else {
@@ -1658,7 +1662,7 @@ final class AgentRuntimeWorker {
             "reason": "runtime_changed",
             "from_runtime": owningRuntime.rawValue,
             "to_runtime": selectedRuntime.rawValue,
-            "phase": phase,
+            "phase": phase.rawValue,
             "history_run_count": String(task.runs.count)
         ], level: .info)
     }
@@ -1674,11 +1678,11 @@ final class AgentRuntimeWorker {
         for task: AgentTask,
         currentRun: TaskRun,
         runtimeAdapter: any AgentRuntimeDescriptorReadiness,
-        phase: String,
+        phase: RunPhase,
         currentLaunchSignature: ProviderLaunchSignaturePayload,
         grantNeutralizingStrings: Set<String> = []
     ) -> NativeContinuationDecision {
-        guard phase == "resume",
+        guard phase == .resume,
               runtimeAdapter.descriptor.supportsNativeContinuation else {
             return NativeContinuationDecision(sessionID: nil, skipReason: "unsupported_or_not_resume_phase", signatureMatched: false)
         }
@@ -1794,7 +1798,7 @@ final class AgentRuntimeWorker {
         task: AgentTask,
         run: TaskRun,
         modelContext: ModelContext,
-        phase: String
+        phase: RunPhase
     ) -> Bool {
         guard let reason = result.runtimeStopReason, !reason.isEmpty else { return false }
 
@@ -1810,7 +1814,7 @@ final class AgentRuntimeWorker {
             ?? "ASTRA stopped the provider because browser control reached a terminal guardrail: \(reason)."
         modelContext.insert(TaskEvent(task: task, eventType: TaskEventTypes.System.error, payload: payload, run: run))
         AppLogger.audit(.workerBlocked, category: "Worker", taskID: task.id, fields: [
-            "phase": phase,
+            "phase": phase.rawValue,
             "reason": reason,
             "source": "runtime_stop"
         ], level: .error)
@@ -1839,7 +1843,7 @@ final class AgentRuntimeWorker {
         task: AgentTask,
         run: TaskRun,
         modelContext: ModelContext,
-        phase: String
+        phase: RunPhase
     ) -> Bool {
         guard result.repetitionKilled else { return false }
 
@@ -1854,7 +1858,7 @@ final class AgentRuntimeWorker {
             run: run
         ))
         AppLogger.audit(.workerBlocked, category: "Worker", taskID: task.id, fields: [
-            "phase": phase,
+            "phase": phase.rawValue,
             "reason": "repetition_detected",
             "source": "runtime_repetition_guard"
         ], level: .error)
@@ -1890,6 +1894,7 @@ final class AgentRuntimeWorker {
     @MainActor
     private func effectivePermissionPolicy(
         for task: AgentTask,
+        selectedRuntime: AgentRuntimeID,
         executionPolicy: AgentRuntimeExecutionPolicy
     ) -> PermissionPolicy {
         if skipPermissions {
@@ -1901,7 +1906,10 @@ final class AgentRuntimeWorker {
             fallbackPermissionPolicy: permissionPolicy,
             executionPolicy: executionPolicy
         )
-        return PermissionPolicy.fromAgentPolicyLevel(resolution.level)
+        return ProviderPolicyModeResolver.permissionPolicy(
+            for: resolution.policy,
+            runtime: selectedRuntime
+        )
     }
 
     /// Model used for AI validation checks

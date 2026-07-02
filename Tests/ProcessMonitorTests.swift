@@ -2007,7 +2007,7 @@ struct RuntimePolicyGuardTests {
         let manifest = runtimePolicyManifest(
             allowedTools: ["*"],
             allowedShellPatterns: ["*"],
-            permissionMode: PermissionPolicy.autonomous.rawValue,
+            permissionMode: .autonomous,
             providerID: .copilotCLI,
             policyLevel: .autonomous,
             usesBroadProviderPermissions: true
@@ -3302,7 +3302,7 @@ private func runtimePolicyManifest(
     deniedURLPatterns: [String] = [],
     workspacePath: String = "/tmp/astra-policy-guard",
     additionalPaths: [String] = [],
-    permissionMode: String = PermissionPolicy.restricted.rawValue,
+    permissionMode: ProviderPermissionMode = .restricted,
     providerID: AgentRuntimeID = .claudeCode,
     policyLevel: AgentPolicyLevel = .review,
     usesBroadProviderPermissions: Bool = false,

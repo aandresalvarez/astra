@@ -390,7 +390,7 @@ extension TaskThreadSnapshotTests {
             adapterVersion: 1,
             policyLevel: .review,
             configOwnership: .generated,
-            permissionMode: PermissionPolicy.restricted.rawValue,
+            permissionMode: .restricted,
             allowedTools: ["Read"],
             askFirstTools: [],
             deniedTools: [],

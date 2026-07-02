@@ -221,7 +221,7 @@ struct AgentPolicyTests {
 
         #expect(render.providerID == .claudeCode)
         #expect(render.policyLevel == .review)
-        #expect(render.permissionMode == PermissionPolicy.restricted.rawValue)
+        #expect(render.permissionMode == .restricted)
         #expect(render.allowedTools.contains("Read"))
         #expect(!render.allowedTools.contains("Write"))
         #expect(render.askFirstTools.contains("Bash"))
@@ -1015,7 +1015,7 @@ struct TaskPolicyStoreTests {
 
         #expect(manifest.policyLevel == .locked)
         #expect(manifest.policyScope == .oneRunEscalation)
-        #expect(manifest.providerRender.permissionMode == PermissionPolicy.restricted.rawValue)
+        #expect(manifest.providerRender.permissionMode == .restricted)
         #expect(manifest.providerRender.allowedTools.contains("Write"))
         #expect(!manifest.providerRender.usesBroadProviderPermissions)
     }
@@ -1060,7 +1060,7 @@ struct TaskPolicyStoreTests {
 
         #expect(manifest.policyLevel == .review)
         #expect(manifest.policyScope == .oneRunEscalation)
-        #expect(manifest.providerRender.permissionMode == PermissionPolicy.restricted.rawValue)
+        #expect(manifest.providerRender.permissionMode == .restricted)
         #expect(!manifest.providerRender.usesBroadProviderPermissions)
         #expect(manifest.approvalGrants == [.shellCommand(executable: "curl", pattern: "*stanfordmed.atlassian.net*")])
     }
@@ -1751,7 +1751,7 @@ struct RunPermissionManifestTests {
             adapterVersion: 1,
             policyLevel: .review,
             configOwnership: .generated,
-            permissionMode: PermissionPolicy.restricted.rawValue,
+            permissionMode: .restricted,
             allowedTools: ["read"],
             runtimeSupportTools: CopilotPolicyAdapter().runtimeSupportTools,
             askFirstTools: [],

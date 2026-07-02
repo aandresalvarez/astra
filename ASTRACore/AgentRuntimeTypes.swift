@@ -75,6 +75,34 @@ public struct AgentRuntimeID: RawRepresentable, Codable, Sendable, Hashable, Ide
     }
 }
 
+public struct RunPhase: Codable, Sendable, Hashable, Equatable, ExpressibleByStringLiteral, CustomStringConvertible {
+    public let rawValue: String
+
+    public init(rawValue: String) {
+        self.rawValue = rawValue
+    }
+
+    public init(stringLiteral value: StringLiteralType) {
+        self.init(rawValue: value)
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        self.init(rawValue: try container.decode(String.self))
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
+
+    public var description: String { rawValue }
+
+    public static let run = RunPhase(rawValue: "run")
+    public static let resume = RunPhase(rawValue: "resume")
+    public static let approvedPlan = RunPhase(rawValue: "approved_plan")
+}
+
 public struct AgentRuntimeDescriptor: Sendable, Equatable, Identifiable {
     public let id: AgentRuntimeID
     public let displayName: String

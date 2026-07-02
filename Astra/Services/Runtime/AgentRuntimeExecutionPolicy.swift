@@ -31,7 +31,7 @@ struct AgentRuntimeExecutionPolicy: Equatable {
 
     func applyingProviderRender(_ render: ProviderPolicyRender) -> AgentRuntimeExecutionPolicy {
         AgentRuntimeExecutionPolicy(
-            permissionPolicyOverride: PermissionPolicy(rawValue: render.permissionMode) ?? permissionPolicyOverride,
+            permissionPolicyOverride: PermissionPolicy(providerMode: render.permissionMode),
             allowedToolsOverride: render.allowedTools,
             permissionGrantsOverride: permissionGrantsOverride,
             providerRenderOverride: render
@@ -70,16 +70,28 @@ struct AgentRuntimeExecutionPolicy: Equatable {
 }
 
 enum AgentRuntimeProviderLaunchPolicy {
+    static func mode(
+        runtime: AgentRuntimeID,
+        effectiveProviderMode: ProviderPermissionMode,
+        executionEnvironment: WorkspaceExecutionEnvironment
+    ) -> ProviderPermissionMode {
+        if runtime == .copilotCLI,
+           DockerWorkspaceMCPProjection.isEnabled(for: executionEnvironment),
+           effectiveProviderMode == .autonomous {
+            return .restricted
+        }
+        return effectiveProviderMode
+    }
+
     static func permissionPolicy(
         runtime: AgentRuntimeID,
         effectivePermissionPolicy: PermissionPolicy,
         executionEnvironment: WorkspaceExecutionEnvironment
     ) -> PermissionPolicy {
-        if runtime == .copilotCLI,
-           DockerWorkspaceMCPProjection.isEnabled(for: executionEnvironment),
-           effectivePermissionPolicy == .autonomous {
-            return .restricted
-        }
-        return effectivePermissionPolicy
+        PermissionPolicy(providerMode: mode(
+            runtime: runtime,
+            effectiveProviderMode: effectivePermissionPolicy.providerPermissionMode,
+            executionEnvironment: executionEnvironment
+        ))
     }
 }

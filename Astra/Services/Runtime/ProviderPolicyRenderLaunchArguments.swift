@@ -27,7 +27,7 @@ extension ProviderPolicyRender {
             adapterVersion: 0,
             policyLevel: .review,
             configOwnership: .generated,
-            permissionMode: PermissionPolicy.restricted.rawValue,
+            permissionMode: .restricted,
             allowedTools: [],
             runtimeSupportTools: [],
             askFirstTools: [],
@@ -73,7 +73,7 @@ extension ProviderPolicyRender {
     }
 
     var launchPermissionPolicy: PermissionPolicy {
-        PermissionPolicy(rawValue: permissionMode) ?? .restricted
+        PermissionPolicy(providerMode: permissionMode)
     }
 
     func claudeLaunchPermissionArguments() -> [String] {

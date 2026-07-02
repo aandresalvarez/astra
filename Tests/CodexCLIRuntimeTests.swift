@@ -376,4 +376,42 @@ struct CodexCLIRuntimeTests {
         #expect(render.diagnostics.contains { $0.id == "codex_cli.fine-grained-provider-native-gap" })
         #expect(render.usesBroadProviderPermissions == false)
     }
+
+    @Test("Codex locked policy render stays read only")
+    func codexLockedPolicyRenderStaysReadOnly() {
+        let render = CodexPolicyAdapter().render(
+            policy: .preset(.locked),
+            context: PolicyRenderContext(
+                runtimeID: .codexCLI,
+                model: "gpt-5.5",
+                workspacePath: "/tmp/workspace",
+                additionalPaths: [],
+                requestedAllowedTools: ["Read", "Bash"],
+                localToolCommands: [],
+                environmentKeyNames: [],
+                credentialLabels: [],
+                providerFeatures: CodexPolicyAdapter().supportedFeatures
+            )
+        )
+
+        #expect(render.policyLevel == .locked)
+        #expect(render.permissionMode == .interactive)
+        #expect(render.generatedConfigPreview.contains("--sandbox read-only"))
+        #expect(render.generatedConfigPreview.contains("--sandbox workspace-write") == false)
+    }
+
+    @Test("Provider permission mode decodes legacy strings fail closed")
+    func providerPermissionModeDecodesLegacyStringsFailClosed() throws {
+        let known = try JSONDecoder().decode(
+            ProviderPermissionMode.self,
+            from: Data(#""restricted""#.utf8)
+        )
+        let unknown = try JSONDecoder().decode(
+            ProviderPermissionMode.self,
+            from: Data(#""future-provider-mode""#.utf8)
+        )
+
+        #expect(known == .restricted)
+        #expect(unknown == .restricted)
+    }
 }

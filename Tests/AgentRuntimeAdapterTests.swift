@@ -888,7 +888,7 @@ struct AgentRuntimeAdapterTests {
             adapterVersion: 1,
             policyLevel: .review,
             configOwnership: .generated,
-            permissionMode: PermissionPolicy.restricted.rawValue,
+            permissionMode: .restricted,
             allowedTools: [],
             runtimeSupportTools: [],
             askFirstTools: [],
@@ -910,7 +910,7 @@ struct AgentRuntimeAdapterTests {
             adapterVersion: 1,
             policyLevel: .review,
             configOwnership: .generated,
-            permissionMode: PermissionPolicy.restricted.rawValue,
+            permissionMode: .restricted,
             allowedTools: [],
             runtimeSupportTools: [],
             askFirstTools: [],
@@ -1000,7 +1000,7 @@ struct AgentRuntimeAdapterTests {
             adapterVersion: 1,
             policyLevel: .review,
             configOwnership: .generated,
-            permissionMode: PermissionPolicy.restricted.rawValue,
+            permissionMode: .restricted,
             allowedTools: ["Write"],
             runtimeSupportTools: CopilotPolicyAdapter().runtimeSupportTools,
             askFirstTools: [],
@@ -1063,7 +1063,7 @@ struct AgentRuntimeAdapterTests {
             adapterVersion: 1,
             policyLevel: .review,
             configOwnership: .generated,
-            permissionMode: PermissionPolicy.restricted.rawValue,
+            permissionMode: .restricted,
             allowedTools: ["Read"],
             runtimeSupportTools: [],
             askFirstTools: ["Write"],
@@ -1085,7 +1085,7 @@ struct AgentRuntimeAdapterTests {
             adapterVersion: 1,
             policyLevel: .review,
             configOwnership: .generated,
-            permissionMode: PermissionPolicy.restricted.rawValue,
+            permissionMode: .restricted,
             allowedTools: ["Read", "Write"],
             runtimeSupportTools: [],
             askFirstTools: [],
@@ -1166,7 +1166,7 @@ struct AgentRuntimeAdapterTests {
             adapterVersion: 1,
             policyLevel: .review,
             configOwnership: .generated,
-            permissionMode: PermissionPolicy.restricted.rawValue,
+            permissionMode: .restricted,
             allowedTools: ["read"],
             runtimeSupportTools: supportTools,
             askFirstTools: [],
@@ -1426,7 +1426,7 @@ struct AgentRuntimeAdapterTests {
             adapterVersion: 1,
             policyLevel: .review,
             configOwnership: .generated,
-            permissionMode: PermissionPolicy.restricted.rawValue,
+            permissionMode: .restricted,
             allowedTools: ["Read"],
             runtimeSupportTools: [],
             askFirstTools: ["Write", "Edit", "Bash"],
@@ -1551,7 +1551,7 @@ struct AgentRuntimeAdapterTests {
             adapterVersion: 1,
             policyLevel: .review,
             configOwnership: .generated,
-            permissionMode: PermissionPolicy.restricted.rawValue,
+            permissionMode: .restricted,
             allowedTools: ["Read"],
             runtimeSupportTools: [],
             askFirstTools: ["Write", "Edit", "Bash"],
@@ -1626,7 +1626,7 @@ struct AgentRuntimeAdapterTests {
             adapterVersion: 1,
             policyLevel: .review,
             configOwnership: .generated,
-            permissionMode: PermissionPolicy.restricted.rawValue,
+            permissionMode: .restricted,
             allowedTools: ["Read"],
             runtimeSupportTools: [],
             askFirstTools: ["Write", "Edit", "Bash"],
@@ -2188,7 +2188,7 @@ struct AgentRuntimeAdapterTests {
                 runID: UUID(uuidString: "C0D1A170-F1A6-4F51-95A7-AC04F0F03881")
             ))
 
-        #expect(manifest.providerRender.permissionMode == PermissionPolicy.restricted.rawValue)
+        #expect(manifest.providerRender.permissionMode == .restricted)
         #expect(!manifest.providerRender.cliArgumentsSummary.contains("--allow-all"))
         #expect(!manifest.providerRender.cliArgumentsSummary.contains("--allow-all-tools"))
         #expect(!manifest.providerRender.allowedTools.contains("*"))
@@ -2733,7 +2733,7 @@ struct AgentRuntimeAdapterTests {
             adapterVersion: 1,
             policyLevel: .review,
             configOwnership: .generated,
-            permissionMode: PermissionPolicy.restricted.rawValue,
+            permissionMode: .restricted,
             allowedTools: manifestAllowedTools,
             runtimeSupportTools: CopilotPolicyAdapter().runtimeSupportTools,
             askFirstTools: askFirstTools,

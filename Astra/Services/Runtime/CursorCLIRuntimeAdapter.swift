@@ -44,11 +44,15 @@ struct CursorCLIRuntimeAdapter: AgentRuntimeAdapter {
     }
 
     func missingExecutableMessage(executablePath _: String) -> String {
-        "Cursor CLI not found. Install Cursor CLI, then authenticate with `cursor-agent login`."
+        ProviderMessages.missingExecutable(
+            providerName: "Cursor",
+            installAction: "Install Cursor CLI",
+            authAction: "authenticate with `cursor-agent login`."
+        )
     }
 
     func defaultStartEventPayload(task: AgentTask) -> String {
-        "Cursor started working on: \(task.goal)"
+        ProviderMessages.start(providerName: "Cursor", goal: task.goal)
     }
 
     func connectorPreflightContextText(
@@ -56,37 +60,37 @@ struct CursorCLIRuntimeAdapter: AgentRuntimeAdapter {
         promptOverride: String?,
         startPayload: String,
         sessionMessage _: String?,
-        phase _: String
+        phase _: RunPhase
     ) -> String {
         promptOverride ?? startPayload
     }
 
-    func shouldPrepareIsolation(phase _: String) -> Bool {
+    func shouldPrepareIsolation(phase _: RunPhase) -> Bool {
         true
     }
 
-    func shouldValidateSuccessfulRun(phase _: String) -> Bool {
+    func shouldValidateSuccessfulRun(phase _: RunPhase) -> Bool {
         true
     }
 
-    func requiresVisibleResultForSuccessfulRun(phase _: String) -> Bool {
+    func requiresVisibleResultForSuccessfulRun(phase _: RunPhase) -> Bool {
         true
     }
 
-    func manualCompletionPayload(phase _: String) -> String {
-        "Cursor finished."
+    func manualCompletionPayload(phase _: RunPhase) -> String {
+        ProviderMessages.manualCompletion(providerName: "Cursor", phase: .run)
     }
 
-    func failurePayloadPrefix(phase _: String, exitCode: Int) -> String {
-        "Cursor exited with code \(exitCode)."
+    func failurePayloadPrefix(phase _: RunPhase, exitCode: Int) -> String {
+        ProviderMessages.failurePrefix(providerName: "Cursor", phase: .run, exitCode: exitCode)
     }
 
-    func timeoutPayload(phase _: String, timeoutSeconds: TimeInterval) -> String {
-        "Task idle timeout - no output for \(Int(timeoutSeconds))s. Process killed."
+    func timeoutPayload(phase _: RunPhase, timeoutSeconds: TimeInterval) -> String {
+        ProviderMessages.timeout(phase: .run, timeoutSeconds: timeoutSeconds)
     }
 
-    func maxTurnsPayload(phase _: String, task: AgentTask) -> String {
-        "Max turns reached (\(task.maxTurns)). Process killed."
+    func maxTurnsPayload(phase _: RunPhase, task: AgentTask) -> String {
+        ProviderMessages.maxTurns(phase: .run, maxTurns: task.maxTurns)
     }
 
     func sessionTurnMessage(
@@ -94,7 +98,7 @@ struct CursorCLIRuntimeAdapter: AgentRuntimeAdapter {
         promptOverride: String?,
         startPayload: String?,
         sessionMessage _: String?,
-        phase _: String
+        phase _: RunPhase
     ) -> String {
         promptOverride == nil ? task.goal : (startPayload ?? task.goal)
     }
@@ -245,7 +249,7 @@ struct CursorCLIRuntimeAdapter: AgentRuntimeAdapter {
         )
         var commandPlannedFields = [
             "runtime": id.rawValue,
-            "phase": context.phase,
+            "phase": context.phase.rawValue,
             "model": model,
             "provider_model": providerModel,
             "permission_policy": effectivePermissionPolicy.rawValue,

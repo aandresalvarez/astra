@@ -1,18 +1,19 @@
 import Foundation
 import SwiftData
+import ASTRACore
 
 enum AgentRuntimeStartAdmission {
     @MainActor
     static func confirmRuntimeSessionStarted(
         task: AgentTask,
         modelContext: ModelContext,
-        auditPhase: String
+        auditPhase: RunPhase
     ) -> Bool {
         let result = TaskStateMachine.markRuntimeSessionStarted(task, modelContext: modelContext)
         guard result.rejection == nil else {
             AppLogger.audit(.workerBlocked, category: "Worker", taskID: task.id, fields: [
                 "reason": "runtime_start_rejected",
-                "phase": auditPhase,
+                "phase": auditPhase.rawValue,
                 "from": result.from.rawValue,
                 "to": result.to.rawValue
             ], level: .warning)
@@ -27,7 +28,7 @@ enum AgentRuntimeStartAdmission {
                 taskID: task.id,
                 auditFields: [
                     "operation": "runtime_start_rejected",
-                    "phase": auditPhase,
+                    "phase": auditPhase.rawValue,
                     "status": result.from.rawValue
                 ]
             )

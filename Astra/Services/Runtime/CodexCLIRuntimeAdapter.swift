@@ -46,11 +46,15 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
     }
 
     func missingExecutableMessage(executablePath _: String) -> String {
-        "Codex CLI not found. Install Codex CLI, then authenticate with `codex login`."
+        ProviderMessages.missingExecutable(
+            providerName: "Codex",
+            installAction: "Install Codex CLI",
+            authAction: "authenticate with `codex login`."
+        )
     }
 
     func defaultStartEventPayload(task: AgentTask) -> String {
-        "Codex started working on: \(task.goal)"
+        ProviderMessages.start(providerName: "Codex", goal: task.goal)
     }
 
     func connectorPreflightContextText(
@@ -58,37 +62,37 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
         promptOverride: String?,
         startPayload: String,
         sessionMessage _: String?,
-        phase _: String
+        phase _: RunPhase
     ) -> String {
         promptOverride ?? startPayload
     }
 
-    func shouldPrepareIsolation(phase _: String) -> Bool {
+    func shouldPrepareIsolation(phase _: RunPhase) -> Bool {
         true
     }
 
-    func shouldValidateSuccessfulRun(phase _: String) -> Bool {
+    func shouldValidateSuccessfulRun(phase _: RunPhase) -> Bool {
         true
     }
 
-    func requiresVisibleResultForSuccessfulRun(phase _: String) -> Bool {
+    func requiresVisibleResultForSuccessfulRun(phase _: RunPhase) -> Bool {
         true
     }
 
-    func manualCompletionPayload(phase _: String) -> String {
-        "Codex finished."
+    func manualCompletionPayload(phase _: RunPhase) -> String {
+        ProviderMessages.manualCompletion(providerName: "Codex", phase: .run)
     }
 
-    func failurePayloadPrefix(phase _: String, exitCode: Int) -> String {
-        "Codex exited with code \(exitCode)."
+    func failurePayloadPrefix(phase _: RunPhase, exitCode: Int) -> String {
+        ProviderMessages.failurePrefix(providerName: "Codex", phase: .run, exitCode: exitCode)
     }
 
-    func timeoutPayload(phase _: String, timeoutSeconds: TimeInterval) -> String {
-        "Task idle timeout - no output for \(Int(timeoutSeconds))s. Process killed."
+    func timeoutPayload(phase _: RunPhase, timeoutSeconds: TimeInterval) -> String {
+        ProviderMessages.timeout(phase: .run, timeoutSeconds: timeoutSeconds)
     }
 
-    func maxTurnsPayload(phase _: String, task: AgentTask) -> String {
-        "Max turns reached (\(task.maxTurns)). Process killed."
+    func maxTurnsPayload(phase _: RunPhase, task: AgentTask) -> String {
+        ProviderMessages.maxTurns(phase: .run, maxTurns: task.maxTurns)
     }
 
     func sessionTurnMessage(
@@ -96,7 +100,7 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
         promptOverride: String?,
         startPayload: String?,
         sessionMessage _: String?,
-        phase _: String
+        phase _: RunPhase
     ) -> String {
         promptOverride == nil ? task.goal : (startPayload ?? task.goal)
     }
@@ -300,7 +304,7 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
             ],
             commandPlannedFields: [
                 "runtime": id.rawValue,
-                "phase": context.phase,
+                "phase": context.phase.rawValue,
                 "model": model,
                 "provider_model": providerModel,
                 "permission_policy": effectivePermissionPolicy.rawValue,
@@ -330,8 +334,8 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
         )
     }
 
-    func shouldClearStaleSessionOnFailure(phase: String, result: AgentProcessResult) -> Bool {
-        guard phase == "resume" else { return false }
+    func shouldClearStaleSessionOnFailure(phase: RunPhase, result: AgentProcessResult) -> Bool {
+        guard phase == .resume else { return false }
         let error = result.error?.lowercased() ?? ""
         return error.contains("session") && (error.contains("not found") || error.contains("no such"))
     }

@@ -142,7 +142,12 @@ final class TaskQueue {
             worker.validationModel = validationModel
             worker.skipPermissions = skipPermissions
             worker.defaultAgentPolicyLevelRaw = configuredPolicyLevel.rawValue
-            worker.permissionPolicy = skipPermissions ? .autonomous : .fromAgentPolicyLevel(configuredPolicyLevel)
+            worker.permissionPolicy = skipPermissions
+                ? .autonomous
+                : ProviderPolicyModeResolver.permissionPolicy(
+                    for: AgentPolicy.preset(configuredPolicyLevel),
+                    runtime: defaultRuntimeID
+                )
         }
     }
 

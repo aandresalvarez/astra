@@ -44,11 +44,15 @@ struct OpenCodeCLIRuntimeAdapter: AgentRuntimeAdapter {
     }
 
     func missingExecutableMessage(executablePath _: String) -> String {
-        "OpenCode CLI not found. Install OpenCode, then authenticate with `opencode auth login`."
+        ProviderMessages.missingExecutable(
+            providerName: "OpenCode",
+            installAction: "Install OpenCode",
+            authAction: "authenticate with `opencode auth login`."
+        )
     }
 
     func defaultStartEventPayload(task: AgentTask) -> String {
-        "OpenCode started working on: \(task.goal)"
+        ProviderMessages.start(providerName: "OpenCode", goal: task.goal)
     }
 
     func connectorPreflightContextText(
@@ -56,37 +60,37 @@ struct OpenCodeCLIRuntimeAdapter: AgentRuntimeAdapter {
         promptOverride: String?,
         startPayload: String,
         sessionMessage _: String?,
-        phase _: String
+        phase _: RunPhase
     ) -> String {
         promptOverride ?? startPayload
     }
 
-    func shouldPrepareIsolation(phase _: String) -> Bool {
+    func shouldPrepareIsolation(phase _: RunPhase) -> Bool {
         true
     }
 
-    func shouldValidateSuccessfulRun(phase _: String) -> Bool {
+    func shouldValidateSuccessfulRun(phase _: RunPhase) -> Bool {
         true
     }
 
-    func requiresVisibleResultForSuccessfulRun(phase _: String) -> Bool {
+    func requiresVisibleResultForSuccessfulRun(phase _: RunPhase) -> Bool {
         true
     }
 
-    func manualCompletionPayload(phase _: String) -> String {
-        "OpenCode finished."
+    func manualCompletionPayload(phase _: RunPhase) -> String {
+        ProviderMessages.manualCompletion(providerName: "OpenCode", phase: .run)
     }
 
-    func failurePayloadPrefix(phase _: String, exitCode: Int) -> String {
-        "OpenCode exited with code \(exitCode)."
+    func failurePayloadPrefix(phase _: RunPhase, exitCode: Int) -> String {
+        ProviderMessages.failurePrefix(providerName: "OpenCode", phase: .run, exitCode: exitCode)
     }
 
-    func timeoutPayload(phase _: String, timeoutSeconds: TimeInterval) -> String {
-        "Task idle timeout - no output for \(Int(timeoutSeconds))s. Process killed."
+    func timeoutPayload(phase _: RunPhase, timeoutSeconds: TimeInterval) -> String {
+        ProviderMessages.timeout(phase: .run, timeoutSeconds: timeoutSeconds)
     }
 
-    func maxTurnsPayload(phase _: String, task: AgentTask) -> String {
-        "Max turns reached (\(task.maxTurns)). Process killed."
+    func maxTurnsPayload(phase _: RunPhase, task: AgentTask) -> String {
+        ProviderMessages.maxTurns(phase: .run, maxTurns: task.maxTurns)
     }
 
     func sessionTurnMessage(
@@ -94,7 +98,7 @@ struct OpenCodeCLIRuntimeAdapter: AgentRuntimeAdapter {
         promptOverride: String?,
         startPayload: String?,
         sessionMessage _: String?,
-        phase _: String
+        phase _: RunPhase
     ) -> String {
         promptOverride == nil ? task.goal : (startPayload ?? task.goal)
     }
@@ -263,7 +267,7 @@ struct OpenCodeCLIRuntimeAdapter: AgentRuntimeAdapter {
         )
         var commandPlannedFields = [
             "runtime": id.rawValue,
-            "phase": context.phase,
+            "phase": context.phase.rawValue,
             "model": model,
             "provider_model": providerModel,
             "permission_policy": effectivePermissionPolicy.rawValue,

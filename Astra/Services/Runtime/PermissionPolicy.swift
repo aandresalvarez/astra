@@ -62,4 +62,12 @@ enum PermissionPolicy: String, Codable, CaseIterable {
             .restricted
         }
     }
+
+    init(providerMode: ProviderPermissionMode) {
+        self = PermissionPolicy(rawValue: providerMode.rawValue) ?? .restricted
+    }
+
+    var providerPermissionMode: ProviderPermissionMode {
+        ProviderPermissionMode(rawValue: rawValue) ?? .restricted
+    }
 }
