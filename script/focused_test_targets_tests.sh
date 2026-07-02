@@ -28,6 +28,8 @@ assert_targets "MailToolSupportTests" \
 assert_targets $'MCPGatewaySupportTests\nMailToolSupportTests' \
   "Package.swift"
 
+assert_targets ""
+
 assert_targets "" \
   "Astra/Services/Runtime/AgentRuntimeAdapter.swift" \
   "Tests/ArchitectureFitnessTests.swift"

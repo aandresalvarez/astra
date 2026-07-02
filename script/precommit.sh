@@ -28,9 +28,12 @@ run_focused_targets_for_changed_paths() {
 }
 
 run swift test --filter ArchitectureFitnessTests
+run script/focused_test_targets_tests.sh
 changed_files=()
 while IFS= read -r path; do
   changed_files+=("$path")
 done < <(changed_paths)
-run_focused_targets_for_changed_paths "${changed_files[@]}"
+if ((${#changed_files[@]} > 0)); then
+  run_focused_targets_for_changed_paths "${changed_files[@]}"
+fi
 run git diff --cached --check

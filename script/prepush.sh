@@ -60,9 +60,12 @@ run_focused_targets_for_changed_paths() {
 FOCUSED_SWIFT_TEST_FILTER="ArchitectureFitnessTests|RuntimeReadinessServiceTests|WorkspacePersistenceTests|AgentRuntimeAdapterTests|TaskContextStateTests|CapsuleSnapshotTests|CapsuleSelectionPressureTests|ExecutionSandboxTests|RuntimePolicyGuardTests|CopilotCLICommandPlanningTests|TaskCapabilityResolverTests|RunPermissionManifestTests"
 
 run swift test --filter "$FOCUSED_SWIFT_TEST_FILTER"
+run script/focused_test_targets_tests.sh
 changed_files=()
 while IFS= read -r path; do
   changed_files+=("$path")
 done < <(changed_paths)
-run_focused_targets_for_changed_paths "${changed_files[@]}"
+if ((${#changed_files[@]} > 0)); then
+  run_focused_targets_for_changed_paths "${changed_files[@]}"
+fi
 check_whitespace
