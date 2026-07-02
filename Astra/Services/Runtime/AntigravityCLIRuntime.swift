@@ -153,7 +153,7 @@ enum AntigravityCLIRuntime {
         for path in uniquePaths {
             args += ["--add-dir", path]
         }
-        args += permissionArguments ?? antigravityPermissionArguments(policy: permissionPolicy)
+        args += permissionArguments ?? ProviderPolicyRender.antigravityLaunchPermissionArguments(policy: permissionPolicy)
 
         var extraVars: [String: String] = [
             "NO_COLOR": "1",

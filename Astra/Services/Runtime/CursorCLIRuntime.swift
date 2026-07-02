@@ -54,7 +54,7 @@ enum CursorCLIRuntime {
             "--workspace", workspacePath,
             "--model", providerModel
         ]
-        args += permissionArguments ?? cursorPermissionArguments(policy: permissionPolicy)
+        args += permissionArguments ?? ProviderPolicyRender.cursorLaunchPermissionArguments(policy: permissionPolicy)
         args.append(prompt)
 
         var extraVars: [String: String] = [

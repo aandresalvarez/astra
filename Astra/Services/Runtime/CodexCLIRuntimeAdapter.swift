@@ -264,7 +264,7 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
                 || taskEnv["ASTRA_BROWSER_URL"] != nil,
             mcpConfigArguments: mcpProjection.configArguments,
             resumeSessionID: context.nativeContinuationSessionID,
-            permissionArguments: context.providerPolicyRender(for: id)?.codexLaunchPermissionArguments(
+            permissionArguments: context.requiredProviderPolicyRender(for: id).codexLaunchPermissionArguments(
                 resumingNativeSession: resumingNativeSession
             )
         )
@@ -406,7 +406,11 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
             permissionPolicy: permissionPolicy,
             timeoutSeconds: configuration.timeoutSeconds,
             taskEnvironment: [:],
-            providerHomeDirectory: configuration.homeDirectory(for: id)
+            providerHomeDirectory: configuration.homeDirectory(for: id),
+            permissionArguments: ProviderPolicyRender.codexLaunchPermissionArguments(
+                policy: permissionPolicy,
+                resumingNativeSession: false
+            )
         )
 
         for directory in CodexCLIRuntime.directoriesToCreate(

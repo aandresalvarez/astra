@@ -253,24 +253,14 @@ enum CopilotCLIRuntime {
             args += ["--add-dir", path]
         }
 
-        let permissionArgs = permissionArguments ?? copilotPermissionArguments(
+        args += permissionArguments ?? ProviderPolicyRender.copilotLaunchPermissionArguments(
             policy: permissionPolicy,
             allowedTools: allowedTools,
+            capabilities: capabilities,
             localToolCommands: localToolCommands,
             runtimeSupportTools: runtimeSupportTools,
-            supportsAllowAll: capabilities.supportsAllowAll,
-            supportsAllowAllTools: capabilities.supportsAllowAllTools,
-            supportsAllowAllPaths: capabilities.supportsAllowAllPaths,
-            supportsAllowAllURLs: capabilities.supportsAllowAllURLs,
-            requiresAllowAllToolsForPrompt: capabilities.requiresAllowAllToolsForPrompt
+            allowAllPathsForSSHConnections: allowAllPathsForSSHConnections
         )
-        args += permissionArgs
-        if allowAllPathsForSSHConnections,
-           permissionPolicy != .autonomous,
-           capabilities.supportsAllowAllPaths,
-           !args.contains("--allow-all-paths") {
-            args.append("--allow-all-paths")
-        }
         args += copilotToolSurfaceArguments(
             policy: permissionPolicy,
             allowedTools: allowedTools,

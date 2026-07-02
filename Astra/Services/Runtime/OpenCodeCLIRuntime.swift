@@ -54,7 +54,7 @@ enum OpenCodeCLIRuntime {
             "--dir", launchDirectory,
             "--model", providerModel
         ]
-        args += permissionArguments ?? Self.permissionArguments(policy: permissionPolicy)
+        args += permissionArguments ?? ProviderPolicyRender.openCodeLaunchPermissionArguments(policy: permissionPolicy)
         args.append(prompt)
 
         var extraVars: [String: String] = [

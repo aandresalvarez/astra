@@ -64,7 +64,10 @@ enum CodexCLIRuntime {
                 "--model", providerModel
             ]
             args += mcpConfigArguments
-            args += permissionArguments ?? codexResumePermissionArguments(policy: permissionPolicy)
+            args += permissionArguments ?? ProviderPolicyRender.codexLaunchPermissionArguments(
+                policy: permissionPolicy,
+                resumingNativeSession: true
+            )
             args.append("--skip-git-repo-check")
             args.append(trimmedResumeSessionID)
         } else {
@@ -83,7 +86,10 @@ enum CodexCLIRuntime {
                 args += ["--add-dir", path]
             }
 
-            args += permissionArguments ?? codexPermissionArguments(policy: permissionPolicy)
+            args += permissionArguments ?? ProviderPolicyRender.codexLaunchPermissionArguments(
+                policy: permissionPolicy,
+                resumingNativeSession: false
+            )
             args.append("--skip-git-repo-check")
         }
         args.append(prompt)

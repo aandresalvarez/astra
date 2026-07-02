@@ -1040,15 +1040,18 @@ final class AgentRuntimeProcessRunner {
         permissionManifest: RunPermissionManifest?
     ) -> [String] {
         guard let permissionManifest,
-              permissionManifest.providerID == runtime,
-              !permissionManifest.approvalGrants.isEmpty else {
+              permissionManifest.providerID == runtime else {
             return baseAllowedTools
+        }
+        let manifestAllowedTools = permissionManifest.providerRender.allowedTools
+        guard !permissionManifest.approvalGrants.isEmpty else {
+            return manifestAllowedTools
         }
         let runtimeGrants = PermissionBroker.providerRuntimeGrantStrings(
             for: permissionManifest.approvalGrants,
             runtime: runtime
         )
-        return Array(Set(baseAllowedTools + runtimeGrants)).sorted()
+        return Array(Set(manifestAllowedTools + runtimeGrants)).sorted()
     }
 
     static func providerRuntimeSupportToolPermissions(

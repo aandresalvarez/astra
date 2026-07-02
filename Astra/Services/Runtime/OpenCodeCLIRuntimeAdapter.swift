@@ -258,7 +258,7 @@ struct OpenCodeCLIRuntimeAdapter: AgentRuntimeAdapter {
                 contextText: context.contextText
             )
                 || taskEnv["ASTRA_BROWSER_URL"] != nil,
-            permissionArguments: context.providerPolicyRender(for: id)?.openCodeLaunchPermissionArguments()
+            permissionArguments: context.requiredProviderPolicyRender(for: id).openCodeLaunchPermissionArguments()
         )
         var commandPlannedFields = [
             "runtime": id.rawValue,
@@ -372,7 +372,8 @@ struct OpenCodeCLIRuntimeAdapter: AgentRuntimeAdapter {
             additionalPaths: [],
             permissionPolicy: permissionPolicy,
             timeoutSeconds: configuration.timeoutSeconds,
-            taskEnvironment: [:]
+            taskEnvironment: [:],
+            permissionArguments: ProviderPolicyRender.openCodeLaunchPermissionArguments(policy: permissionPolicy)
         )
 
         let process = Process()
