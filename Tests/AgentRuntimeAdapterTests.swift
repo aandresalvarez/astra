@@ -977,11 +977,20 @@ struct AgentRuntimeAdapterTests {
             model: "gpt-5.3-codex",
             runtime: .copilotCLI
         )
+        let manifestPermissionArguments = ProviderPolicyRender.copilotLaunchPermissionArguments(
+            policy: .restricted,
+            allowedTools: ["read"],
+            capabilities: CopilotCLICapabilities(helpText: Self.fakeCopilotHelpText()),
+            localToolCommands: [],
+            runtimeSupportTools: Self.copilotRuntimeSupportToolPermissions(),
+            allowAllPathsForSSHConnections: false
+        )
         let manifest = Self.copilotManifest(
             task: task,
             workspacePath: workspace.primaryPath,
             allowedTools: ["read"],
-            askFirstTools: []
+            askFirstTools: [],
+            cliArgumentsSummary: manifestPermissionArguments
         )
         let executionRender = ProviderPolicyRender(
             providerID: .copilotCLI,
@@ -1025,6 +1034,9 @@ struct AgentRuntimeAdapterTests {
         #expect(allowedEntries.contains("grep"))
         #expect(allowedEntries.contains("glob"))
         #expect(!allowedEntries.contains("write"))
+        #expect(manifest.providerRender.cliArgumentsSummary == manifestPermissionArguments)
+        #expect(Self.copilotPermissionArguments(in: plan.arguments) == manifest.providerRender.cliArgumentsSummary)
+        #expect(manifest.providerRender.generatedConfigPreview == manifestPermissionArguments.joined(separator: " "))
     }
 
     @Test("Claude live approvals withhold manifest ask-first tools when execution policy disagrees")
@@ -2604,7 +2616,8 @@ struct AgentRuntimeAdapterTests {
         task: AgentTask,
         workspacePath: String,
         allowedTools: [String],
-        askFirstTools: [String]
+        askFirstTools: [String],
+        cliArgumentsSummary: [String] = []
     ) -> RunPermissionManifest {
         let manifestAllowedTools = Array(Set(
             allowedTools + ProviderArtifactBootstrapPolicy.launchTools(
@@ -2629,9 +2642,9 @@ struct AgentRuntimeAdapterTests {
             deniedShellPatterns: [],
             allowedURLPatterns: [],
             deniedURLPatterns: [],
-            cliArgumentsSummary: [],
+            cliArgumentsSummary: cliArgumentsSummary,
             settingsSummary: "test",
-            generatedConfigPreview: "",
+            generatedConfigPreview: cliArgumentsSummary.joined(separator: " "),
             enforcementTiers: [.providerNative, .astraBrokered],
             diagnostics: [],
             usesBroadProviderPermissions: false
@@ -2660,12 +2673,11 @@ struct AgentRuntimeAdapterTests {
         supportsAdditionalMCPConfig: Bool = true
     ) throws -> String {
         let url = directory.appendingPathComponent("copilot")
-        let mcpConfigHelp = supportsAdditionalMCPConfig ? " --additional-mcp-config CONFIG" : ""
         let script = """
         #!/bin/sh
         if [ "$1" = "help" ]; then
           cat <<'HELP'
-        --allow-tool TOOL --available-tools=TOOLS --excluded-tools=TOOLS --output-format=FORMAT --stream=MODE --no-ask-user --effort LEVEL\(mcpConfigHelp)
+        \(fakeCopilotHelpText(supportsAdditionalMCPConfig: supportsAdditionalMCPConfig))
         HELP
           exit 0
         fi
@@ -2680,10 +2692,28 @@ struct AgentRuntimeAdapterTests {
         return url.path
     }
 
+    private static func fakeCopilotHelpText(supportsAdditionalMCPConfig: Bool = true) -> String {
+        let mcpConfigHelp = supportsAdditionalMCPConfig ? " --additional-mcp-config CONFIG" : ""
+        return "--allow-tool TOOL --available-tools=TOOLS --excluded-tools=TOOLS --output-format=FORMAT --stream=MODE --no-ask-user --effort LEVEL\(mcpConfigHelp)"
+    }
+
     private static func argumentValues(after flag: String, in arguments: [String]) -> [String] {
         guard let index = arguments.firstIndex(of: flag) else { return [] }
         let start = arguments.index(after: index)
         guard start < arguments.endIndex else { return [] }
         return Array(arguments[start...].prefix { !$0.hasPrefix("--") })
+    }
+
+    private static func copilotPermissionArguments(in arguments: [String]) -> [String] {
+        guard let flagIndex = arguments.firstIndex(of: "--allow-tool") else { return [] }
+        let endIndex = arguments[flagIndex...].firstIndex(of: "--available-tools") ?? arguments.endIndex
+        return Array(arguments[flagIndex..<endIndex])
+    }
+
+    private static func copilotRuntimeSupportToolPermissions() -> [String] {
+        CopilotPolicyAdapter().runtimeSupportTools.compactMap { descriptor in
+            let permission = descriptor.providerNativePermission?.trimmingCharacters(in: .whitespacesAndNewlines)
+            return permission?.isEmpty == false ? permission : nil
+        }.sorted()
     }
 }

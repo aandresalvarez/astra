@@ -44,7 +44,7 @@ enum CursorCLIRuntime {
         taskEnvironment: [String: String],
         pathPrefix: [String] = [],
         includeAstraToolsPath: Bool = false,
-        permissionArguments: [String]? = nil
+        permissionArguments: [String]
     ) -> CursorCLICommandPlan {
         let providerModel = resolvedModelName(model)
         var args = [
@@ -54,7 +54,7 @@ enum CursorCLIRuntime {
             "--workspace", workspacePath,
             "--model", providerModel
         ]
-        args += permissionArguments ?? ProviderPolicyRender.cursorLaunchPermissionArguments(policy: permissionPolicy)
+        args += permissionArguments
         args.append(prompt)
 
         var extraVars: [String: String] = [

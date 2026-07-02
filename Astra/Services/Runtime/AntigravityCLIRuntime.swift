@@ -136,7 +136,7 @@ enum AntigravityCLIRuntime {
         pathPrefix: [String] = [],
         includeAstraToolsPath: Bool = false,
         diagnosticLogPath: String? = nil,
-        permissionArguments: [String]? = nil
+        permissionArguments: [String]
     ) -> AntigravityCLICommandPlan {
         var args = [
             "--print",
@@ -153,7 +153,7 @@ enum AntigravityCLIRuntime {
         for path in uniquePaths {
             args += ["--add-dir", path]
         }
-        args += permissionArguments ?? ProviderPolicyRender.antigravityLaunchPermissionArguments(policy: permissionPolicy)
+        args += permissionArguments
 
         var extraVars: [String: String] = [
             "NO_COLOR": "1",

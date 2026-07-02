@@ -207,7 +207,7 @@ enum CopilotCLIRuntime {
         reasoningEffort: String? = nil,
         disableCustomInstructions: Bool = false,
         allowAllPathsForSSHConnections: Bool = false,
-        permissionArguments: [String]? = nil
+        permissionArguments: [String]
     ) -> CopilotCLICommandPlan {
         var args = ["--prompt", prompt, "--model", model, "--no-color", "--log-level", "error"]
         if capabilities.supportsReasoningEffort,
@@ -253,14 +253,7 @@ enum CopilotCLIRuntime {
             args += ["--add-dir", path]
         }
 
-        args += permissionArguments ?? ProviderPolicyRender.copilotLaunchPermissionArguments(
-            policy: permissionPolicy,
-            allowedTools: allowedTools,
-            capabilities: capabilities,
-            localToolCommands: localToolCommands,
-            runtimeSupportTools: runtimeSupportTools,
-            allowAllPathsForSSHConnections: allowAllPathsForSSHConnections
-        )
+        args += permissionArguments
         args += copilotToolSurfaceArguments(
             policy: permissionPolicy,
             allowedTools: allowedTools,

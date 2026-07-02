@@ -41,7 +41,7 @@ enum OpenCodeCLIRuntime {
         taskEnvironment: [String: String],
         pathPrefix: [String] = [],
         includeAstraToolsPath: Bool = false,
-        permissionArguments: [String]? = nil
+        permissionArguments: [String]
     ) -> OpenCodeCLICommandPlan {
         let providerModel = resolvedModelName(model)
         let launchDirectory = executionDirectory(
@@ -54,7 +54,7 @@ enum OpenCodeCLIRuntime {
             "--dir", launchDirectory,
             "--model", providerModel
         ]
-        args += permissionArguments ?? ProviderPolicyRender.openCodeLaunchPermissionArguments(policy: permissionPolicy)
+        args += permissionArguments
         args.append(prompt)
 
         var extraVars: [String: String] = [

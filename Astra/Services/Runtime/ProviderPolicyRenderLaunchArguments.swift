@@ -178,4 +178,18 @@ extension ProviderPolicyRender {
         }
         return args
     }
+
+    static func copilotUtilityLaunchPermissionArguments(
+        allowedTools: [String],
+        capabilities: CopilotCLICapabilities
+    ) -> [String] {
+        copilotLaunchPermissionArguments(
+            policy: .restricted,
+            allowedTools: allowedTools,
+            capabilities: capabilities,
+            localToolCommands: [],
+            runtimeSupportTools: [],
+            allowAllPathsForSSHConnections: false
+        )
+    }
 }

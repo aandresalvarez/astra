@@ -2076,14 +2076,9 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
         toolMode: AgentUtilityToolMode
     ) async -> AgentUtilityRunResult {
         let configuredPath = configuration.executablePath(for: id)
-        let executable = configuredPath.isEmpty
-            ? CopilotCLIRuntime.detectPath()
-            : configuredPath
-        let copilotHome = configuration.homeDirectory(for: id).isEmpty
-            ? CopilotCLIRuntime.channelHome()
-            : configuration.homeDirectory(for: id)
-        // Share terminal auth (~/.copilot) like the main launch path so Copilot
-        // helper prompts stay authenticated after a plain `copilot` /login.
+        let executable = configuredPath.isEmpty ? CopilotCLIRuntime.detectPath() : configuredPath
+        let configuredHome = configuration.homeDirectory(for: id)
+        let copilotHome = configuredHome.isEmpty ? CopilotCLIRuntime.channelHome() : configuredHome
         let userHome = FileManager.default.homeDirectoryForCurrentUser.path
         let copilotStateHome = CopilotCLIRuntime.defaultHome(userHome: userHome)
         let capabilities = CopilotCLIRuntime.capabilities(executablePath: executable)
@@ -2102,7 +2097,11 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             copilotHome: copilotHome,
             copilotStateHome: copilotStateHome,
             userHome: userHome,
-            disableCustomInstructions: true
+            disableCustomInstructions: true,
+            permissionArguments: ProviderPolicyRender.copilotUtilityLaunchPermissionArguments(
+                allowedTools: allowedTools,
+                capabilities: capabilities
+            )
         )
 
         try? FileManager.default.createDirectory(atPath: copilotHome, withIntermediateDirectories: true)
@@ -2785,7 +2784,8 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
             permissionPolicy: .restricted,
             timeoutSeconds: configuration.timeoutSeconds,
             taskEnvironment: [:],
-            providerHomeDirectory: configuration.homeDirectory(for: id)
+            providerHomeDirectory: configuration.homeDirectory(for: id),
+            permissionArguments: ProviderPolicyRender.antigravityLaunchPermissionArguments(policy: .restricted)
         )
 
         let process = Process()
