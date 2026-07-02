@@ -1328,6 +1328,8 @@ struct ArchitectureFitnessTests {
             ".github/CODEOWNERS",
             ".githooks/pre-commit",
             ".githooks/pre-push",
+            "script/focused_test_targets.sh",
+            "script/focused_test_targets_tests.sh",
             "script/precommit.sh",
             "script/prepush.sh",
             "script/configure_branch_protection.sh"
@@ -1349,6 +1351,7 @@ struct ArchitectureFitnessTests {
 
         let preCommitHook = try fileText(".githooks/pre-commit", root: root)
         let prePushHook = try fileText(".githooks/pre-push", root: root)
+        let focusedTargetScript = try fileText("script/focused_test_targets.sh", root: root)
         let preCommitScript = try fileText("script/precommit.sh", root: root)
         let prePushScript = try fileText("script/prepush.sh", root: root)
         let branchProtectionScript = try fileText("script/configure_branch_protection.sh", root: root)
@@ -1358,10 +1361,22 @@ struct ArchitectureFitnessTests {
         #expect(preCommitHook.contains("script/precommit.sh"))
         #expect(prePushHook.contains("script/prepush.sh"))
         #expect(preCommitScript.contains("swift test --filter ArchitectureFitnessTests"))
+        #expect(preCommitScript.contains("script/focused_test_targets.sh"))
+        #expect(preCommitScript.contains("script/focused_test_targets_tests.sh"))
+        #expect(preCommitScript.contains(#"swift test --filter "$target""#))
+        #expect(preCommitScript.contains(#"${#changed_files[@]} > 0"#))
         #expect(preCommitScript.contains("git diff --cached --check"))
         #expect(branchProtectionScript.contains(#""enforce_admins": false"#))
+        #expect(focusedTargetScript.contains("Tools/MCPGatewaySupport"))
+        #expect(focusedTargetScript.contains("MCPGatewaySupportTests"))
+        #expect(focusedTargetScript.contains("Tools/MailToolSupport"))
+        #expect(focusedTargetScript.contains("MailToolSupportTests"))
+        #expect(prePushScript.contains("script/focused_test_targets.sh"))
+        #expect(prePushScript.contains("script/focused_test_targets_tests.sh"))
         #expect(prePushScript.contains("FOCUSED_SWIFT_TEST_FILTER="))
-        #expect(prePushScript.components(separatedBy: "run swift test --filter").count == 2)
+        #expect(prePushScript.components(separatedBy: "run swift test --filter").count == 3)
+        #expect(prePushScript.contains(#"swift test --filter "$target""#))
+        #expect(prePushScript.contains(#"${#changed_files[@]} > 0"#))
         #expect(prePushScript.contains("ArchitectureFitnessTests"))
         #expect(prePushScript.contains("RuntimeReadinessServiceTests"))
         #expect(prePushScript.contains("WorkspacePersistenceTests"))
@@ -1371,8 +1386,14 @@ struct ArchitectureFitnessTests {
         #expect(prePushScript.contains(#""${range}...HEAD""#))
         #expect(prePushScript.contains("origin/main...HEAD"))
         #expect(prePushScript.contains("git diff-tree --check --no-commit-id --root -r HEAD"))
+        #expect(prePushScript.contains("changed_paths"))
+        #expect(ciWorkflow.contains("actions/cache@v4"))
         #expect(ciWorkflow.contains("script/prepush.sh"))
         #expect(ciWorkflow.contains("Focused Swift tests"))
+        #expect(ciWorkflow.contains("Full Swift test suite"))
+        #expect(ciWorkflow.contains("workflow_dispatch:"))
+        #expect(ciWorkflow.contains("schedule:"))
+        #expect(ciWorkflow.contains("swift test"))
         #expect(ciWorkflow.contains("fetch-depth: 0"))
         #expect(ciWorkflow.range(of: #"runs-on:\s+macos[-A-Za-z0-9_.]*"#, options: .regularExpression) != nil)
         #expect(ciWorkflow.contains("git diff --check"))
