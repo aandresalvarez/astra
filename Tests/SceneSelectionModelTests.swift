@@ -132,6 +132,83 @@ struct SceneSelectionModelTests {
         #expect(model.activeSurface == .appComposer(workspace.id))
     }
 
+    @Test("Passive workspace restoration preserves active app composer for the same workspace")
+    func passiveRestorePreservesAppComposerForSameWorkspace() {
+        let workspace = makeWorkspace(name: "Studio")
+        let model = SceneSelectionModel()
+        let coordinator = ContentWorkspaceSelectionCoordinator(
+            selectedTask: nil,
+            selectedWorkspace: workspace,
+            isComposingTask: false
+        )
+
+        model.composeApp(workspace: workspace)
+        let result = model.apply(coordinator.restore(workspace: workspace))
+
+        #expect(!result.clearedWorkspaceAppSurface)
+        #expect(!result.cancelledWorkspaceAppComposer)
+        #expect(model.isComposingWorkspaceApp)
+        #expect(model.activeSurface == .appComposer(workspace.id))
+    }
+
+    @Test("Passive workspace restoration clears app composer when the workspace no longer matches")
+    func passiveRestoreClearsAppComposerForDifferentWorkspace() {
+        let original = makeWorkspace(name: "Original")
+        let restored = makeWorkspace(name: "Restored")
+        let model = SceneSelectionModel()
+        let coordinator = ContentWorkspaceSelectionCoordinator(
+            selectedTask: nil,
+            selectedWorkspace: original,
+            isComposingTask: false
+        )
+
+        model.composeApp(workspace: original)
+        let result = model.apply(coordinator.restore(workspace: restored))
+
+        #expect(result.clearedWorkspaceAppSurface)
+        #expect(result.cancelledWorkspaceAppComposer)
+        #expect(!model.isComposingWorkspaceApp)
+        #expect(model.activeSurface == .workspace(restored.id))
+    }
+
+    @Test("Passive workspace restoration preserves matching app detail")
+    func passiveRestorePreservesMatchingAppDetail() {
+        let workspace = makeWorkspace(name: "Apps")
+        let app = makeApp(workspace: workspace)
+        let model = SceneSelectionModel()
+        let coordinator = ContentWorkspaceSelectionCoordinator(
+            selectedTask: nil,
+            selectedWorkspace: workspace,
+            isComposingTask: false
+        )
+
+        model.openApp(app, workspace: workspace)
+        let result = model.apply(coordinator.restore(workspace: workspace))
+
+        #expect(!result.clearedWorkspaceAppSurface)
+        #expect(model.selectedWorkspaceApp?.id == app.id)
+        #expect(model.activeSurface == .workspaceApp(app.id))
+    }
+
+    @Test("Explicit workspace open clears matching app detail")
+    func explicitWorkspaceOpenClearsMatchingAppDetail() {
+        let workspace = makeWorkspace(name: "Apps")
+        let app = makeApp(workspace: workspace)
+        let model = SceneSelectionModel()
+        let coordinator = ContentWorkspaceSelectionCoordinator(
+            selectedTask: nil,
+            selectedWorkspace: workspace,
+            isComposingTask: false
+        )
+
+        model.openApp(app, workspace: workspace)
+        let result = model.apply(coordinator.open(workspace: workspace))
+
+        #expect(result.clearedWorkspaceAppSurface)
+        #expect(model.selectedWorkspaceApp == nil)
+        #expect(model.activeSurface == .workspace(workspace.id))
+    }
+
     @Test("Applying workspace restoration can clear all selection when no workspace remains")
     func restoreCanClearWorkspaceSelection() {
         let workspace = makeWorkspace(name: "Workspace")

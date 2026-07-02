@@ -2256,14 +2256,15 @@ struct ContentView: View {
 
     private func applyWorkspaceSelectionUpdate(_ update: ContentWorkspaceSelectionUpdate) {
         let previousTaskID = selectedTask?.id
-        let wasComposingWorkspaceApp = isComposingWorkspaceApp
         updateCanvasForTaskSelectionChange(previousTaskID: previousTaskID, nextTaskID: update.selectedTask?.id)
-        sceneSelection.apply(update)
+        let sceneUpdate = sceneSelection.apply(update)
         if previousTaskID != update.selectedTask?.id {
             handleSelectedTaskIdentityChanged(to: update.selectedTask)
         }
         markTaskRead(update.selectedTask)
-        clearWorkspaceAppSurfaceSideEffects(wasComposing: wasComposingWorkspaceApp)
+        if sceneUpdate.clearedWorkspaceAppSurface {
+            clearWorkspaceAppSurfaceSideEffects(wasComposing: sceneUpdate.cancelledWorkspaceAppComposer)
+        }
         if update.shouldPresentRightRail {
             presentRightRail(
                 rememberShelfState: update.shouldRememberShelfStateWhenPresentingRightRail

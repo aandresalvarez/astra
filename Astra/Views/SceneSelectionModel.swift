@@ -10,6 +10,11 @@ enum SceneSelectionSurface: Equatable {
     case appComposer(UUID?)
 }
 
+struct SceneSelectionApplyResult: Equatable {
+    let clearedWorkspaceAppSurface: Bool
+    let cancelledWorkspaceAppComposer: Bool
+}
+
 /// The single mutable owner for ContentView's scene selection tuple.
 ///
 /// Pure route restoration stays in `ContentSceneState`; this model owns the
@@ -116,17 +121,46 @@ final class SceneSelectionModel: ObservableObject {
         isComposingWorkspaceApp = false
     }
 
-    func apply(_ update: ContentWorkspaceSelectionUpdate) {
+    @discardableResult
+    func apply(_ update: ContentWorkspaceSelectionUpdate) -> SceneSelectionApplyResult {
+        let previousSelectedWorkspaceApp = selectedWorkspaceApp
+        let wasComposingWorkspaceApp = isComposingWorkspaceApp
+        let preserveWorkspaceAppSurface = shouldPreserveWorkspaceAppSurface(for: update)
+
         selectedWorkspace = update.selectedWorkspace
         selectedTask = update.selectedTask
-        selectedWorkspaceApp = nil
         isComposingTask = update.isComposingTask
-        isComposingWorkspaceApp = false
+        if !preserveWorkspaceAppSurface {
+            selectedWorkspaceApp = nil
+            isComposingWorkspaceApp = false
+        }
+
+        return SceneSelectionApplyResult(
+            clearedWorkspaceAppSurface: (previousSelectedWorkspaceApp != nil || wasComposingWorkspaceApp)
+                && selectedWorkspaceApp == nil
+                && !isComposingWorkspaceApp,
+            cancelledWorkspaceAppComposer: wasComposingWorkspaceApp && !isComposingWorkspaceApp
+        )
     }
 
     private func clearTransientSurfaces() {
         selectedWorkspaceApp = nil
         isComposingTask = false
         isComposingWorkspaceApp = false
+    }
+
+    private func shouldPreserveWorkspaceAppSurface(for update: ContentWorkspaceSelectionUpdate) -> Bool {
+        guard update.workspaceAppSurfacePolicy == .preserveIfWorkspaceMatches,
+              update.selectedTask == nil,
+              let workspaceID = update.selectedWorkspace?.id else {
+            return false
+        }
+        if isComposingWorkspaceApp {
+            return selectedWorkspace?.id == workspaceID
+        }
+        if let selectedWorkspaceApp {
+            return selectedWorkspaceApp.workspaceID == workspaceID
+        }
+        return false
     }
 }
