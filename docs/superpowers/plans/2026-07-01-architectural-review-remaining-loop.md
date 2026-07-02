@@ -20,7 +20,7 @@ For each remaining PR:
 ## Remaining Queue
 
 - [x] PR 5: Bound and Relocate the Workspace JSON Mirror
-- [ ] PR 6: Derive Launch Arguments from `ProviderPolicyRender`
+- [x] PR 6: Derive Launch Arguments from `ProviderPolicyRender`
 - [ ] PR 7: Introduce `TaskStateMachine`
 - [ ] PR 8: Introduce `SceneSelectionModel`
 - [ ] PR 9: Fix CI and Test Target Feedback Loops
@@ -55,3 +55,13 @@ For each remaining PR:
 - Code quality review: passed after fix loop.
 - Coordinator merge: completed.
 - Focused worker validation: `WorkspacePersistenceTests`, `WorkspaceStoreRepairTests`, `git diff --check`, `script/precommit.sh`.
+
+### PR 6
+
+- Branch: `alvaro/arch-review-pr6-policy-render`
+- Head: `a07c03f789889214d45f475781706a82f10744da`
+- Spec review: passed after the Copilot Docker Auto render/launch consistency loop.
+- Code quality review: passed after fixing broad Copilot flags and stale wildcard render evidence.
+- Coordinator merge: completed.
+- Focused worker validation: `AgentRuntimeAdapterTests`, `AgentPolicyTests`, `RunPermissionManifestTests`, `AgentRuntimeExecutionPolicyTests`, `ArchitectureFitnessTests`, `CopilotRuntimeTests`, `ExecutionSandboxRunnerTests`, `git diff --check`, `script/precommit.sh`.
+- Coordinator validation: `swift test --filter AgentRuntimeAdapterTests/copilotDockerAutoPreflightManifestPersistsRestrictedLaunchFlags` passed; `swift test --filter AgentRuntimeAdapterTests --filter AgentPolicyTests --filter RunPermissionManifestTests --filter AgentRuntimeExecutionPolicyTests --filter ArchitectureFitnessTests` passed.
