@@ -225,6 +225,40 @@ struct ArchitectureFitnessTests {
         #expect(matches.isEmpty, "New raw stop reason assignments should stay behind runtime/completion/persistence boundaries: \(matches)")
     }
 
+    @Test("High-risk SwiftData saves go through persistence coordinator")
+    func highRiskSwiftDataSavesGoThroughPersistenceCoordinator() throws {
+        let root = try repositoryRoot()
+        let checkedFiles = [
+            "Astra/Services/WorkspaceApps/WorkspaceAppActionExecutor.swift",
+            "Astra/Services/Runtime/AgentRuntimeLaunchPreflight.swift",
+            "Astra/Services/Runtime/AgentInteractivePermissionChannel.swift",
+            "Astra/Views/ContentView.swift",
+            "Astra/Views/TaskMainView.swift"
+        ]
+
+        let matches = try checkedFiles.flatMap { relativePath -> [String] in
+            let text = try fileText(relativePath, root: root)
+            return text
+                .split(separator: "\n", omittingEmptySubsequences: false)
+                .enumerated()
+                .compactMap { index, line -> String? in
+                    let value = String(line)
+                    guard value.range(
+                        of: #"\bmodelContext\s*\.\s*save\s*\("#,
+                        options: .regularExpression
+                    ) != nil else {
+                        return nil
+                    }
+                    return "\(relativePath):\(index + 1): \(value.trimmingCharacters(in: .whitespaces))"
+                }
+        }
+
+        #expect(
+            matches.isEmpty,
+            "Route SwiftData saves in app/runtime/view edges through WorkspacePersistenceCoordinator: \(matches)"
+        )
+    }
+
     @Test("Production task status writes go through TaskStateMachine")
     func productionTaskStatusWritesGoThroughTaskStateMachine() throws {
         let root = try repositoryRoot()

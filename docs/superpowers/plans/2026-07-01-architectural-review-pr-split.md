@@ -900,6 +900,16 @@ script/precommit.sh
 script/prepush.sh
 ```
 
+**Implementation evidence (2026-07-02):**
+
+- Added a targeted architecture fitness guardrail that fails if the high-risk Workspace Apps, runtime preflight, live permission, ContentView, or TaskMainView edges reintroduce raw `modelContext.save()` calls.
+- Added `WorkspacePersistenceCoordinator.saveAndAutoExportOrThrow(...)` so callers that previously propagated SwiftData save failures still throw while successful saves continue through the workspace auto-export boundary.
+- Migrated `WorkspaceAppActionExecutor` run completion, failure, waiting, approval, async read, and async write persistence through `WorkspacePersistenceCoordinator`, threading `Workspace` into the waiting helpers so suspended app runs still export through the owning workspace.
+- Migrated launch preflight and live interactive permission-channel saves through the coordinator, preserving their best-effort save behavior while restoring the persistence/export side effects.
+- Migrated `ContentView` and `TaskMainView` raw saves through the coordinator, removing existing double-save patterns where a raw save was immediately followed by `saveAndAutoExport`.
+- Red/green evidence: `swift test --filter ArchitectureFitnessTests/highRiskSwiftDataSavesGoThroughPersistenceCoordinator` failed before migration with 34 raw-save violations and passed after the migration.
+- Validation passed: `swift test --filter ArchitectureFitnessTests`; `swift test --filter WorkspacePersistenceTests`; `swift test --filter WorkspaceAppActionExecutorTests`; `swift test --filter TaskRunLifecycleServiceTests`; `swift test --filter HeadlessChatPermissionScenarioTests`; `swift test`; `git diff --check`; `script/precommit.sh`; `script/prepush.sh`.
+
 ## PR 20: Split Capability Resolution into Authorization and Relevance
 
 **Root cause:** `TaskCapabilityResolver` mixes enablement, approval, keyword relevance, runtime projection, and special cases. Launch may resolve capabilities multiple times against mutable SwiftData state.

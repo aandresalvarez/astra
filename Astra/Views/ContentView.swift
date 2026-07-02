@@ -963,7 +963,10 @@ struct ContentView: View {
                 if let ws = renamingWorkspace, !renameText.isEmpty {
                     ws.name = renameText
                     do {
-                        try modelContext.save()
+                        try WorkspacePersistenceCoordinator.saveAndAutoExportOrThrow(
+                            workspace: ws,
+                            modelContext: modelContext
+                        )
                     } catch {
                         AppLogger.audit(.workspaceExported, category: "UI", fields: [
                             "operation": "rename_workspace",
@@ -2169,7 +2172,10 @@ struct ContentView: View {
         }
 
         do {
-            try modelContext.save()
+            try WorkspacePersistenceCoordinator.saveAndAutoExportOrThrow(
+                workspace: nil,
+                modelContext: modelContext
+            )
         } catch {
             AppLogger.audit(.appUpdateBlocked, category: "Updater", fields: [
                 "reason": "swiftdata_save_failed",
@@ -2341,14 +2347,16 @@ struct ContentView: View {
         guard let task, task.unreadAt != nil else { return }
         task.markRead()
         do {
-            try modelContext.save()
+            try WorkspacePersistenceCoordinator.saveAndAutoExportOrThrow(
+                workspace: task.workspace,
+                modelContext: modelContext
+            )
         } catch {
             AppLogger.audit(.taskFailed, category: "UI", taskID: task.id, fields: [
                 "operation": "mark_task_read",
                 "error_type": String(describing: type(of: error))
             ], level: .error)
         }
-        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
     }
 
     private func runQueue() {
@@ -2621,7 +2629,7 @@ struct ContentView: View {
             TaskStateMachine.enqueueFromUITestSeed(task, modelContext: modelContext)
             modelContext.insert(task)
         }
-        try? modelContext.save()
+        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: ws, modelContext: modelContext)
     }
 
     private func applySettings() {

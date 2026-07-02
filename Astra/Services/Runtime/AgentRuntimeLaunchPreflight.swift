@@ -88,7 +88,7 @@ enum AgentRuntimeLaunchPreflight {
                 type: "error",
                 payload: "ASTRA could not create this task's output folder before launching the agent: \(error.localizedDescription)"
             ))
-            try? modelContext.save()
+            WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
             return AgentRuntimeLaunchPreflightResult(
                 status: .taskFolderCreateFailed,
                 phase: phase,
@@ -281,7 +281,7 @@ enum AgentRuntimeLaunchPreflight {
             run: run
         ))
         AppLogger.audit(.workerBlocked, category: "Worker", taskID: task.id, fields: fields, level: .warning, fieldMaxLength: 240)
-        try? modelContext.save()
+        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
         return AgentRuntimeLaunchPreflightResult(
             status: .connectorCredentialApprovalRequired,
             phase: phase,
@@ -384,7 +384,7 @@ enum AgentRuntimeLaunchPreflight {
             ),
             run: run
         ))
-        try? modelContext.save()
+        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
 
         return AgentRuntimeLaunchPreflightResult(
             status: .remoteWorkspacePreflightPassed,
@@ -600,7 +600,7 @@ enum AgentRuntimeLaunchPreflight {
         task.executionEnvironmentSnapshotJSON = json
         task.updatedAt = Date()
         run.executionEnvironmentSnapshotJSON = json
-        try? modelContext.save()
+        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
 
         AppLogger.audit(.executionEnvironmentChanged, category: "Worker", taskID: task.id, fields: [
             "result": "auto_projected_required_docker_credentials",
@@ -1075,6 +1075,6 @@ enum AgentRuntimeLaunchPreflight {
         AppLogger.audit(.taskFailed, category: "Worker", taskID: task.id, fields: [
             "reason": reason
         ], level: .error)
-        try? modelContext.save()
+        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
     }
 }

@@ -3592,7 +3592,7 @@ struct TaskMainView: View {
     private func forkTask(from run: TaskRunSnapshot) {
         guard let sourceRun = task.runs.first(where: { $0.id == run.id }) else { return }
         let forked = AgentTask.fork(from: task, upToRun: sourceRun, in: modelContext)
-        try? modelContext.save()
+        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
         onForkTask?(forked)
     }
 
@@ -4733,7 +4733,7 @@ struct TaskMainView: View {
             withAnimation(reduceMotion ? nil : .default) {
                 task.isDone.toggle()
                 task.updatedAt = Date()
-                try? modelContext.save()
+                WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
             }
         }
     }
@@ -4912,7 +4912,7 @@ struct TaskMainView: View {
                             source: "task_composer"
                         )
                         task.updatedAt = Date()
-                        try? modelContext.save()
+                        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
                     },
                     showSecurityGate: true,
                     sshConnections: sshConnections
@@ -5172,8 +5172,8 @@ struct TaskMainView: View {
                     // Force a save so the inverse relationship (task.events) fires
                     // observation immediately — otherwise the bubble can lag behind
                     // the spinner by several seconds.
-                    try? modelContext.save()
                     task.updatedAt = Date()
+                    WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
                     isGeneratingRecap = false
                 case .failure(let error):
                     isGeneratingRecap = false
@@ -5377,7 +5377,6 @@ struct TaskMainView: View {
         TaskPlanService.recordApproved(plan, task: task, modelContext: modelContext)
         showPlanCanvasIfNeeded()
         TaskStateMachine.enqueueApprovedPlanRun(task, modelContext: modelContext)
-        try? modelContext.save()
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
         threadViewModel.refreshSnapshot(for: task)
 
@@ -5456,7 +5455,6 @@ struct TaskMainView: View {
             payload: assistantMessage
         ))
         task.updatedAt = Date()
-        try? modelContext.save()
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
         threadViewModel.refreshSnapshot(for: task)
     }
@@ -5522,7 +5520,7 @@ struct TaskMainView: View {
         let userEvent = TaskEvent(task: task, type: TaskPlanConversationEventTypes.userMessage, payload: msg)
         modelContext.insert(userEvent)
         task.updatedAt = Date()
-        try? modelContext.save()
+        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
         threadViewModel.refreshSnapshot(for: task)
 
         let history = planningConversationHistory(appendingUserMessage: msg)

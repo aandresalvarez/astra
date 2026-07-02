@@ -342,7 +342,7 @@ extension AgentRuntimeWorker {
                         payload: "Auto-approved \(ask.toolName) (inside the active policy envelope).",
                         run: run
                     ))
-                    try? modelContext.save()
+                    WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
                 }
                 return .allow
             case .deny(let reason):
@@ -371,7 +371,7 @@ extension AgentRuntimeWorker {
                         payload: "Auto-denied \(ask.toolName) by ASTRA policy: \(reason)",
                         run: run
                     ))
-                    try? modelContext.save()
+                    WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
                 }
                 // The provider sees the actual policy reason, not "user declined".
                 return .deny(message: "Blocked by ASTRA policy: \(reason)")
@@ -399,7 +399,7 @@ extension AgentRuntimeWorker {
                 )
                 modelContext.insert(event)
                 TaskStateMachine.pauseForRuntimePermission(task, modelContext: modelContext)
-                try? modelContext.save()
+                WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
             }
             let approved = await InFlightPermissionCenter.shared.awaitDecision(
                 taskID: taskID,
@@ -437,7 +437,7 @@ extension AgentRuntimeWorker {
                         : "Live permission for \(ask.toolName) was declined or the run ended; the provider continues without it.",
                     run: run
                 ))
-                try? modelContext.save()
+                WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
             }
             return approved
                 ? .allow

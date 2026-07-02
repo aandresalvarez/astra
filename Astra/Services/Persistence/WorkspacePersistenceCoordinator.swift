@@ -46,6 +46,44 @@ enum WorkspacePersistenceCoordinator {
         return didSave
     }
 
+    static func saveAndAutoExportOrThrow(
+        workspace: Workspace?,
+        modelContext: ModelContext,
+        taskID: UUID? = nil,
+        auditFields: [String: String] = [:]
+    ) throws {
+        do {
+            try modelContext.save()
+            if taskID != nil || !auditFields.isEmpty {
+                var fields = auditFields
+                fields["result"] = "swiftdata_save_succeeded"
+                fields["workspace_id"] = workspace?.id.uuidString ?? "none"
+                AppLogger.audit(.runtimePersistenceSummary, category: "Persistence", taskID: taskID, fields: fields, level: .debug)
+            }
+        } catch {
+            var fields = auditFields
+            fields["result"] = "swiftdata_save_failed"
+            fields["workspace_id"] = workspace?.id.uuidString ?? "none"
+            fields["error_type"] = String(describing: type(of: error))
+            AppLogger.audit(.runtimePersistenceSummary, category: "Persistence", taskID: taskID, fields: fields, level: .error)
+            AppLogger.audit(.workspaceExported, category: "Persistence", fields: [
+                "result": "swiftdata_save_failed",
+                "error_type": String(describing: type(of: error))
+            ], level: .error)
+            throw error
+        }
+
+        guard let workspace else { return }
+        guard !shouldSkipAutoExport() else {
+            AppLogger.audit(.workspaceExported, category: "Persistence", fields: [
+                "result": "skipped",
+                "reason": "launch_flag"
+            ], level: .debug)
+            return
+        }
+        WorkspaceConfigManager.autoExport(workspace: workspace, modelContext: modelContext)
+    }
+
     static func scheduleAutoExport(
         workspace: Workspace?,
         modelContext: ModelContext,

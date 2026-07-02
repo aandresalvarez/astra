@@ -355,21 +355,24 @@ struct WorkspaceAppActionExecutor {
             recorder.completeRun(run, outputSummary: result.outputSummary, modelContext: modelContext)
             app.lastRunAt = Date()
             app.updatedAt = Date()
-            try modelContext.save()
+            try WorkspacePersistenceCoordinator.saveAndAutoExportOrThrow(
+                workspace: workspace,
+                modelContext: modelContext
+            )
             return WorkspaceAppActionExecutionResult(
                 run: run,
                 rows: result.rows,
                 outputSummary: result.outputSummary
             )
         } catch let suspension as WorkspaceAppPipelineSuspension {
-            markWaiting(run: run, suspension: suspension, modelContext: modelContext)
+            markWaiting(run: run, suspension: suspension, workspace: workspace, modelContext: modelContext)
             return WorkspaceAppActionExecutionResult(
                 run: run,
                 rows: [],
                 outputSummary: "Workflow '\(suspension.pipelineActionID)' is waiting on \(suspension.taskIDs.count) task(s)."
             )
         } catch let approval as WorkspaceAppApprovalSuspension {
-            markWaitingForApproval(run: run, suspension: approval, modelContext: modelContext)
+            markWaitingForApproval(run: run, suspension: approval, workspace: workspace, modelContext: modelContext)
             return WorkspaceAppActionExecutionResult(
                 run: run,
                 rows: [],
@@ -382,7 +385,7 @@ struct WorkspaceAppActionExecutor {
                 blocked: isPermissionError(error),
                 modelContext: modelContext
             )
-            try? modelContext.save()
+            WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
             throw error
         }
     }
@@ -427,7 +430,7 @@ struct WorkspaceAppActionExecutor {
                 ],
                 modelContext: modelContext
             )
-            try? modelContext.save()
+            WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
             return WorkspaceAppActionExecutionResult(
                 run: run,
                 rows: [],
@@ -477,21 +480,24 @@ struct WorkspaceAppActionExecutor {
             recorder.completeRun(run, outputSummary: result.outputSummary, modelContext: modelContext)
             app.lastRunAt = Date()
             app.updatedAt = Date()
-            try modelContext.save()
+            try WorkspacePersistenceCoordinator.saveAndAutoExportOrThrow(
+                workspace: workspace,
+                modelContext: modelContext
+            )
             return WorkspaceAppActionExecutionResult(
                 run: run,
                 rows: result.rows,
                 outputSummary: result.outputSummary
             )
         } catch let suspension as WorkspaceAppPipelineSuspension {
-            markWaiting(run: run, suspension: suspension, modelContext: modelContext)
+            markWaiting(run: run, suspension: suspension, workspace: workspace, modelContext: modelContext)
             return WorkspaceAppActionExecutionResult(
                 run: run,
                 rows: [],
                 outputSummary: "Workflow '\(suspension.pipelineActionID)' is waiting on \(suspension.taskIDs.count) task(s)."
             )
         } catch let approval as WorkspaceAppApprovalSuspension {
-            markWaitingForApproval(run: run, suspension: approval, modelContext: modelContext)
+            markWaitingForApproval(run: run, suspension: approval, workspace: workspace, modelContext: modelContext)
             return WorkspaceAppActionExecutionResult(
                 run: run,
                 rows: [],
@@ -499,14 +505,16 @@ struct WorkspaceAppActionExecutor {
             )
         } catch {
             recorder.failRun(run, error: error, blocked: isPermissionError(error), modelContext: modelContext)
-            try? modelContext.save()
+            WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
             throw error
         }
     }
 
+    @MainActor
     private func markWaiting(
         run: WorkspaceAppRun,
         suspension: WorkspaceAppPipelineSuspension,
+        workspace: Workspace,
         modelContext: ModelContext
     ) {
         run.status = .waiting
@@ -525,12 +533,14 @@ struct WorkspaceAppActionExecutor {
             ],
             modelContext: modelContext
         )
-        try? modelContext.save()
+        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
     }
 
+    @MainActor
     private func markWaitingForApproval(
         run: WorkspaceAppRun,
         suspension: WorkspaceAppApprovalSuspension,
+        workspace: Workspace,
         modelContext: ModelContext
     ) {
         run.status = .waiting
@@ -549,7 +559,7 @@ struct WorkspaceAppActionExecutor {
             ],
             modelContext: modelContext
         )
-        try? modelContext.save()
+        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
     }
 
     /// Resume a run suspended on a human-approval gate: on approve, re-run the pipeline from the
@@ -586,7 +596,7 @@ struct WorkspaceAppActionExecutor {
             run.completedAt = Date()
             run.errorMessage = "Approval rejected for '\(gateID)'."
             run.pendingActionID = nil
-            try? modelContext.save()
+            WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
             return WorkspaceAppActionExecutionResult(
                 run: run, rows: [],
                 outputSummary: "Workflow '\(pipelineID)' rejected at approval gate '\(gateID)'."
@@ -631,23 +641,26 @@ struct WorkspaceAppActionExecutor {
             recorder.completeRun(run, outputSummary: result.outputSummary, modelContext: modelContext)
             app.lastRunAt = Date()
             app.updatedAt = Date()
-            try modelContext.save()
+            try WorkspacePersistenceCoordinator.saveAndAutoExportOrThrow(
+                workspace: workspace,
+                modelContext: modelContext
+            )
             return WorkspaceAppActionExecutionResult(run: run, rows: result.rows, outputSummary: result.outputSummary)
         } catch let suspension as WorkspaceAppPipelineSuspension {
-            markWaiting(run: run, suspension: suspension, modelContext: modelContext)
+            markWaiting(run: run, suspension: suspension, workspace: workspace, modelContext: modelContext)
             return WorkspaceAppActionExecutionResult(
                 run: run, rows: [],
                 outputSummary: "Workflow '\(suspension.pipelineActionID)' is waiting on \(suspension.taskIDs.count) task(s)."
             )
         } catch let approval as WorkspaceAppApprovalSuspension {
-            markWaitingForApproval(run: run, suspension: approval, modelContext: modelContext)
+            markWaitingForApproval(run: run, suspension: approval, workspace: workspace, modelContext: modelContext)
             return WorkspaceAppActionExecutionResult(
                 run: run, rows: [],
                 outputSummary: "Workflow '\(approval.pipelineActionID)' is waiting for approval of '\(approval.gateActionID)'."
             )
         } catch {
             recorder.failRun(run, error: error, blocked: isPermissionError(error), modelContext: modelContext)
-            try? modelContext.save()
+            WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
             throw error
         }
     }
@@ -745,11 +758,11 @@ struct WorkspaceAppActionExecutor {
             recorder.completeRun(run, outputSummary: result.outputSummary, modelContext: modelContext)
             app.lastRunAt = Date()
             app.updatedAt = Date()
-            try? modelContext.save()
+            WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
             return WorkspaceAppActionExecutionResult(run: run, rows: result.rows, outputSummary: result.outputSummary)
         } catch {
             recorder.failRun(run, error: error, blocked: isPermissionError(error), modelContext: modelContext)
-            try? modelContext.save()
+            WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
             throw error
         }
     }
@@ -1375,11 +1388,11 @@ struct WorkspaceAppActionExecutor {
             recorder.completeRun(run, outputSummary: resolved.outputSummary, modelContext: modelContext)
             app.lastRunAt = Date()
             app.updatedAt = Date()
-            try? modelContext.save()
+            WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
             return WorkspaceAppActionExecutionResult(run: run, rows: resolved.rows, outputSummary: resolved.outputSummary)
         } catch {
             recorder.failRun(run, error: error, blocked: isPermissionError(error), modelContext: modelContext)
-            try? modelContext.save()
+            WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
             throw error
         }
     }
