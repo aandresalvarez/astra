@@ -401,36 +401,28 @@ extension HeadlessChatScenarioTests {
         defer { harness.cleanup() }
 
         let countFile = harness.rootURL.appendingPathComponent("review-contract-count.txt")
+        // Validation `.command` assertions are policy-gated to workspace-relative
+        // paths (ValidationCommandPolicy.fileTestPathIsWorkspaceRelative rejects
+        // any path starting with "/") so a plan can't assert against arbitrary
+        // filesystem locations outside its sandbox. The proof file therefore has
+        // to live under the task's workspace, not the harness's outer root.
+        let proofURL = harness.workspaceURL.appendingPathComponent("final-proof.txt")
         let plan = TaskPlanPayload(
             title: "Two step proof plan",
             goal: "Build proof across multiple approvals",
             steps: [
                 TaskPlanPayloadStep(id: "step-1", title: "Prepare proof", likelyTools: ["Write"]),
-                TaskPlanPayloadStep(
-                    id: "step-2",
-                    title: "Finish proof",
-                    likelyTools: ["Write"],
-                    outputs: [TaskPlanStepOutput(kind: .file, scope: .taskOutput, path: "final-proof.txt")]
-                )
+                TaskPlanPayloadStep(id: "step-2", title: "Finish proof", likelyTools: ["Write"])
             ],
             validationContract: TaskValidationContract(assertions: [
                 TaskValidationAssertion(
                     id: "final-proof",
                     description: "Final proof exists",
-                    method: .artifact,
-                    path: "final-proof.txt"
+                    method: .command,
+                    command: "test -f final-proof.txt"
                 )
             ])
         )
-        let task = harness.makeTask(runtime: .copilotCLI, goal: plan.goal, model: "gpt-5")
-        // `method: .artifact` resolves relative to the task's own output folder
-        // first (`ValidationService.artifactCandidatePaths`), matching where a
-        // real `Write` tool call for a `scope: .taskOutput` step output lands --
-        // mirrors `approvedArtifactPlanValidatesGeneratedFilesWithoutShellComposition`
-        // above, and avoids `ValidationCommandPolicy` rejecting a raw `test -f`
-        // shell assertion on an absolute path (workspace-relative paths only).
-        let taskFolder = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
-        let proofPath = (taskFolder as NSString).appendingPathComponent("final-proof.txt")
         let copilotPath = try harness.writeExecutable(
             named: "copilot",
             script: Self.copilotScript(body: """
@@ -440,13 +432,15 @@ extension HeadlessChatScenarioTests {
             if [ "$count" = "1" ]; then
               printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"ASTRA_EVENT {\\"v\\":1,\\"type\\":\\"plan.step.completed\\",\\"stepID\\":\\"step-1\\",\\"summary\\":\\"Prepared\\"}\\n"}}'
             else
-              printf 'proof\\n' > \(Self.shQuote(proofPath))
+              printf 'proof complete' > \(Self.shQuote(proofURL.path))
               printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"ASTRA_EVENT {\\"v\\":1,\\"type\\":\\"plan.step.completed\\",\\"stepID\\":\\"step-2\\",\\"summary\\":\\"Finished\\"}\\n"}}'
             fi
             printf '%s\\n' '{"type":"usage","usage":{"input_tokens":2,"output_tokens":3},"duration_ms":11,"turns":1}'
             exit 0
             """)
         )
+
+        let task = harness.makeTask(runtime: .copilotCLI, goal: plan.goal, model: "gpt-5")
         TaskPlanService.recordCreated(plan, task: task, modelContext: harness.context)
         TaskPlanService.recordApproved(plan, task: task, modelContext: harness.context)
         let worker = harness.makeWorker(runtime: .copilotCLI, executablePath: copilotPath)

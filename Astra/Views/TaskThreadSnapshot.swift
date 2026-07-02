@@ -1074,6 +1074,59 @@ struct TaskThreadSnapshotTrigger: Equatable {
     }
 }
 
+/// Cheap, task-based liveness check used to gate how often the O(event count)
+/// `TaskThreadSnapshotTrigger` gets rebuilt (see `TaskThreadChangeObserver` in
+/// TaskMainView.swift), without needing to build the trigger itself just to find
+/// out. Reads directly off `task`/`task.runs` (O(run count), not O(event count))
+/// instead of via a constructed trigger.
+///
+/// An earlier version tried to make the trigger's `visibleEventCount` itself O(1)
+/// amortized via an incremental scan over `task.events`, trusting that new events
+/// only ever land at the tail. That assumption doesn't hold: `AgentEventRecorder`
+/// inserts new `TaskEvent`s through the model context rather than appending to
+/// `task.events` directly, and SwiftData doesn't guarantee that relationship
+/// array's ordering, so an incremental scan (even with a boundary-identity check)
+/// could silently miss a new event inserted ahead of the previously-scanned
+/// region. Rather than chase a provably-correct-but-intricate incremental scheme,
+/// this keeps `visibleEventCount` a plain, always-correct full scan and instead
+/// bounds how often it runs: `TaskThreadChangeObserver` polls at
+/// `livePollIntervalNanoseconds` while `isLive` is true instead of rebuilding the trigger on
+/// every single SwiftData-observed mutation.
+///
+/// Deliberately narrower than `TaskThreadViewModel.refreshSnapshot`'s inline
+/// liveness check (`status == .running/.queued || latestRunStatus == .running`),
+/// which also treats `.queued` as live — that's the right call for deciding
+/// whether the *terminal snapshot cache* applies (a queued task's plan could
+/// still change before its turn), but wrong for deciding whether to *poll*: a
+/// task queued behind another run has no live output or events yet, so polling
+/// it every tick is pure waste until an actual run starts.
+///
+/// Requires *both* `task.status == .running` *and* the latest run's status ==
+/// `.running` — either alone is insufficient:
+/// - `task.status` alone: `sendConversationMessage` can optimistically set
+///   `.running` before `taskQueue.continueSession` has actually acquired a
+///   worker/resource lock (it can sit in `waitForResourceLock` first), so
+///   `task.status == .running` doesn't guarantee any run has started producing
+///   events yet.
+/// - run status alone: `AgentInteractivePermissionChannel` sets
+///   `task.status = .pendingUser` for a permission prompt while leaving
+///   `run.status == .running` until the user decides — the run is still
+///   "open" but nothing is streaming while it waits on the user, so treating
+///   that run status alone as live would poll a large history every tick for
+///   as long as the prompt goes unanswered.
+/// Both conditions together correctly exclude `.queued`, the pre-lock-
+/// acquisition window, and a pending-user permission pause, leaving all of
+/// them on the cheap reactive path
+/// (`TaskThreadChangeObserver.reactiveTriggerWhenNotLive`,
+/// `UsageDashboardView`'s query-driven follow-up) until a run is actually
+/// running.
+enum TaskLiveness {
+    static func isLive(task: AgentTask) -> Bool {
+        task.status == .running
+            && task.runs.max(by: { $0.startedAt < $1.startedAt })?.status == .running
+    }
+}
+
 struct TaskThreadSnapshotCacheKey: Hashable, Sendable {
     let taskID: UUID
     let status: TaskStatus
