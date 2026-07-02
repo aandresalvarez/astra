@@ -67,7 +67,7 @@ struct WorkspaceAppCapabilityReadPipeline {
             manifest: request.manifest,
             dependencyBindings: request.dependencyBindings,
             input: WorkspaceAppSourceResolutionInput(
-                limit: request.input.limit,
+                limit: WorkspaceAppReadPolicy.connectorLimit(request.input.requestedLimit),
                 parameters: request.input.record
             )
         )
@@ -82,7 +82,7 @@ struct WorkspaceAppCapabilityReadPipeline {
             manifest: request.manifest,
             dependencyBindings: request.dependencyBindings,
             input: WorkspaceAppSourceResolutionInput(
-                limit: request.input.limit,
+                limit: WorkspaceAppReadPolicy.connectorLimit(request.input.requestedLimit),
                 parameters: request.input.record
             )
         )

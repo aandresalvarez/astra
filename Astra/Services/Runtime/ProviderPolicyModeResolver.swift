@@ -34,7 +34,7 @@ enum ProviderPolicyModeResolver {
         case .autonomous:
             return .autonomous
         case .locked:
-            return customPolicyNeedsWriteSandbox(policy) ? .restricted : .interactive
+            return .restricted
         case .review, .build, .network:
             return .restricted
         case .custom:

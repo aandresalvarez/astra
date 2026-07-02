@@ -377,8 +377,8 @@ struct CodexCLIRuntimeTests {
         #expect(render.usesBroadProviderPermissions == false)
     }
 
-    @Test("Codex locked policy render stays read only")
-    func codexLockedPolicyRenderStaysReadOnly() {
+    @Test("Codex locked policy render uses restricted provider mode")
+    func codexLockedPolicyRenderUsesRestrictedProviderMode() {
         let render = CodexPolicyAdapter().render(
             policy: .preset(.locked),
             context: PolicyRenderContext(
@@ -395,9 +395,9 @@ struct CodexCLIRuntimeTests {
         )
 
         #expect(render.policyLevel == .locked)
-        #expect(render.permissionMode == .interactive)
-        #expect(render.generatedConfigPreview.contains("--sandbox read-only"))
-        #expect(render.generatedConfigPreview.contains("--sandbox workspace-write") == false)
+        #expect(render.permissionMode == .restricted)
+        #expect(render.generatedConfigPreview.contains("--sandbox workspace-write"))
+        #expect(render.generatedConfigPreview.contains("--sandbox read-only") == false)
     }
 
     @Test("Provider permission mode decodes legacy strings fail closed")

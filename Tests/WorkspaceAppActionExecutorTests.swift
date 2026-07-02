@@ -1965,6 +1965,31 @@ struct WorkspaceAppActionExecutorTests {
         return (root, container, context, workspace, result.app, resolvedManifest)
     }
 
+    static func warehouseBinding(
+        for fixture: (
+            root: URL,
+            container: ModelContainer,
+            context: ModelContext,
+            workspace: Workspace,
+            app: WorkspaceApp,
+            manifest: WorkspaceAppManifest
+        )
+    ) -> WorkspaceAppDependencyBinding {
+        WorkspaceAppDependencyBinding(
+            workspaceID: fixture.workspace.id,
+            appID: fixture.app.id,
+            appLogicalID: fixture.app.logicalID,
+            requirementID: "warehouse",
+            contract: "tabularQuery.read",
+            operations: ["runReadOnlyQuery"],
+            optional: false,
+            status: .mapped,
+            implementationID: "bigquery-read-task-backed",
+            provider: "bigQuery",
+            transport: .taskBacked
+        )
+    }
+
     static func metricExportManifest(permissionMode: WorkspaceAppPermissionMode) -> WorkspaceAppManifest {
         WorkspaceAppManifest(
             app: WorkspaceAppManifestMetadata(

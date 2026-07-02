@@ -234,6 +234,24 @@ struct AgentPolicyTests {
         #expect(!render.diagnostics.contains { $0.id == "claude.ask-checkpoints-brokered" })
     }
 
+    @Test("Read-only locked policy stays in restricted provider mode")
+    func lockedPolicyUsesRestrictedProviderMode() {
+        let policy = AgentPolicy.preset(.locked)
+        let adapter = ClaudePolicyAdapter()
+        let render = adapter.render(
+            policy: policy,
+            context: policyRenderContext(runtime: .claudeCode, features: adapter.supportedFeatures)
+        )
+
+        #expect(ProviderPolicyModeResolver.mode(for: policy, runtime: .claudeCode) == .restricted)
+        #expect(render.permissionMode == .restricted)
+        #expect(render.allowedTools.contains("Read"))
+        #expect(!render.allowedTools.contains("Write"))
+        #expect(render.generatedConfigPreview.contains("Read(*)"))
+        #expect(!render.generatedConfigPreview.contains("Write(*)"))
+        #expect(!render.generatedConfigPreview.contains("Bash(*)"))
+    }
+
     @Test("Copilot autonomous render uses allow-all only when capability supports it")
     func copilotAutonomousRenderUsesAllowAllWhenSupported() {
         let capabilities = CopilotCLICapabilities(helpText: """

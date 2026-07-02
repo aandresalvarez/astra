@@ -77,6 +77,7 @@ struct WorkspaceAppActionInput: Codable, Sendable, Equatable {
     var table: String?
     var record: [String: WorkspaceAppStorageValue]
     var limit: Int
+    var requestedLimit: Int?
     var exportFormat: String?
     var taskTitle: String?
     var taskGoal: String?
@@ -90,7 +91,7 @@ struct WorkspaceAppActionInput: Codable, Sendable, Equatable {
     init(
         table: String? = nil,
         record: [String: WorkspaceAppStorageValue] = [:],
-        limit: Int = 100,
+        limit: Int? = nil,
         exportFormat: String? = nil,
         taskTitle: String? = nil,
         taskGoal: String? = nil,
@@ -101,7 +102,8 @@ struct WorkspaceAppActionInput: Codable, Sendable, Equatable {
     ) {
         self.table = table
         self.record = record
-        self.limit = limit
+        self.limit = limit ?? 100
+        self.requestedLimit = limit
         self.exportFormat = exportFormat
         self.taskTitle = taskTitle
         self.taskGoal = taskGoal
@@ -274,7 +276,7 @@ struct WorkspaceAppRunRecorder {
 // must await. The top-level execute() catches it, persists the resume point on the
 // run, and marks the run `.waiting` (not failed). resume() continues from there
 // once the task completes.
-private struct WorkspaceAppPipelineSuspension: Error {
+struct WorkspaceAppPipelineSuspension: Error {
     // A SET of awaited task ids (one element for a B2 single task.createAndRun step,
     // N for a C1 task.fanOut barrier).
     let taskIDs: [UUID]
@@ -285,7 +287,7 @@ private struct WorkspaceAppPipelineSuspension: Error {
 /// Human-in-the-loop: thrown when a pipeline reaches an un-approved `gate.humanApproval` step, so the
 /// run suspends to `.waiting` pending a HUMAN decision (resumed via `resumeWithApproval`) instead of
 /// failing — the executor analogue of the task suspension above.
-private struct WorkspaceAppApprovalSuspension: Error {
+struct WorkspaceAppApprovalSuspension: Error {
     let pipelineActionID: String
     let gateStepIndex: Int
     let gateActionID: String
@@ -511,7 +513,7 @@ struct WorkspaceAppActionExecutor {
     }
 
     @MainActor
-    private func markWaiting(
+    func markWaiting(
         run: WorkspaceAppRun,
         suspension: WorkspaceAppPipelineSuspension,
         workspace: Workspace,
@@ -537,7 +539,7 @@ struct WorkspaceAppActionExecutor {
     }
 
     @MainActor
-    private func markWaitingForApproval(
+    func markWaitingForApproval(
         run: WorkspaceAppRun,
         suspension: WorkspaceAppApprovalSuspension,
         workspace: Workspace,
@@ -665,14 +667,14 @@ struct WorkspaceAppActionExecutor {
         }
     }
 
-    private func actionSpec(actionID: String, manifest: WorkspaceAppManifest) throws -> WorkspaceAppActionSpec {
+    func actionSpec(actionID: String, manifest: WorkspaceAppManifest) throws -> WorkspaceAppActionSpec {
         guard let action = manifest.actions.first(where: { $0.id == actionID }) else {
             throw WorkspaceAppActionExecutionError.missingAction(actionID)
         }
         return action
     }
 
-    private func enforcePermission(
+    func enforcePermission(
         for action: WorkspaceAppActionSpec,
         app: WorkspaceApp,
         input: WorkspaceAppActionInput,
@@ -715,6 +717,19 @@ struct WorkspaceAppActionExecutor {
                 action: action, app: app, workspace: workspace, manifest: manifest,
                 dependencyBindings: dependencyBindings, input: input, trigger: trigger,
                 surface: bridgeSurface, modelContext: modelContext
+            )
+        }
+        if try workflowContainsCapabilityRead(action: action, manifest: manifest) {
+            return try await executeAsyncWorkflow(
+                action: action,
+                app: app,
+                workspace: workspace,
+                manifest: manifest,
+                dependencyBindings: dependencyBindings,
+                input: input,
+                trigger: trigger,
+                surface: bridgeSurface,
+                modelContext: modelContext
             )
         }
         guard action.type == "capability.write" else {
@@ -767,7 +782,8 @@ struct WorkspaceAppActionExecutor {
         }
     }
 
-    private func execute(
+    @MainActor
+    func execute(
         action: WorkspaceAppActionSpec,
         app: WorkspaceApp,
         workspace: Workspace,
@@ -977,6 +993,7 @@ struct WorkspaceAppActionExecutor {
     // C2: evaluate a predicate against the upstream bound output and run exactly one
     // chosen target step inline (then/else). Synchronous, non-suspending — branch
     // targets are validator-restricted to non-task action types.
+    @MainActor
     private func executeBranch(
         action: WorkspaceAppActionSpec,
         app: WorkspaceApp,
@@ -1487,6 +1504,7 @@ struct WorkspaceAppActionExecutor {
         return (result.rows, result.outputSummary, nil, nil)
     }
 
+    @MainActor
     private func executePipeline(
         action: WorkspaceAppActionSpec,
         app: WorkspaceApp,
@@ -1663,7 +1681,7 @@ struct WorkspaceAppActionExecutor {
         )
     }
 
-    private func hasHumanApprovalGate(
+    func hasHumanApprovalGate(
         before stepIndex: Int,
         in pipeline: WorkspaceAppActionSpec,
         manifest: WorkspaceAppManifest
@@ -1677,7 +1695,7 @@ struct WorkspaceAppActionExecutor {
         return false
     }
 
-    private func pipelineStepHasApproval(
+    func pipelineStepHasApproval(
         step: WorkspaceAppActionSpec,
         index: Int,
         startIndex: Int,
@@ -1690,6 +1708,7 @@ struct WorkspaceAppActionExecutor {
         return (index == startIndex && input.confirmedApproval) || carriesHumanApproval
     }
 
+    @MainActor
     private func executeLoop(
         action: WorkspaceAppActionSpec,
         app: WorkspaceApp,
@@ -1905,7 +1924,7 @@ struct WorkspaceAppActionExecutor {
         return columns
     }
 
-    private func createTask(
+    func createTask(
         action: WorkspaceAppActionSpec,
         app: WorkspaceApp,
         manifest: WorkspaceAppManifest,
@@ -2098,7 +2117,7 @@ struct WorkspaceAppActionExecutor {
         )
     }
 
-    private func inputSummary(_ input: WorkspaceAppActionInput) -> String {
+    func inputSummary(_ input: WorkspaceAppActionInput) -> String {
         let table = input.table ?? "none"
         let taskGoal = input.taskGoal?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? "present" : "none"
         let exportFormat = input.exportFormat ?? "none"
@@ -2117,7 +2136,7 @@ struct WorkspaceAppActionExecutor {
     /// rare false block. `launching` is the number of agent tasks about to be created (1 for a single
     /// task step, N for a fan-out) so the pre-flight accounts for the whole batch. Called at EVERY
     /// queued-agent creation boundary (pipeline task step, fan-out, and the direct dispatcher).
-    private func enforceAppAgentBudget(
+    func enforceAppAgentBudget(
         app: WorkspaceApp,
         run: WorkspaceAppRun,
         launching: Int,
@@ -2176,7 +2195,7 @@ struct WorkspaceAppActionExecutor {
         )
     }
 
-    private func isPermissionError(_ error: Error) -> Bool {
+    func isPermissionError(_ error: Error) -> Bool {
         if case WorkspaceAppActionExecutionError.permissionDenied = error {
             return true
         }
@@ -2214,7 +2233,7 @@ struct WorkspaceAppActionExecutor {
         ]
     }
 
-    private func evaluateExpressionGate(
+    func evaluateExpressionGate(
         gateOperator: WorkspaceAppExpressionGateOperator,
         actualValue: WorkspaceAppStorageValue?,
         expectedValue: WorkspaceAppStorageValue?
