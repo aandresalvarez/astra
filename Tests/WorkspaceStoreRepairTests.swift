@@ -104,7 +104,7 @@ struct WorkspaceStoreRepairTests {
         container = nil
 
         let results = WorkspaceRecoveryService.exportReadableWorkspacesBeforeStoreReset(at: storeURL)
-        let configURL = workspaceRoot.appendingPathComponent(WorkspaceFileLayout.workspaceConfigFileName)
+        let configURL = URL(fileURLWithPath: WorkspaceFileLayout.workspaceConfigFile(for: workspaceRoot.path))
         let config = try WorkspaceConfigManager.loadConfig(from: configURL)
 
         #expect(results.count == 1)

@@ -1197,7 +1197,119 @@ struct WorkspacePersistenceTests {
         let target = WorkspaceConfigManager.autoExportTarget(for: root.path)
 
         #expect(target.reason == "ready")
-        #expect(target.url?.path == root.appendingPathComponent(WorkspaceFileLayout.workspaceConfigFileName).path)
+        #expect(target.url?.path == root
+            .appendingPathComponent(WorkspaceFileLayout.supportDirectoryName, isDirectory: true)
+            .appendingPathComponent(WorkspaceFileLayout.workspaceConfigFileName)
+            .path)
+    }
+
+    @Test("workspace layout keeps generated mirror under ASTRA metadata")
+    func workspaceLayoutUsesSupportDirectoryForGeneratedMirror() {
+        let root = "/tmp/astra_layout_\(UUID().uuidString)"
+
+        #expect(
+            WorkspaceFileLayout.workspaceConfigFile(for: root)
+                == "\(root)/.astra/\(WorkspaceFileLayout.workspaceConfigFileName)"
+        )
+        #expect(WorkspaceFileLayout.legacyWorkspaceConfigFile(for: root) == "\(root)/\(WorkspaceFileLayout.workspaceConfigFileName)")
+    }
+
+    @Test("workspace import discovery accepts canonical support config before legacy root config")
+    func importDiscoveryPrefersSupportConfigAndKeepsLegacyRootCompatibility() throws {
+        let root = URL(fileURLWithPath: "/tmp/astra_import_discovery_\(UUID().uuidString)", isDirectory: true)
+        let support = root.appendingPathComponent(WorkspaceFileLayout.supportDirectoryName, isDirectory: true)
+        try FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let canonical = support.appendingPathComponent(WorkspaceFileLayout.workspaceConfigFileName)
+        let legacy = root.appendingPathComponent(WorkspaceFileLayout.workspaceConfigFileName)
+        try Data("{}".utf8).write(to: canonical)
+        try Data("{}".utf8).write(to: legacy)
+
+        let preferred = try #require(WorkspaceImportDiscovery.candidates(for: [root]).first)
+        #expect(preferred.folderURL.path == root.path)
+        #expect(preferred.configURL?.path == canonical.path)
+
+        try FileManager.default.removeItem(at: canonical)
+        let legacyCandidate = try #require(WorkspaceImportDiscovery.candidates(for: [root]).first)
+        #expect(legacyCandidate.folderURL.path == root.path)
+        #expect(legacyCandidate.configURL?.path == legacy.path)
+    }
+
+    @Test("workspace config file selection resolves support mirror to workspace root")
+    func supportMirrorSelectionResolvesWorkspaceRoot() throws {
+        let root = URL(fileURLWithPath: "/tmp/astra_config_selection_\(UUID().uuidString)", isDirectory: true)
+        let support = root.appendingPathComponent(WorkspaceFileLayout.supportDirectoryName, isDirectory: true)
+        try FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let canonical = support.appendingPathComponent(WorkspaceFileLayout.workspaceConfigFileName)
+        try Data("{}".utf8).write(to: canonical)
+
+        let candidate = try #require(WorkspaceImportDiscovery.candidates(for: [canonical]).first)
+        #expect(candidate.folderURL.path == root.path)
+        #expect(candidate.configURL?.path == canonical.path)
+    }
+
+    @Test("workspace generated state is excluded through local git info exclude")
+    func generatedWorkspaceStateIsExcludedFromGitCheckout() throws {
+        let root = URL(fileURLWithPath: "/tmp/astra_git_exclude_\(UUID().uuidString)", isDirectory: true)
+        let info = root.appendingPathComponent(".git/info", isDirectory: true)
+        try FileManager.default.createDirectory(at: info, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let exclude = info.appendingPathComponent("exclude")
+        try "# user excludes\n".write(to: exclude, atomically: true, encoding: .utf8)
+
+        try WorkspaceGeneratedStateExcluder.ensureExcluded(workspacePath: root.path)
+        try WorkspaceGeneratedStateExcluder.ensureExcluded(workspacePath: root.path)
+
+        let contents = try String(contentsOf: exclude, encoding: .utf8)
+        #expect(contents.contains("# user excludes"))
+        #expect(contents.components(separatedBy: ".astra/").count == 2)
+        #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent(".gitignore").path))
+    }
+
+    @Test("workspace mirror export bounds runs events and output")
+    @MainActor
+    func workspaceMirrorExportBoundsRunsEventsAndOutput() throws {
+        let container = try makeWorkspacePersistenceContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Bounded Mirror", primaryPath: "/tmp/astra_bounded_mirror_\(UUID().uuidString)")
+        context.insert(workspace)
+        let task = AgentTask(title: "Long history", goal: "Create lots of output", workspace: workspace)
+        context.insert(task)
+
+        for index in 0..<15 {
+            let run = TaskRun(task: task)
+            run.startedAt = Date(timeIntervalSince1970: TimeInterval(index))
+            run.output = String(repeating: "\(index)", count: 12_000)
+            context.insert(run)
+
+            let event = TaskEvent(
+                task: task,
+                type: "task.event.\(index)",
+                payload: String(repeating: "payload-\(index)", count: 2_000),
+                run: run
+            )
+            event.timestamp = Date(timeIntervalSince1970: TimeInterval(index))
+            context.insert(event)
+        }
+        try context.save()
+
+        let config = try #require(WorkspaceConfigManager.export(workspace: workspace, modelContext: context))
+        let mirroredTask = try #require(config.tasks?.first)
+        let firstRun = try #require(mirroredTask.runs.first)
+        let firstEvent = try #require(mirroredTask.events.first)
+
+        #expect(mirroredTask.runs.count == WorkspaceConfigManager.MirrorLimits.maxRunsPerTask)
+        #expect(mirroredTask.events.count == WorkspaceConfigManager.MirrorLimits.maxEventsPerTask)
+        #expect(firstRun.output.contains("[ASTRA mirror truncated"))
+        #expect(firstEvent.payload.contains("[ASTRA mirror truncated"))
+        #expect(firstRun.output.count <= WorkspaceConfigManager.MirrorLimits.maxRunOutputCharacters)
+        #expect(firstEvent.payload.count <= WorkspaceConfigManager.MirrorLimits.maxEventPayloadCharacters)
+        #expect(mirroredTask.runs.map(\.startedAt) == mirroredTask.runs.map(\.startedAt).sorted())
+        #expect(mirroredTask.events.map(\.timestamp) == mirroredTask.events.map(\.timestamp).sorted())
     }
 
     @Test("workspace export result reports write diagnostics")

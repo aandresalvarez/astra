@@ -11,8 +11,24 @@ enum WorkspaceFileLayout {
     }
 
     static func workspaceConfigFile(for workspacePath: String) -> String {
+        let support = supportDirectory(for: workspacePath)
+        guard !support.isEmpty else { return "" }
+        return (support as NSString).appendingPathComponent(workspaceConfigFileName)
+    }
+
+    static func legacyWorkspaceConfigFile(for workspacePath: String) -> String {
         guard !workspacePath.isEmpty else { return "" }
         return (workspacePath as NSString).appendingPathComponent(workspaceConfigFileName)
+    }
+
+    static func workspaceRoot(forConfigFile url: URL) -> URL {
+        let standardized = url.standardizedFileURL
+        let parent = standardized.deletingLastPathComponent()
+        if parent.lastPathComponent == supportDirectoryName,
+           standardized.lastPathComponent == workspaceConfigFileName {
+            return parent.deletingLastPathComponent()
+        }
+        return parent
     }
 
     static func sshConnectionsFile(for workspacePath: String) -> String {

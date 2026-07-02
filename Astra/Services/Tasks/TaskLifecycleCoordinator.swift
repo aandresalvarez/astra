@@ -602,7 +602,7 @@ final class TaskLifecycleCoordinator {
                           askDuplicateAction: (String, Int) -> DuplicateAction) -> Workspace? {
         do {
             var config = try WorkspaceConfigManager.loadConfig(from: url)
-            config.primaryPath = url.deletingLastPathComponent().standardizedFileURL.path
+            config.primaryPath = WorkspaceFileLayout.workspaceRoot(forConfigFile: url).path
             let configID = config.id
             if let existing = existingWorkspaces.first(where: { workspace in
                 (configID != nil && workspace.id.uuidString == configID) || workspace.primaryPath == config.primaryPath
@@ -649,7 +649,7 @@ final class TaskLifecycleCoordinator {
         existing: Workspace,
         configURL: URL
     ) -> WorkspaceConfigManager.ScheduleImportTrustPolicy {
-        let configFolderPath = configURL.deletingLastPathComponent().standardizedFileURL.path
+        let configFolderPath = WorkspaceFileLayout.workspaceRoot(forConfigFile: configURL).path
         let existingPath = URL(fileURLWithPath: existing.primaryPath).standardizedFileURL.path
         return configFolderPath == existingPath ? .preserveEnabledState : .quarantineEnabledSchedules
     }
