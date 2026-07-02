@@ -56,13 +56,7 @@ struct ContentView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Query(sort: \Workspace.name) private var workspaces: [Workspace]
-    @State private var selectedTask: AgentTask?
-    @State private var selectedWorkspace: Workspace?
-    // F7: Workspace App surfaces. selectedWorkspaceApp renders the app detail;
-    // isComposingWorkspaceApp renders the App Studio builder. Mutually exclusive
-    // with task selection (set/cleared together).
-    @State private var selectedWorkspaceApp: WorkspaceApp?
-    @State private var isComposingWorkspaceApp = false
+    @StateObject private var sceneSelection = SceneSelectionModel()
     @State private var showingConfigure = false
     @State private var configureInitialTab: ConfigureTab = .capabilities
     @State private var configureFocusItemID: UUID?
@@ -72,7 +66,6 @@ struct ContentView: View {
     @State private var showingNewWorkspace = false
     @State private var showingSSHEditor = false
     @State private var editingSSHConnection: SSHConnection?
-    @State private var isComposingTask = false
     @State private var sshReloadTrigger = 0
     @State private var newWorkspaceDraft = NewWorkspaceDraft()
     @StateObject private var browserSessionStore = ShelfBrowserSessionStore()
@@ -167,6 +160,26 @@ struct ContentView: View {
     init(appUpdateController: AppUpdateController, runtime: AppRuntimeController) {
         self.appUpdateController = appUpdateController
         self.runtime = runtime
+    }
+
+    private var selectedTask: AgentTask? {
+        sceneSelection.selectedTask
+    }
+
+    private var selectedWorkspace: Workspace? {
+        sceneSelection.selectedWorkspace
+    }
+
+    private var selectedWorkspaceApp: WorkspaceApp? {
+        sceneSelection.selectedWorkspaceApp
+    }
+
+    private var isComposingTask: Bool {
+        sceneSelection.isComposingTask
+    }
+
+    private var isComposingWorkspaceApp: Bool {
+        sceneSelection.isComposingWorkspaceApp
     }
 
     private var effectiveWorkspace: Workspace? {
@@ -626,7 +639,7 @@ struct ContentView: View {
             },
             onRunAction: { action, manifest, input in
                 try runWorkspaceAppAction(app: app, action: action, manifest: manifest, input: input)
-            }, onDeleted: { selectedWorkspaceApp = nil }
+            }, onDeleted: { setSelectedWorkspaceApp(nil) }
         )
         .id(app.id)
     }
@@ -636,11 +649,7 @@ struct ContentView: View {
         initialPrompt: String? = nil,
         workspace targetWorkspace: Workspace? = nil
     ) {
-        if let targetWorkspace { selectedWorkspace = targetWorkspace }
-        selectedTask = nil
-        selectedWorkspaceApp = nil
-        isComposingTask = false
-        isComposingWorkspaceApp = true
+        sceneSelection.composeApp(workspace: targetWorkspace)
         isWorkspaceRightRailVisible = false
         if let workspace = targetWorkspace ?? effectiveWorkspace {
             workspaceAppStudioSession.reset(for: workspace, existingManifest: existingManifest, initialPrompt: initialPrompt)
@@ -656,7 +665,7 @@ struct ContentView: View {
     /// Leave the Studio without publishing: drop the composer, collapse the preview, cancel gen.
     private func cancelWorkspaceAppStudio() {
         workspaceAppStudioSession.cancelGeneration()
-        isComposingWorkspaceApp = false
+        sceneSelection.clearWorkspaceAppSurface()
         pendingAppPreviewPolicyRestore = false
         if activeWorkspaceCanvasItem == .appPreview {
             setActiveWorkspaceCanvasItem(nil, remember: false)
@@ -698,10 +707,7 @@ struct ContentView: View {
             return
         }
         if case .failed(let failure) = draftResolution {
-            selectedTask = nil
-            selectedWorkspaceApp = nil
-            isComposingTask = false
-            isComposingWorkspaceApp = false
+            sceneSelection.clear()
             if let workspace = failure.workspace ?? effectiveWorkspace {
                 startWorkspaceAppStudio(workspace: workspace)
                 workspaceAppStudioSession.noteDraftOpenFailure(appName: app?.name ?? "this draft app", detail: failure.detail)
@@ -710,13 +716,10 @@ struct ContentView: View {
             }
             return
         }
-        selectedTask = nil
-        isComposingTask = false
-        isComposingWorkspaceApp = false
         if activeWorkspaceCanvasItem == .appPreview {
             setActiveWorkspaceCanvasItem(nil, remember: false)
         }
-        selectedWorkspaceApp = app
+        sceneSelection.openApp(app, workspace: sceneCoordinator.workspace(for: app))
     }
 
     private func runWorkspaceAppAction(
@@ -777,7 +780,6 @@ struct ContentView: View {
             try WorkspaceAppVersionService().recordPublish(app: result.app, manifestData: publishedData, validated: true, workspacePath: target.primaryPath, modelContext: modelContext)
         } catch { AppLogger.error("Workspace app published but version snapshot failed: \(error)", category: "WorkspaceApps") }
         if seedSampleData, isNewApp { WorkspaceAppSampleSeeder.seed(manifest: result.manifest, workspacePath: target.primaryPath, appID: result.app.logicalID) }
-        isComposingWorkspaceApp = false
         setSelectedWorkspaceApp(result.app)
     }
 
@@ -861,7 +863,7 @@ struct ContentView: View {
                 SearchPanelOverlayContainer(
                     workspaces: workspaces,
                     selectedTask: selectedTaskBinding,
-                    selectedWorkspace: $selectedWorkspace,
+                    selectedWorkspace: selectedWorkspaceBinding,
                     isActive: $isSearchActive
                 )
             }
@@ -1129,7 +1131,7 @@ struct ContentView: View {
     }
 
     private func beginEditingWorkspace(_ workspace: Workspace) {
-        selectedWorkspace = workspace
+        sceneSelection.openWorkspace(workspace)
         showingWorkspaceEditor = true
     }
 
@@ -1915,37 +1917,44 @@ struct ContentView: View {
     }
 
     private func selectWorkspaceFromSidebar(_ workspace: Workspace?) {
-        selectedWorkspace = workspace
-        clearWorkspaceAppSurfaceSelection()
+        let wasComposingWorkspaceApp = isComposingWorkspaceApp
+        sceneSelection.openWorkspace(workspace)
+        clearWorkspaceAppSurfaceSideEffects(wasComposing: wasComposingWorkspaceApp)
     }
 
     private func clearWorkspaceAppSurfaceSelection() {
-        selectedWorkspaceApp = nil
-        if isComposingWorkspaceApp {
-            cancelWorkspaceAppStudio()
-        } else if activeWorkspaceCanvasItem == .appPreview {
+        let wasComposing = isComposingWorkspaceApp
+        sceneSelection.clearWorkspaceAppSurface()
+        clearWorkspaceAppSurfaceSideEffects(wasComposing: wasComposing)
+    }
+
+    private func clearWorkspaceAppSurfaceSideEffects(wasComposing: Bool) {
+        if wasComposing {
+            workspaceAppStudioSession.cancelGeneration()
+            pendingAppPreviewPolicyRestore = false
+        }
+        if activeWorkspaceCanvasItem == .appPreview {
             setActiveWorkspaceCanvasItem(nil, remember: false)
         }
     }
 
     private func startComposingTask() {
-        clearWorkspaceAppSurfaceSelection()
+        let wasComposingWorkspaceApp = isComposingWorkspaceApp
         setSelectedTask(nil)
-        isComposingTask = true
+        sceneSelection.composeTask()
+        clearWorkspaceAppSurfaceSideEffects(wasComposing: wasComposingWorkspaceApp)
         presentRightRail(rememberShelfState: false)
     }
 
     private func handleQuickRunTask(_ task: AgentTask) {
         promoteDraftBrowserSessionIfNeeded(to: task)
         setSelectedTask(task)
-        isComposingTask = false
         runSingleTask(task)
     }
 
     private func handleTaskCreated(_ task: AgentTask) {
         promoteDraftBrowserSessionIfNeeded(to: task)
         setSelectedTask(task)
-        isComposingTask = false
         presentRightRail(rememberShelfState: false)
     }
 
@@ -1996,13 +2005,11 @@ struct ContentView: View {
                 targetHasPlanContent: targetHasPlanContent
             )
         }
-        isComposingTask = false
         presentCanvas(.plan)
     }
 
     private func openExistingTask(_ task: AgentTask) {
         setSelectedTask(task)
-        isComposingTask = false
     }
 
     private func handlePendingExternalRoute() {
@@ -2042,7 +2049,6 @@ struct ContentView: View {
     }
 
     private func moveTaskToDraft(_ task: AgentTask) {
-        isComposingTask = false
         setSelectedTask(nil)
         DispatchQueue.main.async {
             setSelectedTask(task)
@@ -2238,15 +2244,15 @@ struct ContentView: View {
     }
 
     private func applyWorkspaceSelectionUpdate(_ update: ContentWorkspaceSelectionUpdate) {
-        if selectedWorkspace?.id != update.selectedWorkspace?.id {
-            selectedWorkspace = update.selectedWorkspace
+        let previousTaskID = selectedTask?.id
+        let wasComposingWorkspaceApp = isComposingWorkspaceApp
+        updateCanvasForTaskSelectionChange(previousTaskID: previousTaskID, nextTaskID: update.selectedTask?.id)
+        sceneSelection.apply(update)
+        if previousTaskID != update.selectedTask?.id {
+            handleSelectedTaskIdentityChanged(to: update.selectedTask)
         }
-        if selectedTask?.id != update.selectedTask?.id {
-            setSelectedTask(update.selectedTask)
-        } else {
-            selectedTask = update.selectedTask
-        }
-        isComposingTask = update.isComposingTask
+        markTaskRead(update.selectedTask)
+        clearWorkspaceAppSurfaceSideEffects(wasComposing: wasComposingWorkspaceApp)
         if update.shouldPresentRightRail {
             presentRightRail(
                 rememberShelfState: update.shouldRememberShelfStateWhenPresentingRightRail
@@ -2258,42 +2264,43 @@ struct ContentView: View {
 
     private func setSelectedTask(_ task: AgentTask?) {
         let previousTaskID = selectedTask?.id
+        updateCanvasForTaskSelectionChange(previousTaskID: previousTaskID, nextTaskID: task?.id)
+        let wasComposingWorkspaceApp = isComposingWorkspaceApp
+        sceneSelection.openTask(task)
+        clearWorkspaceAppSurfaceSideEffects(wasComposing: wasComposingWorkspaceApp)
         if previousTaskID != task?.id {
-            let nextCanvasItem = WorkspaceCanvasItemSelectionTransition.itemAfterTaskSelectionChange(
-                currentItem: activeWorkspaceCanvasItem,
-                previousTaskID: previousTaskID,
-                nextTaskID: task?.id,
-                isComposingTask: isComposingTask
-            )
-            if nextCanvasItem != activeWorkspaceCanvasItem {
-                setActiveWorkspaceCanvasItem(nextCanvasItem, remember: false)
-            }
-        }
-        if let taskWorkspace = task?.workspace,
-           selectedWorkspace?.id != taskWorkspace.id {
-            selectedWorkspace = taskWorkspace
-        }
-        if task != nil {
-            // Workspace App surfaces and task selection are mutually exclusive.
-            selectedWorkspaceApp = nil
-            isComposingWorkspaceApp = false
-        }
-        selectedTask = task
-        if previousTaskID != task?.id {
-            clearGeneratedHTMLDiscoveryState()
-            currentBrowserSession.bindToTask(task?.id)
-            currentMarkdownSession.bindToTask(task?.id)
-            querySession.bindToTask(task?.id)
-            syncBrowserPresentation()
-            refreshMarkdownShelfAvailabilityForSelectedTask()
-            refreshQueryShelfAvailabilityForSelectedTask()
-            refreshGeneratedHTMLAvailabilityForSelectedTask()
-            restoreRememberedWorkspaceCanvasItemIfAvailable()
-        }
-        if task != nil {
-            isComposingTask = false
+            handleSelectedTaskIdentityChanged(to: task)
         }
         markTaskRead(task)
+    }
+
+    private func updateCanvasForTaskSelectionChange(previousTaskID: UUID?, nextTaskID: UUID?) {
+        guard previousTaskID != nextTaskID else { return }
+        let nextCanvasItem = WorkspaceCanvasItemSelectionTransition.itemAfterTaskSelectionChange(
+            currentItem: activeWorkspaceCanvasItem,
+            previousTaskID: previousTaskID,
+            nextTaskID: nextTaskID,
+            isComposingTask: isComposingTask
+        )
+        if nextCanvasItem != activeWorkspaceCanvasItem {
+            setActiveWorkspaceCanvasItem(nextCanvasItem, remember: false)
+        }
+    }
+
+    private func handleSelectedTaskIdentityChanged(to task: AgentTask?) {
+        clearGeneratedHTMLDiscoveryState()
+        bindTaskScopedSessions(to: task?.id)
+        syncBrowserPresentation()
+        refreshMarkdownShelfAvailabilityForSelectedTask()
+        refreshQueryShelfAvailabilityForSelectedTask()
+        refreshGeneratedHTMLAvailabilityForSelectedTask()
+        restoreRememberedWorkspaceCanvasItemIfAvailable()
+    }
+
+    private func bindTaskScopedSessions(to taskID: UUID?) {
+        currentBrowserSession.bindToTask(taskID)
+        currentMarkdownSession.bindToTask(taskID)
+        querySession.bindToTask(taskID)
     }
 
     private func markSelectedTaskReadIfNeeded() {
@@ -2431,9 +2438,13 @@ struct ContentView: View {
         clearWorkspaceAppSurfaceSelection()
         if isUITestingSeededLaunch {
             setSelectedTask(nil)
-            isComposingTask = selectedWorkspace != nil
-        } else {
-            isComposingTask = false
+            if selectedWorkspace != nil {
+                sceneSelection.composeTask()
+            } else {
+                sceneSelection.openWorkspace(nil)
+            }
+        } else if isComposingTask {
+            sceneSelection.openWorkspace(selectedWorkspace)
         }
         invalidateActiveWorkspaceCanvasItemIfUnavailable(remember: false)
         persistWorkspaceSelection()
@@ -2519,7 +2530,7 @@ struct ContentView: View {
         guard isUITestingSeededLaunch, selectedWorkspace != nil else { return }
 
         setSelectedTask(nil)
-        isComposingTask = true
+        sceneSelection.composeTask()
     }
 
     private func seedTestDataIfNeeded() {
@@ -2541,7 +2552,7 @@ struct ContentView: View {
         guard (try? modelContext.fetchCount(descriptor)) == 0 else {
             let wsDescriptor = FetchDescriptor<Workspace>()
             if let existing = try? modelContext.fetch(wsDescriptor).first {
-                selectedWorkspace = existing
+                sceneSelection.openWorkspace(existing)
                 enterUITestComposerIfNeeded()
             }
             return
@@ -2560,7 +2571,7 @@ struct ContentView: View {
 
         let ws = Workspace(name: "Test Workspace", primaryPath: testPath)
         modelContext.insert(ws)
-        selectedWorkspace = ws
+        sceneSelection.openWorkspace(ws)
         enterUITestComposerIfNeeded()
 
         if args.contains("--uitesting-seed") {
