@@ -43,6 +43,12 @@ final class SceneSelectionModel: ObservableObject {
         return .none
     }
 
+    var shouldClearWorkspaceAppSurfaceAfterWorkspaceChange: Bool {
+        if isComposingWorkspaceApp { return false }
+        guard let selectedWorkspaceApp else { return false }
+        return selectedWorkspaceApp.workspaceID != selectedWorkspace?.id
+    }
+
     func restoreWorkspace(_ workspace: Workspace?) {
         selectedTask = nil
         selectedWorkspace = workspace

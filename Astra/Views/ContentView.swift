@@ -649,9 +649,12 @@ struct ContentView: View {
         initialPrompt: String? = nil,
         workspace targetWorkspace: Workspace? = nil
     ) {
-        sceneSelection.composeApp(workspace: targetWorkspace)
+        let studioWorkspace = targetWorkspace ?? effectiveWorkspace
+        applySceneSelectionIntent {
+            sceneSelection.composeApp(workspace: studioWorkspace)
+        }
         isWorkspaceRightRailVisible = false
-        if let workspace = targetWorkspace ?? effectiveWorkspace {
+        if let workspace = studioWorkspace {
             workspaceAppStudioSession.reset(for: workspace, existingManifest: existingManifest, initialPrompt: initialPrompt)
         }
         let appPreviewItem = WorkspaceCanvasPolicyTransition.itemAfterAppStudioStart(
@@ -707,7 +710,9 @@ struct ContentView: View {
             return
         }
         if case .failed(let failure) = draftResolution {
-            sceneSelection.clear()
+            applySceneSelectionIntent {
+                sceneSelection.clear()
+            }
             if let workspace = failure.workspace ?? effectiveWorkspace {
                 startWorkspaceAppStudio(workspace: workspace)
                 workspaceAppStudioSession.noteDraftOpenFailure(appName: app?.name ?? "this draft app", detail: failure.detail)
@@ -719,7 +724,9 @@ struct ContentView: View {
         if activeWorkspaceCanvasItem == .appPreview {
             setActiveWorkspaceCanvasItem(nil, remember: false)
         }
-        sceneSelection.openApp(app, workspace: sceneCoordinator.workspace(for: app))
+        applySceneSelectionIntent {
+            sceneSelection.openApp(app, workspace: sceneCoordinator.workspace(for: app))
+        }
     }
 
     private func runWorkspaceAppAction(
@@ -1131,7 +1138,9 @@ struct ContentView: View {
     }
 
     private func beginEditingWorkspace(_ workspace: Workspace) {
-        sceneSelection.openWorkspace(workspace)
+        applySceneSelectionIntent {
+            sceneSelection.openWorkspace(workspace)
+        }
         showingWorkspaceEditor = true
     }
 
@@ -1918,7 +1927,9 @@ struct ContentView: View {
 
     private func selectWorkspaceFromSidebar(_ workspace: Workspace?) {
         let wasComposingWorkspaceApp = isComposingWorkspaceApp
-        sceneSelection.openWorkspace(workspace)
+        applySceneSelectionIntent {
+            sceneSelection.openWorkspace(workspace)
+        }
         clearWorkspaceAppSurfaceSideEffects(wasComposing: wasComposingWorkspaceApp)
     }
 
@@ -2260,6 +2271,20 @@ struct ContentView: View {
         }
     }
 
+    private func applySceneSelectionIntent(_ intent: () -> Void) {
+        let previousTaskID = selectedTask?.id
+        let isComposingTaskForTransition = isComposingTask
+        intent()
+        guard previousTaskID != selectedTask?.id else { return }
+        updateCanvasForTaskSelectionChange(
+            previousTaskID: previousTaskID,
+            nextTaskID: selectedTask?.id,
+            isComposingTaskForTransition: isComposingTaskForTransition
+        )
+        handleSelectedTaskIdentityChanged(to: selectedTask)
+        markTaskRead(selectedTask)
+    }
+
     // MARK: - Task Actions
 
     private func setSelectedTask(_ task: AgentTask?) {
@@ -2274,13 +2299,17 @@ struct ContentView: View {
         markTaskRead(task)
     }
 
-    private func updateCanvasForTaskSelectionChange(previousTaskID: UUID?, nextTaskID: UUID?) {
+    private func updateCanvasForTaskSelectionChange(
+        previousTaskID: UUID?,
+        nextTaskID: UUID?,
+        isComposingTaskForTransition: Bool? = nil
+    ) {
         guard previousTaskID != nextTaskID else { return }
         let nextCanvasItem = WorkspaceCanvasItemSelectionTransition.itemAfterTaskSelectionChange(
             currentItem: activeWorkspaceCanvasItem,
             previousTaskID: previousTaskID,
             nextTaskID: nextTaskID,
-            isComposingTask: isComposingTask
+            isComposingTask: isComposingTaskForTransition ?? isComposingTask
         )
         if nextCanvasItem != activeWorkspaceCanvasItem {
             setActiveWorkspaceCanvasItem(nextCanvasItem, remember: false)
@@ -2434,8 +2463,12 @@ struct ContentView: View {
         if selectedTask != nil, taskWorkspaceID != selectedWorkspaceID {
             setSelectedTask(nil)
         }
-        // Switching workspaces exits App Studio (its session is bound to the start workspace).
-        clearWorkspaceAppSurfaceSelection()
+        // Switching away from an app surface exits App Studio/detail. Workspace
+        // changes caused by app/app-studio intents are already bound to the new
+        // workspace and must not clear themselves via this observer.
+        if sceneSelection.shouldClearWorkspaceAppSurfaceAfterWorkspaceChange {
+            clearWorkspaceAppSurfaceSelection()
+        }
         if isUITestingSeededLaunch {
             setSelectedTask(nil)
             if selectedWorkspace != nil {

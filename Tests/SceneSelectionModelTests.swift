@@ -107,6 +107,31 @@ struct SceneSelectionModelTests {
         #expect(model.activeSurface == .workspace(workspace.id))
     }
 
+    @Test("Workspace-change observer preserves app surfaces bound to the selected workspace")
+    func workspaceChangePolicyPreservesMatchingAppSurfaces() {
+        let workspace = makeWorkspace(name: "Apps")
+        let otherWorkspace = makeWorkspace(name: "Other")
+        let app = makeApp(workspace: workspace)
+        let model = SceneSelectionModel()
+
+        model.openApp(app, workspace: workspace)
+        #expect(!model.shouldClearWorkspaceAppSurfaceAfterWorkspaceChange)
+
+        model.openApp(app, workspace: otherWorkspace)
+        #expect(model.shouldClearWorkspaceAppSurfaceAfterWorkspaceChange)
+    }
+
+    @Test("Workspace-change observer preserves active app composer intent")
+    func workspaceChangePolicyPreservesAppComposer() {
+        let workspace = makeWorkspace(name: "Studio")
+        let model = SceneSelectionModel()
+
+        model.composeApp(workspace: workspace)
+
+        #expect(!model.shouldClearWorkspaceAppSurfaceAfterWorkspaceChange)
+        #expect(model.activeSurface == .appComposer(workspace.id))
+    }
+
     @Test("Applying workspace restoration can clear all selection when no workspace remains")
     func restoreCanClearWorkspaceSelection() {
         let workspace = makeWorkspace(name: "Workspace")
