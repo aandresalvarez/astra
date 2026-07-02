@@ -1,6 +1,9 @@
 name: CI
 
 on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 9 * * *"
   pull_request:
   push:
     branches:
@@ -20,8 +23,41 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Cache SwiftPM
+        uses: actions/cache@v4
+        with:
+          path: |
+            .build
+            ~/.swiftpm
+          key: ${{ runner.os }}-swiftpm-${{ hashFiles('Package.swift', 'Package.resolved') }}
+          restore-keys: |
+            ${{ runner.os }}-swiftpm-
+
       - name: Run focused Swift protection suites
         run: script/prepush.sh
+
+  full-swift-test-suite:
+    name: Full Swift test suite
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    runs-on: macos-26
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Cache SwiftPM
+        uses: actions/cache@v4
+        with:
+          path: |
+            .build
+            ~/.swiftpm
+          key: ${{ runner.os }}-swiftpm-${{ hashFiles('Package.swift', 'Package.resolved') }}
+          restore-keys: |
+            ${{ runner.os }}-swiftpm-
+
+      - name: Run full Swift test suite
+        run: swift test
 
   whitespace:
     name: Whitespace
