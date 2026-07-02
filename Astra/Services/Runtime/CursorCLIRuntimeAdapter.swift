@@ -360,27 +360,26 @@ struct CursorCLIRuntimeAdapter: AgentRuntimeAdapter {
             permissionArguments: ProviderPolicyRender.cursorLaunchPermissionArguments(policy: permissionPolicy)
         )
 
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: plan.executablePath)
-        process.arguments = plan.arguments
-        process.currentDirectoryURL = URL(fileURLWithPath: workspacePath)
-        process.environment = plan.environment
-
-        let stdoutPipe = Pipe()
-        let stderrPipe = Pipe()
-        process.standardOutput = stdoutPipe
-        process.standardError = stderrPipe
-        process.standardInput = FileHandle.nullDevice
-        let result = await AsyncProcessRunner.run(
-            process,
-            stdout: stdoutPipe,
-            stderr: stderrPipe,
-            timeoutSeconds: configuration.timeoutSeconds
+        let processPlan = AgentRuntimeProcessLaunchPlan(
+            runtime: id,
+            executablePath: plan.executablePath,
+            arguments: plan.arguments,
+            currentDirectory: workspacePath,
+            environment: plan.environment,
+            browserShimDirectory: nil,
+            providerVersion: nil,
+            parsesJSONLines: plan.parsesJSONLines
         )
-        return AgentUtilityRunResult(
-            exitCode: result.exitCode,
-            output: CursorCLIRuntime.extractUtilityText(from: result.stdout),
-            error: result.stderr
+        return await AgentRuntimeProcessRunner().runUtilityProcess(
+            AgentUtilityLaunchPlan(
+                process: processPlan,
+                providerHomeDirectory: configuration.homeDirectory(for: id),
+                permissionPolicy: permissionPolicy,
+                timeoutSeconds: configuration.timeoutSeconds
+            ),
+            outputTransform: { output in
+                CursorCLIRuntime.extractUtilityText(from: output)
+            }
         )
     }
 }

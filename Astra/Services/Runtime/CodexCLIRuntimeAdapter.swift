@@ -414,13 +414,6 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
             )
         )
 
-        for directory in CodexCLIRuntime.directoriesToCreate(
-            providerHomeDirectory: configuration.homeDirectory(for: id),
-            environment: plan.environment
-        ) {
-            try? FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
-        }
-
         // Utility prompts are one-shot structured generations (e.g. App Studio manifests), not
         // interactive agent sessions. Run codex at LOW reasoning so it answers promptly instead
         // of deliberating (and exploring the workspace) past the timeout and forcing a fallback.
@@ -429,27 +422,34 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
         if let execIndex = arguments.firstIndex(of: "exec") {
             arguments.insert(contentsOf: ["-c", "model_reasoning_effort=\"low\""], at: execIndex + 1)
         }
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: plan.executablePath)
-        process.arguments = arguments
-        process.currentDirectoryURL = URL(fileURLWithPath: workspacePath)
-        process.environment = plan.environment
-
-        let stdoutPipe = Pipe()
-        let stderrPipe = Pipe()
-        process.standardOutput = stdoutPipe
-        process.standardError = stderrPipe
-        process.standardInput = FileHandle.nullDevice
-        let result = await AsyncProcessRunner.run(
-            process,
-            stdout: stdoutPipe,
-            stderr: stderrPipe,
-            timeoutSeconds: configuration.timeoutSeconds
+        let processPlan = AgentRuntimeProcessLaunchPlan(
+            runtime: id,
+            executablePath: plan.executablePath,
+            arguments: arguments,
+            currentDirectory: workspacePath,
+            environment: plan.environment,
+            browserShimDirectory: nil,
+            providerVersion: nil,
+            parsesJSONLines: plan.parsesJSONLines,
+            directoriesToCreate: CodexCLIRuntime.directoriesToCreate(
+                providerHomeDirectory: configuration.homeDirectory(for: id),
+                environment: plan.environment
+            ),
+            sandboxReadablePaths: CodexCLIRuntime.sandboxReadablePaths(
+                providerHomeDirectory: configuration.homeDirectory(for: id),
+                environment: plan.environment
+            )
         )
-        return AgentUtilityRunResult(
-            exitCode: result.exitCode,
-            output: CodexCLIRuntime.extractUtilityText(from: result.stdout),
-            error: result.stderr
+        return await AgentRuntimeProcessRunner().runUtilityProcess(
+            AgentUtilityLaunchPlan(
+                process: processPlan,
+                providerHomeDirectory: configuration.homeDirectory(for: id),
+                permissionPolicy: permissionPolicy,
+                timeoutSeconds: configuration.timeoutSeconds
+            ),
+            outputTransform: { output in
+                CodexCLIRuntime.extractUtilityText(from: output)
+            }
         )
     }
 }

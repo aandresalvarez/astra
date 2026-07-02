@@ -33,6 +33,12 @@ struct AgentExecutionScopedProcessError: LocalizedError {
     }
 }
 
+enum AgentExecutionScopedProcessStdinMode {
+    case inherited
+    case closed
+    case pipe
+}
+
 /// Launches a provider in its own process group so cancellation can clean up
 /// tool subprocesses that the provider starts or backgrounds.
 final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProcessControl {
@@ -40,6 +46,7 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
     private let arguments: [String]
     private let currentDirectory: String
     private let environment: [String: String]
+    private let stdinMode: AgentExecutionScopedProcessStdinMode
     private let lock = NSLock()
 
     private var processID: pid_t = 0
@@ -80,13 +87,15 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
         arguments: [String],
         currentDirectory: String,
         environment: [String: String],
+        stdinMode: AgentExecutionScopedProcessStdinMode = .inherited,
         providesStdinChannel: Bool = false
     ) {
         self.executablePath = executablePath
         self.arguments = arguments
         self.currentDirectory = currentDirectory
         self.environment = environment
-        self.stdinPipe = providesStdinChannel ? Pipe() : nil
+        self.stdinMode = providesStdinChannel ? .pipe : stdinMode
+        self.stdinPipe = self.stdinMode == .pipe ? Pipe() : nil
     }
 
     /// Writes one line to the child's stdin. Safe to call after the child has
@@ -141,6 +150,9 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
                       operation: "posix_spawn_file_actions_addclose(stdin_read)")
             try check(posix_spawn_file_actions_addclose(&actions, stdinPipe.fileHandleForWriting.fileDescriptor),
                       operation: "posix_spawn_file_actions_addclose(stdin_write)")
+        } else if stdinMode == .closed {
+            try check(posix_spawn_file_actions_addopen(&actions, STDIN_FILENO, "/dev/null", O_RDONLY, 0),
+                      operation: "posix_spawn_file_actions_addopen(stdin)")
         }
         try addWorkingDirectory(to: &actions)
 

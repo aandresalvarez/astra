@@ -14,6 +14,19 @@ struct AgentRuntimeBudgetProfile: Sendable, Equatable {
     }
 }
 
+private final class AgentUtilityScopedProcessRunState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var completed = false
+
+    func complete() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !completed else { return false }
+        completed = true
+        return true
+    }
+}
+
 final class AgentRuntimeProcessRunner {
     typealias SandboxSettingsProvider = @MainActor (PermissionPolicy) -> ExecutionSandboxSettings
     typealias GitCredentialContextProvider = @MainActor (AgentRuntimeProcessLaunchContext) -> GitCredentialSandboxContext
@@ -250,6 +263,126 @@ final class AgentRuntimeProcessRunner {
         }
 
         return Self.sandboxOutcome(for: decision, originalPlan: plan)
+    }
+
+    enum SandboxedUtilityPlanOutcome {
+        case plan(AgentUtilityLaunchPlan)
+        case blocked(AgentUtilityRunResult)
+    }
+
+    @MainActor
+    func sandboxedUtilityPlan(_ utilityPlan: AgentUtilityLaunchPlan) -> SandboxedUtilityPlanOutcome {
+        let plan = utilityPlan.process
+        let settings = sandboxSettingsProvider(utilityPlan.permissionPolicy)
+        let decision = ExecutionSandbox.decide(
+            plan: plan,
+            providerHomeDirectory: utilityPlan.providerHomeDirectory,
+            settings: settings
+        )
+
+        switch decision {
+        case .applied(_, let writableRoots):
+            AppLogger.audit(.sandboxApplied, category: "Utility", fields: [
+                "runtime": plan.runtime.rawValue,
+                "enforcement": settings.enforcement.rawValue,
+                "read_scope": settings.readScope.rawValue,
+                "read_scope_audit": String(settings.readScope == .audit),
+                "writable_root_count": String(writableRoots.count),
+                "allow_network": String(settings.allowNetwork)
+            ], level: .debug)
+        case .skipped(let reason):
+            AppLogger.audit(.sandboxSkipped, category: "Utility", fields: [
+                "runtime": plan.runtime.rawValue,
+                "reason": reason
+            ], level: .debug)
+        case .fallback(let reason):
+            AppLogger.audit(.sandboxFallback, category: "Utility", fields: [
+                "runtime": plan.runtime.rawValue,
+                "enforcement": settings.enforcement.rawValue,
+                "reason": reason
+            ], level: .warning)
+        case .failClosed(let reason):
+            AppLogger.audit(.sandboxFailed, category: "Utility", fields: [
+                "runtime": plan.runtime.rawValue,
+                "enforcement": settings.enforcement.rawValue,
+                "reason": reason
+            ], level: .error)
+        }
+
+        switch Self.sandboxOutcome(for: decision, originalPlan: plan) {
+        case .plan(let resolvedPlan):
+            return .plan(AgentUtilityLaunchPlan(
+                process: resolvedPlan,
+                providerHomeDirectory: utilityPlan.providerHomeDirectory,
+                permissionPolicy: utilityPlan.permissionPolicy,
+                timeoutSeconds: utilityPlan.timeoutSeconds
+            ))
+        case .blocked(let result):
+            return .blocked(AgentUtilityRunResult(
+                exitCode: result.exitCode,
+                output: "",
+                error: result.error ?? result.runtimeStopMessage ?? "ASTRA could not apply the execution sandbox."
+            ))
+        }
+    }
+
+    @MainActor
+    func runUtilityProcess(
+        _ utilityPlan: AgentUtilityLaunchPlan,
+        outputTransform: @escaping @Sendable (String) -> String = { $0 },
+        stdoutLineHandler: (@Sendable (String) -> AgentUtilityRunResult?)? = nil,
+        stderrChunkHandler: (@Sendable (String) -> Void)? = nil,
+        completion: (@Sendable (_ exitCode: Int, _ stdout: String, _ stderr: String) -> AgentUtilityRunResult)? = nil,
+        launchError: (@Sendable (_ message: String) -> AgentUtilityRunResult)? = nil,
+        timeoutResult: (@Sendable (_ timeoutSeconds: TimeInterval) -> AgentUtilityRunResult)? = nil
+    ) async -> AgentUtilityRunResult {
+        let resolvedPlan: AgentUtilityLaunchPlan
+        switch sandboxedUtilityPlan(utilityPlan) {
+        case .plan(let plan):
+            resolvedPlan = plan
+        case .blocked(let result):
+            return result
+        }
+
+        let processPlan = resolvedPlan.process
+        AppLogger.audit(
+            .runtimeProviderDetected,
+            category: "Utility",
+            fields: processPlan.providerDetectedFields,
+            level: .debug,
+            fieldMaxLength: 220
+        )
+        AppLogger.audit(
+            .runtimeCommandPlanned,
+            category: "Utility",
+            fields: processPlan.commandPlannedFields,
+            level: .debug
+        )
+
+        for directory in processPlan.directoriesToCreate where !directory.isEmpty {
+            try? FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
+        }
+
+        let completionHandler = completion ?? { exitCode, stdout, stderr in
+            AgentUtilityRunResult(exitCode: exitCode, output: outputTransform(stdout), error: stderr)
+        }
+        let launchErrorHandler = launchError ?? { message in
+            AgentUtilityRunResult(exitCode: -1, output: "", error: message)
+        }
+        let timeoutHandler = timeoutResult ?? { timeoutSeconds in
+            let timeoutText = "Process timed out after \(Int(timeoutSeconds.rounded())) seconds."
+            return AgentUtilityRunResult(exitCode: -1, output: "", error: timeoutText)
+        }
+
+        return await Self.runScopedUtilityProcess(
+            processPlan,
+            timeoutSeconds: resolvedPlan.timeoutSeconds,
+            stdoutLineHandler: stdoutLineHandler,
+            stderrChunkHandler: stderrChunkHandler,
+            completion: completionHandler,
+            launchError: launchErrorHandler,
+            timeoutResult: timeoutHandler
+        )
     }
 
     @MainActor
@@ -546,6 +679,134 @@ final class AgentRuntimeProcessRunner {
             }
             currentProcess = process
             monitor.startWatchdog(process: process)
+        }
+    }
+
+    private static func runScopedUtilityProcess(
+        _ plan: AgentRuntimeProcessLaunchPlan,
+        timeoutSeconds: TimeInterval,
+        stdoutLineHandler: (@Sendable (String) -> AgentUtilityRunResult?)?,
+        stderrChunkHandler: (@Sendable (String) -> Void)?,
+        completion: @escaping @Sendable (_ exitCode: Int, _ stdout: String, _ stderr: String) -> AgentUtilityRunResult,
+        launchError: @escaping @Sendable (_ message: String) -> AgentUtilityRunResult,
+        timeoutResult: @escaping @Sendable (_ timeoutSeconds: TimeInterval) -> AgentUtilityRunResult
+    ) async -> AgentUtilityRunResult {
+        let process = AgentExecutionScopedProcess(
+            executablePath: plan.executablePath,
+            arguments: plan.arguments,
+            currentDirectory: plan.currentDirectory,
+            environment: plan.environment,
+            stdinMode: .closed
+        )
+        let stdoutBuffer = AgentLockedBuffer()
+        let stderrBuffer = AgentLockedBuffer()
+        let stdoutLineBuffer = AgentLockedBuffer()
+        let runState = AgentUtilityScopedProcessRunState()
+
+        let handleStdout: @Sendable (String) -> AgentUtilityRunResult? = { chunk in
+            stdoutBuffer.append(chunk)
+            guard let stdoutLineHandler else { return nil }
+            for line in stdoutLineBuffer.appendAndDrainLines(chunk) {
+                if let result = stdoutLineHandler(line) {
+                    return result
+                }
+            }
+            return nil
+        }
+
+        let handleRemainingStdoutLine: @Sendable () -> AgentUtilityRunResult? = {
+            guard let stdoutLineHandler else { return nil }
+            let remaining = stdoutLineBuffer.drainRemaining()
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !remaining.isEmpty else { return nil }
+            return stdoutLineHandler(remaining)
+        }
+
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                let finish: @Sendable (AgentUtilityRunResult, Bool) -> Void = { result, shouldTerminate in
+                    guard runState.complete() else { return }
+                    process.stdoutFileHandle.readabilityHandler = nil
+                    process.stderrFileHandle.readabilityHandler = nil
+                    if shouldTerminate {
+                        process.terminate()
+                    }
+                    continuation.resume(returning: result)
+                }
+
+                process.stdoutFileHandle.readabilityHandler = { handle in
+                    let data = handle.availableData
+                    guard !data.isEmpty,
+                          let chunk = String(data: data, encoding: .utf8) else { return }
+                    if let result = handleStdout(chunk) {
+                        finish(result, true)
+                    }
+                }
+
+                process.stderrFileHandle.readabilityHandler = { handle in
+                    let data = handle.availableData
+                    guard !data.isEmpty,
+                          let chunk = String(data: data, encoding: .utf8) else { return }
+                    stderrBuffer.append(chunk)
+                    stderrChunkHandler?(chunk)
+                }
+
+                process.terminationHandler = { proc in
+                    proc.stdoutFileHandle.readabilityHandler = nil
+                    proc.stderrFileHandle.readabilityHandler = nil
+                    if let chunk = String(
+                        data: proc.stdoutFileHandle.readDataToEndOfFile(),
+                        encoding: .utf8
+                    ), !chunk.isEmpty, let result = handleStdout(chunk) {
+                        finish(result, false)
+                        return
+                    }
+                    if let result = handleRemainingStdoutLine() {
+                        finish(result, false)
+                        return
+                    }
+                    if let chunk = String(
+                        data: proc.stderrFileHandle.readDataToEndOfFile(),
+                        encoding: .utf8
+                    ), !chunk.isEmpty {
+                        stderrBuffer.append(chunk)
+                        stderrChunkHandler?(chunk)
+                    }
+                    let result = completion(
+                        Int(proc.terminationStatus),
+                        stdoutBuffer.value.trimmingCharacters(in: .whitespacesAndNewlines),
+                        stderrBuffer.value.trimmingCharacters(in: .whitespacesAndNewlines)
+                    )
+                    finish(result, false)
+                }
+
+                do {
+                    try process.run()
+                    scheduleUtilityTimeoutIfNeeded(
+                        timeoutSeconds: timeoutSeconds,
+                        process: process,
+                        finish: finish,
+                        timeoutResult: timeoutResult
+                    )
+                } catch {
+                    finish(launchError(error.localizedDescription), false)
+                }
+            }
+        } onCancel: {
+            process.terminate()
+        }
+    }
+
+    private static func scheduleUtilityTimeoutIfNeeded(
+        timeoutSeconds: TimeInterval,
+        process: AgentExecutionScopedProcess,
+        finish: @escaping @Sendable (AgentUtilityRunResult, Bool) -> Void,
+        timeoutResult: @escaping @Sendable (TimeInterval) -> AgentUtilityRunResult
+    ) {
+        guard timeoutSeconds > 0 else { return }
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + timeoutSeconds) {
+            guard process.isRunning else { return }
+            finish(timeoutResult(timeoutSeconds), true)
         }
     }
 

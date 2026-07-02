@@ -1518,8 +1518,6 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
         let executable = configuredPath.isEmpty
             ? RuntimePathResolver.detectClaudePath()
             : configuredPath
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: executable)
         var args = [
             "-p",
             prompt,
@@ -1534,24 +1532,24 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
                 "Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch"
             ]
         }
-        process.arguments = args
-        process.currentDirectoryURL = URL(fileURLWithPath: workspacePath)
-        process.environment = claudeUtilityEnvironment()
-
-        let stdoutPipe = Pipe()
-        let stderrPipe = Pipe()
-        process.standardOutput = stdoutPipe
-        process.standardError = stderrPipe
-        // Non-interactive helper: hand the CLI an empty stdin so it never blocks
-        // waiting for input it will never receive (provider-agnostic safeguard).
-        process.standardInput = FileHandle.nullDevice
-        let result = await AsyncProcessRunner.run(
-            process,
-            stdout: stdoutPipe,
-            stderr: stderrPipe,
-            timeoutSeconds: configuration.timeoutSeconds
+        let plan = AgentRuntimeProcessLaunchPlan(
+            runtime: id,
+            executablePath: executable,
+            arguments: args,
+            currentDirectory: workspacePath,
+            environment: claudeUtilityEnvironment(),
+            browserShimDirectory: nil,
+            providerVersion: nil,
+            parsesJSONLines: false
         )
-        return AgentUtilityRunResult(exitCode: result.exitCode, output: result.stdout, error: result.stderr)
+        return await AgentRuntimeProcessRunner().runUtilityProcess(
+            AgentUtilityLaunchPlan(
+                process: plan,
+                providerHomeDirectory: "",
+                permissionPolicy: .restricted,
+                timeoutSeconds: configuration.timeoutSeconds
+            )
+        )
     }
 
     private func checkClaudeAuth(
@@ -2101,136 +2099,61 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             )
         )
 
-        try? FileManager.default.createDirectory(atPath: copilotHome, withIntermediateDirectories: true)
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: plan.executablePath)
-        process.arguments = plan.arguments
-        process.currentDirectoryURL = URL(fileURLWithPath: workspacePath)
-        process.environment = plan.environment
-
-        let stdoutPipe = Pipe()
-        let stderrPipe = Pipe()
-        process.standardOutput = stdoutPipe
-        process.standardError = stderrPipe
-        // Non-interactive helper: hand the CLI an empty stdin so it never blocks
-        // waiting for input it will never receive (provider-agnostic safeguard).
-        process.standardInput = FileHandle.nullDevice
-        if plan.parsesJSONLines {
-            return await runStreamingCopilotUtilityPrompt(
-                process,
-                stdout: stdoutPipe,
-                stderr: stderrPipe,
-                timeoutSeconds: configuration.timeoutSeconds
-            )
-        }
-
-        let result = await AsyncProcessRunner.run(
-            process,
-            stdout: stdoutPipe,
-            stderr: stderrPipe,
+        let processPlan = AgentRuntimeProcessLaunchPlan(
+            runtime: id,
+            executablePath: plan.executablePath,
+            arguments: plan.arguments,
+            currentDirectory: workspacePath,
+            environment: plan.environment,
+            browserShimDirectory: nil,
+            providerVersion: nil,
+            parsesJSONLines: plan.parsesJSONLines,
+            directoriesToCreate: CopilotCLIRuntime.directoriesToCreate(
+                copilotHome: copilotHome,
+                copilotStateHome: copilotStateHome,
+                userHome: userHome
+            ),
+            sandboxReadablePaths: CopilotCLIRuntime.authReadablePaths(userHome: userHome),
+            sandboxProtectedWriteDenyPaths: CopilotCLIRuntime.configWriteDenyPaths(userHome: userHome)
+        )
+        let utilityPlan = AgentUtilityLaunchPlan(
+            process: processPlan,
+            providerHomeDirectory: copilotHome,
+            permissionPolicy: .restricted,
             timeoutSeconds: configuration.timeoutSeconds
         )
-        let output = plan.parsesJSONLines
-            ? extractCopilotUtilityText(from: result.stdout)
-            : result.stdout
-        return AgentUtilityRunResult(exitCode: result.exitCode, output: output, error: result.stderr)
+        if plan.parsesJSONLines {
+            return await runStreamingCopilotUtilityPrompt(utilityPlan)
+        }
+
+        return await AgentRuntimeProcessRunner().runUtilityProcess(utilityPlan)
     }
 
     private func runStreamingCopilotUtilityPrompt(
-        _ process: Process,
-        stdout: Pipe,
-        stderr: Pipe,
-        timeoutSeconds: TimeInterval?
+        _ utilityPlan: AgentUtilityLaunchPlan
     ) async -> AgentUtilityRunResult {
         let state = CopilotUtilityStreamRunState()
-        let stdoutLines = AgentLockedBuffer()
-
-        return await withTaskCancellationHandler {
-            await withCheckedContinuation { continuation in
-                let finish: @Sendable (AgentUtilityRunResult, Bool) -> Void = { result, shouldTerminate in
-                    stdout.fileHandleForReading.readabilityHandler = nil
-                    stderr.fileHandleForReading.readabilityHandler = nil
-                    if shouldTerminate {
-                        AsyncProcessRunner.terminateProcessTree(process)
-                    }
-                    continuation.resume(returning: result)
-                }
-
-                let handleLine: @Sendable (String) -> Void = { line in
-                    if let result = state.appendStdoutLineAndCompleteIfReady(line) {
-                        finish(result, true)
-                    }
-                }
-
-                stdout.fileHandleForReading.readabilityHandler = { handle in
-                    let data = handle.availableData
-                    guard !data.isEmpty,
-                          let chunk = String(data: data, encoding: .utf8) else { return }
-                    stdoutLines.appendAndProcessLines(chunk, handleLine)
-                }
-
-                stderr.fileHandleForReading.readabilityHandler = { handle in
-                    let data = handle.availableData
-                    guard !data.isEmpty,
-                          let chunk = String(data: data, encoding: .utf8) else { return }
-                    state.appendStderr(chunk)
-                }
-
-                process.terminationHandler = { proc in
-                    stdout.fileHandleForReading.readabilityHandler = nil
-                    stderr.fileHandleForReading.readabilityHandler = nil
-                    if let chunk = String(
-                        data: stdout.fileHandleForReading.readDataToEndOfFile(),
-                        encoding: .utf8
-                    ), !chunk.isEmpty {
-                        stdoutLines.appendAndProcessLines(chunk, handleLine)
-                    }
-                    let remaining = stdoutLines.drainRemaining()
-                    if !remaining.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        handleLine(remaining)
-                    }
-                    if let chunk = String(
-                        data: stderr.fileHandleForReading.readDataToEndOfFile(),
-                        encoding: .utf8
-                    ), !chunk.isEmpty {
-                        state.appendStderr(chunk)
-                    }
-                    if let result = state.completeWithProcessExit(exitCode: Int(proc.terminationStatus)) {
-                        finish(result, false)
-                    }
-                }
-
-                do {
-                    try process.run()
-                    scheduleCopilotUtilityTimeout(
-                        process: process,
-                        timeoutSeconds: timeoutSeconds,
-                        state: state,
-                        finish: finish
-                    )
-                } catch {
-                    if let result = state.completeWithLaunchError(error.localizedDescription) {
-                        finish(result, false)
-                    }
-                }
+        return await AgentRuntimeProcessRunner().runUtilityProcess(
+            utilityPlan,
+            stdoutLineHandler: { line in
+                state.appendStdoutLineAndCompleteIfReady(line)
+            },
+            stderrChunkHandler: { chunk in
+                state.appendStderr(chunk)
+            },
+            completion: { exitCode, _, _ in
+                state.completeWithProcessExit(exitCode: exitCode)
+                    ?? AgentUtilityRunResult(exitCode: exitCode, output: "", error: "")
+            },
+            launchError: { message in
+                state.completeWithLaunchError(message)
+                    ?? AgentUtilityRunResult(exitCode: -1, output: "", error: message)
+            },
+            timeoutResult: { timeoutSeconds in
+                state.completeWithTimeout(timeoutSeconds: timeoutSeconds)
+                    ?? AgentUtilityRunResult(exitCode: -1, output: "", error: "Process timed out.")
             }
-        } onCancel: {
-            AsyncProcessRunner.terminateProcessTree(process)
-        }
-    }
-
-    private func scheduleCopilotUtilityTimeout(
-        process: Process,
-        timeoutSeconds: TimeInterval?,
-        state: CopilotUtilityStreamRunState,
-        finish: @escaping @Sendable (AgentUtilityRunResult, Bool) -> Void
-    ) {
-        guard let timeoutSeconds, timeoutSeconds > 0 else { return }
-        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + timeoutSeconds) {
-            if let result = state.completeWithTimeout(timeoutSeconds: timeoutSeconds) {
-                finish(result, true)
-            }
-        }
+        )
     }
 
     @MainActor
@@ -2291,40 +2214,6 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
         )
     }
 
-    private func extractCopilotUtilityText(from output: String) -> String {
-        var textPieces: [String] = []
-        var failurePieces: [String] = []
-        var completionSummary: String?
-        var terminalSummary: String?
-        for line in output.split(whereSeparator: \.isNewline).map(String.init) {
-            for event in CopilotStreamEventParser.parseAgentEvents(line: line) {
-                switch event {
-                case .text(let text):
-                    textPieces.append(text)
-                case .completed(let summary):
-                    if let summary = CopilotUtilityOutputRendering.nonEmptyText(summary),
-                       CopilotUtilityOutputRendering.isFinalAssistantMessageLine(line) {
-                        completionSummary = summary
-                    } else if let summary = CopilotUtilityOutputRendering.nonEmptyText(summary) {
-                        terminalSummary = summary
-                    }
-                case .failed(let message):
-                    if let message = CopilotUtilityOutputRendering.nonEmptyText(message) {
-                        failurePieces.append(message)
-                    }
-                default:
-                    continue
-                }
-            }
-        }
-        if let completionSummary {
-            return completionSummary
-        }
-        if let joined = CopilotUtilityOutputRendering.nonEmptyText((textPieces + failurePieces).joined()) {
-            return joined
-        }
-        return terminalSummary ?? output
-    }
 }
 
 private final class CopilotUtilityStreamRunState: @unchecked Sendable {
@@ -2752,8 +2641,9 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
         let executable = configuredPath.isEmpty
             ? AntigravityCLIRuntime.detectPath()
             : configuredPath
+        let providerHomeDirectory = configuration.homeDirectory(for: id)
         let modelSettingsURL = AntigravityCLIRuntime.settingsURL(
-            providerHomeDirectory: configuration.homeDirectory(for: id)
+            providerHomeDirectory: providerHomeDirectory
         )
         let sharedStateKey = AgentRuntimeSharedStateKey(
             runtime: id,
@@ -2782,31 +2672,32 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
             permissionPolicy: .restricted,
             timeoutSeconds: configuration.timeoutSeconds,
             taskEnvironment: [:],
-            providerHomeDirectory: configuration.homeDirectory(for: id),
+            providerHomeDirectory: providerHomeDirectory,
             permissionArguments: ProviderPolicyRender.antigravityLaunchPermissionArguments(policy: .restricted)
         )
 
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: plan.executablePath)
-        process.arguments = plan.arguments
-        process.currentDirectoryURL = URL(fileURLWithPath: workspacePath)
-        process.environment = plan.environment
-
-        let stdoutPipe = Pipe()
-        let stderrPipe = Pipe()
-        process.standardOutput = stdoutPipe
-        process.standardError = stderrPipe
-        // Non-interactive helper: hand the CLI an empty stdin so it never blocks
-        // waiting for input it will never receive (provider-agnostic safeguard).
-        process.standardInput = FileHandle.nullDevice
-        let result = await AsyncProcessRunner.run(
-            process,
-            stdout: stdoutPipe,
-            stderr: stderrPipe,
-            timeoutSeconds: configuration.timeoutSeconds
+        let trimmedHome = providerHomeDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
+        let processPlan = AgentRuntimeProcessLaunchPlan(
+            runtime: id,
+            executablePath: plan.executablePath,
+            arguments: plan.arguments,
+            currentDirectory: workspacePath,
+            environment: plan.environment,
+            browserShimDirectory: nil,
+            providerVersion: nil,
+            parsesJSONLines: plan.parsesJSONLines,
+            directoriesToCreate: trimmedHome.isEmpty ? [] : [trimmedHome]
+        )
+        let result = await AgentRuntimeProcessRunner().runUtilityProcess(
+            AgentUtilityLaunchPlan(
+                process: processPlan,
+                providerHomeDirectory: providerHomeDirectory,
+                permissionPolicy: .restricted,
+                timeoutSeconds: configuration.timeoutSeconds
+            )
         )
         await AgentRuntimeSharedStateGate.shared.release(sharedStateKey)
-        return AgentUtilityRunResult(exitCode: result.exitCode, output: result.stdout, error: result.stderr)
+        return result
     }
 
     private func antigravityLiveAccountCheck(
