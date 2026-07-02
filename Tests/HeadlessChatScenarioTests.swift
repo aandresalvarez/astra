@@ -262,6 +262,7 @@ final class HeadlessChatHarness {
 
     func execute(task: AgentTask, worker: AgentRuntimeWorker) async -> [ParsedEvent] {
         var events: [ParsedEvent] = []
+        DirectWorkerLaunchAdmission.admitInitialRun(task, modelContext: context)
         await worker.execute(task: task, modelContext: context) { event in
             events.append(event)
         }
@@ -276,6 +277,7 @@ final class HeadlessChatHarness {
         executionPolicy: AgentRuntimeExecutionPolicy = .default
     ) async -> [ParsedEvent] {
         var events: [ParsedEvent] = []
+        DirectWorkerLaunchAdmission.admitContinuation(task, modelContext: context)
         await worker.continueSession(
             task: task,
             message: message,
@@ -295,6 +297,7 @@ final class HeadlessChatHarness {
         mode: TaskPlanExecutionMode = .fullPlan
     ) async -> [ParsedEvent] {
         var events: [ParsedEvent] = []
+        DirectWorkerLaunchAdmission.admitInitialRun(task, modelContext: context)
         await worker.executeApprovedPlan(task: task, plan: plan, mode: mode, modelContext: context) { event in
             events.append(event)
         }

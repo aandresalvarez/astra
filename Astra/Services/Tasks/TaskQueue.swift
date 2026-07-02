@@ -182,6 +182,10 @@ final class TaskQueue {
             return
         }
 
+        guard admitQueuedTaskToRuntime(task, modelContext: modelContext, mode: "task") else {
+            return
+        }
+
         guard prepareTaskFolder(task, modelContext: modelContext, mode: "task") else {
             return
         }
@@ -328,9 +332,13 @@ final class TaskQueue {
             sourceTask.updatedAt = Date()
         }
 
-        sourceTask.status = scheduledTask.status
+        TaskStateMachine.mirrorScheduleResultStatus(
+            sourceTask: sourceTask,
+            scheduledTask: scheduledTask,
+            modelContext: modelContext,
+            at: sourceTask.updatedAt
+        )
         sourceTask.isDone = false
-        sourceTask.markUnreadForCurrentStatus(at: sourceTask.updatedAt)
     }
 
     private static let dateFormatter: DateFormatter = {
@@ -396,7 +404,7 @@ final class TaskQueue {
             return false
         }
 
-        markContinuationLaunchAdmitted(task)
+        markContinuationLaunchAdmitted(task, modelContext: modelContext)
         taskWorkerMap[task.id] = worker
         await worker.continueSession(
             task: task,
@@ -420,11 +428,8 @@ final class TaskQueue {
     }
 
     @MainActor
-    private func markContinuationLaunchAdmitted(_ task: AgentTask) {
-        task.status = .running
-        task.updatedAt = Date()
-        task.completedAt = nil
-        task.markRead()
+    private func markContinuationLaunchAdmitted(_ task: AgentTask, modelContext: ModelContext) {
+        TaskStateMachine.admitContinuationToRuntime(task, modelContext: modelContext)
     }
 
     @MainActor
@@ -441,10 +446,11 @@ final class TaskQueue {
             return
         }
 
-        task.status = lifecycle.previousStatus
-        task.completedAt = lifecycle.previousCompletedAt
-        task.updatedAt = Date()
-        task.markUnreadForCurrentStatus()
+        TaskStateMachine.restoreContinuationAdmissionFailure(
+            task,
+            snapshot: TaskStateMachine.Snapshot(status: lifecycle.previousStatus, completedAt: lifecycle.previousCompletedAt),
+            modelContext: modelContext
+        )
         modelContext.insert(TaskEvent(
             task: task,
             eventType: TaskEventTypes.System.error,
@@ -493,6 +499,10 @@ final class TaskQueue {
             return
         }
 
+        guard admitQueuedTaskToRuntime(task, modelContext: modelContext, mode: "approved_plan") else {
+            return
+        }
+
         guard prepareTaskFolder(task, modelContext: modelContext, mode: "approved_plan") else {
             return
         }
@@ -519,6 +529,50 @@ final class TaskQueue {
     }
 
     @MainActor
+    private func admitQueuedTaskToRuntime(
+        _ task: AgentTask,
+        modelContext: ModelContext,
+        mode: String
+    ) -> Bool {
+        let result = TaskStateMachine.admitQueuedTaskToRuntime(task, modelContext: modelContext)
+        guard result.rejection == nil else {
+            recordQueueAdmissionRejection(task, result: result, modelContext: modelContext, mode: mode)
+            return false
+        }
+        return true
+    }
+
+    @MainActor
+    private func recordQueueAdmissionRejection(
+        _ task: AgentTask,
+        result: TaskStateMachine.TransitionResult,
+        modelContext: ModelContext,
+        mode: String
+    ) {
+        AppLogger.audit(.workerBlocked, category: "Queue", taskID: task.id, fields: [
+            "reason": "queue_admission_rejected",
+            "mode": mode,
+            "from": result.from.rawValue,
+            "to": result.to.rawValue
+        ], level: .warning)
+        modelContext.insert(TaskEvent(
+            task: task,
+            eventType: TaskEventTypes.System.error,
+            payload: "This task could not be admitted to runtime because it is no longer queued. Current status: \(result.from.rawValue)."
+        ))
+        WorkspacePersistenceCoordinator.saveAndAutoExport(
+            workspace: task.workspace,
+            modelContext: modelContext,
+            taskID: task.id,
+            auditFields: [
+                "operation": "queue_admission_rejected",
+                "mode": mode,
+                "status": result.from.rawValue
+            ]
+        )
+    }
+
+    @MainActor
     private func prepareTaskFolder(_ task: AgentTask, modelContext: ModelContext, mode: String) -> Bool {
         do {
             let folder = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
@@ -534,11 +588,8 @@ final class TaskQueue {
                 "mode": mode,
                 "error_type": String(describing: type(of: error))
             ], level: .error)
-            task.status = .failed
             let now = Date()
-            task.updatedAt = now
-            task.completedAt = now
-            task.markUnreadForCurrentStatus(at: now)
+            TaskStateMachine.failFromRuntime(task, modelContext: modelContext, at: now)
             modelContext.insert(TaskEvent(
                 task: task,
                 type: "error",

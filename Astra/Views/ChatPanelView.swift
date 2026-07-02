@@ -1652,7 +1652,7 @@ struct ChatPanelView: View {
             model: model,
             runtime: runtime
         )
-        task.status = .queued
+        TaskStateMachine.enqueueFromChatSubmission(task, modelContext: modelContext)
         task.inputs = attachedFiles
         task.skills = taskSkills
         TaskCapabilitySnapshotter.capture(for: task)
@@ -1756,8 +1756,6 @@ struct ChatPanelView: View {
         TaskPlanService.recordApproved(plan, task: task, modelContext: modelContext)
         task.title = plan.title
         task.goal = plan.goal.isEmpty ? task.goal : plan.goal
-        task.status = .draft
-        task.updatedAt = Date()
         pendingPlan = nil
         isApprovedPlanHistoryExpanded = false
         isPlanMode = false
@@ -1785,9 +1783,7 @@ struct ChatPanelView: View {
         TaskPlanService.recordApproved(plan, task: task, modelContext: modelContext)
         task.title = plan.title
         task.goal = plan.goal.isEmpty ? plan.title : plan.goal
-        task.status = .queued
-        task.completedAt = nil
-        task.updatedAt = Date()
+        TaskStateMachine.enqueueFromChatSubmission(task, modelContext: modelContext)
         pendingPlan = nil
         isApprovedPlanHistoryExpanded = false
         isPlanMode = false
@@ -1839,7 +1835,7 @@ struct ChatPanelView: View {
             model: model,
             runtime: runtime
         )
-        task.status = .queued
+        TaskStateMachine.enqueueFromChatSubmission(task, modelContext: modelContext)
         task.inputs = spec.inputs + attachedFiles
         task.constraints = spec.constraints
         task.acceptanceCriteria = spec.acceptanceCriteria
@@ -2597,7 +2593,6 @@ struct ChatPanelView: View {
                 model: model,
                 runtime: runtime
             )
-            draft.status = .draft
             draft.draftMessages = json
             draft.inputs = attachedFiles
             draft.skills = scopedSelectedSkills(forTaskText: draft.goal, inputs: attachedFiles)

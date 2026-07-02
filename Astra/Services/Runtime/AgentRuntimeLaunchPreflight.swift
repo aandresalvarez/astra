@@ -79,11 +79,8 @@ enum AgentRuntimeLaunchPreflight {
                 "result": AgentRuntimeLaunchPreflightResult.Status.taskFolderCreateFailed.rawValue
             ]
             AppLogger.audit(.taskFailed, category: "Worker", taskID: task.id, fields: fields, level: .error)
-            task.status = .failed
             let now = Date()
-            task.updatedAt = now
-            task.completedAt = now
-            task.markUnreadForCurrentStatus(at: now)
+            TaskStateMachine.failFromRuntime(task, modelContext: modelContext, at: now)
             modelContext.insert(TaskEvent(
                 task: task,
                 type: "error",
@@ -998,9 +995,7 @@ enum AgentRuntimeLaunchPreflight {
         run.status = .failed
         run.typedStopReason = TaskRunStopReason.custom(reason)
         run.completedAt = Date()
-        task.status = .failed
-        task.updatedAt = Date()
-        task.markUnreadForCurrentStatus(at: task.updatedAt)
+        TaskStateMachine.failFromRuntime(task, modelContext: modelContext, at: run.completedAt ?? Date())
         let event = TaskEvent(task: task, eventType: TaskEventTypes.System.error, payload: payload, run: run)
         modelContext.insert(event)
         AppLogger.audit(.taskFailed, category: "Worker", taskID: task.id, fields: [

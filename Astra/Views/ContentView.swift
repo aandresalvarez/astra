@@ -2573,7 +2573,7 @@ struct ContentView: View {
                 model: RuntimeModelAvailability.defaultModel(for: runtime),
                 runtime: runtime
             )
-            task.status = .queued
+            TaskStateMachine.enqueueFromUITestSeed(task, modelContext: modelContext)
             modelContext.insert(task)
         }
         try? modelContext.save()

@@ -118,8 +118,7 @@ final class AgentRuntimeWorker {
                 return
             }
             TaskPlanService.recordExecutionCompleted(planID: currentPlan.planID, task: task, modelContext: modelContext)
-            task.status = .completed
-            task.updatedAt = Date()
+            TaskStateMachine.completeFromRuntime(task, modelContext: modelContext)
             WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
             return
         }
@@ -386,10 +385,7 @@ final class AgentRuntimeWorker {
             run: run
         )
         modelContext.insert(notice)
-        task.status = .pendingUser
-        task.completedAt = nil
-        task.updatedAt = Date()
-        task.markUnreadForCurrentStatus(at: task.updatedAt)
+        TaskStateMachine.pauseForValidationReview(task, modelContext: modelContext)
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
     }
 
@@ -466,6 +462,13 @@ final class AgentRuntimeWorker {
             ], level: .warning)
             return
         }
+        guard AgentRuntimeStartAdmission.confirmRuntimeSessionStarted(
+            task: task,
+            modelContext: modelContext,
+            auditPhase: auditPhase
+        ) else {
+            return
+        }
         guard AgentRuntimeLaunchPreflight.prepareTaskFolderForLaunch(
             task,
             modelContext: modelContext,
@@ -479,9 +482,6 @@ final class AgentRuntimeWorker {
         if task.runtimeID == nil {
             task.runtimeID = selectedRuntime.rawValue
         }
-        task.status = .running
-        task.updatedAt = Date()
-        task.markRead()
 
         let run = TaskRun(task: task)
         run.runtimeID = selectedRuntime.rawValue
@@ -509,9 +509,7 @@ final class AgentRuntimeWorker {
             if let stopReason = runtimeAdapter.missingExecutableStopReason() {
                 run.typedStopReason = TaskRunStopReason.custom(stopReason)
             }
-            task.status = .failed
-            task.updatedAt = Date()
-            task.markUnreadForCurrentStatus(at: task.updatedAt)
+            TaskStateMachine.failFromRuntime(task, modelContext: modelContext, at: run.completedAt ?? Date())
             let event = TaskEvent(task: task, eventType: TaskEventTypes.System.error,
                 payload: runtimeAdapter.missingExecutableMessage(executablePath: launchSettings.executablePath), run: run)
             modelContext.insert(event)
@@ -561,9 +559,7 @@ final class AgentRuntimeWorker {
             run.status = .failed
             run.completedAt = Date()
             run.typedStopReason = .workspaceNotFound
-            task.status = .failed
-            task.updatedAt = Date()
-            task.markUnreadForCurrentStatus(at: task.updatedAt)
+            TaskStateMachine.failFromRuntime(task, modelContext: modelContext, at: run.completedAt ?? Date())
             let event = TaskEvent(task: task, eventType: TaskEventTypes.System.error,
                 payload: "Workspace directory not found: \(codeDir)", run: run)
             modelContext.insert(event)
@@ -611,9 +607,7 @@ final class AgentRuntimeWorker {
                 run.status = .failed
                 run.completedAt = Date()
                 run.typedStopReason = .isolationFailed
-                task.status = .failed
-                task.updatedAt = Date()
-                task.markUnreadForCurrentStatus(at: task.updatedAt)
+                TaskStateMachine.failFromRuntime(task, modelContext: modelContext, at: run.completedAt ?? Date())
                 let event = TaskEvent(task: task, eventType: TaskEventTypes.System.error,
                     payload: "Workspace isolation failed: \(error.localizedDescription)", run: run)
                 modelContext.insert(event)
@@ -928,11 +922,11 @@ final class AgentRuntimeWorker {
         if cancellationRequested || task.status == .cancelled {
             run.status = .cancelled
             run.typedStopReason = .cancelled
-            task.status = .cancelled
+            TaskStateMachine.cancelFromRuntime(task, modelContext: modelContext)
         } else if result.timedOut {
             run.status = .timeout
             run.typedStopReason = .timeout
-            task.status = .failed
+            TaskStateMachine.failFromRuntime(task, modelContext: modelContext)
             let event = TaskEvent(task: task, eventType: TaskEventTypes.System.error,
                                   payload: runtimeAdapter.timeoutPayload(
                                     phase: auditPhase,
@@ -942,7 +936,7 @@ final class AgentRuntimeWorker {
         } else if result.maxTurnsExceeded {
             run.status = .budgetExceeded
             run.typedStopReason = .maxTurnsReached
-            task.status = .budgetExceeded
+            TaskStateMachine.exceedBudgetFromRuntime(task, modelContext: modelContext)
             let event = TaskEvent(task: task, eventType: TaskEventTypes.Budget.exceeded,
                                   payload: runtimeAdapter.maxTurnsPayload(phase: auditPhase, task: task), run: run)
             modelContext.insert(event)
@@ -951,7 +945,7 @@ final class AgentRuntimeWorker {
         } else if result.policyApprovalRequired {
             run.status = .failed
             run.typedStopReason = .permissionApprovalRequired
-            task.status = .pendingUser
+            TaskStateMachine.pauseForRuntimePermission(task, modelContext: modelContext)
             let event = TaskEvent(
                 task: task,
                 eventType: TaskEventTypes.Tool.permissionApprovalRequested,
@@ -962,7 +956,7 @@ final class AgentRuntimeWorker {
         } else if result.policyViolation {
             run.status = .failed
             run.typedStopReason = .policyViolation
-            task.status = .pendingUser
+            TaskStateMachine.pauseForRuntimeReview(task, modelContext: modelContext)
             let event = TaskEvent(
                 task: task,
                 eventType: TaskEventTypes.System.error,
@@ -977,7 +971,7 @@ final class AgentRuntimeWorker {
         ) {
             run.status = .budgetExceeded
             run.typedStopReason = .maxBudgetReached
-            task.status = .budgetExceeded
+            TaskStateMachine.exceedBudgetFromRuntime(task, modelContext: modelContext)
             let reason = "Token budget exceeded"
             let outcome = result.budgetExceeded ? "Process killed." : "Provider reported usage above budget."
             let event = TaskEvent(task: task, eventType: TaskEventTypes.Budget.exceeded,
@@ -1032,15 +1026,15 @@ final class AgentRuntimeWorker {
                         let testResult = await ValidationService.runTests(task: task)
                         switch testResult {
                         case .passed(let details):
-                            task.status = .completed
+                            TaskStateMachine.completeFromRuntime(task, modelContext: modelContext)
                             let event = TaskEvent(task: task, eventType: TaskEventTypes.Task.completed, payload: "\(ValidationOutcomeMarker.testsPassed.rawValue). \(String(details.prefix(300)))", run: run)
                             modelContext.insert(event)
                         case .failed(let details):
-                            task.status = .failed
+                            TaskStateMachine.failFromValidation(task, modelContext: modelContext)
                             let event = TaskEvent(task: task, eventType: TaskEventTypes.System.error, payload: "\(ValidationOutcomeMarker.testsFailed.rawValue):\n\(String(details.prefix(500)))", run: run)
                             modelContext.insert(event)
                         case .error(let msg):
-                            task.status = .pendingUser
+                            TaskStateMachine.pauseForValidationReview(task, modelContext: modelContext)
                             let event = TaskEvent(task: task, eventType: TaskEventTypes.System.error, payload: "\(ValidationOutcomeMarker.validationError.rawValue): \(msg). Needs manual review.", run: run)
                             modelContext.insert(event)
                         }
@@ -1061,15 +1055,15 @@ final class AgentRuntimeWorker {
                         )
                         switch aiResult {
                         case .passed(let details):
-                            task.status = .completed
+                            TaskStateMachine.completeFromRuntime(task, modelContext: modelContext)
                             let event = TaskEvent(task: task, eventType: TaskEventTypes.Task.completed, payload: "\(ValidationOutcomeMarker.aiCheckPassed.rawValue). \(String(details.prefix(300)))", run: run)
                             modelContext.insert(event)
                         case .failed(let details):
-                            task.status = .pendingUser
+                            TaskStateMachine.pauseForValidationReview(task, modelContext: modelContext)
                             let event = TaskEvent(task: task, eventType: TaskEventTypes.System.error, payload: "\(ValidationOutcomeMarker.aiCheckFlagged.rawValue) issues:\n\(String(details.prefix(500)))", run: run)
                             modelContext.insert(event)
                         case .error(let msg):
-                            task.status = .pendingUser
+                            TaskStateMachine.pauseForValidationReview(task, modelContext: modelContext)
                             let event = TaskEvent(task: task, eventType: TaskEventTypes.System.error, payload: "\(ValidationOutcomeMarker.aiCheckError.rawValue): \(msg). Needs manual review.", run: run)
                             modelContext.insert(event)
                         }
@@ -1097,7 +1091,7 @@ final class AgentRuntimeWorker {
         ) {
             run.status = .failed
             run.typedStopReason = .permissionApprovalRequired
-            task.status = .pendingUser
+            TaskStateMachine.pauseForRuntimePermission(task, modelContext: modelContext)
             let payload = permissionApprovalRequestPayload(
                 diagnostic: failureDiagnostic,
                 result: result
@@ -1128,7 +1122,7 @@ final class AgentRuntimeWorker {
                 let event = TaskEvent(task: task, eventType: TaskEventTypes.System.error, payload: payload, run: run)
                 modelContext.insert(event)
             }
-            task.status = .failed
+            TaskStateMachine.failFromRuntime(task, modelContext: modelContext)
         }
 
         AgentRuntimeRunPersistence.recordSessionTurn(
@@ -1208,8 +1202,7 @@ final class AgentRuntimeWorker {
 
         run.status = .failed
         run.typedStopReason = .noUsableResult
-        task.status = .pendingUser
-        task.completedAt = nil
+        TaskStateMachine.pauseForRuntimeReview(task, modelContext: modelContext)
 
         let providerName = runtimeAdapter.descriptor.displayName
         let requiredArtifact = TaskDeliverableExpectation.requiresDeliverableArtifact(task)
@@ -1338,7 +1331,7 @@ final class AgentRuntimeWorker {
             return false
         }
 
-        task.status = .completed
+        TaskStateMachine.completeFromRuntime(task, modelContext: modelContext)
         let event = TaskEvent(task: task, eventType: TaskEventTypes.Task.completed, payload: successPayload, run: run)
         modelContext.insert(event)
         return true
@@ -1353,8 +1346,7 @@ final class AgentRuntimeWorker {
     ) {
         run.status = .failed
         run.typedStopReason = decision.typedStopReason ?? TaskRunStopReason.custom(decision.gate.rawValue)
-        task.status = .pendingUser
-        task.completedAt = nil
+        TaskStateMachine.pauseForValidationReview(task, modelContext: modelContext)
         modelContext.insert(TaskEvent(
             task: task,
             eventType: TaskEventTypes.System.error,
@@ -1455,7 +1447,7 @@ final class AgentRuntimeWorker {
             isolationStrategy: task.isolationStrategy,
             validationStrategy: task.validationStrategy
         )
-        nextTask.status = .queued
+        TaskStateMachine.enqueueChainedFollowUp(nextTask, modelContext: modelContext)
         nextTask.chainedFromID = task.id
         nextTask.runtimeID = task.runtimeID
         // A chained follow-up continues in the same checkout and execution
@@ -1545,9 +1537,7 @@ final class AgentRuntimeWorker {
         run.status = .failed
         run.completedAt = Date()
         run.typedStopReason = .policyBlocked
-        task.status = .pendingUser
-        task.updatedAt = Date()
-        task.markUnreadForCurrentStatus(at: task.updatedAt)
+        TaskStateMachine.pauseForRuntimeReview(task, modelContext: modelContext, at: run.completedAt ?? Date())
 
         let details = blockedDiagnostics
             .map { diagnostic in
@@ -1963,7 +1953,11 @@ final class AgentRuntimeWorker {
 
         run.status = .failed
         run.typedStopReason = TaskRunStopReason.custom(reason)
-        task.status = Self.isTerminalRuntimeStop(reason) ? .failed : .pendingUser
+        if Self.isTerminalRuntimeStop(reason) {
+            TaskStateMachine.failFromRuntime(task, modelContext: modelContext)
+        } else {
+            TaskStateMachine.pauseForRuntimeReview(task, modelContext: modelContext)
+        }
 
         let payload = result.runtimeStopMessage
             ?? "ASTRA stopped the provider because browser control reached a terminal guardrail: \(reason)."
@@ -2004,7 +1998,7 @@ final class AgentRuntimeWorker {
 
         run.status = .failed
         run.typedStopReason = .repetitionDetected
-        task.status = .failed
+        TaskStateMachine.failFromRuntime(task, modelContext: modelContext)
 
         modelContext.insert(TaskEvent(
             task: task,

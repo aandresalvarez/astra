@@ -89,9 +89,7 @@ enum AgentRuntimeBudgetPolicy {
         run.status = .budgetExceeded
         run.completedAt = Date()
         run.typedStopReason = .maxBudgetReached
-        task.status = .budgetExceeded
-        task.updatedAt = Date()
-        task.markUnreadForCurrentStatus(at: task.updatedAt)
+        TaskStateMachine.exceedBudgetFromRuntime(task, modelContext: modelContext, at: run.completedAt ?? Date())
         let message = "Launch estimate exceeds the task budget before launch (\(estimatedInputTokens)/\(tokenBudget)). Provider was not started."
         modelContext.insert(TaskEvent(
             task: task,

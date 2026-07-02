@@ -1987,7 +1987,7 @@ struct WorkspaceAppActionExecutor {
         }
 
         let task = AgentTask(title: title, goal: goal, workspace: workspace)
-        task.status = status
+        TaskStateMachine.initializeFromWorkspaceAppAction(task, to: status, modelContext: modelContext)
         task.inputs = [
             "Created from Workspace App '\(manifest.app.name)' (\(manifest.app.id)).",
             "Workspace App action: \(action.id)"

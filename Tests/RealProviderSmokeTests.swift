@@ -1077,6 +1077,7 @@ private final class RealProviderHarness {
 
     func execute(task: AgentTask, worker: AgentRuntimeWorker) async throws -> [ParsedEvent] {
         var events: [ParsedEvent] = []
+        DirectWorkerLaunchAdmission.admitInitialRun(task, modelContext: context)
         try await E2ETestSupport.withLiveProviderSlot {
             await worker.execute(task: task, modelContext: context) { event in
                 events.append(event)
@@ -1088,6 +1089,7 @@ private final class RealProviderHarness {
 
     func continueTask(task: AgentTask, message: String, worker: AgentRuntimeWorker) async throws -> [ParsedEvent] {
         var events: [ParsedEvent] = []
+        DirectWorkerLaunchAdmission.admitContinuation(task, modelContext: context)
         try await E2ETestSupport.withLiveProviderSlot {
             await worker.continueSession(task: task, message: message, modelContext: context) { event in
                 events.append(event)

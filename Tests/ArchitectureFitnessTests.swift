@@ -377,6 +377,56 @@ struct ArchitectureFitnessTests {
         #expect(matches.isEmpty, "New raw stop reason assignments should stay behind runtime/completion/persistence boundaries: \(matches)")
     }
 
+    @Test("Production task status writes go through TaskStateMachine")
+    func productionTaskStatusWritesGoThroughTaskStateMachine() throws {
+        let root = try repositoryRoot()
+        let allowedFiles: Set<String> = [
+            "Astra/Models/AgentTask.swift",
+            "Astra/Models/SchemaVersions.swift",
+            "Astra/Services/Tasks/TaskStateMachine.swift"
+        ]
+
+        let matches = try swiftFiles(under: root.appendingPathComponent("Astra"))
+            .flatMap { file -> [String] in
+                let relativePath = relativePath(for: file, root: root)
+                let text = try String(contentsOf: file, encoding: .utf8)
+                return taskStatusWriteViolations(
+                    in: text,
+                    relativePath: relativePath,
+                    taskStatusOwnerFiles: allowedFiles
+                )
+            }
+            .sorted()
+
+        #expect(
+            matches.isEmpty,
+            "Production AgentTask status writes should use TaskStateMachine intent methods: \(matches)"
+        )
+    }
+
+    @Test("Task status write scanner catches unrecognized task receivers")
+    func taskStatusWriteScannerCatchesUnrecognizedTaskReceivers() throws {
+        let fixturePath = "Astra/Services/Runtime/AgentRuntimeWorker.swift"
+        let fixture = """
+        run.status = .completed
+        selected.status = .running
+        self.task.status = .failed
+        workspace.tasks[i].status = .queued
+        """
+
+        let matches = taskStatusWriteViolations(
+            in: fixture,
+            relativePath: fixturePath,
+            taskStatusOwnerFiles: []
+        )
+
+        #expect(matches == [
+            "\(fixturePath):2: selected.status = .running",
+            "\(fixturePath):3: self.task.status = .failed",
+            "\(fixturePath):4: workspace.tasks[i].status = .queued"
+        ])
+    }
+
     @Test("Launch command builders require render-derived permission arguments")
     func launchCommandBuildersRequireRenderDerivedPermissionArguments() throws {
         let root = try repositoryRoot()
@@ -1342,6 +1392,79 @@ struct ArchitectureFitnessTests {
         #expect(policy.contains("public let excludedTools: [String]"))
         #expect(!policy.contains("public var allowedTools"))
         #expect(!policy.contains("public var excludedTools"))
+    }
+
+    private func taskStatusWriteViolations(
+        in text: String,
+        relativePath: String,
+        taskStatusOwnerFiles: Set<String>
+    ) -> [String] {
+        guard !taskStatusOwnerFiles.contains(relativePath) else { return [] }
+
+        return text
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .enumerated()
+            .compactMap { index, line in
+                let trimmed = String(line).trimmingCharacters(in: .whitespaces)
+                guard !trimmed.hasPrefix("//"),
+                      let receiver = statusAssignmentReceiver(in: trimmed),
+                      !isAllowedNonTaskStatusAssignment(receiver: receiver, relativePath: relativePath) else {
+                    return nil
+                }
+                return "\(relativePath):\(index + 1): \(trimmed)"
+            }
+    }
+
+    private func statusAssignmentReceiver(in line: String) -> String? {
+        guard let assignmentRange = line.range(
+            of: #"(?<![=!<>])=(?!=)"#,
+            options: .regularExpression
+        ) else {
+            return nil
+        }
+
+        let leftHandSide = line[..<assignmentRange.lowerBound]
+            .trimmingCharacters(in: .whitespaces)
+        guard leftHandSide.hasSuffix(".status") else {
+            return nil
+        }
+
+        return String(leftHandSide.dropLast(".status".count))
+    }
+
+    private func isAllowedNonTaskStatusAssignment(receiver: String, relativePath: String) -> Bool {
+        allowedNonTaskStatusReceiversByFile[relativePath]?.contains(receiver) == true
+    }
+
+    private var allowedNonTaskStatusReceiversByFile: [String: Set<String>] {
+        [
+            "Astra/AppIntents/AstraAppEntities.swift": ["self"],
+            "Astra/Models/TaskPlan.swift": ["self"],
+            "Astra/Models/TaskRun.swift": ["self"],
+            "Astra/Services/Capabilities/MCPControlPlaneRuntimeBindingService.swift": ["self"],
+            "Astra/Services/Persistence/SessionScanner.swift": ["run"],
+            "Astra/Services/Persistence/TaskContextStateManager.swift": ["self"],
+            "Astra/Services/Persistence/WorkspaceConfigManager.swift": ["run"],
+            "Astra/Services/Runtime/AgentProcessSupport.swift": ["job"],
+            "Astra/Services/Runtime/AgentRuntimeBudgetPolicy.swift": ["run"],
+            "Astra/Services/Runtime/AgentRuntimeLaunchPreflight.swift": ["run"],
+            "Astra/Services/Runtime/AgentRuntimeWorker.swift": ["run", "run?"],
+            "Astra/Services/Tasks/AgentTaskForkService.swift": ["newRun"],
+            "Astra/Services/Tasks/DatabaseQueryService.swift": ["self"],
+            "Astra/Services/Tasks/TaskPlanService.swift": ["plan.steps[index]", "merged.steps[index]"],
+            "Astra/Services/Tasks/TaskPlanStateCacheSignature.swift": ["self"],
+            "Astra/Services/Tasks/TaskQueue.swift": ["copiedRun"],
+            "Astra/Services/Tasks/TaskRunLifecycleService.swift": ["run"],
+            "Astra/Services/Validation/TaskCorrectiveWorkService.swift": ["payload"],
+            "Astra/Services/WorkspaceApps/WorkspaceAppActionExecutor.swift": ["run"],
+            "Astra/Services/WorkspaceApps/WorkspaceAppAutomationExecutionService.swift": ["state"],
+            "Astra/Services/WorkspaceApps/WorkspaceAppAutomationScheduler.swift": ["automation"],
+            "Astra/Services/WorkspaceApps/WorkspaceAppRunResumptionService.swift": ["run"],
+            "Astra/Services/WorkspaceApps/WorkspaceAppService.swift": ["automation", "binding", "surviving"],
+            "Astra/Views/Components/KanbanBoardView.swift": ["self"],
+            "Astra/Views/RunActivityPresentation.swift": ["response"],
+            "Astra/Views/WorkspaceRightRailCapabilitySnapshotCache.swift": ["self"]
+        ]
     }
 
     private func declaredTaskEventTypeConstants() throws -> Set<String> {

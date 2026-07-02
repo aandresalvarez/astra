@@ -616,9 +616,8 @@ struct KanbanBoardView: View {
         }
 
         withAnimation(.easeInOut(duration: 0.2)) {
-            task.status = nextStatus
+            TaskStateMachine.setFromBoardMove(task, to: nextStatus, modelContext: modelContext)
             task.isDone = nextDone
-            task.updatedAt = Date()
             try? modelContext.save()
             AppLogger.info(
                 "Kanban drop applied task=\(task.id.uuidString) target=\(category.rawValue) status=\(previousStatus.rawValue)->\(task.status.rawValue) done=\(wasDone)->\(task.isDone)",
