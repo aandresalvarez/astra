@@ -42,6 +42,13 @@ struct BrowserAutomationEngineDescriptor: Equatable, Sendable {
     }
 }
 
+protocol BrowserAutomationEngineDescribing {
+    var automationDescriptor: BrowserAutomationEngineDescriptor { get }
+    var bridgeBackendLabel: String { get }
+}
+
+extension ShelfBrowserEngine: BrowserAutomationEngineDescribing {}
+
 extension ShelfBrowserEngine {
     var automationDescriptor: BrowserAutomationEngineDescriptor {
         switch self {

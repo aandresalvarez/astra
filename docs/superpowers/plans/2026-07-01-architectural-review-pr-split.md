@@ -687,6 +687,14 @@ script/precommit.sh
 script/prepush.sh
 ```
 
+**Implementation evidence (2026-07-02):**
+
+- Added `ShelfBrowserBridgeCommandSpec` as the single route catalog for method/path lookup, published `/actions` metadata, and batch aliases.
+- Routed GitHub read-only batch policy and `ShelfBrowserSession.runBatch` through `ShelfBrowserBridgeCommandRouter.route(batchAction:)`, removing mirrored alias switches from those surfaces.
+- Added `BrowserAutomationEngineDescribing` plus `ShelfBrowserBridgeVerificationCommandHandler` and moved the `verifyText`, `waitSaved`, `waitForText`, and `waitForSelector` direct/batch cluster behind it.
+- Added `BrowserBridgeSecurityTests` coverage for route-spec ownership, batch alias policy coverage, and direct/batch verification handler execution.
+- Validation passed: `swift test --filter BrowserBridgeSecurityTests`; `swift test --filter BrowserAutomationEngineTests`; `swift test --filter BrowserControlActionServiceTests`; `swift test --filter BrowserMCPServerTests`; `git diff --check`; `script/precommit.sh`; `script/prepush.sh`.
+
 ## PR 16: Single-Source WorkspaceApps Permission Gate and Read Pipeline
 
 **Root cause:** WorkspaceApps permission enforcement and capability-read execution are mirrored across executor async, executor sync, preview, and view wiring. A security-relevant rate limiter already had to be patched because one mirror missed it.

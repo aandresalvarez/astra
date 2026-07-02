@@ -157,6 +157,32 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
     private var isWebKitDebugInstrumentationScriptRegistered = false
     private var suppressEngineTransitionHandler = false
 
+    private var verificationCommandHandler: ShelfBrowserBridgeVerificationCommandHandler {
+        ShelfBrowserBridgeVerificationCommandHandler(
+            automationEngine: engine,
+            verifyText: { [self] text, absent in
+                try await verifyText(text, absent: absent)
+            },
+            waitSaved: { [self] timeoutSeconds, intervalMilliseconds in
+                try await waitSaved(timeoutSeconds: timeoutSeconds, intervalMilliseconds: intervalMilliseconds)
+            },
+            waitForText: { [self] text, timeoutSeconds, intervalMilliseconds in
+                try await waitForText(
+                    text,
+                    timeoutSeconds: timeoutSeconds,
+                    intervalMilliseconds: intervalMilliseconds
+                )
+            },
+            waitForSelector: { [self] selector, timeoutSeconds, intervalMilliseconds in
+                try await waitForSelector(
+                    selector,
+                    timeoutSeconds: timeoutSeconds,
+                    intervalMilliseconds: intervalMilliseconds
+                )
+            }
+        )
+    }
+
     var isUsingControlledBrowser: Bool {
         engine == .controlled
     }
@@ -1411,15 +1437,11 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                     role: command.role,
                     allowDangerous: BrowserDangerousActionApproval.trustedProviderApproval(command.allowDangerous)
                 ))
-            case .verifyText:
-                let command = try request.decodeJSON(VerifyTextCommand.self)
-                return .json(try await verifyText(command.text, absent: command.absent ?? false))
-            case .waitSaved:
-                let command = try request.decodeJSON(WaitSavedCommand.self)
-                return .json(try await waitSaved(
-                    timeoutSeconds: command.timeoutSeconds ?? 8,
-                    intervalMilliseconds: command.intervalMilliseconds ?? 500
-                ))
+            case .verifyText, .waitSaved, .waitForText, .waitForSelector:
+                if let response = try await verificationCommandHandler.handleDirect(route: route, request: request) {
+                    return response
+                }
+                return .json(["ok": false, "error": "handler_not_registered"], statusCode: 500)
             case .googleFindReplace:
                 let command = try request.decodeJSON(GoogleFindReplaceCommand.self)
                 return .json(try await googleFindReplace(
@@ -1473,22 +1495,6 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 let command = try request.decodeJSON(TextCommand.self)
                 let json = try await insertText(command.text)
                 return .rawJSON(json)
-            case .waitForText:
-                let command = try request.decodeJSON(WaitTextCommand.self)
-                let result = try await waitForText(
-                    command.text,
-                    timeoutSeconds: command.timeoutSeconds ?? 5,
-                    intervalMilliseconds: command.intervalMilliseconds ?? 250
-                )
-                return .json(result)
-            case .waitForSelector:
-                let command = try request.decodeJSON(WaitSelectorCommand.self)
-                let result = try await waitForSelector(
-                    command.selector,
-                    timeoutSeconds: command.timeoutSeconds ?? 5,
-                    intervalMilliseconds: command.intervalMilliseconds ?? 250
-                )
-                return .json(result)
             case .batch:
                 let command = try request.decodeJSON(BatchCommand.self)
                 let result = try await runBatch(command)
@@ -5120,8 +5126,12 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 stopReason = "site_action_not_allowed"
                 break batchLoop
             }
-            switch action.normalizedAction {
-            case "analyze":
+            guard let route = ShelfBrowserBridgeCommandRouter.route(batchAction: action.normalizedAction) else {
+                results.append(["ok": false, "action": action.action, "error": "unknown_action"])
+                continue
+            }
+            switch route {
+            case .analyze:
                 let hasExplicitVersion = action.v2 != nil || action.version != nil || action.analysisVersion != nil
                 let requestedVersion = BrowserAnalysisVersion.requested(
                     version: action.analysisVersion ?? action.version,
@@ -5139,7 +5149,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                     includeShadowV2: rollout.shouldAttachShadowAnalysis && !hasExplicitVersion
                 )
                 results.append(result.merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
-            case "preflight":
+            case .preflight:
                 guard action.hasAnalysisControl else {
                     results.append(["ok": false, "action": action.action, "error": "missing_analysis_or_control"])
                     stopReason = "missing_analysis_or_control"
@@ -5156,7 +5166,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                     stopReason = result["error"] as? String ?? "preflight_failed"
                     break batchLoop
                 }
-            case "navigate":
+            case .navigate:
                 guard let urlText = action.url,
                       let url = BrowserBridgeNavigationPolicy.normalizedProviderURL(from: urlText) else {
                     results.append(["ok": false, "action": action.action, "error": "invalid_url"])
@@ -5170,7 +5180,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                     "title": wait["title"] as? String ?? "",
                     "navigationWait": wait
                 ])
-            case "click":
+            case .click:
                 if action.hasAnalysisControl {
                     let resolved = try await resolvePreflight(
                         analysisID: action.analysisID,
@@ -5215,7 +5225,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                     )
                     results.append(try Self.jsonObject(from: json).merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
                 }
-            case "open":
+            case .open:
                 guard action.hasAnalysisControl else {
                     results.append(["ok": false, "action": action.action, "error": "missing_analysis_or_control"])
                     stopReason = "missing_analysis_or_control"
@@ -5241,7 +5251,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 )
                 object["preflight"] = resolved.response
                 results.append(object.merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
-            case "doubleclick", "double-click", "double_click":
+            case .doubleClick:
                 if action.hasAnalysisControl {
                     let resolved = try await resolvePreflight(
                         analysisID: action.analysisID,
@@ -5286,7 +5296,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                     )
                     results.append(try Self.jsonObject(from: json).merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
                 }
-            case "type":
+            case .type:
                 guard let text = action.text else {
                     results.append(["ok": false, "action": action.action, "error": "missing_text"])
                     continue
@@ -5333,7 +5343,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                     let result = try Self.jsonObject(from: json).merging(["action": action.action], uniquingKeysWith: { current, _ in current })
                     if appendBatchResult(result) { break batchLoop }
                 }
-            case "setvalue", "set-value", "fill":
+            case .setValue, .fill:
                 guard let text = action.text else {
                     results.append(["ok": false, "action": action.action, "error": "missing_text"])
                     continue
@@ -5381,7 +5391,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                     let result = try Self.jsonObject(from: json).merging(["action": action.action], uniquingKeysWith: { current, _ in current })
                     if appendBatchResult(result) { break batchLoop }
                 }
-            case "replacetext", "replace-text":
+            case .replaceText:
                 guard let find = action.find,
                       let replacement = action.replacement ?? action.text else {
                     results.append(["ok": false, "action": action.action, "error": "missing_find_or_replacement"])
@@ -5422,14 +5432,14 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 }
                 let result = object.merging(["action": action.action], uniquingKeysWith: { current, _ in current })
                 if appendBatchResult(result) { break batchLoop }
-            case "findcontrol", "find-control":
+            case .findControl:
                 let result = try await findControl(
                     query: action.query ?? action.label ?? "",
                     role: action.role,
                     limit: action.limit ?? 10
                 )
                 results.append(result.merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
-            case "clickcontrol", "click-control":
+            case .clickControl:
                 if action.hasAnalysisControl {
                     let resolved = try await resolvePreflight(
                         analysisID: action.analysisID,
@@ -5472,20 +5482,13 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                     allowDangerous: BrowserDangerousActionApproval.trustedProviderApproval(action.allowDangerous)
                 )
                 results.append(result.merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
-            case "verifytext", "verify-text":
-                guard let text = action.text ?? action.query else {
-                    results.append(["ok": false, "action": action.action, "error": "missing_text"])
-                    continue
+            case .verifyText, .waitSaved, .waitForText, .waitForSelector:
+                if let result = try await verificationCommandHandler.handleBatch(route: route, action: action) {
+                    results.append(result)
+                } else {
+                    results.append(["ok": false, "action": action.action, "error": "unknown_action"])
                 }
-                let result = try await verifyText(text, absent: action.absent ?? false)
-                results.append(result.merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
-            case "waitsaved", "wait-saved":
-                let result = try await waitSaved(
-                    timeoutSeconds: action.timeoutSeconds ?? 8,
-                    intervalMilliseconds: action.intervalMilliseconds ?? 500
-                )
-                results.append(result.merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
-            case "googlefindreplace", "google-find-replace":
+            case .googleFindReplace:
                 guard let find = action.find,
                       let replacement = action.replacement ?? action.text else {
                     results.append(["ok": false, "action": action.action, "error": "missing_find_or_replacement"])
@@ -5493,14 +5496,14 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 }
                 let result = try await googleFindReplace(find: find, replacement: replacement, all: action.all ?? true)
                 results.append(result.merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
-            case "googledocsfind", "google-docs-find":
+            case .googleDocsFind:
                 guard let query = action.query ?? action.text ?? action.verify else {
                     results.append(["ok": false, "action": action.action, "error": "missing_query"])
                     continue
                 }
                 let result = try await googleDocsFind(query: query, closeFindBar: action.closeFindBar ?? true)
                 results.append(result.merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
-            case "googledocsinsert", "google-docs-insert":
+            case .googleDocsInsert:
                 guard let text = action.text else {
                     results.append(["ok": false, "action": action.action, "error": "missing_text"])
                     continue
@@ -5511,17 +5514,17 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                     waitSaved: action.waitSaved ?? true
                 )
                 results.append(result.merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
-            case "googledocsreaddocument", "google-docs-read-document", "googledocsread", "google-docs-read":
+            case .googleDocsReadDocument:
                 let result = try await googleDocsReadDocument()
                 results.append(result.merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
-            case "googledocsreadvisiblepage", "google-docs-read-visible-page", "googledocsreadvisible", "google-docs-read-visible", "googledocsreadpage", "google-docs-read-page":
+            case .googleDocsReadVisiblePage:
                 let result = try await googleDocsReadVisiblePage(
                     format: action.format ?? "markdown",
                     limit: action.limit,
                     chunkSize: action.chunkSize
                 )
                 results.append(result.merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
-            case "googledocsreplacedocument", "google-docs-replace-document":
+            case .googleDocsReplaceDocument:
                 guard let text = action.text else {
                     results.append(["ok": false, "action": action.action, "error": "missing_text"])
                     continue
@@ -5531,7 +5534,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                     verifyText: action.verify ?? action.query
                 )
                 results.append(result.merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
-            case "googledriveopen", "google-drive-open", "drive-open":
+            case .googleDriveOpen:
                 guard let name = action.name ?? action.query ?? action.text else {
                     results.append(["ok": false, "action": action.action, "error": "missing_name"])
                     continue
@@ -5542,7 +5545,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                     intervalMilliseconds: action.intervalMilliseconds ?? 500
                 )
                 results.append(result.merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
-            case "act":
+            case .act:
                 let result = try await act(ActCommand(
                     analysisID: action.analysisID,
                     controlID: action.controlID,
@@ -5564,7 +5567,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 ))
                 let batchResult = result.merging(["action": action.action], uniquingKeysWith: { current, _ in current })
                 if appendBatchResult(batchResult) { break batchLoop }
-            case "keypress":
+            case .keypress:
                 guard let key = action.key else {
                     results.append(["ok": false, "action": action.action, "error": "missing_key"])
                     continue
@@ -5572,7 +5575,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 let json = try await keypress(key: key, modifiers: action.modifiers ?? [])
                 let result = try Self.jsonObject(from: json).merging(["action": action.action], uniquingKeysWith: { current, _ in current })
                 if appendBatchResult(result) { break batchLoop }
-            case "text", "inserttext":
+            case .text:
                 guard let text = action.text else {
                     results.append(["ok": false, "action": action.action, "error": "missing_text"])
                     continue
@@ -5580,36 +5583,14 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 let json = try await insertText(text)
                 let result = try Self.jsonObject(from: json).merging(["action": action.action], uniquingKeysWith: { current, _ in current })
                 if appendBatchResult(result) { break batchLoop }
-            case "waitfortext", "wait-text":
-                guard let text = action.text else {
-                    results.append(["ok": false, "action": action.action, "error": "missing_text"])
-                    continue
-                }
-                let result = try await waitForText(
-                    text,
-                    timeoutSeconds: action.timeoutSeconds ?? 5,
-                    intervalMilliseconds: action.intervalMilliseconds ?? 250
-                )
-                results.append(result.merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
-            case "waitforselector", "wait-selector":
-                guard let selector = action.normalizedSelector else {
-                    results.append(["ok": false, "action": action.action, "error": "missing_selector"])
-                    continue
-                }
-                let result = try await waitForSelector(
-                    selector,
-                    timeoutSeconds: action.timeoutSeconds ?? 5,
-                    intervalMilliseconds: action.intervalMilliseconds ?? 250
-                )
-                results.append(result.merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
-            case "snapshot":
+            case .snapshot:
                 let json = try await snapshot(
                     mode: BrowserSnapshotMode(rawValue: action.mode ?? "summary") ?? .summary,
                     query: action.query,
                     limit: action.limit
                 )
                 results.append(try Self.jsonObject(from: json).merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
-            default:
+            case .health, .actions, .trace, .benchmark, .readPage, .locator, .batch:
                 results.append(["ok": false, "action": action.action, "error": "unknown_action"])
             }
         }
