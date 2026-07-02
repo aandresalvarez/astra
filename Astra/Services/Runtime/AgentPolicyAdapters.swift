@@ -1219,6 +1219,15 @@ enum AgentPolicyManifestService {
             localToolCommands: scopedLocalToolCommands,
             allowAllPaths: shouldAllowAllPaths
         )
+        let runtimeSupportToolNames = Set(updated.runtimeSupportTools.flatMap {
+            [$0.name, $0.providerNativePermission ?? ""]
+        }.map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }.filter { !$0.isEmpty })
+        updated.allowedTools = uniqueStrings(
+            copilotAllowedTools(from: args, fallback: updated.allowedTools).filter {
+                let normalized = $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                return normalized != "*" && !runtimeSupportToolNames.contains(normalized)
+            }
+        )
         updated.cliArgumentsSummary = summarizeCopilotArguments(args)
         updated.generatedConfigPreview = args.joined(separator: " ")
         updated.usesBroadProviderPermissions = copilotUsesBroadProviderPermissions(args)

@@ -2191,6 +2191,11 @@ struct AgentRuntimeAdapterTests {
         #expect(manifest.providerRender.permissionMode == PermissionPolicy.restricted.rawValue)
         #expect(!manifest.providerRender.cliArgumentsSummary.contains("--allow-all"))
         #expect(!manifest.providerRender.cliArgumentsSummary.contains("--allow-all-tools"))
+        #expect(!manifest.providerRender.allowedTools.contains("*"))
+        #expect(AgentRuntimePolicyGuard(manifest: manifest).disposition(
+            toolName: "bash",
+            command: "echo outside-docker"
+        ) == .denied)
         #expect(plan.commandPlannedFields["docker_workspace_executor"] == "true")
         #expect(plan.commandPlannedFields["permission_policy"] == PermissionPolicy.restricted.rawValue)
         #expect(!plan.arguments.contains("--allow-all"))
