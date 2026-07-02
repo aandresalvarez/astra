@@ -1363,6 +1363,36 @@ struct WorkspacePersistenceTests {
         #expect(!FileManager.default.fileExists(atPath: workspace.appendingPathComponent(".gitignore").path))
     }
 
+    @Test("nested workspace generated state escapes git ignore metacharacters")
+    func nestedWorkspaceGeneratedStateEscapesGitIgnorePatterns() throws {
+        let root = URL(fileURLWithPath: "/tmp/astra_nested_git_escape_\(UUID().uuidString)", isDirectory: true)
+        let info = root.appendingPathComponent(".git/info", isDirectory: true)
+        try FileManager.default.createDirectory(at: info, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let workspaces = [
+            ("#project", "packages/\\#project/.astra/"),
+            ("!project", "packages/\\!project/.astra/"),
+            ("project[1]", "packages/project\\[1\\]/.astra/"),
+            ("project*?", "packages/project\\*\\?/.astra/"),
+            (" spaced project ", "packages/\\ spaced\\ project\\ /.astra/")
+        ]
+
+        for (name, _) in workspaces {
+            let workspace = root
+                .appendingPathComponent("packages", isDirectory: true)
+                .appendingPathComponent(name, isDirectory: true)
+            try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
+            try WorkspaceGeneratedStateExcluder.ensureExcluded(workspacePath: workspace.path)
+            try WorkspaceGeneratedStateExcluder.ensureExcluded(workspacePath: workspace.path)
+        }
+
+        let contents = try String(contentsOf: info.appendingPathComponent("exclude"), encoding: .utf8)
+        for (_, expectedPattern) in workspaces {
+            #expect(contents.components(separatedBy: expectedPattern).count == 2)
+        }
+    }
+
     @Test("workspace mirror export bounds runs events and output")
     @MainActor
     func workspaceMirrorExportBoundsRunsEventsAndOutput() throws {
@@ -1403,6 +1433,47 @@ struct WorkspacePersistenceTests {
         #expect(firstEvent.payload.count <= WorkspaceConfigManager.MirrorLimits.maxEventPayloadCharacters)
         #expect(mirroredTask.runs.map(\.startedAt) == mirroredTask.runs.map(\.startedAt).sorted())
         #expect(mirroredTask.events.map(\.timestamp) == mirroredTask.events.map(\.timestamp).sorted())
+    }
+
+    @Test("workspace mirror export breaks task run and event timestamp ties by UUID")
+    @MainActor
+    func workspaceMirrorExportBreaksTaskRunEventTimestampTiesByUUID() throws {
+        let container = try makeWorkspacePersistenceContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Tie Bounded Mirror", primaryPath: "/tmp/astra_tie_bounded_mirror_\(UUID().uuidString)")
+        context.insert(workspace)
+        let task = AgentTask(title: "Equal timestamps", goal: "Create tie keys", workspace: workspace)
+        context.insert(task)
+
+        let runIDs = (0..<11).map { UUID(uuidString: "00000000-0000-0000-0000-\(String(format: "%012d", $0))")! }
+        let eventIDs = (0..<11).map { UUID(uuidString: "10000000-0000-0000-0000-\(String(format: "%012d", $0))")! }
+        let sharedDate = Date(timeIntervalSince1970: 42)
+
+        for index in (0..<11).reversed() {
+            let run = TaskRun(task: task)
+            run.id = runIDs[index]
+            run.startedAt = sharedDate
+            context.insert(run)
+
+            let event = TaskEvent(
+                task: task,
+                type: "task.tie.\(index)",
+                payload: "{}",
+                run: run
+            )
+            event.id = eventIDs[index]
+            event.timestamp = sharedDate
+            context.insert(event)
+        }
+        try context.save()
+
+        let config = try #require(WorkspaceConfigManager.export(workspace: workspace, modelContext: context))
+        let mirroredTask = try #require(config.tasks?.first)
+        let expectedRunIDs = runIDs.suffix(WorkspaceConfigManager.MirrorLimits.maxRunsPerTask).map(\.uuidString)
+        let expectedEventIDs = eventIDs.suffix(WorkspaceConfigManager.MirrorLimits.maxEventsPerTask).map(\.uuidString)
+
+        #expect(mirroredTask.runs.map(\.id) == expectedRunIDs)
+        #expect(mirroredTask.events.map(\.id) == expectedEventIDs)
     }
 
     @Test("workspace mirror export bounds workspace app runs events and output")
@@ -1471,6 +1542,79 @@ struct WorkspacePersistenceTests {
         #expect(mirroredEvents.map(\.timestamp) == mirroredEvents.map(\.timestamp).sorted())
         #expect(mirroredRuns.first?.actionID == "refresh-5")
         #expect(mirroredEvents.first?.type == "workspace_app.run.event.5")
+    }
+
+    @Test("workspace mirror export keeps workspace app run event references closed")
+    @MainActor
+    func workspaceMirrorExportKeepsWorkspaceAppRunEventReferencesClosed() throws {
+        let container = try makeWorkspacePersistenceContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Closed App Mirror", primaryPath: "/tmp/astra_closed_app_mirror_\(UUID().uuidString)")
+        context.insert(workspace)
+        let app = WorkspaceApp(
+            workspaceID: workspace.id,
+            logicalID: "review-dashboard",
+            name: "Review Dashboard",
+            icon: "chart.bar",
+            appDescription: "Tracks review status",
+            lifecycleStatus: .published,
+            permissionMode: .approvalRequired,
+            dependencyStatus: .ready,
+            manifestRelativePath: ".astra/apps/review-dashboard/manifest.json",
+            appDirectoryRelativePath: ".astra/apps/review-dashboard",
+            manifestDigest: "digest-current"
+        )
+        context.insert(app)
+
+        var runs: [WorkspaceAppRun] = []
+        for index in 0..<11 {
+            let run = WorkspaceAppRun(
+                workspaceID: workspace.id,
+                appID: app.id,
+                appLogicalID: app.logicalID,
+                actionID: "refresh-\(index)",
+                trigger: .automation,
+                status: .completed,
+                startedAt: Date(timeIntervalSince1970: TimeInterval(index)),
+                inputSummary: "Refresh PR data",
+                outputSummary: "Done",
+                errorMessage: nil
+            )
+            runs.append(run)
+            context.insert(run)
+
+            if index > 0 {
+                context.insert(WorkspaceAppRunEvent(
+                    runID: run.id,
+                    workspaceID: workspace.id,
+                    appID: app.id,
+                    actionID: run.actionID,
+                    type: "workspace_app.run.event.\(index)",
+                    payload: "{}",
+                    timestamp: Date(timeIntervalSince1970: TimeInterval(index))
+                ))
+            }
+        }
+
+        context.insert(WorkspaceAppRunEvent(
+            runID: runs[0].id,
+            workspaceID: workspace.id,
+            appID: app.id,
+            actionID: runs[0].actionID,
+            type: "workspace_app.run.event.omitted_parent",
+            payload: "{}",
+            timestamp: Date(timeIntervalSince1970: 100)
+        ))
+        try context.save()
+
+        let config = try #require(WorkspaceConfigManager.export(workspace: workspace, modelContext: context))
+        let mirroredRuns = try #require(config.workspaceAppRuns)
+        let mirroredEvents = try #require(config.workspaceAppRunEvents)
+        let exportedRunIDs = Set(mirroredRuns.compactMap(\.id))
+
+        #expect(mirroredRuns.map(\.actionID) == (1..<11).map { "refresh-\($0)" })
+        #expect(mirroredEvents.allSatisfy { exportedRunIDs.contains($0.runID) })
+        #expect(!mirroredEvents.contains { $0.type == "workspace_app.run.event.omitted_parent" })
     }
 
     @Test("workspace export result reports write diagnostics")

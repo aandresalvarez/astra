@@ -15,6 +15,11 @@ enum WorkspaceConfigManager {
 
     static let currentVersion = 11
 
+    private struct WorkspaceAppRunMirrorSnapshot {
+        var runs: [WorkspaceAppRun]
+        var events: [WorkspaceAppRunEvent]
+    }
+
     enum MirrorLimits {
         static let maxRunsPerTask = 10
         static let maxEventsPerTask = 10
@@ -557,8 +562,9 @@ enum WorkspaceConfigManager {
         let sshConnections = SSHConnectionManager.load(workspacePath: workspace.primaryPath)
         let taskConfigs = workspace.tasks.map(taskConfig)
         let workspaceAppConfigs = workspaceAppsForExport(workspace: workspace).map(workspaceAppConfig)
-        let workspaceAppRunConfigs = workspaceAppRunsForExport(workspace: workspace).map(workspaceAppRunConfig)
-        let workspaceAppRunEventConfigs = workspaceAppRunEventsForExport(workspace: workspace).map(workspaceAppRunEventConfig)
+        let workspaceAppRunSnapshot = workspaceAppRunMirrorSnapshotForExport(workspace: workspace)
+        let workspaceAppRunConfigs = workspaceAppRunSnapshot.runs.map(workspaceAppRunConfig)
+        let workspaceAppRunEventConfigs = workspaceAppRunSnapshot.events.map(workspaceAppRunEventConfig)
         let workspaceAppDependencyBindingConfigs = workspaceAppDependencyBindingsForExport(workspace: workspace)
             .map(workspaceAppDependencyBindingConfig)
         let workspaceAppAutomationStateConfigs = workspaceAppAutomationStatesForExport(workspace: workspace)
@@ -1043,27 +1049,22 @@ enum WorkspaceConfigManager {
         return (try? modelContext.fetch(descriptor)) ?? []
     }
 
-    private static func workspaceAppRunsForExport(workspace: Workspace) -> [WorkspaceAppRun] {
-        guard let modelContext = workspace.modelContext else { return [] }
+    private static func workspaceAppRunMirrorSnapshotForExport(workspace: Workspace) -> WorkspaceAppRunMirrorSnapshot {
+        guard let modelContext = workspace.modelContext else {
+            return WorkspaceAppRunMirrorSnapshot(runs: [], events: [])
+        }
         let workspaceID = workspace.id
-        let descriptor = FetchDescriptor<WorkspaceAppRun>(predicate: #Predicate { $0.workspaceID == workspaceID })
-        let runs = (try? modelContext.fetch(descriptor)) ?? []
-        return Array(runs
-            .sorted {
-                if $0.startedAt == $1.startedAt {
-                    return $0.id.uuidString < $1.id.uuidString
-                }
-                return $0.startedAt < $1.startedAt
-            }
+        let runDescriptor = FetchDescriptor<WorkspaceAppRun>(predicate: #Predicate { $0.workspaceID == workspaceID })
+        let runs = (try? modelContext.fetch(runDescriptor)) ?? []
+        let mirroredRuns = Array(runs
+            .sorted(by: workspaceAppRunMirrorOrder)
             .suffix(MirrorLimits.maxWorkspaceAppRuns))
-    }
+        let mirroredRunIDs = Set(mirroredRuns.map(\.id))
 
-    private static func workspaceAppRunEventsForExport(workspace: Workspace) -> [WorkspaceAppRunEvent] {
-        guard let modelContext = workspace.modelContext else { return [] }
-        let workspaceID = workspace.id
-        let descriptor = FetchDescriptor<WorkspaceAppRunEvent>(predicate: #Predicate { $0.workspaceID == workspaceID })
-        let events = (try? modelContext.fetch(descriptor)) ?? []
-        return Array(events
+        let eventDescriptor = FetchDescriptor<WorkspaceAppRunEvent>(predicate: #Predicate { $0.workspaceID == workspaceID })
+        let events = ((try? modelContext.fetch(eventDescriptor)) ?? [])
+            .filter { mirroredRunIDs.contains($0.runID) }
+        let mirroredEvents = Array(events
             .sorted {
                 if $0.timestamp == $1.timestamp {
                     return $0.id.uuidString < $1.id.uuidString
@@ -1071,6 +1072,15 @@ enum WorkspaceConfigManager {
                 return $0.timestamp < $1.timestamp
             }
             .suffix(MirrorLimits.maxWorkspaceAppRunEvents))
+
+        return WorkspaceAppRunMirrorSnapshot(runs: mirroredRuns, events: mirroredEvents)
+    }
+
+    private static func workspaceAppRunMirrorOrder(_ lhs: WorkspaceAppRun, _ rhs: WorkspaceAppRun) -> Bool {
+        if lhs.startedAt == rhs.startedAt {
+            return lhs.id.uuidString < rhs.id.uuidString
+        }
+        return lhs.startedAt < rhs.startedAt
     }
 
     private static func workspaceAppDependencyBindingsForExport(workspace: Workspace) -> [WorkspaceAppDependencyBinding] {
@@ -1396,7 +1406,12 @@ enum WorkspaceConfigManager {
     }
 
     private static func taskConfig(_ task: AgentTask) -> TaskConfig {
-        let sortedRuns = task.runs.sorted { $0.startedAt < $1.startedAt }
+        let sortedRuns = task.runs.sorted {
+            if $0.startedAt == $1.startedAt {
+                return $0.id.uuidString < $1.id.uuidString
+            }
+            return $0.startedAt < $1.startedAt
+        }
         let mirroredRuns = Array(sortedRuns.suffix(MirrorLimits.maxRunsPerTask))
         let runIDToIndex = Dictionary(
             mirroredRuns.enumerated().map { ($1.id, $0) },
@@ -1425,7 +1440,12 @@ enum WorkspaceConfigManager {
         }
 
         let mirroredEvents = Array(task.events
-            .sorted(by: { $0.timestamp < $1.timestamp })
+            .sorted {
+                if $0.timestamp == $1.timestamp {
+                    return $0.id.uuidString < $1.id.uuidString
+                }
+                return $0.timestamp < $1.timestamp
+            }
             .suffix(MirrorLimits.maxEventsPerTask))
         let eventConfigs = mirroredEvents.map { event in
             EventConfig(
