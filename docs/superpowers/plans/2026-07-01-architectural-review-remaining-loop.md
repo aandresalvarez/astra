@@ -22,7 +22,7 @@ For each remaining PR:
 - [x] PR 5: Bound and Relocate the Workspace JSON Mirror
 - [x] PR 6: Derive Launch Arguments from `ProviderPolicyRender`
 - [x] PR 7: Introduce `TaskStateMachine`
-- [ ] PR 8: Introduce `SceneSelectionModel`
+- [x] PR 8: Introduce `SceneSelectionModel`
 - [ ] PR 9: Fix CI and Test Target Feedback Loops
 - [ ] PR 10: Gate Credential Egress
 - [ ] PR 11: Promote Continuation and Approval State to Typed Properties
@@ -75,3 +75,13 @@ For each remaining PR:
 - Coordinator merge: completed.
 - Focused worker validation: `TaskStateMachineTests`, `QueueLockTests`, `TaskRunLifecycleServiceTests`, `TaskRuntimeHealthTests`, `ArchitectureFitnessTests`, `git diff --check`, `script/precommit.sh`.
 - Coordinator validation: `swift test --filter TaskStateMachineTests`, `swift test --filter ArchitectureFitnessTests/productionTaskStatusWritesGoThroughTaskStateMachine`, `swift test --filter TaskRunLifecycleServiceTests`, `swift test --filter QueueLockTests`, `swift test --filter TaskRuntimeHealthTests`, `swift test --filter ArchitectureFitnessTests`, and `git diff --check 6f777596c93e211ff58b4d0fb03d7ee36c2212e1..HEAD` passed before merge.
+
+### PR 8
+
+- Branch: `alvaro/arch-review-pr8-scene-selection`
+- Head: `33f322cabe23b6c68756e2346a03e2b042892bf4`
+- Spec review: passed after fixing App/App Studio side effects and passive workspace restoration preservation.
+- Code quality review: passed after verifying `SceneSelectionModel` stayed the single mutable scene selection owner.
+- Coordinator merge: completed.
+- Focused worker validation: `SceneSelectionModelTests`, `SidebarPresentationModelTests`, `SidebarSurfaceTests`, `SidebarWorkspaceAppFilterTests`, `ViewTests`, `git diff --check`, `script/precommit.sh`.
+- Coordinator validation: `swift test --filter SceneSelectionModelTests` passed after merge.
