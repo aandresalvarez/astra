@@ -788,12 +788,21 @@ script/prepush.sh
 swift test --filter MCPServerKitTests
 swift test --filter WorkspaceToolSupportTests
 swift test --filter HostControlToolSupportTests
-swift test --target MCPGatewaySupportTests
+swift test --filter MCPGatewaySupportTests
 swift test --filter BrowserMCPServerTests
 git diff --check
 script/precommit.sh
 script/prepush.sh
 ```
+
+**Implementation evidence (2026-07-02):**
+
+- Added `MCPServerKit` as a small SwiftPM support target owning JSON-RPC line parsing, initialize/tools-list/tools-call dispatch, shared result/error envelope encoding, id normalization, notification suppression, and protocol diagnostics.
+- Migrated `WorkspaceMCPServer.handleLine(_:)` to delegate protocol mechanics to `MCPServerKit.MCPServer`; Workspace now provides only tool schemas and typed tool-call handling for `workspace_shell` and durable job tools.
+- Removed Workspace's local `encodeResult`, `encodeError`, `normalizedID`, and raw method switch, reducing duplicated protocol mechanics without moving Workspace command/job policy out of `WorkspaceToolSupport`.
+- Added `Tests/MCPServerKitTests.swift` with red-green coverage proving the kit owns protocol flow, errors, id behavior, notifications, diagnostics, and tool delegation.
+- Validation passed: `swift test --filter MCPServerKitTests`; `swift test --filter WorkspaceToolSupportTests`; `swift test --filter HostControlToolSupportTests`; `swift test --filter RemoteMCPGatewaySupportTests`; `swift test --filter MCPGatewaySupportTests`; `swift test --filter BrowserMCPServerTests`; `git diff --check`; `script/precommit.sh`; `script/prepush.sh`.
+- Note: `swift test --target MCPGatewaySupportTests` failed because this SwiftPM CLI does not support `--target`; the equivalent supported selector is `swift test --filter MCPGatewaySupportTests`.
 
 ## PR 18: Add a Shared `HardenedProcessExecutor`
 

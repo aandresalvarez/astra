@@ -1,4 +1,5 @@
 import Foundation
+import MCPServerKit
 
 public struct WorkspaceDockerMount: Codable, Equatable, Sendable {
     public var hostPath: String
@@ -2827,6 +2828,15 @@ public final class WorkspaceMCPServer {
     private let executor: WorkspaceCommandExecutor
     private let jobManager: WorkspaceJobManaging?
     private let diagnosticsRecorder: WorkspaceToolDiagnosticsRecorder?
+    private lazy var server = MCPServer(
+        name: "astra-workspace",
+        tools: { [weak self] in
+            self?.toolSchemas() ?? []
+        },
+        handleToolCall: { [weak self] call in
+            self?.handleToolCall(call) ?? .error(code: -32000, message: "Workspace MCP server is unavailable")
+        }
+    )
 
     public init(
         executor: WorkspaceCommandExecutor,
@@ -2839,68 +2849,36 @@ public final class WorkspaceMCPServer {
     }
 
     public func handleLine(_ line: String) -> String? {
-        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return nil }
-        guard let data = trimmed.data(using: .utf8),
-              let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-              let method = object["method"] as? String else {
-            return encodeError(id: nil, code: -32700, message: "Invalid JSON-RPC request")
-        }
-
-        let id = object["id"]
-        if id == nil, method.hasPrefix("notifications/") {
-            return nil
-        }
-        switch method {
-        case "initialize":
-            return encodeResult(id: id, result: [
-                "protocolVersion": "2025-03-26",
-                "capabilities": ["tools": [:]],
-                "serverInfo": ["name": "astra-workspace", "version": "1.0.0"]
-            ])
-        case "tools/list":
-            return encodeResult(id: id, result: [
-                "tools": toolSchemas()
-            ])
-        case "tools/call":
-            return handleToolCall(id: id, object: object)
-        default:
-            return encodeError(id: id, code: -32601, message: "Unsupported method \(method)")
-        }
+        server.handleLine(line)
     }
 
     public func cleanup() {
         executor.cleanup()
     }
 
-    private func handleToolCall(id: Any?, object: [String: Any]) -> String? {
-        guard let params = object["params"] as? [String: Any],
-              let toolName = params["name"] as? String else {
-            return encodeError(id: id, code: -32602, message: "Unsupported tool")
-        }
-        let arguments = params["arguments"] as? [String: Any] ?? [:]
-        switch toolName {
+    private func handleToolCall(_ call: MCPToolCall) -> MCPServerReply {
+        switch call.name {
         case "workspace_shell":
-            return handleWorkspaceShell(id: id, arguments: arguments)
+            return handleWorkspaceShell(arguments: call.arguments)
         case "workspace_job_start":
-            return handleWorkspaceJobStart(id: id, arguments: arguments)
+            return handleWorkspaceJobStart(arguments: call.arguments)
         case "workspace_job_status":
-            return handleWorkspaceJobStatus(id: id, arguments: arguments)
+            return handleWorkspaceJobStatus(arguments: call.arguments)
         case "workspace_job_tail":
-            return handleWorkspaceJobTail(id: id, arguments: arguments)
+            return handleWorkspaceJobTail(arguments: call.arguments)
         case "workspace_job_cancel":
-            return handleWorkspaceJobCancel(id: id, arguments: arguments)
+            return handleWorkspaceJobCancel(arguments: call.arguments)
         case "workspace_job_wait":
-            return handleWorkspaceJobWait(id: id, arguments: arguments)
+            return handleWorkspaceJobWait(arguments: call.arguments)
         default:
-            return encodeError(id: id, code: -32602, message: "Unsupported tool")
+            return .error(code: -32602, message: "Unsupported tool")
         }
     }
 
-    private func handleWorkspaceShell(id: Any?, arguments: [String: Any]) -> String? {
+    private func handleWorkspaceShell(arguments: [String: Any]) -> MCPServerReply {
         guard let command = arguments["command"] as? String,
               !command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return encodeError(id: id, code: -32602, message: "workspace_shell requires command")
+            return .error(code: -32602, message: "workspace_shell requires command")
         }
         let timeout = timeoutSeconds(from: arguments["timeout_seconds"]) ?? 120
         let result = executor.run(command: command, timeoutSeconds: timeout)
@@ -2912,7 +2890,7 @@ public final class WorkspaceMCPServer {
             timeoutSeconds: timeout,
             result: result
         )
-        return encodeResult(id: id, result: [
+        return .result([
             "content": [[
                 "type": "text",
                 "text": formatted(result)
@@ -2921,13 +2899,13 @@ public final class WorkspaceMCPServer {
         ])
     }
 
-    private func handleWorkspaceJobStart(id: Any?, arguments: [String: Any]) -> String? {
+    private func handleWorkspaceJobStart(arguments: [String: Any]) -> MCPServerReply {
         guard let jobManager else {
-            return encodeError(id: id, code: -32001, message: "workspace_job_start is unavailable")
+            return .error(code: -32001, message: "workspace_job_start is unavailable")
         }
         guard let command = arguments["command"] as? String,
               !command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return encodeError(id: id, code: -32602, message: "workspace_job_start requires command")
+            return .error(code: -32602, message: "workspace_job_start requires command")
         }
         let job = jobManager.start(
             command: command,
@@ -2936,33 +2914,33 @@ public final class WorkspaceMCPServer {
             progressProbe: clean(arguments["progress_probe"] as? String)
         )
         diagnosticsRecorder?.recordJob(toolName: "workspace_job_start", command: command, job: job)
-        return encodeJobResult(id: id, job: job)
+        return encodeJobResult(job: job)
     }
 
-    private func handleWorkspaceJobStatus(id: Any?, arguments: [String: Any]) -> String? {
+    private func handleWorkspaceJobStatus(arguments: [String: Any]) -> MCPServerReply {
         guard let jobManager else {
-            return encodeError(id: id, code: -32001, message: "workspace_job_status is unavailable")
+            return .error(code: -32001, message: "workspace_job_status is unavailable")
         }
         guard let jobID = clean(arguments["job_id"] as? String) else {
-            return encodeError(id: id, code: -32602, message: "workspace_job_status requires job_id")
+            return .error(code: -32602, message: "workspace_job_status requires job_id")
         }
         let job = jobManager.status(jobID: jobID)
         diagnosticsRecorder?.recordJob(toolName: "workspace_job_status", command: nil, job: job)
-        return encodeJobResult(id: id, job: job)
+        return encodeJobResult(job: job)
     }
 
-    private func handleWorkspaceJobTail(id: Any?, arguments: [String: Any]) -> String? {
+    private func handleWorkspaceJobTail(arguments: [String: Any]) -> MCPServerReply {
         guard let jobManager else {
-            return encodeError(id: id, code: -32001, message: "workspace_job_tail is unavailable")
+            return .error(code: -32001, message: "workspace_job_tail is unavailable")
         }
         guard let jobID = clean(arguments["job_id"] as? String) else {
-            return encodeError(id: id, code: -32602, message: "workspace_job_tail requires job_id")
+            return .error(code: -32602, message: "workspace_job_tail requires job_id")
         }
         let stream = clean(arguments["stream"] as? String) ?? "stdout"
         let lines = intValue(from: arguments["lines"]) ?? 120
         let tail = jobManager.tail(jobID: jobID, stream: stream, lines: lines)
         diagnosticsRecorder?.recordTail(toolName: "workspace_job_tail", jobID: jobID, stream: stream, lines: lines)
-        return encodeResult(id: id, result: [
+        return .result([
             "content": [[
                 "type": "text",
                 "text": formatted(tail)
@@ -2971,29 +2949,29 @@ public final class WorkspaceMCPServer {
         ])
     }
 
-    private func handleWorkspaceJobCancel(id: Any?, arguments: [String: Any]) -> String? {
+    private func handleWorkspaceJobCancel(arguments: [String: Any]) -> MCPServerReply {
         guard let jobManager else {
-            return encodeError(id: id, code: -32001, message: "workspace_job_cancel is unavailable")
+            return .error(code: -32001, message: "workspace_job_cancel is unavailable")
         }
         guard let jobID = clean(arguments["job_id"] as? String) else {
-            return encodeError(id: id, code: -32602, message: "workspace_job_cancel requires job_id")
+            return .error(code: -32602, message: "workspace_job_cancel requires job_id")
         }
         let job = jobManager.cancel(jobID: jobID)
         diagnosticsRecorder?.recordJob(toolName: "workspace_job_cancel", command: nil, job: job)
-        return encodeJobResult(id: id, job: job)
+        return encodeJobResult(job: job)
     }
 
-    private func handleWorkspaceJobWait(id: Any?, arguments: [String: Any]) -> String? {
+    private func handleWorkspaceJobWait(arguments: [String: Any]) -> MCPServerReply {
         guard let jobManager else {
-            return encodeError(id: id, code: -32001, message: "workspace_job_wait is unavailable")
+            return .error(code: -32001, message: "workspace_job_wait is unavailable")
         }
         guard let jobID = clean(arguments["job_id"] as? String) else {
-            return encodeError(id: id, code: -32602, message: "workspace_job_wait requires job_id")
+            return .error(code: -32602, message: "workspace_job_wait requires job_id")
         }
         let timeout = min(timeoutSeconds(from: arguments["max_wait_seconds"]) ?? 30, WorkspaceCommandRoutingPolicy.maxJobWaitSeconds)
         let job = jobManager.wait(jobID: jobID, timeoutSeconds: timeout)
         diagnosticsRecorder?.recordJob(toolName: "workspace_job_wait", command: nil, job: job, timeoutSeconds: timeout)
-        return encodeJobResult(id: id, job: job)
+        return encodeJobResult(job: job)
     }
 
     private func timeoutSeconds(from value: Any?) -> TimeInterval? {
@@ -3023,8 +3001,8 @@ public final class WorkspaceMCPServer {
         return trimmed.isEmpty ? nil : trimmed
     }
 
-    private func encodeJobResult(id: Any?, job: WorkspaceManagedJobRecord) -> String? {
-        encodeResult(id: id, result: [
+    private func encodeJobResult(job: WorkspaceManagedJobRecord) -> MCPServerReply {
+        .result([
             "content": [[
                 "type": "text",
                 "text": formatted(job)
@@ -3213,34 +3191,6 @@ public final class WorkspaceMCPServer {
         ]
     }
 
-    private func encodeResult(id: Any?, result: [String: Any]) -> String? {
-        encode(["jsonrpc": "2.0", "id": normalizedID(id), "result": result])
-    }
-
-    private func encodeError(id: Any?, code: Int, message: String) -> String? {
-        encode([
-            "jsonrpc": "2.0",
-            "id": normalizedID(id),
-            "error": ["code": code, "message": message]
-        ])
-    }
-
-    private func normalizedID(_ id: Any?) -> Any {
-        switch id {
-        case let value as String: return value
-        case let value as NSNumber: return value
-        case .none: return NSNull()
-        default: return NSNull()
-        }
-    }
-
-    private func encode(_ object: [String: Any]) -> String? {
-        guard JSONSerialization.isValidJSONObject(object),
-              let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]) else {
-            return nil
-        }
-        return String(data: data, encoding: .utf8)
-    }
 }
 
 public enum AstraWorkspaceToolMain {

@@ -38,7 +38,12 @@ let package = Package(
             path: "Tools/MailToolSupport"
         ),
         .target(
+            name: "MCPServerKit",
+            path: "Tools/MCPServerKit"
+        ),
+        .target(
             name: "WorkspaceToolSupport",
+            dependencies: ["MCPServerKit"],
             path: "Tools/WorkspaceToolSupport"
         ),
         .target(
@@ -120,7 +125,7 @@ let package = Package(
         ),
         .testTarget(
             name: "ASTRATests",
-            dependencies: ["ASTRA", "ASTRACore", "ASTRAGitContracts", "HostControlToolSupport", "MCPGatewaySupport", "WorkspaceToolSupport"],
+            dependencies: ["ASTRA", "ASTRACore", "ASTRAGitContracts", "HostControlToolSupport", "MCPGatewaySupport", "MCPServerKit", "WorkspaceToolSupport"],
             path: "Tests",
             exclude: ["ArchitectureFitnessTests", "MCPGatewaySupportTests", "MailToolSupportTests"]
         ),
