@@ -209,6 +209,7 @@ struct TaskContextState: Codable, Sendable, Equatable {
     /// Recent follow-up user messages, kept close to as-typed, so mid-conversation
     /// instructions survive past the transcript window (first message excluded).
     var standingInstructions: [ContextFact]?
+    var objectiveAssessment: ObjectiveAssessment?
     var turns: [Turn]
     var updatedAt: String
 }
@@ -303,11 +304,12 @@ enum TaskContextStateManager {
     }
 
     @MainActor
-    static func refresh(task: AgentTask) {
+    static func refresh(task: AgentTask, followUpMessage: String = "") {
         guard let folder = ensureTaskFolder(for: task) else { return }
         let existing = TaskContextStateRecovery.recoverState(taskFolder: folder, taskID: task.id)
         var state = existing ?? initialState(for: task)
         updateDerivedFields(&state, task: task, latestRun: latestRun(for: task))
+        reconcileActiveObjectiveWithAssessmentPivot(&state, task: task, followUpMessage: followUpMessage)
         // No-op refresh (common on task open) — skip the encode + two file writes. See perf audit.
         guard existing != state else { return }
         state.updatedAt = timestamp(Date())
@@ -315,8 +317,8 @@ enum TaskContextStateManager {
     }
 
     @MainActor
-    static func refreshedPromptContext(for task: AgentTask) -> String? {
-        refresh(task: task)
+    static func refreshedPromptContext(for task: AgentTask, followUpMessage: String = "") -> String? {
+        refresh(task: task, followUpMessage: followUpMessage)
         return promptContext(for: task)
     }
 
@@ -427,10 +429,10 @@ enum TaskContextStateManager {
         if !state.objective.startingRequest.isEmpty {
             lines.append("- Starting request: \(boundedInline(state.objective.startingRequest, maxCharacters: 240))")
         }
-        if !state.objective.currentObjective.isEmpty {
+        if !state.objective.currentObjective.isEmpty, !MainActor.assumeIsolated({ shouldSuppressRedundantCurrentObjectiveLine(state: state, task: task) }) {
             lines.append("- Current objective: \(boundedInline(state.objective.currentObjective, maxCharacters: 320))")
         }
-        if let approvedGoal = state.objective.approvedGoal, !approvedGoal.isEmpty {
+        if let approvedGoal = state.objective.approvedGoal, !approvedGoal.isEmpty, !MainActor.assumeIsolated({ shouldSuppressRedundantApprovedGoalLine(state: state, task: task) }) {
             lines.append("- Approved goal: \(boundedInline(approvedGoal, maxCharacters: 320))")
         }
         if let divergence = state.objectiveDivergenceNote, !divergence.isEmpty {
@@ -448,7 +450,7 @@ enum TaskContextStateManager {
         if let testCommand = state.testCommand, !testCommand.isEmpty {
             lines.append("- Test command: \(boundedInline(testCommand, maxCharacters: 320))")
         }
-        appendFactList("Decisions", state.decisionFacts, to: &lines, limit: 6)
+        appendFactList("Decisions", MainActor.assumeIsolated({ decisionFactsExcludingRedundantApprovedGoal(state.decisionFacts, state: state, task: task) }), to: &lines, limit: 6)
         appendList("Open questions", state.openQuestions, to: &lines, limit: 5)
         appendFactList("Blockers", state.blockerFacts, to: &lines, limit: 5)
         appendChangedFiles(state.changedFiles, to: &lines, limit: 8)
@@ -468,6 +470,7 @@ enum TaskContextStateManager {
         appendSourcePointerList("Verification evidence", state.verification.evidence, to: &lines, limit: 4)
         appendArtifactReferences(state.artifacts, to: &lines, limit: 6)
         appendLatestHandoff(state.latestHandoff, to: &lines)
+        appendObjectiveAssessment(state.objectiveAssessment, to: &lines)
         appendCorrectiveWork(state.correctiveWork, to: &lines, limit: 5)
         if let next = state.nextLikelyAction, !next.isEmpty {
             lines.append("- Next likely action: \(boundedInline(next, maxCharacters: 320))")
@@ -565,6 +568,7 @@ enum TaskContextStateManager {
         appendMarkdownVerification(state.verification, to: &parts)
         appendMarkdownArtifacts(state.artifacts, to: &parts)
         appendMarkdownHandoff(state.latestHandoff, to: &parts)
+        appendMarkdownObjectiveAssessment(state.objectiveAssessment, to: &parts)
         appendMarkdownCorrectiveWork(state.correctiveWork, to: &parts)
         if let next = state.nextLikelyAction, !next.isEmpty {
             parts.append("")

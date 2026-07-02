@@ -5,6 +5,16 @@ extension TaskContextStateManager {
         var objective: String
         var sourcePointers: [TaskContextState.SourcePointer]
         var supersedesOriginalGoal: Bool
+        /// True whenever an explicit objective-override message was found,
+        /// regardless of whether its resolved text differs from `task.goal`.
+        /// Distinct from `supersedesOriginalGoal`, which is specifically about
+        /// whether the resolved text differs -- a user who explicitly says
+        /// "no wait, go back to the original goal: <goal text verbatim>" DID
+        /// just issue a fresh, authoritative correction, even though the
+        /// override's resolved text happens to equal `task.goal` (adversarial
+        /// finding: a stale Tier 2 pivot must not survive this because
+        /// `supersedesOriginalGoal` alone reads as "nothing changed").
+        var hasExplicitOverride: Bool = false
     }
 
     static func activeObjectiveText(for task: AgentTask) -> String {
@@ -46,7 +56,8 @@ extension TaskContextStateManager {
             return ActiveObjectiveResolution(
                 objective: override.objective,
                 sourcePointers: [override.source],
-                supersedesOriginalGoal: !activeCaseInsensitiveEquals(override.objective, task.goal)
+                supersedesOriginalGoal: !activeCaseInsensitiveEquals(override.objective, task.goal),
+                hasExplicitOverride: true
             )
         }
 
@@ -99,6 +110,20 @@ extension TaskContextStateManager {
             .filter { $0.type == "user.message" || $0.type == TaskPlanConversationEventTypes.userMessage }
             .sorted { $0.timestamp < $1.timestamp }
             .first
+    }
+
+    /// Whether `text` (typically the CURRENT turn's follow-up message, before
+    /// it has been persisted as a `TaskEvent`) would itself be recognized as
+    /// an explicit objective-override message -- i.e. the same marker-based
+    /// detection `latestObjectiveOverride` applies to persisted events, but
+    /// against a live, not-yet-persisted string. `continueSession` builds the
+    /// prompt before inserting the new `user.message` event, so a correction
+    /// arriving on THIS turn (e.g. "no, go back to the original goal") is
+    /// invisible to `task.events`-based checks until the NEXT turn; callers
+    /// that need to react to it within the same turn must check this
+    /// alongside `hasExplicitOverride` (adversarial finding).
+    static func isExplicitObjectiveOverrideMessage(_ text: String) -> Bool {
+        objectiveOverrideCandidate(from: text) != nil
     }
 
     static func isGeneratedResumeInstruction(_ text: String) -> Bool {

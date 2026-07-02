@@ -51,6 +51,9 @@ enum AppStorageKeys {
     static let sandboxReadScope = "astra.runtime.sandboxReadScope.v1"
     static let logRetentionDays = "astra.logging.retentionDays.v1"
     static let browserAutoPromoteGoogleWorkspace = "astra.browser.autoPromoteGoogleWorkspace.v1"
+    // Opt-in Tier 2 (utility-model) objective drift detection. Default OFF --
+    // this is new/unproven; see ObjectiveAssessmentService.
+    static let objectiveDriftDetectionEnabled = "astra.objectiveAssessment.driftDetectionEnabled.v1"
     static let defaultTokenBudget = "defaultTokenBudget"
     static let budgetEnforcementMode = "astra.budget.enforcementMode.v1"
     static let claudePath = "claudePath"

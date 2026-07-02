@@ -185,6 +185,78 @@ enum AgentPromptBuilder {
         """
     }
 
+    /// Tier 2 (utility-model) objective re-assessment result, when it disagrees
+    /// with Tier 1's `.active` classification. Only `superseded` and
+    /// `original_satisfied` verdicts count as a pivot -- `original_active`
+    /// (or no assessment at all) leaves today's imperative framing untouched.
+    /// Purely advisory (INVARIANTS #3/#5): the original goal text is still
+    /// surfaced, just demoted to background framing, exactly like the Tier 1
+    /// `.delivered` branch already does.
+    ///
+    /// A persisted assessment is treated as invalidated (returns `nil`) when
+    /// Tier 1's deterministic resolver already found a newer, more
+    /// authoritative signal -- either an explicit objective-override message
+    /// (`activeObjectiveResolution(...).hasExplicitOverride`, true even when
+    /// the override's resolved text reaffirms `task.goal` verbatim -- an
+    /// explicit correction is still a fresh signal even if it lands back on
+    /// the original goal) or an approved/executing/completed plan whose goal
+    /// has already reconciled to something other than `task.goal` (mirrors
+    /// `TaskObjectiveAssessmentPivotReconciler`'s own invalidation logic; kept
+    /// duplicated here rather than shared because this section provider runs
+    /// before `.threadState`'s `refresh()` in the follow-up provider order,
+    /// so it must read the same signal independently within a single prompt
+    /// assembly) -- an explicit user override or an approved plan always wins
+    /// over an older, now-stale Tier 2 verdict (adversarial findings: an
+    /// explicit correction, or a plan approved after an earlier drift
+    /// episode, must not keep surfacing the earlier drift episode; nothing
+    /// else invalidates a persisted assessment once
+    /// `ObjectiveAssessmentTrigger.shouldAssess` stops re-running Tier 2 once
+    /// either signal is present).
+    ///
+    /// Also checks the opt-in "Objective Drift Detection" setting directly
+    /// rather than relying solely on the write side
+    /// (`AgentRuntimeRunPersistence.recordSessionTurn`, which only clears a
+    /// stale assessment when a turn *finishes* recording): this section
+    /// provider runs while building the prompt for the turn that follows the
+    /// user disabling the setting, before that write-side cleanup has had a
+    /// chance to run for this turn, so an independent read-side check is
+    /// required to avoid a one-turn window where a stale pivot still demotes
+    /// the original goal (adversarial finding).
+    ///
+    /// Also invalidates on `followUpMessage` itself (the CURRENT turn's raw
+    /// text, before it's persisted as a `user.message` event): `continueSession`
+    /// builds this very prompt before inserting that event, so a correction
+    /// arriving on this exact turn (e.g. "no, go back to the original goal")
+    /// would otherwise still see the stale pivot applied to the turn it was
+    /// meant to correct, only clearing on the NEXT turn (adversarial finding).
+    private static func followUpTier2ObjectivePivot(
+        for task: AgentTask,
+        followUpMessage: String
+    ) -> (verdict: String, currentObjective: String?)? {
+        guard UserDefaults.standard.bool(forKey: AppStorageKeys.objectiveDriftDetectionEnabled) else {
+            return nil
+        }
+        let folder = TaskWorkspaceAccess(task: task).taskFolder
+        guard !folder.isEmpty,
+              let assessment = TaskContextStateManager.load(taskFolder: folder)?.objectiveAssessment,
+              assessment.verdict == "superseded" || assessment.verdict == "original_satisfied" else {
+            return nil
+        }
+        let resolution = TaskContextStateManager.activeObjectiveResolution(
+            for: task,
+            planState: TaskPlanService.reconstruct(for: task),
+            startingRequest: task.goal,
+            approvedGoal: nil
+        )
+        let goal = task.goal.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedObjective = resolution.objective.trimmingCharacters(in: .whitespacesAndNewlines)
+        let tier1HasMovedPastOriginalGoal = resolution.hasExplicitOverride
+            || (!resolvedObjective.isEmpty && resolvedObjective.caseInsensitiveCompare(goal) != .orderedSame)
+            || TaskContextStateManager.isExplicitObjectiveOverrideMessage(followUpMessage)
+        guard !tier1HasMovedPastOriginalGoal else { return nil }
+        return (assessment.verdict, assessment.currentObjective)
+    }
+
     private static func currentTaskReminder(for task: AgentTask) -> String {
         "Current Task Reminder: complete this task now: \(task.goal)"
     }
@@ -287,11 +359,20 @@ enum AgentPromptBuilder {
         )
     }
 
-    private static func appendTaskOutputFolder(for task: AgentTask, to sections: inout [PromptContextSection]) {
+    private static func appendTaskOutputFolder(
+        for task: AgentTask,
+        followUpMessage: String = "",
+        to sections: inout [PromptContextSection]
+    ) {
         let taskDir = TaskWorkspaceAccess(task: task).taskFolder
         if !taskDir.isEmpty {
             let relativePath = relativeTaskFolderPath(for: task, taskDir: taskDir)
-            let artifactDirective = standaloneArtifactDirective(for: task, relativePath: relativePath, taskDir: taskDir)
+            let artifactDirective = standaloneArtifactDirective(
+                for: task,
+                followUpMessage: followUpMessage,
+                relativePath: relativePath,
+                taskDir: taskDir
+            )
             let stateHistoryDirective = stateHistoryOwnershipDirective(for: task)
             let stateReadDirective = providerStateReadDirective(for: task)
             if let relativePath {
@@ -333,10 +414,24 @@ enum AgentPromptBuilder {
 
     private static func standaloneArtifactDirective(
         for task: AgentTask,
+        followUpMessage: String = "",
         relativePath: String?,
         taskDir: String
     ) -> String {
         guard TaskDeliverableExpectation.requiresDeliverableArtifact(task) else { return "" }
+        // Mirrors `FollowUpIntroSectionProvider`'s own demotion check
+        // (Tier 1 `.delivered`, or a Tier 2 pivot) -- this directive is a
+        // SEPARATE section provider (`TaskOutputFolderSectionProvider`) that
+        // runs on every prompt, so suppressing the artifact contract in
+        // `FollowUpIntroSectionProvider` alone left this one still telling
+        // the provider its first action must be creating/updating the
+        // already-delivered or superseded original deliverable (adversarial
+        // finding). Never fires for a genuinely fresh/in-progress task: both
+        // signals are false until the goal is actually delivered or pivoted.
+        guard TaskContextStateManager.originalGoalDelivery(for: task) == .active,
+              followUpTier2ObjectivePivot(for: task, followUpMessage: followUpMessage) == nil else {
+            return ""
+        }
 
         let location = relativePath ?? taskDir
         let suggestedFile = suggestedStandaloneArtifactFilename(for: task)
@@ -691,18 +786,100 @@ enum AgentPromptBuilder {
                 to: &sections,
                 sourcePointers: taskSourcePointers(task)
             )
+            switch TaskContextStateManager.originalGoalDelivery(for: task) {
+            case .active:
+                if let pivot = followUpTier2ObjectivePivot(for: task, followUpMessage: context.followUpMessage) {
+                    appendTier2DemotedOriginalGoal(pivot, for: task, to: &sections)
+                } else {
+                    appendSection(
+                        "Goal: \(task.goal)",
+                        kind: .currentGoal,
+                        to: &sections,
+                        sourcePointers: taskSourcePointers(task)
+                    )
+                    appendSection(
+                        initialArtifactActionContract(for: task),
+                        kind: .currentGoal,
+                        to: &sections,
+                        sourcePointers: taskSourcePointers(task)
+                    )
+                }
+            case .delivered:
+                appendDemotedOriginalGoal(
+                    reason: "already delivered",
+                    transparencyNote: "the original goal above is treated as already delivered based on recorded completion/verification signals, so it has been demoted to background framing here. The current objective for this turn (if any) is carried separately below.",
+                    for: task,
+                    to: &sections
+                )
+            }
+        }
+
+        /// Shared demotion path used by both the Tier 1 `.delivered` branch and
+        /// the Tier 2 `original_satisfied` verdict (PR 6): same wording, same
+        /// section kind, so a satisfied-via-model-assessment thread reads
+        /// identically to a deterministically-delivered one. Never silently
+        /// re-anchors (INVARIANT #1): the original goal text is always still
+        /// surfaced verbatim, just demoted to background framing (INVARIANT #5).
+        private func appendDemotedOriginalGoal(
+            reason: String,
+            transparencyNote: String,
+            for task: AgentTask,
+            to sections: inout [PromptContextSection]
+        ) {
             appendSection(
-                "Goal: \(task.goal)",
+                "Original request (\(reason) -- background context only; do not re-address unless the user asks): \(task.goal)",
                 kind: .currentGoal,
                 to: &sections,
                 sourcePointers: taskSourcePointers(task)
             )
             appendSection(
-                initialArtifactActionContract(for: task),
+                "Transparency note: \(transparencyNote)",
                 kind: .currentGoal,
                 to: &sections,
                 sourcePointers: taskSourcePointers(task)
             )
+        }
+
+        /// Tier 2 pivot framing (PR 6). `original_satisfied` reuses the exact
+        /// `.delivered` demotion wording via `appendDemotedOriginalGoal`
+        /// (nothing to duplicate). `superseded` reuses the same demotion for the
+        /// original goal, but must never invent a second, potentially
+        /// conflicting "current objective" string here -- the capsule's
+        /// `appendThreadIntentContext` (Thread Intent "Current objective" line
+        /// plus the "Objective assessment" block written by PR 3) is the single
+        /// place that renders the live directive from
+        /// `objectiveAssessment.currentObjective`. This section only needs to
+        /// make the divergence auditable per INVARIANT #1.
+        ///
+        /// This claim only holds because `TaskContextStateManager.refresh` also
+        /// calls `reconcileActiveObjectiveWithAssessmentPivot`
+        /// (TaskObjectiveAssessmentPivotReconciler.swift), which overwrites the
+        /// Thread Intent "Current objective" line with the same pivoted text
+        /// whenever this same `superseded` verdict is still valid (drift
+        /// detection enabled, no newer explicit Tier 1 marker) -- otherwise the
+        /// two sections would show two different "current objective" values in
+        /// the same prompt.
+        private func appendTier2DemotedOriginalGoal(
+            _ pivot: (verdict: String, currentObjective: String?),
+            for task: AgentTask,
+            to sections: inout [PromptContextSection]
+        ) {
+            switch pivot.verdict {
+            case "original_satisfied":
+                appendDemotedOriginalGoal(
+                    reason: "already delivered",
+                    transparencyNote: "a background objective assessment concluded the original goal above is already satisfied, so it has been demoted to background framing here. The current objective for this turn (if any) is carried separately below.",
+                    for: task,
+                    to: &sections
+                )
+            default:
+                appendDemotedOriginalGoal(
+                    reason: "superseded by later work -- Tier 2 objective assessment",
+                    transparencyNote: "a background objective assessment concluded the original goal above has been superseded, so it has been demoted to background framing here. The current objective carried below (Thread Intent / Objective assessment) reflects this pivot. This is advisory -- confirm with the user before assuming this is final.",
+                    for: task,
+                    to: &sections
+                )
+            }
         }
     }
 
@@ -714,7 +891,7 @@ enum AgentPromptBuilder {
             state _: inout PromptContextSectionProviderState,
             to sections: inout [PromptContextSection]
         ) {
-            appendThreadIntentContext(for: context.task, to: &sections)
+            appendThreadIntentContext(for: context.task, followUpMessage: context.followUpMessage, to: &sections)
         }
     }
 
@@ -937,7 +1114,7 @@ enum AgentPromptBuilder {
             state _: inout PromptContextSectionProviderState,
             to sections: inout [PromptContextSection]
         ) {
-            appendTaskOutputFolder(for: context.task, to: &sections)
+            appendTaskOutputFolder(for: context.task, followUpMessage: context.followUpMessage, to: &sections)
         }
     }
 
@@ -1400,8 +1577,12 @@ enum AgentPromptBuilder {
         return files
     }
 
-    private static func appendThreadIntentContext(for task: AgentTask, to sections: inout [PromptContextSection]) {
-        guard var context = TaskContextStateManager.refreshedPromptContext(for: task),
+    private static func appendThreadIntentContext(
+        for task: AgentTask,
+        followUpMessage: String = "",
+        to sections: inout [PromptContextSection]
+    ) {
+        guard var context = TaskContextStateManager.refreshedPromptContext(for: task, followUpMessage: followUpMessage),
               !context.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return
         }

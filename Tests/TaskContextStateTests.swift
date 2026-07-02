@@ -1217,7 +1217,13 @@ struct TaskContextStateTests {
         let capsuleRange = try #require(prompt.range(of: "Context Capsule v2:"))
         let transcriptRange = try #require(prompt.range(of: "Recent conversation transcript"))
         #expect(capsuleRange.lowerBound < transcriptRange.lowerBound)
-        #expect(prompt.contains("Current objective: Current objective from edited task must stay primary"))
+        // The task is completed, so the edited goal is correctly demoted to
+        // background framing rather than also asserted as a live "Current
+        // objective" line -- a completed goal must not be shown as both
+        // "already delivered" and "current" in the same prompt (adversarial
+        // finding). The edit still propagates immediately either way.
+        #expect(prompt.contains("Original request (already delivered -- background context only; do not re-address unless the user asks): Current objective from edited task must stay primary"))
+        #expect(!prompt.contains("- Current objective: Current objective from edited task must stay primary"))
         #expect(prompt.contains("Old transcript says: use provider-native session memory"))
     }
 
