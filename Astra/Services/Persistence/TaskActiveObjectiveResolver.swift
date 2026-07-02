@@ -5,6 +5,16 @@ extension TaskContextStateManager {
         var objective: String
         var sourcePointers: [TaskContextState.SourcePointer]
         var supersedesOriginalGoal: Bool
+        /// True whenever an explicit objective-override message was found,
+        /// regardless of whether its resolved text differs from `task.goal`.
+        /// Distinct from `supersedesOriginalGoal`, which is specifically about
+        /// whether the resolved text differs -- a user who explicitly says
+        /// "no wait, go back to the original goal: <goal text verbatim>" DID
+        /// just issue a fresh, authoritative correction, even though the
+        /// override's resolved text happens to equal `task.goal` (adversarial
+        /// finding: a stale Tier 2 pivot must not survive this because
+        /// `supersedesOriginalGoal` alone reads as "nothing changed").
+        var hasExplicitOverride: Bool = false
     }
 
     static func activeObjectiveText(for task: AgentTask) -> String {
@@ -46,7 +56,8 @@ extension TaskContextStateManager {
             return ActiveObjectiveResolution(
                 objective: override.objective,
                 sourcePointers: [override.source],
-                supersedesOriginalGoal: !activeCaseInsensitiveEquals(override.objective, task.goal)
+                supersedesOriginalGoal: !activeCaseInsensitiveEquals(override.objective, task.goal),
+                hasExplicitOverride: true
             )
         }
 

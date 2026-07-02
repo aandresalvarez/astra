@@ -194,13 +194,24 @@ enum AgentPromptBuilder {
     /// `.delivered` branch already does.
     ///
     /// A persisted assessment is treated as invalidated (returns `nil`) when
-    /// Tier 1's deterministic resolver already found a newer explicit
-    /// objective marker (`activeObjectiveResolution(...).supersedesOriginalGoal`)
-    /// -- an explicit user override always wins over an older, now-stale Tier 2
-    /// verdict (adversarial finding: an explicit correction after a Tier 2
-    /// pivot must not keep surfacing the earlier drift episode, and
-    /// `ObjectiveAssessmentTrigger.shouldAssess` will not re-run Tier 2 once an
-    /// explicit marker is present, so nothing else invalidates it here).
+    /// Tier 1's deterministic resolver already found a newer, more
+    /// authoritative signal -- either an explicit objective-override message
+    /// (`activeObjectiveResolution(...).hasExplicitOverride`, true even when
+    /// the override's resolved text reaffirms `task.goal` verbatim -- an
+    /// explicit correction is still a fresh signal even if it lands back on
+    /// the original goal) or an approved/executing/completed plan whose goal
+    /// has already reconciled to something other than `task.goal` (mirrors
+    /// `TaskObjectiveAssessmentPivotReconciler`'s own invalidation logic; kept
+    /// duplicated here rather than shared because this section provider runs
+    /// before `.threadState`'s `refresh()` in the follow-up provider order,
+    /// so it must read the same signal independently within a single prompt
+    /// assembly) -- an explicit user override or an approved plan always wins
+    /// over an older, now-stale Tier 2 verdict (adversarial findings: an
+    /// explicit correction, or a plan approved after an earlier drift
+    /// episode, must not keep surfacing the earlier drift episode; nothing
+    /// else invalidates a persisted assessment once
+    /// `ObjectiveAssessmentTrigger.shouldAssess` stops re-running Tier 2 once
+    /// either signal is present).
     ///
     /// Also checks the opt-in "Objective Drift Detection" setting directly
     /// rather than relying solely on the write side
@@ -223,13 +234,17 @@ enum AgentPromptBuilder {
               assessment.verdict == "superseded" || assessment.verdict == "original_satisfied" else {
             return nil
         }
-        let hasNewerExplicitMarker = TaskContextStateManager.activeObjectiveResolution(
+        let resolution = TaskContextStateManager.activeObjectiveResolution(
             for: task,
             planState: TaskPlanService.reconstruct(for: task),
             startingRequest: task.goal,
             approvedGoal: nil
-        ).supersedesOriginalGoal
-        guard !hasNewerExplicitMarker else { return nil }
+        )
+        let goal = task.goal.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedObjective = resolution.objective.trimmingCharacters(in: .whitespacesAndNewlines)
+        let tier1HasMovedPastOriginalGoal = resolution.hasExplicitOverride
+            || (!resolvedObjective.isEmpty && resolvedObjective.caseInsensitiveCompare(goal) != .orderedSame)
+        guard !tier1HasMovedPastOriginalGoal else { return nil }
         return (assessment.verdict, assessment.currentObjective)
     }
 
@@ -385,6 +400,19 @@ enum AgentPromptBuilder {
         taskDir: String
     ) -> String {
         guard TaskDeliverableExpectation.requiresDeliverableArtifact(task) else { return "" }
+        // Mirrors `FollowUpIntroSectionProvider`'s own demotion check
+        // (Tier 1 `.delivered`, or a Tier 2 pivot) -- this directive is a
+        // SEPARATE section provider (`TaskOutputFolderSectionProvider`) that
+        // runs on every prompt, so suppressing the artifact contract in
+        // `FollowUpIntroSectionProvider` alone left this one still telling
+        // the provider its first action must be creating/updating the
+        // already-delivered or superseded original deliverable (adversarial
+        // finding). Never fires for a genuinely fresh/in-progress task: both
+        // signals are false until the goal is actually delivered or pivoted.
+        guard TaskContextStateManager.originalGoalDelivery(for: task) == .active,
+              followUpTier2ObjectivePivot(for: task) == nil else {
+            return ""
+        }
 
         let location = relativePath ?? taskDir
         let suggestedFile = suggestedStandaloneArtifactFilename(for: task)

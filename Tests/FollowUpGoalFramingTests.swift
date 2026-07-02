@@ -192,6 +192,114 @@ struct FollowUpGoalFramingTests {
         #expect(prompt.contains("- Current objective: finish the onboarding guide"))
     }
 
+    @Test("an explicit return to the original goal invalidates a stale superseded Tier 2 verdict")
+    func explicitReturnToOriginalGoalInvalidatesStaleSupersededVerdict() throws {
+        let defaults = UserDefaults.standard
+        let key = AppStorageKeys.objectiveDriftDetectionEnabled
+        let original = defaults.object(forKey: key) as? Bool
+        defaults.set(true, forKey: key)
+        defer {
+            if let original {
+                defaults.set(original, forKey: key)
+            } else {
+                defaults.removeObject(forKey: key)
+            }
+        }
+
+        let container = try makeFollowUpGoalFramingContainer()
+        let context = container.mainContext
+        let root = try Self.temporaryRoot(name: "explicit-return-to-original")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let workspace = Workspace(name: "Explicit Return To Original", primaryPath: root)
+        let task = AgentTask(title: "Running thread", goal: "Write the onboarding guide", workspace: workspace)
+        task.status = .running
+        context.insert(workspace)
+        context.insert(task)
+
+        let first = TaskEvent(task: task, type: "user.message", payload: "Write the onboarding guide")
+        first.timestamp = Date(timeIntervalSince1970: 1)
+        context.insert(first)
+
+        // Unlike `explicitMarkerInvalidatesStaleSupersededVerdict` above, this
+        // correction resolves back to the EXACT original goal text, so
+        // `supersedesOriginalGoal` reads false -- but it's still a fresh,
+        // explicit correction and must still invalidate the stale pivot
+        // (adversarial finding).
+        let explicitReturn = TaskEvent(
+            task: task,
+            type: "user.message",
+            payload: "no wait, go back -- your goal is to Write the onboarding guide"
+        )
+        explicitReturn.timestamp = Date(timeIntervalSince1970: 2)
+        context.insert(explicitReturn)
+        try context.save()
+
+        let folder = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
+        TaskContextStateManager.refresh(task: task)
+        var state = try #require(TaskContextStateManager.load(taskFolder: folder))
+        // Simulate the earlier turn-6 Tier 2 pivot that was never cleared.
+        state.objectiveAssessment = TaskContextState.ObjectiveAssessment(
+            verdict: "superseded",
+            currentObjective: "Rework the CSV exporter instead",
+            assessedAtTurn: 4,
+            inputHash: "hash-stale-superseded"
+        )
+        TaskContextStateManager.saveState(state, taskFolder: folder, taskID: task.id)
+
+        let prompt = AgentPromptBuilder.buildFreshFollowUpPrompt(message: "Thanks, one more thing", task: task)
+
+        // The just-reaffirmed original goal must be active, not demoted, and
+        // the earlier drift episode's objective must not resurface anywhere.
+        #expect(prompt.contains("Goal: Write the onboarding guide"))
+        #expect(!prompt.contains("Rework the CSV exporter instead"))
+        #expect(!prompt.contains("superseded by later work"))
+        #expect(prompt.contains("- Current objective: Write the onboarding guide"))
+    }
+
+    @Test("artifact delivery contract is suppressed once the original deliverable is demoted")
+    func artifactDeliveryContractSuppressedOnceDemoted() throws {
+        let container = try makeFollowUpGoalFramingContainer()
+        let context = container.mainContext
+        // `standaloneArtifactDirective` only fires once
+        // `TaskWorkspaceAccess(task:).taskFolder` resolves to a real folder, so
+        // both tasks need a workspace (unlike the plain no-workspace tasks
+        // elsewhere in this file, which only exercise `FollowUpIntroSectionProvider`).
+        let activeRoot = try Self.temporaryRoot(name: "artifact-contract-active")
+        defer { try? FileManager.default.removeItem(atPath: activeRoot) }
+        let deliveredRoot = try Self.temporaryRoot(name: "artifact-contract-delivered")
+        defer { try? FileManager.default.removeItem(atPath: deliveredRoot) }
+
+        // "Write" (action word) + "demo app" (artifact keyword) makes
+        // `TaskDeliverableExpectation.requiresDeliverableArtifact` true.
+        let activeWorkspace = Workspace(name: "Artifact Contract Active", primaryPath: activeRoot)
+        let activeTask = AgentTask(title: "Running thread", goal: "Write a demo app for onboarding", workspace: activeWorkspace)
+        activeTask.status = .running
+        context.insert(activeWorkspace)
+        context.insert(activeTask)
+        _ = try TaskWorkspaceAccess(task: activeTask).ensureTaskFolder()
+
+        let deliveredWorkspace = Workspace(name: "Artifact Contract Delivered", primaryPath: deliveredRoot)
+        let deliveredTask = AgentTask(title: "Completed thread", goal: "Write a demo app for onboarding", workspace: deliveredWorkspace)
+        deliveredTask.status = .completed
+        context.insert(deliveredWorkspace)
+        context.insert(deliveredTask)
+        _ = try TaskWorkspaceAccess(task: deliveredTask).ensureTaskFolder()
+        try context.save()
+
+        let activePrompt = AgentPromptBuilder.buildFreshFollowUpPrompt(message: "Thanks, one more thing", task: activeTask)
+        // Sanity check: this goal wording actually triggers the directive for
+        // a still-active task, so the absence below is meaningful.
+        #expect(activePrompt.contains("Artifact delivery contract:"))
+
+        let deliveredPrompt = AgentPromptBuilder.buildFreshFollowUpPrompt(message: "Thanks, one more thing", task: deliveredTask)
+        // `TaskOutputFolderSectionProvider` is a separate section provider from
+        // `FollowUpIntroSectionProvider` -- suppressing the artifact contract
+        // there alone left this one still telling the provider its first
+        // action must be creating/updating the already-delivered artifact
+        // (adversarial finding).
+        #expect(!deliveredPrompt.contains("Artifact delivery contract:"))
+    }
+
     @Test("no objectiveAssessment (Tier 2 never ran) matches PR 2 behavior exactly")
     func missingAssessmentMatchesPriorBehavior() throws {
         let container = try makeFollowUpGoalFramingContainer()

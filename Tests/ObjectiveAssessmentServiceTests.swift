@@ -310,6 +310,112 @@ struct ObjectiveAssessmentServiceTests {
         #expect(after.objectiveAssessment?.assessedAtTurn == fixture.turnCountBeforeAssessment + 50)
     }
 
+    // MARK: - Race safety: newer inputs discard a slower call's stale result
+
+    @Test("a newer user message recorded during an in-flight assessment discards the now-stale result")
+    func newerUserMessageDuringInFlightAssessmentDiscardsStaleResult() async throws {
+        let fixture = try makeReadyToAssessFixture(named: "newer-inputs-during-flight")
+        defer { fixture.cleanup() }
+
+        let priorState = try #require(TaskContextStateManager.load(taskFolder: fixture.folder))
+        #expect(priorState.objectiveAssessment == nil)
+
+        await ObjectiveAssessmentService.assessIfNeeded(
+            task: fixture.task,
+            utilityRuntime: fixture.utilityRuntime
+        ) { _, _, _ in
+            // Simulate turn N+1 recording a brand-new substantive user message
+            // while this (turn N) call is still "in flight" -- nothing has
+            // been persisted for N+1 yet, so the assessedAtTurn race guard
+            // alone would not catch this (adversarial finding).
+            if let modelContext = fixture.task.modelContext {
+                let newerMessage = TaskEvent(
+                    task: fixture.task,
+                    type: "user.message",
+                    payload: "Actually, forget all that -- prioritize the login bug instead"
+                )
+                newerMessage.timestamp = Date(timeIntervalSince1970: 1000)
+                modelContext.insert(newerMessage)
+                try? modelContext.save()
+            }
+
+            return AgentUtilityRunResult(
+                exitCode: 0,
+                output: #"{"verdict":"superseded","currentObjective":"Rework the CSV exporter instead"}"#,
+                error: ""
+            )
+        }
+
+        let after = try #require(TaskContextStateManager.load(taskFolder: fixture.folder))
+        // The result was computed against inputs that are now stale (the
+        // newer message didn't exist yet when the hash was captured), so it
+        // must not be persisted at all.
+        #expect(after.objectiveAssessment == nil)
+    }
+
+    // MARK: - Fail-safe: a failed reassessment discards a demonstrably stale verdict
+
+    @Test("a failed reassessment on new inputs clears the now-stale persisted verdict")
+    func failedReassessmentOnNewInputsClearsStaleVerdict() async throws {
+        let fixture = try makeReadyToAssessFixture(named: "failed-reassessment-clears-stale")
+        defer { fixture.cleanup() }
+
+        // A verdict persisted against inputs that no longer match anything
+        // the current thread could have produced -- stands in for "an older
+        // user message existed when this was computed, but the thread has
+        // since moved on."
+        var state = try #require(TaskContextStateManager.load(taskFolder: fixture.folder))
+        state.objectiveAssessment = TaskContextState.ObjectiveAssessment(
+            verdict: "superseded",
+            currentObjective: "An earlier, now-stale drift-episode objective",
+            assessedAtTurn: 1,
+            inputHash: "hash-that-will-never-match-current-inputs"
+        )
+        TaskContextStateManager.saveState(state, taskFolder: fixture.folder, taskID: fixture.task.id)
+
+        await ObjectiveAssessmentService.assessIfNeeded(
+            task: fixture.task,
+            utilityRuntime: fixture.utilityRuntime
+        ) { _, _, _ in
+            AgentUtilityRunResult(exitCode: 1, output: "", error: "timed out")
+        }
+
+        let after = try #require(TaskContextStateManager.load(taskFolder: fixture.folder))
+        // Fail-safe does not mean "leave stale data forever" -- once a
+        // reassessment attempt confirms the persisted verdict's inputHash no
+        // longer matches current reality, it must be discarded rather than
+        // keep applying an old pivot indefinitely (adversarial finding).
+        #expect(after.objectiveAssessment == nil)
+    }
+
+    // MARK: - Disabling the setting mid-flight discards an in-flight result
+
+    @Test("disabling Objective Drift Detection mid-flight discards the in-flight result")
+    func disablingDriftDetectionMidFlightDiscardsInFlightResult() async throws {
+        let fixture = try makeReadyToAssessFixture(named: "disabled-mid-flight")
+        defer { fixture.cleanup() }
+
+        let key = AppStorageKeys.objectiveDriftDetectionEnabled
+        await ObjectiveAssessmentService.assessIfNeeded(
+            task: fixture.task,
+            utilityRuntime: fixture.utilityRuntime
+        ) { _, _, _ in
+            // The user disables the opt-in setting while this call is
+            // in flight (adversarial finding): the result must not be
+            // persisted once it lands, even though scheduling already
+            // happened while the setting was on.
+            UserDefaults.standard.set(false, forKey: key)
+            return AgentUtilityRunResult(
+                exitCode: 0,
+                output: #"{"verdict":"superseded","currentObjective":"Rework the CSV exporter instead"}"#,
+                error: ""
+            )
+        }
+
+        let after = try #require(TaskContextStateManager.load(taskFolder: fixture.folder))
+        #expect(after.objectiveAssessment == nil)
+    }
+
     // MARK: - The sole early follow-up must not be dropped as a goal restatement
 
     @Test("the sole early follow-up is not dropped as if it were the original goal restated")
@@ -405,15 +511,34 @@ struct ObjectiveAssessmentServiceTests {
         var root: String
         var utilityRuntime: AgentUtilityRuntimeConfiguration
         var turnCountBeforeAssessment: Int
+        var restoreDriftDetectionSetting: () -> Void
 
         func cleanup() {
+            restoreDriftDetectionSetting()
             try? FileManager.default.removeItem(atPath: root)
         }
     }
 
     /// Builds a task with enough recorded turns and a substantive later user
     /// message so `ObjectiveAssessmentTrigger.shouldAssess` returns true.
+    /// Also enables the opt-in "Objective Drift Detection" setting for the
+    /// duration of the fixture (restored by `cleanup()`) -- `assessIfNeeded`
+    /// re-checks this setting after its await completes (adversarial finding:
+    /// discard an in-flight result if the setting was disabled mid-call), so
+    /// any direct caller exercising its success path needs it on throughout.
     private func makeReadyToAssessFixture(named name: String) throws -> AssessmentFixture {
+        let defaults = UserDefaults.standard
+        let driftDetectionKey = AppStorageKeys.objectiveDriftDetectionEnabled
+        let originalDriftDetectionSetting = defaults.object(forKey: driftDetectionKey) as? Bool
+        defaults.set(true, forKey: driftDetectionKey)
+        let restoreDriftDetectionSetting: () -> Void = {
+            if let originalDriftDetectionSetting {
+                defaults.set(originalDriftDetectionSetting, forKey: driftDetectionKey)
+            } else {
+                defaults.removeObject(forKey: driftDetectionKey)
+            }
+        }
+
         let root = try temporaryRoot(name: name)
         let container = try makeObjectiveAssessmentServiceContainer()
         let context = ModelContext(container)
@@ -452,7 +577,8 @@ struct ObjectiveAssessmentServiceTests {
             folder: folder,
             root: root,
             utilityRuntime: AgentUtilityRuntimeConfiguration(runtime: .claudeCode, model: "claude-haiku-4-5-20251001"),
-            turnCountBeforeAssessment: state.turns.count
+            turnCountBeforeAssessment: state.turns.count,
+            restoreDriftDetectionSetting: restoreDriftDetectionSetting
         )
     }
 

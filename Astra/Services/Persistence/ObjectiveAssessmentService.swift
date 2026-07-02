@@ -143,8 +143,14 @@ enum ObjectiveAssessmentService {
         let result = await promptRunner(prompt, workspacePath, configuration)
 
         // Re-check after the (possibly long-running, up to 60s) await -- the
-        // task may have been deleted from the UI while this was in flight.
-        guard !task.isDeleted, task.modelContext != nil else { return }
+        // task may have been deleted from the UI while this was in flight, or
+        // the user may have disabled the opt-in setting since this was
+        // scheduled (adversarial finding: without this, a call already in
+        // flight when the setting is turned off can still persist its
+        // verdict, silently reintroducing `objectiveAssessment` after the
+        // off-path cleanup already removed it).
+        guard !task.isDeleted, task.modelContext != nil,
+              UserDefaults.standard.bool(forKey: AppStorageKeys.objectiveDriftDetectionEnabled) else { return }
 
         guard result.exitCode == 0 else {
             AppLogger.audit(.contextStateUpdated, category: "Worker", taskID: task.id, fields: [
@@ -152,6 +158,11 @@ enum ObjectiveAssessmentService {
                 "result": "provider_error",
                 "exit_code": String(result.exitCode)
             ], level: .warning)
+            discardAssessmentIfStaleAfterFailedReassessment(
+                task: task,
+                folder: folder,
+                fallbackVerificationStatus: verificationStatus
+            )
             return
         }
 
@@ -164,6 +175,11 @@ enum ObjectiveAssessmentService {
                 "operation": "objective_assessment",
                 "result": "parse_failed"
             ], level: .warning)
+            discardAssessmentIfStaleAfterFailedReassessment(
+                task: task,
+                folder: folder,
+                fallbackVerificationStatus: verificationStatus
+            )
             return
         }
 
@@ -193,6 +209,25 @@ enum ObjectiveAssessmentService {
             ], level: .debug)
             return
         }
+
+        // A slower call can also lose the race without anything newer having
+        // been PERSISTED yet: turn N starts this call, turn N+1 records a new
+        // user message (changing the true current input hash) before N+1's
+        // own assessment lands or even runs, and N's now-stale result would
+        // otherwise be saved as if it reflected N+1's message (adversarial
+        // finding). Recomputing the hash fresh, right before writing, catches
+        // this regardless of whether anything else has been persisted yet.
+        guard currentAssessmentInputHash(
+            for: task,
+            folder: folder,
+            fallbackVerificationStatus: verificationStatus
+        ) == inputHash else {
+            AppLogger.audit(.contextStateUpdated, category: "Worker", taskID: task.id, fields: [
+                "operation": "objective_assessment",
+                "result": "discarded_stale_inputs"
+            ], level: .debug)
+            return
+        }
         stateToSave.objectiveAssessment = parsed
         TaskContextStateManager.saveState(stateToSave, taskFolder: folder, taskID: task.id)
 
@@ -201,6 +236,62 @@ enum ObjectiveAssessmentService {
             "result": "assessed",
             "verdict": parsed.verdict
         ], level: .info)
+    }
+
+    // MARK: - Freshness
+
+    /// Recomputes the input hash from `task`'s CURRENT events/state, not from
+    /// values captured earlier in a possibly long-running call -- the single
+    /// source of truth for "does what's persisted still reflect reality right
+    /// now," used both to gate a successful save and to decide whether a
+    /// failed reassessment should discard a now-stale persisted verdict.
+    @MainActor
+    private static func currentAssessmentInputHash(
+        for task: AgentTask,
+        folder: String,
+        fallbackVerificationStatus: String
+    ) -> String {
+        let freshVerificationStatus = TaskContextStateManager.load(taskFolder: folder)?.verification.status
+            ?? fallbackVerificationStatus
+        return ObjectiveAssessmentTrigger.objectiveInputHash(
+            originalGoal: task.goal,
+            recentUserMessages: assessmentRecentUserMessages(for: task),
+            verificationStatus: freshVerificationStatus
+        )
+    }
+
+    /// Called when a reassessment attempt fails (provider error or parse
+    /// failure): if the persisted `objectiveAssessment`'s own `inputHash` no
+    /// longer matches what's freshly computed right now, it no longer
+    /// reflects the current inputs -- e.g. a later, substantive user message
+    /// arrived after the stale verdict was recorded -- so it's discarded
+    /// rather than left to keep applying an old pivot indefinitely
+    /// (adversarial finding). A still-fresh persisted assessment (its own
+    /// `inputHash` already matches, whether from this call's original
+    /// computation or a faster parallel call that already landed) is left
+    /// untouched.
+    @MainActor
+    private static func discardAssessmentIfStaleAfterFailedReassessment(
+        task: AgentTask,
+        folder: String,
+        fallbackVerificationStatus: String
+    ) {
+        guard var state = TaskContextStateManager.load(taskFolder: folder),
+              let assessment = state.objectiveAssessment else {
+            return
+        }
+        let fresh = currentAssessmentInputHash(
+            for: task,
+            folder: folder,
+            fallbackVerificationStatus: fallbackVerificationStatus
+        )
+        guard assessment.inputHash != fresh else { return }
+        state.objectiveAssessment = nil
+        TaskContextStateManager.saveState(state, taskFolder: folder, taskID: task.id)
+        AppLogger.audit(.contextStateUpdated, category: "Worker", taskID: task.id, fields: [
+            "operation": "objective_assessment",
+            "result": "discarded_stale_after_failed_reassessment"
+        ], level: .debug)
     }
 
     // MARK: - Prompt
