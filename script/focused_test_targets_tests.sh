@@ -25,11 +25,16 @@ assert_targets "MailToolSupportTests" \
   "Tools/StanfordAppleMailTool/main.swift" \
   "Tests/MailToolSupportTests/StanfordAppleMailToolTests.swift"
 
-assert_targets $'MCPGatewaySupportTests\nMailToolSupportTests' \
+assert_targets $'ArchitectureFitnessTests.ArchitectureFitnessTests\nMCPGatewaySupportTests\nMailToolSupportTests' \
   "Package.swift"
+
+assert_targets "ArchitectureFitnessTests.ArchitectureFitnessTests" \
+  "Tests/ArchitectureFitnessTests/ArchitectureFitnessTests.swift"
+
+assert_targets "AppSemanticFitnessTests" \
+  "Tests/AppSemanticFitnessTests.swift"
 
 assert_targets ""
 
 assert_targets "" \
-  "Astra/Services/Runtime/AgentRuntimeAdapter.swift" \
-  "Tests/ArchitectureFitnessTests.swift"
+  "Astra/Services/Runtime/AgentRuntimeAdapter.swift"

@@ -27,7 +27,7 @@ run_focused_targets_for_changed_paths() {
   done <<< "$targets"
 }
 
-run swift test --filter ArchitectureFitnessTests
+run swift test --filter ArchitectureFitnessTests.ArchitectureFitnessTests
 run script/focused_test_targets_tests.sh
 changed_files=()
 while IFS= read -r path; do
