@@ -913,39 +913,7 @@ struct ChatPanelView: View {
     @ViewBuilder
     private func messageBubble(_ msg: ChatMessage) -> some View {
         if msg.role == "user" {
-            // User bubble — right-aligned, subtle fill
-            HStack(alignment: .top, spacing: 10) {
-                Spacer(minLength: 120)
-                VStack(alignment: .trailing, spacing: 4) {
-                    Text(msg.content)
-                        .font(Stanford.chatBody())
-                        .lineSpacing(Stanford.chatBodyLineSpacing)
-                        .textSelection(.enabled)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 12)
-                        .background(Stanford.sky.opacity(0.055))
-                        .foregroundStyle(Stanford.readingText)
-                        .clipShape(UnevenRoundedRectangle(
-                            topLeadingRadius: 16,
-                            bottomLeadingRadius: 16,
-                            bottomTrailingRadius: 4,
-                            topTrailingRadius: 16
-                        ))
-                        .overlay(
-                            UnevenRoundedRectangle(
-                                topLeadingRadius: 16,
-                                bottomLeadingRadius: 16,
-                                bottomTrailingRadius: 4,
-                                topTrailingRadius: 16
-                            )
-                            .stroke(Stanford.sky.opacity(0.11), lineWidth: 1)
-                        )
-
-                    Text(msg.timestamp, style: .time)
-                        .font(Stanford.chatMeta())
-                        .foregroundStyle(.tertiary)
-                        .padding(.trailing, 4)
-                }
+            ChatTranscriptUserBubble(text: msg.content, timestamp: msg.timestamp, style: .workspace)
                 .contextMenu {
                     Button {
                         NSPasteboard.general.clearContents()
@@ -959,7 +927,6 @@ struct ChatPanelView: View {
                         Label("Reuse in Composer", systemImage: "arrow.uturn.up")
                     }
                 }
-            }
         } else {
             // AI response — flows directly on background, no card
             VStack(alignment: .leading, spacing: 6) {
@@ -2070,42 +2037,12 @@ struct ChatPanelView: View {
 
     @discardableResult
     private func smartPaste() -> Bool {
-        let pb = NSPasteboard.general
-        let types = pb.types ?? []
-
-        if let urls = pb.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL], !urls.isEmpty {
-            for url in urls where !attachedFiles.contains(url.path) {
-                attachedFiles.append(url.path)
-            }
-            return true
-        }
-
-        if types.contains(.png) || types.contains(.tiff) {
-            if let image = pb.readObjects(forClasses: [NSImage.self]) as? [NSImage], let first = image.first {
-                if let tiff = first.tiffRepresentation,
-                   let bitmap = NSBitmapImageRep(data: tiff),
-                   let png = bitmap.representation(using: .png, properties: [:]) {
-                    let tempPath = NSTemporaryDirectory() + "astra_paste_\(UUID().uuidString.prefix(8)).png"
-                    try? png.write(to: URL(fileURLWithPath: tempPath))
-                    attachedFiles.append(tempPath)
-                    return true
-                }
-            }
-        }
-
-        if let text = pb.string(forType: .string), !text.isEmpty {
-            let lineCount = text.components(separatedBy: .newlines).count
-            if lineCount > 10 || text.count > 500 {
-                let ext = text.hasPrefix("{") || text.hasPrefix("[") ? "json" : "txt"
-                let tempPath = NSTemporaryDirectory() + "astra_paste_\(UUID().uuidString.prefix(8)).\(ext)"
-                try? text.write(toFile: tempPath, atomically: true, encoding: .utf8)
-                attachedFiles.append(tempPath)
-                return true
-            }
-            return false
-        }
-
-        return false
+        let result = ComposerPasteIntake.intake(
+            pasteboard: .general,
+            existingAttachments: Set(attachedFiles)
+        )
+        attachedFiles.append(contentsOf: result.attachmentPaths)
+        return result.handled
     }
 
     private func installPasteMonitor() {

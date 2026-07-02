@@ -197,20 +197,12 @@ struct WorkspaceAppStudioChatView: View {
 
     private func bubble(_ message: StudioMessage) -> some View {
         let isUser = message.role == .user
-        return HStack(spacing: 0) {
-            if isUser { Spacer(minLength: 56) }
-            Text(message.text)
-                .font(Stanford.ui(13))
-                .foregroundStyle(isUser ? Color.white : Color.primary)
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: 380, alignment: .leading)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .background(bubbleBackground(message))
-                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-            if !isUser { Spacer(minLength: 56) }
-        }
-        .frame(maxWidth: .infinity, alignment: isUser ? .trailing : .leading)
+        return ChatTranscriptCompactBubble(
+            text: message.text,
+            role: isUser ? .user : .assistant,
+            foreground: isUser ? Color.white : Color.primary,
+            background: bubbleBackground(message)
+        )
     }
 
     private func bubbleBackground(_ message: StudioMessage) -> Color {

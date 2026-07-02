@@ -2201,35 +2201,10 @@ struct TaskMainView: View {
     // MARK: - Chat Bubbles
 
     private func chatUserBubble(text: String, timestamp _: Date) -> some View {
-        HStack(alignment: .top, spacing: 10) {
-            Spacer(minLength: 120)
-            VStack(alignment: .trailing, spacing: 4) {
-                Text(MarkdownTextView.markdownAttributed(text))
-                    .font(Stanford.chatBody())
-                    .lineSpacing(Stanford.chatBodyLineSpacing)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 12)
-                    .background(Color.primary.opacity(0.028))
-                    .foregroundStyle(Stanford.readingText)
-                    .tint(Stanford.link)
-                    .clipShape(UnevenRoundedRectangle(
-                        topLeadingRadius: 16,
-                        bottomLeadingRadius: 16,
-                        bottomTrailingRadius: 4,
-                        topTrailingRadius: 16
-                    ))
-                    .overlay(
-                        UnevenRoundedRectangle(
-                            topLeadingRadius: 16,
-                            bottomLeadingRadius: 16,
-                            bottomTrailingRadius: 4,
-                            topTrailingRadius: 16
-                        )
-                        .stroke(Color.primary.opacity(0.07), lineWidth: 1)
-                    )
-                    .textSelection(.enabled)
-            }
-        }
+        ChatTranscriptUserBubble(
+            attributedText: MarkdownTextView.markdownAttributed(text),
+            style: .task
+        )
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Your message: \(text)")
     }
@@ -5065,45 +5040,12 @@ struct TaskMainView: View {
     /// let the TextField handle it natively (short text).
     @discardableResult
     private func smartPaste() -> Bool {
-        let pb = NSPasteboard.general
-        let types = pb.types ?? []
-
-        // 1. File URLs — attach directly
-        if let urls = pb.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL], !urls.isEmpty {
-            for url in urls where !attachedFiles.contains(url.path) {
-                attachedFiles.append(url.path)
-            }
-            return true
-        }
-
-        // 2. Image data (screenshot, copied image) — save as temp PNG
-        if types.contains(.png) || types.contains(.tiff) {
-            if let image = pb.readObjects(forClasses: [NSImage.self]) as? [NSImage], let first = image.first {
-                if let tiff = first.tiffRepresentation,
-                   let bitmap = NSBitmapImageRep(data: tiff),
-                   let png = bitmap.representation(using: .png, properties: [:]) {
-                    let tempPath = NSTemporaryDirectory() + "astra_paste_\(UUID().uuidString.prefix(8)).png"
-                    try? png.write(to: URL(fileURLWithPath: tempPath))
-                    attachedFiles.append(tempPath)
-                    return true
-                }
-            }
-        }
-
-        // 3. Text — short text pastes inline, long text attaches as file
-        if let text = pb.string(forType: .string), !text.isEmpty {
-            let lineCount = text.components(separatedBy: .newlines).count
-            if lineCount > 10 || text.count > 500 {
-                let ext = text.hasPrefix("{") || text.hasPrefix("[") ? "json" : "txt"
-                let tempPath = NSTemporaryDirectory() + "astra_paste_\(UUID().uuidString.prefix(8)).\(ext)"
-                try? text.write(toFile: tempPath, atomically: true, encoding: .utf8)
-                attachedFiles.append(tempPath)
-                return true
-            }
-            return false
-        }
-
-        return false
+        let result = ComposerPasteIntake.intake(
+            pasteboard: .general,
+            existingAttachments: Set(attachedFiles)
+        )
+        attachedFiles.append(contentsOf: result.attachmentPaths)
+        return result.handled
     }
 
     private func installPasteMonitor() {

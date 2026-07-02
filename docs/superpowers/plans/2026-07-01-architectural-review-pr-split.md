@@ -607,8 +607,8 @@ script/prepush.sh
 
 **Scope:**
 
-- Add `ChatTranscriptMessage` and shared `ChatTranscriptView`/`MessageBubble` components.
-- Extract common `AttachmentIntake` or paste handling from duplicate `smartPaste` implementations.
+- Add shared `ChatTranscriptRole`, `ChatTranscriptUserBubble`, and `ChatTranscriptCompactBubble` presentation primitives.
+- Extract duplicate `smartPaste` text/file/image intake into `ComposerPasteIntake`.
 - Keep task-specific and App Studio-specific session ownership outside the shared view.
 - Preserve markdown rendering and streaming where task chat already supports it.
 
@@ -616,9 +616,10 @@ script/prepush.sh
 
 - `Astra/Views/ChatPanelView.swift`
 - `Astra/Views/WorkspaceAppStudioChatView.swift`
-- `Astra/Views/TaskConversationItem.swift`
+- `Astra/Views/TaskThreadSnapshot.swift`
 - `Astra/Views/TaskMainView.swift`
 - New `Astra/Views/Components/ChatTranscriptView.swift`
+- New `Astra/Services/Tasks/ComposerPasteIntake.swift`
 
 **Tests:**
 
@@ -637,6 +638,13 @@ swift test --filter HeadlessChatScenarioTests
 git diff --check
 script/precommit.sh
 ```
+
+**Implementation evidence (2026-07-02):**
+
+- Added `ChatTranscriptUserBubble` for ChatPanel and TaskMain user messages, preserving ChatPanel copy/reuse context actions and TaskMain markdown text.
+- Added `ChatTranscriptCompactBubble` for App Studio chat rows while leaving Studio session state and scroll sentinels local.
+- Added `ComposerPasteIntake` and routed ChatPanel/TaskMain paste monitors through it; long text attaches as `.txt` or `.json`, short text still falls through to native text paste.
+- Validation passed: `swift test --filter ComposerPresentationTests`; `swift test --filter 'TaskPresentationModelTests|TaskThreadConversationSnapshotTests|WorkspaceAppStudioSessionTests|WorkspaceAppStudioUXTests|HeadlessChatScenarioTests'`; `git diff --check`; `script/precommit.sh`; `script/prepush.sh`.
 
 ## PR 15: Replace Browser Command Switches with a Handler Registry
 
