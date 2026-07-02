@@ -66,20 +66,20 @@ enum WorkspaceGeneratedStateExcluder {
         let workspacePath = workspaceURL.standardizedFileURL.path
         let rootPath = repositoryRoot.standardizedFileURL.path
         guard workspacePath != rootPath else {
-            return "\(WorkspaceFileLayout.supportDirectoryName)/"
+            return "/\(WorkspaceFileLayout.supportDirectoryName)/"
         }
 
         let rootPrefix = rootPath.hasSuffix("/") ? rootPath : "\(rootPath)/"
         guard workspacePath.hasPrefix(rootPrefix) else {
-            return "\(WorkspaceFileLayout.supportDirectoryName)/"
+            return "/\(WorkspaceFileLayout.supportDirectoryName)/"
         }
 
         let relativeWorkspacePath = String(workspacePath.dropFirst(rootPrefix.count))
             .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         guard !relativeWorkspacePath.isEmpty else {
-            return "\(WorkspaceFileLayout.supportDirectoryName)/"
+            return "/\(WorkspaceFileLayout.supportDirectoryName)/"
         }
-        return "\(escapedGitIgnorePath(relativeWorkspacePath))/\(WorkspaceFileLayout.supportDirectoryName)/"
+        return "/\(escapedGitIgnorePath(relativeWorkspacePath))/\(WorkspaceFileLayout.supportDirectoryName)/"
     }
 
     private static func escapedGitIgnorePath(_ relativePath: String) -> String {

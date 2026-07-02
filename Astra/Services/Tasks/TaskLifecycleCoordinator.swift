@@ -579,8 +579,7 @@ final class TaskLifecycleCoordinator {
     }
 
     func deleteWorkspace(_ ws: Workspace, existingWorkspaces: [Workspace]) -> Workspace? {
-        let configPath = WorkspaceFileLayout.workspaceConfigFile(for: ws.primaryPath)
-        try? FileManager.default.removeItem(atPath: configPath)
+        removeGeneratedWorkspaceMirrors(for: ws.primaryPath)
 
         for connector in ws.connectors {
             connector.cleanupKeychain()
@@ -596,6 +595,16 @@ final class TaskLifecycleCoordinator {
         let next = existingWorkspaces.first(where: { $0.id != ws.id })
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: next, modelContext: modelContext)
         return next
+    }
+
+    private func removeGeneratedWorkspaceMirrors(for workspacePath: String) {
+        let mirrorPaths = Set([
+            WorkspaceFileLayout.workspaceConfigFile(for: workspacePath),
+            WorkspaceFileLayout.legacyWorkspaceConfigFile(for: workspacePath)
+        ])
+        for path in mirrorPaths {
+            try? FileManager.default.removeItem(atPath: path)
+        }
     }
 
     func importFromConfig(at url: URL, existingWorkspaces: [Workspace],

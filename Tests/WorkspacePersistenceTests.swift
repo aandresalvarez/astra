@@ -10,6 +10,26 @@ private func makeWorkspacePersistenceContainer() throws -> ModelContainer {
     return try ModelContainer(for: schema, migrationPlan: ASTRAMigrationPlan.self, configurations: [config])
 }
 
+private func runGit(_ arguments: [String], in directory: URL) throws -> Int32 {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+    process.arguments = arguments
+    process.currentDirectoryURL = directory
+    process.standardOutput = Pipe()
+    process.standardError = Pipe()
+    try process.run()
+    process.waitUntilExit()
+    return process.terminationStatus
+}
+
+private func gitPathIsIgnored(_ relativePath: String, in repository: URL) throws -> Bool {
+    let status = try runGit(["check-ignore", relativePath], in: repository)
+    if status == 0 { return true }
+    if status == 1 { return false }
+    Issue.record("git check-ignore failed for \(relativePath) with status \(status)")
+    return false
+}
+
 @MainActor
 private func makeRichWorkspace(in context: ModelContext, root: String) throws -> Workspace {
     let workspace = Workspace(name: "Persistence", primaryPath: root)
@@ -1220,6 +1240,41 @@ struct WorkspacePersistenceTests {
         #expect(workspaces.first?.primaryPath != configURL.deletingLastPathComponent().path)
     }
 
+    @Test("deleting workspace removes canonical and legacy generated mirrors")
+    @MainActor
+    func deletingWorkspaceRemovesCanonicalAndLegacyGeneratedMirrors() throws {
+        let root = URL(fileURLWithPath: "/tmp/astra_delete_legacy_mirror_\(UUID().uuidString)")
+        let workspaceFolder = root.appendingPathComponent("project")
+        try FileManager.default.createDirectory(at: workspaceFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let container = try makeWorkspacePersistenceContainer()
+        let context = container.mainContext
+        let workspace = try makeRichWorkspace(in: context, root: workspaceFolder.path)
+        let canonicalURL = URL(fileURLWithPath: WorkspaceFileLayout.workspaceConfigFile(for: workspaceFolder.path))
+        let legacyURL = URL(fileURLWithPath: WorkspaceFileLayout.legacyWorkspaceConfigFile(for: workspaceFolder.path))
+        try WorkspaceConfigManager.exportToFile(workspace: workspace, modelContext: context, url: canonicalURL)
+        try WorkspaceConfigManager.exportToFile(workspace: workspace, modelContext: context, url: legacyURL)
+
+        let coordinator = TaskLifecycleCoordinator(modelContext: context, taskQueue: TaskQueue())
+        _ = coordinator.deleteWorkspace(workspace, existingWorkspaces: [workspace])
+
+        #expect(!FileManager.default.fileExists(atPath: canonicalURL.path))
+        #expect(!FileManager.default.fileExists(atPath: legacyURL.path))
+
+        let recoveryContainer = try makeWorkspacePersistenceContainer()
+        let recoveryContext = recoveryContainer.mainContext
+        let importedCount = WorkspaceRecoveryService.recoverMissingWorkspaces(
+            modelContext: recoveryContext,
+            extraRoots: [root.path],
+            includeDefaultRoots: false
+        )
+        let recoveredWorkspaces = (try? recoveryContext.fetch(FetchDescriptor<Workspace>())) ?? []
+
+        #expect(importedCount == 0)
+        #expect(recoveredWorkspaces.isEmpty)
+    }
+
     @Test("automatic recovery skips privacy-sensitive user media folders")
     func recoverySkipsPrivacySensitiveUserMediaFolders() throws {
         let root = URL(fileURLWithPath: "/tmp/astra_recovery_privacy_\(UUID().uuidString)")
@@ -1323,10 +1378,11 @@ struct WorkspacePersistenceTests {
     @Test("workspace generated state is excluded through local git info exclude")
     func generatedWorkspaceStateIsExcludedFromGitCheckout() throws {
         let root = URL(fileURLWithPath: "/tmp/astra_git_exclude_\(UUID().uuidString)", isDirectory: true)
-        let info = root.appendingPathComponent(".git/info", isDirectory: true)
-        try FileManager.default.createDirectory(at: info, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        #expect(try runGit(["init", "-q"], in: root) == 0)
         defer { try? FileManager.default.removeItem(at: root) }
 
+        let info = root.appendingPathComponent(".git/info", isDirectory: true)
         let exclude = info.appendingPathComponent("exclude")
         try "# user excludes\n".write(to: exclude, atomically: true, encoding: .utf8)
 
@@ -1335,8 +1391,23 @@ struct WorkspacePersistenceTests {
 
         let contents = try String(contentsOf: exclude, encoding: .utf8)
         #expect(contents.contains("# user excludes"))
-        #expect(contents.components(separatedBy: ".astra/").count == 2)
+        #expect(contents.components(separatedBy: "/.astra/").count == 2)
         #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent(".gitignore").path))
+
+        let rootGeneratedFile = root
+            .appendingPathComponent(".astra", isDirectory: true)
+            .appendingPathComponent("state.json")
+        let nestedGeneratedFile = root
+            .appendingPathComponent("nested", isDirectory: true)
+            .appendingPathComponent(".astra", isDirectory: true)
+            .appendingPathComponent("state.json")
+        try FileManager.default.createDirectory(at: rootGeneratedFile.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: nestedGeneratedFile.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("{}".utf8).write(to: rootGeneratedFile)
+        try Data("{}".utf8).write(to: nestedGeneratedFile)
+
+        #expect(try gitPathIsIgnored(".astra/state.json", in: root) == true)
+        #expect(try gitPathIsIgnored("nested/.astra/state.json", in: root) == false)
     }
 
     @Test("workspace generated state is excluded when workspace is nested in a git checkout")
@@ -1345,11 +1416,12 @@ struct WorkspacePersistenceTests {
         let workspace = root
             .appendingPathComponent("packages", isDirectory: true)
             .appendingPathComponent("project", isDirectory: true)
-        let info = root.appendingPathComponent(".git/info", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        #expect(try runGit(["init", "-q"], in: root) == 0)
         try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
-        try FileManager.default.createDirectory(at: info, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
 
+        let info = root.appendingPathComponent(".git/info", isDirectory: true)
         let exclude = info.appendingPathComponent("exclude")
         try "# user excludes\n".write(to: exclude, atomically: true, encoding: .utf8)
 
@@ -1358,9 +1430,26 @@ struct WorkspacePersistenceTests {
 
         let contents = try String(contentsOf: exclude, encoding: .utf8)
         #expect(contents.contains("# user excludes"))
-        #expect(contents.components(separatedBy: "packages/project/.astra/").count == 2)
+        #expect(contents.components(separatedBy: "/packages/project/.astra/").count == 2)
         #expect(!contents.split(whereSeparator: \.isNewline).contains(".astra/"))
         #expect(!FileManager.default.fileExists(atPath: workspace.appendingPathComponent(".gitignore").path))
+
+        let intendedFile = root
+            .appendingPathComponent("packages/project/.astra/state.json", isDirectory: false)
+        let siblingFile = root
+            .appendingPathComponent("packages/other/.astra/state.json", isDirectory: false)
+        let rootGeneratedFile = root
+            .appendingPathComponent(".astra/state.json", isDirectory: false)
+        try FileManager.default.createDirectory(at: intendedFile.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: siblingFile.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: rootGeneratedFile.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("{}".utf8).write(to: intendedFile)
+        try Data("{}".utf8).write(to: siblingFile)
+        try Data("{}".utf8).write(to: rootGeneratedFile)
+
+        #expect(try gitPathIsIgnored("packages/project/.astra/state.json", in: root) == true)
+        #expect(try gitPathIsIgnored("packages/other/.astra/state.json", in: root) == false)
+        #expect(try gitPathIsIgnored(".astra/state.json", in: root) == false)
     }
 
     @Test("nested workspace generated state escapes git ignore metacharacters")
@@ -1371,11 +1460,11 @@ struct WorkspacePersistenceTests {
         defer { try? FileManager.default.removeItem(at: root) }
 
         let workspaces = [
-            ("#project", "packages/\\#project/.astra/"),
-            ("!project", "packages/\\!project/.astra/"),
-            ("project[1]", "packages/project\\[1\\]/.astra/"),
-            ("project*?", "packages/project\\*\\?/.astra/"),
-            (" spaced project ", "packages/\\ spaced\\ project\\ /.astra/")
+            ("#project", "/packages/\\#project/.astra/"),
+            ("!project", "/packages/\\!project/.astra/"),
+            ("project[1]", "/packages/project\\[1\\]/.astra/"),
+            ("project*?", "/packages/project\\*\\?/.astra/"),
+            (" spaced project ", "/packages/\\ spaced\\ project\\ /.astra/")
         ]
 
         for (name, _) in workspaces {
