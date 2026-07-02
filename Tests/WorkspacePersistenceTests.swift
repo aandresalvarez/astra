@@ -2211,6 +2211,44 @@ struct WorkspacePersistenceTests {
         #expect(SSHConnectionManager.hasStoredConnections(workspacePath: root.path) == true)
     }
 
+    @Test("SSH connection save writes canonical file atomically")
+    func sshConnectionSaveWritesCanonicalFileAtomically() throws {
+        let root = URL(fileURLWithPath: "/tmp/astra_ssh_atomic_\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let connection = SSHConnection(name: "atomic", host: "example.test", user: "agent")
+        SSHConnectionManager.save([connection], workspacePath: root.path)
+
+        let canonical = URL(fileURLWithPath: WorkspaceFileLayout.sshConnectionsFile(for: root.path))
+        let data = try Data(contentsOf: canonical)
+        let decoded = try JSONDecoder().decode([SSHConnection].self, from: data)
+
+        #expect(decoded.first?.id == connection.id)
+        #expect(SSHConnectionManager.load(workspacePath: root.path).first?.id == connection.id)
+    }
+
+    @Test("SSH connection save preserves existing file when replacement fails")
+    func sshConnectionSavePreservesExistingFileWhenReplacementFails() throws {
+        let root = URL(fileURLWithPath: "/tmp/astra_ssh_atomic_fail_\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let original = SSHConnection(name: "original", host: "old.example.test", user: "agent")
+        let replacement = SSHConnection(name: "replacement", host: "new.example.test", user: "agent")
+        SSHConnectionManager.save([original], workspacePath: root.path)
+
+        SSHConnectionManager.save(
+            [replacement],
+            workspacePath: root.path,
+            fileWriter: ThrowingSSHConnectionFileWriter()
+        )
+
+        let loaded = SSHConnectionManager.load(workspacePath: root.path)
+        #expect(loaded.first?.id == original.id)
+        #expect(loaded.first?.host == "old.example.test")
+    }
+
     @Test("SSH connection presence recognizes legacy files without migrating them")
     func sshConnectionPresenceRecognizesLegacyFilesWithoutMigratingThem() throws {
         let root = URL(fileURLWithPath: "/tmp/astra_ssh_presence_legacy_\(UUID().uuidString)")
@@ -2294,5 +2332,11 @@ struct WorkspacePersistenceTests {
         #expect(sourceTask.events.contains { $0.type == "user.message" && $0.payload.contains("Routine run: Reply Monitor") })
         #expect(sourceTask.events.contains { $0.type == "user.message" && $0.payload.contains("Watch reply activity") })
         #expect(sourceTask.events.contains { $0.type == "user.message" && $0.payload.contains("/tmp/reply-context") })
+    }
+}
+
+private struct ThrowingSSHConnectionFileWriter: SSHConnectionFileWriting {
+    func writeAtomically(_: Data, to _: URL) throws {
+        throw CocoaError(.fileWriteUnknown)
     }
 }

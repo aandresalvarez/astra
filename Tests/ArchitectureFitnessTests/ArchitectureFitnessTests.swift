@@ -1099,43 +1099,128 @@ struct ArchitectureFitnessTests {
         }
     }
 
-    @Test("Large owner files stay within current debt budgets")
-    func largeOwnerFilesStayWithinCurrentDebtBudgets() throws {
+    @Test("Large Swift files stay within owned debt budgets")
+    func largeSwiftFilesStayWithinOwnedDebtBudgets() throws {
         let root = try repositoryRoot()
-        let lineBudgets = [
-            "Astra/Views/TaskMainView.swift": 6_900,
-            "Astra/Services/Browser/ShelfBrowserSession.swift": 5_900,
-            "Astra/Views/ContentView.swift": 5_000,
-            "Astra/Views/WorkspaceRightRailView.swift": 3_500,
-            "Astra/Views/ChatPanelView.swift": 3_215,
-            "Astra/Services/Runtime/AgentRuntimeAdapter.swift": 2_940,
-            "Astra/Views/PluginCatalogView.swift": 2_900,
-            "Astra/Views/ShelfMarkdownPanelView.swift": 2_850,
-            "Astra/Views/WorkspaceGitSectionView.swift": 2_650,
-            "Astra/Views/ConfigureView.swift": 2_550,
-            "Astra/Services/Diagnostics/LogDiagnosticsService.swift": 2_550,
-            "Astra/Views/TaskSidebarView.swift": 2_465,
-            "Astra/Views/ShelfQueryPanelView.swift": 2_350,
-            "Astra/Services/Persistence/TaskContextStateManager.swift": 2_250,
-            "Astra/Services/Runtime/AgentPromptBuilder.swift": 2_250,
-            "Astra/Views/OnboardingWizardView.swift": 2_250,
-            "Astra/Services/Runtime/AgentProcessSupport.swift": 2_100,
-            "Astra/Services/Browser/BrowserAnalysis.swift": 2_100,
-            "Astra/Services/Git/GitService.swift": 2_100,
-            "Astra/Services/Runtime/AgentRuntimeWorker.swift": 2_100,
-            "Astra/Services/Browser/ControlledBrowserController.swift": 2_050,
-            "Astra/Views/ShelfBrowserPanelView.swift": 2_050
-        ]
-
-        let violations = try lineBudgets.compactMap { relativePath, budget -> String? in
+        let violations = try lineBudgetRegistry.compactMap { relativePath, entry -> String? in
             let count = try lineCount(for: root.appendingPathComponent(relativePath))
-            return count > budget ? "\(relativePath): \(count) > \(budget)" : nil
+            return count > entry.budget ? "\(relativePath): \(count) > \(entry.budget)" : nil
         }
 
         #expect(
             violations.isEmpty,
             "Large owner files should shrink or move behind focused boundaries instead of growing: \(violations.sorted())"
         )
+    }
+
+    @Test("Oversized Swift files have line-budget ownership")
+    func oversizedSwiftFilesHaveLineBudgetOwnership() throws {
+        let root = try repositoryRoot()
+        let scanRoots = ["Astra", "ASTRACore", "Tools", "Tests"]
+        let oversizedFiles = try scanRoots
+            .flatMap { try swiftFiles(under: root.appendingPathComponent($0)) }
+            .map { relativePath(for: $0, root: root) }
+            .filter { path in
+                try lineCount(for: root.appendingPathComponent(path)) > lineBudgetThreshold
+            }
+            .sorted()
+
+        let missing = oversizedFiles.filter { lineBudgetRegistry[$0] == nil }
+
+        #expect(
+            missing.isEmpty,
+            "Every Swift file over \(lineBudgetThreshold) lines needs an explicit owner or companion budget entry: \(missing)"
+        )
+    }
+
+    @Test("Line-budget companion entries reference budgeted owners")
+    func lineBudgetCompanionEntriesReferenceBudgetedOwners() {
+        let invalid = lineBudgetRegistry.compactMap { path, entry -> String? in
+            guard case let .companion(owner) = entry.classification else { return nil }
+            guard let ownerEntry = lineBudgetRegistry[owner],
+                  case .owner = ownerEntry.classification else {
+                return "\(path) -> \(owner)"
+            }
+            return nil
+        }
+
+        #expect(
+            invalid.isEmpty,
+            "Companion line-budget entries must point at production owner entries: \(invalid.sorted())"
+        )
+    }
+
+    @Test("Line-budget registry does not carry stale entries")
+    func lineBudgetRegistryDoesNotCarryStaleEntries() throws {
+        let root = try repositoryRoot()
+        let stale = try lineBudgetRegistry.compactMap { path, _ -> String? in
+            let count = try lineCount(for: root.appendingPathComponent(path))
+            return count <= lineBudgetThreshold ? "\(path): \(count)" : nil
+        }
+
+        #expect(
+            stale.isEmpty,
+            "Remove line-budget entries once files shrink under \(lineBudgetThreshold) lines: \(stale.sorted())"
+        )
+    }
+
+    @Test("Runtime adapter docs match registered providers")
+    func runtimeAdapterDocsMatchRegisteredProviders() throws {
+        let root = try repositoryRoot()
+        let docs = try fileText("docs/architecture/runtime-adapters.md", root: root)
+        let adapterSource = try fileText("Astra/Services/Runtime/AgentRuntimeAdapter.swift", root: root)
+        let runtimeTypesSource = try fileText("ASTRACore/AgentRuntimeTypes.swift", root: root)
+        let registeredProviders = Set(try regexCaptures(
+            #"([A-Za-z0-9]+RuntimeAdapterProvider)\(\)"#,
+            in: adapterSource
+        ))
+        let runtimeIDs = Set(try regexCaptures(
+            #"AgentRuntimeID\(staticRawValue: "([^"]+)"\)"#,
+            in: runtimeTypesSource
+        ))
+        let documentedProviders = Set(try regexCaptures(
+            #"([A-Za-z0-9]+RuntimeAdapterProvider)"#,
+            in: docs
+        ))
+
+        let missingProviders = registeredProviders.subtracting(documentedProviders).sorted()
+        let missingRuntimeIDs = runtimeIDs.filter { !docs.contains($0) }.sorted()
+
+        #expect(!registeredProviders.isEmpty, "Runtime adapter provider extraction should find built-in providers.")
+        #expect(!runtimeIDs.isEmpty, "Runtime ID extraction should find static runtime IDs.")
+        #expect(missingProviders.isEmpty, "Runtime adapter docs are missing registered providers: \(missingProviders)")
+        #expect(missingRuntimeIDs.isEmpty, "Runtime adapter docs are missing runtime IDs: \(missingRuntimeIDs)")
+    }
+
+    @Test("Architecture docs cover Workspace Apps and execution environments")
+    func architectureDocsCoverWorkspaceAppsAndExecutionEnvironments() throws {
+        let root = try repositoryRoot()
+        let workspaceApps = try fileText("docs/architecture/workspace-apps.md", root: root)
+        let executionEnvironments = try fileText("docs/architecture/execution-environments.md", root: root)
+
+        for expected in ["WorkspaceAppManifest", "WorkspaceAppService", "WorkspaceAppActionExecutor"] {
+            #expect(workspaceApps.contains(expected), "Workspace Apps docs should cover \(expected)")
+        }
+        for expected in ["ExecutionEnvironment", "ExecutionEnvironmentProviderPlacement", "WorkspaceDockerViewModel"] {
+            #expect(executionEnvironments.contains(expected), "Execution environment docs should cover \(expected)")
+        }
+    }
+
+    @Test("Model secret persistence owns Keychain IO for model classes")
+    func modelSecretPersistenceOwnsKeychainIOForModelClasses() throws {
+        let root = try repositoryRoot()
+        let modelFiles = [
+            "Astra/Models/Connector.swift",
+            "Astra/Models/Skill.swift"
+        ]
+        let violations = try modelFiles.compactMap { path -> String? in
+            let text = try fileText(path, root: root)
+            return text.contains("KeychainService.") ? path : nil
+        }
+        let service = try fileText("Astra/Services/Capabilities/ModelSecretPersistence.swift", root: root)
+
+        #expect(violations.isEmpty, "SwiftData models must delegate Keychain IO to services: \(violations)")
+        #expect(service.contains("KeychainService."), "ModelSecretPersistence should own the KeychainService boundary.")
     }
 
     @Test("Direct AppStorage usage does not grow")
@@ -1390,6 +1475,63 @@ struct ArchitectureFitnessTests {
         ]
     }
 
+    private enum LineBudgetClassification: Equatable {
+        case owner(String)
+        case companion(of: String)
+    }
+
+    private struct LineBudgetEntry {
+        let budget: Int
+        let classification: LineBudgetClassification
+
+        init(_ budget: Int, _ classification: LineBudgetClassification) {
+            self.budget = budget
+            self.classification = classification
+        }
+    }
+
+    private var lineBudgetThreshold: Int { 2_000 }
+
+    private var lineBudgetRegistry: [String: LineBudgetEntry] {
+        [
+            "Astra/Views/TaskMainView.swift": .init(6_100, .owner("Task detail and run surface")),
+            "Astra/Services/Browser/ShelfBrowserSession.swift": .init(6_000, .owner("Shelf browser session")),
+            "Astra/Views/ContentView.swift": .init(4_850, .owner("Workspace shell composition")),
+            "Astra/Models/SchemaVersions.swift": .init(3_650, .owner("SwiftData schema history")),
+            "Astra/Views/ChatPanelView.swift": .init(3_050, .owner("Composer chat surface")),
+            "Astra/Services/Runtime/AgentRuntimeAdapter.swift": .init(2_900, .owner("Runtime adapter registry")),
+            "Astra/Views/PluginCatalogView.swift": .init(2_900, .owner("Capability catalog UI")),
+            "Astra/Views/ShelfMarkdownPanelView.swift": .init(2_850, .owner("Shelf markdown panel")),
+            "Astra/Services/Persistence/WorkspaceConfigManager.swift": .init(2_700, .owner("Workspace mirror persistence")),
+            "Astra/Views/ConfigureView.swift": .init(2_600, .owner("Legacy configure surface")),
+            "Astra/Services/Diagnostics/LogDiagnosticsService.swift": .init(2_600, .owner("Log diagnostics")),
+            "Astra/Views/TaskSidebarView.swift": .init(2_500, .owner("Task sidebar")),
+            "Astra/Services/WorkspaceApps/WorkspaceAppActionExecutor.swift": .init(2_450, .owner("Workspace App action execution")),
+            "Astra/Views/WorkspaceRightRailView.swift": .init(2_400, .owner("Workspace right rail")),
+            "Astra/Services/Persistence/TaskContextStateManager.swift": .init(2_300, .owner("Task context state")),
+            "Astra/Views/ShelfQueryPanelView.swift": .init(2_300, .owner("Shelf query panel")),
+            "Astra/Services/Runtime/AgentPromptBuilder.swift": .init(2_300, .owner("Provider prompt assembly")),
+            "Astra/Services/Browser/BrowserAnalysis.swift": .init(2_150, .owner("Browser analysis")),
+            "Astra/Services/Runtime/AgentProcessSupport.swift": .init(2_150, .owner("Runtime process stream support")),
+            "Astra/Services/Browser/ControlledBrowserController.swift": .init(2_100, .owner("Controlled browser orchestration")),
+            "Astra/Services/Git/GitService.swift": .init(2_050, .owner("Git integration")),
+            "Tools/WorkspaceToolSupport/WorkspaceToolSupport.swift": .init(3_450, .owner("Workspace MCP tool")),
+            "Tools/HostControlToolSupport/HostControlToolSupport.swift": .init(2_250, .owner("Host-control MCP tool")),
+            "Tests/ProcessMonitorTests.swift": .init(3_500, .companion(of: "Astra/Services/Runtime/AgentProcessSupport.swift")),
+            "Tests/TaskCapabilityResolverTests.swift": .init(2_950, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
+            "Tests/AgentRuntimeAdapterTests.swift": .init(2_900, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
+            "Tests/AgentRuntimeWorkerTests.swift": .init(2_550, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
+            "Tests/AgentPolicyTests.swift": .init(2_500, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
+            "Tests/WorkspaceAppActionExecutorTests.swift": .init(2_500, .companion(of: "Astra/Services/WorkspaceApps/WorkspaceAppActionExecutor.swift")),
+            "Tests/WorkspacePersistenceTests.swift": .init(2_400, .companion(of: "Astra/Services/Persistence/WorkspaceConfigManager.swift")),
+            "Tests/CopilotRuntimeTests.swift": .init(2_300, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
+            "Tests/WorkspaceAppPackageTests.swift": .init(2_250, .companion(of: "Astra/Services/WorkspaceApps/WorkspaceAppActionExecutor.swift")),
+            "Tests/WorkspaceToolSupportTests.swift": .init(2_150, .companion(of: "Tools/WorkspaceToolSupport/WorkspaceToolSupport.swift")),
+            "Tests/ExecutionSandboxTests.swift": .init(2_100, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
+            "Tests/HostControlToolSupportTests.swift": .init(2_100, .companion(of: "Tools/HostControlToolSupport/HostControlToolSupport.swift"))
+        ]
+    }
+
     private func repositoryRoot() throws -> URL {
         var candidate = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
         while true {
@@ -1445,6 +1587,18 @@ struct ArchitectureFitnessTests {
             contentsOf: root.appendingPathComponent(relativePath),
             encoding: .utf8
         )
+    }
+
+    private func regexCaptures(_ pattern: String, in text: String, captureGroup: Int = 1) throws -> [String] {
+        let regex = try NSRegularExpression(pattern: pattern)
+        let range = NSRange(text.startIndex..., in: text)
+        return regex.matches(in: text, range: range).compactMap { match in
+            guard match.numberOfRanges > captureGroup,
+                  let range = Range(match.range(at: captureGroup), in: text) else {
+                return nil
+            }
+            return String(text[range])
+        }
     }
 
     private func extractedStruct(named name: String, from source: String) throws -> String {

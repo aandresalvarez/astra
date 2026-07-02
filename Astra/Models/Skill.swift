@@ -118,7 +118,7 @@ final class Skill {
 
             let newSecretKeys = Set(environmentKeys.filter(Self.isSecretEnvironmentKey))
             for key in oldSecretKeys where !newSecretKeys.contains(key) {
-                KeychainService.delete(key: key, skillID: id)
+                SkillSecretPersistence.deleteRemovedSecret(key: key, from: self)
             }
         }
     }
@@ -140,14 +140,7 @@ final class Skill {
     }
 
     func valueForEnvironmentKey(at index: Int, store: SecretStore) -> String {
-        guard index < environmentKeys.count else { return "" }
-        let key = environmentKeys[index]
-        let storedValue = normalizedEnvironmentValue(at: index)
-        if Self.isSecretEnvironmentKey(key) {
-            let entityID = KeychainSecretStore.skillEntityID(for: id)
-            return store.load(key: key, entityID: entityID) ?? storedValue
-        }
-        return storedValue
+        SkillSecretPersistence.valueForEnvironmentKey(on: self, at: index, store: store)
     }
 
     func upsertEnvironmentEntry(key rawKey: String, value: String) {
@@ -165,70 +158,22 @@ final class Skill {
     }
 
     func setEnvironmentValue(_ value: String, at index: Int) {
-        guard index < environmentKeys.count else { return }
-        ensureEnvironmentValueCapacity()
-
-        let key = environmentKeys[index]
-        if Self.isSecretEnvironmentKey(key) {
-            if !value.isEmpty {
-                let saved = KeychainService.save(key: key, value: value, skillID: id, label: "Astra: \(name)")
-                AppLogger.audit(.skillSecretAdded, category: "Keychain", fields: [
-                    "skill_id": id.uuidString,
-                    "result": saved ? "stored" : "failed"
-                ], level: saved ? .info : .warning)
-                environmentValues[index] = saved ? "" : value
-            } else {
-                environmentValues[index] = ""
-            }
-        } else {
-            environmentValues[index] = value
-        }
-        updatedAt = Date()
+        SkillSecretPersistence.setEnvironmentValue(value, on: self, at: index)
     }
 
     func removeEnvironmentEntry(at index: Int) {
-        guard index < environmentKeys.count else { return }
-        let key = environmentKeys[index]
-        if Self.isSecretEnvironmentKey(key) {
-            let deleted = KeychainService.delete(key: key, skillID: id)
-            AppLogger.audit(.skillSecretRemoved, category: "Keychain", fields: [
-                "skill_id": id.uuidString,
-                "result": deleted ? "removed" : "failed"
-            ], level: deleted ? .info : .warning)
-        }
-        environmentKeys.remove(at: index)
-        if index < environmentValues.count {
-            environmentValues.remove(at: index)
-        }
-        updatedAt = Date()
+        SkillSecretPersistence.removeEnvironmentEntry(on: self, at: index)
     }
 
     func migrateSecretsToKeychain() {
-        ensureEnvironmentValueCapacity()
-
-        for (index, key) in environmentKeys.enumerated() where Self.isSecretEnvironmentKey(key) {
-            let legacyValue = environmentValues[index]
-            guard !legacyValue.isEmpty else { continue }
-
-            if KeychainService.exists(key: key, skillID: id) {
-                environmentValues[index] = ""
-                continue
-            }
-
-            if KeychainService.save(key: key, value: legacyValue, skillID: id, label: "Astra: \(name)") {
-                environmentValues[index] = ""
-            }
-        }
+        SkillSecretPersistence.migrateSecretsToKeychain(self)
     }
 
     func cleanupKeychain() {
-        KeychainService.deleteAll(skillID: id)
-        AppLogger.audit(.skillDeleted, category: "Keychain", fields: [
-            "skill_id": id.uuidString
-        ])
+        SkillSecretPersistence.cleanupKeychain(for: self)
     }
 
-    private func normalizedEnvironmentValue(at index: Int) -> String {
+    func normalizedEnvironmentValue(at index: Int) -> String {
         guard index < environmentValues.count else { return "" }
         return environmentValues[index]
     }
@@ -240,7 +185,7 @@ final class Skill {
         return environmentValues + Array(repeating: "", count: environmentKeys.count - environmentValues.count)
     }
 
-    private func ensureEnvironmentValueCapacity() {
+    func ensureEnvironmentValueCapacity() {
         if environmentValues.count < environmentKeys.count {
             environmentValues.append(contentsOf: Array(repeating: "", count: environmentKeys.count - environmentValues.count))
         } else if environmentValues.count > environmentKeys.count {

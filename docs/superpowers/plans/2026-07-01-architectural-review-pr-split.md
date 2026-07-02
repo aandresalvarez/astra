@@ -1066,10 +1066,28 @@ script/prepush.sh
 ```bash
 swift test --filter ArchitectureFitnessTests
 swift test --filter WorkspacePersistenceTests
+swift test --filter WorkspaceAppManifestTests
+swift test --filter WorkspaceAppInteractiveChartTests
 swift test --filter CapabilityPackageValidatorTests
+swift test --filter TaskPresentationModelTests
+swift test --filter DataIntegrityTests
+swift test --filter SecurityTests
+swift test
 git diff --check
 script/precommit.sh
+script/prepush.sh
 ```
+
+**Implementation evidence (2026-07-02):**
+
+- Deleted the test-only `MCPToolPolicyEngine` / gateway adapter and removed their obsolete tests after confirming there were no production callers.
+- Removed the unused nested `ChatBubbleView` and its stale presentation tests, then centralized chat draft persistence on one `DraftChatMessagePayload`.
+- Replaced the obsolete `WorkspaceAppWebViewBridge` allow-list with `WorkspaceAppWebRendererPolicy`, keeping manifest validation and interactive chart coverage on the live renderer policy.
+- Moved direct `KeychainService` calls out of the SwiftData model files into `ModelSecretPersistence`, while leaving `Connector` and `Skill` as thin domain-facing delegators.
+- Changed `SSHConnectionManager.save` to write through an atomic file-writer boundary and added regression coverage proving failed replacement does not clobber the existing SSH connections file.
+- Updated runtime adapter docs to cover all registered providers and runtime IDs, and added architecture docs for Workspace Apps and execution environments.
+- Strengthened `ArchitectureFitnessTests` with source-derived runtime-doc drift checks, global oversized Swift-file ownership, companion-budget validation, stale-budget cleanup, model Keychain-boundary checks, and docs coverage checks.
+- Validation passed: `swift test --filter ArchitectureFitnessTests`; `swift test --filter WorkspacePersistenceTests`; `swift test --filter WorkspaceAppManifestTests`; `swift test --filter WorkspaceAppInteractiveChartTests`; `swift test --filter CapabilityPackageValidatorTests`; `swift test --filter TaskPresentationModelTests`; `swift test --filter DataIntegrityTests`; `swift test --filter SecurityTests`; full `swift test` passed with 4,400 tests; `git diff --check`; `script/precommit.sh`; `script/prepush.sh`.
 
 ---
 

@@ -170,29 +170,6 @@ struct ShortenIdentifierTokensTests {
     }
 }
 
-// MARK: - ChatBubbleView
-
-@Suite("ChatBubbleView")
-struct ChatBubbleViewTests {
-
-    @Test("isUser true for user.message")
-    func isUserTrue() {
-        let task = makeTask()
-        let event = TaskEvent(task: task, type: "user.message", payload: "hello")
-        let bubble = ChatBubbleView(event: event)
-        #expect(bubble.isUser == true)
-    }
-
-    @Test("isUser false for agent types",
-          arguments: ["agent.response", "agent.thinking", "tool.use", "task.completed", "error"])
-    func isUserFalse(eventType: String) {
-        let task = makeTask()
-        let event = TaskEvent(task: task, type: eventType, payload: "test")
-        let bubble = ChatBubbleView(event: event)
-        #expect(bubble.isUser == false)
-    }
-}
-
 // MARK: - AgentTask computed properties
 
 @Suite("AgentTask computed properties")

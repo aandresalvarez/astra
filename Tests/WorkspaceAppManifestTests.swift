@@ -5,7 +5,7 @@ import Testing
 
 // F1 scope: this suite covers WorkspaceAppManifest Codable + WorkspaceAppManifestValidator only.
 // The susom source file also exercised WorkspaceAppService (encoding/digest/CRUD),
-// WorkspaceAppContractRegistry, WorkspaceAppStorageService, and WorkspaceAppWebViewBridge;
+// WorkspaceAppContractRegistry, WorkspaceAppStorageService, and WorkspaceAppWebRendererPolicy;
 // those tests re-land with their subsystems in F2 / F3 / F5.
 @Suite("Workspace App Manifest")
 struct WorkspaceAppManifestTests {

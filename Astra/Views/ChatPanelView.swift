@@ -10,6 +10,11 @@ struct ChatMessage: Identifiable {
     let timestamp = Date()
 }
 
+private struct DraftChatMessagePayload: Codable {
+    let role: String
+    let content: String
+}
+
 // MARK: - Slash Command Wizard
 
 enum SlashWizardType: String {
@@ -2471,11 +2476,7 @@ struct ChatPanelView: View {
     private func saveDraft() -> AgentTask? {
         guard !messages.isEmpty else { return draftTask }
 
-        struct DraftMessage: Codable {
-            let role: String
-            let content: String
-        }
-        let draftMessages = messages.map { DraftMessage(role: $0.role, content: $0.content) }
+        let draftMessages = messages.map { DraftChatMessagePayload(role: $0.role, content: $0.content) }
         guard let data = try? JSONEncoder().encode(draftMessages),
               let json = String(data: data, encoding: .utf8) else { return draftTask }
 
@@ -2614,15 +2615,10 @@ struct ChatPanelView: View {
     }
 
     private func loadDraftMessages(_ task: AgentTask) {
-        struct DraftMessage: Codable {
-            let role: String
-            let content: String
-        }
-
         // First try loading from draftMessages JSON
         if !task.draftMessages.isEmpty,
            let data = task.draftMessages.data(using: .utf8),
-           let decoded = try? JSONDecoder().decode([DraftMessage].self, from: data) {
+           let decoded = try? JSONDecoder().decode([DraftChatMessagePayload].self, from: data) {
             messages = decoded.map { ChatMessage(role: $0.role, content: $0.content) }
             draftTask = task
             isPlanMode = true
@@ -3021,40 +3017,6 @@ struct EditableListField: View {
                 .buttonStyle(.plain)
                 .disabled(newItem.trimmingCharacters(in: .whitespaces).isEmpty)
             }
-        }
-    }
-}
-
-struct ChatBubbleView: View {
-    let event: TaskEvent
-
-    var isUser: Bool {
-        event.type == "user.message"
-    }
-
-    var body: some View {
-        HStack {
-            if isUser { Spacer(minLength: 60) }
-
-            VStack(alignment: isUser ? .trailing : .leading, spacing: 4) {
-                Text(event.payload)
-                    .font(Stanford.chatBody())
-                    .lineSpacing(Stanford.chatBodyLineSpacing)
-                    .padding(10)
-                    .background(isUser ? Stanford.sky.opacity(0.055) : Stanford.fog)
-                    .foregroundStyle(Stanford.readingText)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 12)
-                            .stroke(isUser ? Stanford.sky.opacity(0.11) : Color.clear, lineWidth: 1)
-                    )
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
-
-                Text(event.timestamp, style: .time)
-                    .font(Stanford.chatMeta())
-                    .foregroundStyle(.tertiary)
-            }
-
-            if !isUser { Spacer(minLength: 60) }
         }
     }
 }

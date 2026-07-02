@@ -72,10 +72,10 @@ struct WorkspaceAppInteractiveChartTests {
 
     // MARK: - Bridge + manifest gating
 
-    @Test("the WebView bridge allow-list includes the interactive renderer")
+    @Test("the renderer policy allow-list includes the interactive renderer")
     func bridgeAllowsInteractiveRenderer() {
-        #expect(WorkspaceAppWebViewBridge.allowedRenderers.contains("chartInteractive"))
-        #expect(WorkspaceAppWebViewBridge.allowedRenderers.contains("htmlReport"))
+        #expect(WorkspaceAppWebRendererPolicy.allowedRenderers.contains("chartInteractive"))
+        #expect(WorkspaceAppWebRendererPolicy.allowedRenderers.contains("htmlReport"))
     }
 
     @Test("addInteractiveChart adds a validated chartInteractive widget, then is unavailable")

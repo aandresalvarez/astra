@@ -12,10 +12,27 @@ recording, and utility prompts.
 - `AgentRuntimeAdapterCatalog` and `AgentRuntimeAdapterRegistry` register
   runtime IDs and descriptors.
 - Built-in providers are `ClaudeCodeRuntimeAdapterProvider`,
-  `CopilotCLIRuntimeAdapterProvider`, and `AntigravityCLIRuntimeAdapterProvider`.
+  `CopilotCLIRuntimeAdapterProvider`, `AntigravityCLIRuntimeAdapterProvider`,
+  `CodexCLIRuntimeAdapterProvider`, `CursorCLIRuntimeAdapterProvider`, and
+  `OpenCodeCLIRuntimeAdapterProvider`.
 - `AgentRuntimeWorker` selects the registered adapter for a task, builds the
   prompt, launches the process, records stream events, and applies completion
   policy.
+
+## Registered Providers
+
+| Runtime ID | Provider | Adapter | Executable | Native Continuation |
+| --- | --- | --- | --- | --- |
+| `claude_code` | `ClaudeCodeRuntimeAdapterProvider` | `ClaudeCodeRuntimeAdapter` | `claude` | yes |
+| `copilot_cli` | `CopilotCLIRuntimeAdapterProvider` | `CopilotCLIRuntimeAdapter` | `copilot` | no |
+| `antigravity_cli` | `AntigravityCLIRuntimeAdapterProvider` | `AntigravityCLIRuntimeAdapter` | `agy` | no |
+| `codex_cli` | `CodexCLIRuntimeAdapterProvider` | `CodexCLIRuntimeAdapter` | `codex` | yes |
+| `cursor_cli` | `CursorCLIRuntimeAdapterProvider` | `CursorCLIRuntimeAdapter` | `cursor-agent` | no |
+| `opencode_cli` | `OpenCodeCLIRuntimeAdapterProvider` | `OpenCodeCLIRuntimeAdapter` | `opencode` | no |
+
+Runtime IDs live in `AgentRuntimeID`. Install and auth prerequisites live in
+`CLIPrerequisite`. The registry is the only composition point for built-in
+adapter lookup.
 
 ## Adapter Responsibilities
 
@@ -55,6 +72,9 @@ An adapter owns:
   descriptor. Prompt assembly remains ASTRA-owned and state-backed.
 - Readiness and model availability are per-runtime concerns, but the runtime
   registry remains the single composition point for provider lookup.
+- Policy vocabulary is typed at the boundary. `RunPhase` and
+  `ProviderPermissionMode` are serialized as strings only at provider or audit
+  edges.
 
 ## Related Files
 
@@ -62,5 +82,14 @@ An adapter owns:
 - `Astra/Services/Runtime/AgentRuntimeWorker.swift`
 - `Astra/Services/Runtime/AgentRuntimeProcessRunner.swift`
 - `Astra/Services/Runtime/RuntimeReadinessService.swift`
+- `Astra/Services/Runtime/CodexCLIRuntimeAdapter.swift`
+- `Astra/Services/Runtime/CursorCLIRuntimeAdapter.swift`
+- `Astra/Services/Runtime/OpenCodeCLIRuntimeAdapter.swift`
+- `Astra/Services/Runtime/CodexCLIRuntime.swift`
+- `Astra/Services/Runtime/CursorCLIRuntime.swift`
+- `Astra/Services/Runtime/OpenCodeCLIRuntime.swift`
+- `Astra/Services/Runtime/ProviderPolicyModeResolver.swift`
 - `Astra/Services/Runtime/ClaudeModelAvailabilityService.swift`
 - `Astra/Services/Runtime/CopilotModelAvailabilityService.swift`
+- `ASTRACore/AgentRuntimeTypes.swift`
+- `ASTRACore/CLIPrerequisite.swift`
