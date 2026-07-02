@@ -170,6 +170,47 @@ struct TaskLifecycleResumeTests {
         #expect(task.events.contains { $0.type == "error" })
     }
 
+    @Test("Allow once credential approval does not persist task-scoped credential grants")
+    func allowOnceCredentialApprovalDoesNotPersistTaskScopedCredentialGrant() async throws {
+        let env = try makeEnvironment()
+        defer { try? FileManager.default.removeItem(atPath: env.root) }
+
+        let workspace = Workspace(name: "Credential Approval", primaryPath: env.root)
+        let task = AgentTask(title: "Credential Approval", goal: "Use the API", workspace: workspace)
+        task.status = .pendingUser
+        task.runtimeID = AgentRuntimeID.claudeCode.rawValue
+        task.sessionId = "sess-credential-approval"
+        env.context.insert(workspace)
+        env.context.insert(task)
+
+        let approvalRun = TaskRun(task: task)
+        approvalRun.status = .failed
+        approvalRun.stopReason = "permission_approval_required"
+        approvalRun.completedAt = Date()
+        env.context.insert(approvalRun)
+
+        let label = "connector:11111111-1111-1111-1111-111111111111:JIRA_API_TOKEN"
+        let grants = PermissionBroker.approvalGrants(for: .credential(label: label))
+        env.context.insert(TaskEvent(
+            task: task,
+            eventType: TaskEventTypes.Tool.permissionApprovalRequested,
+            payload: PermissionBroker.approvalPayloadString(
+                providerID: .claudeCode,
+                request: .credential(label: label),
+                reason: "Connector credential egress requires user approval.",
+                grants: grants
+            ),
+            run: approvalRun
+        ))
+        try env.context.save()
+
+        await env.coordinator.approveTask(task)?.value
+
+        #expect(TaskRuntimePermissionGrants.approvedCredentialLabels(for: task).isEmpty)
+        #expect(task.events.contains { $0.type == TaskRuntimePermissionGrants.eventType } == false)
+        #expect(task.status == .pendingUser)
+    }
+
     @Test("Resume preserves a queue-recorded .failed instead of reverting over it")
     func resumePreservesQueueRecordedFailure() async throws {
         let env = try makeEnvironment()

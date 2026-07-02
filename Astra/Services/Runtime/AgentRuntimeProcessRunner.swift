@@ -977,8 +977,15 @@ final class AgentRuntimeProcessRunner {
     }
 
     @MainActor
-    static func scopedEnvironmentVariables(for task: AgentTask, contextText: String = "") -> [String: String] {
-        let capabilityScope = TaskCapabilityResolver(task: task).promptScope(contextText: contextText)
+    static func scopedEnvironmentVariables(
+        for task: AgentTask,
+        contextText: String = "",
+        executionPolicy: AgentRuntimeExecutionPolicy = .default
+    ) -> [String: String] {
+        let capabilityScope = TaskCapabilityResolver(
+            task: task,
+            additionalCredentialGrants: executionPolicy.permissionGrantsOverride ?? []
+        ).promptScope(contextText: contextText)
         var taskEnv = capabilityScope.resolver.resolvedEnvironmentVariables
         if hasStanfordOutlookMailAccess(in: capabilityScope) {
             taskEnv["ASTRA_CHANNEL"] = AppChannel.current.rawValue

@@ -15,6 +15,7 @@ struct AgentRuntimeLaunchPreflightResult: Sendable, Equatable {
         case capabilityRuntimeResourcesMissing
         case connectorPreflightPassed
         case connectorPreflightFailed
+        case connectorCredentialApprovalRequired
         case dockerImageAvailabilityPassed
         case dockerImageAvailabilityFailed
     }
@@ -40,6 +41,7 @@ struct AgentRuntimeLaunchPreflightResult: Sendable, Equatable {
              .credentialProjectionFailed,
              .capabilityRuntimeResourcesMissing,
              .connectorPreflightFailed,
+             .connectorCredentialApprovalRequired,
              .dockerImageAvailabilityFailed:
             return false
         }
@@ -110,7 +112,9 @@ enum AgentRuntimeLaunchPreflight {
         run: TaskRun,
         modelContext: ModelContext,
         phase: String,
-        contextText: String
+        contextText: String,
+        executionPolicy: AgentRuntimeExecutionPolicy = .default,
+        secretStore: SecretStore = KeychainSecretStore()
     ) async -> AgentRuntimeLaunchPreflightResult {
         let capabilityResult = await preflightCapabilitiesBeforeLaunchResultWithPrerequisiteChecks(
             task: task,
@@ -132,7 +136,17 @@ enum AgentRuntimeLaunchPreflight {
         // Service-agnostic credential presence check. Non-blocking — the
         // agent may not need every projected connector — but a connector
         // with declared, unloadable credentials must not fail silently.
-        let missingCredentials = ConnectorRuntimeProjection(connectors: scopedConnectors)
+        let credentialProjection = ConnectorRuntimeProjection(
+            connectors: scopedConnectors,
+            secretStore: secretStore,
+            credentialExposurePolicy: .approvedLabels(
+                Set(TaskRuntimePermissionGrants.approvedCredentialLabels(
+                    for: task,
+                    additionalGrants: executionPolicy.permissionGrantsOverride ?? []
+                ))
+            )
+        )
+        let missingCredentials = credentialProjection
             .missingCredentialKeysByConnector()
         if !missingCredentials.isEmpty {
             var warningFields = CapabilityAudit.taskContextFields(
@@ -148,6 +162,15 @@ enum AgentRuntimeLaunchPreflight {
                 .sorted()
                 .joined(separator: ",")
             AppLogger.audit(.connectorTested, category: "Worker", taskID: task.id, fields: warningFields, level: .warning, fieldMaxLength: 240)
+        }
+        if let credentialLabel = credentialProjection.unapprovedCredentialLabelsRequiringApproval().first {
+            return finishPreLaunchCredentialApprovalRequest(
+                task: task,
+                run: run,
+                modelContext: modelContext,
+                phase: phase,
+                credentialLabel: credentialLabel
+            )
         }
         let connectors = ConnectorPreflightService.connectorsRequiringPreflight(
             from: scopedConnectors,
@@ -166,6 +189,7 @@ enum AgentRuntimeLaunchPreflight {
 
         guard let issue = await ConnectorPreflightService.firstBlockingIssue(
             connectors: connectors,
+            store: secretStore,
             contextText: fullContext,
             workspaceID: task.workspace?.id,
             traceID: traceID
@@ -221,19 +245,68 @@ enum AgentRuntimeLaunchPreflight {
         )
     }
 
+    private static func finishPreLaunchCredentialApprovalRequest(
+        task: AgentTask,
+        run: TaskRun,
+        modelContext: ModelContext,
+        phase: String,
+        credentialLabel: String
+    ) -> AgentRuntimeLaunchPreflightResult {
+        let request = PermissionRequest.credential(label: credentialLabel)
+        let grants = PermissionBroker.approvalGrants(for: request)
+        let payload = PermissionBroker.approvalPayloadString(
+            providerID: task.resolvedRuntimeID,
+            request: request,
+            reason: "Connector credential egress requires explicit first-use approval before ASTRA injects it into the provider environment.",
+            providerDetail: credentialLabel,
+            grants: grants
+        )
+        let fields: [String: String] = [
+            "source": "connector_credential_egress",
+            "phase": phase,
+            "runtime": task.resolvedRuntimeID.rawValue,
+            "credential_label": credentialLabel,
+            "diagnostic_result": AgentRuntimeLaunchPreflightResult.Status.connectorCredentialApprovalRequired.rawValue,
+            "result": "approval_required"
+        ]
+        run.status = .failed
+        run.typedStopReason = .permissionApprovalRequired
+        run.completedAt = Date()
+        TaskStateMachine.pauseForRuntimePermission(task, modelContext: modelContext, at: run.completedAt ?? Date())
+        modelContext.insert(TaskEvent(
+            task: task,
+            eventType: TaskEventTypes.Tool.permissionApprovalRequested,
+            payload: payload,
+            run: run
+        ))
+        AppLogger.audit(.workerBlocked, category: "Worker", taskID: task.id, fields: fields, level: .warning, fieldMaxLength: 240)
+        try? modelContext.save()
+        return AgentRuntimeLaunchPreflightResult(
+            status: .connectorCredentialApprovalRequired,
+            phase: phase,
+            reason: TaskRunStopReason.permissionApprovalRequired.rawValue,
+            detail: credentialLabel,
+            auditFields: fields
+        )
+    }
+
     static func preflightConnectorsBeforeLaunch(
         task: AgentTask,
         run: TaskRun,
         modelContext: ModelContext,
         phase: String,
-        contextText: String
+        contextText: String,
+        executionPolicy: AgentRuntimeExecutionPolicy = .default,
+        secretStore: SecretStore = KeychainSecretStore()
     ) async -> Bool {
         await preflightConnectorsBeforeLaunchResult(
             task: task,
             run: run,
             modelContext: modelContext,
             phase: phase,
-            contextText: contextText
+            contextText: contextText,
+            executionPolicy: executionPolicy,
+            secretStore: secretStore
         ).didPass
     }
 

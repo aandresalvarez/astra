@@ -3,9 +3,16 @@ import Foundation
 enum AgentPromptConnectorContextBuilder {
     static func section(
         from capabilityScope: TaskCapabilityPromptScope,
-        task: AgentTask
+        task: AgentTask,
+        credentialExposurePolicy: ConnectorRuntimeProjection.CredentialExposurePolicy? = nil
     ) -> PromptContextSection? {
-        let projection = ConnectorRuntimeProjection(connectors: capabilityScope.connectors)
+        let exposurePolicy = credentialExposurePolicy ?? .approvedLabels(
+            Set(TaskRuntimePermissionGrants.approvedCredentialLabels(for: task))
+        )
+        let projection = ConnectorRuntimeProjection(
+            connectors: capabilityScope.connectors,
+            credentialExposurePolicy: exposurePolicy
+        )
         let aliasesByID = projection.aliasesByConnectorID
         let bindingsByConnectorID = Dictionary(grouping: projection.environmentBindings(), by: \.connectorID)
         let dockerRouted = DockerWorkspaceMCPProjection.isEnabled(for: DockerExecutionPlanner.resolveEnvironment(for: task))
@@ -23,7 +30,7 @@ enum AgentPromptConnectorContextBuilder {
         return PromptContextSection(
             kind: .tools,
             text: """
-            Available Connectors (credentials are pre-loaded into your process environment - use them directly, never ask the user to provide them again):
+            Available Connectors (ASTRA lists only env vars available to this run; use listed credentials directly and never ask the user to repeat them):
             \(connectorDescriptions.joined(separator: "\n\n"))
 
             The connector env vars listed above and the ASTRA_CONNECTORS JSON manifest are authoritative for this run. When more than one connector of the same service is available, use the connector name or alias to pick the right env vars. If behavioral instructions mention bare legacy env names, use those names only when they are explicitly listed above or in ASTRA_CONNECTORS. If the user request is ambiguous, ask which connector to use before calling external APIs.
@@ -94,8 +101,8 @@ enum AgentPromptConnectorContextBuilder {
             return HostControlPlanePromptGuidance.dockerConnectorAPIGuidance
         }
         return """
-        IMPORTANT: To call authenticated APIs, use Bash with curl/python and the env var tokens - NOT WebFetch. \
-        WebFetch cannot handle SSO, session cookies, or token-based auth headers. Prefer the per-connector runtime examples above, or in Python use os.environ["ENV_KEY_LISTED_ABOVE"] to read the credential.
+        IMPORTANT: To call authenticated APIs, use Bash with curl/python and the listed env var tokens - NOT WebFetch. \
+        WebFetch cannot handle SSO, session cookies, or token-based auth headers. Prefer the per-connector runtime examples above, or in Python use os.environ["ENV_KEY_LISTED_ABOVE"] only for credential env vars listed in this section.
         """
     }
 
