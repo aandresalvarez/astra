@@ -23,7 +23,7 @@ For each remaining PR:
 - [x] PR 6: Derive Launch Arguments from `ProviderPolicyRender`
 - [x] PR 7: Introduce `TaskStateMachine`
 - [x] PR 8: Introduce `SceneSelectionModel`
-- [ ] PR 9: Fix CI and Test Target Feedback Loops
+- [x] PR 9: Fix CI and Test Target Feedback Loops
 - [ ] PR 10: Gate Credential Egress
 - [ ] PR 11: Promote Continuation and Approval State to Typed Properties
 - [ ] PR 12: Run Utility Prompts Through a Sandboxed Launch Plan
@@ -85,3 +85,13 @@ For each remaining PR:
 - Coordinator merge: completed.
 - Focused worker validation: `SceneSelectionModelTests`, `SidebarPresentationModelTests`, `SidebarSurfaceTests`, `SidebarWorkspaceAppFilterTests`, `ViewTests`, `git diff --check`, `script/precommit.sh`.
 - Coordinator validation: `swift test --filter SceneSelectionModelTests` passed after merge.
+
+### PR 9
+
+- Branch: `alvaro/arch-review-pr9-ci-feedback`
+- Head: `d7cbdc4d2791aa1260778dde1dfd19f146e05691`
+- Spec review: passed after confirming CI cache/manual full-suite coverage, focused hook routing, and the PR13 deferral for the ArchitectureFitness leaf target split.
+- Code quality review: passed after fixing macOS `/bin/bash` empty-array handling under `set -u` and wiring `script/focused_test_targets_tests.sh` into the automated guardrails.
+- Coordinator merge: completed.
+- Focused worker validation: `script/focused_test_targets_tests.sh`, `swift test --filter MCPGatewaySupportTests`, `swift test --filter MailToolSupportTests`, `git diff --check`, `script/precommit.sh`, `script/prepush.sh`.
+- Coordinator validation: shell syntax checks for focused target scripts and hooks, `script/focused_test_targets_tests.sh`, `swift test --filter ArchitectureFitnessTests/repositoryProtectionArtifactsStayWired`, `swift test --filter MCPGatewaySupportTests`, `swift test --filter MailToolSupportTests`, and `git diff --check 0aa6bffdb9d74a4d49eedf9d0a9c3537de6cdf2d..HEAD` passed after merge.
