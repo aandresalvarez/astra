@@ -52,6 +52,8 @@ struct SchemaVersionTests {
         #expect(ASTRASchemaV8.models.contains { $0 == ASTRASchemaV8.AgentTask.self })
         #expect(!ASTRASchemaV8.models.contains { $0 == Workspace.self })
         #expect(!ASTRASchemaV8.models.contains { $0 == AgentTask.self })
+        #expect(ASTRASchemaV8.models.contains { $0 == ASTRASchemaV8.WorkspaceApp.self })
+        #expect(!ASTRASchemaV8.models.contains { $0 == WorkspaceApp.self })
     }
 
     @Test("SchemaV1 version identifier is 1.0.0")
@@ -102,7 +104,8 @@ struct SchemaVersionTests {
     @Test("SchemaV9 declares 16 model types (V8 + Google OAuth account profiles)")
     func v9ModelCount() {
         #expect(ASTRASchemaV9.models.count == 16)
-        #expect(ASTRASchemaV9.models.contains { $0 == GoogleOAuthAccountProfile.self })
+        #expect(ASTRASchemaV9.models.contains { $0 == ASTRASchemaV9.GoogleOAuthAccountProfile.self })
+        #expect(!ASTRASchemaV9.models.contains { $0 == GoogleOAuthAccountProfile.self })
     }
 
     @Test("SchemaV9 version identifier is 9.0.0")

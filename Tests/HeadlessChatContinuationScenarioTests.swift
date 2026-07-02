@@ -97,6 +97,51 @@ extension HeadlessChatScenarioTests {
         #expect(task.status == .completed)
     }
 
+    @Test("Queue-admitted follow-up starts from a terminal task without caller prewriting running")
+    func queueAdmittedFollowUpOwnsRunningTransition() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let claudePath = try harness.writeExecutable(
+            named: "claude",
+            script: Self.claudeScript(body: """
+            printf '%s\\n' '{"type":"system","subtype":"init","session_id":"queue-session-1","model":"claude-sonnet-4-6"}'
+            printf '%s\\n' '{"type":"assistant","message":{"model":"claude-sonnet-4-6","content":[{"type":"text","text":"Queue answer"}]}}'
+            printf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"duration_ms":12,"num_turns":1,"result":"Queue answer","usage":{"input_tokens":3,"output_tokens":5}}'
+            exit 0
+            """)
+        )
+        let task = harness.makeTask(runtime: .claudeCode, goal: "Start through queue", model: "claude-sonnet-4-6")
+        let worker = harness.makeWorker(runtime: .claudeCode, executablePath: claudePath)
+
+        _ = await harness.execute(task: task, worker: worker)
+        #expect(task.status == .completed)
+
+        let queue = TaskQueue(poolSize: 1) {
+            AgentRuntimeWorker.scenarioWorker()
+        }
+        var settings = AgentRuntimeProviderSettings()
+        settings.setExecutablePath(claudePath, for: .claudeCode)
+        queue.applySettings(
+            claudePath: claudePath,
+            providerSettings: settings,
+            defaultRuntimeID: .claudeCode,
+            timeoutSeconds: 5,
+            validationModel: "claude-sonnet-4-6"
+        )
+
+        let didStart = await queue.continueSession(
+            task: task,
+            message: "Continue through queue",
+            modelContext: harness.context
+        )
+
+        #expect(didStart)
+        #expect(task.runs.count == 2)
+        #expect(task.events.contains { $0.type == "user.message" && $0.payload == "Continue through queue" })
+        #expect(task.status == .completed)
+    }
+
     @Test("Claude follow-up skips native session when launch signature changes")
     func claudeFollowUpSkipsNativeSessionWhenLaunchSignatureChanges() async throws {
         let harness = try HeadlessChatHarness()
@@ -517,6 +562,10 @@ extension HeadlessChatScenarioTests {
         #expect(!args.contains("--sandbox"))
         #expect(rawArgs.contains("User's follow-up request:\nContinue from the prior thread"))
         #expect(task.runs.count == 2)
+        let runs = task.runs.sorted { $0.startedAt < $1.startedAt }
+        #expect(runs[0].tokensUsed == 12)
+        #expect(runs[1].tokensUsed == 12)
+        #expect(task.tokensUsed == 24)
         #expect(task.status == .completed)
     }
 

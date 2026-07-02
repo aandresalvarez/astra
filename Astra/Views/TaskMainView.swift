@@ -5571,13 +5571,10 @@ struct TaskMainView: View {
                     "next_action": "continue_session"
                 ], level: .warning)
             }
-            task.status = .running
-            task.updatedAt = Date()
-            task.completedAt = nil
             logTaskCapabilityContext(source: "task_continue_chat", traceID: traceID)
             recordCurrentTaskPolicyIfNeeded(source: "task_continue_chat")
             Task {
-                await taskQueue.continueSession(task: task, message: msg, modelContext: modelContext) { _ in }
+                _ = await taskQueue.continueSession(task: task, message: msg, modelContext: modelContext) { _ in }
             }
         } else {
             let event = TaskEvent(task: task, eventType: TaskEventTypes.Conversation.userMessage, payload: msg)

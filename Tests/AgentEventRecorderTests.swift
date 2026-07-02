@@ -153,6 +153,50 @@ struct AgentEventRecorderTests {
         #expect(!run.output.contains("ASTRA_EVENT"))
     }
 
+    @Test("Claude result summaries keep the last completed transcript output")
+    func claudeResultSummariesKeepLastCompletedOutput() throws {
+        let container = try makeAgentEventRecorderContainer()
+        let context = container.mainContext
+        let task = AgentTask(title: "Review", goal: "Second pass review")
+        let run = TaskRun(task: task)
+        context.insert(task)
+        context.insert(run)
+
+        let recordingState = AgentEventRecordingState()
+        AgentEventRecorder.recordClaudeRunEvent(
+            .result(
+                text: "I'll do a second review pass from the repository itself.",
+                costUSD: nil,
+                totalInputTokens: 1,
+                totalOutputTokens: 1,
+                durationMs: nil,
+                numTurns: nil,
+                isError: false
+            ),
+            to: task,
+            run: run,
+            modelContext: context,
+            recordingState: recordingState
+        )
+        AgentEventRecorder.recordClaudeRunEvent(
+            .result(
+                text: "**Findings**\n1. High: resume flows can leave tasks stuck running.",
+                costUSD: nil,
+                totalInputTokens: 2,
+                totalOutputTokens: 3,
+                durationMs: nil,
+                numTurns: nil,
+                isError: false
+            ),
+            to: task,
+            run: run,
+            modelContext: context,
+            recordingState: recordingState
+        )
+
+        #expect(run.output == "**Findings**\n1. High: resume flows can leave tasks stuck running.")
+    }
+
     @Test("Completed summary never clobbers streamed text output")
     func completedSummaryDoesNotClobberStreamedText() throws {
         let container = try makeAgentEventRecorderContainer()

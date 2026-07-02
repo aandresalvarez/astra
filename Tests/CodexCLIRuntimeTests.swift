@@ -1,7 +1,17 @@
 import Foundation
+import SwiftData
 import Testing
 @testable import ASTRA
 import ASTRACore
+
+private func makeCodexRuntimeTestContainer() throws -> ModelContainer {
+    let config = ModelConfiguration(isStoredInMemoryOnly: true)
+    return try ModelContainer(
+        for: ASTRASchema.current,
+        migrationPlan: ASTRAMigrationPlan.self,
+        configurations: [config]
+    )
+}
 
 @Suite("Codex CLI Runtime")
 struct CodexCLIRuntimeTests {
@@ -68,6 +78,32 @@ struct CodexCLIRuntimeTests {
         } else {
             Issue.record("Expected stats agent event")
         }
+    }
+
+    @MainActor
+    @Test("Codex adapter follow-up mode accumulates usage instead of resetting task total")
+    func codexAdapterFollowUpModeAccumulatesUsage() throws {
+        let container = try makeCodexRuntimeTestContainer()
+        let context = container.mainContext
+        let task = AgentTask(title: "Follow-up", goal: "Continue a Codex run")
+        task.tokensUsed = 40
+        let run = TaskRun(task: task)
+        context.insert(task)
+        context.insert(run)
+
+        CodexCLIRuntimeAdapter().recordWorkerStreamEvent(
+            .agent(.stats(inputTokens: 3, outputTokens: 7, costUSD: nil, durationMs: nil, turns: nil)),
+            mode: .followUp,
+            task: task,
+            run: run,
+            modelContext: context,
+            recordingState: AgentEventRecordingState()
+        )
+
+        #expect(run.tokensUsed == 10)
+        #expect(run.inputTokens == 3)
+        #expect(run.outputTokens == 7)
+        #expect(task.tokensUsed == 50)
     }
 
     @Test("Codex stream parser treats known lifecycle and item shapes as typed events")

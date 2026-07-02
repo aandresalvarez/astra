@@ -1,5 +1,6 @@
 import Foundation
 import SQLite3
+import SwiftData
 import Testing
 @testable import ASTRA
 
@@ -78,6 +79,38 @@ struct WorkspaceStoreRepairTests {
             "SELECT COUNT(*) FROM ZTASKSCHEDULE WHERE ZRESULTMODE = 'same_thread'",
             at: storeURL
         ) == 1)
+    }
+
+    @Test("read-only pre-reset recovery exports workspace configs before backup")
+    @MainActor
+    func readOnlyPreResetRecoveryExportsWorkspaceConfigs() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-store-export-\(UUID().uuidString)", isDirectory: true)
+        let workspaceRoot = root.appendingPathComponent("project", isDirectory: true)
+        try FileManager.default.createDirectory(at: workspaceRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let storeURL = root.appendingPathComponent("default.store")
+        var container: ModelContainer? = try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(url: storeURL)]
+        )
+        let context = try #require(container?.mainContext)
+        let workspace = Workspace(name: "Recoverable", primaryPath: workspaceRoot.path)
+        context.insert(workspace)
+        try context.save()
+        let workspaceID = workspace.id
+        container = nil
+
+        let results = WorkspaceRecoveryService.exportReadableWorkspacesBeforeStoreReset(at: storeURL)
+        let configURL = workspaceRoot.appendingPathComponent(WorkspaceFileLayout.workspaceConfigFileName)
+        let config = try WorkspaceConfigManager.loadConfig(from: configURL)
+
+        #expect(results.count == 1)
+        #expect(results.first?.didExport == true)
+        #expect(config.id == workspaceID.uuidString)
+        #expect(config.name == "Recoverable")
     }
 }
 

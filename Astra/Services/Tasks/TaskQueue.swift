@@ -350,7 +350,6 @@ final class TaskQueue {
     }
 
     /// Continue a session on the worker that originally ran the task
-    @discardableResult
     @MainActor
     func continueSession(
         task: AgentTask,
@@ -360,11 +359,14 @@ final class TaskQueue {
         resourceAccess: TaskResourceAccessMode = .write,
         onEvent: @escaping (ParsedEvent) -> Void = { _ in }
     ) async -> Bool {
+        let lifecycle = ContinuationLaunchLifecycle(task: task)
+
         // Try to find the original worker, or use any available one
         guard taskWorkerMap[task.id] != nil || hasAvailableWorker else {
             AppLogger.audit(.workerBlocked, category: "Queue", taskID: task.id, fields: [
                 "reason": "no_worker_for_continue"
             ], level: .warning)
+            recordContinuationAdmissionFailure(task, lifecycle: lifecycle, modelContext: modelContext)
             return false
         }
 
@@ -374,6 +376,7 @@ final class TaskQueue {
             runMode: "continue",
             modelContext: modelContext
         ) else {
+            recordContinuationAdmissionFailure(task, lifecycle: lifecycle, modelContext: modelContext)
             return false
         }
         defer {
@@ -384,13 +387,16 @@ final class TaskQueue {
             AppLogger.audit(.workerBlocked, category: "Queue", taskID: task.id, fields: [
                 "reason": "no_worker_for_continue_after_resource_lock"
             ], level: .warning)
+            recordContinuationAdmissionFailure(task, lifecycle: lifecycle, modelContext: modelContext)
             return false
         }
 
         guard prepareTaskFolder(task, modelContext: modelContext, mode: "continue") else {
+            recordContinuationAdmissionFailure(task, lifecycle: lifecycle, modelContext: modelContext)
             return false
         }
 
+        markContinuationLaunchAdmitted(task)
         taskWorkerMap[task.id] = worker
         await worker.continueSession(
             task: task,
@@ -401,6 +407,50 @@ final class TaskQueue {
         )
         taskWorkerMap.removeValue(forKey: task.id)
         return true
+    }
+
+    private struct ContinuationLaunchLifecycle {
+        let previousStatus: TaskStatus
+        let previousCompletedAt: Date?
+
+        init(task: AgentTask) {
+            previousStatus = task.status
+            previousCompletedAt = task.completedAt
+        }
+    }
+
+    @MainActor
+    private func markContinuationLaunchAdmitted(_ task: AgentTask) {
+        task.status = .running
+        task.updatedAt = Date()
+        task.completedAt = nil
+        task.markRead()
+    }
+
+    @MainActor
+    private func recordContinuationAdmissionFailure(
+        _ task: AgentTask,
+        lifecycle: ContinuationLaunchLifecycle,
+        modelContext: ModelContext
+    ) {
+        guard task.status == .running || task.status == lifecycle.previousStatus else {
+            AppLogger.audit(.workerBlocked, category: "Queue", taskID: task.id, fields: [
+                "reason": "continuation_not_admitted",
+                "preserved_status": task.status.rawValue
+            ], level: .debug)
+            return
+        }
+
+        task.status = lifecycle.previousStatus
+        task.completedAt = lifecycle.previousCompletedAt
+        task.updatedAt = Date()
+        task.markUnreadForCurrentStatus()
+        modelContext.insert(TaskEvent(
+            task: task,
+            eventType: TaskEventTypes.System.error,
+            payload: "Couldn't continue this task — it couldn't be started right now. Try again in a moment."
+        ))
+        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
     }
 
     /// Execute a user-approved plan on the next available worker.

@@ -5,6 +5,115 @@ import ASTRACore
 
 @Suite("Workspace right rail performance")
 struct WorkspaceRightRailPerformanceTests {
+    @Test("Browser session policy cache reuses stable signatures without reloading policy inputs")
+    func browserSessionPolicyCacheReusesStableSignature() {
+        let taskID = UUID(uuidString: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")!
+        var packageLoadCount = 0
+        var approvalLoadCount = 0
+        var eventContextLoadCount = 0
+
+        let package = browserAdapterPackage(id: "github-workflow", adapterID: BrowserSiteAdapterID.github)
+        var source = BrowserSessionPolicySource(
+            packageDefinitions: {
+                packageLoadCount += 1
+                return [package]
+            },
+            approvalRecords: {
+                approvalLoadCount += 1
+                return []
+            },
+            latestContextText: {
+                eventContextLoadCount += 1
+                return "please review this GitHub pull request"
+            },
+            environment: { .host }
+        )
+        var cache = BrowserSessionPolicyCache()
+        let stable = BrowserSessionPolicySignature(
+            taskID: taskID,
+            enabledCapabilityIDs: ["github-workflow"],
+            approvalRevision: "approval:1",
+            packageDefinitionFingerprint: "packages:v1",
+            taskEventRevision: "events:v1"
+        )
+
+        let first = cache.policy(for: stable, source: source)
+        let second = cache.policy(for: stable, source: source)
+
+        #expect(first.enabledBrowserAdapters == [BrowserSiteAdapterID.github])
+        #expect(second.enabledBrowserAdapters == [BrowserSiteAdapterID.github])
+        #expect(packageLoadCount == 1)
+        #expect(approvalLoadCount == 1)
+        #expect(eventContextLoadCount == 1)
+
+        source = BrowserSessionPolicySource(
+            packageDefinitions: {
+                packageLoadCount += 1
+                return [package]
+            },
+            approvalRecords: {
+                approvalLoadCount += 1
+                return []
+            },
+            latestContextText: {
+                eventContextLoadCount += 1
+                return "please review this GitHub pull request"
+            },
+            environment: { .host }
+        )
+        _ = cache.policy(
+            for: BrowserSessionPolicySignature(
+                taskID: taskID,
+                enabledCapabilityIDs: ["github-workflow"],
+                approvalRevision: "approval:2",
+                packageDefinitionFingerprint: "packages:v1",
+                taskEventRevision: "events:v1"
+            ),
+            source: source
+        )
+
+        #expect(packageLoadCount == 2)
+        #expect(approvalLoadCount == 2)
+        #expect(eventContextLoadCount == 2)
+
+        _ = cache.policy(
+            for: BrowserSessionPolicySignature(
+                taskID: taskID,
+                enabledCapabilityIDs: ["github-workflow"],
+                approvalRevision: "approval:2",
+                packageDefinitionFingerprint: "packages:v2",
+                taskEventRevision: "events:v1"
+            ),
+            source: source
+        )
+
+        #expect(packageLoadCount == 3)
+        #expect(approvalLoadCount == 3)
+        #expect(eventContextLoadCount == 3)
+    }
+
+    @Test("Browser session policy cache fails closed when refresh throws")
+    func browserSessionPolicyCacheFailsClosedOnRefreshFailure() {
+        var cache = BrowserSessionPolicyCache()
+        let policy = cache.policy(
+            for: BrowserSessionPolicySignature(
+                taskID: UUID(uuidString: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")!,
+                enabledCapabilityIDs: ["github-workflow"],
+                approvalRevision: "approval:1",
+                packageDefinitionFingerprint: "packages:v1",
+                taskEventRevision: "events:v1"
+            ),
+            source: BrowserSessionPolicySource(
+                packageDefinitions: { throw BrowserSessionPolicyCacheTestError.unavailable },
+                approvalRecords: { [] },
+                latestContextText: { "github" },
+                environment: { .host }
+            )
+        )
+
+        #expect(policy == .failClosed)
+    }
+
     @MainActor
     @Test("Capability rail snapshot cache reuses stable signature and invalidates on capability changes")
     func capabilityRailSnapshotCacheReusesStableSignature() {
@@ -254,4 +363,26 @@ struct WorkspaceRightRailPerformanceTests {
 
         #expect(CapabilityRailResourceSignature(skill: first) != CapabilityRailResourceSignature(skill: second))
     }
+
+    private func browserAdapterPackage(id: String, adapterID: String) -> PluginPackage {
+        PluginPackage(
+            id: id,
+            name: id,
+            icon: "globe",
+            description: "Browser adapter package",
+            author: "ASTRA",
+            category: "Browser",
+            tags: [],
+            version: "1.0.0",
+            skills: [],
+            connectors: [],
+            localTools: [],
+            templates: [],
+            browserAdapters: [adapterID]
+        )
+    }
+}
+
+private enum BrowserSessionPolicyCacheTestError: Error {
+    case unavailable
 }

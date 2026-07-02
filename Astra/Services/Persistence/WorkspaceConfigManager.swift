@@ -171,6 +171,12 @@ enum WorkspaceConfigManager {
         var schedules: [ScheduleConfig]?
         var sshConnections: [SSHConnection]
         var tasks: [TaskConfig]?
+        var workspaceApps: [WorkspaceAppConfig]? = nil
+        var workspaceAppRuns: [WorkspaceAppRunConfig]? = nil
+        var workspaceAppRunEvents: [WorkspaceAppRunEventConfig]? = nil
+        var workspaceAppDependencyBindings: [WorkspaceAppDependencyBindingConfig]? = nil
+        var workspaceAppAutomationStates: [WorkspaceAppAutomationStateConfig]? = nil
+        var googleOAuthAccountProfiles: [GoogleOAuthAccountProfileConfig]? = nil
         var installedPlugins: [InstalledPluginRef]?
         var exportedAt: Date
     }
@@ -336,6 +342,11 @@ enum WorkspaceConfigManager {
         var teamInstructions: String?
         var templateID: String?
         var templateHooksJSON: String?
+        var queuePosition: Int? = nil
+        var forkedFromID: String? = nil
+        var forkedAtRunIndex: Int? = nil
+        var originScheduleID: String? = nil
+        var executionRootPath: String? = nil
         var runs: [RunConfig]
         var events: [EventConfig]
         var artifacts: [ArtifactConfig]?
@@ -343,6 +354,115 @@ enum WorkspaceConfigManager {
         var skillNames: [String]
         var skillSnapshots: [SkillSnapshotConfig]?
         var executionEnvironmentSnapshotJSON: String?
+    }
+
+    struct WorkspaceAppConfig: Codable, Sendable {
+        var id: String?
+        var workspaceID: String
+        var logicalID: String
+        var name: String
+        var icon: String
+        var description: String
+        var lifecycleStatus: String
+        var permissionMode: String
+        var dependencyStatus: String
+        var manifestRelativePath: String
+        var appDirectoryRelativePath: String
+        var manifestDigest: String
+        var publishedManifestDigest: String?
+        var lastKnownGoodManifestDigest: String?
+        var latestVersionNumber: Int?
+        var sourcePackageID: String?
+        var sourcePackageVersion: String?
+        var sourcePackageDigest: String?
+        var lastOpenedAt: Date?
+        var lastRefreshedAt: Date?
+        var lastRunAt: Date?
+        var createdAt: Date?
+        var updatedAt: Date?
+    }
+
+    struct WorkspaceAppRunConfig: Codable, Sendable {
+        var id: String?
+        var workspaceID: String
+        var appID: String
+        var appLogicalID: String
+        var actionID: String
+        var trigger: String
+        var status: String
+        var startedAt: Date
+        var completedAt: Date?
+        var inputSummary: String
+        var outputSummary: String
+        var errorMessage: String?
+        var linkedTaskID: String?
+        var linkedArtifactPath: String?
+        var pendingActionID: String?
+        var pendingStepIndex: Int?
+        var consumedTokens: Int?
+        var awaitedTaskIDsJSON: String?
+        var pendingApprovalActionID: String?
+    }
+
+    struct WorkspaceAppRunEventConfig: Codable, Sendable {
+        var id: String?
+        var runID: String
+        var workspaceID: String
+        var appID: String
+        var actionID: String
+        var type: String
+        var payload: String
+        var timestamp: Date
+    }
+
+    struct WorkspaceAppDependencyBindingConfig: Codable, Sendable {
+        var id: String?
+        var workspaceID: String
+        var appID: String
+        var appLogicalID: String
+        var requirementID: String
+        var contract: String
+        var operationsSummary: String
+        var optional: Bool
+        var status: String
+        var implementationID: String?
+        var provider: String?
+        var transport: String?
+        var createdAt: Date?
+        var updatedAt: Date?
+    }
+
+    struct WorkspaceAppAutomationStateConfig: Codable, Sendable {
+        var id: String?
+        var workspaceID: String
+        var appID: String
+        var appLogicalID: String
+        var automationID: String
+        var automationType: String
+        var actionID: String?
+        var isEnabled: Bool
+        var status: String
+        var lastRunAt: Date?
+        var nextRunAt: Date?
+        var createdAt: Date?
+        var updatedAt: Date?
+    }
+
+    struct GoogleOAuthAccountProfileConfig: Codable, Sendable {
+        var id: String?
+        var subject: String
+        var email: String
+        var displayName: String
+        var avatarURLString: String?
+        var hostedDomain: String?
+        var grantedScopes: [String]
+        var requestedScopes: [String]
+        var authState: String
+        var authStateReason: String
+        var createdAt: Date
+        var updatedAt: Date
+        var lastAuthenticatedAt: Date?
+        var revokedAt: Date?
     }
 
     struct RunConfig: Codable, Sendable {
@@ -425,6 +545,14 @@ enum WorkspaceConfigManager {
         let scheduleConfigs = workspace.schedules.map(scheduleConfig)
         let sshConnections = SSHConnectionManager.load(workspacePath: workspace.primaryPath)
         let taskConfigs = workspace.tasks.map(taskConfig)
+        let workspaceAppConfigs = workspaceAppsForExport(workspace: workspace).map(workspaceAppConfig)
+        let workspaceAppRunConfigs = workspaceAppRunsForExport(workspace: workspace).map(workspaceAppRunConfig)
+        let workspaceAppRunEventConfigs = workspaceAppRunEventsForExport(workspace: workspace).map(workspaceAppRunEventConfig)
+        let workspaceAppDependencyBindingConfigs = workspaceAppDependencyBindingsForExport(workspace: workspace)
+            .map(workspaceAppDependencyBindingConfig)
+        let workspaceAppAutomationStateConfigs = workspaceAppAutomationStatesForExport(workspace: workspace)
+            .map(workspaceAppAutomationStateConfig)
+        let googleOAuthProfileConfigs = googleOAuthProfilesForExport(workspace: workspace).map(googleOAuthAccountProfileConfig)
 
         var pluginRefs: [InstalledPluginRef] = []
         for (idx, pluginID) in workspace.installedPluginIDs.enumerated() {
@@ -460,6 +588,12 @@ enum WorkspaceConfigManager {
             schedules: scheduleConfigs,
             sshConnections: sshConnections,
             tasks: taskConfigs,
+            workspaceApps: workspaceAppConfigs.isEmpty ? nil : workspaceAppConfigs,
+            workspaceAppRuns: workspaceAppRunConfigs.isEmpty ? nil : workspaceAppRunConfigs,
+            workspaceAppRunEvents: workspaceAppRunEventConfigs.isEmpty ? nil : workspaceAppRunEventConfigs,
+            workspaceAppDependencyBindings: workspaceAppDependencyBindingConfigs.isEmpty ? nil : workspaceAppDependencyBindingConfigs,
+            workspaceAppAutomationStates: workspaceAppAutomationStateConfigs.isEmpty ? nil : workspaceAppAutomationStateConfigs,
+            googleOAuthAccountProfiles: googleOAuthProfileConfigs.isEmpty ? nil : googleOAuthProfileConfigs,
             installedPlugins: pluginRefs.isEmpty ? nil : pluginRefs,
             exportedAt: Date()
         )
@@ -792,6 +926,12 @@ enum WorkspaceConfigManager {
                 )
             }
         }
+        importWorkspaceApps(config.workspaceApps ?? [], modelContext: modelContext)
+        importWorkspaceAppRuns(config.workspaceAppRuns ?? [], modelContext: modelContext)
+        importWorkspaceAppRunEvents(config.workspaceAppRunEvents ?? [], modelContext: modelContext)
+        importWorkspaceAppDependencyBindings(config.workspaceAppDependencyBindings ?? [], modelContext: modelContext)
+        importWorkspaceAppAutomationStates(config.workspaceAppAutomationStates ?? [], modelContext: modelContext)
+        importGoogleOAuthProfiles(config.googleOAuthAccountProfiles ?? [], modelContext: modelContext)
 
         let result = WorkspaceConfigImportResult(
             status: .imported,
@@ -849,6 +989,47 @@ enum WorkspaceConfigManager {
 
     private static func fetchGlobalTools(modelContext: ModelContext) -> [LocalTool] {
         let descriptor = FetchDescriptor<LocalTool>(predicate: #Predicate { $0.isGlobal })
+        return (try? modelContext.fetch(descriptor)) ?? []
+    }
+
+    private static func workspaceAppsForExport(workspace: Workspace) -> [WorkspaceApp] {
+        guard let modelContext = workspace.modelContext else { return [] }
+        let workspaceID = workspace.id
+        let descriptor = FetchDescriptor<WorkspaceApp>(predicate: #Predicate { $0.workspaceID == workspaceID })
+        return (try? modelContext.fetch(descriptor)) ?? []
+    }
+
+    private static func workspaceAppRunsForExport(workspace: Workspace) -> [WorkspaceAppRun] {
+        guard let modelContext = workspace.modelContext else { return [] }
+        let workspaceID = workspace.id
+        let descriptor = FetchDescriptor<WorkspaceAppRun>(predicate: #Predicate { $0.workspaceID == workspaceID })
+        return (try? modelContext.fetch(descriptor)) ?? []
+    }
+
+    private static func workspaceAppRunEventsForExport(workspace: Workspace) -> [WorkspaceAppRunEvent] {
+        guard let modelContext = workspace.modelContext else { return [] }
+        let workspaceID = workspace.id
+        let descriptor = FetchDescriptor<WorkspaceAppRunEvent>(predicate: #Predicate { $0.workspaceID == workspaceID })
+        return (try? modelContext.fetch(descriptor)) ?? []
+    }
+
+    private static func workspaceAppDependencyBindingsForExport(workspace: Workspace) -> [WorkspaceAppDependencyBinding] {
+        guard let modelContext = workspace.modelContext else { return [] }
+        let workspaceID = workspace.id
+        let descriptor = FetchDescriptor<WorkspaceAppDependencyBinding>(predicate: #Predicate { $0.workspaceID == workspaceID })
+        return (try? modelContext.fetch(descriptor)) ?? []
+    }
+
+    private static func workspaceAppAutomationStatesForExport(workspace: Workspace) -> [WorkspaceAppAutomationState] {
+        guard let modelContext = workspace.modelContext else { return [] }
+        let workspaceID = workspace.id
+        let descriptor = FetchDescriptor<WorkspaceAppAutomationState>(predicate: #Predicate { $0.workspaceID == workspaceID })
+        return (try? modelContext.fetch(descriptor)) ?? []
+    }
+
+    private static func googleOAuthProfilesForExport(workspace: Workspace) -> [GoogleOAuthAccountProfile] {
+        guard let modelContext = workspace.modelContext else { return [] }
+        let descriptor = FetchDescriptor<GoogleOAuthAccountProfile>()
         return (try? modelContext.fetch(descriptor)) ?? []
     }
 
@@ -1021,6 +1202,133 @@ enum WorkspaceConfigManager {
         )
     }
 
+    private static func workspaceAppConfig(_ app: WorkspaceApp) -> WorkspaceAppConfig {
+        WorkspaceAppConfig(
+            id: app.id.uuidString,
+            workspaceID: app.workspaceID.uuidString,
+            logicalID: app.logicalID,
+            name: app.name,
+            icon: app.icon,
+            description: app.appDescription,
+            lifecycleStatus: app.lifecycleStatusRaw,
+            permissionMode: app.permissionModeRaw,
+            dependencyStatus: app.dependencyStatusRaw,
+            manifestRelativePath: app.manifestRelativePath,
+            appDirectoryRelativePath: app.appDirectoryRelativePath,
+            manifestDigest: app.manifestDigest,
+            publishedManifestDigest: app.publishedManifestDigest,
+            lastKnownGoodManifestDigest: app.lastKnownGoodManifestDigest,
+            latestVersionNumber: app.latestVersionNumber,
+            sourcePackageID: app.sourcePackageID,
+            sourcePackageVersion: app.sourcePackageVersion,
+            sourcePackageDigest: app.sourcePackageDigest,
+            lastOpenedAt: app.lastOpenedAt,
+            lastRefreshedAt: app.lastRefreshedAt,
+            lastRunAt: app.lastRunAt,
+            createdAt: app.createdAt,
+            updatedAt: app.updatedAt
+        )
+    }
+
+    private static func workspaceAppRunConfig(_ run: WorkspaceAppRun) -> WorkspaceAppRunConfig {
+        WorkspaceAppRunConfig(
+            id: run.id.uuidString,
+            workspaceID: run.workspaceID.uuidString,
+            appID: run.appID.uuidString,
+            appLogicalID: run.appLogicalID,
+            actionID: run.actionID,
+            trigger: run.triggerRaw,
+            status: run.statusRaw,
+            startedAt: run.startedAt,
+            completedAt: run.completedAt,
+            inputSummary: run.inputSummary,
+            outputSummary: run.outputSummary,
+            errorMessage: run.errorMessage,
+            linkedTaskID: run.linkedTaskID?.uuidString,
+            linkedArtifactPath: run.linkedArtifactPath,
+            pendingActionID: run.pendingActionID,
+            pendingStepIndex: run.pendingStepIndex,
+            consumedTokens: run.consumedTokens,
+            awaitedTaskIDsJSON: run.awaitedTaskIDsJSON,
+            pendingApprovalActionID: run.pendingApprovalActionID
+        )
+    }
+
+    private static func workspaceAppRunEventConfig(_ event: WorkspaceAppRunEvent) -> WorkspaceAppRunEventConfig {
+        WorkspaceAppRunEventConfig(
+            id: event.id.uuidString,
+            runID: event.runID.uuidString,
+            workspaceID: event.workspaceID.uuidString,
+            appID: event.appID.uuidString,
+            actionID: event.actionID,
+            type: event.type,
+            payload: event.payload,
+            timestamp: event.timestamp
+        )
+    }
+
+    private static func workspaceAppDependencyBindingConfig(
+        _ binding: WorkspaceAppDependencyBinding
+    ) -> WorkspaceAppDependencyBindingConfig {
+        WorkspaceAppDependencyBindingConfig(
+            id: binding.id.uuidString,
+            workspaceID: binding.workspaceID.uuidString,
+            appID: binding.appID.uuidString,
+            appLogicalID: binding.appLogicalID,
+            requirementID: binding.requirementID,
+            contract: binding.contract,
+            operationsSummary: binding.operationsSummary,
+            optional: binding.optional,
+            status: binding.statusRaw,
+            implementationID: binding.implementationID,
+            provider: binding.provider,
+            transport: binding.transportRaw,
+            createdAt: binding.createdAt,
+            updatedAt: binding.updatedAt
+        )
+    }
+
+    private static func workspaceAppAutomationStateConfig(
+        _ state: WorkspaceAppAutomationState
+    ) -> WorkspaceAppAutomationStateConfig {
+        WorkspaceAppAutomationStateConfig(
+            id: state.id.uuidString,
+            workspaceID: state.workspaceID.uuidString,
+            appID: state.appID.uuidString,
+            appLogicalID: state.appLogicalID,
+            automationID: state.automationID,
+            automationType: state.automationType,
+            actionID: state.actionID,
+            isEnabled: state.isEnabled,
+            status: state.statusRaw,
+            lastRunAt: state.lastRunAt,
+            nextRunAt: state.nextRunAt,
+            createdAt: state.createdAt,
+            updatedAt: state.updatedAt
+        )
+    }
+
+    private static func googleOAuthAccountProfileConfig(
+        _ profile: GoogleOAuthAccountProfile
+    ) -> GoogleOAuthAccountProfileConfig {
+        GoogleOAuthAccountProfileConfig(
+            id: profile.id.uuidString,
+            subject: profile.subject,
+            email: profile.email,
+            displayName: profile.displayName,
+            avatarURLString: profile.avatarURLString,
+            hostedDomain: profile.hostedDomain,
+            grantedScopes: profile.grantedScopes,
+            requestedScopes: profile.requestedScopes,
+            authState: profile.authStateRaw,
+            authStateReason: profile.authStateReason,
+            createdAt: profile.createdAt,
+            updatedAt: profile.updatedAt,
+            lastAuthenticatedAt: profile.lastAuthenticatedAt,
+            revokedAt: profile.revokedAt
+        )
+    }
+
     private static func taskConfig(_ task: AgentTask) -> TaskConfig {
         let sortedRuns = task.runs.sorted { $0.startedAt < $1.startedAt }
         let runIDToIndex = Dictionary(
@@ -1099,6 +1407,11 @@ enum WorkspaceConfigManager {
             teamInstructions: task.teamInstructions,
             templateID: task.templateID?.uuidString,
             templateHooksJSON: task.templateHooksJSON,
+            queuePosition: task.queuePosition,
+            forkedFromID: task.forkedFromID?.uuidString,
+            forkedAtRunIndex: task.forkedAtRunIndex,
+            originScheduleID: task.originScheduleID?.uuidString,
+            executionRootPath: task.executionRootPath,
             runs: runConfigs,
             events: eventConfigs,
             artifacts: task.artifacts.map(ArtifactConfig.init(artifact:)),
@@ -1564,6 +1877,11 @@ enum WorkspaceConfigManager {
         if let id = config.chainedFromID {
             task.chainedFromID = UUID(uuidString: id)
         }
+        task.queuePosition = config.queuePosition ?? 0
+        task.forkedFromID = config.forkedFromID.flatMap(UUID.init(uuidString:))
+        task.forkedAtRunIndex = config.forkedAtRunIndex ?? 0
+        task.originScheduleID = config.originScheduleID.flatMap(UUID.init(uuidString:))
+        task.executionRootPath = config.executionRootPath
         task.useAgentTeam = config.useAgentTeam ?? false
         task.teamSize = config.teamSize ?? 3
         task.teamInstructions = config.teamInstructions ?? ""
@@ -1660,6 +1978,179 @@ enum WorkspaceConfigManager {
             artifact.createdAt = ac.createdAt
             modelContext.insert(artifact)
         }
+    }
+
+    private static func importWorkspaceApps(_ configs: [WorkspaceAppConfig], modelContext: ModelContext) {
+        for config in configs {
+            let app = WorkspaceApp(
+                id: config.id.flatMap(UUID.init(uuidString:)) ?? UUID(),
+                workspaceID: UUID(uuidString: config.workspaceID) ?? UUID(),
+                logicalID: config.logicalID,
+                name: config.name,
+                icon: config.icon,
+                appDescription: config.description,
+                lifecycleStatus: WorkspaceAppLifecycleStatus(rawValue: config.lifecycleStatus) ?? .draft,
+                permissionMode: WorkspaceAppPermissionMode(rawValue: config.permissionMode) ?? .readOnly,
+                dependencyStatus: WorkspaceAppDependencyStatus(rawValue: config.dependencyStatus) ?? .unresolved,
+                manifestRelativePath: config.manifestRelativePath,
+                appDirectoryRelativePath: config.appDirectoryRelativePath,
+                manifestDigest: config.manifestDigest,
+                publishedManifestDigest: config.publishedManifestDigest ?? "",
+                lastKnownGoodManifestDigest: config.lastKnownGoodManifestDigest ?? "",
+                latestVersionNumber: config.latestVersionNumber ?? 0,
+                sourcePackageID: config.sourcePackageID,
+                sourcePackageVersion: config.sourcePackageVersion,
+                sourcePackageDigest: config.sourcePackageDigest,
+                createdAt: config.createdAt ?? Date(),
+                updatedAt: config.updatedAt ?? config.createdAt ?? Date()
+            )
+            app.lastOpenedAt = config.lastOpenedAt
+            app.lastRefreshedAt = config.lastRefreshedAt
+            app.lastRunAt = config.lastRunAt
+            modelContext.insert(app)
+        }
+    }
+
+    private static func importWorkspaceAppRuns(_ configs: [WorkspaceAppRunConfig], modelContext: ModelContext) {
+        for config in configs {
+            let run = WorkspaceAppRun(
+                id: config.id.flatMap(UUID.init(uuidString:)) ?? UUID(),
+                workspaceID: UUID(uuidString: config.workspaceID) ?? UUID(),
+                appID: UUID(uuidString: config.appID) ?? UUID(),
+                appLogicalID: config.appLogicalID,
+                actionID: config.actionID,
+                trigger: WorkspaceAppRunTrigger(rawValue: config.trigger) ?? .user,
+                status: WorkspaceAppRunStatus(rawValue: config.status) ?? .failed,
+                startedAt: config.startedAt,
+                inputSummary: config.inputSummary,
+                outputSummary: config.outputSummary,
+                errorMessage: config.errorMessage
+            )
+            run.completedAt = config.completedAt
+            run.linkedTaskID = config.linkedTaskID.flatMap(UUID.init(uuidString:))
+            run.linkedArtifactPath = config.linkedArtifactPath
+            run.pendingActionID = config.pendingActionID
+            run.pendingStepIndex = config.pendingStepIndex ?? 0
+            run.consumedTokens = config.consumedTokens ?? 0
+            run.awaitedTaskIDsJSON = config.awaitedTaskIDsJSON ?? "[]"
+            run.pendingApprovalActionID = config.pendingApprovalActionID
+            modelContext.insert(run)
+        }
+    }
+
+    private static func importWorkspaceAppRunEvents(
+        _ configs: [WorkspaceAppRunEventConfig],
+        modelContext: ModelContext
+    ) {
+        for config in configs {
+            let event = WorkspaceAppRunEvent(
+                id: config.id.flatMap(UUID.init(uuidString:)) ?? UUID(),
+                runID: UUID(uuidString: config.runID) ?? UUID(),
+                workspaceID: UUID(uuidString: config.workspaceID) ?? UUID(),
+                appID: UUID(uuidString: config.appID) ?? UUID(),
+                actionID: config.actionID,
+                type: config.type,
+                payload: config.payload,
+                timestamp: config.timestamp
+            )
+            modelContext.insert(event)
+        }
+    }
+
+    private static func importWorkspaceAppDependencyBindings(
+        _ configs: [WorkspaceAppDependencyBindingConfig],
+        modelContext: ModelContext
+    ) {
+        for config in configs {
+            let binding = WorkspaceAppDependencyBinding(
+                id: config.id.flatMap(UUID.init(uuidString:)) ?? UUID(),
+                workspaceID: UUID(uuidString: config.workspaceID) ?? UUID(),
+                appID: UUID(uuidString: config.appID) ?? UUID(),
+                appLogicalID: config.appLogicalID,
+                requirementID: config.requirementID,
+                contract: config.contract,
+                operations: config.operationsSummary
+                    .split(separator: ",")
+                    .map(String.init)
+                    .filter { !$0.isEmpty },
+                optional: config.optional,
+                status: WorkspaceAppDependencyBindingStatus(rawValue: config.status) ?? .missingRequired,
+                implementationID: config.implementationID,
+                provider: config.provider,
+                transport: config.transport.flatMap(WorkspaceAppContractTransport.init(rawValue:)),
+                createdAt: config.createdAt ?? Date(),
+                updatedAt: config.updatedAt ?? config.createdAt ?? Date()
+            )
+            modelContext.insert(binding)
+        }
+    }
+
+    private static func importWorkspaceAppAutomationStates(
+        _ configs: [WorkspaceAppAutomationStateConfig],
+        modelContext: ModelContext
+    ) {
+        for config in configs {
+            let state = WorkspaceAppAutomationState(
+                id: config.id.flatMap(UUID.init(uuidString:)) ?? UUID(),
+                workspaceID: UUID(uuidString: config.workspaceID) ?? UUID(),
+                appID: UUID(uuidString: config.appID) ?? UUID(),
+                appLogicalID: config.appLogicalID,
+                automationID: config.automationID,
+                automationType: config.automationType,
+                actionID: config.actionID,
+                isEnabled: config.isEnabled,
+                status: WorkspaceAppAutomationStateStatus(rawValue: config.status) ?? .disabled,
+                lastRunAt: config.lastRunAt,
+                nextRunAt: config.nextRunAt,
+                createdAt: config.createdAt ?? Date(),
+                updatedAt: config.updatedAt ?? config.createdAt ?? Date()
+            )
+            modelContext.insert(state)
+        }
+    }
+
+    private static func importGoogleOAuthProfiles(
+        _ configs: [GoogleOAuthAccountProfileConfig],
+        modelContext: ModelContext
+    ) {
+        for config in configs {
+            guard existingGoogleOAuthProfile(for: config, modelContext: modelContext) == nil else {
+                continue
+            }
+            let profile = GoogleOAuthAccountProfile(
+                id: config.id.flatMap(UUID.init(uuidString:)) ?? UUID(),
+                subject: config.subject,
+                email: config.email,
+                displayName: config.displayName,
+                avatarURLString: config.avatarURLString,
+                hostedDomain: config.hostedDomain,
+                grantedScopes: config.grantedScopes,
+                requestedScopes: config.requestedScopes,
+                authState: GoogleOAuthAccountAuthState(rawValue: config.authState) ?? .active,
+                authStateReason: config.authStateReason,
+                createdAt: config.createdAt,
+                updatedAt: config.updatedAt,
+                lastAuthenticatedAt: config.lastAuthenticatedAt,
+                revokedAt: config.revokedAt
+            )
+            modelContext.insert(profile)
+        }
+    }
+
+    private static func existingGoogleOAuthProfile(
+        for config: GoogleOAuthAccountProfileConfig,
+        modelContext: ModelContext
+    ) -> GoogleOAuthAccountProfile? {
+        if let id = config.id.flatMap(UUID.init(uuidString:)) {
+            let descriptor = FetchDescriptor<GoogleOAuthAccountProfile>(predicate: #Predicate { $0.id == id })
+            if let profile = (try? modelContext.fetch(descriptor))?.first {
+                return profile
+            }
+        }
+
+        let email = config.email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let descriptor = FetchDescriptor<GoogleOAuthAccountProfile>(predicate: #Predicate { $0.email == email })
+        return (try? modelContext.fetch(descriptor))?.first
     }
 
     private static func importedValidationConfiguration(

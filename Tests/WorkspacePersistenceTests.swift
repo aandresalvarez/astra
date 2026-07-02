@@ -235,6 +235,165 @@ struct WorkspacePersistenceTests {
         #expect(imported.tasks.first?.artifacts.first?.id == workspace.tasks.first?.artifacts.first?.id)
     }
 
+    @Test("recovery export and import preserve WorkspaceApps, OAuth profiles, and task execution metadata")
+    @MainActor
+    func recoveryRoundTripPreservesAppsOAuthAndExecutionMetadata() throws {
+        let root = "/tmp/astra_recovery_roundtrip_\(UUID().uuidString)"
+        let container = try makeWorkspacePersistenceContainer()
+        let context = container.mainContext
+        let workspace = try makeRichWorkspace(in: context, root: root)
+        let task = try #require(workspace.tasks.first)
+        let forkedFromID = UUID()
+        let schedule = TaskSchedule(name: "Morning Review", goal: "Summarize changes", workspace: workspace)
+        context.insert(schedule)
+
+        task.queuePosition = 42
+        task.forkedFromID = forkedFromID
+        task.forkedAtRunIndex = 3
+        task.originScheduleID = schedule.id
+        task.executionRootPath = "\(root)/worktrees/feature"
+
+        let app = WorkspaceApp(
+            workspaceID: workspace.id,
+            logicalID: "review-dashboard",
+            name: "Review Dashboard",
+            icon: "chart.bar",
+            appDescription: "Tracks review status",
+            lifecycleStatus: .published,
+            permissionMode: .approvalRequired,
+            dependencyStatus: .ready,
+            manifestRelativePath: ".astra/apps/review-dashboard/manifest.json",
+            appDirectoryRelativePath: ".astra/apps/review-dashboard",
+            manifestDigest: "digest-current",
+            publishedManifestDigest: "digest-published",
+            lastKnownGoodManifestDigest: "digest-good",
+            latestVersionNumber: 7,
+            sourcePackageID: "review.pack",
+            sourcePackageVersion: "2.0.0",
+            sourcePackageDigest: "pack-digest"
+        )
+        app.lastOpenedAt = Date(timeIntervalSince1970: 1_710_000_001)
+        app.lastRefreshedAt = Date(timeIntervalSince1970: 1_710_000_002)
+        app.lastRunAt = Date(timeIntervalSince1970: 1_710_000_003)
+        context.insert(app)
+
+        let appRun = WorkspaceAppRun(
+            workspaceID: workspace.id,
+            appID: app.id,
+            appLogicalID: app.logicalID,
+            actionID: "refresh",
+            trigger: .automation,
+            status: .waiting,
+            startedAt: Date(timeIntervalSince1970: 1_710_000_004),
+            inputSummary: "Refresh PR data",
+            outputSummary: "Awaiting task",
+            errorMessage: nil
+        )
+        appRun.completedAt = Date(timeIntervalSince1970: 1_710_000_005)
+        appRun.linkedTaskID = task.id
+        appRun.linkedArtifactPath = "artifacts/review.json"
+        appRun.pendingActionID = "approval"
+        appRun.pendingStepIndex = 5
+        appRun.consumedTokens = 1234
+        appRun.awaitedTaskIDs = [task.id]
+        appRun.pendingApprovalActionID = "human-gate"
+        context.insert(appRun)
+
+        let appEvent = WorkspaceAppRunEvent(
+            runID: appRun.id,
+            workspaceID: workspace.id,
+            appID: app.id,
+            actionID: appRun.actionID,
+            type: "workspace_app.run.waiting",
+            payload: #"{"reason":"approval"}"#,
+            timestamp: Date(timeIntervalSince1970: 1_710_000_006)
+        )
+        context.insert(appEvent)
+
+        let binding = WorkspaceAppDependencyBinding(
+            workspaceID: workspace.id,
+            appID: app.id,
+            appLogicalID: app.logicalID,
+            requirementID: "github.prs",
+            contract: "pullRequest.read",
+            operations: ["list", "get"],
+            optional: false,
+            status: .mapped,
+            implementationID: "github.cli",
+            provider: "github",
+            transport: .cli
+        )
+        context.insert(binding)
+
+        let automation = WorkspaceAppAutomationState(
+            workspaceID: workspace.id,
+            appID: app.id,
+            appLogicalID: app.logicalID,
+            automationID: "daily-refresh",
+            automationType: "schedule",
+            actionID: "refresh",
+            isEnabled: true,
+            status: .enabled,
+            lastRunAt: Date(timeIntervalSince1970: 1_710_000_007),
+            nextRunAt: Date(timeIntervalSince1970: 1_710_086_400)
+        )
+        context.insert(automation)
+
+        let profile = GoogleOAuthAccountProfile(
+            subject: "google-subject-1",
+            email: "Researcher@Example.COM",
+            displayName: "Researcher",
+            avatarURLString: "https://example.test/avatar.png",
+            hostedDomain: "Example.COM",
+            grantedScopes: ["https://www.googleapis.com/auth/drive.file"],
+            requestedScopes: [
+                "https://www.googleapis.com/auth/drive.file",
+                "https://www.googleapis.com/auth/spreadsheets"
+            ],
+            authState: .needsReauth,
+            authStateReason: "scope_upgrade",
+            createdAt: Date(timeIntervalSince1970: 1_710_000_008),
+            updatedAt: Date(timeIntervalSince1970: 1_710_000_009),
+            lastAuthenticatedAt: Date(timeIntervalSince1970: 1_710_000_010)
+        )
+        context.insert(profile)
+        try context.save()
+
+        let config = try #require(WorkspaceConfigManager.export(workspace: workspace, modelContext: context))
+        #expect(config.tasks?.first?.queuePosition == 42)
+        #expect(config.tasks?.first?.forkedFromID == forkedFromID.uuidString)
+        #expect(config.tasks?.first?.originScheduleID == schedule.id.uuidString)
+        #expect(config.tasks?.first?.executionRootPath == "\(root)/worktrees/feature")
+        #expect(config.workspaceApps?.first?.logicalID == "review-dashboard")
+        #expect(config.workspaceAppRuns?.first?.awaitedTaskIDsJSON?.contains(task.id.uuidString) == true)
+        #expect(config.workspaceAppRunEvents?.first?.type == "workspace_app.run.waiting")
+        #expect(config.workspaceAppDependencyBindings?.first?.transport == "cli")
+        #expect(config.workspaceAppAutomationStates?.first?.status == "enabled")
+        #expect(config.googleOAuthAccountProfiles?.first?.authState == "needsReauth")
+
+        let importedContainer = try makeWorkspacePersistenceContainer()
+        let importedContext = importedContainer.mainContext
+        let importedWorkspace = WorkspaceConfigManager.importWorkspace(from: config, modelContext: importedContext)
+        try importedContext.save()
+
+        let importedTask = try #require(importedWorkspace.tasks.first)
+        #expect(importedTask.queuePosition == 42)
+        #expect(importedTask.forkedFromID == forkedFromID)
+        #expect(importedTask.forkedAtRunIndex == 3)
+        #expect(importedTask.originScheduleID == schedule.id)
+        #expect(importedTask.executionRootPath == "\(root)/worktrees/feature")
+
+        #expect(try importedContext.fetch(FetchDescriptor<WorkspaceApp>()).first?.publishedManifestDigest == "digest-published")
+        #expect(try importedContext.fetch(FetchDescriptor<WorkspaceAppRun>()).first?.pendingApprovalActionID == "human-gate")
+        #expect(try importedContext.fetch(FetchDescriptor<WorkspaceAppRunEvent>()).first?.payload == #"{"reason":"approval"}"#)
+        #expect(try importedContext.fetch(FetchDescriptor<WorkspaceAppDependencyBinding>()).first?.transportRaw == "cli")
+        #expect(try importedContext.fetch(FetchDescriptor<WorkspaceAppAutomationState>()).first?.isEnabled == true)
+        let importedProfile = try #require(importedContext.fetch(FetchDescriptor<GoogleOAuthAccountProfile>()).first)
+        #expect(importedProfile.email == "researcher@example.com")
+        #expect(importedProfile.authState == .needsReauth)
+        #expect(importedProfile.authStateReason == "scope_upgrade")
+    }
+
     @Test("legacy task configs without done state import as not done")
     @MainActor
     func legacyTaskConfigsWithoutDoneStateDefaultToOpen() throws {

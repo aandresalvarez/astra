@@ -238,11 +238,12 @@ enum AgentEventRecorder {
                 task.costUSD = cost
                 run.costUSD = cost
             }
-            if let text, run.output.isEmpty {
-                let visibleText = AgentEventRecordingPresentation.visibleTextWithoutProtocolMarkers(text)
-                if !visibleText.isEmpty {
-                    run.output = visibleText
-                }
+            if let text {
+                recordCompletedOutput(
+                    text,
+                    to: run,
+                    recordingState: recordingState
+                )
             }
 
             let details = [
@@ -483,6 +484,7 @@ enum AgentEventRecorder {
         to task: AgentTask,
         run: TaskRun,
         modelContext: ModelContext,
+        recordingMode: AgentRuntimeRecordingMode = .initial,
         recordingState: AgentEventRecordingState? = nil
     ) {
         recordProviderAgentEvent(
@@ -493,6 +495,7 @@ enum AgentEventRecorder {
             to: task,
             run: run,
             modelContext: modelContext,
+            recordingMode: recordingMode,
             recordingState: recordingState
         )
     }
@@ -546,6 +549,7 @@ enum AgentEventRecorder {
         to task: AgentTask,
         run: TaskRun,
         modelContext: ModelContext,
+        recordingMode: AgentRuntimeRecordingMode = .initial,
         recordingState: AgentEventRecordingState? = nil
     ) {
         switch event {
@@ -609,13 +613,21 @@ enum AgentEventRecorder {
             recordingState?.breakConversationCoalescing(for: run)
             let total = input + output
             if total > 0 {
-                task.tokensUsed = total
-                run.tokensUsed = total
-                run.inputTokens = input
-                run.outputTokens = output
+                recordUsageTotals(
+                    inputTokens: input,
+                    outputTokens: output,
+                    to: task,
+                    run: run,
+                    recordingMode: recordingMode
+                )
             }
             if let cost {
-                task.costUSD = cost
+                switch recordingMode {
+                case .initial:
+                    task.costUSD = cost
+                case .followUp:
+                    task.costUSD += cost
+                }
                 run.costUSD = cost
             }
             let details = [
@@ -631,18 +643,11 @@ enum AgentEventRecorder {
         case .completed(let summary):
             recordingState?.breakConversationCoalescing(for: run)
             if let summary {
-                let visibleText = AgentEventRecordingPresentation.visibleTextWithoutProtocolMarkers(summary)
-                // First-completed sets the output; a later completed message
-                // replaces it (last-completed-wins) so multi-message providers
-                // like Codex keep the final answer rather than an opening
-                // preamble. Output already assembled from streamed `.text`
-                // deltas is never overwritten here.
-                let mayReplace = run.output.isEmpty
-                    || (recordingState?.outputCameFromCompletedSummary(for: run) ?? false)
-                if !visibleText.isEmpty, mayReplace {
-                    run.output = visibleText
-                    recordingState?.markOutputFromCompletedSummary(for: run)
-                }
+                recordCompletedOutput(
+                    summary,
+                    to: run,
+                    recordingState: recordingState
+                )
             }
 
         case .astraProtocol(let event):
@@ -696,6 +701,45 @@ enum AgentEventRecorder {
             return .toolUse(name: toolName, id: "", input: input)
         case .unknown:
             return nil
+        }
+    }
+
+    @MainActor
+    private static func recordUsageTotals(
+        inputTokens: Int,
+        outputTokens: Int,
+        to task: AgentTask,
+        run: TaskRun,
+        recordingMode: AgentRuntimeRecordingMode
+    ) {
+        let totalTokens = inputTokens + outputTokens
+        switch recordingMode {
+        case .initial:
+            task.tokensUsed = totalTokens
+            run.tokensUsed = totalTokens
+            run.inputTokens = inputTokens
+            run.outputTokens = outputTokens
+        case .followUp:
+            let previousRunTokens = run.tokensUsed
+            run.tokensUsed = max(run.tokensUsed, totalTokens)
+            run.inputTokens = max(run.inputTokens, inputTokens)
+            run.outputTokens = max(run.outputTokens, outputTokens)
+            task.tokensUsed += max(0, run.tokensUsed - previousRunTokens)
+        }
+    }
+
+    @MainActor
+    private static func recordCompletedOutput(
+        _ summary: String,
+        to run: TaskRun,
+        recordingState: AgentEventRecordingState?
+    ) {
+        let visibleText = AgentEventRecordingPresentation.visibleTextWithoutProtocolMarkers(summary)
+        let mayReplace = run.output.isEmpty
+            || (recordingState?.outputCameFromCompletedSummary(for: run) ?? false)
+        if !visibleText.isEmpty, mayReplace {
+            run.output = visibleText
+            recordingState?.markOutputFromCompletedSummary(for: run)
         }
     }
 

@@ -23,6 +23,21 @@ enum CapabilityRuntimeResourceMatcher {
         uniquePackages(cachedInstalledPackages(library: library) + PluginCatalog.builtInPackages)
     }
 
+    static func packageDefinitionsFingerprint(library: CapabilityLibrary = CapabilityLibrary()) -> String {
+        let directory = library.directory.standardizedFileURL
+        let fingerprint = directoryFingerprint(for: directory)
+        let builtInFingerprint = PluginCatalog.builtInPackages
+            .map { "\($0.id):\($0.version)" }
+            .sorted()
+            .joined(separator: ",")
+        return [
+            directory.path,
+            String(fingerprint.fileCount),
+            String(fingerprint.latestModificationTime),
+            builtInFingerprint
+        ].joined(separator: "|")
+    }
+
     static func enabledPackages(
         for workspace: Workspace?,
         library: CapabilityLibrary = CapabilityLibrary(),

@@ -1,4 +1,5 @@
 import Foundation
+import SwiftData
 import Testing
 @testable import ASTRA
 
@@ -181,6 +182,34 @@ struct ArchitectureFitnessTests {
             }
 
         #expect(symbolMatches.isEmpty, "Workspace App Studio should be owned by WorkspaceAppStudioSession and generator, not task drafts: \(symbolMatches)")
+    }
+
+    @Test("Historical SwiftData schemas only reference frozen schema-local model types")
+    func historicalSwiftDataSchemasOnlyReferenceFrozenSchemaLocalModelTypes() {
+        let historicalSchemas: [(String, [any PersistentModel.Type])] = [
+            ("ASTRASchemaV1", ASTRASchemaV1.models),
+            ("ASTRASchemaV2", ASTRASchemaV2.models),
+            ("ASTRASchemaV3", ASTRASchemaV3.models),
+            ("ASTRASchemaV4", ASTRASchemaV4.models),
+            ("ASTRASchemaV5", ASTRASchemaV5.models),
+            ("ASTRASchemaV6", ASTRASchemaV6.models),
+            ("ASTRASchemaV7", ASTRASchemaV7.models),
+            ("ASTRASchemaV8", ASTRASchemaV8.models),
+            ("ASTRASchemaV9", ASTRASchemaV9.models)
+        ]
+
+        let liveReferences = historicalSchemas.flatMap { schemaName, models in
+            models.compactMap { model -> String? in
+                let reflectedName = String(reflecting: model)
+                guard reflectedName.contains(".\(schemaName).") else { return "\(schemaName): \(reflectedName)" }
+                return nil
+            }
+        }
+
+        #expect(
+            liveReferences.isEmpty,
+            "Historical VersionedSchema models must be declared inside their own schema enum: \(liveReferences)"
+        )
     }
 
     @Test("Prompt section provider identifiers are unique and used by known prompt modes")

@@ -44,3 +44,18 @@ struct UpdateSafetyObserver: View {
             .onChange(of: signature) { onChange() }
     }
 }
+
+struct BrowserSessionPolicyObserver: ViewModifier {
+    let signature: String
+    let onRefresh: (String) -> Void
+
+    func body(content: Content) -> some View {
+        content
+            .task(id: signature) {
+                onRefresh("trigger_signature")
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .capabilityApprovalsChanged)) { _ in
+                onRefresh("capability_approvals_changed")
+            }
+    }
+}

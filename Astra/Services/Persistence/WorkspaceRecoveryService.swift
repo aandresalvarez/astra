@@ -216,6 +216,56 @@ enum WorkspaceRecoveryService {
     }
 
     @discardableResult
+    static func exportReadableWorkspacesBeforeStoreReset(
+        at url: URL,
+        schema: Schema = ASTRASchema.current,
+        migrationPlan: (any SchemaMigrationPlan.Type)? = ASTRAMigrationPlan.self
+    ) -> [WorkspaceConfigManager.WorkspaceConfigExportResult] {
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            return []
+        }
+
+        do {
+            let readOnlyConfig = ModelConfiguration(url: url, allowsSave: false)
+            let container = try ModelContainer(
+                for: schema,
+                migrationPlan: migrationPlan,
+                configurations: [readOnlyConfig]
+            )
+            let context = ModelContext(container)
+            let workspaces = try context.fetch(FetchDescriptor<Workspace>())
+            let results = workspaces.compactMap { workspace -> WorkspaceConfigManager.WorkspaceConfigExportResult? in
+                let target = WorkspaceConfigManager.autoExportTarget(for: workspace.primaryPath)
+                guard let targetURL = target.url else {
+                    AppLogger.audit(.workspaceExported, category: "Persistence", fields: [
+                        "result": "recovery_export_skipped",
+                        "reason": target.reason,
+                        "workspace_id": workspace.id.uuidString
+                    ], level: .warning)
+                    return nil
+                }
+                return WorkspaceConfigManager.exportToFileResult(
+                    workspace: workspace,
+                    modelContext: context,
+                    url: targetURL
+                )
+            }
+            AppLogger.audit(.workspaceExported, category: "Persistence", fields: [
+                "result": "pre_reset_recovery_export_completed",
+                "workspace_count": String(workspaces.count),
+                "exported_count": String(results.filter(\.didExport).count)
+            ])
+            return results
+        } catch {
+            AppLogger.audit(.workspaceRecoveryFailed, category: "Persistence", fields: [
+                "operation": "pre_reset_read_only_export",
+                "error_type": String(describing: type(of: error))
+            ], level: .error)
+            return []
+        }
+    }
+
+    @discardableResult
     static func copyStoreBackup(
         at url: URL,
         backupRoot: URL? = nil,

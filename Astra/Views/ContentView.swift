@@ -147,6 +147,9 @@ struct ContentView: View {
     @State private var selectedTaskPreferredQueryPath = ""
     @State private var cachedShelfAvailabilityPolicy = ShelfAvailabilityPolicy()
     @State private var cachedShelfAvailabilityPolicySignature = ""
+    @State private var browserSessionPolicyCache = BrowserSessionPolicyCache()
+    @State private var cachedBrowserSessionPolicy = BrowserSessionPolicy.failClosed
+    @State private var cachedBrowserSessionPolicySignature: BrowserSessionPolicySignature?
     @State private var rememberedWorkspaceCanvasItemsRaw = WorkspaceCanvasItemPreferenceStore.load()
     /// First-run flag. Flips to true once the user finishes the
     /// onboarding wizard. Exposed via Settings → "Show Onboarding Again"
@@ -242,12 +245,24 @@ struct ContentView: View {
         )
     }
 
+    private var renameWorkspaceAlertBinding: Binding<Bool> {
+        Binding(
+            get: { renamingWorkspace != nil },
+            set: { isPresented in
+                if !isPresented {
+                    renamingWorkspace = nil
+                }
+            }
+        )
+    }
+
     private var currentBrowserSession: ShelfBrowserSession {
-        browserSessionStore.session(
+        let policy = currentBrowserSessionPolicy
+        return browserSessionStore.session(
             for: selectedTask?.id,
             pinnedToTask: isBrowserPinnedToTask,
-            enabledBrowserAdapters: enabledBrowserAdapterIDs(for: selectedTask),
-            githubReadOnlyMode: githubReadOnlyBrowserMode(for: selectedTask)
+            enabledBrowserAdapters: policy.enabledBrowserAdapters,
+            githubReadOnlyMode: policy.githubReadOnlyMode
         )
     }
 
@@ -258,30 +273,23 @@ struct ContentView: View {
         )
     }
 
-    private func enabledBrowserAdapterIDs(for task: AgentTask?) -> [String] {
-        guard let task else { return [] }
-        return TaskCapabilityResolver(task: task).enabledBrowserAdapters
-    }
-
-    private func githubReadOnlyBrowserMode(for task: AgentTask?) -> Bool {
-        guard let task else { return false }
-        return HostControlPlaneMCPProjection.enabledToolNames(
-            task: task,
-            environment: DockerExecutionPlanner.resolveEnvironment(for: task),
-            contextText: browserPolicyContextText(for: task)
-        ).contains("github")
-    }
-
-    private func browserPolicyContextText(for task: AgentTask) -> String {
-        let latestUserMessage = task.events
-            .filter { $0.type == "user.message" }
-            .max { $0.timestamp < $1.timestamp }?
-            .payload
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        if let latestUserMessage, !latestUserMessage.isEmpty {
-            return latestUserMessage
+    private var currentBrowserSessionPolicy: BrowserSessionPolicy {
+        let expectedSignature = makeBrowserSessionPolicySignature()
+        guard cachedBrowserSessionPolicySignature == expectedSignature else {
+            return .failClosed
         }
-        return task.goal
+        return cachedBrowserSessionPolicy
+    }
+
+    private var browserSessionPolicyRefreshTriggerSignature: String {
+        makeBrowserSessionPolicySignature().refreshKey
+    }
+
+    private func normalizedEnabledCapabilityIDs(for task: AgentTask?) -> [String] {
+        (task?.workspace?.enabledCapabilityIDs ?? [])
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .sorted()
     }
 
     private var browserPinnedToTaskBinding: Binding<Bool> {
@@ -907,6 +915,10 @@ struct ContentView: View {
         .task(id: shelfAvailabilityPolicyRefreshSignature) {
             await refreshShelfAvailabilityPolicy()
         }
+        .modifier(BrowserSessionPolicyObserver(
+            signature: browserSessionPolicyRefreshTriggerSignature,
+            onRefresh: refreshBrowserSessionPolicy(source:)
+        ))
         .onChange(of: activeWorkspaceCanvasItem) {
             syncBrowserPresentation()
         }
@@ -935,10 +947,7 @@ struct ContentView: View {
                 })
             }
         }
-        .alert("Rename Workspace", isPresented: Binding(
-            get: { renamingWorkspace != nil },
-            set: { if !$0 { renamingWorkspace = nil } }
-        )) {
+        .alert("Rename Workspace", isPresented: renameWorkspaceAlertBinding) {
             TextField("Name", text: $renameText)
             Button("Cancel", role: .cancel) { renamingWorkspace = nil }
             Button("Rename") {
@@ -1652,11 +1661,12 @@ struct ContentView: View {
         guard !selectedTaskPreferredHTMLPath.isEmpty else { return }
 
         let taskID = selectedTask?.id
+        let policy = currentBrowserSessionPolicy
         let session = browserSessionStore.session(
             for: taskID,
             pinnedToTask: isBrowserPinnedToTask,
-            enabledBrowserAdapters: enabledBrowserAdapterIDs(for: selectedTask),
-            githubReadOnlyMode: githubReadOnlyBrowserMode(for: selectedTask)
+            enabledBrowserAdapters: policy.enabledBrowserAdapters,
+            githubReadOnlyMode: policy.githubReadOnlyMode
         )
         guard TaskGeneratedFiles.shouldLoadGeneratedHTMLOnUserOpen(
             currentBrowserURL: session.currentURL,
@@ -1706,6 +1716,75 @@ struct ContentView: View {
         cachedShelfAvailabilityPolicySignature = signature
     }
 
+    private func refreshBrowserSessionPolicy(source: String) {
+        let signature = makeBrowserSessionPolicySignature()
+        let policy = browserSessionPolicyCache.policy(
+            for: signature,
+            source: makeBrowserSessionPolicySource(for: selectedTask)
+        )
+        cachedBrowserSessionPolicy = policy
+        cachedBrowserSessionPolicySignature = signature
+        syncBrowserPresentation()
+        AppLogger.audit(.shelfBrowserPreview, category: "Browser", taskID: selectedTask?.id, fields: [
+            "event": "browser_session_policy_refreshed",
+            "source": source,
+            "enabled_browser_adapters": policy.enabledBrowserAdapters.joined(separator: ","),
+            "github_read_only_mode": String(policy.githubReadOnlyMode)
+        ])
+    }
+
+    private func makeBrowserSessionPolicySignature() -> BrowserSessionPolicySignature {
+        makeBrowserSessionPolicySignature(for: selectedTask)
+    }
+
+    private func makeBrowserSessionPolicySignature(for task: AgentTask?) -> BrowserSessionPolicySignature {
+        BrowserSessionPolicySignature(
+            taskID: task?.id,
+            enabledCapabilityIDs: normalizedEnabledCapabilityIDs(for: task),
+            approvalRevision: CapabilityApprovalStore().revisionFingerprint(),
+            packageDefinitionFingerprint: CapabilityRuntimeResourceMatcher.packageDefinitionsFingerprint(),
+            taskEventRevision: BrowserSessionPolicyContext.taskEventRevision(for: task)
+        )
+    }
+
+    private func browserSessionPolicy(for task: AgentTask?) -> BrowserSessionPolicy {
+        browserSessionPolicyCache.policy(
+            for: makeBrowserSessionPolicySignature(for: task),
+            source: makeBrowserSessionPolicySource(for: task)
+        )
+    }
+
+    private func makeBrowserSessionPolicySource(for task: AgentTask?) -> BrowserSessionPolicySource {
+        guard let task else {
+            return BrowserSessionPolicySource(
+                packageDefinitions: { [] },
+                approvalRecords: { [] },
+                latestContextText: { "" },
+                environment: { .host }
+            )
+        }
+        return BrowserSessionPolicySource(
+            packageDefinitions: { CapabilityRuntimeResourceMatcher.packageDefinitions() },
+            approvalRecords: { CapabilityApprovalStore().records() },
+            latestContextText: { BrowserSessionPolicyContext.latestContextText(for: task) },
+            environment: { DockerExecutionPlanner.resolveEnvironment(for: task) },
+            enabledBrowserAdapters: { _, packages, approvalRecords in
+                TaskCapabilityResolver.enabledBrowserAdapters(
+                    for: task.workspace,
+                    packages: packages,
+                    approvalRecords: approvalRecords
+                )
+            },
+            githubReadOnlyMode: { environment, contextText in
+                HostControlPlaneMCPProjection.enabledToolNames(
+                    task: task,
+                    environment: environment,
+                    contextText: contextText
+                ).contains("github")
+            }
+        )
+    }
+
     private func openGeneratedFile(_ path: String) {
         let url = URL(fileURLWithPath: path)
         switch TaskGeneratedFiles.shelfDestination(for: path) {
@@ -1715,11 +1794,12 @@ struct ContentView: View {
                 return
             }
             let taskID = selectedTask?.id
+            let policy = currentBrowserSessionPolicy
             let session = browserSessionStore.session(
                 for: taskID,
                 pinnedToTask: isBrowserPinnedToTask,
-                enabledBrowserAdapters: enabledBrowserAdapterIDs(for: selectedTask),
-                githubReadOnlyMode: githubReadOnlyBrowserMode(for: selectedTask)
+                enabledBrowserAdapters: policy.enabledBrowserAdapters,
+                githubReadOnlyMode: policy.githubReadOnlyMode
             )
             session.load(url, source: "generated_file")
             if let taskID {
@@ -1792,12 +1872,13 @@ struct ContentView: View {
     }
 
     private func syncBrowserPresentation() {
+        let policy = currentBrowserSessionPolicy
         browserSessionStore.setPresented(
             activeWorkspaceCanvasItem == .browser,
             taskID: selectedTask?.id,
             pinnedToTask: isBrowserPinnedToTask,
-            enabledBrowserAdapters: enabledBrowserAdapterIDs(for: selectedTask),
-            githubReadOnlyMode: githubReadOnlyBrowserMode(for: selectedTask)
+            enabledBrowserAdapters: policy.enabledBrowserAdapters,
+            githubReadOnlyMode: policy.githubReadOnlyMode
         )
     }
 
@@ -1871,12 +1952,13 @@ struct ContentView: View {
     private func promoteDraftBrowserSessionIfNeeded(to task: AgentTask) {
         guard selectedTask == nil || isComposingTask else { return }
         let wasPresented = activeWorkspaceCanvasItem == .browser
+        let policy = currentBrowserSessionPolicy
         let promoted = browserSessionStore.promoteSharedSession(
             to: task.id,
             pinnedToTask: isBrowserPinnedToTask,
             isPresented: wasPresented,
-            enabledBrowserAdapters: enabledBrowserAdapterIDs(for: task),
-            githubReadOnlyMode: githubReadOnlyBrowserMode(for: task)
+            enabledBrowserAdapters: policy.enabledBrowserAdapters,
+            githubReadOnlyMode: policy.githubReadOnlyMode
         )
         guard promoted else { return }
 
