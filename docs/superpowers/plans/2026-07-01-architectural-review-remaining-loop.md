@@ -21,7 +21,7 @@ For each remaining PR:
 
 - [x] PR 5: Bound and Relocate the Workspace JSON Mirror
 - [x] PR 6: Derive Launch Arguments from `ProviderPolicyRender`
-- [ ] PR 7: Introduce `TaskStateMachine`
+- [x] PR 7: Introduce `TaskStateMachine`
 - [ ] PR 8: Introduce `SceneSelectionModel`
 - [ ] PR 9: Fix CI and Test Target Feedback Loops
 - [ ] PR 10: Gate Credential Egress
@@ -65,3 +65,13 @@ For each remaining PR:
 - Coordinator merge: completed.
 - Focused worker validation: `AgentRuntimeAdapterTests`, `AgentPolicyTests`, `RunPermissionManifestTests`, `AgentRuntimeExecutionPolicyTests`, `ArchitectureFitnessTests`, `CopilotRuntimeTests`, `ExecutionSandboxRunnerTests`, `git diff --check`, `script/precommit.sh`.
 - Coordinator validation: `swift test --filter AgentRuntimeAdapterTests/copilotDockerAutoPreflightManifestPersistsRestrictedLaunchFlags` passed; `swift test --filter AgentRuntimeAdapterTests --filter AgentPolicyTests --filter RunPermissionManifestTests --filter AgentRuntimeExecutionPolicyTests --filter ArchitectureFitnessTests` passed.
+
+### PR 7
+
+- Branch: `alvaro/arch-review-pr7-task-state-machine`
+- Head: `ef9874272d6e258863a9725d9b96ff54306b1c59`
+- Spec review: passed after the queue-admission, no-step approved-plan, and raw status-write fitness guard fix loop.
+- Code quality review: passed after verifying `TaskStateMachine` stayed the production status mutation boundary.
+- Coordinator merge: completed.
+- Focused worker validation: `TaskStateMachineTests`, `QueueLockTests`, `TaskRunLifecycleServiceTests`, `TaskRuntimeHealthTests`, `ArchitectureFitnessTests`, `git diff --check`, `script/precommit.sh`.
+- Coordinator validation: `swift test --filter TaskStateMachineTests`, `swift test --filter ArchitectureFitnessTests/productionTaskStatusWritesGoThroughTaskStateMachine`, `swift test --filter TaskRunLifecycleServiceTests`, `swift test --filter QueueLockTests`, `swift test --filter TaskRuntimeHealthTests`, `swift test --filter ArchitectureFitnessTests`, and `git diff --check 6f777596c93e211ff58b4d0fb03d7ee36c2212e1..HEAD` passed before merge.
