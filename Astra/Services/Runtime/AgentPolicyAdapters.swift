@@ -1207,6 +1207,12 @@ enum AgentPolicyManifestService {
         let shouldAllowAllPaths = shouldProjectGitCredentials(task: task, contextText: contextText)
             || AgentRuntimeProcessRunner.hasWorkspaceSSHConnections(for: task)
         var updated = render
+        let launchPermissionPolicy = AgentRuntimeProviderLaunchPolicy.permissionPolicy(
+            runtime: render.providerID,
+            effectivePermissionPolicy: PermissionPolicy(rawValue: render.permissionMode) ?? .restricted,
+            executionEnvironment: executionEnvironment
+        )
+        updated.permissionMode = launchPermissionPolicy.rawValue
         let args = copilotLaunchPermissionArguments(
             render: updated,
             providerCapabilities: providerCapabilities,

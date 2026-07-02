@@ -1850,9 +1850,11 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
         )
         let executionEnvironment = DockerExecutionPlanner.resolveEnvironment(for: context.task)
         let usesDockerWorkspaceExecutor = DockerWorkspaceMCPProjection.isEnabled(for: executionEnvironment)
-        let providerLaunchPermissionPolicy = usesDockerWorkspaceExecutor && effectivePermissionPolicy == .autonomous
-            ? PermissionPolicy.restricted
-            : effectivePermissionPolicy
+        let providerLaunchPermissionPolicy = AgentRuntimeProviderLaunchPolicy.permissionPolicy(
+            runtime: id,
+            effectivePermissionPolicy: effectivePermissionPolicy,
+            executionEnvironment: executionEnvironment
+        )
         let baseProviderAllowed = AgentRuntimeProcessRunner.providerAllowedTools(
             for: id,
             baseAllowedTools: allowed,

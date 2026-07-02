@@ -1,7 +1,14 @@
 import Foundation
+import SwiftData
 import Testing
 @testable import ASTRA
 import ASTRACore
+
+private func makeAgentRuntimeAdapterContainer() throws -> ModelContainer {
+    let schema = ASTRASchema.current
+    let config = ModelConfiguration(isStoredInMemoryOnly: true)
+    return try ModelContainer(for: schema, migrationPlan: ASTRAMigrationPlan.self, configurations: [config])
+}
 
 @Suite("Agent Runtime Adapters", .serialized)
 struct AgentRuntimeAdapterTests {
@@ -2114,6 +2121,81 @@ struct AgentRuntimeAdapterTests {
         #expect(availableTools.contains("astra_workspace-workspace_shell"))
         #expect(!availableTools.contains(DockerWorkspaceMCPProjection.providerToolPermission))
         #expect(!availableTools.contains("bash"))
+    }
+
+    @Test("Copilot Docker Auto preflight manifest persists restricted launch flags")
+    @MainActor
+    func copilotDockerAutoPreflightManifestPersistsRestrictedLaunchFlags() throws {
+        let container = try makeAgentRuntimeAdapterContainer()
+        let context = container.mainContext
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-copilot-docker-auto-preflight-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let copilotPath = try Self.writeFakeCopilotExecutable(in: root)
+
+        let workspace = Workspace(name: "Docker Auto Preflight", primaryPath: root.path)
+        let task = AgentTask(
+            title: "Inspect dbt",
+            goal: "Check dbt in the configured Docker image",
+            workspace: workspace,
+            model: "gpt-5",
+            runtime: .copilotCLI
+        )
+        let shellSkill = Skill(name: "Shell", allowedTools: ["Read", "Bash"])
+        shellSkill.workspace = workspace
+        task.skills = [shellSkill]
+        task.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encode(WorkspaceExecutionEnvironment(
+            id: "image:workspace",
+            kind: .dockerImage,
+            displayName: "Workspace Image",
+            image: "astra/workspace:latest"
+        ))
+        let run = TaskRun(task: task)
+        context.insert(workspace)
+        context.insert(shellSkill)
+        context.insert(task)
+        context.insert(run)
+
+        let manifest = AgentPolicyManifestService.recordPreflightManifest(
+            task: task,
+            run: run,
+            runtime: .copilotCLI,
+            model: "gpt-5",
+            workspacePath: workspace.primaryPath,
+            phase: "run",
+            permissionPolicy: .autonomous,
+            executionPolicy: .default,
+            defaultPolicyLevelRaw: AgentPolicyLevel.autonomous.rawValue,
+            providerCapabilities: AgentRuntimePolicyCapabilities(copilotCLI: CopilotCLICapabilities(helpText: """
+            --allow-all --allow-all-tools --allow-all-paths --allow-all-urls --allow-tool TOOL --available-tools=TOOLS --excluded-tools=TOOLS --output-format=FORMAT --stream=MODE --no-ask-user --effort LEVEL --additional-mcp-config CONFIG
+            """)),
+            modelContext: context
+        )
+
+        let plan = AgentRuntimeAdapterRegistry
+            .adapter(for: .copilotCLI)
+            .makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext(
+                prompt: "check dbt",
+                task: task,
+                workspacePath: workspace.primaryPath,
+                executablePath: copilotPath,
+                providerHomeDirectory: root.appendingPathComponent("copilot-home", isDirectory: true).path,
+                permissionPolicy: .autonomous,
+                executionPolicy: .default,
+                permissionManifest: manifest,
+                timeoutSeconds: 30,
+                runID: UUID(uuidString: "C0D1A170-F1A6-4F51-95A7-AC04F0F03881")
+            ))
+
+        #expect(manifest.providerRender.permissionMode == PermissionPolicy.restricted.rawValue)
+        #expect(!manifest.providerRender.cliArgumentsSummary.contains("--allow-all"))
+        #expect(!manifest.providerRender.cliArgumentsSummary.contains("--allow-all-tools"))
+        #expect(plan.commandPlannedFields["docker_workspace_executor"] == "true")
+        #expect(plan.commandPlannedFields["permission_policy"] == PermissionPolicy.restricted.rawValue)
+        #expect(!plan.arguments.contains("--allow-all"))
+        #expect(!plan.arguments.contains("--allow-all-tools"))
+        #expect(Self.copilotPermissionArguments(in: plan.arguments) == manifest.providerRender.cliArgumentsSummary)
     }
 
     @Test("Adapters own provider stream parsing")

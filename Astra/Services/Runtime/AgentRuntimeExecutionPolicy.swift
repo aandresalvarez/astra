@@ -68,3 +68,18 @@ struct AgentRuntimeExecutionPolicy: Equatable {
         )
     }
 }
+
+enum AgentRuntimeProviderLaunchPolicy {
+    static func permissionPolicy(
+        runtime: AgentRuntimeID,
+        effectivePermissionPolicy: PermissionPolicy,
+        executionEnvironment: WorkspaceExecutionEnvironment
+    ) -> PermissionPolicy {
+        if runtime == .copilotCLI,
+           DockerWorkspaceMCPProjection.isEnabled(for: executionEnvironment),
+           effectivePermissionPolicy == .autonomous {
+            return .restricted
+        }
+        return effectivePermissionPolicy
+    }
+}
