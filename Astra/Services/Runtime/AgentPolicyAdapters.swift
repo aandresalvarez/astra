@@ -38,7 +38,7 @@ extension ProviderPolicyAdapter {
                 return name.trimmingCharacters(in: .whitespacesAndNewlines)
             case .shellCommand(let executable, let pattern):
                 return "shell(\(executable):\(pattern))"
-            case .filePath, .networkPattern:
+            case .filePath, .networkPattern, .credential:
                 return nil
             }
         }
@@ -144,7 +144,7 @@ struct ClaudePolicyAdapter: ProviderPolicyAdapter {
                 return canonicalClaudeToolName(name)
             case .shellCommand(let executable, let pattern):
                 return claudeShellGrant(executable: executable, pattern: pattern)
-            case .filePath, .networkPattern:
+            case .filePath, .networkPattern, .credential:
                 return nil
             }
         })
@@ -335,7 +335,7 @@ struct CopilotPolicyAdapter: ProviderPolicyAdapter {
                 return canonicalCopilotToolName(name)
             case .shellCommand(let executable, let pattern):
                 return "shell(\(executable):\(pattern))"
-            case .filePath, .networkPattern:
+            case .filePath, .networkPattern, .credential:
                 return nil
             }
         })
@@ -700,7 +700,7 @@ private enum BrokeredProviderGrantStrings {
                 return name.trimmingCharacters(in: .whitespacesAndNewlines)
             case .shellCommand(let executable, let pattern):
                 return "shell(\(executable):\(pattern))"
-            case .filePath, .networkPattern:
+            case .filePath, .networkPattern, .credential:
                 return nil
             }
         })
@@ -928,10 +928,13 @@ enum AgentPolicyManifestService {
             executionPolicy: executionPolicy
         )
         let basePolicy = resolution.policy
-        let taskCapabilityResolver = TaskCapabilityResolver(task: task)
-        let taskCapabilityScope = taskCapabilityResolver.promptScope(contextText: contextText)
         let taskScopedGrants = TaskRuntimePermissionGrants.approvedGrants(for: task)
         let executionGrants = executionPolicy.permissionGrantsOverride ?? []
+        let taskCapabilityResolver = TaskCapabilityResolver(
+            task: task,
+            additionalCredentialGrants: executionGrants
+        )
+        let taskCapabilityScope = taskCapabilityResolver.promptScope(contextText: contextText)
         let effectiveGrants = PermissionBroker.sanitizeApprovedGrants(taskScopedGrants + executionGrants)
         let taskScopedProviderGrants = PermissionBroker.providerGrantStrings(for: taskScopedGrants, runtime: runtime)
         let effectiveProviderGrants = PermissionBroker.providerGrantStrings(for: effectiveGrants, runtime: runtime)
@@ -1373,8 +1376,13 @@ enum AgentPolicyManifestService {
     private static func credentialLabels(for task: AgentTask, contextText: String) -> [String] {
         let capabilityScope = TaskCapabilityResolver(task: task).promptScope(contextText: contextText)
         let skillKeys = capabilityScope.behaviorSkills.flatMap(\.environmentKeys)
-        let connectorKeys = capabilityScope.connectors.flatMap(\.credentialKeys)
-        return Array(Set(skillKeys + connectorKeys)).sorted()
+        let connectorLabels = ConnectorRuntimeProjection(
+            connectors: capabilityScope.connectors,
+            credentialExposurePolicy: .approvedLabels(
+                Set(TaskRuntimePermissionGrants.approvedCredentialLabels(for: task))
+            )
+        ).configuredCredentialLabels()
+        return Array(Set(skillKeys + connectorLabels)).sorted()
     }
 
     private static func runtimeSupportAllowedShellPatterns(environmentKeyNames: [String]) -> [String] {

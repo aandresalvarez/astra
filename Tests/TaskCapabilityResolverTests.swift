@@ -612,7 +612,11 @@ struct TaskCapabilityResolverTests {
 
         let env = ConnectorRuntimeProjection(
             connectors: [source, target],
-            secretStore: store
+            secretStore: store,
+            credentialExposurePolicy: .approvedLabels([
+                ConnectorRuntimeProjection.credentialLabel(for: source, key: "REDCAP_API_TOKEN"),
+                ConnectorRuntimeProjection.credentialLabel(for: target, key: "REDCAP_API_TOKEN")
+            ])
         ).environmentVariables()
 
         #expect(env["REDCAP_STUDY_A_SOURCE_API_TOKEN"] == "source-token")
@@ -632,7 +636,11 @@ struct TaskCapabilityResolverTests {
 
         let env = ConnectorRuntimeProjection(
             connectors: [connector],
-            secretStore: store
+            secretStore: store,
+            credentialExposurePolicy: .approvedLabels([
+                ConnectorRuntimeProjection.credentialLabel(for: connector, key: "JIRA_EMAIL"),
+                ConnectorRuntimeProjection.credentialLabel(for: connector, key: "JIRA_API_TOKEN")
+            ])
         ).environmentVariables()
 
         #expect(env["JIRA_JIRA_EMAIL"] == "user@example.edu")

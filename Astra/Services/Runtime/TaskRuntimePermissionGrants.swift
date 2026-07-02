@@ -53,6 +53,20 @@ enum TaskRuntimePermissionGrants {
         return PermissionBroker.taskScopedApprovalGrants(for: decoded)
     }
 
+    static func approvedCredentialLabels(
+        for task: AgentTask,
+        runtime: AgentRuntimeID? = nil,
+        additionalGrants: [PermissionGrant] = []
+    ) -> [String] {
+        let taskGrants = approvedGrants(for: task, runtime: runtime)
+        let oneRunGrants = PermissionBroker.sanitizeApprovedGrants(additionalGrants)
+        return Array(Set((taskGrants + oneRunGrants).compactMap { grant in
+            guard case .credential(let label) = grant else { return nil }
+            let trimmed = label.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        })).sorted()
+    }
+
     static func decodePayload(_ payload: String) -> Payload? {
         guard let data = payload.data(using: .utf8) else { return nil }
         return try? JSONDecoder().decode(Payload.self, from: data)

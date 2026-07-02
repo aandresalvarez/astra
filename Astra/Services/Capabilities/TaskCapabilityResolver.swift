@@ -32,9 +32,11 @@ enum TaskCapabilityResolutionScope: Equatable {
 
 struct TaskCapabilityResolver {
     private let task: AgentTask
+    private let additionalCredentialGrants: [PermissionGrant]
 
-    init(task: AgentTask) {
+    init(task: AgentTask, additionalCredentialGrants: [PermissionGrant] = []) {
         self.task = task
+        self.additionalCredentialGrants = additionalCredentialGrants
     }
 
     var resolver: SkillResolver {
@@ -60,7 +62,10 @@ struct TaskCapabilityResolver {
             }
         }
 
-        let connEnvVars = ConnectorRuntimeProjection(connectors: liveConnectors)
+        let connEnvVars = ConnectorRuntimeProjection(
+            connectors: liveConnectors,
+            credentialExposurePolicy: credentialExposurePolicy()
+        )
             .environmentVariables()
 
         return SkillResolver(
@@ -432,6 +437,15 @@ struct TaskCapabilityResolver {
         }
     }
 
+    private func credentialExposurePolicy() -> ConnectorRuntimeProjection.CredentialExposurePolicy {
+        ConnectorRuntimeProjection.CredentialExposurePolicy.approvedLabels(
+            Set(TaskRuntimePermissionGrants.approvedCredentialLabels(
+                for: task,
+                additionalGrants: additionalCredentialGrants
+            ))
+        )
+    }
+
     private var effectiveSkillSnapshots: [SkillSnapshotConfig] {
         let liveSnapshots = allBehaviorSkills.map(SkillSnapshotConfig.init(skill:))
         guard !task.skillSnapshots.isEmpty else { return liveSnapshots }
@@ -516,7 +530,10 @@ struct TaskCapabilityResolver {
             }
         }
 
-        let connectorEnvVars = ConnectorRuntimeProjection(connectors: connectors)
+        let connectorEnvVars = ConnectorRuntimeProjection(
+            connectors: connectors,
+            credentialExposurePolicy: credentialExposurePolicy()
+        )
             .environmentVariables()
 
         let resolver = SkillResolver(

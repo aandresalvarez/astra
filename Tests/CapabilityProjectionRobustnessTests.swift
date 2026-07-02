@@ -82,12 +82,83 @@ struct ConnectorCredentialPresenceTests {
         _ = store.save(key: "JIRA_EMAIL", value: "user@example.com", entityID: stableEntityID, label: nil)
         _ = store.save(key: "JIRA_API_TOKEN", value: "secret-token", entityID: stableEntityID, label: nil)
 
-        let projection = ConnectorRuntimeProjection(connectors: [connector], secretStore: store)
+        let projection = ConnectorRuntimeProjection(
+            connectors: [connector],
+            secretStore: store,
+            credentialExposurePolicy: .approvedLabels([
+                ConnectorRuntimeProjection.credentialLabel(for: connector, key: "JIRA_EMAIL"),
+                ConnectorRuntimeProjection.credentialLabel(for: connector, key: "JIRA_API_TOKEN")
+            ])
+        )
         let environment = projection.environmentVariables()
 
         #expect(projection.missingCredentialKeysByConnector().isEmpty)
         #expect(environment.values.contains("user@example.com"))
         #expect(environment.values.contains("secret-token"))
+    }
+
+    @Test("HTTP connector credentials are withheld until their label is approved")
+    func httpConnectorCredentialsRequireApprovedLabel() throws {
+        let container = try makeRobustnessContainer()
+        let store = MockSecretStore()
+        let connector = Connector(
+            name: "Jira", serviceType: "jira", icon: "j",
+            connectorDescription: "d", baseURL: "https://stanfordmed.atlassian.net", authMethod: "basic"
+        )
+        connector.credentialKeys = ["JIRA_API_TOKEN"]
+        container.mainContext.insert(connector)
+        _ = store.save(
+            key: "JIRA_API_TOKEN",
+            value: "secret-token",
+            entityID: KeychainSecretStore.connectorEntityID(for: connector.id),
+            label: nil
+        )
+
+        let label = ConnectorRuntimeProjection.credentialLabel(for: connector, key: "JIRA_API_TOKEN")
+        let withheld = ConnectorRuntimeProjection(connectors: [connector], secretStore: store)
+        let approved = ConnectorRuntimeProjection(
+            connectors: [connector],
+            secretStore: store,
+            credentialExposurePolicy: .approvedLabels([label])
+        )
+
+        #expect(withheld.environmentVariables()["JIRA_JIRA_API_TOKEN"] == nil)
+        #expect(withheld.unapprovedCredentialLabelsRequiringApproval() == [label])
+        #expect(approved.environmentVariables()["JIRA_JIRA_API_TOKEN"] == "secret-token")
+        #expect(approved.unapprovedCredentialLabelsRequiringApproval().isEmpty)
+    }
+
+    @Test("Non-HTTP connector credentials are withheld by default even for local service names")
+    func nonHTTPConnectorCredentialsFailClosedByDefault() throws {
+        let container = try makeRobustnessContainer()
+        let store = MockSecretStore()
+        let connector = Connector(
+            name: "Forged Local Cloud", serviceType: "gcloud", icon: "cloud",
+            connectorDescription: "d", baseURL: "", authMethod: "api_key"
+        )
+        connector.credentialKeys = ["GCLOUD_TOKEN"]
+        container.mainContext.insert(connector)
+        _ = store.save(
+            key: "GCLOUD_TOKEN",
+            value: "secret-token",
+            entityID: KeychainSecretStore.connectorEntityID(for: connector.id),
+            label: nil
+        )
+
+        let label = ConnectorRuntimeProjection.credentialLabel(for: connector, key: "GCLOUD_TOKEN")
+        let withheld = ConnectorRuntimeProjection(connectors: [connector], secretStore: store)
+        let explicitCompatibility = ConnectorRuntimeProjection(
+            connectors: [connector],
+            secretStore: store,
+            credentialExposurePolicy: .approvedLabels(
+                [],
+                allowUnapprovedNonHTTPConnectorCredentials: true
+            )
+        )
+
+        #expect(!withheld.environmentVariables().values.contains("secret-token"))
+        #expect(withheld.unapprovedCredentialLabelsRequiringApproval() == [label])
+        #expect(explicitCompatibility.environmentVariables().values.contains("secret-token"))
     }
 }
 
@@ -117,17 +188,24 @@ struct LegacyEnvFallbackTests {
         }
 
         let solo = jiraConnector(name: "Solo Jira", host: "https://solo.example.com")
-        let single = ConnectorRuntimeProjection(connectors: [solo], secretStore: store)
+        let policy = ConnectorRuntimeProjection.CredentialExposurePolicy.approvedLabels([
+            ConnectorRuntimeProjection.credentialLabel(for: solo, key: "JIRA_API_TOKEN")
+        ])
+        let single = ConnectorRuntimeProjection(connectors: [solo], secretStore: store, credentialExposurePolicy: policy)
             .environmentVariables()
         #expect(single["JIRA_API_TOKEN"] == nil)
         #expect(single.keys.contains { $0.hasSuffix("_JIRA_API_TOKEN") })
 
-        let legacySingle = ConnectorRuntimeProjection(connectors: [solo], secretStore: store)
+        let legacySingle = ConnectorRuntimeProjection(connectors: [solo], secretStore: store, credentialExposurePolicy: policy)
             .environmentVariables(includeLegacySingleConnectorFallback: true)
         #expect(legacySingle["JIRA_API_TOKEN"] == "tok-Solo Jira")
 
         let second = jiraConnector(name: "Second Jira", host: "https://second.example.com")
-        let dual = ConnectorRuntimeProjection(connectors: [solo, second], secretStore: store)
+        let dualPolicy = ConnectorRuntimeProjection.CredentialExposurePolicy.approvedLabels([
+            ConnectorRuntimeProjection.credentialLabel(for: solo, key: "JIRA_API_TOKEN"),
+            ConnectorRuntimeProjection.credentialLabel(for: second, key: "JIRA_API_TOKEN")
+        ])
+        let dual = ConnectorRuntimeProjection(connectors: [solo, second], secretStore: store, credentialExposurePolicy: dualPolicy)
             .environmentVariables()
         // With two connectors of one service, the bare name must disappear
         // rather than silently rebind to either connector.

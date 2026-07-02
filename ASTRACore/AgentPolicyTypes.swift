@@ -843,6 +843,7 @@ public enum PermissionGrant: Codable, Equatable, Sendable, Hashable {
     case filePath(path: String, access: String)
     case networkPattern(pattern: String)
     case providerTool(name: String)
+    case credential(label: String)
 
     public var displayName: String {
         switch self {
@@ -856,6 +857,8 @@ public enum PermissionGrant: Codable, Equatable, Sendable, Hashable {
             "network(\(pattern))"
         case .providerTool(let name):
             name
+        case .credential(let label):
+            "credential(\(label))"
         }
     }
 }

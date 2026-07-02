@@ -401,7 +401,11 @@ final class AgentRuntimeWorker {
         let selectedRuntime = runtimeConfiguration.selectedRuntime(for: task)
         alignTaskModelWithSelectedRuntime(task, selectedRuntime: selectedRuntime, phase: "resume")
         clearMismatchedProviderSessionIfNeeded(for: task, selectedRuntime: selectedRuntime, phase: "resume")
-        let prompt = AgentPromptBuilder.buildFreshFollowUpPrompt(message: message, task: task)
+        let prompt = AgentPromptBuilder.buildFreshFollowUpPrompt(
+            message: message,
+            task: task,
+            executionPolicy: executionPolicy
+        )
         await executeRuntimeSession(
             task: task,
             modelContext: modelContext,
@@ -533,7 +537,8 @@ final class AgentRuntimeWorker {
             run: run,
             modelContext: modelContext,
             phase: auditPhase,
-            contextText: providerLaunchContextText
+            contextText: providerLaunchContextText,
+            executionPolicy: executionPolicy
         ) else {
             isRunning = false
             return
@@ -627,7 +632,7 @@ final class AgentRuntimeWorker {
         task.executionEnvironmentSnapshotJSON = executionEnvironmentJSON
         run.executionEnvironmentSnapshotJSON = executionEnvironmentJSON
 
-        let prompt = promptOverride ?? buildPrompt(for: task)
+        let prompt = promptOverride ?? buildPrompt(for: task, executionPolicy: executionPolicy)
         let launchResourcePlan = TaskLaunchResourceResolver.resolve(
             task: task,
             runID: run.id,
@@ -2033,8 +2038,11 @@ final class AgentRuntimeWorker {
     }
 
     @MainActor
-    func buildPrompt(for task: AgentTask) -> String {
-        AgentPromptBuilder.buildPrompt(for: task)
+    func buildPrompt(
+        for task: AgentTask,
+        executionPolicy: AgentRuntimeExecutionPolicy = .default
+    ) -> String {
+        AgentPromptBuilder.buildPrompt(for: task, executionPolicy: executionPolicy)
     }
 
     @MainActor

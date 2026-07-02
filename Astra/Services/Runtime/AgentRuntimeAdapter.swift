@@ -1183,7 +1183,8 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
     func makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext) -> AgentRuntimeProcessLaunchPlan {
         let taskEnv = AgentRuntimeProcessRunner.scopedEnvironmentVariables(
             for: context.task,
-            contextText: context.contextText
+            contextText: context.contextText,
+            executionPolicy: context.executionPolicy
         )
         let browserShimDirectory = AgentRuntimeProcessRunner.browserToolShimDirectory(
             for: context.task,
@@ -1837,7 +1838,8 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
     func makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext) -> AgentRuntimeProcessLaunchPlan {
         let taskEnv = AgentRuntimeProcessRunner.scopedEnvironmentVariables(
             for: context.task,
-            contextText: context.contextText
+            contextText: context.contextText,
+            executionPolicy: context.executionPolicy
         )
         let browserShimDirectory = AgentRuntimeProcessRunner.browserToolShimDirectory(
             for: context.task,
@@ -2599,7 +2601,8 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
     func makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext) -> AgentRuntimeProcessLaunchPlan {
         let taskEnv = AgentRuntimeProcessRunner.scopedEnvironmentVariables(
             for: context.task,
-            contextText: context.contextText
+            contextText: context.contextText,
+            executionPolicy: context.executionPolicy
         )
         let browserShimDirectory = AgentRuntimeProcessRunner.browserToolShimDirectory(
             for: context.task,
