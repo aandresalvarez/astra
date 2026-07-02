@@ -2,4 +2,11 @@
 set -euo pipefail
 
 ROOT_DIR="$(git rev-parse --show-toplevel)"
+
+# Git exports local repository environment variables while running hooks. The
+# test suite creates nested fixture repositories, so clear those variables before
+# launching any child git processes.
+unset $(git rev-parse --local-env-vars)
+cd "$ROOT_DIR"
+
 exec "$ROOT_DIR/script/prepush.sh"
