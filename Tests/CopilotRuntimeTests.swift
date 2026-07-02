@@ -1027,7 +1027,6 @@ struct CopilotCLICommandPlanningTests {
             capabilities: capabilities,
             taskEnvironment: [:],
             copilotHome: "/tmp/copilot-home",
-            allowAllPathsForSSHConnections: true,
             permissionArguments: Self.permissionArguments(
                 policy: .restricted,
                 allowedTools: ["Bash"],

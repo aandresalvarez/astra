@@ -125,30 +125,8 @@ extension ProviderPolicyRender {
         OpenCodeCLIRuntime.permissionArguments(policy: policy)
     }
 
-    func copilotLaunchPermissionArguments(
-        capabilities: CopilotCLICapabilities,
-        localToolCommands: [String],
-        runtimeSupportTools: [String],
-        allowAllPathsForSSHConnections: Bool
-    ) -> [String] {
-        var args = CopilotCLIRuntime.copilotPermissionArguments(
-            policy: launchPermissionPolicy,
-            allowedTools: allowedTools,
-            localToolCommands: localToolCommands,
-            runtimeSupportTools: runtimeSupportTools,
-            supportsAllowAll: capabilities.supportsAllowAll,
-            supportsAllowAllTools: capabilities.supportsAllowAllTools,
-            supportsAllowAllPaths: capabilities.supportsAllowAllPaths,
-            supportsAllowAllURLs: capabilities.supportsAllowAllURLs,
-            requiresAllowAllToolsForPrompt: capabilities.requiresAllowAllToolsForPrompt
-        )
-        if allowAllPathsForSSHConnections,
-           launchPermissionPolicy != .autonomous,
-           capabilities.supportsAllowAllPaths,
-           !args.contains("--allow-all-paths") {
-            args.append("--allow-all-paths")
-        }
-        return args
+    func copilotLaunchPermissionArguments() -> [String] {
+        cliArgumentsSummary
     }
 
     static func copilotLaunchPermissionArguments(

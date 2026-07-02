@@ -1918,13 +1918,7 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
         for (key, value) in mcpProjection.hostControlEnvironment {
             launchTaskEnv[key] = value
         }
-        let allowAllPathsForSSHConnections = AgentRuntimeProcessRunner.hasWorkspaceSSHConnections(for: context.task)
-        let permissionArguments = context.requiredProviderPolicyRender(for: id).copilotLaunchPermissionArguments(
-            capabilities: capabilities,
-            localToolCommands: localToolCommands,
-            runtimeSupportTools: runtimeSupportTools,
-            allowAllPathsForSSHConnections: allowAllPathsForSSHConnections
-        )
+        let permissionArguments = context.requiredProviderPolicyRender(for: id).copilotLaunchPermissionArguments()
         let plan = CopilotCLIRuntime.buildCommand(
             executablePath: executable,
             prompt: context.prompt,
@@ -1947,7 +1941,6 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             askFirstTools: surfacedAskFirstTools,
             additionalMCPConfigPaths: mcpProjection.configURL.map { [$0.path] } ?? [],
             reasoningEffort: artifactBootstrapTools.isEmpty ? nil : "none",
-            allowAllPathsForSSHConnections: allowAllPathsForSSHConnections,
             permissionArguments: permissionArguments
         )
         let directoriesToCreate = CopilotCLIRuntime.directoriesToCreate(

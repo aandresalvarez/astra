@@ -108,10 +108,6 @@ final class AgentRuntimeProcessRunner {
         plan = plan.addingSandboxProtectedWriteDenyPaths(launchResourcePlan.hostProtectedWriteDenyPaths)
         if !gitCredentialContext.isEmpty {
             plan = plan.addingGitCredentialContext(gitCredentialContext)
-                .enablingProviderNativeGitCredentialReads(
-                    for: gitCredentialContext,
-                    permissionPolicy: effectivePermissionPolicy
-                )
         }
         let environment = DockerExecutionPlanner.resolveEnvironment(for: context.task)
         if let block = plan.unsupportedProviderNativeCredentialReadBlock(

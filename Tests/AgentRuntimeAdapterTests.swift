@@ -220,10 +220,6 @@ struct AgentRuntimeAdapterTests {
         )
 
         let enriched = plan.addingGitCredentialContext(gitContext)
-            .enablingProviderNativeGitCredentialReads(
-                for: gitContext,
-                permissionPolicy: .restricted
-            )
 
         #expect(enriched.pathMapper == mapper)
         #expect(enriched.executionEnvironment == environment)
@@ -1150,6 +1146,14 @@ struct AgentRuntimeAdapterTests {
             runtime: .copilotCLI
         )
         let supportTools = CopilotPolicyAdapter().runtimeSupportTools
+        let permissionArguments = ProviderPolicyRender.copilotLaunchPermissionArguments(
+            policy: .restricted,
+            allowedTools: ["read"],
+            capabilities: CopilotCLICapabilities(helpText: Self.fakeCopilotHelpText()),
+            localToolCommands: [],
+            runtimeSupportTools: Self.copilotRuntimeSupportToolPermissions(),
+            allowAllPathsForSSHConnections: false
+        )
         let providerRender = ProviderPolicyRender(
             providerID: .copilotCLI,
             adapterVersion: 1,
@@ -1165,9 +1169,9 @@ struct AgentRuntimeAdapterTests {
             deniedShellPatterns: [],
             allowedURLPatterns: [],
             deniedURLPatterns: [],
-            cliArgumentsSummary: [],
+            cliArgumentsSummary: permissionArguments,
             settingsSummary: "test",
-            generatedConfigPreview: "",
+            generatedConfigPreview: permissionArguments.joined(separator: " "),
             enforcementTiers: [.providerNative, .astraBrokered],
             diagnostics: [],
             usesBroadProviderPermissions: false
@@ -2627,6 +2631,16 @@ struct AgentRuntimeAdapterTests {
                 askFirstTools: askFirstTools
             )
         )).sorted()
+        let manifestPermissionArguments = cliArgumentsSummary.isEmpty
+            ? ProviderPolicyRender.copilotLaunchPermissionArguments(
+                policy: .restricted,
+                allowedTools: manifestAllowedTools,
+                capabilities: CopilotCLICapabilities(helpText: Self.fakeCopilotHelpText()),
+                localToolCommands: [],
+                runtimeSupportTools: Self.copilotRuntimeSupportToolPermissions(),
+                allowAllPathsForSSHConnections: false
+            )
+            : cliArgumentsSummary
         let providerRender = ProviderPolicyRender(
             providerID: .copilotCLI,
             adapterVersion: 1,
@@ -2642,9 +2656,9 @@ struct AgentRuntimeAdapterTests {
             deniedShellPatterns: [],
             allowedURLPatterns: [],
             deniedURLPatterns: [],
-            cliArgumentsSummary: cliArgumentsSummary,
+            cliArgumentsSummary: manifestPermissionArguments,
             settingsSummary: "test",
-            generatedConfigPreview: cliArgumentsSummary.joined(separator: " "),
+            generatedConfigPreview: manifestPermissionArguments.joined(separator: " "),
             enforcementTiers: [.providerNative, .astraBrokered],
             diagnostics: [],
             usesBroadProviderPermissions: false

@@ -206,7 +206,6 @@ enum CopilotCLIRuntime {
         additionalMCPConfigPaths: [String] = [],
         reasoningEffort: String? = nil,
         disableCustomInstructions: Bool = false,
-        allowAllPathsForSSHConnections: Bool = false,
         permissionArguments: [String]
     ) -> CopilotCLICommandPlan {
         var args = ["--prompt", prompt, "--model", model, "--no-color", "--log-level", "error"]

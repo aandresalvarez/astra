@@ -508,8 +508,8 @@ struct ExecutionSandboxRunnerTests {
         }
     }
 
-    @Test("sandboxedPlan enables Copilot native path access for Git credential context")
-    func sandboxedPlanEnablesCopilotGitCredentialAccess() {
+    @Test("sandboxedPlan does not append Copilot path access outside render evidence")
+    func sandboxedPlanDoesNotAppendCopilotGitCredentialAccessOutsideRenderEvidence() {
         withStandardEnforcement(.off) {
             let runner = AgentRuntimeProcessRunner(gitCredentialContextProvider: { _ in
                 GitCredentialSandboxContext(
@@ -532,8 +532,8 @@ struct ExecutionSandboxRunnerTests {
                 Issue.record("Expected .plan when disabled")
                 return
             }
-            #expect(plan.arguments.contains("--allow-all-paths"))
-            #expect(plan.commandPlannedFields["git_provider_native_read_access"] == "copilot_allow_all_paths")
+            #expect(!plan.arguments.contains("--allow-all-paths"))
+            #expect(plan.commandPlannedFields["git_provider_native_read_access"] == nil)
         }
     }
 
@@ -698,10 +698,6 @@ struct ExecutionSandboxRunnerTests {
         )
 
         let plan = base.addingGitCredentialContext(context)
-            .enablingProviderNativeGitCredentialReads(
-                for: context,
-                permissionPolicy: .restricted
-            )
 
         #expect(plan.executionEnvironment.id == "image:workspace")
         #expect(plan.pathMapper?.containerPath(forHostPath: "/tmp/whatever") == "/workspace")
