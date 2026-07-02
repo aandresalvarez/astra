@@ -61,6 +61,47 @@ struct TaskStateMachineTests {
         #expect(task.unreadAt == nil)
     }
 
+    @Test("Runtime session start only confirms an admitted running task")
+    func runtimeSessionStartOnlyConfirmsAdmittedRunningTask() throws {
+        let container = try makeTaskStateMachineContainer()
+        let context = container.mainContext
+        let rejectedStatuses: [TaskStatus] = [.draft, .queued, .pendingUser]
+
+        for status in rejectedStatuses {
+            let task = AgentTask(title: "Not admitted", goal: "Run me")
+            task.status = status
+            context.insert(task)
+
+            let result = TaskStateMachine.markRuntimeSessionStarted(
+                task,
+                modelContext: context,
+                at: Date(timeIntervalSince1970: 1_000)
+            )
+
+            #expect(!result.changed)
+            #expect(result.from == status)
+            #expect(result.to == .running)
+            #expect(result.rejection == .illegalTransition)
+            #expect(task.status == status)
+        }
+
+        let admitted = AgentTask(title: "Admitted", goal: "Already running")
+        admitted.status = .running
+        context.insert(admitted)
+
+        let result = TaskStateMachine.markRuntimeSessionStarted(
+            admitted,
+            modelContext: context,
+            at: Date(timeIntervalSince1970: 2_000)
+        )
+
+        #expect(!result.changed)
+        #expect(result.from == .running)
+        #expect(result.to == .running)
+        #expect(result.rejection == nil)
+        #expect(admitted.status == .running)
+    }
+
     @Test("Illegal runtime admission is rejected without mutation")
     func illegalRuntimeAdmissionIsRejectedWithoutMutation() throws {
         let container = try makeTaskStateMachineContainer()

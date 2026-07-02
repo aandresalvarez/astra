@@ -254,7 +254,7 @@ enum TaskStateMachine {
             task,
             to: .running,
             intent: "runtime_session_started",
-            allowedFrom: [.draft, .queued, .running, .pendingUser],
+            allowedFrom: [.running],
             completedAt: .clear,
             readState: .read,
             modelContext: modelContext,

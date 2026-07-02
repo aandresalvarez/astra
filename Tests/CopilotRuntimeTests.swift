@@ -1533,6 +1533,7 @@ struct CopilotWorkerExecutionTests {
         worker.copilotHome = root.appendingPathComponent("copilot-home", isDirectory: true).path
         worker.timeoutSeconds = 30
 
+        DirectWorkerLaunchAdmission.admitInitialRun(task, modelContext: context)
         await worker.execute(task: task, modelContext: context) { _ in }
 
         #expect(task.status == .completed)
@@ -1593,6 +1594,7 @@ struct CopilotWorkerExecutionTests {
         worker.copilotHome = root.appendingPathComponent("copilot-home", isDirectory: true).path
         worker.timeoutSeconds = 30
 
+        DirectWorkerLaunchAdmission.admitInitialRun(task, modelContext: context)
         await worker.execute(task: task, modelContext: context) { _ in }
 
         #expect(task.status == .completed)
@@ -1660,6 +1662,7 @@ struct CopilotWorkerExecutionTests {
         worker.copilotHome = copilotHomeURL.path
         worker.timeoutSeconds = 30
 
+        DirectWorkerLaunchAdmission.admitInitialRun(task, modelContext: context)
         await worker.execute(task: task, modelContext: context) { _ in }
 
         #expect(task.status == .completed)
@@ -1723,6 +1726,7 @@ struct CopilotWorkerExecutionTests {
         worker.timeoutSeconds = 30
         worker.budgetEnforcementModeOverride = .warning
 
+        DirectWorkerLaunchAdmission.admitInitialRun(task, modelContext: context)
         await worker.execute(task: task, modelContext: context) { _ in }
 
         #expect(task.status == .completed)
@@ -1793,6 +1797,7 @@ struct CopilotWorkerExecutionTests {
         worker.timeoutSeconds = 30
         worker.budgetEnforcementModeOverride = .hardStop
 
+        DirectWorkerLaunchAdmission.admitInitialRun(task, modelContext: context)
         await worker.execute(task: task, modelContext: context) { _ in }
 
         #expect(task.status == .budgetExceeded)
@@ -1870,6 +1875,7 @@ struct CopilotWorkerExecutionTests {
         worker.copilotHome = root.appendingPathComponent("copilot-home", isDirectory: true).path
         worker.timeoutSeconds = 30
 
+        DirectWorkerLaunchAdmission.admitInitialRun(task, modelContext: context)
         await worker.execute(task: task, modelContext: context) { _ in }
 
         let run = try #require(task.runs.first)
@@ -1920,6 +1926,7 @@ struct CopilotWorkerExecutionTests {
         worker.copilotHome = root.appendingPathComponent("copilot-home", isDirectory: true).path
         worker.timeoutSeconds = 30
 
+        DirectWorkerLaunchAdmission.admitInitialRun(task, modelContext: context)
         await worker.execute(task: task, modelContext: context) { _ in }
 
         #expect(task.status == .failed)
@@ -2007,6 +2014,7 @@ struct CopilotWorkerExecutionTests {
                 )
             ]
         )
+        DirectWorkerLaunchAdmission.admitInitialRun(task, modelContext: context)
         await worker.executeApprovedPlan(task: task, plan: plan, modelContext: context) { _ in }
 
         #expect(task.status == .completed)
@@ -2065,6 +2073,7 @@ struct CopilotWorkerExecutionTests {
         worker.copilotHome = root.appendingPathComponent("copilot-home", isDirectory: true).path
         worker.timeoutSeconds = 30
 
+        DirectWorkerLaunchAdmission.admitInitialRun(task, modelContext: context)
         await worker.execute(task: task, modelContext: context) { _ in }
 
         #expect(task.status == .failed)
@@ -2121,6 +2130,7 @@ struct CopilotWorkerExecutionTests {
         worker.copilotHome = root.appendingPathComponent("copilot-home", isDirectory: true).path
         worker.timeoutSeconds = 30
 
+        DirectWorkerLaunchAdmission.admitInitialRun(task, modelContext: context)
         await worker.execute(task: task, modelContext: context) { _ in }
 
         #expect(task.status == .pendingUser)
@@ -2179,6 +2189,7 @@ struct CopilotWorkerExecutionTests {
         worker.copilotHome = root.appendingPathComponent("copilot-home", isDirectory: true).path
         worker.timeoutSeconds = 30
 
+        DirectWorkerLaunchAdmission.admitInitialRun(task, modelContext: context)
         await worker.execute(task: task, modelContext: context) { _ in }
 
         #expect(task.status == .completed)

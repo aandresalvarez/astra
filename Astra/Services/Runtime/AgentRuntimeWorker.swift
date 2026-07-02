@@ -462,6 +462,13 @@ final class AgentRuntimeWorker {
             ], level: .warning)
             return
         }
+        guard AgentRuntimeStartAdmission.confirmRuntimeSessionStarted(
+            task: task,
+            modelContext: modelContext,
+            auditPhase: auditPhase
+        ) else {
+            return
+        }
         guard AgentRuntimeLaunchPreflight.prepareTaskFolderForLaunch(
             task,
             modelContext: modelContext,
@@ -475,7 +482,6 @@ final class AgentRuntimeWorker {
         if task.runtimeID == nil {
             task.runtimeID = selectedRuntime.rawValue
         }
-        TaskStateMachine.markRuntimeSessionStarted(task, modelContext: modelContext)
 
         let run = TaskRun(task: task)
         run.runtimeID = selectedRuntime.rawValue

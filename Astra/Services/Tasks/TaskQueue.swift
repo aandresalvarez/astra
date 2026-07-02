@@ -182,6 +182,10 @@ final class TaskQueue {
             return
         }
 
+        guard admitQueuedTaskToRuntime(task, modelContext: modelContext, mode: "task") else {
+            return
+        }
+
         guard prepareTaskFolder(task, modelContext: modelContext, mode: "task") else {
             return
         }
@@ -495,6 +499,10 @@ final class TaskQueue {
             return
         }
 
+        guard admitQueuedTaskToRuntime(task, modelContext: modelContext, mode: "approved_plan") else {
+            return
+        }
+
         guard prepareTaskFolder(task, modelContext: modelContext, mode: "approved_plan") else {
             return
         }
@@ -518,6 +526,50 @@ final class TaskQueue {
             "mode": "approved_plan",
             "plan_execution_mode": mode.rawValue
         ])
+    }
+
+    @MainActor
+    private func admitQueuedTaskToRuntime(
+        _ task: AgentTask,
+        modelContext: ModelContext,
+        mode: String
+    ) -> Bool {
+        let result = TaskStateMachine.admitQueuedTaskToRuntime(task, modelContext: modelContext)
+        guard result.rejection == nil else {
+            recordQueueAdmissionRejection(task, result: result, modelContext: modelContext, mode: mode)
+            return false
+        }
+        return true
+    }
+
+    @MainActor
+    private func recordQueueAdmissionRejection(
+        _ task: AgentTask,
+        result: TaskStateMachine.TransitionResult,
+        modelContext: ModelContext,
+        mode: String
+    ) {
+        AppLogger.audit(.workerBlocked, category: "Queue", taskID: task.id, fields: [
+            "reason": "queue_admission_rejected",
+            "mode": mode,
+            "from": result.from.rawValue,
+            "to": result.to.rawValue
+        ], level: .warning)
+        modelContext.insert(TaskEvent(
+            task: task,
+            eventType: TaskEventTypes.System.error,
+            payload: "This task could not be admitted to runtime because it is no longer queued. Current status: \(result.from.rawValue)."
+        ))
+        WorkspacePersistenceCoordinator.saveAndAutoExport(
+            workspace: task.workspace,
+            modelContext: modelContext,
+            taskID: task.id,
+            auditFields: [
+                "operation": "queue_admission_rejected",
+                "mode": mode,
+                "status": result.from.rawValue
+            ]
+        )
     }
 
     @MainActor

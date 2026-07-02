@@ -112,6 +112,7 @@ struct Phase2FunctionalTest {
         var receivedEvents: [ParsedEvent] = []
 
         try await E2ETestSupport.withLiveProviderSlot {
+            DirectWorkerLaunchAdmission.admitInitialRun(task, modelContext: context)
             await worker.execute(task: task, modelContext: context) { event in
                 receivedEvents.append(event)
             }
