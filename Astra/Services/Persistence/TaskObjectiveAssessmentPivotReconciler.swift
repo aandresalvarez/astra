@@ -14,13 +14,18 @@ import Foundation
 ///     (`activeObjectiveResolution(...).objective != task.goal`, which
 ///     `hasExplicitOverride`/`supersedesOriginalGoal` do not catch -- both are
 ///     hardcoded `false` on the plan-reconciliation path even though the
-///     resolved objective genuinely changed) -- any persisted
-///     `objectiveAssessment` is dropped entirely. A durable Tier 1 signal
-///     always wins over an older, now-stale Tier 2 verdict, and nothing else
-///     invalidates a persisted assessment once
+///     resolved objective genuinely changed) -- OR the CURRENT turn's raw
+///     follow-up message text is itself an explicit override
+///     (`isExplicitObjectiveOverrideMessage`), since `continueSession` builds
+///     the prompt before persisting that message as a `user.message` event,
+///     making it invisible to `activeObjectiveResolution` until the next turn
+///     -- any persisted `objectiveAssessment` is dropped entirely. A durable
+///     Tier 1 signal always wins over an older, now-stale Tier 2 verdict, and
+///     nothing else invalidates a persisted assessment once
 ///     `ObjectiveAssessmentTrigger.shouldAssess` stops re-running Tier 2 after
 ///     such a signal appears (adversarial findings: an explicit correction --
-///     including one that reaffirms the original goal verbatim -- or a plan
+///     including one that reaffirms the original goal verbatim, or that
+///     arrives on the very turn it's meant to take effect -- or a plan
 ///     approved after an earlier drift episode, must not keep surfacing that
 ///     earlier pivot via either the Thread Intent line or the raw "Objective
 ///     assessment" block).
@@ -50,7 +55,11 @@ import Foundation
 /// func` (internal), matching `TaskActiveObjectiveResolver.swift`'s own usage.
 extension TaskContextStateManager {
     @MainActor
-    static func reconcileActiveObjectiveWithAssessmentPivot(_ state: inout TaskContextState, task: AgentTask) {
+    static func reconcileActiveObjectiveWithAssessmentPivot(
+        _ state: inout TaskContextState,
+        task: AgentTask,
+        followUpMessage: String = ""
+    ) {
         guard let assessment = state.objectiveAssessment else { return }
 
         guard UserDefaults.standard.bool(forKey: AppStorageKeys.objectiveDriftDetectionEnabled) else {
@@ -66,8 +75,15 @@ extension TaskContextStateManager {
         )
         let goal = task.goal.trimmingCharacters(in: .whitespacesAndNewlines)
         let resolvedObjective = resolution.objective.trimmingCharacters(in: .whitespacesAndNewlines)
+        // The CURRENT turn's follow-up message is checked directly, not just
+        // via `resolution` -- `continueSession` builds the prompt before the
+        // message is persisted as a `user.message` event, so a correction
+        // arriving on this exact turn is otherwise invisible to
+        // `activeObjectiveResolution` (which reads `task.events`) until the
+        // NEXT turn (adversarial finding).
         let tier1HasMovedPastOriginalGoal = resolution.hasExplicitOverride
             || (!resolvedObjective.isEmpty && resolvedObjective.caseInsensitiveCompare(goal) != .orderedSame)
+            || isExplicitObjectiveOverrideMessage(followUpMessage)
         guard !tier1HasMovedPastOriginalGoal else {
             state.objectiveAssessment = nil
             return
@@ -96,11 +112,52 @@ extension TaskContextStateManager {
     /// asserting a demoted goal as still "current").
     @MainActor
     static func shouldSuppressRedundantCurrentObjectiveLine(state: TaskContextState, task: AgentTask) -> Bool {
-        let currentObjective = state.objective.currentObjective.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !currentObjective.isEmpty else { return false }
+        shouldSuppressGoalRestatementLine(state.objective.currentObjective, state: state, task: task)
+    }
+
+    /// Same rationale as `shouldSuppressRedundantCurrentObjectiveLine`, applied
+    /// to the "Approved goal" Thread Intent line: a completed/verified plan
+    /// whose approved goal equals `task.goal` would otherwise still render
+    /// "Approved goal: <original goal>" immediately after
+    /// `FollowUpIntroSectionProvider` demotes that same text to background
+    /// framing (adversarial finding).
+    @MainActor
+    static func shouldSuppressRedundantApprovedGoalLine(state: TaskContextState, task: AgentTask) -> Bool {
+        guard let approvedGoal = state.objective.approvedGoal else { return false }
+        return shouldSuppressGoalRestatementLine(approvedGoal, state: state, task: task)
+    }
+
+    @MainActor
+    private static func shouldSuppressGoalRestatementLine(_ text: String, state: TaskContextState, task: AgentTask) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
         let goal = task.goal.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard currentObjective.caseInsensitiveCompare(goal) == .orderedSame else { return false }
+        guard trimmed.caseInsensitiveCompare(goal) == .orderedSame else { return false }
         return originalGoalDelivery(for: task) == .delivered
             || state.objectiveAssessment?.verdict == "original_satisfied"
+    }
+
+    /// `updateDerivedFields` also logs plan approval into `state.decisionFacts`
+    /// as a plain "Approved goal: <plan.goal>" entry, a SEPARATE rendering path
+    /// from the direct "Approved goal" Thread Intent line above -- discovered
+    /// while testing that fix: the same redundant restatement can resurface
+    /// via the "Decisions" list right after the goal is demoted, since a
+    /// decision log entry is otherwise untouched by
+    /// `shouldSuppressRedundantApprovedGoalLine`. Filters it out at render
+    /// time only, same as the line above: `state.decisionFacts` itself (and
+    /// Mission Control / markdown export, which read it directly) keep the
+    /// full historical record.
+    @MainActor
+    static func decisionFactsExcludingRedundantApprovedGoal(
+        _ facts: [TaskContextState.ContextFact],
+        state: TaskContextState,
+        task: AgentTask
+    ) -> [TaskContextState.ContextFact] {
+        guard let approvedGoal = state.objective.approvedGoal,
+              shouldSuppressRedundantApprovedGoalLine(state: state, task: task) else {
+            return facts
+        }
+        let redundant = "Approved goal: \(approvedGoal)"
+        return facts.filter { $0.text.caseInsensitiveCompare(redundant) != .orderedSame }
     }
 }

@@ -222,8 +222,16 @@ enum AgentPromptBuilder {
     /// chance to run for this turn, so an independent read-side check is
     /// required to avoid a one-turn window where a stale pivot still demotes
     /// the original goal (adversarial finding).
+    ///
+    /// Also invalidates on `followUpMessage` itself (the CURRENT turn's raw
+    /// text, before it's persisted as a `user.message` event): `continueSession`
+    /// builds this very prompt before inserting that event, so a correction
+    /// arriving on this exact turn (e.g. "no, go back to the original goal")
+    /// would otherwise still see the stale pivot applied to the turn it was
+    /// meant to correct, only clearing on the NEXT turn (adversarial finding).
     private static func followUpTier2ObjectivePivot(
-        for task: AgentTask
+        for task: AgentTask,
+        followUpMessage: String
     ) -> (verdict: String, currentObjective: String?)? {
         guard UserDefaults.standard.bool(forKey: AppStorageKeys.objectiveDriftDetectionEnabled) else {
             return nil
@@ -244,6 +252,7 @@ enum AgentPromptBuilder {
         let resolvedObjective = resolution.objective.trimmingCharacters(in: .whitespacesAndNewlines)
         let tier1HasMovedPastOriginalGoal = resolution.hasExplicitOverride
             || (!resolvedObjective.isEmpty && resolvedObjective.caseInsensitiveCompare(goal) != .orderedSame)
+            || TaskContextStateManager.isExplicitObjectiveOverrideMessage(followUpMessage)
         guard !tier1HasMovedPastOriginalGoal else { return nil }
         return (assessment.verdict, assessment.currentObjective)
     }
@@ -350,11 +359,20 @@ enum AgentPromptBuilder {
         )
     }
 
-    private static func appendTaskOutputFolder(for task: AgentTask, to sections: inout [PromptContextSection]) {
+    private static func appendTaskOutputFolder(
+        for task: AgentTask,
+        followUpMessage: String = "",
+        to sections: inout [PromptContextSection]
+    ) {
         let taskDir = TaskWorkspaceAccess(task: task).taskFolder
         if !taskDir.isEmpty {
             let relativePath = relativeTaskFolderPath(for: task, taskDir: taskDir)
-            let artifactDirective = standaloneArtifactDirective(for: task, relativePath: relativePath, taskDir: taskDir)
+            let artifactDirective = standaloneArtifactDirective(
+                for: task,
+                followUpMessage: followUpMessage,
+                relativePath: relativePath,
+                taskDir: taskDir
+            )
             let stateHistoryDirective = stateHistoryOwnershipDirective(for: task)
             let stateReadDirective = providerStateReadDirective(for: task)
             if let relativePath {
@@ -396,6 +414,7 @@ enum AgentPromptBuilder {
 
     private static func standaloneArtifactDirective(
         for task: AgentTask,
+        followUpMessage: String = "",
         relativePath: String?,
         taskDir: String
     ) -> String {
@@ -410,7 +429,7 @@ enum AgentPromptBuilder {
         // finding). Never fires for a genuinely fresh/in-progress task: both
         // signals are false until the goal is actually delivered or pivoted.
         guard TaskContextStateManager.originalGoalDelivery(for: task) == .active,
-              followUpTier2ObjectivePivot(for: task) == nil else {
+              followUpTier2ObjectivePivot(for: task, followUpMessage: followUpMessage) == nil else {
             return ""
         }
 
@@ -769,7 +788,7 @@ enum AgentPromptBuilder {
             )
             switch TaskContextStateManager.originalGoalDelivery(for: task) {
             case .active:
-                if let pivot = followUpTier2ObjectivePivot(for: task) {
+                if let pivot = followUpTier2ObjectivePivot(for: task, followUpMessage: context.followUpMessage) {
                     appendTier2DemotedOriginalGoal(pivot, for: task, to: &sections)
                 } else {
                     appendSection(
@@ -872,7 +891,7 @@ enum AgentPromptBuilder {
             state _: inout PromptContextSectionProviderState,
             to sections: inout [PromptContextSection]
         ) {
-            appendThreadIntentContext(for: context.task, to: &sections)
+            appendThreadIntentContext(for: context.task, followUpMessage: context.followUpMessage, to: &sections)
         }
     }
 
@@ -1095,7 +1114,7 @@ enum AgentPromptBuilder {
             state _: inout PromptContextSectionProviderState,
             to sections: inout [PromptContextSection]
         ) {
-            appendTaskOutputFolder(for: context.task, to: &sections)
+            appendTaskOutputFolder(for: context.task, followUpMessage: context.followUpMessage, to: &sections)
         }
     }
 
@@ -1558,8 +1577,12 @@ enum AgentPromptBuilder {
         return files
     }
 
-    private static func appendThreadIntentContext(for task: AgentTask, to sections: inout [PromptContextSection]) {
-        guard var context = TaskContextStateManager.refreshedPromptContext(for: task),
+    private static func appendThreadIntentContext(
+        for task: AgentTask,
+        followUpMessage: String = "",
+        to sections: inout [PromptContextSection]
+    ) {
+        guard var context = TaskContextStateManager.refreshedPromptContext(for: task, followUpMessage: followUpMessage),
               !context.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return
         }

@@ -192,6 +192,57 @@ struct FollowUpGoalFramingTests {
         #expect(prompt.contains("- Current objective: finish the onboarding guide"))
     }
 
+    @Test("a live correction in the current follow-up message invalidates a stale pivot on this same turn")
+    func liveFollowUpMessageInvalidatesStalePivotOnSameTurn() throws {
+        let defaults = UserDefaults.standard
+        let key = AppStorageKeys.objectiveDriftDetectionEnabled
+        let original = defaults.object(forKey: key) as? Bool
+        defaults.set(true, forKey: key)
+        defer {
+            if let original {
+                defaults.set(original, forKey: key)
+            } else {
+                defaults.removeObject(forKey: key)
+            }
+        }
+
+        let container = try makeFollowUpGoalFramingContainer()
+        let context = container.mainContext
+        let root = try Self.temporaryRoot(name: "live-followup-invalidates")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let workspace = Workspace(name: "Live Follow-up Invalidates", primaryPath: root)
+        let task = AgentTask(title: "Running thread", goal: "Write the onboarding guide", workspace: workspace)
+        task.status = .running
+        context.insert(workspace)
+        context.insert(task)
+        try context.save()
+
+        let folder = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
+        TaskContextStateManager.refresh(task: task)
+        var state = try #require(TaskContextStateManager.load(taskFolder: folder))
+        state.objectiveAssessment = TaskContextState.ObjectiveAssessment(
+            verdict: "superseded",
+            currentObjective: "Rework the CSV exporter instead",
+            assessedAtTurn: 4,
+            inputHash: "hash-stale-superseded"
+        )
+        TaskContextStateManager.saveState(state, taskFolder: folder, taskID: task.id)
+
+        // The correction arrives as THIS turn's raw message, never persisted
+        // as a `user.message` event beforehand -- `continueSession` builds
+        // the prompt before recording that event, so a check based only on
+        // `task.events` would still apply the stale pivot to this exact turn
+        // (adversarial finding).
+        let prompt = AgentPromptBuilder.buildFreshFollowUpPrompt(
+            message: "no wait, go back -- your goal is to Write the onboarding guide",
+            task: task
+        )
+
+        #expect(prompt.contains("Goal: Write the onboarding guide"))
+        #expect(!prompt.contains("Rework the CSV exporter instead"))
+        #expect(!prompt.contains("superseded by later work"))
+    }
+
     @Test("an explicit return to the original goal invalidates a stale superseded Tier 2 verdict")
     func explicitReturnToOriginalGoalInvalidatesStaleSupersededVerdict() throws {
         let defaults = UserDefaults.standard
@@ -298,6 +349,41 @@ struct FollowUpGoalFramingTests {
         // action must be creating/updating the already-delivered artifact
         // (adversarial finding).
         #expect(!deliveredPrompt.contains("Artifact delivery contract:"))
+    }
+
+    @Test("the Approved goal Thread Intent line is suppressed once its goal is demoted")
+    func approvedGoalLineSuppressedOnceDemoted() throws {
+        let container = try makeFollowUpGoalFramingContainer()
+        let context = container.mainContext
+        let root = try Self.temporaryRoot(name: "approved-goal-suppressed")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let workspace = Workspace(name: "Approved Goal Suppressed", primaryPath: root)
+        let task = AgentTask(title: "Completed thread", goal: "Ship the release notes", workspace: workspace)
+        context.insert(workspace)
+        context.insert(task)
+
+        // Approving reconciles `state.objective.approvedGoal` to the plan's
+        // goal, which equals `task.goal` here -- the common case
+        // (ChatPanelView syncs `task.goal = plan.goal` on approval).
+        let plan = TaskPlanPayload(
+            title: "Release notes plan",
+            goal: "Ship the release notes",
+            steps: [TaskPlanPayloadStep(id: "s1", title: "Write the notes")]
+        )
+        TaskPlanService.recordCreated(plan, task: task, modelContext: context)
+        TaskPlanService.recordApproved(plan, task: task, modelContext: context)
+        task.status = .completed
+        try context.save()
+
+        let prompt = AgentPromptBuilder.buildFreshFollowUpPrompt(message: "Thanks, one more thing", task: task)
+
+        // `FollowUpIntroSectionProvider` demotes the same text to "already
+        // delivered -- background context only" framing; the Thread Intent
+        // block must not then re-anchor the provider by also asserting
+        // "Approved goal: Ship the release notes" as if it were still live
+        // (adversarial finding).
+        #expect(prompt.contains("already delivered"))
+        #expect(!prompt.contains("- Approved goal: Ship the release notes"))
     }
 
     @Test("no objectiveAssessment (Tier 2 never ran) matches PR 2 behavior exactly")

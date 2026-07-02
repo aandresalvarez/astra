@@ -112,6 +112,20 @@ extension TaskContextStateManager {
             .first
     }
 
+    /// Whether `text` (typically the CURRENT turn's follow-up message, before
+    /// it has been persisted as a `TaskEvent`) would itself be recognized as
+    /// an explicit objective-override message -- i.e. the same marker-based
+    /// detection `latestObjectiveOverride` applies to persisted events, but
+    /// against a live, not-yet-persisted string. `continueSession` builds the
+    /// prompt before inserting the new `user.message` event, so a correction
+    /// arriving on THIS turn (e.g. "no, go back to the original goal") is
+    /// invisible to `task.events`-based checks until the NEXT turn; callers
+    /// that need to react to it within the same turn must check this
+    /// alongside `hasExplicitOverride` (adversarial finding).
+    static func isExplicitObjectiveOverrideMessage(_ text: String) -> Bool {
+        objectiveOverrideCandidate(from: text) != nil
+    }
+
     static func isGeneratedResumeInstruction(_ text: String) -> Bool {
         let lower = text.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
         return lower == "continue where you left off. complete the original goal."
