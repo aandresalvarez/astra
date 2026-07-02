@@ -24,6 +24,10 @@ struct TaskRuntimePermissionState {
         taskScopedGrants: []
     )
 
+    static func build(task: AgentTask) -> TaskRuntimePermissionState {
+        TaskRuntimePermissionOpenRequestStore.state(for: task)
+    }
+
     static func build(events: [Event]) -> TaskRuntimePermissionState {
         let latestRequest = events
             .filter { $0.type == "permission.approval.requested" }

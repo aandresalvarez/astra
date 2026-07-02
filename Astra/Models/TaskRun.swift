@@ -25,6 +25,9 @@ final class TaskRun {
     var providerSessionId: String?
     var providerVersion: String?
     var executionEnvironmentSnapshotJSON: String?
+    /// JSON-encoded provider launch signature used to decide whether native
+    /// continuation is safe for a follow-up run.
+    var providerLaunchSignatureJSON: String?
     var exitCode: Int?
     var output: String
     var costUSD: Double
@@ -50,6 +53,7 @@ final class TaskRun {
         if task.executionEnvironmentSnapshotJSON == nil {
             task.executionEnvironmentSnapshotJSON = snapshot
         }
+        self.providerLaunchSignatureJSON = nil
         self.output = ""
         self.costUSD = 0
         self.fileChangesJSON = "[]"

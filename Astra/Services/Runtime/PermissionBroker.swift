@@ -156,7 +156,8 @@ enum PermissionBroker {
     static func executionPolicy(forRuntime runtime: AgentRuntimeID, grants: [PermissionGrant]) -> AgentRuntimeExecutionPolicy {
         let sanitizedGrants = sanitizeGrants(grants)
         let providerGrants = providerGrantStrings(for: sanitizedGrants, runtime: runtime)
-        let allowedTools = Array(Set(AgentPolicy.preset(.review).allowedTools + providerGrants)).sorted()
+        let runtimeGrants = providerRuntimeGrantStrings(for: sanitizedGrants, runtime: runtime)
+        let allowedTools = Array(Set(AgentPolicy.preset(.review).allowedTools + providerGrants + runtimeGrants)).sorted()
         return .approvedRuntimePermission(
             runtime: runtime,
             allowedTools: allowedTools,

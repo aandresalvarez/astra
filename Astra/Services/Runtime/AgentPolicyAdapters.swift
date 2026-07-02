@@ -936,8 +936,8 @@ enum AgentPolicyManifestService {
         )
         let taskCapabilityScope = taskCapabilityResolver.promptScope(contextText: contextText)
         let effectiveGrants = PermissionBroker.sanitizeApprovedGrants(taskScopedGrants + executionGrants)
-        let taskScopedProviderGrants = PermissionBroker.providerGrantStrings(for: taskScopedGrants, runtime: runtime)
-        let effectiveProviderGrants = PermissionBroker.providerGrantStrings(for: effectiveGrants, runtime: runtime)
+        let taskScopedProviderGrants = PermissionBroker.providerRuntimeGrantStrings(for: taskScopedGrants, runtime: runtime)
+        let effectiveProviderGrants = PermissionBroker.providerRuntimeGrantStrings(for: effectiveGrants, runtime: runtime)
         let policyApprovedTools = uniqueStrings((executionPolicy.allowedToolsOverride ?? []) + effectiveProviderGrants)
         let policy = policyApprovedTools.isEmpty
             ? basePolicy

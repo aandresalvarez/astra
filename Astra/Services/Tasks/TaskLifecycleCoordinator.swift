@@ -267,6 +267,7 @@ final class TaskLifecycleCoordinator {
 
         let runtime = task.resolvedRuntimeID
         let latestGrants = Self.latestRuntimePermissionGrants(for: task)
+        let latestRequestedTool = Self.latestRequestedPermissionTool(for: task)
         let taskScopedGrants = TaskRuntimePermissionGrants.record(
             grants: latestGrants,
             providerID: runtime,
@@ -284,6 +285,7 @@ final class TaskLifecycleCoordinator {
             "runtime": runtime.rawValue,
             "grant_count": String(taskScopedGrants.count)
         ])
+        TaskRuntimePermissionOpenRequestStore.closeAllOpenRequests(for: task)
         task.updatedAt = Date()
         task.markRead()
         let event = TaskEvent(
@@ -304,7 +306,7 @@ final class TaskLifecycleCoordinator {
         let resumeMessage = PermissionBroker.resumeMessage(
             providerID: runtime,
             grants: taskScopedGrants,
-            fallback: Self.latestRequestedPermissionTool(for: task)
+            fallback: latestRequestedTool
                 .flatMap { PermissionBroker.permissionGrant(fromProviderString: $0)?.displayName },
             scopeDescription: "task-scoped runtime permission for similar requests in this task"
         )
@@ -324,10 +326,14 @@ final class TaskLifecycleCoordinator {
     }
 
     private func approveRuntimePermissionAndContinue(_ task: AgentTask) -> Task<Void, Never> {
+        let runtime = task.resolvedRuntimeID
+        let approvedGrants = Self.approvedRuntimePermissionGrants(for: task)
+        let resumeMessage = Self.runtimePermissionApprovalResumeMessage(for: task, grants: approvedGrants)
         AppLogger.audit(.taskApproved, category: "UI", taskID: task.id, fields: [
             "approval_type": "runtime_permission",
-            "runtime": task.resolvedRuntimeID.rawValue
+            "runtime": runtime.rawValue
         ])
+        TaskRuntimePermissionOpenRequestStore.closeAllOpenRequests(for: task)
         task.updatedAt = Date()
         task.markRead()
         let event = TaskEvent(
@@ -348,10 +354,7 @@ final class TaskLifecycleCoordinator {
             return Task {}
         }
 
-        let runtime = task.resolvedRuntimeID
-        let approvedGrants = Self.approvedRuntimePermissionGrants(for: task)
         let executionPolicy = PermissionBroker.executionPolicy(forRuntime: runtime, grants: approvedGrants)
-        let resumeMessage = Self.runtimePermissionApprovalResumeMessage(for: task, grants: approvedGrants)
         return Task {
             let didStart = await taskQueue.continueSession(
                 task: task,
@@ -390,32 +393,15 @@ final class TaskLifecycleCoordinator {
     }
 
     private static func approvedRuntimePermissionGrants(for task: AgentTask) -> [PermissionGrant] {
-        latestRuntimePermissionGrants(for: task)
+        TaskRuntimePermissionOpenRequestStore.latestApprovalGrants(for: task)
     }
 
     private static func latestRuntimePermissionGrants(for task: AgentTask) -> [PermissionGrant] {
-        let events = permissionRequestEvents(for: task)
-            .sorted { $0.timestamp < $1.timestamp }
-            .reversed()
-        for event in events {
-            let structured = PermissionBroker.structuredApprovalGrants(from: event.payload)
-            if !structured.isEmpty { return structured }
-            let legacy = PermissionBroker.legacyApprovalGrants(from: event.payload)
-            if !legacy.isEmpty { return legacy }
-        }
-        if let requestedTool = latestRequestedPermissionTool(for: task),
-           let grant = PermissionBroker.permissionGrant(fromProviderString: requestedTool) {
-            return [grant]
-        }
-        return []
+        TaskRuntimePermissionOpenRequestStore.latestApprovalGrants(for: task)
     }
 
     private static func latestRequestedPermissionTool(for task: AgentTask) -> String? {
-        permissionRequestEvents(for: task)
-            .sorted { $0.timestamp < $1.timestamp }
-            .reversed()
-            .compactMap { permissionToolName(from: $0.payload) }
-            .first
+        TaskRuntimePermissionOpenRequestStore.latestRequestedToolName(for: task)
     }
 
     private static func permissionRequestEvents(for task: AgentTask) -> [TaskEvent] {
@@ -462,48 +448,8 @@ final class TaskLifecycleCoordinator {
             normalized.hasPrefix("astra approved task-scoped runtime permission")
     }
 
-    private static func permissionToolName(from payload: String) -> String? {
-        if let decoded = PermissionApprovalEventPayload.decoded(from: payload) {
-            switch decoded.request {
-            case .tool(let name, _), .providerNativePrompt(let name, _):
-                return name
-            case .shell(_, let toolName):
-                return toolName ?? "Bash"
-            case .fileWrite(_, let toolName):
-                return toolName ?? "Write"
-            case .network(_, let toolName):
-                return toolName ?? "WebFetch"
-            case .credential(let label):
-                return label
-            }
-        }
-        let patterns = [
-            #"Permission (?:denied|requested) for tool: ([^.\n]+)"#,
-            #""tool"\s*:\s*"([^"]+)""#,
-            #""toolName"\s*:\s*"([^"]+)""#
-        ]
-        for pattern in patterns {
-            guard let regex = try? NSRegularExpression(pattern: pattern),
-                  let match = regex.firstMatch(in: payload, range: NSRange(payload.startIndex..., in: payload)),
-                  let range = Range(match.range(at: 1), in: payload) else {
-                continue
-            }
-            let value = String(payload[range]).trimmingCharacters(in: .whitespacesAndNewlines)
-            if !value.isEmpty {
-                return value
-            }
-        }
-        return nil
-    }
-
     private func hasOpenRuntimePermissionApprovalRequest(_ task: AgentTask) -> Bool {
-        // Correlate live asks by requestID (out-of-order resolutions can't hide
-        // a still-pending ask); legacy requests fall back to task.approved.
-        RuntimePermissionOpenState.hasOpenRequest(
-            events: task.events.map {
-                RuntimePermissionOpenState.Event(type: $0.type, payload: $0.payload, timestamp: $0.timestamp)
-            }
-        )
+        TaskRuntimePermissionOpenRequestStore.hasOpenRequest(for: task)
     }
 
     func deleteTask(_ task: AgentTask) -> Workspace? {

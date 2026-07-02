@@ -4121,13 +4121,7 @@ struct TaskMainView: View {
     }
 
     private var runtimePermissionState: TaskRuntimePermissionState {
-        TaskRuntimePermissionState.build(events: sortedEvents.map {
-            TaskRuntimePermissionState.Event(
-                type: $0.type,
-                payload: $0.payload,
-                timestamp: $0.timestamp
-            )
-        })
+        TaskRuntimePermissionState.build(task: task)
     }
 
     private var hasOpenRuntimePermissionApprovalRequest: Bool {

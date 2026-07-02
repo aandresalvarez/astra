@@ -273,6 +273,7 @@ enum AgentRuntimeLaunchPreflight {
         run.typedStopReason = .permissionApprovalRequired
         run.completedAt = Date()
         TaskStateMachine.pauseForRuntimePermission(task, modelContext: modelContext, at: run.completedAt ?? Date())
+        TaskRuntimePermissionOpenRequestStore.recordOpenRequest(payload: payload, task: task)
         modelContext.insert(TaskEvent(
             task: task,
             eventType: TaskEventTypes.Tool.permissionApprovalRequested,

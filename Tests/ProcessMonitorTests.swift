@@ -2931,6 +2931,124 @@ struct RuntimePolicyGuardTests {
         #expect(monitor.policyApprovalMessage?.contains("ask-first") == true)
     }
 
+    @Test("Ask-first bootstrap Write outside task output still asks when launch-allowed")
+    func askFirstBootstrapWriteOutsideTaskOutputStillAsksWhenLaunchAllowed() throws {
+        let taskID = try #require(UUID(uuidString: "B405BA1D-26C0-401E-AD63-F57C0F217C3C"))
+        let workspacePath = "/tmp/astra-policy-guard"
+        let manifest = runtimePolicyManifest(
+            allowedTools: ["Read", "Glob", "Grep", "Write"],
+            askFirstTools: ["Write"],
+            workspacePath: workspacePath,
+            taskID: taskID
+        )
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            taskID: manifest.taskID,
+            policyGuard: AgentRuntimePolicyGuard(manifest: manifest)
+        )
+
+        let shouldKill = monitor.processEvent(
+            .toolUse(
+                name: "Write",
+                id: "t1",
+                input: [
+                    "file_path": "\(workspacePath)/index.html",
+                    "content": "<html></html>"
+                ]
+            ),
+            process: nil
+        )
+
+        #expect(shouldKill == true)
+        #expect(monitor.policyApprovalRequired == true)
+        #expect(monitor.policyViolation == false)
+        #expect(monitor.policyApprovalMessage?.contains("Permission requested for tool: Write") == true)
+        #expect(monitor.policyApprovalMessage?.contains("\(workspacePath)/index.html") == true)
+    }
+
+    @Test("Approved file Write grant only allows the granted path")
+    func approvedFileWriteGrantOnlyAllowsGrantedPath() throws {
+        let taskID = try #require(UUID(uuidString: "B405BA1D-26C0-401E-AD63-F57C0F217C3C"))
+        let workspacePath = "/tmp/astra-policy-guard"
+        let approvedPath = "\(workspacePath)/index.html"
+        let manifest = runtimePolicyManifest(
+            allowedTools: ["Read", "Glob", "Grep", "Write"],
+            askFirstTools: ["Write"],
+            workspacePath: workspacePath,
+            approvalGrants: [
+                .filePath(path: approvedPath, access: "write"),
+                .providerTool(name: "Write")
+            ],
+            taskID: taskID
+        )
+        let allowedMonitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            taskID: manifest.taskID,
+            policyGuard: AgentRuntimePolicyGuard(manifest: manifest)
+        )
+        let siblingMonitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            taskID: manifest.taskID,
+            policyGuard: AgentRuntimePolicyGuard(manifest: manifest)
+        )
+
+        let approvedShouldKill = allowedMonitor.processEvent(
+            .toolUse(
+                name: "Write",
+                id: "t1",
+                input: ["file_path": approvedPath, "content": "<html></html>"]
+            ),
+            process: nil
+        )
+        let siblingShouldKill = siblingMonitor.processEvent(
+            .toolUse(
+                name: "Write",
+                id: "t2",
+                input: ["file_path": "\(workspacePath)/other.html", "content": "<html></html>"]
+            ),
+            process: nil
+        )
+
+        #expect(approvedShouldKill == false)
+        #expect(allowedMonitor.policyApprovalRequired == false)
+        #expect(allowedMonitor.policyViolation == false)
+        #expect(siblingShouldKill == true)
+        #expect(siblingMonitor.policyApprovalRequired == true)
+        #expect(siblingMonitor.policyViolation == false)
+        #expect(siblingMonitor.policyApprovalMessage?.contains("\(workspacePath)/other.html") == true)
+    }
+
+    @Test("Claude streamed ask-first artifact write outside task output asks before timeout")
+    func claudeStreamedAskFirstArtifactWriteOutsideTaskOutputAsksBeforeTimeout() throws {
+        let taskID = try #require(UUID(uuidString: "B405BA1D-26C0-401E-AD63-F57C0F217C3C"))
+        let workspacePath = "/tmp/astra-policy-guard"
+        let manifest = runtimePolicyManifest(
+            allowedTools: ["Read", "Glob", "Grep"],
+            askFirstTools: ["Write"],
+            workspacePath: workspacePath,
+            taskID: taskID
+        )
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            taskID: manifest.taskID,
+            policyGuard: AgentRuntimePolicyGuard(manifest: manifest)
+        )
+        let process = MonitorMockProcess()
+        let line = """
+        {"type":"assistant","message":{"model":"claude-sonnet-4-6","content":[{"type":"tool_use","name":"Write","id":"toolu_write","input":{"file_path":".astra/tasks/requestable/index.html","content":"<html></html>"}}]}}
+        """
+        let event = try #require(StreamEventParser.parseAll(line: line).first)
+
+        let shouldKill = monitor.processEvent(event, process: process)
+
+        #expect(shouldKill)
+        #expect(process.didTerminate)
+        #expect(monitor.policyApprovalRequired)
+        #expect(monitor.policyViolation == false)
+        #expect(monitor.policyApprovalMessage?.contains("Runtime grant: Write") == true)
+        #expect(monitor.policyApprovalMessage?.contains(".astra/tasks/requestable/index.html") == true)
+    }
+
     @Test("Read outside allowed paths stops the provider when path is observable")
     func outsidePathReadStopsProvider() {
         let manifest = runtimePolicyManifest(allowedTools: ["Read"])

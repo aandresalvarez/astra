@@ -370,6 +370,8 @@ enum WorkspaceConfigManager {
         var skillNames: [String]
         var skillSnapshots: [SkillSnapshotConfig]?
         var executionEnvironmentSnapshotJSON: String?
+        var runtimePermissionOpenRequestsJSON: String?
+        var runtimePermissionGrantsJSON: String?
     }
 
     struct WorkspaceAppConfig: Codable, Sendable {
@@ -493,6 +495,7 @@ enum WorkspaceConfigManager {
         var providerSessionId: String?
         var providerVersion: String?
         var executionEnvironmentSnapshotJSON: String?
+        var providerLaunchSignatureJSON: String?
         var exitCode: Int?
         var output: String
         var costUSD: Double
@@ -1431,6 +1434,7 @@ enum WorkspaceConfigManager {
                 providerSessionId: run.providerSessionId,
                 providerVersion: run.providerVersion,
                 executionEnvironmentSnapshotJSON: run.executionEnvironmentSnapshotJSON,
+                providerLaunchSignatureJSON: run.providerLaunchSignatureJSON,
                 exitCode: run.exitCode,
                 output: boundedMirrorString(run.output, limit: MirrorLimits.maxRunOutputCharacters),
                 costUSD: run.costUSD,
@@ -1508,7 +1512,9 @@ enum WorkspaceConfigManager {
             skillIDs: task.skills.map { $0.id.uuidString },
             skillNames: task.skills.map(\.name),
             skillSnapshots: snapshots,
-            executionEnvironmentSnapshotJSON: sanitizedExecutionEnvironmentJSON(task.executionEnvironmentSnapshotJSON, preservingHost: true)
+            executionEnvironmentSnapshotJSON: sanitizedExecutionEnvironmentJSON(task.executionEnvironmentSnapshotJSON, preservingHost: true),
+            runtimePermissionOpenRequestsJSON: task.runtimePermissionOpenRequestsJSON == "[]" ? nil : task.runtimePermissionOpenRequestsJSON,
+            runtimePermissionGrantsJSON: task.runtimePermissionGrantsJSON == "[]" ? nil : task.runtimePermissionGrantsJSON
         )
     }
 
@@ -1995,6 +2001,8 @@ enum WorkspaceConfigManager {
             config.executionEnvironmentSnapshotJSON,
             preservingHost: true
         )
+        task.runtimePermissionOpenRequestsJSON = config.runtimePermissionOpenRequestsJSON ?? "[]"
+        task.runtimePermissionGrantsJSON = config.runtimePermissionGrantsJSON ?? "[]"
         modelContext.insert(task)
 
         linkSkills(
@@ -2034,6 +2042,7 @@ enum WorkspaceConfigManager {
                 rc.executionEnvironmentSnapshotJSON,
                 preservingHost: true
             )
+            run.providerLaunchSignatureJSON = rc.providerLaunchSignatureJSON
             run.exitCode = rc.exitCode
             run.output = rc.output
             run.costUSD = rc.costUSD

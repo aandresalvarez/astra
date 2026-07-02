@@ -183,6 +183,32 @@ struct WorkspacePersistenceTests {
         sourceTask.isPinned = true
         sourceTask.isDone = true
         sourceTask.updatedAt = historicalTaskUpdatedAt
+        let sourceRun = try #require(sourceTask.runs.first)
+        let approvalGrant = PermissionGrant.shellCommand(executable: "gh", pattern: "search prs *")
+        let openApprovalPayload = PermissionBroker.approvalPayloadString(
+            providerID: .claudeCode,
+            request: .shell(command: "gh search prs author:@me --limit 10", toolName: "Bash"),
+            reason: "The shell command requires user approval by the effective ASTRA policy.",
+            grants: [approvalGrant],
+            requestID: "mirror-open-request"
+        )
+        TaskRuntimePermissionOpenRequestStore.recordOpenRequest(
+            payload: openApprovalPayload,
+            task: sourceTask,
+            at: historicalTaskUpdatedAt
+        )
+        let grantPayload = TaskRuntimePermissionGrants.Payload(
+            brokerVersion: PermissionBroker.brokerVersion,
+            providerID: .claudeCode,
+            grants: [approvalGrant],
+            approvedAt: historicalTaskUpdatedAt,
+            source: "mirror-test"
+        )
+        sourceTask.runtimePermissionGrantsJSON = String(
+            decoding: try JSONEncoder().encode([grantPayload]),
+            as: UTF8.self
+        )
+        sourceRun.providerLaunchSignatureJSON = #"{"runtime":"claudeCode","model":"claude-sonnet-4-6"}"#
         try context.save()
 
         let config = try #require(WorkspaceConfigManager.export(workspace: workspace, modelContext: context))
@@ -207,6 +233,9 @@ struct WorkspacePersistenceTests {
         #expect(config.tasks?.first?.isDone == true)
         #expect(config.tasks?.first?.unreadAt == sourceTask.unreadAt)
         #expect(config.tasks?.first?.updatedAt == historicalTaskUpdatedAt)
+        #expect(config.tasks?.first?.runtimePermissionOpenRequestsJSON == sourceTask.runtimePermissionOpenRequestsJSON)
+        #expect(config.tasks?.first?.runtimePermissionGrantsJSON == sourceTask.runtimePermissionGrantsJSON)
+        #expect(config.tasks?.first?.runs.first?.providerLaunchSignatureJSON == sourceRun.providerLaunchSignatureJSON)
         #expect(config.enabledCapabilityIDs == ["stanford.builder"])
         #expect(config.enabledPackIDs == ["astra.pack.devops"])
         #expect(config.shelfVisibilityOverrides == [
@@ -226,6 +255,8 @@ struct WorkspacePersistenceTests {
         let importedContext = importedContainer.mainContext
         let imported = WorkspaceConfigManager.importWorkspace(from: config, modelContext: importedContext)
         try importedContext.save()
+        let importedTask = try #require(imported.tasks.first)
+        let importedRun = try #require(importedTask.runs.first)
 
         #expect(imported.id == workspace.id)
         #expect(imported.isStarred == true)
@@ -253,6 +284,11 @@ struct WorkspacePersistenceTests {
         #expect(imported.tasks.first?.runs.first?.id == workspace.tasks.first?.runs.first?.id)
         #expect(imported.tasks.first?.events.first?.id == workspace.tasks.first?.events.first?.id)
         #expect(imported.tasks.first?.artifacts.first?.id == workspace.tasks.first?.artifacts.first?.id)
+        #expect(importedTask.runtimePermissionOpenRequestsJSON == sourceTask.runtimePermissionOpenRequestsJSON)
+        #expect(importedTask.runtimePermissionGrantsJSON == sourceTask.runtimePermissionGrantsJSON)
+        #expect(importedRun.providerLaunchSignatureJSON == sourceRun.providerLaunchSignatureJSON)
+        #expect(TaskRuntimePermissionOpenRequestStore.hasOpenRequest(for: importedTask))
+        #expect(TaskRuntimePermissionGrants.approvedGrants(for: importedTask) == [approvalGrant])
     }
 
     @Test("recovery export and import preserve WorkspaceApps, OAuth profiles, and task execution metadata")

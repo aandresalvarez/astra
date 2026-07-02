@@ -327,6 +327,7 @@ extension AgentRuntimeWorker {
             switch decision {
             case .autoApprove:
                 pendingEvents.add {
+                    TaskRuntimePermissionOpenRequestStore.resolveOpenRequest(requestID: ask.requestID, task: task)
                     modelContext.insert(TaskEvent(
                         task: task,
                         eventType: TaskEventTypes.Tool.permissionRequestResolved,
@@ -346,6 +347,7 @@ extension AgentRuntimeWorker {
                 return .allow
             case .deny(let reason):
                 pendingEvents.add {
+                    TaskRuntimePermissionOpenRequestStore.resolveOpenRequest(requestID: ask.requestID, task: task)
                     modelContext.insert(TaskEvent(
                         task: task,
                         eventType: TaskEventTypes.Tool.permissionRequestResolved,
@@ -388,6 +390,7 @@ extension AgentRuntimeWorker {
                 requestID: ask.requestID
             )
             pendingEvents.add {
+                TaskRuntimePermissionOpenRequestStore.recordOpenRequest(payload: payload, task: task)
                 let event = TaskEvent(
                     task: task,
                     eventType: TaskEventTypes.Tool.permissionApprovalRequested,
@@ -413,6 +416,7 @@ extension AgentRuntimeWorker {
                 if task.status == .pendingUser, run.status == .running {
                     TaskStateMachine.resumeAfterRuntimePermission(task, modelContext: modelContext)
                 }
+                TaskRuntimePermissionOpenRequestStore.resolveOpenRequest(requestID: ask.requestID, task: task)
                 // Closes the open-request card: a denied live ask never emits
                 // task.approved, so without this the card would linger.
                 modelContext.insert(TaskEvent(

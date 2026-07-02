@@ -928,6 +928,19 @@ final class AgentRuntimeWorker {
             run.status = .cancelled
             run.typedStopReason = .cancelled
             TaskStateMachine.cancelFromRuntime(task, modelContext: modelContext)
+        } else if result.policyApprovalRequired {
+            run.status = .failed
+            run.typedStopReason = .permissionApprovalRequired
+            TaskStateMachine.pauseForRuntimePermission(task, modelContext: modelContext)
+            let payload = result.policyApprovalMessage ?? "The provider needs a runtime permission before it can continue."
+            TaskRuntimePermissionOpenRequestStore.recordOpenRequest(payload: payload, task: task)
+            let event = TaskEvent(
+                task: task,
+                eventType: TaskEventTypes.Tool.permissionApprovalRequested,
+                payload: payload,
+                run: run
+            )
+            modelContext.insert(event)
         } else if result.timedOut {
             run.status = .timeout
             run.typedStopReason = .timeout
@@ -947,17 +960,6 @@ final class AgentRuntimeWorker {
             modelContext.insert(event)
         } else if applyRuntimeStopIfNeeded(result, task: task, run: run, modelContext: modelContext, phase: auditPhase) {
         } else if applyRepetitionStopIfNeeded(result, task: task, run: run, modelContext: modelContext, phase: auditPhase) {
-        } else if result.policyApprovalRequired {
-            run.status = .failed
-            run.typedStopReason = .permissionApprovalRequired
-            TaskStateMachine.pauseForRuntimePermission(task, modelContext: modelContext)
-            let event = TaskEvent(
-                task: task,
-                eventType: TaskEventTypes.Tool.permissionApprovalRequested,
-                payload: result.policyApprovalMessage ?? "The provider needs a runtime permission before it can continue.",
-                run: run
-            )
-            modelContext.insert(event)
         } else if result.policyViolation {
             run.status = .failed
             run.typedStopReason = .policyViolation
@@ -1101,6 +1103,7 @@ final class AgentRuntimeWorker {
                 diagnostic: failureDiagnostic,
                 result: result
             )
+            TaskRuntimePermissionOpenRequestStore.recordOpenRequest(payload: payload, task: task)
             let event = TaskEvent(task: task, eventType: TaskEventTypes.Tool.permissionApprovalRequested, payload: payload, run: run)
             modelContext.insert(event)
         } else {
@@ -1875,11 +1878,17 @@ final class AgentRuntimeWorker {
               let payload = String(data: data, encoding: .utf8) else {
             return
         }
+        run.providerLaunchSignatureJSON = payload
         modelContext.insert(TaskEvent(task: task, type: providerLaunchSignatureEventType, payload: payload, run: run))
     }
 
     private static func providerLaunchSignature(for task: AgentTask, run: TaskRun) -> ProviderLaunchSignaturePayload? {
-        task.events
+        if let payload = run.providerLaunchSignatureJSON,
+           let data = payload.data(using: .utf8),
+           let signature = try? JSONDecoder().decode(ProviderLaunchSignaturePayload.self, from: data) {
+            return signature
+        }
+        return task.events
             .filter { $0.type == providerLaunchSignatureEventType && $0.run?.id == run.id }
             .sorted { $0.timestamp < $1.timestamp }
             .compactMap { event -> ProviderLaunchSignaturePayload? in

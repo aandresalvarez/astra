@@ -356,6 +356,22 @@ struct AgentPolicyTests {
         #expect(!runtimeClaudeGrants.contains("Bash(gh *)"))
     }
 
+    @Test("One-run execution policy carries runtime companion grants")
+    func oneRunExecutionPolicyCarriesRuntimeCompanionGrants() {
+        let grants: [PermissionGrant] = [
+            .shellCommand(executable: "gh", pattern: "search prs *")
+        ]
+
+        let policy = PermissionBroker.executionPolicy(forRuntime: .copilotCLI, grants: grants)
+        let allowedTools = policy.allowedTools(default: [])
+
+        #expect(allowedTools.contains("shell(gh:search prs *)"))
+        #expect(allowedTools.contains("shell(gh:auth status *)"))
+        #expect(allowedTools.contains("shell(mkdir:-p *)"))
+        #expect(!allowedTools.contains("shell(gh:*)"))
+        #expect(policy.permissionGrantsOverride == grants)
+    }
+
     @Test("Broker sanitizes structured approval payloads before provider rendering")
     func brokerSanitizesStructuredApprovalPayloads() throws {
         let payload = PermissionApprovalEventPayload(
@@ -2052,6 +2068,8 @@ struct RunPermissionManifestTests {
         #expect(manifest.policyScope == .taskApproval)
         #expect(manifest.approvalGrants == [.shellCommand(executable: "gh", pattern: "search prs *")])
         #expect(manifest.providerRender.allowedTools.contains("shell(gh:search prs *)"))
+        #expect(manifest.providerRender.allowedTools.contains("shell(gh:auth status *)"))
+        #expect(manifest.providerRender.allowedTools.contains("shell(mkdir:-p *)"))
         #expect(!manifest.providerRender.allowedTools.contains("shell(gh:*)"))
     }
 
@@ -2098,6 +2116,53 @@ struct RunPermissionManifestTests {
         #expect(manifest.approvalGrants == [.shellCommand(executable: "gh", pattern: "pr list *")])
         #expect(manifest.providerRender.allowedTools.contains("shell(gh:pr list *)"))
         #expect(manifest.providerRender.usesBroadProviderPermissions == false)
+    }
+
+    @Test("Task-scoped grant records typed storage and legacy events remain readable")
+    func taskScopedGrantRecordsTypedStorageAndReadsLegacyEvents() throws {
+        let container = try makeAgentPolicyContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Typed Grant Storage", primaryPath: "/tmp/typed-grant-workspace")
+        let task = AgentTask(title: "Typed Grant Storage", goal: "Review open PRs", workspace: workspace)
+        context.insert(workspace)
+        context.insert(task)
+
+        let grant = PermissionGrant.shellCommand(executable: "gh", pattern: "search prs *")
+        let recorded = TaskRuntimePermissionGrants.record(
+            grants: [grant],
+            providerID: .claudeCode,
+            task: task,
+            modelContext: context,
+            source: "typed-test"
+        )
+        try context.save()
+
+        let typedData = try #require(task.runtimePermissionGrantsJSON?.data(using: .utf8))
+        let typedPayloads = try JSONDecoder().decode([TaskRuntimePermissionGrants.Payload].self, from: typedData)
+        #expect(recorded == [grant])
+        #expect(typedPayloads.map(\.providerID) == [.claudeCode])
+        #expect(typedPayloads.flatMap(\.grants) == [grant])
+        #expect(task.events.contains { $0.type == TaskRuntimePermissionGrants.eventType })
+
+        task.events.removeAll()
+        #expect(TaskRuntimePermissionGrants.approvedGrants(for: task, runtime: .claudeCode) == [grant])
+        #expect(TaskRuntimePermissionGrants.approvedGrants(for: task, runtime: .openCodeCLI).isEmpty)
+
+        let legacyTask = AgentTask(title: "Legacy Grant Storage", goal: "Review open PRs", workspace: workspace)
+        context.insert(legacyTask)
+        let legacyPayload = TaskRuntimePermissionGrants.Payload(
+            brokerVersion: PermissionBroker.brokerVersion,
+            providerID: .claudeCode,
+            grants: [grant],
+            approvedAt: Date(),
+            source: "legacy-test"
+        )
+        let legacyEncoded = try #require(String(data: JSONEncoder().encode(legacyPayload), encoding: .utf8))
+        context.insert(TaskEvent(task: legacyTask, type: TaskRuntimePermissionGrants.eventType, payload: legacyEncoded))
+        try context.save()
+
+        #expect(TaskRuntimePermissionGrants.approvedGrants(for: legacyTask, runtime: .claudeCode) == [grant])
+        #expect(TaskRuntimePermissionGrants.approvedGrants(for: legacyTask, runtime: .openCodeCLI).isEmpty)
     }
 
     @Test("Task-scoped grant records reject risky shell approvals")

@@ -76,6 +76,15 @@ enum DirectWorkerLaunchAdmission {
     static func admitContinuation(_ task: AgentTask, modelContext: ModelContext) -> TaskStateMachine.TransitionResult {
         TaskStateMachine.admitContinuationToRuntime(task, modelContext: modelContext)
     }
+
+    @MainActor
+    @discardableResult
+    static func admitApprovedPlanRun(_ task: AgentTask, modelContext: ModelContext) -> TaskStateMachine.TransitionResult {
+        if task.status != .queued {
+            TaskStateMachine.enqueueApprovedPlanRun(task, modelContext: modelContext)
+        }
+        return TaskStateMachine.admitQueuedTaskToRuntime(task, modelContext: modelContext)
+    }
 }
 
 private extension ProviderSettingsSnapshot {

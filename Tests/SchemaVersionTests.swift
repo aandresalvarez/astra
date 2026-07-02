@@ -116,7 +116,8 @@ struct SchemaVersionTests {
     @Test("SchemaV10 declares 16 model types and keeps pack profile fields on Workspace")
     func v10ModelCountAndPackProfileFields() {
         #expect(ASTRASchemaV10.models.count == 16)
-        #expect(ASTRASchemaV10.models.contains { $0 == GoogleOAuthAccountProfile.self })
+        #expect(ASTRASchemaV10.models.contains { $0 == ASTRASchemaV10.GoogleOAuthAccountProfile.self })
+        #expect(!ASTRASchemaV10.models.contains { $0 == AgentTask.self })
     }
 
     @Test("SchemaV10 version identifier is 10.0.0")
@@ -124,14 +125,44 @@ struct SchemaVersionTests {
         #expect(ASTRASchemaV10.versionIdentifier == Schema.Version(10, 0, 0))
     }
 
-    @Test("Migration plan lists SchemaV1 through SchemaV10")
-    func migrationPlanHasVersions() {
-        #expect(ASTRAMigrationPlan.schemas.count == 10)
+    @MainActor
+    @Test("SchemaV11 declares current model types and typed runtime state fields")
+    func v11ModelCountAndTypedRuntimeStateFields() throws {
+        #expect(ASTRASchemaV11.models.count == 16)
+        #expect(ASTRASchemaV11.models.contains { $0 == AgentTask.self })
+        #expect(ASTRASchemaV11.models.contains { $0 == TaskRun.self })
+
+        let config = ModelConfiguration(isStoredInMemoryOnly: true)
+        let container = try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [config]
+        )
+        let context = container.mainContext
+        let task = AgentTask(title: "Typed State", goal: "Verify typed state")
+        context.insert(task)
+        let run = TaskRun(task: task)
+        context.insert(run)
+        try context.save()
+
+        #expect(task.runtimePermissionOpenRequestsJSON == "[]")
+        #expect(task.runtimePermissionGrantsJSON == "[]")
+        #expect(run.providerLaunchSignatureJSON == nil)
     }
 
-    @Test("Migration plan has V1 to V10 lightweight stages")
+    @Test("SchemaV11 version identifier is 11.0.0")
+    func v11VersionIdentifier() {
+        #expect(ASTRASchemaV11.versionIdentifier == Schema.Version(11, 0, 0))
+    }
+
+    @Test("Migration plan lists SchemaV1 through SchemaV11")
+    func migrationPlanHasVersions() {
+        #expect(ASTRAMigrationPlan.schemas.count == 11)
+    }
+
+    @Test("Migration plan has V1 to V11 lightweight stages")
     func migrationPlanHasStage() {
-        #expect(ASTRAMigrationPlan.stages.count == 9)
+        #expect(ASTRAMigrationPlan.stages.count == 10)
     }
 
     @Test("ModelContainer can be created with versioned schema")
@@ -272,12 +303,15 @@ struct SchemaVersionTests {
         let migratedTask = try #require(tasks.first)
         #expect(migratedTask.resolvedRuntimeID == .claudeCode)
         #expect(migratedTask.unreadAt == nil)
+        #expect((migratedTask.runtimePermissionOpenRequestsJSON ?? "[]") == "[]")
+        #expect((migratedTask.runtimePermissionGrantsJSON ?? "[]") == "[]")
 
         let runs = try context.fetch(FetchDescriptor<TaskRun>())
         let migratedRun = try #require(runs.first)
         #expect(migratedRun.runtimeID == nil)
         #expect(migratedRun.providerSessionId == nil)
         #expect(migratedRun.providerVersion == nil)
+        #expect(migratedRun.providerLaunchSignatureJSON == nil)
 
         let schedules = try context.fetch(FetchDescriptor<TaskSchedule>())
         let migratedSchedule = try #require(schedules.first)

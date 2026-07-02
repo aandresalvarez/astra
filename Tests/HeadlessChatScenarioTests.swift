@@ -297,7 +297,7 @@ final class HeadlessChatHarness {
         mode: TaskPlanExecutionMode = .fullPlan
     ) async -> [ParsedEvent] {
         var events: [ParsedEvent] = []
-        DirectWorkerLaunchAdmission.admitInitialRun(task, modelContext: context)
+        DirectWorkerLaunchAdmission.admitApprovedPlanRun(task, modelContext: context)
         await worker.executeApprovedPlan(task: task, plan: plan, mode: mode, modelContext: context) { event in
             events.append(event)
         }
