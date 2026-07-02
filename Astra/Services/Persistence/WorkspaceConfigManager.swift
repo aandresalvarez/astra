@@ -3,7 +3,7 @@ import SwiftData
 import ASTRACore
 
 /// Exports and imports workspace configurations as shareable JSON files.
-/// SwiftData is the local cache. The workspace JSON is the durable recovery and sharing format.
+/// SwiftData remains the source of truth. The workspace JSON is a bounded recovery and sharing surface.
 ///
 /// Data safety contract:
 /// - UUIDs are exported for every durable entity so names are display text only.
@@ -14,6 +14,22 @@ enum WorkspaceConfigManager {
     // MARK: - Config Schema (v11)
 
     static let currentVersion = 11
+
+    private struct WorkspaceAppRunMirrorSnapshot {
+        var runs: [WorkspaceAppRun]
+        var events: [WorkspaceAppRunEvent]
+    }
+
+    enum MirrorLimits {
+        static let maxRunsPerTask = 10
+        static let maxEventsPerTask = 10
+        static let maxWorkspaceAppRuns = 10
+        static let maxWorkspaceAppRunEvents = 10
+        static let maxRunOutputCharacters = 8_000
+        static let maxEventPayloadCharacters = 4_000
+        static let maxWorkspaceAppRunOutputCharacters = 8_000
+        static let maxWorkspaceAppRunEventPayloadCharacters = 4_000
+    }
 
     enum ScheduleImportTrustPolicy {
         case quarantineEnabledSchedules
@@ -546,8 +562,9 @@ enum WorkspaceConfigManager {
         let sshConnections = SSHConnectionManager.load(workspacePath: workspace.primaryPath)
         let taskConfigs = workspace.tasks.map(taskConfig)
         let workspaceAppConfigs = workspaceAppsForExport(workspace: workspace).map(workspaceAppConfig)
-        let workspaceAppRunConfigs = workspaceAppRunsForExport(workspace: workspace).map(workspaceAppRunConfig)
-        let workspaceAppRunEventConfigs = workspaceAppRunEventsForExport(workspace: workspace).map(workspaceAppRunEventConfig)
+        let workspaceAppRunSnapshot = workspaceAppRunMirrorSnapshotForExport(workspace: workspace)
+        let workspaceAppRunConfigs = workspaceAppRunSnapshot.runs.map(workspaceAppRunConfig)
+        let workspaceAppRunEventConfigs = workspaceAppRunSnapshot.events.map(workspaceAppRunEventConfig)
         let workspaceAppDependencyBindingConfigs = workspaceAppDependencyBindingsForExport(workspace: workspace)
             .map(workspaceAppDependencyBindingConfig)
         let workspaceAppAutomationStateConfigs = workspaceAppAutomationStatesForExport(workspace: workspace)
@@ -601,11 +618,13 @@ enum WorkspaceConfigManager {
 
     static func exportToFile(workspace: Workspace, url: URL) throws {
         guard let config = export(workspace: workspace) else { return }
+        try prepareMirrorParentIfNeeded(workspace: workspace, url: url)
         try write(config, to: url)
     }
 
     static func exportToFile(workspace: Workspace, modelContext: ModelContext, url: URL) throws {
         guard let config = export(workspace: workspace, modelContext: modelContext) else { return }
+        try prepareMirrorParentIfNeeded(workspace: workspace, url: url)
         try write(config, to: url)
     }
 
@@ -619,6 +638,11 @@ enum WorkspaceConfigManager {
                 error: nil
             )
         }
+        do {
+            try prepareMirrorParentIfNeeded(workspace: workspace, url: url)
+        } catch {
+            return exportResult(status: .writeFailed, workspaceID: workspace.id.uuidString, url: url, error: error)
+        }
         return writeResult(config, workspaceID: workspace.id.uuidString, to: url)
     }
 
@@ -631,6 +655,11 @@ enum WorkspaceConfigManager {
                 url: url,
                 error: nil
             )
+        }
+        do {
+            try prepareMirrorParentIfNeeded(workspace: workspace, url: url)
+        } catch {
+            return exportResult(status: .writeFailed, workspaceID: workspace.id.uuidString, url: url, error: error)
         }
         return writeResult(config, workspaceID: workspace.id.uuidString, to: url)
     }
@@ -689,6 +718,16 @@ enum WorkspaceConfigManager {
         guard !configPath.isEmpty else {
             return AutoExportTarget(url: nil, reason: "config_path_empty")
         }
+        let supportPath = WorkspaceFileLayout.supportDirectory(for: workspacePath)
+        do {
+            try FileManager.default.createDirectory(
+                atPath: supportPath,
+                withIntermediateDirectories: true
+            )
+            try WorkspaceGeneratedStateExcluder.ensureExcluded(workspacePath: workspacePath)
+        } catch {
+            return AutoExportTarget(url: nil, reason: "support_directory_unavailable")
+        }
 
         return AutoExportTarget(url: URL(fileURLWithPath: configPath), reason: "ready")
     }
@@ -729,6 +768,17 @@ enum WorkspaceConfigManager {
         } catch {
             return exportResult(status: .writeFailed, workspaceID: workspaceID, url: url, error: error)
         }
+    }
+
+    private static func prepareMirrorParentIfNeeded(workspace: Workspace, url: URL) throws {
+        let mirrorURL = URL(fileURLWithPath: WorkspaceFileLayout.workspaceConfigFile(for: workspace.primaryPath))
+            .standardizedFileURL
+        guard url.standardizedFileURL.path == mirrorURL.path else { return }
+        try FileManager.default.createDirectory(
+            at: mirrorURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try WorkspaceGeneratedStateExcluder.ensureExcluded(workspacePath: workspace.primaryPath)
     }
 
     // MARK: - Import
@@ -999,18 +1049,38 @@ enum WorkspaceConfigManager {
         return (try? modelContext.fetch(descriptor)) ?? []
     }
 
-    private static func workspaceAppRunsForExport(workspace: Workspace) -> [WorkspaceAppRun] {
-        guard let modelContext = workspace.modelContext else { return [] }
+    private static func workspaceAppRunMirrorSnapshotForExport(workspace: Workspace) -> WorkspaceAppRunMirrorSnapshot {
+        guard let modelContext = workspace.modelContext else {
+            return WorkspaceAppRunMirrorSnapshot(runs: [], events: [])
+        }
         let workspaceID = workspace.id
-        let descriptor = FetchDescriptor<WorkspaceAppRun>(predicate: #Predicate { $0.workspaceID == workspaceID })
-        return (try? modelContext.fetch(descriptor)) ?? []
+        let runDescriptor = FetchDescriptor<WorkspaceAppRun>(predicate: #Predicate { $0.workspaceID == workspaceID })
+        let runs = (try? modelContext.fetch(runDescriptor)) ?? []
+        let mirroredRuns = Array(runs
+            .sorted(by: workspaceAppRunMirrorOrder)
+            .suffix(MirrorLimits.maxWorkspaceAppRuns))
+        let mirroredRunIDs = Set(mirroredRuns.map(\.id))
+
+        let eventDescriptor = FetchDescriptor<WorkspaceAppRunEvent>(predicate: #Predicate { $0.workspaceID == workspaceID })
+        let events = ((try? modelContext.fetch(eventDescriptor)) ?? [])
+            .filter { mirroredRunIDs.contains($0.runID) }
+        let mirroredEvents = Array(events
+            .sorted {
+                if $0.timestamp == $1.timestamp {
+                    return $0.id.uuidString < $1.id.uuidString
+                }
+                return $0.timestamp < $1.timestamp
+            }
+            .suffix(MirrorLimits.maxWorkspaceAppRunEvents))
+
+        return WorkspaceAppRunMirrorSnapshot(runs: mirroredRuns, events: mirroredEvents)
     }
 
-    private static func workspaceAppRunEventsForExport(workspace: Workspace) -> [WorkspaceAppRunEvent] {
-        guard let modelContext = workspace.modelContext else { return [] }
-        let workspaceID = workspace.id
-        let descriptor = FetchDescriptor<WorkspaceAppRunEvent>(predicate: #Predicate { $0.workspaceID == workspaceID })
-        return (try? modelContext.fetch(descriptor)) ?? []
+    private static func workspaceAppRunMirrorOrder(_ lhs: WorkspaceAppRun, _ rhs: WorkspaceAppRun) -> Bool {
+        if lhs.startedAt == rhs.startedAt {
+            return lhs.id.uuidString < rhs.id.uuidString
+        }
+        return lhs.startedAt < rhs.startedAt
     }
 
     private static func workspaceAppDependencyBindingsForExport(workspace: Workspace) -> [WorkspaceAppDependencyBinding] {
@@ -1242,7 +1312,10 @@ enum WorkspaceConfigManager {
             startedAt: run.startedAt,
             completedAt: run.completedAt,
             inputSummary: run.inputSummary,
-            outputSummary: run.outputSummary,
+            outputSummary: boundedMirrorString(
+                run.outputSummary,
+                limit: MirrorLimits.maxWorkspaceAppRunOutputCharacters
+            ),
             errorMessage: run.errorMessage,
             linkedTaskID: run.linkedTaskID?.uuidString,
             linkedArtifactPath: run.linkedArtifactPath,
@@ -1262,7 +1335,10 @@ enum WorkspaceConfigManager {
             appID: event.appID.uuidString,
             actionID: event.actionID,
             type: event.type,
-            payload: event.payload,
+            payload: boundedMirrorString(
+                event.payload,
+                limit: MirrorLimits.maxWorkspaceAppRunEventPayloadCharacters
+            ),
             timestamp: event.timestamp
         )
     }
@@ -1330,13 +1406,19 @@ enum WorkspaceConfigManager {
     }
 
     private static func taskConfig(_ task: AgentTask) -> TaskConfig {
-        let sortedRuns = task.runs.sorted { $0.startedAt < $1.startedAt }
+        let sortedRuns = task.runs.sorted {
+            if $0.startedAt == $1.startedAt {
+                return $0.id.uuidString < $1.id.uuidString
+            }
+            return $0.startedAt < $1.startedAt
+        }
+        let mirroredRuns = Array(sortedRuns.suffix(MirrorLimits.maxRunsPerTask))
         let runIDToIndex = Dictionary(
-            sortedRuns.enumerated().map { ($1.id, $0) },
+            mirroredRuns.enumerated().map { ($1.id, $0) },
             uniquingKeysWith: { first, _ in first }
         )
 
-        let runConfigs = sortedRuns.map { run in
+        let runConfigs = mirroredRuns.map { run in
             RunConfig(
                 id: run.id.uuidString,
                 status: run.status.rawValue,
@@ -1350,18 +1432,26 @@ enum WorkspaceConfigManager {
                 providerVersion: run.providerVersion,
                 executionEnvironmentSnapshotJSON: run.executionEnvironmentSnapshotJSON,
                 exitCode: run.exitCode,
-                output: run.output,
+                output: boundedMirrorString(run.output, limit: MirrorLimits.maxRunOutputCharacters),
                 costUSD: run.costUSD,
                 stopReason: run.stopReason,
                 fileChangesJSON: run.fileChangesJSON
             )
         }
 
-        let eventConfigs = task.events.sorted(by: { $0.timestamp < $1.timestamp }).map { event in
+        let mirroredEvents = Array(task.events
+            .sorted {
+                if $0.timestamp == $1.timestamp {
+                    return $0.id.uuidString < $1.id.uuidString
+                }
+                return $0.timestamp < $1.timestamp
+            }
+            .suffix(MirrorLimits.maxEventsPerTask))
+        let eventConfigs = mirroredEvents.map { event in
             EventConfig(
                 id: event.id.uuidString,
                 type: event.type,
-                payload: event.payload,
+                payload: boundedMirrorString(event.payload, limit: MirrorLimits.maxEventPayloadCharacters),
                 timestamp: event.timestamp,
                 category: event.category,
                 agentName: event.agentName,
@@ -1420,6 +1510,13 @@ enum WorkspaceConfigManager {
             skillSnapshots: snapshots,
             executionEnvironmentSnapshotJSON: sanitizedExecutionEnvironmentJSON(task.executionEnvironmentSnapshotJSON, preservingHost: true)
         )
+    }
+
+    private static func boundedMirrorString(_ value: String, limit: Int) -> String {
+        guard value.count > limit else { return value }
+        let marker = "\n[ASTRA mirror truncated: original \(value.count) characters; limit \(limit) characters]"
+        let retainedCount = max(0, limit - marker.count)
+        return String(value.prefix(retainedCount)) + marker
     }
 
     private static func uniqueByID<T>(_ values: [T], id: (T) -> UUID) -> [T] {

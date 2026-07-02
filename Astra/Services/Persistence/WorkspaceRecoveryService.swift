@@ -352,7 +352,9 @@ enum WorkspaceRecoveryService {
                             from: configURL,
                             accessIntent: .implicitScan(root: nil)
                         )
-                        config.primaryPath = configURL.deletingLastPathComponent().standardizedFileURL.path
+                        config.primaryPath = WorkspaceFileLayout.workspaceRoot(forConfigFile: configURL)
+                            .standardizedFileURL
+                            .path
                         return LoadedWorkspaceConfig(config: config)
                     } catch {
                         AppLogger.audit(.workspaceRecoveryFailed, category: "Persistence", fields: [
@@ -398,7 +400,9 @@ enum WorkspaceRecoveryService {
                     from: configURL,
                     accessIntent: .implicitScan(root: nil)
                 )
-                config.primaryPath = configURL.deletingLastPathComponent().standardizedFileURL.path
+                config.primaryPath = WorkspaceFileLayout.workspaceRoot(forConfigFile: configURL)
+                    .standardizedFileURL
+                    .path
                 let configID = config.id
                 let configPath = normalizePath(config.primaryPath)
                 if let configID, existingIDs.contains(configID) {
@@ -649,10 +653,13 @@ enum WorkspaceRecoveryService {
             return []
         }
 
-        let directConfig = root.appendingPathComponent(WorkspaceFileLayout.workspaceConfigFileName)
+        let directConfig = URL(fileURLWithPath: WorkspaceFileLayout.workspaceConfigFile(for: root.path))
+        let legacyConfig = URL(fileURLWithPath: WorkspaceFileLayout.legacyWorkspaceConfigFile(for: root.path))
         var results: [URL] = []
         if hostFileAccess.fileExists(at: directConfig, intent: intent) {
             results.append(directConfig)
+        } else if hostFileAccess.fileExists(at: legacyConfig, intent: intent) {
+            results.append(legacyConfig)
         }
 
         guard maxDepth > 0,

@@ -579,8 +579,7 @@ final class TaskLifecycleCoordinator {
     }
 
     func deleteWorkspace(_ ws: Workspace, existingWorkspaces: [Workspace]) -> Workspace? {
-        let configPath = WorkspaceFileLayout.workspaceConfigFile(for: ws.primaryPath)
-        try? FileManager.default.removeItem(atPath: configPath)
+        removeGeneratedWorkspaceMirrors(for: ws.primaryPath)
 
         for connector in ws.connectors {
             connector.cleanupKeychain()
@@ -598,11 +597,21 @@ final class TaskLifecycleCoordinator {
         return next
     }
 
+    private func removeGeneratedWorkspaceMirrors(for workspacePath: String) {
+        let mirrorPaths = Set([
+            WorkspaceFileLayout.workspaceConfigFile(for: workspacePath),
+            WorkspaceFileLayout.legacyWorkspaceConfigFile(for: workspacePath)
+        ])
+        for path in mirrorPaths {
+            try? FileManager.default.removeItem(atPath: path)
+        }
+    }
+
     func importFromConfig(at url: URL, existingWorkspaces: [Workspace],
                           askDuplicateAction: (String, Int) -> DuplicateAction) -> Workspace? {
         do {
             var config = try WorkspaceConfigManager.loadConfig(from: url)
-            config.primaryPath = url.deletingLastPathComponent().standardizedFileURL.path
+            config.primaryPath = WorkspaceFileLayout.workspaceRoot(forConfigFile: url).path
             let configID = config.id
             if let existing = existingWorkspaces.first(where: { workspace in
                 (configID != nil && workspace.id.uuidString == configID) || workspace.primaryPath == config.primaryPath
@@ -649,7 +658,7 @@ final class TaskLifecycleCoordinator {
         existing: Workspace,
         configURL: URL
     ) -> WorkspaceConfigManager.ScheduleImportTrustPolicy {
-        let configFolderPath = configURL.deletingLastPathComponent().standardizedFileURL.path
+        let configFolderPath = WorkspaceFileLayout.workspaceRoot(forConfigFile: configURL).path
         let existingPath = URL(fileURLWithPath: existing.primaryPath).standardizedFileURL.path
         return configFolderPath == existingPath ? .preserveEnabledState : .quarantineEnabledSchedules
     }

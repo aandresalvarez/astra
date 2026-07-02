@@ -50,7 +50,7 @@ enum WorkspaceImportDiscovery {
 
         if !isDirectory.boolValue {
             guard url.pathExtension.lowercased() == "json" else { return [] }
-            return [WorkspaceImportCandidate(folderURL: url.deletingLastPathComponent(), configURL: url)]
+            return [WorkspaceImportCandidate(folderURL: WorkspaceFileLayout.workspaceRoot(forConfigFile: url), configURL: url)]
         }
 
         if let direct = configuredWorkspaceCandidate(
@@ -114,8 +114,12 @@ enum WorkspaceImportDiscovery {
         hostFileAccess: HostFileAccessBroker,
         accessIntent: HostFileAccessIntent
     ) -> WorkspaceImportCandidate? {
-        for name in [WorkspaceFileLayout.workspaceConfigFileName, legacyAgentFlowConfigFileName] {
-            let configURL = url.appendingPathComponent(name)
+        let configURLs = [
+            URL(fileURLWithPath: WorkspaceFileLayout.workspaceConfigFile(for: url.path)),
+            URL(fileURLWithPath: WorkspaceFileLayout.legacyWorkspaceConfigFile(for: url.path)),
+            url.appendingPathComponent(legacyAgentFlowConfigFileName)
+        ]
+        for configURL in configURLs {
             if hostFileAccess.fileExists(at: configURL, intent: accessIntent) {
                 return WorkspaceImportCandidate(folderURL: url, configURL: configURL)
             }
