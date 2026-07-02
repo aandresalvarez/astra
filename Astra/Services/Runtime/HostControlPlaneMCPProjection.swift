@@ -13,12 +13,16 @@ enum HostControlPlaneMCPProjection {
     static func enabledToolNames(
         task: AgentTask,
         environment: WorkspaceExecutionEnvironment,
-        contextText: String = ""
+        contextText: String = "",
+        capabilityScope: TaskCapabilityPromptScope? = nil
     ) -> [String] {
         if isEnabled(for: environment) {
             return toolNames
         }
-        let scope = TaskCapabilityResolver(task: task).promptScope(contextText: contextText)
+        let scope = capabilityScope ?? TaskCapabilityResolutionSnapshot.capture(
+            for: task,
+            providerLaunchContextText: contextText
+        ).providerLaunch
         return githubCapabilityIsInScope(scope) ? ["github"] : []
     }
 
@@ -93,9 +97,15 @@ enum HostControlPlaneMCPProjection {
         currentDirectory: String,
         runID: UUID?,
         taskEnvironment: [String: String] = [:],
-        contextText: String = ""
+        contextText: String = "",
+        capabilityScope: TaskCapabilityPromptScope? = nil
     ) -> MCPRuntimeProjection.ResolvedServer? {
-        let allowedTools = enabledToolNames(task: task, environment: environment, contextText: contextText)
+        let allowedTools = enabledToolNames(
+            task: task,
+            environment: environment,
+            contextText: contextText,
+            capabilityScope: capabilityScope
+        )
         guard !allowedTools.isEmpty else { return nil }
         let envKeys = environmentKeys(taskEnvironment: taskEnvironment)
         return MCPRuntimeProjection.ResolvedServer(
@@ -120,9 +130,15 @@ enum HostControlPlaneMCPProjection {
         currentDirectory: String,
         runID: UUID?,
         taskEnvironment: [String: String] = [:],
-        contextText: String = ""
+        contextText: String = "",
+        capabilityScope: TaskCapabilityPromptScope? = nil
     ) -> [String: String] {
-        let allowedTools = enabledToolNames(task: task, environment: environment, contextText: contextText)
+        let allowedTools = enabledToolNames(
+            task: task,
+            environment: environment,
+            contextText: contextText,
+            capabilityScope: capabilityScope
+        )
         guard !allowedTools.isEmpty else { return [:] }
         var output: [String: String] = [
             "ASTRA_HOST_CONTROL_GH_EXECUTABLE": detectExecutable("gh"),

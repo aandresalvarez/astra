@@ -643,6 +643,7 @@ struct AgentRuntimeProcessLaunchContext {
     let runID: UUID?
     let liveApprovalsEnabled: Bool
     let launchResourcePlan: TaskLaunchResourcePlan?
+    let capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot
 
     init(
         prompt: String,
@@ -659,7 +660,8 @@ struct AgentRuntimeProcessLaunchContext {
         nativeContinuationSessionID: String? = nil,
         runID: UUID? = nil,
         liveApprovalsEnabled: Bool = false,
-        launchResourcePlan: TaskLaunchResourcePlan? = nil
+        launchResourcePlan: TaskLaunchResourcePlan? = nil,
+        capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot? = nil
     ) {
         self.prompt = prompt
         self.task = task
@@ -676,6 +678,11 @@ struct AgentRuntimeProcessLaunchContext {
         self.runID = runID
         self.liveApprovalsEnabled = liveApprovalsEnabled
         self.launchResourcePlan = launchResourcePlan
+        self.capabilityResolutionSnapshot = capabilityResolutionSnapshot ?? TaskCapabilityResolutionSnapshot.capture(
+            for: task,
+            providerLaunchContextText: contextText,
+            additionalCredentialGrants: executionPolicy.permissionGrantsOverride ?? []
+        )
     }
 }
 
@@ -1183,6 +1190,7 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
     func makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext) -> AgentRuntimeProcessLaunchPlan {
         let taskEnv = AgentRuntimeProcessRunner.scopedEnvironmentVariables(
             for: context.task,
+            capabilityScope: context.capabilityResolutionSnapshot.providerLaunch,
             contextText: context.contextText,
             executionPolicy: context.executionPolicy
         )
@@ -1191,7 +1199,7 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
             taskEnv: taskEnv
         )
         let effectivePermissionPolicy = context.executionPolicy.permissionPolicy(default: context.permissionPolicy)
-        let capabilityScope = TaskCapabilityResolver(task: context.task).promptScope(contextText: context.contextText)
+        let capabilityScope = context.capabilityResolutionSnapshot.providerLaunch
         let allowed = context.executionPolicy.allowedTools(
             default: capabilityScope.resolver.resolvedProviderAllowedTools
         )
@@ -1244,7 +1252,8 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
             currentDirectory: context.workspacePath,
             runID: context.runID,
             taskEnvironment: taskEnv,
-            contextText: context.contextText
+            contextText: context.contextText,
+            capabilityScope: context.capabilityResolutionSnapshot.providerLaunch
         )
         if let hostControlServer = HostControlPlaneMCPProjection.resolvedServer(
             task: context.task,
@@ -1252,7 +1261,8 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
             currentDirectory: context.workspacePath,
             runID: context.runID,
             taskEnvironment: taskEnv.merging(hostControlEnvironment) { current, _ in current },
-            contextText: context.contextText
+            contextText: context.contextText,
+            capabilityScope: context.capabilityResolutionSnapshot.providerLaunch
         ) {
             mcpServers.append(hostControlServer)
         }
@@ -1836,6 +1846,7 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
     func makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext) -> AgentRuntimeProcessLaunchPlan {
         let taskEnv = AgentRuntimeProcessRunner.scopedEnvironmentVariables(
             for: context.task,
+            capabilityScope: context.capabilityResolutionSnapshot.providerLaunch,
             contextText: context.contextText,
             executionPolicy: context.executionPolicy
         )
@@ -1844,7 +1855,7 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             taskEnv: taskEnv
         )
         let effectivePermissionPolicy = context.executionPolicy.permissionPolicy(default: context.permissionPolicy)
-        let capabilityScope = TaskCapabilityResolver(task: context.task).promptScope(contextText: context.contextText)
+        let capabilityScope = context.capabilityResolutionSnapshot.providerLaunch
         let allowed = context.executionPolicy.allowedTools(
             default: capabilityScope.resolver.resolvedProviderAllowedTools
         )
@@ -2490,6 +2501,7 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
     func makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext) -> AgentRuntimeProcessLaunchPlan {
         let taskEnv = AgentRuntimeProcessRunner.scopedEnvironmentVariables(
             for: context.task,
+            capabilityScope: context.capabilityResolutionSnapshot.providerLaunch,
             contextText: context.contextText,
             executionPolicy: context.executionPolicy
         )
@@ -2517,7 +2529,8 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
         let hostControlTools = HostControlPlaneMCPProjection.enabledToolNames(
             task: context.task,
             environment: executionEnvironment,
-            contextText: context.contextText
+            contextText: context.contextText,
+            capabilityScope: context.capabilityResolutionSnapshot.providerLaunch
         )
         let plan = AntigravityCLIRuntime.buildCommand(
             executablePath: executable,
@@ -2529,7 +2542,11 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
             taskEnvironment: taskEnv,
             providerHomeDirectory: context.providerHomeDirectory,
             pathPrefix: pathPrefix,
-            includeAstraToolsPath: AgentRuntimeProcessRunner.hasActiveCLITools(context.task, contextText: context.contextText)
+            includeAstraToolsPath: AgentRuntimeProcessRunner.hasActiveCLITools(
+                context.task,
+                contextText: context.contextText,
+                capabilityScope: context.capabilityResolutionSnapshot.providerLaunch
+            )
                 || taskEnv["ASTRA_BROWSER_URL"] != nil,
             diagnosticLogPath: diagnosticLogPath,
             permissionArguments: context.requiredProviderPolicyRender(for: id).antigravityLaunchPermissionArguments()

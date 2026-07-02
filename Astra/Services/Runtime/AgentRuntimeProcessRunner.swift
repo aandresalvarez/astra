@@ -108,6 +108,7 @@ final class AgentRuntimeProcessRunner {
             prompt: context.prompt,
             contextText: context.contextText,
             workspacePath: context.workspacePath,
+            capabilityResolutionSnapshot: context.capabilityResolutionSnapshot,
             gitCredentialContextProvider: { [gitCredentialContextProvider] _, _, _, _ in
                 gitCredentialContextProvider(context)
             }
@@ -403,6 +404,7 @@ final class AgentRuntimeProcessRunner {
         nativeContinuationSessionID: String? = nil,
         runID: UUID? = nil,
         launchResourcePlan: TaskLaunchResourcePlan? = nil,
+        capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot? = nil,
         liveApprovalsEnabled: Bool = false,
         noSemanticProgressTimeoutSeconds: TimeInterval? = nil,
         onInteractiveAsk: ((AgentInteractiveAskRequest) async -> InteractiveAskOutcome)? = nil,
@@ -423,7 +425,8 @@ final class AgentRuntimeProcessRunner {
             nativeContinuationSessionID: nativeContinuationSessionID,
             runID: runID,
             liveApprovalsEnabled: liveApprovalsEnabled && onInteractiveAsk != nil,
-            launchResourcePlan: launchResourcePlan
+            launchResourcePlan: launchResourcePlan,
+            capabilityResolutionSnapshot: capabilityResolutionSnapshot
         )
         if let sharedStateKey = adapter.sharedLaunchStateKey(context: launchContext) {
             do {
@@ -882,7 +885,15 @@ final class AgentRuntimeProcessRunner {
 
     @MainActor
     static func runtimeLocalToolCommands(for task: AgentTask, contextText: String = "") -> [String] {
-        let capabilityScope = TaskCapabilityResolver(task: task).promptScope(contextText: contextText)
+        let capabilityScope = TaskCapabilityResolutionSnapshot.capture(
+            for: task,
+            providerLaunchContextText: contextText
+        ).providerLaunch
+        return runtimeLocalToolCommands(in: capabilityScope)
+    }
+
+    @MainActor
+    static func runtimeLocalToolCommands(in capabilityScope: TaskCapabilityPromptScope) -> [String] {
         return Array(Set(capabilityScope.localTools.compactMap { tool in
             guard tool.toolType != "mcp" else { return nil }
             let command = tool.command.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1243,16 +1254,33 @@ final class AgentRuntimeProcessRunner {
         contextText: String = "",
         executionPolicy: AgentRuntimeExecutionPolicy = .default
     ) -> [String: String] {
-        let capabilityScope = TaskCapabilityResolver(
-            task: task,
+        let capabilityScope = TaskCapabilityResolutionSnapshot.capture(
+            for: task,
+            providerLaunchContextText: contextText,
             additionalCredentialGrants: executionPolicy.permissionGrantsOverride ?? []
-        ).promptScope(contextText: contextText)
+        ).providerLaunch
+        return scopedEnvironmentVariables(
+            for: task,
+            capabilityScope: capabilityScope,
+            contextText: contextText,
+            executionPolicy: executionPolicy
+        )
+    }
+
+    @MainActor
+    static func scopedEnvironmentVariables(
+        for task: AgentTask,
+        capabilityScope: TaskCapabilityPromptScope,
+        contextText: String = "",
+        executionPolicy _: AgentRuntimeExecutionPolicy = .default
+    ) -> [String: String] {
         var taskEnv = capabilityScope.resolver.resolvedEnvironmentVariables
         if hasStanfordOutlookMailAccess(in: capabilityScope) {
             taskEnv["ASTRA_CHANNEL"] = AppChannel.current.rawValue
             taskEnv["ASTRA_MAIL_REGISTRY_PATH"] = StanfordOutlookMail.registryURL.path
         }
-        if TaskCapabilityResolver.shouldExposeBrowserBridge(for: task, contextText: contextText) {
+        if capabilityScope.exposesBrowserBridge ||
+            TaskCapabilityResolver.shouldExposeBrowserBridge(for: task, contextText: contextText) {
             for (key, value) in ShelfBrowserBridgeRegistry.shared.environmentVariables(for: task.id) {
                 guard isBrowserBridgeEnvKeyAllowed(key) else {
                     AppLogger.audit(.capabilityChatContext, category: "Capabilities", taskID: task.id, fields: [
@@ -1287,8 +1315,16 @@ final class AgentRuntimeProcessRunner {
     }
 
     @MainActor
-    static func hasActiveCLITools(_ task: AgentTask, contextText: String = "") -> Bool {
-        TaskCapabilityResolver(task: task).promptScope(contextText: contextText).localTools.contains { tool in
+    static func hasActiveCLITools(
+        _ task: AgentTask,
+        contextText: String = "",
+        capabilityScope: TaskCapabilityPromptScope? = nil
+    ) -> Bool {
+        let scope = capabilityScope ?? TaskCapabilityResolutionSnapshot.capture(
+            for: task,
+            providerLaunchContextText: contextText
+        ).providerLaunch
+        return scope.localTools.contains { tool in
             tool.toolType != "mcp" && !tool.command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }
     }

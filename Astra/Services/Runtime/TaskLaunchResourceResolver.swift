@@ -14,6 +14,7 @@ enum TaskLaunchResourceResolver {
         contextText: String,
         workspacePath: String,
         executionEnvironment: WorkspaceExecutionEnvironment? = nil,
+        capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot? = nil,
         homeDirectoryPath: String = FileManager.default.homeDirectoryForCurrentUser.path,
         fileManager: FileManager = .default,
         gcloudExecutablePathProvider: GCloudExecutablePathProvider = defaultGCloudExecutablePath,
@@ -81,6 +82,7 @@ enum TaskLaunchResourceResolver {
         appendCapabilityGrants(
             task: task,
             contextText: contextText,
+            capabilityResolutionSnapshot: capabilityResolutionSnapshot,
             executionEnvironment: environment,
             homeDirectoryPath: homeDirectoryPath,
             fileManager: fileManager,
@@ -475,6 +477,7 @@ enum TaskLaunchResourceResolver {
     private static func appendCapabilityGrants(
         task: AgentTask,
         contextText: String,
+        capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot?,
         executionEnvironment: WorkspaceExecutionEnvironment,
         homeDirectoryPath: String,
         fileManager: FileManager,
@@ -486,7 +489,13 @@ enum TaskLaunchResourceResolver {
         controlPlaneResources: inout [RuntimeControlPlaneResource],
         diagnostics: inout [RuntimeResourceDiagnostic]
     ) {
-        if TaskCapabilityResolver.shouldExposeBrowserBridge(for: task, contextText: contextText) {
+        let capabilityScope = capabilityResolutionSnapshot?.providerLaunch ?? TaskCapabilityResolutionSnapshot.capture(
+            for: task,
+            providerLaunchContextText: contextText
+        ).providerLaunch
+
+        if capabilityScope.exposesBrowserBridge ||
+            TaskCapabilityResolver.shouldExposeBrowserBridge(for: task, contextText: contextText) {
             providerRequirements.append(RuntimeProviderRequirement(
                 capability: "browser_bridge",
                 source: .browser,
@@ -504,8 +513,7 @@ enum TaskLaunchResourceResolver {
             ))
         }
 
-        let scope = TaskCapabilityResolver(task: task).promptScope(contextText: contextText)
-        let hasGCloudConnector = scope.connectors.contains { connector in
+        let hasGCloudConnector = capabilityScope.connectors.contains { connector in
             let normalized = connector.serviceType
                 .trimmingCharacters(in: .whitespacesAndNewlines)
                 .lowercased()
@@ -533,7 +541,7 @@ enum TaskLaunchResourceResolver {
             )
         }
 
-        for connector in scope.connectors {
+        for connector in capabilityScope.connectors {
             appendConnectorControlPlaneResource(
                 connector,
                 controlPlaneResources: &controlPlaneResources
@@ -575,8 +583,8 @@ enum TaskLaunchResourceResolver {
             }
         }
         appendSkillControlPlaneResources(
-            skills: scope.behaviorSkills,
-            localTools: scope.localTools,
+            skills: capabilityScope.behaviorSkills,
+            localTools: capabilityScope.localTools,
             controlPlaneResources: &controlPlaneResources
         )
     }

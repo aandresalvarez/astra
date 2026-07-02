@@ -915,6 +915,7 @@ enum AgentPolicyManifestService {
         capabilityPackages: [PluginPackage]? = nil,
         approvalRecords: [CapabilityApprovalRecord]? = nil,
         contextText: String = "",
+        capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot? = nil,
         modelContext: ModelContext
     ) -> RunPermissionManifest {
         let defaultLevel = AgentPolicyDefaults.effectiveUserFacingLevel(
@@ -934,7 +935,12 @@ enum AgentPolicyManifestService {
             task: task,
             additionalCredentialGrants: executionGrants
         )
-        let taskCapabilityScope = taskCapabilityResolver.promptScope(contextText: contextText)
+        let capabilityResolutionSnapshot = capabilityResolutionSnapshot ?? TaskCapabilityResolutionSnapshot.capture(
+            for: task,
+            providerLaunchContextText: contextText,
+            additionalCredentialGrants: executionGrants
+        )
+        let taskCapabilityScope = capabilityResolutionSnapshot.providerLaunch
         let effectiveGrants = PermissionBroker.sanitizeApprovedGrants(taskScopedGrants + executionGrants)
         let taskScopedProviderGrants = PermissionBroker.providerRuntimeGrantStrings(for: taskScopedGrants, runtime: runtime)
         let effectiveProviderGrants = PermissionBroker.providerRuntimeGrantStrings(for: effectiveGrants, runtime: runtime)
@@ -957,7 +963,7 @@ enum AgentPolicyManifestService {
                 + dockerCredentialEnvironmentKeyNames(environment: executionEnvironment)
         )
         let manifestCredentialLabels = uniqueStrings(
-            credentialLabels(for: task, contextText: contextText)
+            credentialLabels(for: task, capabilityScope: taskCapabilityScope)
                 + dockerCredentialLabels(environment: executionEnvironment)
                 + gitCredentialLabels(task: task, contextText: contextText)
         )
@@ -971,7 +977,11 @@ enum AgentPolicyManifestService {
             workspacePath: workspacePath,
             additionalPaths: runtimePaths,
             requestedAllowedTools: requestedAllowedTools,
-            localToolCommands: localToolCommands(for: task, contextText: contextText),
+            localToolCommands: localToolCommands(
+                for: task,
+                capabilityScope: taskCapabilityScope,
+                contextText: contextText
+            ),
             environmentKeyNames: envKeys,
             credentialLabels: manifestCredentialLabels,
             providerFeatures: providerPolicyAdapter.supportedFeatures,
@@ -984,7 +994,8 @@ enum AgentPolicyManifestService {
             task: task,
             runtime: runtime,
             executionEnvironment: executionEnvironment,
-            contextText: contextText
+            contextText: contextText,
+            capabilityScope: taskCapabilityScope
         )
         render = applyingArtifactBootstrapManifestSupport(to: render, task: task)
         render.allowedShellPatterns = uniqueStrings(
@@ -997,7 +1008,8 @@ enum AgentPolicyManifestService {
             localToolCommands: context.localToolCommands,
             task: task,
             executionEnvironment: executionEnvironment,
-            contextText: contextText
+            contextText: contextText,
+            capabilityScope: taskCapabilityScope
         )
         render.diagnostics = providerPolicyAdapter.validate(render: render, context: context)
         if shouldProjectGitCredentials(task: task, contextText: contextText) {
@@ -1071,7 +1083,8 @@ enum AgentPolicyManifestService {
                 task: task,
                 runtime: runtime,
                 executionEnvironment: executionEnvironment,
-                contextText: contextText
+                contextText: contextText,
+                capabilityScope: taskCapabilityScope
             ),
             approvalsGranted: approvals,
             approvalGrants: effectiveGrants
@@ -1113,14 +1126,16 @@ enum AgentPolicyManifestService {
         task: AgentTask,
         runtime: AgentRuntimeID,
         executionEnvironment: WorkspaceExecutionEnvironment,
-        contextText: String
+        contextText: String,
+        capabilityScope: TaskCapabilityPromptScope
     ) -> ProviderPolicyRender {
         let usesDockerWorkspaceExecutor = DockerWorkspaceMCPProjection.isEnabled(for: executionEnvironment)
             && DockerWorkspaceMCPProjection.supportsHostProviderWorkspaceExecutor(runtime: runtime)
         let hostControlTools = HostControlPlaneMCPProjection.enabledToolNames(
             task: task,
             environment: executionEnvironment,
-            contextText: contextText
+            contextText: contextText,
+            capabilityScope: capabilityScope
         )
         guard usesDockerWorkspaceExecutor || !hostControlTools.isEmpty else {
             return render
@@ -1193,13 +1208,15 @@ enum AgentPolicyManifestService {
         localToolCommands: [String],
         task: AgentTask,
         executionEnvironment: WorkspaceExecutionEnvironment,
-        contextText: String
+        contextText: String,
+        capabilityScope: TaskCapabilityPromptScope
     ) -> ProviderPolicyRender {
         guard render.providerID == .copilotCLI else { return render }
         let hostControlTools = HostControlPlaneMCPProjection.enabledToolNames(
             task: task,
             environment: executionEnvironment,
-            contextText: contextText
+            contextText: contextText,
+            capabilityScope: capabilityScope
         )
         let scopedLocalToolCommands = hostControlTools.isEmpty
             ? localToolCommands
@@ -1269,14 +1286,16 @@ enum AgentPolicyManifestService {
         task: AgentTask,
         runtime: AgentRuntimeID,
         executionEnvironment: WorkspaceExecutionEnvironment,
-        contextText: String
+        contextText: String,
+        capabilityScope: TaskCapabilityPromptScope
     ) -> [RunPermissionManifest.MCPServer] {
         let usesDockerWorkspaceExecutor = DockerWorkspaceMCPProjection.isEnabled(for: executionEnvironment)
             && DockerWorkspaceMCPProjection.supportsHostProviderWorkspaceExecutor(runtime: runtime)
         let hostControlTools = HostControlPlaneMCPProjection.enabledToolNames(
             task: task,
             environment: executionEnvironment,
-            contextText: contextText
+            contextText: contextText,
+            capabilityScope: capabilityScope
         )
         var servers = base
         if usesDockerWorkspaceExecutor {
@@ -1360,13 +1379,25 @@ enum AgentPolicyManifestService {
 
     @MainActor
     private static func localToolCommands(for task: AgentTask, contextText: String) -> [String] {
-        let capabilityScope = TaskCapabilityResolver(task: task).promptScope(contextText: contextText)
+        let capabilityScope = TaskCapabilityResolutionSnapshot.capture(
+            for: task,
+            providerLaunchContextText: contextText
+        ).providerLaunch
+        return localToolCommands(for: task, capabilityScope: capabilityScope, contextText: contextText)
+    }
+
+    private static func localToolCommands(
+        for task: AgentTask,
+        capabilityScope: TaskCapabilityPromptScope,
+        contextText: String
+    ) -> [String] {
         var commands: [String] = capabilityScope.localTools.compactMap { tool in
             guard tool.toolType != "mcp" else { return nil }
             let command = tool.command.trimmingCharacters(in: .whitespacesAndNewlines)
             return command.isEmpty ? nil : command
         }
-        if TaskCapabilityResolver.shouldExposeBrowserBridge(for: task, contextText: contextText) {
+        if capabilityScope.exposesBrowserBridge ||
+            TaskCapabilityResolver.shouldExposeBrowserBridge(for: task, contextText: contextText) {
             commands.append("astra-browser")
         }
         return Array(Set(commands)).sorted()
@@ -1374,7 +1405,14 @@ enum AgentPolicyManifestService {
 
     @MainActor
     private static func credentialLabels(for task: AgentTask, contextText: String) -> [String] {
-        let capabilityScope = TaskCapabilityResolver(task: task).promptScope(contextText: contextText)
+        let capabilityScope = TaskCapabilityResolutionSnapshot.capture(
+            for: task,
+            providerLaunchContextText: contextText
+        ).providerLaunch
+        return credentialLabels(for: task, capabilityScope: capabilityScope)
+    }
+
+    private static func credentialLabels(for task: AgentTask, capabilityScope: TaskCapabilityPromptScope) -> [String] {
         let skillKeys = capabilityScope.behaviorSkills.flatMap(\.environmentKeys)
         let connectorLabels = ConnectorRuntimeProjection(
             connectors: capabilityScope.connectors,

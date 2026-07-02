@@ -7,9 +7,13 @@ enum AgentRuntimeCapabilityLaunchAudit {
         for task: AgentTask,
         runtime: AgentRuntimeID,
         phase: String,
-        contextText: String
+        contextText: String,
+        capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot? = nil
     ) {
-        let scope = TaskCapabilityResolver(task: task).promptScope(contextText: contextText)
+        let scope = capabilityResolutionSnapshot?.providerLaunch ?? TaskCapabilityResolutionSnapshot.capture(
+            for: task,
+            providerLaunchContextText: contextText
+        ).providerLaunch
         let buildInfo = AppBuildInfo.current
         var fields = buildInfo.auditFields
         fields["runtime"] = runtime.rawValue
@@ -40,9 +44,13 @@ enum AgentRuntimeCapabilityLaunchAudit {
         for task: AgentTask,
         runtime: AgentRuntimeID,
         phase: String,
-        contextText: String
+        contextText: String,
+        capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot? = nil
     ) async {
-        let scope = TaskCapabilityResolver(task: task).promptScope(contextText: contextText)
+        let scope = capabilityResolutionSnapshot?.providerLaunch ?? TaskCapabilityResolutionSnapshot.capture(
+            for: task,
+            providerLaunchContextText: contextText
+        ).providerLaunch
         let hasGitHubTool = scope.localTools.contains { tool in
             tool.command.trimmingCharacters(in: .whitespacesAndNewlines) == "gh"
         }

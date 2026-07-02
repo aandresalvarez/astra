@@ -930,6 +930,7 @@ script/prepush.sh
 - `Astra/Services/Runtime/AgentRuntimeWorker.swift`
 - `Astra/Services/Runtime/AgentRuntimeLaunchPreflight.swift`
 - `Astra/Services/Runtime/AgentRuntimeAdapter.swift`
+- `Astra/Services/Runtime/ProviderLaunchSignatureService.swift`
 - `Astra/Services/Capabilities/CapabilityRuntimeIntegrityService.swift`
 
 **Tests:**
@@ -952,6 +953,17 @@ git diff --check
 script/precommit.sh
 script/prepush.sh
 ```
+
+**Implementation evidence (2026-07-02):**
+
+- Added `TaskCapabilityResolutionSnapshot`, capturing full inventory separately from provider-launch relevance so launch-time authorization/reachability and prompt pruning are no longer recomputed from mutable SwiftData state at each boundary.
+- Threaded the captured snapshot from `AgentRuntimeWorker` into connector preflight, runtime integrity, prerequisite probing, policy manifest rendering, launch-resource planning, capability launch audit, provider launch signature generation, and process-launch context consumed by the runtime adapters.
+- Updated policy, adapter, process-runner, host-control, and launch-resource helpers to consume a supplied `TaskCapabilityPromptScope` where launch already has one, while retaining explicit browser bridge exposure checks for the synthetic browser tool.
+- Extracted provider launch signature creation/persistence/lookup into `ProviderLaunchSignatureService`, keeping `AgentRuntimeWorker` under the large-owner budget while the signature builder consumes the captured provider-launch snapshot.
+- Added behavioral coverage proving a snapshot preserves enabled GitHub inventory while provider-launch relevance prunes it from an unrelated task, even after later SwiftData mutations.
+- Added worker source coverage proving the launch path captures one `TaskCapabilityResolutionSnapshot` and passes it through adapter, preflight, and policy-manifest surfaces.
+- Red/green evidence: `swift test --filter TaskCapabilityResolverTests/resolutionSnapshotSeparatesInventoryAuthorizationFromLaunchRelevance` failed before implementation because `TaskCapabilityResolutionSnapshot` did not exist, then passed after the snapshot and plumbing were added.
+- Validation passed: `swift test --filter TaskCapabilityResolverTests`; `swift test --filter ComposerCapabilitySnapshotTests`; `swift test --filter CapabilityRuntimeIntegrityServiceTests`; `swift test --filter AgentRuntimeWorker`; `swift test --filter CapabilityCoverageGapTests`; extra adjacent checks `swift test --filter TaskLaunchResourcePlanTests`, `swift test --filter AgentPolicyTests`, and `swift test --filter AgentRuntimeAdapterTests`; `git diff --check`; `script/precommit.sh`; `script/prepush.sh`.
 
 ## PR 21: Collapse Policy Vocabulary Drift and Runtime Protocol Strings
 

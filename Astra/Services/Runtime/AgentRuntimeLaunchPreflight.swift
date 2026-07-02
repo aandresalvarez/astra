@@ -114,14 +114,21 @@ enum AgentRuntimeLaunchPreflight {
         phase: String,
         contextText: String,
         executionPolicy: AgentRuntimeExecutionPolicy = .default,
+        capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot? = nil,
         secretStore: SecretStore = KeychainSecretStore()
     ) async -> AgentRuntimeLaunchPreflightResult {
+        let resolutionSnapshot = capabilityResolutionSnapshot ?? TaskCapabilityResolutionSnapshot.capture(
+            for: task,
+            providerLaunchContextText: contextText,
+            additionalCredentialGrants: executionPolicy.permissionGrantsOverride ?? []
+        )
         let capabilityResult = await preflightCapabilitiesBeforeLaunchResultWithPrerequisiteChecks(
             task: task,
             run: run,
             modelContext: modelContext,
             phase: phase,
-            contextText: contextText
+            contextText: contextText,
+            capabilityResolutionSnapshot: resolutionSnapshot
         )
         guard capabilityResult.didPass else {
             return capabilityResult
@@ -132,7 +139,7 @@ enum AgentRuntimeLaunchPreflight {
             task.title,
             contextText
         ].joined(separator: "\n")
-        let scopedConnectors = TaskCapabilityResolver(task: task).promptScope(contextText: contextText).connectors
+        let scopedConnectors = resolutionSnapshot.providerLaunch.connectors
         // Service-agnostic credential presence check. Non-blocking — the
         // agent may not need every projected connector — but a connector
         // with declared, unloadable credentials must not fail silently.
@@ -298,6 +305,7 @@ enum AgentRuntimeLaunchPreflight {
         phase: String,
         contextText: String,
         executionPolicy: AgentRuntimeExecutionPolicy = .default,
+        capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot? = nil,
         secretStore: SecretStore = KeychainSecretStore()
     ) async -> Bool {
         await preflightConnectorsBeforeLaunchResult(
@@ -307,6 +315,7 @@ enum AgentRuntimeLaunchPreflight {
             phase: phase,
             contextText: contextText,
             executionPolicy: executionPolicy,
+            capabilityResolutionSnapshot: capabilityResolutionSnapshot,
             secretStore: secretStore
         ).didPass
     }
@@ -754,9 +763,14 @@ enum AgentRuntimeLaunchPreflight {
         phase: String,
         contextText: String = "",
         prerequisiteStatuses: [String: HealthStatus] = [:],
+        capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot? = nil,
         mcpDetectExecutable: (String) -> String = { RuntimePathResolver.detectExecutablePath(named: $0) },
         mcpIsExecutableFile: (String) -> Bool = { FileManager.default.isExecutableFile(atPath: $0) }
     ) -> AgentRuntimeLaunchPreflightResult {
+        let resolutionSnapshot = capabilityResolutionSnapshot ?? TaskCapabilityResolutionSnapshot.capture(
+            for: task,
+            providerLaunchContextText: contextText
+        )
         let policyContext = task.workspace.map {
             CapabilityCatalogPolicyContext.workspaceUser(
                 workspace: $0,
@@ -767,7 +781,8 @@ enum AgentRuntimeLaunchPreflight {
             for: task,
             prerequisiteStatuses: prerequisiteStatuses,
             policyContext: policyContext,
-            scope: .providerLaunch(contextText: contextText)
+            scope: .providerLaunch(contextText: contextText),
+            capabilityResolutionSnapshot: resolutionSnapshot
         )
         var fields = CapabilityAudit.taskContextFields(
             source: "capability_runtime_integrity",
@@ -789,6 +804,7 @@ enum AgentRuntimeLaunchPreflight {
         if AgentRuntimeAdapterRegistry.descriptor(for: runtime).supportsMCPServers {
             let taskEnv = AgentRuntimeProcessRunner.scopedEnvironmentVariables(
                 for: task,
+                capabilityScope: resolutionSnapshot.providerLaunch,
                 contextText: contextText
             )
             var mcpServers = MCPRuntimeProjection.enabledServers(
@@ -811,7 +827,8 @@ enum AgentRuntimeLaunchPreflight {
                 currentDirectory: TaskWorkspaceAccess(task: task).effectiveWorkspacePath,
                 runID: run.id,
                 taskEnvironment: taskEnv,
-                contextText: contextText
+                contextText: contextText,
+                capabilityScope: resolutionSnapshot.providerLaunch
             ) {
                 mcpServers.append(hostControlServer)
             }
@@ -890,12 +907,18 @@ enum AgentRuntimeLaunchPreflight {
         modelContext: ModelContext,
         phase: String,
         contextText: String = "",
-        preflightCache: PreflightCache = PreflightCache()
+        preflightCache: PreflightCache = PreflightCache(),
+        capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot? = nil
     ) async -> AgentRuntimeLaunchPreflightResult {
+        let resolutionSnapshot = capabilityResolutionSnapshot ?? TaskCapabilityResolutionSnapshot.capture(
+            for: task,
+            providerLaunchContextText: contextText
+        )
         let prerequisiteStatuses = await prerequisiteStatusesBeforeLaunch(
             task: task,
             contextText: contextText,
-            preflightCache: preflightCache
+            preflightCache: preflightCache,
+            capabilityResolutionSnapshot: resolutionSnapshot
         )
         return preflightCapabilitiesBeforeLaunchResult(
             task: task,
@@ -903,18 +926,20 @@ enum AgentRuntimeLaunchPreflight {
             modelContext: modelContext,
             phase: phase,
             contextText: contextText,
-            prerequisiteStatuses: prerequisiteStatuses
+            prerequisiteStatuses: prerequisiteStatuses,
+            capabilityResolutionSnapshot: resolutionSnapshot
         )
     }
 
     private static func prerequisiteStatusesBeforeLaunch(
         task: AgentTask,
         contextText: String,
-        preflightCache: PreflightCache
+        preflightCache: PreflightCache,
+        capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot
     ) async -> [String: HealthStatus] {
         let packages = CapabilityRuntimeResourceMatcher.packageDefinitions()
         let enabledPackageIDs = Set(task.workspace?.enabledCapabilityIDs ?? [])
-        let resolvedScope = TaskCapabilityResolver(task: task).resolvedScope(.providerLaunch(contextText: contextText))
+        let resolvedScope = capabilityResolutionSnapshot.scope(.providerLaunch(contextText: contextText))
         let selectedSkillNames = Set(
             resolvedScope.behaviorSkills.map(\.name)
                 .map(CapabilityRuntimeResourceMatcher.normalizedName)
@@ -955,14 +980,16 @@ enum AgentRuntimeLaunchPreflight {
         run: TaskRun,
         modelContext: ModelContext,
         phase: String,
-        contextText: String = ""
+        contextText: String = "",
+        capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot? = nil
     ) -> Bool {
         preflightCapabilitiesBeforeLaunchResult(
             task: task,
             run: run,
             modelContext: modelContext,
             phase: phase,
-            contextText: contextText
+            contextText: contextText,
+            capabilityResolutionSnapshot: capabilityResolutionSnapshot
         ).didPass
     }
 

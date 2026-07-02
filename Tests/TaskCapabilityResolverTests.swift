@@ -34,6 +34,41 @@ struct TaskCapabilityResolverTests {
         #expect(task.skillSnapshots.first?.environmentValues == ["present"])
     }
 
+    @Test("Resolution snapshot separates inventory authorization from launch relevance")
+    func resolutionSnapshotSeparatesInventoryAuthorizationFromLaunchRelevance() throws {
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+        let (workspace, githubPackage) = try makeGitHubEnabledWorkspace(in: context, name: "github-resolution-snapshot")
+
+        let task = AgentTask(
+            title: "Bake a cake",
+            goal: "Bake a chocolate sponge cake and write the recipe",
+            workspace: workspace
+        )
+        context.insert(task)
+        try context.save()
+
+        let snapshot = TaskCapabilityResolutionSnapshot.capture(
+            for: task,
+            providerLaunchContextText: task.goal
+        )
+
+        #expect(snapshot.fullInventory.enabledPackageIDs.contains(githubPackage.id))
+        #expect(snapshot.fullInventory.behaviorSkills.map(\.name).contains("GitHub Agent"))
+        #expect(snapshot.fullInventory.localTools.contains { $0.command == "gh" })
+        #expect(snapshot.providerLaunch.prunedForBrowserTask)
+        #expect(!snapshot.providerLaunch.behaviorSkills.map(\.name).contains("GitHub Agent"))
+        #expect(!snapshot.providerLaunch.localTools.contains { $0.command == "gh" })
+
+        workspace.enabledCapabilityIDs = []
+        task.goal = "Use GitHub to list PRs"
+        try context.save()
+
+        #expect(snapshot.fullInventory.enabledPackageIDs.contains(githubPackage.id))
+        #expect(snapshot.providerLaunch.excludedSkillNames.contains("GitHub Agent"))
+        #expect(!snapshot.providerLaunch.localTools.contains { $0.command == "gh" })
+    }
+
     @Test("Enabled connector contributes its companion skill instructions")
     func enabledConnectorIncludesCompanionSkillInstructions() throws {
         let container = try makeTaskCapabilityResolverContainer()

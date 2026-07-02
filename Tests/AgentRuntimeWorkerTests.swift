@@ -28,8 +28,14 @@ struct ProviderLaunchCapabilityScopeTests {
             .appendingPathComponent("Services")
             .appendingPathComponent("Runtime")
             .appendingPathComponent("AgentRuntimeCapabilityLaunchAudit.swift")
+        let signatureURL = repoRoot
+            .appendingPathComponent("Astra")
+            .appendingPathComponent("Services")
+            .appendingPathComponent("Runtime")
+            .appendingPathComponent("ProviderLaunchSignatureService.swift")
         let workerSource = try String(contentsOf: workerURL, encoding: .utf8)
         let auditSource = try String(contentsOf: auditURL, encoding: .utf8)
+        let signatureSource = try String(contentsOf: signatureURL, encoding: .utf8)
 
         #expect(sourceContains(workerSource, "AgentRuntimeCapabilityLaunchAudit.logResolution("))
         #expect(sourceContains(workerSource, "AgentRuntimeCapabilityLaunchAudit.logGitHubCLIPreflightIfNeeded("))
@@ -37,15 +43,84 @@ struct ProviderLaunchCapabilityScopeTests {
         #expect(sourceContains(
             workerSource,
             """
-            Self.providerLaunchSignature(
+            ProviderLaunchSignatureService.make(
                 for: task,
                 manifest: manifest,
-                contextText: providerLaunchContextText
+                contextText: providerLaunchContextText,
+                capabilityResolutionSnapshot: capabilityResolutionSnapshot
             )
             """
         ))
-        #expect(auditSource.contains("TaskCapabilityResolver(task: task).promptScope(contextText: contextText)"))
+        #expect(sourceContains(signatureSource, "capabilityResolutionSnapshot.scope(.providerLaunch(contextText: contextText))"))
+        #expect(auditSource.contains("TaskCapabilityResolutionSnapshot.capture"))
+        #expect(!auditSource.contains("TaskCapabilityResolver(task: task).promptScope(contextText: contextText)"))
         #expect(!auditSource.contains("promptScope()"))
+    }
+
+    @Test("Worker captures one capability resolution snapshot and passes it through launch")
+    func workerCapturesOneCapabilityResolutionSnapshotAndPassesItThroughLaunch() throws {
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let workerSource = try String(
+            contentsOf: repoRoot
+                .appendingPathComponent("Astra")
+                .appendingPathComponent("Services")
+                .appendingPathComponent("Runtime")
+                .appendingPathComponent("AgentRuntimeWorker.swift"),
+            encoding: .utf8
+        )
+        let adapterSource = try String(
+            contentsOf: repoRoot
+                .appendingPathComponent("Astra")
+                .appendingPathComponent("Services")
+                .appendingPathComponent("Runtime")
+                .appendingPathComponent("AgentRuntimeAdapter.swift"),
+            encoding: .utf8
+        )
+        let preflightSource = try String(
+            contentsOf: repoRoot
+                .appendingPathComponent("Astra")
+                .appendingPathComponent("Services")
+                .appendingPathComponent("Runtime")
+                .appendingPathComponent("AgentRuntimeLaunchPreflight.swift"),
+            encoding: .utf8
+        )
+        let policySource = try String(
+            contentsOf: repoRoot
+                .appendingPathComponent("Astra")
+                .appendingPathComponent("Services")
+                .appendingPathComponent("Runtime")
+                .appendingPathComponent("AgentPolicyAdapters.swift"),
+            encoding: .utf8
+        )
+
+        #expect(sourceContains(
+            workerSource,
+            """
+            let capabilityResolutionSnapshot = TaskCapabilityResolutionSnapshot.capture(
+                for: task,
+                providerLaunchContextText: providerLaunchContextText,
+                additionalCredentialGrants: executionPolicy.permissionGrantsOverride ?? []
+            )
+            """
+        ))
+        #expect(sourceContains(
+            workerSource,
+            "capabilityResolutionSnapshot: capabilityResolutionSnapshot"
+        ))
+        #expect(sourceContains(
+            adapterSource,
+            "let capabilityScope = context.capabilityResolutionSnapshot.providerLaunch"
+        ))
+        #expect(sourceContains(
+            preflightSource,
+            "capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot"
+        ))
+        #expect(sourceContains(
+            policySource,
+            "let taskCapabilityScope = capabilityResolutionSnapshot.providerLaunch"
+        ))
     }
 
     @Test("GitHub CLI preflight labels distinguish generic exits from auth failures")

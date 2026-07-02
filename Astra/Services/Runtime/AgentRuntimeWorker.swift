@@ -502,6 +502,11 @@ final class AgentRuntimeWorker {
             sessionMessage: sessionMessage,
             phase: auditPhase
         )
+        let capabilityResolutionSnapshot = TaskCapabilityResolutionSnapshot.capture(
+            for: task,
+            providerLaunchContextText: providerLaunchContextText,
+            additionalCredentialGrants: executionPolicy.permissionGrantsOverride ?? []
+        )
 
         guard FileManager.default.isExecutableFile(atPath: launchSettings.executablePath) else {
             AppLogger.audit(.taskFailed, category: "Worker", taskID: task.id, fields: [
@@ -538,7 +543,8 @@ final class AgentRuntimeWorker {
             modelContext: modelContext,
             phase: auditPhase,
             contextText: providerLaunchContextText,
-            executionPolicy: executionPolicy
+            executionPolicy: executionPolicy,
+            capabilityResolutionSnapshot: capabilityResolutionSnapshot
         ) else {
             isRunning = false
             return
@@ -641,7 +647,8 @@ final class AgentRuntimeWorker {
             prompt: prompt,
             contextText: providerLaunchContextText,
             workspacePath: executionPath,
-            executionEnvironment: executionEnvironment
+            executionEnvironment: executionEnvironment,
+            capabilityResolutionSnapshot: capabilityResolutionSnapshot
         )
         TaskLaunchResourceManifestStore.persist(launchResourcePlan, task: task)
         logContextPromptDiagnostics(for: task, prompt: prompt, phase: auditPhase)
@@ -662,13 +669,15 @@ final class AgentRuntimeWorker {
             for: task,
             runtime: selectedRuntime,
             phase: auditPhase,
-            contextText: providerLaunchContextText
+            contextText: providerLaunchContextText,
+            capabilityResolutionSnapshot: capabilityResolutionSnapshot
         )
         await AgentRuntimeCapabilityLaunchAudit.logGitHubCLIPreflightIfNeeded(
             for: task,
             runtime: selectedRuntime,
             phase: auditPhase,
-            contextText: providerLaunchContextText
+            contextText: providerLaunchContextText,
+            capabilityResolutionSnapshot: capabilityResolutionSnapshot
         )
         let policyRenderer = AgentRuntimeAdapterRegistry.policyRenderer(for: selectedRuntime)
         let providerCapabilities = policyRenderer.policyCapabilities(executablePath: launchSettings.executablePath)
@@ -685,6 +694,7 @@ final class AgentRuntimeWorker {
             defaultPolicyLevelRaw: defaultAgentPolicyLevelRaw,
             providerCapabilities: providerCapabilities,
             contextText: providerLaunchContextText,
+            capabilityResolutionSnapshot: capabilityResolutionSnapshot,
             modelContext: modelContext
         )
         guard shouldStartProvider(with: manifest, task: task, run: run, modelContext: modelContext, phase: auditPhase) else {
@@ -693,10 +703,11 @@ final class AgentRuntimeWorker {
             }
             return
         }
-        let launchSignature = Self.providerLaunchSignature(
+        let launchSignature = ProviderLaunchSignatureService.make(
             for: task,
             manifest: manifest,
-            contextText: providerLaunchContextText
+            contextText: providerLaunchContextText,
+            capabilityResolutionSnapshot: capabilityResolutionSnapshot
         )
         let nativeContinuationDecision = Self.nativeContinuationSessionID(
             for: task,
@@ -704,9 +715,9 @@ final class AgentRuntimeWorker {
             runtimeAdapter: runtimeAdapter,
             phase: auditPhase,
             currentLaunchSignature: launchSignature,
-            grantNeutralizingStrings: Self.signatureGrantStrings(for: manifest)
+            grantNeutralizingStrings: ProviderLaunchSignatureService.grantStrings(for: manifest)
         )
-        Self.recordProviderLaunchSignature(
+        ProviderLaunchSignatureService.record(
             launchSignature,
             task: task,
             run: run,
@@ -737,7 +748,7 @@ final class AgentRuntimeWorker {
                 workspacePath: executionPath
             )
         }
-        let capabilityScope = TaskCapabilityResolver(task: task).promptScope(contextText: providerLaunchContextText)
+        let capabilityScope = capabilityResolutionSnapshot.providerLaunch
         if !capabilityScope.behaviorSkills.isEmpty {
             let skillNames = capabilityScope.behaviorSkills.map(\.name).joined(separator: ", ")
             let skillEvent = TaskEvent(task: task, eventType: TaskEventTypes.System.skillActive,
@@ -774,6 +785,7 @@ final class AgentRuntimeWorker {
             nativeContinuationSessionID: nativeContinuationSessionID,
             runID: run.id,
             launchResourcePlan: launchResourcePlan,
+            capabilityResolutionSnapshot: capabilityResolutionSnapshot,
             liveApprovalsEnabled: liveApprovalsEnabled,
             noSemanticProgressTimeoutSeconds: semanticProgressTimeout,
             onInteractiveAsk: Self.interactiveAskHandler(
@@ -1596,7 +1608,6 @@ final class AgentRuntimeWorker {
 
     static let compactionThreshold = AgentEventCompactor.threshold
     static let compactionKeepCount = AgentEventCompactor.keepCount
-    private static let providerLaunchSignatureEventType = "astra.provider_launch_signature"
 
     @MainActor
     private func alignTaskModelWithSelectedRuntime(
@@ -1658,95 +1669,6 @@ final class AgentRuntimeWorker {
         let signatureMatched: Bool
     }
 
-    private struct ProviderLaunchSignaturePayload: Codable, Equatable {
-        let version: Int
-        let runtimeID: String
-        let model: String
-        let policyLevel: String
-        var policyScope: String
-        let providerAdapterVersion: Int
-        let permissionMode: String
-        var allowedTools: [String]
-        var askFirstTools: [String]
-        var deniedTools: [String]
-        let allowedShellPatterns: [String]
-        let askFirstShellPatterns: [String]
-        let deniedShellPatterns: [String]
-        let allowedURLPatterns: [String]
-        let deniedURLPatterns: [String]
-        let runtimeSupportTools: [String]
-        let scopedSkillIDs: [String]
-        let scopedSkillNames: [String]
-        let scopedConnectorDescriptors: [String]
-        let scopedLocalToolCommands: [String]
-        let environmentKeyNames: [String]
-        let credentialLabels: [String]
-        let mcpServerIDs: [String]
-        let browserAdapters: [String]
-        let promptSchemaVersion: String
-        let executionEnvironmentFingerprint: String?
-
-        var signatureValue: String {
-            [
-                "v=\(version)",
-                "runtime=\(runtimeID)",
-                "model=\(model)",
-                "policyLevel=\(policyLevel)",
-                "policyScope=\(policyScope)",
-                "adapter=\(providerAdapterVersion)",
-                "permission=\(permissionMode)",
-                "allowed=\(allowedTools.joined(separator: ","))",
-                "ask=\(askFirstTools.joined(separator: ","))",
-                "denied=\(deniedTools.joined(separator: ","))",
-                "allowShell=\(allowedShellPatterns.joined(separator: ","))",
-                "askShell=\(askFirstShellPatterns.joined(separator: ","))",
-                "denyShell=\(deniedShellPatterns.joined(separator: ","))",
-                "allowURL=\(allowedURLPatterns.joined(separator: ","))",
-                "denyURL=\(deniedURLPatterns.joined(separator: ","))",
-                "support=\(runtimeSupportTools.joined(separator: ","))",
-                "skillIDs=\(scopedSkillIDs.joined(separator: ","))",
-                "skillNames=\(scopedSkillNames.joined(separator: ","))",
-                "connectors=\(scopedConnectorDescriptors.joined(separator: ","))",
-                "tools=\(scopedLocalToolCommands.joined(separator: ","))",
-                "env=\(environmentKeyNames.joined(separator: ","))",
-                "credentials=\(credentialLabels.joined(separator: ","))",
-                "mcp=\(mcpServerIDs.joined(separator: ","))",
-                "browserAdapters=\(browserAdapters.joined(separator: ","))",
-                "prompt=\(promptSchemaVersion)",
-                "environment=\(executionEnvironmentFingerprint ?? WorkspaceExecutionEnvironment.host.signatureFingerprint)"
-            ].joined(separator: "\u{1f}")
-        }
-    }
-
-    // Approval grants accumulate inside a task, so signatures are compared
-    // modulo grant-derived entries: otherwise the first post-approval turn
-    // always reads as a policy change and drops the provider session.
-    private static func grantNeutralizedSignatureValue(
-        _ payload: ProviderLaunchSignaturePayload,
-        grantStrings: Set<String>
-    ) -> String {
-        guard !grantStrings.isEmpty else { return payload.signatureValue }
-        let grantKeys = Set(grantStrings.map(canonicalToolKey))
-        var neutral = payload
-        neutral.allowedTools = payload.allowedTools.filter { !grantStrings.contains($0) }
-        neutral.askFirstTools = payload.askFirstTools.filter { !grantKeys.contains(canonicalToolKey($0)) }
-        neutral.deniedTools = payload.deniedTools.filter { !grantKeys.contains(canonicalToolKey($0)) }
-        neutral.policyScope = "grant_neutral"
-        return neutral.signatureValue
-    }
-
-    private static func canonicalToolKey(_ value: String) -> String {
-        value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-    }
-
-    private static func signatureGrantStrings(for manifest: RunPermissionManifest) -> Set<String> {
-        guard !manifest.approvalGrants.isEmpty else { return [] }
-        return Set(
-            PermissionBroker.providerGrantStrings(for: manifest.approvalGrants, runtime: manifest.providerID)
-                + PermissionBroker.providerRuntimeGrantStrings(for: manifest.approvalGrants, runtime: manifest.providerID)
-        )
-    }
-
     @MainActor
     private static func nativeContinuationSessionID(
         for task: AgentTask,
@@ -1774,12 +1696,18 @@ final class AgentRuntimeWorker {
             return NativeContinuationDecision(sessionID: nil, skipReason: "missing_previous_session_run", signatureMatched: false)
         }
 
-        guard let previousSignature = providerLaunchSignature(for: task, run: previousRun) else {
+        guard let previousSignature = ProviderLaunchSignatureService.storedSignature(for: task, run: previousRun) else {
             return NativeContinuationDecision(sessionID: nil, skipReason: "missing_previous_launch_signature", signatureMatched: false)
         }
 
-        let previousValue = grantNeutralizedSignatureValue(previousSignature, grantStrings: grantNeutralizingStrings)
-        let currentValue = grantNeutralizedSignatureValue(currentLaunchSignature, grantStrings: grantNeutralizingStrings)
+        let previousValue = ProviderLaunchSignatureService.grantNeutralizedValue(
+            previousSignature,
+            grantStrings: grantNeutralizingStrings
+        )
+        let currentValue = ProviderLaunchSignatureService.grantNeutralizedValue(
+            currentLaunchSignature,
+            grantStrings: grantNeutralizingStrings
+        )
         guard previousValue == currentValue else {
             return NativeContinuationDecision(sessionID: nil, skipReason: "launch_signature_changed", signatureMatched: false)
         }
@@ -1807,101 +1735,6 @@ final class AgentRuntimeWorker {
             .filter { $0.id != currentRun.id }
             .filter { $0.providerSessionId?.trimmingCharacters(in: .whitespacesAndNewlines) == sessionID }
             .max { $0.startedAt < $1.startedAt }
-    }
-
-    @MainActor
-    private static func providerLaunchSignature(
-        for task: AgentTask,
-        manifest: RunPermissionManifest,
-        contextText: String
-    ) -> ProviderLaunchSignaturePayload {
-        let scope = TaskCapabilityResolver(task: task).promptScope(contextText: contextText)
-        let supportTools = manifest.providerRender.runtimeSupportTools.map { descriptor in
-            [
-                descriptor.name,
-                descriptor.providerNativePermission ?? "",
-                descriptor.allowedInputKeys.joined(separator: "+"),
-                descriptor.deniedInputKeys.joined(separator: "+")
-            ].joined(separator: ":")
-        }
-        let connectorDescriptors = scope.connectors.map { connector in
-            [
-                connector.id.uuidString,
-                connector.name,
-                connector.serviceType,
-                connector.baseURL
-            ].joined(separator: ":")
-        }
-        let localToolCommands = scope.localTools.compactMap { tool -> String? in
-            let command = tool.command.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !command.isEmpty else { return nil }
-            return command
-        }
-        return ProviderLaunchSignaturePayload(
-            version: 1,
-            runtimeID: manifest.providerID.rawValue,
-            model: manifest.model,
-            policyLevel: manifest.policyLevel.rawValue,
-            policyScope: manifest.policyScope.rawValue,
-            providerAdapterVersion: manifest.providerRender.adapterVersion,
-            permissionMode: manifest.providerRender.permissionMode,
-            allowedTools: canonicalStrings(manifest.providerRender.allowedTools),
-            askFirstTools: canonicalStrings(manifest.providerRender.askFirstTools),
-            deniedTools: canonicalStrings(manifest.providerRender.deniedTools),
-            allowedShellPatterns: canonicalStrings(manifest.providerRender.allowedShellPatterns),
-            askFirstShellPatterns: canonicalStrings(manifest.providerRender.askFirstShellPatterns),
-            deniedShellPatterns: canonicalStrings(manifest.providerRender.deniedShellPatterns),
-            allowedURLPatterns: canonicalStrings(manifest.providerRender.allowedURLPatterns),
-            deniedURLPatterns: canonicalStrings(manifest.providerRender.deniedURLPatterns),
-            runtimeSupportTools: canonicalStrings(supportTools),
-            scopedSkillIDs: canonicalStrings(scope.behaviorSkills.map { $0.id.uuidString }),
-            scopedSkillNames: canonicalStrings(scope.behaviorSkills.map(\.name)),
-            scopedConnectorDescriptors: canonicalStrings(connectorDescriptors),
-            scopedLocalToolCommands: canonicalStrings(localToolCommands),
-            environmentKeyNames: canonicalStrings(manifest.environmentKeyNames),
-            credentialLabels: canonicalStrings(manifest.credentialLabels),
-            mcpServerIDs: canonicalStrings(manifest.mcpServers.map { "\($0.packageID):\($0.id)" }),
-            browserAdapters: canonicalStrings(scope.enabledBrowserAdapters),
-            promptSchemaVersion: "context_capsule_v2",
-            executionEnvironmentFingerprint: DockerExecutionPlanner.resolveEnvironment(for: task).signatureFingerprint
-        )
-    }
-
-    @MainActor
-    private static func recordProviderLaunchSignature(
-        _ signature: ProviderLaunchSignaturePayload,
-        task: AgentTask,
-        run: TaskRun,
-        modelContext: ModelContext
-    ) {
-        guard let data = try? JSONEncoder().encode(signature),
-              let payload = String(data: data, encoding: .utf8) else {
-            return
-        }
-        run.providerLaunchSignatureJSON = payload
-        modelContext.insert(TaskEvent(task: task, type: providerLaunchSignatureEventType, payload: payload, run: run))
-    }
-
-    private static func providerLaunchSignature(for task: AgentTask, run: TaskRun) -> ProviderLaunchSignaturePayload? {
-        if let payload = run.providerLaunchSignatureJSON,
-           let data = payload.data(using: .utf8),
-           let signature = try? JSONDecoder().decode(ProviderLaunchSignaturePayload.self, from: data) {
-            return signature
-        }
-        return task.events
-            .filter { $0.type == providerLaunchSignatureEventType && $0.run?.id == run.id }
-            .sorted { $0.timestamp < $1.timestamp }
-            .compactMap { event -> ProviderLaunchSignaturePayload? in
-                guard let data = event.payload.data(using: .utf8) else { return nil }
-                return try? JSONDecoder().decode(ProviderLaunchSignaturePayload.self, from: data)
-            }
-            .last
-    }
-
-    private static func canonicalStrings(_ values: [String]) -> [String] {
-        Array(Set(values.map {
-            $0.trimmingCharacters(in: .whitespacesAndNewlines)
-        }.filter { !$0.isEmpty })).sorted()
     }
 
     private static func runtimeID(from rawValue: String?) -> AgentRuntimeID? {

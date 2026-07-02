@@ -30,6 +30,37 @@ enum TaskCapabilityResolutionScope: Equatable {
     }
 }
 
+struct TaskCapabilityResolutionSnapshot {
+    let fullInventory: TaskCapabilityPromptScope
+    let providerLaunch: TaskCapabilityPromptScope
+    let providerLaunchContextText: String
+
+    static func capture(
+        for task: AgentTask,
+        providerLaunchContextText: String,
+        additionalCredentialGrants: [PermissionGrant] = []
+    ) -> TaskCapabilityResolutionSnapshot {
+        let resolver = TaskCapabilityResolver(
+            task: task,
+            additionalCredentialGrants: additionalCredentialGrants
+        )
+        return TaskCapabilityResolutionSnapshot(
+            fullInventory: resolver.resolvedScope(.fullInventory),
+            providerLaunch: resolver.resolvedScope(.providerLaunch(contextText: providerLaunchContextText)),
+            providerLaunchContextText: providerLaunchContextText
+        )
+    }
+
+    func scope(_ requestedScope: TaskCapabilityResolutionScope) -> TaskCapabilityPromptScope {
+        switch requestedScope {
+        case .fullInventory:
+            return fullInventory
+        case .providerLaunch:
+            return providerLaunch
+        }
+    }
+}
+
 struct TaskCapabilityResolver {
     private let task: AgentTask
     private let additionalCredentialGrants: [PermissionGrant]
@@ -977,4 +1008,8 @@ struct TaskCapabilityPromptScope {
     let prunedForBrowserTask: Bool
     let excludedSkillNames: [String]
     let enabledPackageIDs: [String]
+
+    var exposesBrowserBridge: Bool {
+        localTools.contains { $0.command == "astra-browser" }
+    }
 }
