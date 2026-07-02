@@ -4,6 +4,55 @@ import ASTRACore
 
 @Suite("ProcessBinaryRunner")
 struct ProcessBinaryRunnerTests {
+    @Test("Hardened process executor provides synchronous PATH lookup and stdin")
+    func hardenedProcessExecutorProvidesSynchronousPathLookupAndStdin() {
+        let result = HardenedProcessExecutor().runSynchronously(
+            HardenedProcessRequest(
+                executable: "cat",
+                standardInput: Data("mail input".utf8),
+                timeout: 3
+            )
+        )
+
+        #expect(result.exitCode == 0)
+        #expect(result.stdout == "mail input")
+        #expect(result.timedOut == false)
+        #expect(result.launchError == nil)
+    }
+
+    @Test("Hardened process executor classifies synchronous timeouts")
+    func hardenedProcessExecutorClassifiesSynchronousTimeouts() {
+        let result = HardenedProcessExecutor().runSynchronously(
+            HardenedProcessRequest(
+                executable: "/bin/sh",
+                arguments: ["-c", "printf started; sleep 5"],
+                timeout: 0.1
+            )
+        )
+
+        #expect(result.exitCode == nil)
+        #expect(result.timedOut == true)
+        #expect(result.stdout.contains("started"))
+        #expect(result.outcome == .timedOut)
+    }
+
+    @Test("Hardened process executor caps captured output and reports truncation")
+    func hardenedProcessExecutorCapsOutputAndReportsTruncation() {
+        let result = HardenedProcessExecutor().runSynchronously(
+            HardenedProcessRequest(
+                executable: "/bin/sh",
+                arguments: ["-c", "printf 1234567890"],
+                timeout: 3,
+                maximumOutputBytes: 4
+            )
+        )
+
+        #expect(result.exitCode == 0)
+        #expect(result.stdout == "1234")
+        #expect(result.stdoutTruncated)
+        #expect(!result.stderrTruncated)
+    }
+
     @Test("RunResult exposes exit contract fields")
     func runResultExitContractFields() {
         let result = RunResult.exited(code: 0, stdout: "ok", stderr: "")

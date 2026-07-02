@@ -70,6 +70,21 @@ struct WorkspaceAppGenericCapabilityReadTests {
 
     // MARK: - Generic CLI executor — security boundary
 
+    @Test("generic CLI runner delegates process mechanics to HardenedProcessExecutor")
+    func genericCLIRunnerDelegatesToSharedHardenedExecutor() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let sourceURL = repositoryRoot
+            .appendingPathComponent("Astra/Services/WorkspaceApps/WorkspaceAppGenericCLIReadClient.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+        #expect(source.contains("import ASTRACore"))
+        #expect(source.contains("HardenedProcessExecutor"))
+        #expect(!source.contains("let process = Process()"))
+        #expect(!source.contains("CLIOutputBox"))
+    }
+
     @Test("argv templating substitutes validated params and rejects malformed/unsafe/missing values")
     func argvTemplating() throws {
         let command = ["gh", "issue", "list", "--state", "{state}", "--limit", "{limit}"]

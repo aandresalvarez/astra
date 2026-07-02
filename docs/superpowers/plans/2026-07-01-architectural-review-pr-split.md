@@ -839,11 +839,20 @@ swift test --filter ProcessMonitorTests
 swift test --filter AgentExecutionScopedProcessTests
 swift test --filter WorkspaceAppGenericCapabilityReadTests
 swift test --filter HostControlToolSupportTests
-swift test --target MailToolSupportTests
+swift test --filter MailToolSupportTests
 git diff --check
 script/precommit.sh
 script/prepush.sh
 ```
+
+**Implementation evidence:**
+
+- Added `ASTRACore/HardenedProcessExecutor.swift` with a typed `HardenedProcessRequest` for executable, argv, stdin, timeout, explicit environment, current directory, output byte cap, and process-group termination policy.
+- Extended `ProcessBinaryRunner`/`RunResult` so shared process execution can report stdout/stderr truncation, enforce bounded collectors, and optionally terminate a best-effort child process group through the same timeout/cancellation path.
+- Migrated `WorkspaceAppHardenedCLIRunner` away from its private `Process`/`CLIOutputBox` implementation; it now supplies workspace read policy values and delegates launch mechanics to `HardenedProcessExecutor`.
+- Migrated `Tools/MailToolSupport.runProcess` away from its private `LockedDataBuffer`/`Process` implementation while preserving PATH lookup, stdin, timeout errors, stdout/stderr, and exit-code behavior.
+- Added regression coverage in `Tests/BinaryRunnerTests.swift`, `Tests/WorkspaceAppGenericCapabilityReadTests.swift`, and `Tests/MailToolSupportTests/StanfordAppleMailToolTests.swift` proving the shared executor path owns output caps and the migrated callers no longer carry private process runners.
+- Validation passed: `swift test --filter ProcessBinaryRunnerTests`; `swift test --filter WorkspaceAppGenericCapabilityReadTests`; `swift test --filter MailToolSupportTests`; `swift test --filter ProcessMonitorTests`; `swift test --filter AgentExecutionScopedProcessTests`; `swift test --filter HostControlToolSupportTests`; `git diff --check`; `script/precommit.sh`; `script/prepush.sh`.
 
 ## PR 19: Funnel SwiftData Saves Through Persistence Boundaries
 

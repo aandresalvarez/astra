@@ -4,6 +4,21 @@ import Testing
 
 @Suite("Stanford Apple Mail tool")
 struct StanfordAppleMailToolTests {
+    @Test("Mail tool runProcess delegates to the shared hardened executor")
+    func runProcessDelegatesToSharedHardenedExecutor() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let sourceURL = repositoryRoot
+            .appendingPathComponent("Tools/MailToolSupport/MailToolSupport.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+        #expect(source.contains("import ASTRACore"))
+        #expect(source.contains("HardenedProcessExecutor"))
+        #expect(!source.contains("private final class LockedDataBuffer"))
+    }
+
     @Test("missing message errors render attacker input as an AppleScript string literal")
     func missingMessageErrorRendersAttackerInputAsAppleScriptLiteral() {
         let messageID = #"missing" & do shell script "printf ASTRA_INJECTION_PROOF" & ""#

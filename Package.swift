@@ -35,6 +35,7 @@ let package = Package(
         ),
         .target(
             name: "MailToolSupport",
+            dependencies: ["ASTRACore"],
             path: "Tools/MailToolSupport"
         ),
         .target(

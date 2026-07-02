@@ -31,12 +31,23 @@ public struct RunResult: Sendable, Equatable {
     public let timedOut: Bool
     public let cancelled: Bool
     public let elapsedTime: TimeInterval
+    public let stdoutTruncated: Bool
+    public let stderrTruncated: Bool
 
-    public init(outcome: Outcome, stdout: String, stderr: String, elapsedTime: TimeInterval = 0) {
+    public init(
+        outcome: Outcome,
+        stdout: String,
+        stderr: String,
+        elapsedTime: TimeInterval = 0,
+        stdoutTruncated: Bool = false,
+        stderrTruncated: Bool = false
+    ) {
         self.outcome = outcome
         self.stdout = stdout
         self.stderr = stderr
         self.elapsedTime = elapsedTime
+        self.stdoutTruncated = stdoutTruncated
+        self.stderrTruncated = stderrTruncated
         switch outcome {
         case .exited(let code):
             self.exitCode = code
@@ -188,7 +199,9 @@ public struct ProcessBinaryRunner: BinaryRunner {
         timeout: TimeInterval,
         environment: [String: String]?,
         currentDirectory: String?,
-        stdin: Data? = nil
+        stdin: Data? = nil,
+        maximumOutputBytes: Int? = nil,
+        terminateProcessGroup: Bool = false
     ) async -> RunResult {
         let state = ProcessRunState()
         return await withTaskCancellationHandler {
@@ -225,8 +238,8 @@ public struct ProcessBinaryRunner: BinaryRunner {
                     stdinPipe = nil
                 }
 
-                let stdoutCollector = PipeCollector()
-                let stderrCollector = PipeCollector()
+                let stdoutCollector = PipeCollector(maximumBytes: maximumOutputBytes)
+                let stderrCollector = PipeCollector(maximumBytes: maximumOutputBytes)
                 let startedAt = Date()
                 stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
                     let data = handle.availableData
@@ -260,7 +273,9 @@ public struct ProcessBinaryRunner: BinaryRunner {
                         outcome: outcome,
                         stdout: stdoutCollector.string,
                         stderr: stderrCollector.string,
-                        elapsedTime: elapsed
+                        elapsedTime: elapsed,
+                        stdoutTruncated: stdoutCollector.wasTruncated,
+                        stderrTruncated: stderrCollector.wasTruncated
                     )
                 }
 
@@ -275,6 +290,13 @@ public struct ProcessBinaryRunner: BinaryRunner {
                         elapsedTime: Date().timeIntervalSince(startedAt)
                     )
                     return
+                }
+                if terminateProcessGroup {
+                    let pid = process.processIdentifier
+                    setpgid(pid, pid)
+                    if getpgid(pid) == pid {
+                        state.setProcessGroupID(pid)
+                    }
                 }
                 if let stdinPipe, let stdin {
                     // Small payloads only (well under the 64KB pipe buffer),
@@ -300,17 +322,11 @@ public struct ProcessBinaryRunner: BinaryRunner {
                         outcome: .timedOut,
                         stdout: stdoutCollector.string,
                         stderr: stderrCollector.string,
-                        elapsedTime: Date().timeIntervalSince(startedAt)
+                        elapsedTime: Date().timeIntervalSince(startedAt),
+                        stdoutTruncated: stdoutCollector.wasTruncated,
+                        stderrTruncated: stderrCollector.wasTruncated
                     )
-                    // Polite first, then forceful. terminate() sends SIGTERM;
-                    // if the process hasn't exited after 500ms we SIGKILL.
-                    process.terminate()
-                    Task {
-                        try? await Task.sleep(nanoseconds: 500_000_000)
-                        if process.isRunning {
-                            kill(process.processIdentifier, SIGKILL)
-                        }
-                    }
+                    state.terminateRunningProcess(process)
                 }
                 state.setTimeoutTask(timeoutTask)
             }
@@ -326,11 +342,32 @@ public struct ProcessBinaryRunner: BinaryRunner {
 /// background queue, so appends need synchronization.
 private final class PipeCollector: @unchecked Sendable {
     private var buffer = Data()
+    private var truncated = false
     private let lock = NSLock()
+    private let maximumBytes: Int?
+
+    init(maximumBytes: Int? = nil) {
+        if let maximumBytes, maximumBytes >= 0 {
+            self.maximumBytes = maximumBytes
+        } else {
+            self.maximumBytes = nil
+        }
+    }
 
     func append(_ data: Data) {
+        guard !data.isEmpty else { return }
         lock.lock()
-        buffer.append(data)
+        if let maximumBytes {
+            let remaining = max(0, maximumBytes - buffer.count)
+            if remaining > 0 {
+                buffer.append(data.prefix(remaining))
+            }
+            if data.count > remaining {
+                truncated = true
+            }
+        } else {
+            buffer.append(data)
+        }
         lock.unlock()
     }
 
@@ -339,6 +376,13 @@ private final class PipeCollector: @unchecked Sendable {
         let snapshot = buffer
         lock.unlock()
         return String(data: snapshot, encoding: .utf8) ?? ""
+    }
+
+    var wasTruncated: Bool {
+        lock.lock()
+        let value = truncated
+        lock.unlock()
+        return value
     }
 }
 
@@ -349,6 +393,7 @@ private final class ProcessRunState: @unchecked Sendable {
     private let lock = NSLock()
     private var continuation: CheckedContinuation<RunResult, Never>?
     private var process: Process?
+    private var processGroupID: pid_t?
     private var timeoutTask: Task<Void, Never>?
     private var didFinish = false
 
@@ -385,6 +430,16 @@ private final class ProcessRunState: @unchecked Sendable {
         }
     }
 
+    func setProcessGroupID(_ processGroupID: pid_t) {
+        lock.lock()
+        self.processGroupID = processGroupID
+        lock.unlock()
+    }
+
+    func terminateRunningProcess(_ process: Process) {
+        terminate(process)
+    }
+
     func stopIfFinished(_ process: Process) -> Bool {
         lock.lock()
         let shouldTerminate = didFinish
@@ -413,7 +468,14 @@ private final class ProcessRunState: @unchecked Sendable {
         }
     }
 
-    func finish(outcome: RunResult.Outcome, stdout: String, stderr: String, elapsedTime: TimeInterval) {
+    func finish(
+        outcome: RunResult.Outcome,
+        stdout: String,
+        stderr: String,
+        elapsedTime: TimeInterval,
+        stdoutTruncated: Bool = false,
+        stderrTruncated: Bool = false
+    ) {
         lock.lock()
         let cont = continuation
         continuation = nil
@@ -427,17 +489,30 @@ private final class ProcessRunState: @unchecked Sendable {
             outcome: outcome,
             stdout: stdout,
             stderr: stderr,
-            elapsedTime: elapsedTime
+            elapsedTime: elapsedTime,
+            stdoutTruncated: stdoutTruncated,
+            stderrTruncated: stderrTruncated
         ))
     }
 
     private func terminate(_ process: Process) {
         guard process.isRunning else { return }
-        process.terminate()
+        let pid = process.processIdentifier
+        let processGroupID: pid_t?
+        lock.lock()
+        processGroupID = self.processGroupID
+        lock.unlock()
+        if let processGroupID {
+            kill(-processGroupID, SIGTERM)
+        } else {
+            process.terminate()
+        }
         Task {
             try? await Task.sleep(nanoseconds: 500_000_000)
-            if process.isRunning {
-                kill(process.processIdentifier, SIGKILL)
+            if let processGroupID {
+                kill(-processGroupID, SIGKILL)
+            } else if process.isRunning {
+                kill(pid, SIGKILL)
             }
         }
     }
