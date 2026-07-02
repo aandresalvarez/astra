@@ -352,7 +352,9 @@ enum WorkspaceRecoveryService {
                             from: configURL,
                             accessIntent: .implicitScan(root: nil)
                         )
-                        config.primaryPath = configURL.deletingLastPathComponent().standardizedFileURL.path
+                        config.primaryPath = WorkspaceFileLayout.workspaceRoot(forConfigFile: configURL)
+                            .standardizedFileURL
+                            .path
                         return LoadedWorkspaceConfig(config: config)
                     } catch {
                         AppLogger.audit(.workspaceRecoveryFailed, category: "Persistence", fields: [
@@ -398,7 +400,9 @@ enum WorkspaceRecoveryService {
                     from: configURL,
                     accessIntent: .implicitScan(root: nil)
                 )
-                config.primaryPath = configURL.deletingLastPathComponent().standardizedFileURL.path
+                config.primaryPath = WorkspaceFileLayout.workspaceRoot(forConfigFile: configURL)
+                    .standardizedFileURL
+                    .path
                 let configID = config.id
                 let configPath = normalizePath(config.primaryPath)
                 if let configID, existingIDs.contains(configID) {

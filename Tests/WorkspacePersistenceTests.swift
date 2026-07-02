@@ -1151,6 +1151,75 @@ struct WorkspacePersistenceTests {
         #expect(workspaces.first?.schedules.first { $0.name == "Recovered Routine" }?.isEnabled == true)
     }
 
+    @Test("automatic recovery resolves canonical support config to workspace root")
+    @MainActor
+    func recoveryImportsCanonicalSupportConfigAtWorkspaceRoot() throws {
+        let root = URL(fileURLWithPath: "/tmp/astra_recovery_canonical_\(UUID().uuidString)")
+        let workspaceFolder = root.appendingPathComponent("project")
+        try FileManager.default.createDirectory(at: workspaceFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let sourceContainer = try makeWorkspacePersistenceContainer()
+        let sourceContext = sourceContainer.mainContext
+        let sourceWorkspace = try makeRichWorkspace(in: sourceContext, root: workspaceFolder.path)
+        let configURL = URL(fileURLWithPath: WorkspaceFileLayout.workspaceConfigFile(for: workspaceFolder.path))
+        try WorkspaceConfigManager.exportToFile(workspace: sourceWorkspace, modelContext: sourceContext, url: configURL)
+
+        let recoveryContainer = try makeWorkspacePersistenceContainer()
+        let recoveryContext = recoveryContainer.mainContext
+        let importedCount = WorkspaceRecoveryService.recoverMissingWorkspaces(
+            modelContext: recoveryContext,
+            extraRoots: [root.path],
+            includeDefaultRoots: false
+        )
+        let secondImportCount = WorkspaceRecoveryService.recoverMissingWorkspaces(
+            modelContext: recoveryContext,
+            extraRoots: [root.path],
+            includeDefaultRoots: false
+        )
+        let workspaces = (try? recoveryContext.fetch(FetchDescriptor<Workspace>())) ?? []
+
+        #expect(importedCount == 1)
+        #expect(secondImportCount == 0)
+        #expect(workspaces.count == 1)
+        #expect(workspaces.first?.primaryPath == workspaceFolder.path)
+        #expect(workspaces.first?.primaryPath != configURL.deletingLastPathComponent().path)
+    }
+
+    @Test("async launch recovery resolves canonical support config to workspace root")
+    @MainActor
+    func asyncLaunchRecoveryImportsCanonicalSupportConfigAtWorkspaceRoot() async throws {
+        let root = URL(fileURLWithPath: "/tmp/astra_async_recovery_canonical_\(UUID().uuidString)")
+        let workspaceFolder = root.appendingPathComponent("project")
+        try FileManager.default.createDirectory(at: workspaceFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let sourceContainer = try makeWorkspacePersistenceContainer()
+        let sourceContext = sourceContainer.mainContext
+        let sourceWorkspace = try makeRichWorkspace(in: sourceContext, root: workspaceFolder.path)
+        let configURL = URL(fileURLWithPath: WorkspaceFileLayout.workspaceConfigFile(for: workspaceFolder.path))
+        try WorkspaceConfigManager.exportToFile(workspace: sourceWorkspace, modelContext: sourceContext, url: configURL)
+
+        let recoveryContainer = try makeWorkspacePersistenceContainer()
+        let recoveryContext = recoveryContainer.mainContext
+        WorkspaceRecoveryService.recoverMissingWorkspacesAfterLaunch(
+            modelContext: recoveryContext,
+            extraRoots: [root.path],
+            includeDefaultRoots: false
+        )
+
+        var workspaces: [Workspace] = []
+        for _ in 0..<100 {
+            workspaces = (try? recoveryContext.fetch(FetchDescriptor<Workspace>())) ?? []
+            if !workspaces.isEmpty { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+
+        #expect(workspaces.count == 1)
+        #expect(workspaces.first?.primaryPath == workspaceFolder.path)
+        #expect(workspaces.first?.primaryPath != configURL.deletingLastPathComponent().path)
+    }
+
     @Test("automatic recovery skips privacy-sensitive user media folders")
     func recoverySkipsPrivacySensitiveUserMediaFolders() throws {
         let root = URL(fileURLWithPath: "/tmp/astra_recovery_privacy_\(UUID().uuidString)")
@@ -1270,6 +1339,30 @@ struct WorkspacePersistenceTests {
         #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent(".gitignore").path))
     }
 
+    @Test("workspace generated state is excluded when workspace is nested in a git checkout")
+    func nestedWorkspaceGeneratedStateIsExcludedFromContainingGitCheckout() throws {
+        let root = URL(fileURLWithPath: "/tmp/astra_nested_git_exclude_\(UUID().uuidString)", isDirectory: true)
+        let workspace = root
+            .appendingPathComponent("packages", isDirectory: true)
+            .appendingPathComponent("project", isDirectory: true)
+        let info = root.appendingPathComponent(".git/info", isDirectory: true)
+        try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: info, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let exclude = info.appendingPathComponent("exclude")
+        try "# user excludes\n".write(to: exclude, atomically: true, encoding: .utf8)
+
+        try WorkspaceGeneratedStateExcluder.ensureExcluded(workspacePath: workspace.path)
+        try WorkspaceGeneratedStateExcluder.ensureExcluded(workspacePath: workspace.path)
+
+        let contents = try String(contentsOf: exclude, encoding: .utf8)
+        #expect(contents.contains("# user excludes"))
+        #expect(contents.components(separatedBy: "packages/project/.astra/").count == 2)
+        #expect(!contents.split(whereSeparator: \.isNewline).contains(".astra/"))
+        #expect(!FileManager.default.fileExists(atPath: workspace.appendingPathComponent(".gitignore").path))
+    }
+
     @Test("workspace mirror export bounds runs events and output")
     @MainActor
     func workspaceMirrorExportBoundsRunsEventsAndOutput() throws {
@@ -1310,6 +1403,74 @@ struct WorkspacePersistenceTests {
         #expect(firstEvent.payload.count <= WorkspaceConfigManager.MirrorLimits.maxEventPayloadCharacters)
         #expect(mirroredTask.runs.map(\.startedAt) == mirroredTask.runs.map(\.startedAt).sorted())
         #expect(mirroredTask.events.map(\.timestamp) == mirroredTask.events.map(\.timestamp).sorted())
+    }
+
+    @Test("workspace mirror export bounds workspace app runs events and output")
+    @MainActor
+    func workspaceMirrorExportBoundsWorkspaceAppRunsEventsAndOutput() throws {
+        let container = try makeWorkspacePersistenceContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Bounded App Mirror", primaryPath: "/tmp/astra_bounded_app_mirror_\(UUID().uuidString)")
+        context.insert(workspace)
+        let app = WorkspaceApp(
+            workspaceID: workspace.id,
+            logicalID: "review-dashboard",
+            name: "Review Dashboard",
+            icon: "chart.bar",
+            appDescription: "Tracks review status",
+            lifecycleStatus: .published,
+            permissionMode: .approvalRequired,
+            dependencyStatus: .ready,
+            manifestRelativePath: ".astra/apps/review-dashboard/manifest.json",
+            appDirectoryRelativePath: ".astra/apps/review-dashboard",
+            manifestDigest: "digest-current"
+        )
+        context.insert(app)
+
+        for index in 0..<15 {
+            let run = WorkspaceAppRun(
+                workspaceID: workspace.id,
+                appID: app.id,
+                appLogicalID: app.logicalID,
+                actionID: "refresh-\(index)",
+                trigger: .automation,
+                status: .completed,
+                startedAt: Date(timeIntervalSince1970: TimeInterval(index)),
+                inputSummary: "Refresh PR data",
+                outputSummary: String(repeating: "summary-\(index)", count: 2_000),
+                errorMessage: nil
+            )
+            context.insert(run)
+
+            let event = WorkspaceAppRunEvent(
+                runID: run.id,
+                workspaceID: workspace.id,
+                appID: app.id,
+                actionID: run.actionID,
+                type: "workspace_app.run.event.\(index)",
+                payload: String(repeating: "payload-\(index)", count: 2_000),
+                timestamp: Date(timeIntervalSince1970: TimeInterval(index))
+            )
+            context.insert(event)
+        }
+        try context.save()
+
+        let config = try #require(WorkspaceConfigManager.export(workspace: workspace, modelContext: context))
+        let mirroredRuns = try #require(config.workspaceAppRuns)
+        let mirroredEvents = try #require(config.workspaceAppRunEvents)
+        let firstRun = try #require(mirroredRuns.first)
+        let firstEvent = try #require(mirroredEvents.first)
+
+        #expect(mirroredRuns.count == WorkspaceConfigManager.MirrorLimits.maxWorkspaceAppRuns)
+        #expect(mirroredEvents.count == WorkspaceConfigManager.MirrorLimits.maxWorkspaceAppRunEvents)
+        #expect(firstRun.outputSummary.contains("[ASTRA mirror truncated"))
+        #expect(firstEvent.payload.contains("[ASTRA mirror truncated"))
+        #expect(firstRun.outputSummary.count <= WorkspaceConfigManager.MirrorLimits.maxWorkspaceAppRunOutputCharacters)
+        #expect(firstEvent.payload.count <= WorkspaceConfigManager.MirrorLimits.maxWorkspaceAppRunEventPayloadCharacters)
+        #expect(mirroredRuns.map(\.startedAt) == mirroredRuns.map(\.startedAt).sorted())
+        #expect(mirroredEvents.map(\.timestamp) == mirroredEvents.map(\.timestamp).sorted())
+        #expect(mirroredRuns.first?.actionID == "refresh-5")
+        #expect(mirroredEvents.first?.type == "workspace_app.run.event.5")
     }
 
     @Test("workspace export result reports write diagnostics")

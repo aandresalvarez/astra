@@ -1,10 +1,22 @@
 import Foundation
 
 enum WorkspaceGeneratedStateExcluder {
-    private static let generatedStatePattern = "\(WorkspaceFileLayout.supportDirectoryName)/"
+    private struct GitRepository {
+        var root: URL
+        var gitDirectory: URL
+    }
 
     static func ensureExcluded(workspacePath: String, fileManager: FileManager = .default) throws {
-        guard let excludeURL = gitInfoExcludeURL(workspacePath: workspacePath, fileManager: fileManager) else { return }
+        let workspaceURL = URL(fileURLWithPath: workspacePath, isDirectory: true).standardizedFileURL
+        guard let repository = gitRepository(containing: workspaceURL, fileManager: fileManager) else { return }
+
+        let generatedStatePattern = generatedStatePattern(
+            workspaceURL: workspaceURL,
+            repositoryRoot: repository.root
+        )
+        let excludeURL = repository.gitDirectory
+            .appendingPathComponent("info", isDirectory: true)
+            .appendingPathComponent("exclude")
         try fileManager.createDirectory(
             at: excludeURL.deletingLastPathComponent(),
             withIntermediateDirectories: true
@@ -26,24 +38,51 @@ enum WorkspaceGeneratedStateExcluder {
         try updated.write(to: excludeURL, atomically: true, encoding: .utf8)
     }
 
-    private static func gitInfoExcludeURL(workspacePath: String, fileManager: FileManager) -> URL? {
-        let workspaceURL = URL(fileURLWithPath: workspacePath, isDirectory: true).standardizedFileURL
-        let dotGit = workspaceURL.appendingPathComponent(".git")
-        var isDirectory: ObjCBool = false
-        guard fileManager.fileExists(atPath: dotGit.path, isDirectory: &isDirectory) else { return nil }
+    private static func gitRepository(containing workspaceURL: URL, fileManager: FileManager) -> GitRepository? {
+        var current = workspaceURL.standardizedFileURL
+        while true {
+            let dotGit = current.appendingPathComponent(".git")
+            var isDirectory: ObjCBool = false
+            if fileManager.fileExists(atPath: dotGit.path, isDirectory: &isDirectory) {
+                let gitDirectory: URL?
+                if isDirectory.boolValue {
+                    gitDirectory = dotGit
+                } else {
+                    gitDirectory = resolvedGitFileDirectory(dotGit, repositoryRoot: current)
+                }
 
-        let gitDirectory: URL?
-        if isDirectory.boolValue {
-            gitDirectory = dotGit
-        } else {
-            gitDirectory = resolvedGitFileDirectory(dotGit, workspaceURL: workspaceURL)
+                if let gitDirectory {
+                    return GitRepository(root: current, gitDirectory: gitDirectory)
+                }
+            }
+
+            let parent = current.deletingLastPathComponent().standardizedFileURL
+            guard parent.path != current.path else { return nil }
+            current = parent
         }
-        return gitDirectory?
-            .appendingPathComponent("info", isDirectory: true)
-            .appendingPathComponent("exclude")
     }
 
-    private static func resolvedGitFileDirectory(_ dotGit: URL, workspaceURL: URL) -> URL? {
+    private static func generatedStatePattern(workspaceURL: URL, repositoryRoot: URL) -> String {
+        let workspacePath = workspaceURL.standardizedFileURL.path
+        let rootPath = repositoryRoot.standardizedFileURL.path
+        guard workspacePath != rootPath else {
+            return "\(WorkspaceFileLayout.supportDirectoryName)/"
+        }
+
+        let rootPrefix = rootPath.hasSuffix("/") ? rootPath : "\(rootPath)/"
+        guard workspacePath.hasPrefix(rootPrefix) else {
+            return "\(WorkspaceFileLayout.supportDirectoryName)/"
+        }
+
+        let relativeWorkspacePath = String(workspacePath.dropFirst(rootPrefix.count))
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard !relativeWorkspacePath.isEmpty else {
+            return "\(WorkspaceFileLayout.supportDirectoryName)/"
+        }
+        return "\(relativeWorkspacePath)/\(WorkspaceFileLayout.supportDirectoryName)/"
+    }
+
+    private static func resolvedGitFileDirectory(_ dotGit: URL, repositoryRoot: URL) -> URL? {
         guard let contents = try? String(contentsOf: dotGit, encoding: .utf8),
               let line = contents.split(whereSeparator: \.isNewline).first,
               line.lowercased().hasPrefix("gitdir:") else {
@@ -55,7 +94,7 @@ enum WorkspaceGeneratedStateExcluder {
         if rawPath.hasPrefix("/") {
             return URL(fileURLWithPath: rawPath, isDirectory: true).standardizedFileURL
         }
-        return workspaceURL
+        return repositoryRoot
             .appendingPathComponent(rawPath, isDirectory: true)
             .standardizedFileURL
     }

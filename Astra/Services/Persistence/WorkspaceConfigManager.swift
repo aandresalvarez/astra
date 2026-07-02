@@ -18,8 +18,12 @@ enum WorkspaceConfigManager {
     enum MirrorLimits {
         static let maxRunsPerTask = 10
         static let maxEventsPerTask = 10
+        static let maxWorkspaceAppRuns = 10
+        static let maxWorkspaceAppRunEvents = 10
         static let maxRunOutputCharacters = 8_000
         static let maxEventPayloadCharacters = 4_000
+        static let maxWorkspaceAppRunOutputCharacters = 8_000
+        static let maxWorkspaceAppRunEventPayloadCharacters = 4_000
     }
 
     enum ScheduleImportTrustPolicy {
@@ -1043,14 +1047,30 @@ enum WorkspaceConfigManager {
         guard let modelContext = workspace.modelContext else { return [] }
         let workspaceID = workspace.id
         let descriptor = FetchDescriptor<WorkspaceAppRun>(predicate: #Predicate { $0.workspaceID == workspaceID })
-        return (try? modelContext.fetch(descriptor)) ?? []
+        let runs = (try? modelContext.fetch(descriptor)) ?? []
+        return Array(runs
+            .sorted {
+                if $0.startedAt == $1.startedAt {
+                    return $0.id.uuidString < $1.id.uuidString
+                }
+                return $0.startedAt < $1.startedAt
+            }
+            .suffix(MirrorLimits.maxWorkspaceAppRuns))
     }
 
     private static func workspaceAppRunEventsForExport(workspace: Workspace) -> [WorkspaceAppRunEvent] {
         guard let modelContext = workspace.modelContext else { return [] }
         let workspaceID = workspace.id
         let descriptor = FetchDescriptor<WorkspaceAppRunEvent>(predicate: #Predicate { $0.workspaceID == workspaceID })
-        return (try? modelContext.fetch(descriptor)) ?? []
+        let events = (try? modelContext.fetch(descriptor)) ?? []
+        return Array(events
+            .sorted {
+                if $0.timestamp == $1.timestamp {
+                    return $0.id.uuidString < $1.id.uuidString
+                }
+                return $0.timestamp < $1.timestamp
+            }
+            .suffix(MirrorLimits.maxWorkspaceAppRunEvents))
     }
 
     private static func workspaceAppDependencyBindingsForExport(workspace: Workspace) -> [WorkspaceAppDependencyBinding] {
@@ -1282,7 +1302,10 @@ enum WorkspaceConfigManager {
             startedAt: run.startedAt,
             completedAt: run.completedAt,
             inputSummary: run.inputSummary,
-            outputSummary: run.outputSummary,
+            outputSummary: boundedMirrorString(
+                run.outputSummary,
+                limit: MirrorLimits.maxWorkspaceAppRunOutputCharacters
+            ),
             errorMessage: run.errorMessage,
             linkedTaskID: run.linkedTaskID?.uuidString,
             linkedArtifactPath: run.linkedArtifactPath,
@@ -1302,7 +1325,10 @@ enum WorkspaceConfigManager {
             appID: event.appID.uuidString,
             actionID: event.actionID,
             type: event.type,
-            payload: event.payload,
+            payload: boundedMirrorString(
+                event.payload,
+                limit: MirrorLimits.maxWorkspaceAppRunEventPayloadCharacters
+            ),
             timestamp: event.timestamp
         )
     }
