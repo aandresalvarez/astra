@@ -231,6 +231,9 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
         let model = AgentRuntimeProcessRunner.model(context.task.model, for: id)
         let providerModel = CodexCLIRuntime.resolvedModelName(model)
         let additionalPaths = AgentRuntimeProcessRunner.runtimeAdditionalPaths(for: context.task)
+        let resumingNativeSession = !(context.nativeContinuationSessionID ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .isEmpty
         let executionEnvironment = DockerExecutionPlanner.resolveEnvironment(for: context.task)
         let mcpProjection = CodexMCPLaunchProjection.resolve(
             task: context.task,
@@ -260,7 +263,10 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
             )
                 || taskEnv["ASTRA_BROWSER_URL"] != nil,
             mcpConfigArguments: mcpProjection.configArguments,
-            resumeSessionID: context.nativeContinuationSessionID
+            resumeSessionID: context.nativeContinuationSessionID,
+            permissionArguments: context.providerPolicyRender(for: id)?.codexLaunchPermissionArguments(
+                resumingNativeSession: resumingNativeSession
+            )
         )
         let directoriesToCreate = CodexCLIRuntime.directoriesToCreate(
             providerHomeDirectory: context.providerHomeDirectory,

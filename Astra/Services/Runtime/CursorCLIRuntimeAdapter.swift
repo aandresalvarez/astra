@@ -239,7 +239,8 @@ struct CursorCLIRuntimeAdapter: AgentRuntimeAdapter {
                 context.task,
                 contextText: context.contextText
             )
-                || taskEnv["ASTRA_BROWSER_URL"] != nil
+                || taskEnv["ASTRA_BROWSER_URL"] != nil,
+            permissionArguments: context.providerPolicyRender(for: id)?.cursorLaunchPermissionArguments()
         )
         var commandPlannedFields = [
             "runtime": id.rawValue,

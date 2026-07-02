@@ -1359,7 +1359,8 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
         if usesArtifactBootstrapProfile {
             args += ["--effort", "low"]
         }
-        args += effectivePermissionPolicy.cliArguments
+        args += context.providerPolicyRender(for: id)?.claudeLaunchPermissionArguments()
+            ?? effectivePermissionPolicy.cliArguments
         AgentRuntimeProcessRunner.ensureSubAgentPermissions(
             at: context.workspacePath,
             policy: effectivePermissionPolicy,
@@ -1918,6 +1919,17 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
         for (key, value) in mcpProjection.hostControlEnvironment {
             launchTaskEnv[key] = value
         }
+        var providerLaunchRender = context.providerPolicyRender(for: id)
+        providerLaunchRender?.permissionMode = providerLaunchPermissionPolicy.rawValue
+        providerLaunchRender?.allowedTools = providerLaunchAllowed
+        providerLaunchRender?.askFirstTools = surfacedAskFirstTools
+        let allowAllPathsForSSHConnections = AgentRuntimeProcessRunner.hasWorkspaceSSHConnections(for: context.task)
+        let permissionArguments = providerLaunchRender?.copilotLaunchPermissionArguments(
+            capabilities: capabilities,
+            localToolCommands: localToolCommands,
+            runtimeSupportTools: runtimeSupportTools,
+            allowAllPathsForSSHConnections: allowAllPathsForSSHConnections
+        )
         let plan = CopilotCLIRuntime.buildCommand(
             executablePath: executable,
             prompt: context.prompt,
@@ -1940,7 +1952,8 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             askFirstTools: surfacedAskFirstTools,
             additionalMCPConfigPaths: mcpProjection.configURL.map { [$0.path] } ?? [],
             reasoningEffort: artifactBootstrapTools.isEmpty ? nil : "none",
-            allowAllPathsForSSHConnections: AgentRuntimeProcessRunner.hasWorkspaceSSHConnections(for: context.task)
+            allowAllPathsForSSHConnections: allowAllPathsForSSHConnections,
+            permissionArguments: permissionArguments
         )
         let directoriesToCreate = CopilotCLIRuntime.directoriesToCreate(
             copilotHome: context.providerHomeDirectory,
@@ -2631,7 +2644,8 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
             pathPrefix: pathPrefix,
             includeAstraToolsPath: AgentRuntimeProcessRunner.hasActiveCLITools(context.task, contextText: context.contextText)
                 || taskEnv["ASTRA_BROWSER_URL"] != nil,
-            diagnosticLogPath: diagnosticLogPath
+            diagnosticLogPath: diagnosticLogPath,
+            permissionArguments: context.providerPolicyRender(for: id)?.antigravityLaunchPermissionArguments()
         )
         var commandPlannedFields = [
             "runtime": id.rawValue,

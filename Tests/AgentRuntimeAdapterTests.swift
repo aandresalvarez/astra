@@ -867,6 +867,75 @@ struct AgentRuntimeAdapterTests {
         #expect(plan.environment["PATH"]?.contains(".runtime-bin") == true)
     }
 
+    @Test("Codex launch permission flags come from persisted provider render")
+    @MainActor
+    func codexLaunchPermissionFlagsComeFromPersistedProviderRender() throws {
+        let workspace = Workspace(name: "Codex Render", primaryPath: "/tmp/astra-codex-render")
+        let task = AgentTask(
+            title: "Codex render",
+            goal: "Check policy wiring",
+            workspace: workspace,
+            model: "gpt-5.5",
+            runtime: .codexCLI
+        )
+        let renderOwnedFlag = "--render-owned-permission-flag"
+        let providerRender = ProviderPolicyRender(
+            providerID: .codexCLI,
+            adapterVersion: 1,
+            policyLevel: .review,
+            configOwnership: .generated,
+            permissionMode: PermissionPolicy.restricted.rawValue,
+            allowedTools: [],
+            runtimeSupportTools: [],
+            askFirstTools: [],
+            deniedTools: [],
+            allowedShellPatterns: [],
+            askFirstShellPatterns: [],
+            deniedShellPatterns: [],
+            allowedURLPatterns: [],
+            deniedURLPatterns: [],
+            cliArgumentsSummary: [renderOwnedFlag],
+            settingsSummary: "test",
+            generatedConfigPreview: renderOwnedFlag,
+            enforcementTiers: [.providerNative, .astraBrokered],
+            diagnostics: [],
+            usesBroadProviderPermissions: false
+        )
+        let manifest = RunPermissionManifest(
+            taskID: task.id,
+            runID: UUID(),
+            phase: "test",
+            providerID: .codexCLI,
+            providerVersion: nil,
+            model: "gpt-5.5",
+            policyLevel: .review,
+            policyScope: .builtInDefault,
+            providerRender: providerRender,
+            workspacePath: workspace.primaryPath,
+            additionalPaths: [],
+            environmentKeyNames: [],
+            credentialLabels: [],
+            approvalsGranted: [],
+            approvalGrants: []
+        )
+
+        let plan = AgentRuntimeAdapterRegistry
+            .adapter(for: .codexCLI)
+            .makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext(
+                prompt: "hello",
+                task: task,
+                workspacePath: workspace.primaryPath,
+                executablePath: "/bin/codex-not-present",
+                providerHomeDirectory: "/tmp/astra-codex-home",
+                permissionPolicy: .restricted,
+                executionPolicy: .default.applyingProviderRender(providerRender),
+                permissionManifest: manifest,
+                timeoutSeconds: 30
+            ))
+
+        #expect(plan.arguments.contains(renderOwnedFlag))
+    }
+
     @Test("Copilot launch audit separates task and runtime support tools")
     @MainActor
     func copilotLaunchAuditSeparatesTaskAndRuntimeSupportTools() {

@@ -45,7 +45,8 @@ enum CodexCLIRuntime {
         pathPrefix: [String] = [],
         includeAstraToolsPath: Bool = false,
         mcpConfigArguments: [String] = [],
-        resumeSessionID: String? = nil
+        resumeSessionID: String? = nil,
+        permissionArguments: [String]? = nil
     ) -> CodexCLICommandPlan {
         let providerModel = resolvedModelName(model)
         // No `--ephemeral`: native continuation needs the session persisted so a
@@ -63,7 +64,7 @@ enum CodexCLIRuntime {
                 "--model", providerModel
             ]
             args += mcpConfigArguments
-            args += codexResumePermissionArguments(policy: permissionPolicy)
+            args += permissionArguments ?? codexResumePermissionArguments(policy: permissionPolicy)
             args.append("--skip-git-repo-check")
             args.append(trimmedResumeSessionID)
         } else {
@@ -82,7 +83,7 @@ enum CodexCLIRuntime {
                 args += ["--add-dir", path]
             }
 
-            args += codexPermissionArguments(policy: permissionPolicy)
+            args += permissionArguments ?? codexPermissionArguments(policy: permissionPolicy)
             args.append("--skip-git-repo-check")
         }
         args.append(prompt)
