@@ -540,6 +540,51 @@ struct WorkspaceAppActionExecutorTests {
     }
 
     @MainActor
+    @Test("capability read pipeline owns rate limits and source normalization")
+    func capabilityReadPipelineOwnsRateLimitsAndSourceNormalization() throws {
+        let fixture = try Self.makePublishedApp(permissionMode: .readOnly)
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let binding = WorkspaceAppDependencyBinding(
+            workspaceID: fixture.workspace.id,
+            appID: fixture.app.id,
+            appLogicalID: fixture.app.logicalID,
+            requirementID: "warehouse",
+            contract: "tabularQuery.read",
+            operations: ["runReadOnlyQuery"],
+            optional: false,
+            status: .mapped,
+            implementationID: "bigquery-read-task-backed",
+            provider: "bigQuery",
+            transport: .taskBacked
+        )
+        let pipeline = WorkspaceAppCapabilityReadPipeline(
+            sourceResolver: WorkspaceAppSourceResolver(
+                capabilityClient: MockWorkspaceAppCapabilitySourceClient(rowsBySourceID: [:])
+            ),
+            readPolicy: WorkspaceAppReadPolicy(
+                rateLimiter: WorkspaceAppConnectorReadRateLimiter(maxPerWindow: 0, window: 60)
+            )
+        )
+        let request = WorkspaceAppCapabilityReadRequest(
+            action: fixture.manifest.actions.first { $0.id == "readWarehouse" }!,
+            app: fixture.app,
+            workspace: fixture.workspace,
+            manifest: fixture.manifest,
+            dependencyBindings: [binding],
+            input: WorkspaceAppActionInput(limit: 25),
+            surface: .executor
+        )
+
+        #expect(throws: WorkspaceAppSourceResolutionError.capabilityReadUnavailable(
+            "readWarehouse: connector reads are rate-limited; try again shortly"
+        )) {
+            _ = try pipeline.resolve(request)
+        }
+        #expect(WorkspaceAppReadPolicy.connectorLimit(nil as Int?) == WorkspaceAppDataBridge.defaultConnectorReadLimit)
+        #expect(WorkspaceAppReadPolicy.connectorLimit(100_000) == WorkspaceAppDataBridge.maxConnectorReadLimit)
+    }
+
+    @MainActor
     @Test("capability write actions require approval and record audited writes")
     func capabilityWriteActionsRequireApprovalAndRecordAuditedWrites() throws {
         let fixture = try Self.makePublishedApp(permissionMode: .approvalRequired)

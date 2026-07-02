@@ -9,8 +9,8 @@ import Foundation
 /// - Everything that would touch the outside world — `capability.read/write`, `task.*`,
 ///   `url.open`, `clipboard.copy`, `notification.show`, `artifact.export` — is SIMULATED with a
 ///   clear "(preview — would …)" summary and changes nothing.
-/// - The permission gate is replayed exactly from the manifest's `defaultMode` + the `confirmed*`
-///   input flags, so preview faithfully shows `draftOnly`/`approvalRequired`/`readOnly` blocks.
+/// - Permission enforcement routes through `WorkspaceAppPermissionGate`, so preview faithfully shows
+///   the same `draftOnly`/`approvalRequired`/`readOnly` blocks as the executor.
 /// - `pipeline.run`/`loop.run` recurse through the same dispatch; a `task.*` sub-step is
 ///   short-circuited to simulation so the flow runs to completion instead of suspending.
 ///
@@ -31,15 +31,18 @@ final class WorkspaceAppPreviewRunner {
     let sandboxAppID = UUID()
     private let sandboxWorkspaceID = UUID()
     private let sampleRowsPerTable: Int
+    private let permissionGate: any WorkspaceAppPermissionChecking
 
     init(
         manifest: WorkspaceAppManifest,
         sampleRowsPerTable: Int = 3,
-        seededTables: [String: [[String: WorkspaceAppStorageValue]]]? = nil
+        seededTables: [String: [[String: WorkspaceAppStorageValue]]]? = nil,
+        permissionGate: any WorkspaceAppPermissionChecking = WorkspaceAppPermissionGate()
     ) {
         self.manifest = manifest
         self.sampleRowsPerTable = sampleRowsPerTable
         self.tables = seededTables ?? Self.seedTables(manifest: manifest, count: sampleRowsPerTable)
+        self.permissionGate = permissionGate
     }
 
     /// Reset every table back to fresh deterministic sample data.
@@ -88,7 +91,12 @@ final class WorkspaceAppPreviewRunner {
         manifest: WorkspaceAppManifest,
         input: WorkspaceAppActionInput
     ) throws -> WorkspaceAppActionExecutionResult {
-        try enforcePermission(action: action, mode: manifest.permissions.defaultMode, input: input)
+        try permissionGate.enforce(
+            action: action,
+            mode: manifest.permissions.defaultMode,
+            input: input,
+            surface: .preview
+        )
         let outcome = try dispatch(action: action, manifest: manifest, input: input, depth: 0)
         let run = WorkspaceAppRun(
             workspaceID: sandboxWorkspaceID,
@@ -100,60 +108,6 @@ final class WorkspaceAppPreviewRunner {
             outputSummary: outcome.summary
         )
         return WorkspaceAppActionExecutionResult(run: run, rows: outcome.rows, outputSummary: outcome.summary)
-    }
-
-    // MARK: - Permission (faithful replay of WorkspaceAppActionExecutor.enforcePermission)
-
-    private func enforcePermission(
-        action: WorkspaceAppActionSpec,
-        mode: WorkspaceAppPermissionMode,
-        input: WorkspaceAppActionInput
-    ) throws {
-        switch Self.effect(for: action.type) {
-        case .read:
-            return
-        case .localWrite:
-            guard mode != .readOnly else {
-                throw WorkspaceAppActionExecutionError.permissionDenied(
-                    "Read-only workspace apps cannot perform local write action '\(action.id)'."
-                )
-            }
-        case .externalWrite:
-            switch mode {
-            case .preApproved:
-                return
-            case .approvalRequired:
-                guard input.confirmedApproval else {
-                    throw WorkspaceAppActionExecutionError.permissionDenied(
-                        "External write action '\(action.id)' requires explicit approval before execution."
-                    )
-                }
-            case .draftOnly:
-                throw WorkspaceAppActionExecutionError.permissionDenied(
-                    "Draft-only workspace apps cannot submit external write action '\(action.id)'."
-                )
-            case .readOnly:
-                throw WorkspaceAppActionExecutionError.permissionDenied(
-                    "Read-only workspace apps cannot submit external write action '\(action.id)'."
-                )
-            }
-        case .destructive:
-            guard mode != .readOnly else {
-                throw WorkspaceAppActionExecutionError.permissionDenied(
-                    "Read-only workspace apps cannot perform destructive action '\(action.id)'."
-                )
-            }
-            guard input.confirmedDestructive else {
-                throw WorkspaceAppActionExecutionError.permissionDenied(
-                    "Destructive action '\(action.id)' requires explicit confirmation before execution."
-                )
-            }
-        }
-    }
-
-    /// Delegates to the shared `WorkspaceAppActionEffect` map (same source as the real executor).
-    static func effect(for actionType: String) -> WorkspaceAppContractEffect {
-        WorkspaceAppActionEffect.effect(for: actionType)
     }
 
     // MARK: - Dispatch
@@ -429,7 +383,12 @@ final class WorkspaceAppPreviewRunner {
         input: WorkspaceAppActionInput,
         depth: Int
     ) throws -> Outcome {
-        try enforcePermission(action: step, mode: manifest.permissions.defaultMode, input: input)
+        try permissionGate.enforce(
+            action: step,
+            mode: manifest.permissions.defaultMode,
+            input: input,
+            surface: .preview
+        )
         if step.type.hasPrefix("task.") {
             // Slice 10 parity: simulate the agent's answer and apply the step's outputBinding so a
             // preview pipeline exercises the SAME data round-trip as the live run (answer -> field

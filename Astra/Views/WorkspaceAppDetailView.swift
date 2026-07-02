@@ -459,7 +459,7 @@ struct WorkspaceAppDetailView: View {
         return { action, manifest, input in
             try await WorkspaceAppActionExecutor().executeAsync(
                 actionID: action.id, app: app, workspace: workspace, manifest: manifest,
-                dependencyBindings: bindings, input: input, modelContext: context
+                dependencyBindings: bindings, input: input, bridgeSurface: .published, modelContext: context
             )
         }
     }

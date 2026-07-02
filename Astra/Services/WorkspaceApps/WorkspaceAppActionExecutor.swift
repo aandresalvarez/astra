@@ -298,6 +298,8 @@ struct WorkspaceAppActionExecutor {
     var capabilityWriteClient: any WorkspaceAppCapabilityWriteClient = WorkspaceAppNativeCapabilityWriteClient()
     var asyncCapabilityWriteClient: any WorkspaceAppAsyncCapabilityWriteClient = WorkspaceAppNativeAsyncCapabilityWriteClient()
     var utilityActionClient: any WorkspaceAppUtilityActionClient = WorkspaceAppDefaultUtilityActionClient()
+    var permissionGate: any WorkspaceAppPermissionChecking = WorkspaceAppPermissionGate()
+    var readPolicy = WorkspaceAppReadPolicy()
     var recorder = WorkspaceAppRunRecorder()
 
     @MainActor
@@ -660,49 +662,15 @@ struct WorkspaceAppActionExecutor {
     private func enforcePermission(
         for action: WorkspaceAppActionSpec,
         app: WorkspaceApp,
-        input: WorkspaceAppActionInput
+        input: WorkspaceAppActionInput,
+        surface: WorkspaceAppBridgeSurface = .executor
     ) throws {
-        switch effect(for: action.type) {
-        case .read:
-            return
-        case .localWrite:
-            guard app.permissionMode != .readOnly else {
-                throw WorkspaceAppActionExecutionError.permissionDenied(
-                    "Read-only workspace apps cannot perform local write action '\(action.id)'."
-                )
-            }
-        case .externalWrite:
-            if app.permissionMode == .preApproved {
-                return
-            }
-            if app.permissionMode == .approvalRequired {
-                guard input.confirmedApproval else {
-                    throw WorkspaceAppActionExecutionError.permissionDenied(
-                        "External write action '\(action.id)' requires explicit approval before execution."
-                    )
-                }
-                return
-            }
-            if app.permissionMode == .draftOnly {
-                throw WorkspaceAppActionExecutionError.permissionDenied(
-                    "Draft-only workspace apps cannot submit external write action '\(action.id)'."
-                )
-            }
-            throw WorkspaceAppActionExecutionError.permissionDenied(
-                "Read-only workspace apps cannot submit external write action '\(action.id)'."
-            )
-        case .destructive:
-            guard app.permissionMode != .readOnly else {
-                throw WorkspaceAppActionExecutionError.permissionDenied(
-                    "Read-only workspace apps cannot perform destructive action '\(action.id)'."
-                )
-            }
-            guard input.confirmedDestructive else {
-                throw WorkspaceAppActionExecutionError.permissionDenied(
-                    "Destructive action '\(action.id)' requires explicit confirmation before execution."
-                )
-            }
-        }
+        try permissionGate.enforce(
+            action: action,
+            mode: app.permissionMode,
+            input: input,
+            surface: surface
+        )
     }
 
     /// Async execution path for `capability.write` — the one action type that needs real network I/O
@@ -721,6 +689,7 @@ struct WorkspaceAppActionExecutor {
         dependencyBindings: [WorkspaceAppDependencyBinding] = [],
         input: WorkspaceAppActionInput = WorkspaceAppActionInput(),
         trigger: WorkspaceAppRunTrigger = .user,
+        bridgeSurface: WorkspaceAppBridgeSurface = .executor,
         modelContext: ModelContext
     ) async throws -> WorkspaceAppActionExecutionResult {
         let action = try actionSpec(actionID: actionID, manifest: manifest)
@@ -731,7 +700,8 @@ struct WorkspaceAppActionExecutor {
         if action.type == "capability.read" {
             return try await executeAsyncCapabilityRead(
                 action: action, app: app, workspace: workspace, manifest: manifest,
-                dependencyBindings: dependencyBindings, input: input, trigger: trigger, modelContext: modelContext
+                dependencyBindings: dependencyBindings, input: input, trigger: trigger,
+                surface: bridgeSurface, modelContext: modelContext
             )
         }
         guard action.type == "capability.write" else {
@@ -1378,36 +1348,29 @@ struct WorkspaceAppActionExecutor {
         dependencyBindings: [WorkspaceAppDependencyBinding],
         input: WorkspaceAppActionInput,
         trigger: WorkspaceAppRunTrigger,
+        surface: WorkspaceAppBridgeSurface,
         modelContext: ModelContext
     ) async throws -> WorkspaceAppActionExecutionResult {
-        // App-scoped rate budget across ALL surfaces — checked BEFORE the run record so a runaway poller
-        // can't grow the audit log or hammer the connector (the per-WebView throttle only bounds one
-        // surface). A rejected read leaves no run row.
-        guard WorkspaceAppConnectorReadRateLimiter.shared.admit(appID: app.id) else {
-            throw WorkspaceAppSourceResolutionError.capabilityReadUnavailable("\(action.id): connector reads are rate-limited; try again shortly")
-        }
+        let request = capabilityReadRequest(
+            action: action,
+            app: app,
+            workspace: workspace,
+            manifest: manifest,
+            dependencyBindings: dependencyBindings,
+            input: input,
+            surface: surface
+        )
+        // App-scoped rate budget across ALL surfaces is checked BEFORE the run record. A rejected read
+        // leaves no run row; admitted reads still audit resolver failures below.
+        let pipeline = capabilityReadPipeline()
+        try pipeline.admit(request)
         let run = recorder.startRun(
             app: app, actionID: action.id, trigger: trigger, inputSummary: inputSummary(input), modelContext: modelContext
         )
         do {
-            try enforcePermission(for: action, app: app, input: input)
-            let sourceID = normalized(action.sourceRef, input.table, action.table, fallback: "")
-            guard !sourceID.isEmpty else { throw WorkspaceAppActionExecutionError.missingSource }
-            // Connector-ONLY resolution: a capability.read must go through its dependency binding, never
-            // fall through to app storage even if the source id shadows a storage table name.
-            let resolved = try await sourceResolver.resolveCapabilityReadAsync(
-                sourceID: sourceID, app: app, workspace: workspace, manifest: manifest,
-                dependencyBindings: dependencyBindings,
-                input: WorkspaceAppSourceResolutionInput(limit: input.limit, parameters: input.record)
-            )
-            var payload: [String: WorkspaceAppStorageValue] = [
-                "sourceID": .text(resolved.sourceID),
-                "rowCount": .integer(Int64(resolved.rows.count)),
-                "async": .bool(true)
-            ]
-            if let requirementID = resolved.requirementID { payload["requirementID"] = .text(requirementID) }
-            if let implementationID = resolved.implementationID { payload["implementationID"] = .text(implementationID) }
-            if let provider = resolved.provider { payload["provider"] = .text(provider) }
+            try enforcePermission(for: action, app: app, input: input, surface: surface)
+            let resolved = try await pipeline.resolveAdmittedAsync(request)
+            let payload = WorkspaceAppCapabilityReadPipeline.auditPayload(for: resolved, async: true)
             recorder.recordEvent(run: run, type: "workspaceApp.capability.read", payload: payload, modelContext: modelContext)
             recorder.completeRun(run, outputSummary: resolved.outputSummary, modelContext: modelContext)
             app.lastRunAt = Date()
@@ -1436,40 +1399,17 @@ struct WorkspaceAppActionExecutor {
         linkedTaskID: UUID?,
         linkedArtifactPath: String?
     ) {
-        // Same app-scoped rate budget as the async direct path — this sync path is ALSO reachable from a
-        // page via `astra.runAction` → `pipeline.run` → a `capability.read` STEP, so the limiter must
-        // bound it too (else the budget is bypassable). Native user-click reads share the budget; 60/min is
-        // far above any human click rate.
-        guard WorkspaceAppConnectorReadRateLimiter.shared.admit(appID: app.id) else {
-            throw WorkspaceAppSourceResolutionError.capabilityReadUnavailable("\(action.id): connector reads are rate-limited; try again shortly")
-        }
-        let sourceID = normalized(action.sourceRef, input.table, action.table, fallback: "")
-        guard !sourceID.isEmpty else {
-            throw WorkspaceAppActionExecutionError.missingSource
-        }
-        // Connector-ONLY resolution (also used by a capability.read pipeline/loop step reachable from JS
-        // via astra.runAction): never falls through to app storage even if the source id shadows a table.
-        let resolved = try sourceResolver.resolveCapabilityRead(
-            sourceID: sourceID,
+        let request = capabilityReadRequest(
+            action: action,
             app: app,
             workspace: workspace,
             manifest: manifest,
             dependencyBindings: dependencyBindings,
-            input: WorkspaceAppSourceResolutionInput(limit: input.limit, parameters: input.record)
+            input: input,
+            surface: .executor
         )
-        var payload: [String: WorkspaceAppStorageValue] = [
-            "sourceID": .text(resolved.sourceID),
-            "rowCount": .integer(Int64(resolved.rows.count))
-        ]
-        if let requirementID = resolved.requirementID {
-            payload["requirementID"] = .text(requirementID)
-        }
-        if let implementationID = resolved.implementationID {
-            payload["implementationID"] = .text(implementationID)
-        }
-        if let provider = resolved.provider {
-            payload["provider"] = .text(provider)
-        }
+        let resolved = try capabilityReadPipeline().resolve(request)
+        let payload = WorkspaceAppCapabilityReadPipeline.auditPayload(for: resolved)
         recorder.recordEvent(
             run: run,
             type: "workspaceApp.capability.read",
@@ -2121,8 +2061,28 @@ struct WorkspaceAppActionExecutor {
         return .null
     }
 
-    private func effect(for actionType: String) -> WorkspaceAppContractEffect {
-        WorkspaceAppActionEffect.effect(for: actionType)
+    private func capabilityReadPipeline() -> WorkspaceAppCapabilityReadPipeline {
+        WorkspaceAppCapabilityReadPipeline(sourceResolver: sourceResolver, readPolicy: readPolicy)
+    }
+
+    private func capabilityReadRequest(
+        action: WorkspaceAppActionSpec,
+        app: WorkspaceApp,
+        workspace: Workspace,
+        manifest: WorkspaceAppManifest,
+        dependencyBindings: [WorkspaceAppDependencyBinding],
+        input: WorkspaceAppActionInput,
+        surface: WorkspaceAppBridgeSurface
+    ) -> WorkspaceAppCapabilityReadRequest {
+        WorkspaceAppCapabilityReadRequest(
+            action: action,
+            app: app,
+            workspace: workspace,
+            manifest: manifest,
+            dependencyBindings: dependencyBindings,
+            input: input,
+            surface: surface
+        )
     }
 
     private func inputSummary(_ input: WorkspaceAppActionInput) -> String {

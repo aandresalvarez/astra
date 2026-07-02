@@ -741,6 +741,17 @@ script/precommit.sh
 script/prepush.sh
 ```
 
+**Implementation evidence (2026-07-02):**
+
+- Added `WorkspaceAppBridgeSurface`, `WorkspaceAppPermissionGate`, `WorkspaceAppReadPolicy`, and `WorkspaceAppCapabilityReadPipeline` as small service owners for surface context, permission enforcement, connector-read limits, rate admission, source normalization, sync/async resolution, and audit payload construction.
+- Routed `WorkspaceAppActionExecutor` sync and async `capability.read` paths through the shared pipeline while preserving the async rule that rate-limited reads are rejected before a run row is created.
+- Routed `WorkspaceAppPreviewRunner` top-level and nested composite permission checks through `WorkspaceAppPermissionGate` with `.preview` surface context.
+- Routed live App Studio preview reads through `WorkspaceAppCapabilityReadPipeline` and marked published WebView reads with `.published` when they enter `WorkspaceAppActionExecutor.executeAsync`.
+- Moved bridge connector-read limits behind `WorkspaceAppReadPolicy.connectorLimit(_:)`; `WorkspaceAppDataBridge` now aliases those policy constants instead of owning its own cap math.
+- Kept the approval-resume bound-rows rule in `WorkspaceAppApprovalResumeContext`; `WorkspaceAppActionExecutorTests.approvalResumePreservesBoundRowsFromAsyncTaskOutput` remains green.
+- Added regression coverage for preview permission-gate delegation and read-pipeline-owned rate admission/source normalization.
+- Validation passed: `swift test --filter WorkspaceAppActionExecutorTests`; `swift test --filter WorkspaceAppDataBridgeTests`; `swift test --filter WorkspaceAppGenericCapabilityReadTests`; `swift test --filter WorkspaceAppPreviewRunnerTests`; `swift test --filter WorkspaceAppPermissionCoverageTests`; `swift test --filter WorkspaceAppWorkflowBindingTests`; extra `swift test --filter WorkspaceAppConnectorReadTests`; `git diff --check`; `script/precommit.sh`; `script/prepush.sh`.
+
 ## PR 17: Add `MCPServerKit` for Stdio Server Boundaries
 
 **Root cause:** Workspace, host-control, gateway, and browser MCP servers hand-roll JSON-RPC framing, envelope handling, dispatch, and diagnostics. Protocol fixes must be copied into every server.

@@ -102,8 +102,8 @@ enum WorkspaceAppDataBridge {
     /// Connector-read (`astra.read`) row caps — tighter than storage, since each read is a live network
     /// fetch (a `gh` spawn), not a local SQLite query. The page may request fewer; it can never exceed
     /// the max, and an unspecified limit gets the small default.
-    static let maxConnectorReadLimit = 100
-    static let defaultConnectorReadLimit = 30
+    static let maxConnectorReadLimit = WorkspaceAppReadPolicy.maxConnectorReadLimit
+    static let defaultConnectorReadLimit = WorkspaceAppReadPolicy.defaultConnectorReadLimit
 
     // MARK: - Parse (JS → native)
 
@@ -326,7 +326,7 @@ enum WorkspaceAppDataBridge {
         guard let action = manifest.actions.first(where: {
             $0.type == "capability.read" && ($0.sourceRef ?? "") == request.sourceId
         }) else { return nil }
-        let limit = min(max(1, request.limit ?? defaultConnectorReadLimit), maxConnectorReadLimit)
+        let limit = WorkspaceAppReadPolicy.connectorLimit(request.limit)
         let input = WorkspaceAppActionInput(
             table: request.sourceId, record: request.record, limit: limit
         )
