@@ -24,7 +24,7 @@ For each remaining PR:
 - [x] PR 7: Introduce `TaskStateMachine`
 - [x] PR 8: Introduce `SceneSelectionModel`
 - [x] PR 9: Fix CI and Test Target Feedback Loops
-- [ ] PR 10: Gate Credential Egress
+- [x] PR 10: Gate Credential Egress
 - [ ] PR 11: Promote Continuation and Approval State to Typed Properties
 - [ ] PR 12: Run Utility Prompts Through a Sandboxed Launch Plan
 - [ ] PR 13: Extract First SwiftPM Leaf Targets
@@ -95,3 +95,13 @@ For each remaining PR:
 - Coordinator merge: completed.
 - Focused worker validation: `script/focused_test_targets_tests.sh`, `swift test --filter MCPGatewaySupportTests`, `swift test --filter MailToolSupportTests`, `git diff --check`, `script/precommit.sh`, `script/prepush.sh`.
 - Coordinator validation: shell syntax checks for focused target scripts and hooks, `script/focused_test_targets_tests.sh`, `swift test --filter ArchitectureFitnessTests/repositoryProtectionArtifactsStayWired`, `swift test --filter MCPGatewaySupportTests`, `swift test --filter MailToolSupportTests`, and `git diff --check 0aa6bffdb9d74a4d49eedf9d0a9c3537de6cdf2d..HEAD` passed after merge.
+
+### PR 10
+
+- Branch: `alvaro/arch-review-pr10-credential-egress`
+- Head: `93e2c40a82a579fec68eff4db17c219f038b0db8`
+- Spec review: passed.
+- Code quality review: passed after fixing one-run credential replay and fail-closed non-HTTP compatibility defaults.
+- Coordinator merge: completed.
+- Focused worker validation: `TaskRuntimePermissionActionHandlerTests`, `CapabilityProjectionRobustnessTests`, `TaskLifecycleResumeTests`, `ConnectorPreflightServiceTests`, `TaskCapabilityResolverTests`, `AgentPolicyTests`, `AgentRuntimeAdapterTests`, `AgentRuntimeExecutionPolicyTests`, `git diff --check`, `script/precommit.sh`, `script/prepush.sh`.
+- Coordinator validation: `swift test --filter CapabilityProjectionRobustnessTests`, `swift test --filter 'ConnectorPreflightServiceTests|TaskRuntimePermissionActionHandlerTests|TaskCapabilityResolverTests|AgentPolicyTests|AgentRuntimeAdapterTests'`, `swift test --filter 'TaskLifecycleResumeTests|AgentRuntimeExecutionPolicyTests'`, and `git diff --check 14d1c7355fd0ea2e8e4c15f37a2fae369c36e1d7..HEAD` passed after merge.
