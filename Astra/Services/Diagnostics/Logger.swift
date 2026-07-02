@@ -64,6 +64,7 @@ enum AuditEvent: String, CaseIterable {
     case taskFailed = "task.failed"
     case taskStats = "task.stats"
     case taskChained = "task.chained"
+    case taskStatusChanged = "task.status_changed"
 
     case workerStarted = "worker.started"
     case workerExited = "worker.exited"

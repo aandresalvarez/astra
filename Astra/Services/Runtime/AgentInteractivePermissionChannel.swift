@@ -395,8 +395,7 @@ extension AgentRuntimeWorker {
                     run: run
                 )
                 modelContext.insert(event)
-                task.status = .pendingUser
-                task.updatedAt = Date()
+                TaskStateMachine.pauseForRuntimePermission(task, modelContext: modelContext)
                 try? modelContext.save()
             }
             let approved = await InFlightPermissionCenter.shared.awaitDecision(
@@ -412,8 +411,7 @@ extension AgentRuntimeWorker {
                 // pause always lifts; the run-status guard keeps this from
                 // resurrecting a task whose run already finished.
                 if task.status == .pendingUser, run.status == .running {
-                    task.status = .running
-                    task.updatedAt = Date()
+                    TaskStateMachine.resumeAfterRuntimePermission(task, modelContext: modelContext)
                 }
                 // Closes the open-request card: a denied live ask never emits
                 // task.approved, so without this the card would linger.

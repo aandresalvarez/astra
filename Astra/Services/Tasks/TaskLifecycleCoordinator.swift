@@ -94,12 +94,9 @@ final class TaskLifecycleCoordinator {
             modelContext: modelContext,
             source: .supersededByNewRun
         )
-        task.status = .queued
+        TaskStateMachine.enqueueFromRetry(task, modelContext: modelContext)
         task.tokensUsed = 0
         task.costUSD = 0
-        task.updatedAt = Date()
-        task.completedAt = nil
-        task.markRead()
         let event = TaskEvent(
             task: task,
             eventType: TaskEventTypes.Task.retried,
@@ -181,10 +178,7 @@ final class TaskLifecycleCoordinator {
         AppLogger.audit(.taskApproved, category: "UI", taskID: task.id, fields: [
             "approval_type": recordedValidationOverride ? "validation_override" : "completion"
         ])
-        task.status = .completed
-        task.updatedAt = Date()
-        task.completedAt = Date()
-        task.markRead()
+        TaskStateMachine.completeFromUserApproval(task, modelContext: modelContext)
         let event = TaskEvent(
             task: task,
             eventType: TaskEventTypes.Task.approved,

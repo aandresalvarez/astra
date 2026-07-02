@@ -5440,9 +5440,7 @@ struct TaskMainView: View {
         recordCurrentTaskPolicyIfNeeded(source: "approved_plan_run")
         TaskPlanService.recordApproved(plan, task: task, modelContext: modelContext)
         showPlanCanvasIfNeeded()
-        task.status = .queued
-        task.completedAt = nil
-        task.updatedAt = Date()
+        TaskStateMachine.enqueueApprovedPlanRun(task, modelContext: modelContext)
         try? modelContext.save()
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
         threadViewModel.refreshSnapshot(for: task)
@@ -5546,8 +5544,7 @@ struct TaskMainView: View {
         }
 
         if task.status == .queued {
-            task.status = .draft
-            task.updatedAt = Date()
+            TaskStateMachine.restoreDraftForEditing(task, modelContext: modelContext)
             let systemEvent = TaskEvent(task: task, eventType: TaskEventTypes.Task.started, payload: "Moved back to draft for editing.")
             modelContext.insert(systemEvent)
             let userEvent = TaskEvent(task: task, eventType: TaskEventTypes.Conversation.userMessage, payload: msg)

@@ -216,12 +216,14 @@ enum TaskRunLifecycleService {
             || (source.cancelsActiveTaskStatus && (task.status == .running || task.status == .pendingUser))
 
         if shouldCancelTask {
-            if task.status != .cancelled {
-                task.status = .cancelled
+            let result = TaskStateMachine.cancelFromLifecycle(
+                task,
+                modelContext: modelContext,
+                at: finishedAt
+            )
+            if result.changed {
                 summary.tasksUpdated += 1
             }
-            task.completedAt = finishedAt
-            task.markRead()
         }
 
         if summary.runsUpdated > 0 || summary.tasksUpdated > 0 || source.alwaysCancelTask {

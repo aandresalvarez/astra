@@ -377,6 +377,42 @@ struct ArchitectureFitnessTests {
         #expect(matches.isEmpty, "New raw stop reason assignments should stay behind runtime/completion/persistence boundaries: \(matches)")
     }
 
+    @Test("Production task status writes go through TaskStateMachine")
+    func productionTaskStatusWritesGoThroughTaskStateMachine() throws {
+        let root = try repositoryRoot()
+        let allowedFiles: Set<String> = [
+            "Astra/Models/AgentTask.swift",
+            "Astra/Models/SchemaVersions.swift",
+            "Astra/Services/Tasks/TaskStateMachine.swift"
+        ]
+        let taskLikeStatusWrite = #"\b(?:task|mainTask|nextTask|sourceTask|scheduledTask|forked|draft|draftTask)\.status\s*=(?!=)"#
+
+        let matches = try swiftFiles(under: root.appendingPathComponent("Astra"))
+            .flatMap { file -> [String] in
+                let relativePath = relativePath(for: file, root: root)
+                guard !allowedFiles.contains(relativePath) else { return [] }
+                let text = try String(contentsOf: file, encoding: .utf8)
+                return text
+                    .split(separator: "\n", omittingEmptySubsequences: false)
+                    .enumerated()
+                    .compactMap { index, line in
+                        let value = String(line)
+                        let trimmed = value.trimmingCharacters(in: .whitespaces)
+                        guard !trimmed.hasPrefix("//"),
+                              value.range(of: taskLikeStatusWrite, options: .regularExpression) != nil else {
+                            return nil
+                        }
+                        return "\(relativePath):\(index + 1): \(trimmed)"
+                    }
+            }
+            .sorted()
+
+        #expect(
+            matches.isEmpty,
+            "Production AgentTask status writes should use TaskStateMachine intent methods: \(matches)"
+        )
+    }
+
     @Test("Launch command builders require render-derived permission arguments")
     func launchCommandBuildersRequireRenderDerivedPermissionArguments() throws {
         let root = try repositoryRoot()

@@ -39,7 +39,7 @@ enum AgentTaskForkService {
         }
 
         forked.forkedAtRunIndex = cutoffIndex
-        forked.status = .completed
+        TaskStateMachine.initializeForkAsCompleted(forked, modelContext: context)
 
         let runsToFork = sortedRuns.prefix(through: cutoffIndex)
         var forkedRunsBySourceID: [UUID: TaskRun] = [:]

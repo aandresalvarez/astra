@@ -328,9 +328,13 @@ final class TaskQueue {
             sourceTask.updatedAt = Date()
         }
 
-        sourceTask.status = scheduledTask.status
+        TaskStateMachine.mirrorScheduleResultStatus(
+            sourceTask: sourceTask,
+            scheduledTask: scheduledTask,
+            modelContext: modelContext,
+            at: sourceTask.updatedAt
+        )
         sourceTask.isDone = false
-        sourceTask.markUnreadForCurrentStatus(at: sourceTask.updatedAt)
     }
 
     private static let dateFormatter: DateFormatter = {
@@ -396,7 +400,7 @@ final class TaskQueue {
             return false
         }
 
-        markContinuationLaunchAdmitted(task)
+        markContinuationLaunchAdmitted(task, modelContext: modelContext)
         taskWorkerMap[task.id] = worker
         await worker.continueSession(
             task: task,
@@ -420,11 +424,8 @@ final class TaskQueue {
     }
 
     @MainActor
-    private func markContinuationLaunchAdmitted(_ task: AgentTask) {
-        task.status = .running
-        task.updatedAt = Date()
-        task.completedAt = nil
-        task.markRead()
+    private func markContinuationLaunchAdmitted(_ task: AgentTask, modelContext: ModelContext) {
+        TaskStateMachine.admitContinuationToRuntime(task, modelContext: modelContext)
     }
 
     @MainActor
@@ -441,10 +442,11 @@ final class TaskQueue {
             return
         }
 
-        task.status = lifecycle.previousStatus
-        task.completedAt = lifecycle.previousCompletedAt
-        task.updatedAt = Date()
-        task.markUnreadForCurrentStatus()
+        TaskStateMachine.restoreContinuationAdmissionFailure(
+            task,
+            snapshot: TaskStateMachine.Snapshot(status: lifecycle.previousStatus, completedAt: lifecycle.previousCompletedAt),
+            modelContext: modelContext
+        )
         modelContext.insert(TaskEvent(
             task: task,
             eventType: TaskEventTypes.System.error,
@@ -534,11 +536,8 @@ final class TaskQueue {
                 "mode": mode,
                 "error_type": String(describing: type(of: error))
             ], level: .error)
-            task.status = .failed
             let now = Date()
-            task.updatedAt = now
-            task.completedAt = now
-            task.markUnreadForCurrentStatus(at: now)
+            TaskStateMachine.failFromRuntime(task, modelContext: modelContext, at: now)
             modelContext.insert(TaskEvent(
                 task: task,
                 type: "error",

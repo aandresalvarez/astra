@@ -1944,7 +1944,11 @@ enum WorkspaceConfigManager {
         if let id = config.id.flatMap(UUID.init(uuidString:)) {
             task.id = id
         }
-        task.status = TaskStatus(rawValue: config.status) ?? .completed
+        TaskStateMachine.restoreImportedStatus(
+            task,
+            to: TaskStatus(rawValue: config.status) ?? .completed,
+            modelContext: modelContext
+        )
         task.isPinned = config.isPinned ?? false
         task.isDone = config.isDone ?? false
         task.inputs = config.inputs

@@ -308,7 +308,7 @@ struct NewTaskView: View {
             allInputs.append(snippet)
         }
         task.inputs = allInputs
-        task.status = .queued
+        TaskStateMachine.enqueueFromUserSubmission(task, modelContext: modelContext)
 
         modelContext.insert(task)
         TaskPolicyStore.recordSelection(
