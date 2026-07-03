@@ -22,6 +22,7 @@ target_for_path() {
   if [[ "$path" == "Package.swift" ]]; then
     add_target "ArchitectureFitnessTests.ArchitectureFitnessTests"
     add_target "MCPGatewaySupportTests"
+    add_target "MCPServerKitTests"
     add_target "MailToolSupportTests"
     return
   fi
@@ -35,6 +36,9 @@ target_for_path() {
       ;;
     Tests/MCPGatewaySupportTests/*|Tools/AstraMCPGatewayTool/*|Tools/MCPGatewaySupport/*)
       add_target "MCPGatewaySupportTests"
+      ;;
+    Tests/MCPServerKitTests/*|Tools/MCPServerKit/*)
+      add_target "MCPServerKitTests"
       ;;
     Tests/MailToolSupportTests/*|Tools/MailToolSupport/*|Tools/StanfordAppleMailTool/*|Tools/StanfordGraphMailTool/*|Tools/StanfordMailTool/*)
       add_target "MailToolSupportTests"

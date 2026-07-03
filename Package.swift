@@ -128,12 +128,17 @@ let package = Package(
             name: "ASTRATests",
             dependencies: ["ASTRA", "ASTRACore", "ASTRAGitContracts", "HostControlToolSupport", "MCPGatewaySupport", "MCPServerKit", "WorkspaceToolSupport"],
             path: "Tests",
-            exclude: ["ArchitectureFitnessTests", "MCPGatewaySupportTests", "MailToolSupportTests"]
+            exclude: ["ArchitectureFitnessTests", "MCPGatewaySupportTests", "MCPServerKitTests", "MailToolSupportTests"]
         ),
         .testTarget(
             name: "MailToolSupportTests",
             dependencies: ["MailToolSupport"],
             path: "Tests/MailToolSupportTests"
+        ),
+        .testTarget(
+            name: "MCPServerKitTests",
+            dependencies: ["MCPServerKit"],
+            path: "Tests/MCPServerKitTests"
         )
     ]
 )

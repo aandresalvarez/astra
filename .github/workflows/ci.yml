@@ -38,7 +38,10 @@ jobs:
 
   full-swift-test-suite:
     name: Full Swift test suite
-    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    # Runs on every trigger the workflow fires on (pull_request, push, manual,
+    # and the nightly schedule) so the full ~4,400-test suite actually gates PRs
+    # instead of only running on a schedule. The focused job above still gives
+    # fast early signal; this is the authoritative gate.
     runs-on: macos-26
     steps:
       - name: Checkout

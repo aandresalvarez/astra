@@ -228,34 +228,63 @@ struct ArchitectureFitnessTests {
     @Test("High-risk SwiftData saves go through persistence coordinator")
     func highRiskSwiftDataSavesGoThroughPersistenceCoordinator() throws {
         let root = try repositoryRoot()
-        let checkedFiles = [
-            "Astra/Services/WorkspaceApps/WorkspaceAppActionExecutor.swift",
-            "Astra/Services/Runtime/AgentRuntimeLaunchPreflight.swift",
-            "Astra/Services/Runtime/AgentInteractivePermissionChannel.swift",
-            "Astra/Views/ContentView.swift",
-            "Astra/Views/TaskMainView.swift"
+        // Blanket scan of the whole app target (not a hand-picked list of 5
+        // files): every `modelContext.save(` must route through
+        // WorkspacePersistenceCoordinator so the durable workspace JSON mirror
+        // never silently lags SwiftData. `Services/Persistence/` is the
+        // coordinator's own home. The remaining entries are pre-existing
+        // raw-save debt to migrate onto the coordinator over time; a *new* raw
+        // save anywhere outside this allowlist (including the app/runtime/view
+        // edges that were already cleaned up) fails this test.
+        let persistenceHomePrefix = "Astra/Services/Persistence/"
+        let allowedRawSaveFiles: Set<String> = [
+            "Astra/ASTRAApp.swift",
+            "Astra/Services/Capabilities/CapabilityDefinitionRepairService.swift",
+            "Astra/Services/Runtime/AgentRuntimeBudgetPolicy.swift",
+            "Astra/Services/Tasks/TaskLifecycleCoordinator.swift",
+            "Astra/Services/Tasks/TaskQueue.swift",
+            "Astra/Services/Tasks/TaskRunLifecycleService.swift",
+            "Astra/Services/Tasks/TaskStateMachine.swift",
+            "Astra/Services/Validation/TaskExecutionArtifactPreparer.swift",
+            "Astra/Services/WorkspaceApps/WorkspaceAppAutomationExecutionService.swift",
+            "Astra/Services/WorkspaceApps/WorkspaceAppRunResumptionService.swift",
+            "Astra/Services/WorkspaceApps/WorkspaceAppService.swift",
+            "Astra/Services/WorkspaceApps/WorkspaceAppVersionService.swift",
+            "Astra/Views/Capabilities/GoogleWorkspaceCapabilityInstallSheet.swift",
+            "Astra/Views/ChatPanelView.swift",
+            "Astra/Views/Components/KanbanBoardView.swift",
+            "Astra/Views/TaskDetailView.swift",
+            "Astra/Views/TaskSidebarView.swift",
+            "Astra/Views/WorkspaceCanvasPanelView.swift"
         ]
 
-        let matches = try checkedFiles.flatMap { relativePath -> [String] in
-            let text = try fileText(relativePath, root: root)
-            return text
-                .split(separator: "\n", omittingEmptySubsequences: false)
-                .enumerated()
-                .compactMap { index, line -> String? in
-                    let value = String(line)
-                    guard value.range(
-                        of: #"\bmodelContext\s*\.\s*save\s*\("#,
-                        options: .regularExpression
-                    ) != nil else {
-                        return nil
-                    }
-                    return "\(relativePath):\(index + 1): \(value.trimmingCharacters(in: .whitespaces))"
+        let matches = try swiftFiles(under: root.appendingPathComponent("Astra"))
+            .flatMap { file -> [String] in
+                let relativePath = relativePath(for: file, root: root)
+                if relativePath.hasPrefix(persistenceHomePrefix)
+                    || allowedRawSaveFiles.contains(relativePath) {
+                    return []
                 }
-        }
+                let text = try String(contentsOf: file, encoding: .utf8)
+                return text
+                    .split(separator: "\n", omittingEmptySubsequences: false)
+                    .enumerated()
+                    .compactMap { index, line -> String? in
+                        let value = String(line)
+                        guard value.range(
+                            of: #"\bmodelContext\s*\.\s*save\s*\("#,
+                            options: .regularExpression
+                        ) != nil else {
+                            return nil
+                        }
+                        return "\(relativePath):\(index + 1): \(value.trimmingCharacters(in: .whitespaces))"
+                    }
+            }
+            .sorted()
 
         #expect(
             matches.isEmpty,
-            "Route SwiftData saves in app/runtime/view edges through WorkspacePersistenceCoordinator: \(matches)"
+            "Route SwiftData saves through WorkspacePersistenceCoordinator (or, if unavoidable, add the file to the migrate-later allowlist in this test): \(matches)"
         )
     }
 
