@@ -9,7 +9,7 @@ struct WorkspaceAppDetailView: View {
     let onOpenStudio: (WorkspaceAppManifest?) -> Void
     let onRefresh: () -> Void
     let onExportPackage: () throws -> URL
-    let onRunAction: (WorkspaceAppActionSpec, WorkspaceAppManifest, WorkspaceAppActionInput) throws -> WorkspaceAppActionExecutionResult
+    let onRunAction: (WorkspaceAppActionSpec, WorkspaceAppManifest, WorkspaceAppActionInput) async throws -> WorkspaceAppActionExecutionResult
     /// Called after this app is permanently deleted, so the parent clears the selection (the
     /// detail view must not linger on a now-deleted app).
     let onDeleted: () -> Void

@@ -638,7 +638,7 @@ struct ContentView: View {
                 return try WorkspaceAppPackageExporter().exportTemplatePackage(app: app, workspace: workspace).packageURL
             },
             onRunAction: { action, manifest, input in
-                try runWorkspaceAppAction(app: app, action: action, manifest: manifest, input: input)
+                try await runWorkspaceAppAction(app: app, action: action, manifest: manifest, input: input)
             }, onDeleted: { setSelectedWorkspaceApp(nil) }
         )
         .id(app.id)
@@ -734,7 +734,7 @@ struct ContentView: View {
         action: WorkspaceAppActionSpec,
         manifest: WorkspaceAppManifest,
         input: WorkspaceAppActionInput
-    ) throws -> WorkspaceAppActionExecutionResult {
+    ) async throws -> WorkspaceAppActionExecutionResult {
         guard let workspace = sceneCoordinator.workspace(for: app) else {
             throw WorkspaceAppUIError.noWorkspace
         }
@@ -742,7 +742,10 @@ struct ContentView: View {
         let bindings = (try? modelContext.fetch(
             FetchDescriptor<WorkspaceAppDependencyBinding>()
         ))?.filter { $0.appID == appID } ?? []
-        return try WorkspaceAppActionExecutor().execute(
+        // Route through the ASYNC executor so a workflow action that contains a
+        // connector `capability.read` step resolves on the live async client
+        // instead of hitting the unavailable synchronous one.
+        return try await WorkspaceAppActionExecutor().executeAsync(
             actionID: action.id,
             app: app,
             workspace: workspace,

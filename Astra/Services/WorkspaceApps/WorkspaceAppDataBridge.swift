@@ -57,7 +57,7 @@ enum WorkspaceAppDataBridge {
     /// executor. Built in `WorkspaceAppSurfaceView` from `onRunAction` + the manifest, so preview
     /// (in-memory) and published (SQLite) get parity for free. `@MainActor` because it calls the
     /// SwiftUI host's executor closure.
-    typealias Run = @MainActor (Request) -> Reply
+    typealias Run = @MainActor (Request) async -> Reply
 
     /// (Phase 5) The full set of host closures backing `astra.*`. `storage` (query/insert/update) is
     /// always present for a data app; the workflow closures are nil for an app that declares no
@@ -69,7 +69,7 @@ enum WorkspaceAppDataBridge {
         /// synchronous storage path can't await; nil unless the app declares a `capability.read` action
         /// AND the host supplies the async executor (published surface only — preview has no bindings).
         var read: (@MainActor (ReadRequest) async -> Reply)?
-        var runAction: (@MainActor (ActionRequest) -> Reply)?
+        var runAction: (@MainActor (ActionRequest) async -> Reply)?
         var runs: (@MainActor (Int?) -> Reply)?
         var listActions: (@MainActor () -> Reply)?
         /// The DURABLE workflow throttle: a LIVE, UNCAPPED query (run each `runAction` call) that
@@ -377,7 +377,7 @@ enum WorkspaceAppDataBridge {
     static func handlers(
         manifest: WorkspaceAppManifest,
         runs: [WorkspaceAppRunSnapshot],
-        onRunAction: @escaping (WorkspaceAppActionSpec, WorkspaceAppManifest, WorkspaceAppActionInput) throws -> WorkspaceAppActionExecutionResult,
+        onRunAction: @escaping (WorkspaceAppActionSpec, WorkspaceAppManifest, WorkspaceAppActionInput) async throws -> WorkspaceAppActionExecutionResult,
         onReload: @escaping () -> Void = {},
         isWorkflowRunPending: (@MainActor () -> Bool)? = nil,
         onCapabilityRead: (@MainActor (WorkspaceAppActionSpec, WorkspaceAppManifest, WorkspaceAppActionInput) async throws -> WorkspaceAppActionExecutionResult)? = nil
@@ -393,7 +393,7 @@ enum WorkspaceAppDataBridge {
             guard let resolved = resolve(request, in: manifest) else {
                 return .error("Operation '\(request.op)' on '\(request.table)' is not permitted by this app.")
             }
-            do { return .rows(try onRunAction(resolved.action, manifest, resolved.input).rows) }
+            do { return .rows(try await onRunAction(resolved.action, manifest, resolved.input).rows) }
             catch { return .error(String(describing: error)) }
         }
 
@@ -415,12 +415,12 @@ enum WorkspaceAppDataBridge {
             return Handlers(storage: storage, read: read, runAction: nil, runs: nil, listActions: nil)
         }
 
-        let runAction: @MainActor (ActionRequest) -> Reply = { request in
+        let runAction: @MainActor (ActionRequest) async -> Reply = { request in
             guard let resolved = resolveAction(request, in: manifest) else {
                 return .error("Action '\(request.actionId)' is not runnable by this app.")
             }
             do {
-                let result = try onRunAction(resolved.action, manifest, resolved.input)
+                let result = try await onRunAction(resolved.action, manifest, resolved.input)
                 // Refresh the host snapshot so a subsequent `astra.runs()` poll reflects this run
                 // (and the throttle re-derives accurately) instead of the run history going stale.
                 onReload()
@@ -567,7 +567,7 @@ final class WorkspaceAppDataBridgeHandler: NSObject, WKScriptMessageHandlerWithR
                     replyHandler(nil, "A workflow run is already in progress — wait for it to finish or be approved.")
                     return
                 }
-                Self.reply(runAction(request), to: replyHandler)
+                Self.reply(await runAction(request), to: replyHandler)
             }
         case "read":
             guard let read = handlers.read,
@@ -604,7 +604,7 @@ final class WorkspaceAppDataBridgeHandler: NSObject, WKScriptMessageHandlerWithR
                 replyHandler(nil, "Invalid astra request.")
                 return
             }
-            Task { @MainActor in Self.reply(handlers.storage(request), to: replyHandler) }
+            Task { @MainActor in Self.reply(await handlers.storage(request), to: replyHandler) }
         }
     }
 
