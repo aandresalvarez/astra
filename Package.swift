@@ -49,10 +49,12 @@ let package = Package(
         ),
         .target(
             name: "HostControlToolSupport",
+            dependencies: ["MCPServerKit"],
             path: "Tools/HostControlToolSupport"
         ),
         .target(
             name: "MCPGatewaySupport",
+            dependencies: ["MCPServerKit"],
             path: "Tools/MCPGatewaySupport"
         ),
         .executableTarget(
