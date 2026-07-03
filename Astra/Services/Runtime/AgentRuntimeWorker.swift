@@ -1771,6 +1771,17 @@ final class AgentRuntimeWorker {
         plan: TaskPlanPayload,
         step approvedStep: TaskPlanPayloadStep? = nil
     ) -> [String] {
+        // This resolves capabilities independently of the shared
+        // `TaskCapabilityResolutionSnapshot` captured later in
+        // `executeRuntimeSession`, and that is intentional, not a redundant
+        // fifth resolution to fold into the snapshot: the allowed-tools set here
+        // feeds the approved-plan `AgentRuntimeExecutionPolicy`, which is an
+        // INPUT to `execute()` — but `execute()` runs
+        // `TaskCapabilitySnapshotter.refreshForFreshRun` and only then captures
+        // the authoritative launch snapshot. Reusing a snapshot taken at this
+        // point would predate that refresh (and it's plan-scoped, layering the
+        // approved step's likely tools on top). The launch snapshot remains the
+        // enforcement authority; this is the pre-refresh planning view.
         var tools = Set(TaskCapabilityResolver(task: task).promptScope().resolver.resolvedProviderAllowedTools)
         let scopedSteps = approvedStep.map { [$0] } ?? plan.steps
         for step in scopedSteps {
