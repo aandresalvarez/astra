@@ -8,7 +8,7 @@ enum ProviderPolicyModeResolver {
         executionEnvironment: WorkspaceExecutionEnvironment? = nil
     ) -> ProviderPermissionMode {
         applyingRuntimeExecutionClamp(
-            baseMode(for: policy),
+            baseMode(for: policy, runtime: runtime),
             runtime: runtime,
             executionEnvironment: executionEnvironment
         )
@@ -46,21 +46,23 @@ enum ProviderPolicyModeResolver {
         ))
     }
 
-    private static func baseMode(for policy: AgentPolicy) -> ProviderPermissionMode {
+    private static func baseMode(for policy: AgentPolicy, runtime: AgentRuntimeID) -> ProviderPermissionMode {
         switch policy.level {
         case .autonomous:
             return .autonomous
         case .locked:
-            return .restricted
+            return providerModeForReadOnlyIntent(runtime: runtime)
         case .review, .build, .network:
             return .restricted
         case .custom:
+            if hasReadOnlyIntent(policy) {
+                return providerModeForReadOnlyIntent(runtime: runtime)
+            }
             return customPolicyResolvesToRestricted(policy) ? .restricted : .interactive
         }
     }
 
-    /// Whether a `.custom` policy must resolve to `.restricted` (so providers
-    /// still receive the generated read-only allow/deny permissions) rather than
+    /// Whether a `.custom` policy needs a provider sandbox mode rather than
     /// falling back to `.interactive`.
     ///
     /// A custom policy stays restricted when it either (a) permits a mutating
@@ -70,11 +72,8 @@ enum ProviderPolicyModeResolver {
     /// locked preset expresses read-only intent as *denied* tools/shell, so
     /// without this a persisted read-only default would fall through to
     /// `.interactive` and silently drop the allow/deny that enforced the preset
-    /// (e.g. Claude would stop generating its read-only permission set). This
-    /// mirrors the explicit `.locked` branch above, which already resolves to
-    /// `.restricted`.
+    /// (e.g. Claude would stop generating its read-only permission set).
     private static func customPolicyResolvesToRestricted(_ policy: AgentPolicy) -> Bool {
-        let mutatingTools = Set(["bash", "edit", "multiedit", "write", "notebookedit"])
         let allowedTools = policy.allowedTools.map(normalizedToolName)
         if allowedTools.contains(where: mutatingTools.contains) {
             return true
@@ -88,6 +87,25 @@ enum ProviderPolicyModeResolver {
             return true
         }
         return !policy.deniedShellPatterns.isEmpty
+    }
+
+    private static let readOnlyTools = Set(["read", "glob", "grep"])
+    private static let mutatingTools = Set(["bash", "edit", "multiedit", "write", "notebookedit"])
+
+    private static func hasReadOnlyIntent(_ policy: AgentPolicy) -> Bool {
+        if policy.level == .locked { return true }
+        guard policy.level == .custom else { return false }
+        let allowedTools = policy.allowedTools.map(normalizedToolName)
+        guard !allowedTools.isEmpty else { return false }
+        guard allowedTools.allSatisfy(readOnlyTools.contains) else { return false }
+        let deniedTools = policy.deniedTools.map(normalizedToolName)
+        return deniedTools.contains(where: mutatingTools.contains)
+            || policy.deniedShellPatterns.contains("*")
+            || policy.deniedURLPatterns.contains("*")
+    }
+
+    private static func providerModeForReadOnlyIntent(runtime: AgentRuntimeID?) -> ProviderPermissionMode {
+        runtime == .codexCLI ? .readOnly : .restricted
     }
 
     private static func normalizedToolName(_ raw: String) -> String {

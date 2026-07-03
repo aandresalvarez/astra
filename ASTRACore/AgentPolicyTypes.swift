@@ -487,6 +487,7 @@ public struct ProviderRuntimeSupportToolDescriptor: Codable, Equatable, Sendable
 
 public enum ProviderPermissionMode: String, Codable, Equatable, Sendable, CaseIterable {
     case autonomous
+    case readOnly
     case restricted
     case interactive
 

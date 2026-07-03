@@ -7,7 +7,7 @@ struct BrowserSessionPolicy: Equatable {
 
     static let failClosed = BrowserSessionPolicy(
         enabledBrowserAdapters: [],
-        githubReadOnlyMode: false
+        githubReadOnlyMode: true
     )
 }
 

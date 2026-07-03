@@ -44,7 +44,8 @@ enum TaskRuntimePermissionGrants {
 
     static func approvedGrants(for task: AgentTask, runtime: AgentRuntimeID? = nil) -> [PermissionGrant] {
         let typed = typedPayloads(for: task)
-        let decoded = typed.isEmpty ? compatibilityPayloads(for: task) : typed
+        let decoded = (typed + compatibilityPayloads(for: task))
+            .sorted { $0.approvedAt < $1.approvedAt }
         let grants = decoded
             .filter { payload in
                 runtime.map { payload.providerID == $0 } ?? true

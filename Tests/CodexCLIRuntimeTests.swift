@@ -377,8 +377,8 @@ struct CodexCLIRuntimeTests {
         #expect(render.usesBroadProviderPermissions == false)
     }
 
-    @Test("Codex locked policy render uses restricted provider mode")
-    func codexLockedPolicyRenderUsesRestrictedProviderMode() {
+    @Test("Codex locked policy render uses read-only provider mode")
+    func codexLockedPolicyRenderUsesReadOnlyProviderMode() {
         let render = CodexPolicyAdapter().render(
             policy: .preset(.locked),
             context: PolicyRenderContext(
@@ -395,9 +395,10 @@ struct CodexCLIRuntimeTests {
         )
 
         #expect(render.policyLevel == .locked)
-        #expect(render.permissionMode == .restricted)
-        #expect(render.generatedConfigPreview.contains("--sandbox workspace-write"))
-        #expect(render.generatedConfigPreview.contains("--sandbox read-only") == false)
+        #expect(render.permissionMode == .readOnly)
+        #expect(render.generatedConfigPreview.contains("--sandbox read-only"))
+        #expect(render.generatedConfigPreview.contains("--sandbox workspace-write") == false)
+        #expect(render.codexLaunchPermissionArguments(resumingNativeSession: true).contains("sandbox_mode=\"read-only\""))
     }
 
     @Test("Provider permission mode decodes legacy strings fail closed")
@@ -406,12 +407,17 @@ struct CodexCLIRuntimeTests {
             ProviderPermissionMode.self,
             from: Data(#""restricted""#.utf8)
         )
+        let readOnly = try JSONDecoder().decode(
+            ProviderPermissionMode.self,
+            from: Data(#""readOnly""#.utf8)
+        )
         let unknown = try JSONDecoder().decode(
             ProviderPermissionMode.self,
             from: Data(#""future-provider-mode""#.utf8)
         )
 
         #expect(known == .restricted)
+        #expect(readOnly == .readOnly)
         #expect(unknown == .restricted)
     }
 }

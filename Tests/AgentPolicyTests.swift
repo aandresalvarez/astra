@@ -252,19 +252,17 @@ struct AgentPolicyTests {
         #expect(!render.generatedConfigPreview.contains("Bash(*)"))
     }
 
-    @Test("Relabeled read-only custom policy stays in restricted provider mode")
-    func relabeledReadOnlyCustomPolicyStaysRestricted() {
+    @Test("Relabeled read-only custom policy preserves provider-specific sandbox intent")
+    func relabeledReadOnlyCustomPolicyPreservesProviderSpecificSandboxIntent() {
         // AgentPolicyDefaults relabels a persisted `.locked` default to `.custom`
         // while preserving its denied tools/shell. That relabeled policy must
-        // still resolve to `.restricted` so providers keep the generated
-        // read-only allow/deny that enforced the read-only preset — not fall
-        // through to `.interactive`, which drops it.
+        // keep read-only intent while allowing each provider adapter to express
+        // that intent with its safest native sandbox vocabulary.
         var policy = AgentPolicy.preset(.locked)
         policy.level = .custom
         #expect(policy.deniedTools.contains("Write"))
         #expect(ProviderPolicyModeResolver.mode(for: policy, runtime: .claudeCode) == .restricted)
-        // Consistent with the explicit `.locked` branch across providers.
-        #expect(ProviderPolicyModeResolver.mode(for: policy, runtime: .codexCLI) == .restricted)
+        #expect(ProviderPolicyModeResolver.mode(for: policy, runtime: .codexCLI) == .readOnly)
 
         let adapter = ClaudePolicyAdapter()
         let render = adapter.render(
@@ -274,6 +272,14 @@ struct AgentPolicyTests {
         #expect(render.permissionMode == .restricted)
         #expect(render.generatedConfigPreview.contains("Read(*)"))
         #expect(!render.generatedConfigPreview.contains("Write(*)"))
+
+        let codexRender = CodexPolicyAdapter().render(
+            policy: policy,
+            context: policyRenderContext(runtime: .codexCLI, features: CodexPolicyAdapter().supportedFeatures)
+        )
+        #expect(codexRender.permissionMode == .readOnly)
+        #expect(codexRender.generatedConfigPreview.contains("--sandbox read-only"))
+        #expect(codexRender.codexLaunchPermissionArguments(resumingNativeSession: true).contains("sandbox_mode=\"read-only\""))
     }
 
     @Test("Ask-style custom preset keeps interactive provider mode")

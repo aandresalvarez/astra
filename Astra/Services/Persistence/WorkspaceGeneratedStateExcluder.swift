@@ -14,7 +14,7 @@ enum WorkspaceGeneratedStateExcluder {
             workspaceURL: workspaceURL,
             repositoryRoot: repository.root
         )
-        let excludeURL = repository.gitDirectory
+        let excludeURL = commonGitDirectory(for: repository.gitDirectory)
             .appendingPathComponent("info", isDirectory: true)
             .appendingPathComponent("exclude")
         try fileManager.createDirectory(
@@ -116,6 +116,23 @@ enum WorkspaceGeneratedStateExcluder {
             return URL(fileURLWithPath: rawPath, isDirectory: true).standardizedFileURL
         }
         return repositoryRoot
+            .appendingPathComponent(rawPath, isDirectory: true)
+            .standardizedFileURL
+    }
+
+    private static func commonGitDirectory(for gitDirectory: URL) -> URL {
+        let commonDirURL = gitDirectory.appendingPathComponent("commondir")
+        guard let contents = try? String(contentsOf: commonDirURL, encoding: .utf8),
+              let line = contents.split(whereSeparator: \.isNewline).first else {
+            return gitDirectory
+        }
+
+        let rawPath = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !rawPath.isEmpty else { return gitDirectory }
+        if rawPath.hasPrefix("/") {
+            return URL(fileURLWithPath: rawPath, isDirectory: true).standardizedFileURL
+        }
+        return gitDirectory
             .appendingPathComponent(rawPath, isDirectory: true)
             .standardizedFileURL
     }

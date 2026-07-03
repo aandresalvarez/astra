@@ -112,6 +112,13 @@ struct WorkspaceRightRailPerformanceTests {
         )
 
         #expect(policy == .failClosed)
+        #expect(policy.githubReadOnlyMode == true)
+        #expect(BrowserSiteActionPolicy.denialReason(
+            batchAction: "fill",
+            currentURL: "https://github.com/aandresalvarez/astra/pull/177",
+            enabledBrowserAdapters: Set(policy.enabledBrowserAdapters),
+            githubReadOnlyMode: policy.githubReadOnlyMode
+        ) == BrowserSiteActionPolicy.gitHubReadOnlyDenialReason)
     }
 
     @MainActor

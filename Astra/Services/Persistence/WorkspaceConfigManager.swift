@@ -1067,14 +1067,7 @@ enum WorkspaceConfigManager {
         let eventDescriptor = FetchDescriptor<WorkspaceAppRunEvent>(predicate: #Predicate { $0.workspaceID == workspaceID })
         let events = ((try? modelContext.fetch(eventDescriptor)) ?? [])
             .filter { mirroredRunIDs.contains($0.runID) }
-        let mirroredEvents = Array(events
-            .sorted {
-                if $0.timestamp == $1.timestamp {
-                    return $0.id.uuidString < $1.id.uuidString
-                }
-                return $0.timestamp < $1.timestamp
-            }
-            .suffix(MirrorLimits.maxWorkspaceAppRunEvents))
+        let mirroredEvents = workspaceAppRunEventsForMirror(events, mirroredRuns: mirroredRuns)
 
         return WorkspaceAppRunMirrorSnapshot(runs: mirroredRuns, events: mirroredEvents)
     }
@@ -1084,6 +1077,62 @@ enum WorkspaceConfigManager {
             return lhs.id.uuidString < rhs.id.uuidString
         }
         return lhs.startedAt < rhs.startedAt
+    }
+
+    private static func workspaceAppRunEventsForMirror(
+        _ events: [WorkspaceAppRunEvent],
+        mirroredRuns: [WorkspaceAppRun]
+    ) -> [WorkspaceAppRunEvent] {
+        let approvalWaitingRunIDs = Set(mirroredRuns.compactMap { run -> UUID? in
+            guard run.pendingApprovalActionID?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .isEmpty == false else {
+                return nil
+            }
+            return run.id
+        })
+        let approvalResumeEvents = latestApprovalResumeEvents(
+            in: events,
+            approvalWaitingRunIDs: approvalWaitingRunIDs
+        )
+        let approvalResumeEventIDs = Set(approvalResumeEvents.map(\.id))
+        let remainingLimit = max(0, MirrorLimits.maxWorkspaceAppRunEvents - approvalResumeEvents.count)
+        let recentEvents = Array(events
+            .filter { !approvalResumeEventIDs.contains($0.id) }
+            .sorted(by: workspaceAppRunEventMirrorOrder)
+            .suffix(remainingLimit))
+        return (approvalResumeEvents + recentEvents)
+            .sorted(by: workspaceAppRunEventMirrorOrder)
+    }
+
+    private static func latestApprovalResumeEvents(
+        in events: [WorkspaceAppRunEvent],
+        approvalWaitingRunIDs: Set<UUID>
+    ) -> [WorkspaceAppRunEvent] {
+        guard !approvalWaitingRunIDs.isEmpty else { return [] }
+        var latestByRunID: [UUID: WorkspaceAppRunEvent] = [:]
+        for event in events
+            where approvalWaitingRunIDs.contains(event.runID)
+                && event.type == "workspaceApp.run.awaitingApproval" {
+            guard let existing = latestByRunID[event.runID] else {
+                latestByRunID[event.runID] = event
+                continue
+            }
+            if workspaceAppRunEventMirrorOrder(existing, event) {
+                latestByRunID[event.runID] = event
+            }
+        }
+        return latestByRunID.values.sorted(by: workspaceAppRunEventMirrorOrder)
+    }
+
+    private static func workspaceAppRunEventMirrorOrder(
+        _ lhs: WorkspaceAppRunEvent,
+        _ rhs: WorkspaceAppRunEvent
+    ) -> Bool {
+        if lhs.timestamp == rhs.timestamp {
+            return lhs.id.uuidString < rhs.id.uuidString
+        }
+        return lhs.timestamp < rhs.timestamp
     }
 
     private static func workspaceAppDependencyBindingsForExport(workspace: Workspace) -> [WorkspaceAppDependencyBinding] {
