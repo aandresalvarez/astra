@@ -291,7 +291,7 @@ struct WorkspacePersistenceTests {
         #expect(TaskRuntimePermissionGrants.approvedGrants(for: importedTask) == [approvalGrant])
     }
 
-    @Test("recovery export and import preserve WorkspaceApps, OAuth profiles, and task execution metadata")
+    @Test("recovery export and import preserve WorkspaceApps and task execution metadata but exclude global OAuth profiles")
     @MainActor
     func recoveryRoundTripPreservesAppsOAuthAndExecutionMetadata() throws {
         let root = "/tmp/astra_recovery_roundtrip_\(UUID().uuidString)"
@@ -425,7 +425,10 @@ struct WorkspacePersistenceTests {
         #expect(config.workspaceAppRunEvents?.first?.type == "workspace_app.run.waiting")
         #expect(config.workspaceAppDependencyBindings?.first?.transport == "cli")
         #expect(config.workspaceAppAutomationStates?.first?.status == "enabled")
-        #expect(config.googleOAuthAccountProfiles?.first?.authState == "needsReauth")
+        // Global Google account profiles are account-scoped PII with no workspace
+        // link; they must NOT be mirrored into a per-workspace (repo-committable)
+        // config, even when a profile is signed in.
+        #expect(config.googleOAuthAccountProfiles == nil)
 
         let importedContainer = try makeWorkspacePersistenceContainer()
         let importedContext = importedContainer.mainContext
@@ -444,10 +447,10 @@ struct WorkspacePersistenceTests {
         #expect(try importedContext.fetch(FetchDescriptor<WorkspaceAppRunEvent>()).first?.payload == #"{"reason":"approval"}"#)
         #expect(try importedContext.fetch(FetchDescriptor<WorkspaceAppDependencyBinding>()).first?.transportRaw == "cli")
         #expect(try importedContext.fetch(FetchDescriptor<WorkspaceAppAutomationState>()).first?.isEnabled == true)
-        let importedProfile = try #require(importedContext.fetch(FetchDescriptor<GoogleOAuthAccountProfile>()).first)
-        #expect(importedProfile.email == "researcher@example.com")
-        #expect(importedProfile.authState == .needsReauth)
-        #expect(importedProfile.authStateReason == "scope_upgrade")
+        // The mirror carried no OAuth profile (excluded above), so recovery does
+        // not resurrect global account PII from a per-workspace config. Profiles
+        // are re-established from Google auth (tokens live in the keychain).
+        #expect(try importedContext.fetch(FetchDescriptor<GoogleOAuthAccountProfile>()).isEmpty)
     }
 
     @Test("legacy task configs without done state import as not done")

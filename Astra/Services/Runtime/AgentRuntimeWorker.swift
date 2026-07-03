@@ -136,6 +136,13 @@ final class AgentRuntimeWorker {
                 modelContext: modelContext,
                 reason: "artifact_preflight_failed"
             )
+            // The task was admitted to `.running` before this preflight (see
+            // TaskQueue approved-plan admission). Without a terminal transition
+            // here the queue removes the worker and the task is stranded Running
+            // forever with no way to retry from the UI. Fail it so it becomes
+            // actionable again, mirroring the completion path above.
+            TaskStateMachine.failFromRuntime(task, modelContext: modelContext)
+            WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
             return
         }
 

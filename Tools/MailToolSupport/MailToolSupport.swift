@@ -47,7 +47,11 @@ public func runProcess(
         executable: executable,
         arguments: arguments,
         standardInput: input.map { Data($0.utf8) },
-        timeout: requestTimeout
+        timeout: requestTimeout,
+        // Mail helpers can fan out to child processes (osascript, network
+        // helpers); terminate the whole group on timeout so descendants can't
+        // outlive the parent. Matches the connector-read reader's behavior.
+        terminateProcessGroup: true
     ))
     if result.timedOut {
         throw ToolError(timeoutMessage ?? "\(executable) timed out after \(Int(requestTimeout)) seconds.")

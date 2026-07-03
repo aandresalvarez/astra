@@ -1101,9 +1101,18 @@ enum WorkspaceConfigManager {
     }
 
     private static func googleOAuthProfilesForExport(workspace: Workspace) -> [GoogleOAuthAccountProfile] {
-        guard let modelContext = workspace.modelContext else { return [] }
-        let descriptor = FetchDescriptor<GoogleOAuthAccountProfile>()
-        return (try? modelContext.fetch(descriptor)) ?? []
+        // Google account profiles are GLOBAL account state (subject / email /
+        // granted scopes), not workspace-scoped — the model has no workspace
+        // link. The workspace mirror is written as a dotfile inside the user's
+        // repository, so fetching every profile here mirrored a user's personal
+        // Google account metadata into *every* workspace's
+        // `.astra-workspace.json`, including unrelated non-Google projects, and
+        // into anything the workspace file is later shared with. Account
+        // profiles are re-established from Google auth (their tokens live in the
+        // keychain, which survives a store reset), so they are deliberately
+        // excluded from the per-workspace mirror. Existing mirrors that already
+        // contain profiles still import (see importGoogleOAuthProfiles).
+        []
     }
 
     private static func skillsForExport(workspace: Workspace, globalSkills: [Skill]) -> [Skill] {
