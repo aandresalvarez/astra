@@ -816,10 +816,7 @@ final class AgentRuntimeWorker {
                     let emittedEvents = parsedBatch.events.flatMap {
                         runtimeAdapter.processWorkerStreamEvent($0, pipeline: eventPipeline)
                     }
-                    let emittedBatch = AgentRuntimeStreamEventBatch(
-                        representation: parsedBatch.representation,
-                        events: emittedEvents
-                    )
+                    let emittedBatch = AgentRuntimeStreamEventBatch(events: emittedEvents)
                     emittedBatch.recordEmitted(to: streamTelemetry)
                     emittedBatch.recordEmitted(to: streamDebugCapture)
                     for filtered in emittedEvents {

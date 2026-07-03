@@ -218,6 +218,8 @@ public enum CodexStreamEventParser {
             )
         case .fileChange:
             return nil
+        case .teamEvent:
+            return nil
         case .unknown:
             return nil
         }

@@ -2216,7 +2216,13 @@ struct AgentRuntimeAdapterTests {
         let permissionPrompt = "Allow access to these paths? (y/n):"
 
         #expect(claude.parseProcessEvents(line: claudeLine, parsesJSONLines: true).count == 1)
-        #expect(claude.parseWorkerStreamEvents(line: claudeLine, parsesJSONLines: true).parsedEvents.count == 1)
+        // Claude now records through the same `AgentEvent` representation as
+        // every other runtime, so its worker stream batch is `.agent`, not
+        // `.parsed` (the callback path via `parseProcessEvents` above still
+        // produces `ParsedEvent` unchanged).
+        #expect(claude.parseWorkerStreamEvents(line: claudeLine, parsesJSONLines: true).agentEvents == [
+            .text(text: "hello")
+        ])
         #expect(copilot.parseProcessEvents(line: copilotLine, parsesJSONLines: true).isEmpty == false)
         #expect(copilot.parseWorkerStreamEvents(line: copilotLine, parsesJSONLines: true).agentEvents.isEmpty == false)
         #expect(antigravity.parseProcessEvents(line: antigravityLine, parsesJSONLines: false).isEmpty == false)
