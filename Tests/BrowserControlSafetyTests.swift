@@ -1009,16 +1009,20 @@ struct BrowserControlSafetyTests {
 
     @Test("Trusted Google Docs paste shortcut stays outside generic keypress preflight")
     func trustedGoogleDocsPasteShortcutStaysOutsideGenericKeypressPreflight() throws {
+        // googleDocsPasteFullDocumentText (the caller of this trusted Cmd+V
+        // dispatch) now lives in GoogleWorkspaceBrowserWorkflowAdapter.swift,
+        // not ShelfBrowserSession.swift — see GoogleWorkspaceBrowserWorkflowContext's
+        // `keypress` closure, whose third parameter is `skipTextEntryPreflight`.
         let repoRoot = URL(filePath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-        let sessionPath = repoRoot
+        let adapterPath = repoRoot
             .appendingPathComponent("Astra")
             .appendingPathComponent("Services")
             .appendingPathComponent("Browser")
-            .appendingPathComponent("ShelfBrowserSession.swift")
+            .appendingPathComponent("GoogleWorkspaceBrowserWorkflowAdapter.swift")
             .path
-        let source = try String(contentsOfFile: sessionPath, encoding: .utf8)
+        let source = try String(contentsOfFile: adapterPath, encoding: .utf8)
 
-        #expect(source.contains(#"inputJSON = try await keypress(key: "v", modifiers: ["command"], skipTextEntryPreflight: true)"#))
+        #expect(source.contains(#"inputJSON = try await context.keypress("v", ["command"], true)"#))
         #expect(BrowserKeypressSafety.requiresTextEntryPreflight(key: "v", modifiers: ["command"]))
     }
 
