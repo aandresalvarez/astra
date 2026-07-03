@@ -1141,6 +1141,297 @@ struct AgentRuntimeAdapterTests {
         #expect(allowedTools == ["Read"])
     }
 
+    // MARK: - Cross-provider manifest-render authority (all 6 providers)
+    //
+    // Codex ("Codex launch permission flags come from persisted provider render")
+    // and Copilot ("Copilot launch permission flags follow manifest render when
+    // execution policy disagrees") already prove this invariant for those two
+    // providers, and Claude's dedicated test above proves it for the ask-first
+    // tool set. The three tests below close the same coverage gap for
+    // Antigravity, Cursor, and OpenCode: each provider's `xLaunchPermissionArguments()`
+    // reads `cliArgumentsSummary` straight off the RunPermissionManifest's
+    // persisted `providerRender` (see ProviderPolicyRenderLaunchArguments.swift),
+    // so a conflicting execution-policy-derived render must NOT win at launch.
+
+    @Test("Antigravity launch permission flags come from persisted provider render")
+    @MainActor
+    func antigravityLaunchPermissionFlagsComeFromPersistedProviderRender() throws {
+        let workspace = Workspace(name: "Antigravity Render", primaryPath: "/tmp/astra-antigravity-render")
+        let task = AgentTask(
+            title: "Antigravity render",
+            goal: "Check policy wiring",
+            workspace: workspace,
+            model: "antigravity-default",
+            runtime: .antigravityCLI
+        )
+        let manifestFlag = "--manifest-render-owned-permission-flag"
+        let executionFlag = "--execution-render-should-not-win"
+        let manifestRender = ProviderPolicyRender(
+            providerID: .antigravityCLI,
+            adapterVersion: 1,
+            policyLevel: .review,
+            configOwnership: .generated,
+            permissionMode: .restricted,
+            allowedTools: [],
+            runtimeSupportTools: [],
+            askFirstTools: [],
+            deniedTools: [],
+            allowedShellPatterns: [],
+            askFirstShellPatterns: [],
+            deniedShellPatterns: [],
+            allowedURLPatterns: [],
+            deniedURLPatterns: [],
+            cliArgumentsSummary: [manifestFlag],
+            settingsSummary: "test",
+            generatedConfigPreview: manifestFlag,
+            enforcementTiers: [.providerNative, .astraBrokered],
+            diagnostics: [],
+            usesBroadProviderPermissions: false
+        )
+        let executionRender = ProviderPolicyRender(
+            providerID: .antigravityCLI,
+            adapterVersion: 1,
+            policyLevel: .review,
+            configOwnership: .generated,
+            permissionMode: .restricted,
+            allowedTools: [],
+            runtimeSupportTools: [],
+            askFirstTools: [],
+            deniedTools: [],
+            allowedShellPatterns: [],
+            askFirstShellPatterns: [],
+            deniedShellPatterns: [],
+            allowedURLPatterns: [],
+            deniedURLPatterns: [],
+            cliArgumentsSummary: [executionFlag],
+            settingsSummary: "test",
+            generatedConfigPreview: executionFlag,
+            enforcementTiers: [.providerNative, .astraBrokered],
+            diagnostics: [],
+            usesBroadProviderPermissions: false
+        )
+        let manifest = RunPermissionManifest(
+            taskID: task.id,
+            runID: UUID(),
+            phase: "test",
+            providerID: .antigravityCLI,
+            providerVersion: nil,
+            model: "antigravity-default",
+            policyLevel: .review,
+            policyScope: .builtInDefault,
+            providerRender: manifestRender,
+            workspacePath: workspace.primaryPath,
+            additionalPaths: [],
+            environmentKeyNames: [],
+            credentialLabels: [],
+            approvalsGranted: [],
+            approvalGrants: []
+        )
+
+        let plan = AgentRuntimeAdapterRegistry
+            .adapter(for: .antigravityCLI)
+            .makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext(
+                prompt: "hello",
+                task: task,
+                workspacePath: workspace.primaryPath,
+                executablePath: "/bin/antigravity-not-present",
+                providerHomeDirectory: "/tmp/astra-antigravity-home",
+                permissionPolicy: .restricted,
+                executionPolicy: .default.applyingProviderRender(executionRender),
+                permissionManifest: manifest,
+                timeoutSeconds: 30
+            ))
+
+        #expect(plan.arguments.contains(manifestFlag))
+        #expect(!plan.arguments.contains(executionFlag))
+    }
+
+    @Test("Cursor launch permission flags come from persisted provider render")
+    @MainActor
+    func cursorLaunchPermissionFlagsComeFromPersistedProviderRender() throws {
+        let workspace = Workspace(name: "Cursor Render", primaryPath: "/tmp/astra-cursor-render")
+        let task = AgentTask(
+            title: "Cursor render",
+            goal: "Check policy wiring",
+            workspace: workspace,
+            model: "cursor-default",
+            runtime: .cursorCLI
+        )
+        let manifestFlag = "--manifest-render-owned-permission-flag"
+        let executionFlag = "--execution-render-should-not-win"
+        let manifestRender = ProviderPolicyRender(
+            providerID: .cursorCLI,
+            adapterVersion: 1,
+            policyLevel: .review,
+            configOwnership: .generated,
+            permissionMode: .restricted,
+            allowedTools: [],
+            runtimeSupportTools: [],
+            askFirstTools: [],
+            deniedTools: [],
+            allowedShellPatterns: [],
+            askFirstShellPatterns: [],
+            deniedShellPatterns: [],
+            allowedURLPatterns: [],
+            deniedURLPatterns: [],
+            cliArgumentsSummary: [manifestFlag],
+            settingsSummary: "test",
+            generatedConfigPreview: manifestFlag,
+            enforcementTiers: [.providerNative, .astraBrokered],
+            diagnostics: [],
+            usesBroadProviderPermissions: false
+        )
+        let executionRender = ProviderPolicyRender(
+            providerID: .cursorCLI,
+            adapterVersion: 1,
+            policyLevel: .review,
+            configOwnership: .generated,
+            permissionMode: .restricted,
+            allowedTools: [],
+            runtimeSupportTools: [],
+            askFirstTools: [],
+            deniedTools: [],
+            allowedShellPatterns: [],
+            askFirstShellPatterns: [],
+            deniedShellPatterns: [],
+            allowedURLPatterns: [],
+            deniedURLPatterns: [],
+            cliArgumentsSummary: [executionFlag],
+            settingsSummary: "test",
+            generatedConfigPreview: executionFlag,
+            enforcementTiers: [.providerNative, .astraBrokered],
+            diagnostics: [],
+            usesBroadProviderPermissions: false
+        )
+        let manifest = RunPermissionManifest(
+            taskID: task.id,
+            runID: UUID(),
+            phase: "test",
+            providerID: .cursorCLI,
+            providerVersion: nil,
+            model: "cursor-default",
+            policyLevel: .review,
+            policyScope: .builtInDefault,
+            providerRender: manifestRender,
+            workspacePath: workspace.primaryPath,
+            additionalPaths: [],
+            environmentKeyNames: [],
+            credentialLabels: [],
+            approvalsGranted: [],
+            approvalGrants: []
+        )
+
+        let plan = AgentRuntimeAdapterRegistry
+            .adapter(for: .cursorCLI)
+            .makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext(
+                prompt: "hello",
+                task: task,
+                workspacePath: workspace.primaryPath,
+                executablePath: "/bin/cursor-not-present",
+                providerHomeDirectory: "/tmp/astra-cursor-home",
+                permissionPolicy: .restricted,
+                executionPolicy: .default.applyingProviderRender(executionRender),
+                permissionManifest: manifest,
+                timeoutSeconds: 30
+            ))
+
+        #expect(plan.arguments.contains(manifestFlag))
+        #expect(!plan.arguments.contains(executionFlag))
+    }
+
+    @Test("OpenCode launch permission flags come from persisted provider render")
+    @MainActor
+    func openCodeLaunchPermissionFlagsComeFromPersistedProviderRender() throws {
+        let workspace = Workspace(name: "OpenCode Render", primaryPath: "/tmp/astra-opencode-render")
+        let task = AgentTask(
+            title: "OpenCode render",
+            goal: "Check policy wiring",
+            workspace: workspace,
+            model: "opencode-default",
+            runtime: .openCodeCLI
+        )
+        let manifestFlag = "--manifest-render-owned-permission-flag"
+        let executionFlag = "--execution-render-should-not-win"
+        let manifestRender = ProviderPolicyRender(
+            providerID: .openCodeCLI,
+            adapterVersion: 1,
+            policyLevel: .review,
+            configOwnership: .generated,
+            permissionMode: .restricted,
+            allowedTools: [],
+            runtimeSupportTools: [],
+            askFirstTools: [],
+            deniedTools: [],
+            allowedShellPatterns: [],
+            askFirstShellPatterns: [],
+            deniedShellPatterns: [],
+            allowedURLPatterns: [],
+            deniedURLPatterns: [],
+            cliArgumentsSummary: [manifestFlag],
+            settingsSummary: "test",
+            generatedConfigPreview: manifestFlag,
+            enforcementTiers: [.providerNative, .astraBrokered],
+            diagnostics: [],
+            usesBroadProviderPermissions: false
+        )
+        let executionRender = ProviderPolicyRender(
+            providerID: .openCodeCLI,
+            adapterVersion: 1,
+            policyLevel: .review,
+            configOwnership: .generated,
+            permissionMode: .restricted,
+            allowedTools: [],
+            runtimeSupportTools: [],
+            askFirstTools: [],
+            deniedTools: [],
+            allowedShellPatterns: [],
+            askFirstShellPatterns: [],
+            deniedShellPatterns: [],
+            allowedURLPatterns: [],
+            deniedURLPatterns: [],
+            cliArgumentsSummary: [executionFlag],
+            settingsSummary: "test",
+            generatedConfigPreview: executionFlag,
+            enforcementTiers: [.providerNative, .astraBrokered],
+            diagnostics: [],
+            usesBroadProviderPermissions: false
+        )
+        let manifest = RunPermissionManifest(
+            taskID: task.id,
+            runID: UUID(),
+            phase: "test",
+            providerID: .openCodeCLI,
+            providerVersion: nil,
+            model: "opencode-default",
+            policyLevel: .review,
+            policyScope: .builtInDefault,
+            providerRender: manifestRender,
+            workspacePath: workspace.primaryPath,
+            additionalPaths: [],
+            environmentKeyNames: [],
+            credentialLabels: [],
+            approvalsGranted: [],
+            approvalGrants: []
+        )
+
+        let plan = AgentRuntimeAdapterRegistry
+            .adapter(for: .openCodeCLI)
+            .makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext(
+                prompt: "hello",
+                task: task,
+                workspacePath: workspace.primaryPath,
+                executablePath: "/bin/opencode-not-present",
+                providerHomeDirectory: "/tmp/astra-opencode-home",
+                permissionPolicy: .restricted,
+                executionPolicy: .default.applyingProviderRender(executionRender),
+                permissionManifest: manifest,
+                timeoutSeconds: 30
+            ))
+
+        #expect(plan.arguments.contains(manifestFlag))
+        #expect(!plan.arguments.contains(executionFlag))
+    }
+
     @Test("Copilot launch audit separates task and runtime support tools")
     @MainActor
     func copilotLaunchAuditSeparatesTaskAndRuntimeSupportTools() {
