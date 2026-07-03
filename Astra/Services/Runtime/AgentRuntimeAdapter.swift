@@ -94,6 +94,10 @@ protocol AgentRuntimePolicyRendering {
 protocol AgentRuntimeProcessLaunchPlanning {
     var id: AgentRuntimeID { get }
     var descriptor: AgentRuntimeDescriptor { get }
+    /// Presentation copy for missing-executable diagnostics and the default
+    /// start-event payload. See `ProviderRuntimeMessages` for the full set of
+    /// diagnostic-copy accessors this backs by default.
+    var providerRuntimeMessages: ProviderRuntimeMessages { get }
 
     func launchSettings(configuration: AgentRuntimeConfiguration) -> AgentRuntimeLaunchSettings
     func sharedLaunchStateKey(context: AgentRuntimeProcessLaunchContext) -> AgentRuntimeSharedStateKey?
@@ -154,6 +158,9 @@ protocol AgentUtilityRuntimeAdapter {
 protocol AgentRuntimePostRunDiagnostics {
     var id: AgentRuntimeID { get }
     var descriptor: AgentRuntimeDescriptor { get }
+    /// Presentation copy for completion/failure/timeout/max-turns diagnostics
+    /// and the resume session-turn message. See `ProviderRuntimeMessages`.
+    var providerRuntimeMessages: ProviderRuntimeMessages { get }
 
     func shouldValidateSuccessfulRun(phase: RunPhase) -> Bool
     func requiresVisibleResultForSuccessfulRun(phase: RunPhase) -> Bool
@@ -223,19 +230,19 @@ extension AgentRuntimeProcessLaunchPlanning {
     }
 
     func missingExecutableAuditReason() -> String {
-        "provider_cli_not_found"
+        providerRuntimeMessages.missingExecutableAuditReason
     }
 
     func missingExecutableStopReason() -> String? {
-        nil
+        providerRuntimeMessages.missingExecutableStopReason
     }
 
     func missingExecutableMessage(executablePath: String) -> String {
-        ProviderMessages.missingExecutableAtPath(providerName: id.displayName, executablePath: executablePath)
+        providerRuntimeMessages.missingExecutableMessage(executablePath: executablePath, displayName: id.displayName)
     }
 
     func defaultStartEventPayload(task: AgentTask) -> String {
-        ProviderMessages.start(providerName: nil, goal: task.goal)
+        providerRuntimeMessages.defaultStartEventPayload(goal: task.goal)
     }
 
     func connectorPreflightContextText(
@@ -273,19 +280,19 @@ extension AgentRuntimePostRunDiagnostics {
     }
 
     func manualCompletionPayload(phase: RunPhase) -> String {
-        ProviderMessages.manualCompletion(providerName: nil, phase: phase)
+        providerRuntimeMessages.manualCompletionPayload(phase: phase)
     }
 
     func failurePayloadPrefix(phase: RunPhase, exitCode: Int) -> String {
-        ProviderMessages.failurePrefix(providerName: nil, phase: phase, exitCode: exitCode)
+        providerRuntimeMessages.failurePayloadPrefix(phase: phase, exitCode: exitCode)
     }
 
-    func timeoutPayload(phase _: RunPhase, timeoutSeconds: TimeInterval) -> String {
-        ProviderMessages.timeout(phase: .run, timeoutSeconds: timeoutSeconds)
+    func timeoutPayload(phase: RunPhase, timeoutSeconds: TimeInterval) -> String {
+        providerRuntimeMessages.timeoutPayload(phase: phase, timeoutSeconds: timeoutSeconds)
     }
 
-    func maxTurnsPayload(phase _: RunPhase, task: AgentTask) -> String {
-        ProviderMessages.maxTurns(phase: .run, maxTurns: task.maxTurns)
+    func maxTurnsPayload(phase: RunPhase, task: AgentTask) -> String {
+        providerRuntimeMessages.maxTurnsPayload(phase: phase, maxTurns: task.maxTurns)
     }
 
     func shouldClearStaleSessionOnFailure(phase: RunPhase, result: AgentProcessResult) -> Bool {
@@ -1034,6 +1041,7 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
     let modelsCheckedAtStorageKey = AppStorageKeys.claudeModelsCheckedAt
     // Claude Code includes runtime context in billed input, so low budgets need the launch overhead.
     let budgetProfile = AgentRuntimeBudgetProfile(runtime: .claudeCode, launchOverheadTokens: 120_000)
+    let providerRuntimeMessages = ProviderRuntimeMessages.claudeCode
 
     func shouldCheckWorkspaceDirectory(phase: RunPhase) -> Bool {
         phase == .run
@@ -1722,6 +1730,7 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
     let budgetProfile = AgentRuntimeBudgetProfile(runtime: .copilotCLI, launchOverheadTokens: 0)
     let recordsStreamTelemetry = true
     let recordsInferredFileChanges = true
+    let providerRuntimeMessages = ProviderRuntimeMessages.copilot
 
     func launchSettings(configuration: AgentRuntimeConfiguration) -> AgentRuntimeLaunchSettings {
         let configuredPath = configuration.executablePath(for: id)
@@ -1729,26 +1738,6 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             executablePath: configuredPath.isEmpty ? CopilotCLIRuntime.detectPath() : configuredPath,
             homeDirectory: configuration.homeDirectory(for: id)
         )
-    }
-
-    func missingExecutableAuditReason() -> String {
-        "copilot_cli_not_found"
-    }
-
-    func missingExecutableStopReason() -> String? {
-        "missing_copilot"
-    }
-
-    func missingExecutableMessage(executablePath _: String) -> String {
-        ProviderMessages.missingExecutable(
-            providerName: "GitHub Copilot",
-            installAction: "Install with `brew install copilot-cli` or `npm install -g @github/copilot`",
-            authAction: "authenticate with `copilot`."
-        )
-    }
-
-    func defaultStartEventPayload(task: AgentTask) -> String {
-        ProviderMessages.start(providerName: "Copilot", goal: task.goal)
     }
 
     func connectorPreflightContextText(
@@ -1773,22 +1762,6 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
         true
     }
 
-    func manualCompletionPayload(phase _: RunPhase) -> String {
-        ProviderMessages.manualCompletion(providerName: "Copilot", phase: .run)
-    }
-
-    func failurePayloadPrefix(phase _: RunPhase, exitCode: Int) -> String {
-        ProviderMessages.failurePrefix(providerName: "Copilot", phase: .run, exitCode: exitCode)
-    }
-
-    func timeoutPayload(phase _: RunPhase, timeoutSeconds: TimeInterval) -> String {
-        ProviderMessages.timeout(phase: .run, timeoutSeconds: timeoutSeconds)
-    }
-
-    func maxTurnsPayload(phase _: RunPhase, task: AgentTask) -> String {
-        ProviderMessages.maxTurns(phase: .run, maxTurns: task.maxTurns)
-    }
-
     func sessionTurnMessage(
         task: AgentTask,
         promptOverride: String?,
@@ -1796,7 +1769,7 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
         sessionMessage _: String?,
         phase _: RunPhase
     ) -> String {
-        promptOverride == nil ? task.goal : (startPayload ?? task.goal)
+        providerRuntimeMessages.sessionTurnMessage(task: task, promptOverride: promptOverride, startPayload: startPayload)
     }
 
     func policyAdapter(runtimeCapabilities: AgentRuntimePolicyCapabilities) -> any ProviderPolicyAdapter {
@@ -2319,6 +2292,7 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
     let recordsInferredFileChanges = true
     let recordsEstimatedUsageWhenProviderUsageMissing = true
     let modelAvailabilityAuthority: RuntimeModelAvailabilityAuthority = .suggestions
+    let providerRuntimeMessages = ProviderRuntimeMessages.antigravity
 
     func launchSettings(configuration: AgentRuntimeConfiguration) -> AgentRuntimeLaunchSettings {
         let configuredPath = configuration.executablePath(for: id)
@@ -2335,26 +2309,6 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
                 providerHomeDirectory: context.providerHomeDirectory
             ).standardizedFileURL.path
         )
-    }
-
-    func missingExecutableAuditReason() -> String {
-        "antigravity_cli_not_found"
-    }
-
-    func missingExecutableStopReason() -> String? {
-        "missing_antigravity"
-    }
-
-    func missingExecutableMessage(executablePath _: String) -> String {
-        ProviderMessages.missingExecutable(
-            providerName: "Google Antigravity",
-            installAction: "Install it from the official setup docs",
-            authAction: "run `agy` once to authenticate."
-        )
-    }
-
-    func defaultStartEventPayload(task: AgentTask) -> String {
-        ProviderMessages.start(providerName: "Antigravity", goal: task.goal)
     }
 
     func connectorPreflightContextText(
@@ -2379,22 +2333,6 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
         true
     }
 
-    func manualCompletionPayload(phase _: RunPhase) -> String {
-        ProviderMessages.manualCompletion(providerName: "Antigravity", phase: .run)
-    }
-
-    func failurePayloadPrefix(phase _: RunPhase, exitCode: Int) -> String {
-        ProviderMessages.failurePrefix(providerName: "Antigravity", phase: .run, exitCode: exitCode)
-    }
-
-    func timeoutPayload(phase: RunPhase, timeoutSeconds: TimeInterval) -> String {
-        ProviderMessages.timeout(phase: phase, timeoutSeconds: timeoutSeconds)
-    }
-
-    func maxTurnsPayload(phase: RunPhase, task: AgentTask) -> String {
-        ProviderMessages.maxTurns(phase: phase, maxTurns: task.maxTurns)
-    }
-
     func sessionTurnMessage(
         task: AgentTask,
         promptOverride: String?,
@@ -2402,7 +2340,7 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
         sessionMessage _: String?,
         phase _: RunPhase
     ) -> String {
-        promptOverride == nil ? task.goal : (startPayload ?? task.goal)
+        providerRuntimeMessages.sessionTurnMessage(task: task, promptOverride: promptOverride, startPayload: startPayload)
     }
 
     func policyAdapter(runtimeCapabilities _: AgentRuntimePolicyCapabilities) -> any ProviderPolicyAdapter {

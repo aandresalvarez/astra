@@ -28,6 +28,7 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
     let budgetProfile = AgentRuntimeBudgetProfile(runtime: .codexCLI, launchOverheadTokens: 0)
     let recordsStreamTelemetry = true
     let recordsInferredFileChanges = true
+    let providerRuntimeMessages = ProviderRuntimeMessages.codex
 
     func launchSettings(configuration: AgentRuntimeConfiguration) -> AgentRuntimeLaunchSettings {
         let configuredPath = configuration.executablePath(for: id)
@@ -35,26 +36,6 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
             executablePath: configuredPath.isEmpty ? CodexCLIRuntime.detectPath() : configuredPath,
             homeDirectory: configuration.homeDirectory(for: id)
         )
-    }
-
-    func missingExecutableAuditReason() -> String {
-        "codex_cli_not_found"
-    }
-
-    func missingExecutableStopReason() -> String? {
-        "missing_codex"
-    }
-
-    func missingExecutableMessage(executablePath _: String) -> String {
-        ProviderMessages.missingExecutable(
-            providerName: "Codex",
-            installAction: "Install Codex CLI",
-            authAction: "authenticate with `codex login`."
-        )
-    }
-
-    func defaultStartEventPayload(task: AgentTask) -> String {
-        ProviderMessages.start(providerName: "Codex", goal: task.goal)
     }
 
     func connectorPreflightContextText(
@@ -79,22 +60,6 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
         true
     }
 
-    func manualCompletionPayload(phase _: RunPhase) -> String {
-        ProviderMessages.manualCompletion(providerName: "Codex", phase: .run)
-    }
-
-    func failurePayloadPrefix(phase _: RunPhase, exitCode: Int) -> String {
-        ProviderMessages.failurePrefix(providerName: "Codex", phase: .run, exitCode: exitCode)
-    }
-
-    func timeoutPayload(phase _: RunPhase, timeoutSeconds: TimeInterval) -> String {
-        ProviderMessages.timeout(phase: .run, timeoutSeconds: timeoutSeconds)
-    }
-
-    func maxTurnsPayload(phase _: RunPhase, task: AgentTask) -> String {
-        ProviderMessages.maxTurns(phase: .run, maxTurns: task.maxTurns)
-    }
-
     func sessionTurnMessage(
         task: AgentTask,
         promptOverride: String?,
@@ -102,7 +67,7 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
         sessionMessage _: String?,
         phase _: RunPhase
     ) -> String {
-        promptOverride == nil ? task.goal : (startPayload ?? task.goal)
+        providerRuntimeMessages.sessionTurnMessage(task: task, promptOverride: promptOverride, startPayload: startPayload)
     }
 
     func policyAdapter(runtimeCapabilities _: AgentRuntimePolicyCapabilities) -> any ProviderPolicyAdapter {
