@@ -20,12 +20,16 @@ assert_targets "MCPGatewaySupportTests" \
   "Tools/MCPGatewaySupport/MCPGatewaySupport.swift" \
   "Tests/MCPGatewaySupportTests/RemoteMCPGatewaySupportTests.swift"
 
+assert_targets "MCPServerKitTests" \
+  "Tools/MCPServerKit/MCPServerKit.swift" \
+  "Tests/MCPServerKitTests/MCPServerKitTests.swift"
+
 assert_targets "MailToolSupportTests" \
   "Tools/MailToolSupport/AppleScriptSource.swift" \
   "Tools/StanfordAppleMailTool/main.swift" \
   "Tests/MailToolSupportTests/StanfordAppleMailToolTests.swift"
 
-assert_targets $'ArchitectureFitnessTests.ArchitectureFitnessTests\nMCPGatewaySupportTests\nMailToolSupportTests' \
+assert_targets $'ArchitectureFitnessTests.ArchitectureFitnessTests\nMCPGatewaySupportTests\nMCPServerKitTests\nMailToolSupportTests' \
   "Package.swift"
 
 assert_targets "ArchitectureFitnessTests.ArchitectureFitnessTests" \

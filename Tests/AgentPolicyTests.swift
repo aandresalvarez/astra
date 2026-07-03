@@ -252,6 +252,40 @@ struct AgentPolicyTests {
         #expect(!render.generatedConfigPreview.contains("Bash(*)"))
     }
 
+    @Test("Relabeled read-only custom policy stays in restricted provider mode")
+    func relabeledReadOnlyCustomPolicyStaysRestricted() {
+        // AgentPolicyDefaults relabels a persisted `.locked` default to `.custom`
+        // while preserving its denied tools/shell. That relabeled policy must
+        // still resolve to `.restricted` so providers keep the generated
+        // read-only allow/deny that enforced the read-only preset — not fall
+        // through to `.interactive`, which drops it.
+        var policy = AgentPolicy.preset(.locked)
+        policy.level = .custom
+        #expect(policy.deniedTools.contains("Write"))
+        #expect(ProviderPolicyModeResolver.mode(for: policy, runtime: .claudeCode) == .restricted)
+        // Consistent with the explicit `.locked` branch across providers.
+        #expect(ProviderPolicyModeResolver.mode(for: policy, runtime: .codexCLI) == .restricted)
+
+        let adapter = ClaudePolicyAdapter()
+        let render = adapter.render(
+            policy: policy,
+            context: policyRenderContext(runtime: .claudeCode, features: adapter.supportedFeatures)
+        )
+        #expect(render.permissionMode == .restricted)
+        #expect(render.generatedConfigPreview.contains("Read(*)"))
+        #expect(!render.generatedConfigPreview.contains("Write(*)"))
+    }
+
+    @Test("Ask-style custom preset keeps interactive provider mode")
+    func customAskPresetStaysInteractive() {
+        // The default `.custom` preset expresses writes as ask-first (not denies)
+        // and should keep deferring to the provider's interactive approval rather
+        // than being forced to restricted.
+        let policy = AgentPolicy.preset(.custom)
+        #expect(policy.deniedTools.isEmpty)
+        #expect(ProviderPolicyModeResolver.mode(for: policy, runtime: .claudeCode) == .interactive)
+    }
+
     @Test("Copilot autonomous render uses allow-all only when capability supports it")
     func copilotAutonomousRenderUsesAllowAllWhenSupported() {
         let capabilities = CopilotCLICapabilities(helpText: """

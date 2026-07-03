@@ -75,12 +75,14 @@ enum AgentRuntimeProviderLaunchPolicy {
         effectiveProviderMode: ProviderPermissionMode,
         executionEnvironment: WorkspaceExecutionEnvironment
     ) -> ProviderPermissionMode {
-        if runtime == .copilotCLI,
-           DockerWorkspaceMCPProjection.isEnabled(for: executionEnvironment),
-           effectiveProviderMode == .autonomous {
-            return .restricted
-        }
-        return effectiveProviderMode
+        // Single source of truth for the Copilot+Docker autonomous→restricted
+        // clamp lives in ProviderPolicyModeResolver so the launch-time path and
+        // the policy-render path cannot diverge.
+        ProviderPolicyModeResolver.applyingRuntimeExecutionClamp(
+            effectiveProviderMode,
+            runtime: runtime,
+            executionEnvironment: executionEnvironment
+        )
     }
 
     static func permissionPolicy(
