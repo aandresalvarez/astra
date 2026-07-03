@@ -127,6 +127,26 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
     var isWebViewLoaded: Bool { _webView != nil }
     let controlledBrowser = ControlledBrowserController()
 
+    /// The active backend's raw operation surface (see
+    /// `BrowserAutomationEngineOperating`), resolved fresh from `engine` on
+    /// every access. A computed property rather than a stored one so it never
+    /// forces `_webView` creation for a session that is currently using the
+    /// controlled engine, and so it always reflects same-turn engine
+    /// switches. `EmbeddedWebKitEngine` closes over `evaluateJavaScriptString`
+    /// (which lazily creates `webView` on first real use) rather than
+    /// capturing `webView` directly, preserving that laziness.
+    private var automationEngine: any BrowserAutomationEngineOperating {
+        if isUsingControlledBrowser {
+            return ControlledBrowserEngineAdapter(controller: controlledBrowser)
+        }
+        return EmbeddedWebKitEngine(evaluateJavaScript: { [weak self] script in
+            guard let self else {
+                throw ControlledBrowserError.commandFailed("Browser session deallocated.")
+            }
+            return try await self.evaluateJavaScriptString(script)
+        })
+    }
+
     private var observations: [NSKeyValueObservation] = []
     private var controlledBrowserCancellable: AnyCancellable?
     private var bridgeServer: BrowserBridgeServer?
@@ -1866,13 +1886,12 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
     }
 
     private func rawSnapshotJSON() async throws -> String {
+        let json = try await automationEngine.snapshot()
         if isUsingControlledBrowser {
-            let json = try await controlledBrowser.snapshot()
             syncDisplayedStateForEngine()
             publishBridgeState()
-            return json
         }
-        return try await evaluateJavaScriptString(BrowserAutomationScripts.snapshotScript)
+        return json
     }
 
     private func rawSnapshotObject() async throws -> [String: Any] {
@@ -2546,20 +2565,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
 
     private func targetInfo(for control: BrowserControl, controlRef: BrowserControlRef?, allowDangerous: Bool) async throws -> String {
         let target = actionTarget(for: control, controlRef: controlRef)
-        if isUsingControlledBrowser {
-            return try await controlledBrowser.targetInfo(
-                selector: target.selector,
-                x: target.x,
-                y: target.y,
-                allowDangerous: allowDangerous,
-                label: target.label,
-                role: target.role,
-                text: nil,
-                placeholder: target.placeholder,
-                testID: target.testID
-            )
-        }
-        return try await evaluateJavaScriptString(BrowserAutomationScripts.targetInfoScript(
+        return try await automationEngine.targetInfo(
             selector: target.selector,
             x: target.x,
             y: target.y,
@@ -2569,7 +2575,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             text: nil,
             placeholder: target.placeholder,
             testID: target.testID
-        ))
+        )
     }
 
     private func actionTarget(for control: BrowserControl, controlRef: BrowserControlRef?) -> BrowserControlActionTarget {
@@ -2810,33 +2816,20 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             }
             let beforeSettle = try? await rawSnapshotObject()
 
-            let json: String
+            let json = try await automationEngine.click(
+                selector: selector,
+                x: x,
+                y: y,
+                allowDangerous: allowDangerous,
+                label: label,
+                role: role,
+                text: text,
+                placeholder: placeholder,
+                testID: testID
+            )
             if isUsingControlledBrowser {
-                json = try await controlledBrowser.click(
-                    selector: selector,
-                    x: x,
-                    y: y,
-                    allowDangerous: allowDangerous,
-                    label: label,
-                    role: role,
-                    text: text,
-                    placeholder: placeholder,
-                    testID: testID
-                )
                 syncDisplayedStateForEngine()
                 publishBridgeState()
-            } else {
-                json = try await evaluateJavaScriptString(BrowserAutomationScripts.clickScript(
-                    selector: selector,
-                    x: x,
-                    y: y,
-                    allowDangerous: allowDangerous,
-                    label: label,
-                    role: role,
-                    text: text,
-                    placeholder: placeholder,
-                    testID: testID
-                ))
             }
 
             var object = try Self.jsonObject(from: try annotateBrowserLoopHint(json: json, action: action, target: BrowserControlActionService.targetIdentifier(
@@ -2929,33 +2922,20 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             }
             let beforeSettle = try? await rawSnapshotObject()
 
-            let json: String
+            let json = try await automationEngine.doubleClick(
+                selector: selector,
+                x: x,
+                y: y,
+                allowDangerous: allowDangerous,
+                label: label,
+                role: role,
+                text: text,
+                placeholder: placeholder,
+                testID: testID
+            )
             if isUsingControlledBrowser {
-                json = try await controlledBrowser.doubleClick(
-                    selector: selector,
-                    x: x,
-                    y: y,
-                    allowDangerous: allowDangerous,
-                    label: label,
-                    role: role,
-                    text: text,
-                    placeholder: placeholder,
-                    testID: testID
-                )
                 syncDisplayedStateForEngine()
                 publishBridgeState()
-            } else {
-                json = try await evaluateJavaScriptString(BrowserAutomationScripts.doubleClickScript(
-                    selector: selector,
-                    x: x,
-                    y: y,
-                    allowDangerous: allowDangerous,
-                    label: label,
-                    role: role,
-                    text: text,
-                    placeholder: placeholder,
-                    testID: testID
-                ))
             }
 
             var object = try Self.jsonObject(from: try annotateBrowserLoopHint(json: json, action: action, target: BrowserControlActionService.targetIdentifier(
@@ -3132,29 +3112,18 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             }
             let beforeSettle = try? await rawSnapshotObject()
 
-            let json: String
+            let json = try await automationEngine.type(
+                selector: selector,
+                text: text,
+                clear: clear,
+                label: label,
+                role: role,
+                placeholder: placeholder,
+                testID: testID
+            )
             if isUsingControlledBrowser {
-                json = try await controlledBrowser.type(
-                    selector: selector,
-                    text: text,
-                    clear: clear,
-                    label: label,
-                    role: role,
-                    placeholder: placeholder,
-                    testID: testID
-                )
                 syncDisplayedStateForEngine()
                 publishBridgeState()
-            } else {
-                json = try await evaluateJavaScriptString(BrowserAutomationScripts.typeScript(
-                    selector: selector,
-                    text: text,
-                    clear: clear,
-                    label: label,
-                    role: role,
-                    placeholder: placeholder,
-                    testID: testID
-                ))
             }
 
             var object = try Self.jsonObject(from: try annotateBrowserLoopHint(json: json, action: action, target: BrowserControlActionService.targetIdentifier(
@@ -3299,33 +3268,20 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         placeholder: String?,
         testID: String?
     ) async throws -> [String: Any] {
-        let json: String
+        let json = try await automationEngine.targetInfo(
+            selector: selector,
+            x: x,
+            y: y,
+            allowDangerous: allowDangerous,
+            label: label,
+            role: role,
+            text: text,
+            placeholder: placeholder,
+            testID: testID
+        )
         if isUsingControlledBrowser {
-            json = try await controlledBrowser.targetInfo(
-                selector: selector,
-                x: x,
-                y: y,
-                allowDangerous: allowDangerous,
-                label: label,
-                role: role,
-                text: text,
-                placeholder: placeholder,
-                testID: testID
-            )
             syncDisplayedStateForEngine()
             publishBridgeState()
-        } else {
-            json = try await evaluateJavaScriptString(BrowserAutomationScripts.targetInfoScript(
-                selector: selector,
-                x: x,
-                y: y,
-                allowDangerous: allowDangerous,
-                label: label,
-                role: role,
-                text: text,
-                placeholder: placeholder,
-                testID: testID
-            ))
         }
         return try Self.jsonObject(from: json)
     }
@@ -3505,18 +3461,11 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         if let blocked = try await blockedReplacementTextEntryResult(find: find, selector: resolvedSelector ?? BrowserAutomationScripts.defaultEditableSelector, all: all) {
             return try Self.jsonString(blocked)
         }
+        let json = try await automationEngine.replaceText(find: find, replacement: replacement, selector: resolvedSelector, all: all)
         if isUsingControlledBrowser {
-            let json = try await controlledBrowser.replaceText(find: find, replacement: replacement, selector: resolvedSelector, all: all)
             syncDisplayedStateForEngine()
             publishBridgeState()
-            return try annotateBrowserLoopHint(json: json, action: "replaceText", target: resolvedSelector ?? find)
         }
-        let json = try await evaluateJavaScriptString(BrowserAutomationScripts.replaceTextScript(
-            find: find,
-            replacement: replacement,
-            selector: resolvedSelector,
-            all: all
-        ))
         return try annotateBrowserLoopHint(json: json, action: "replaceText", target: resolvedSelector ?? find)
     }
 
@@ -3575,23 +3524,15 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         let preflight = try await keypressTextEntryDispatchValidation(key: key, modifiers: modifiers, started: started, skipTextEntryPreflight: skipTextEntryPreflight)
         if let result = preflight.blockedResultJSON { return result }
         do {
-            let json: String
+            let json = try await automationEngine.keypress(
+                key: key,
+                modifiers: modifiers,
+                expectedFocusedTargetSignature: preflight.targetSignature,
+                allowUnboundFocusedTargetDispatch: preflight.allowUnboundFocusedTargetDispatch
+            )
             if isUsingControlledBrowser {
-                json = try await controlledBrowser.keypress(
-                    key: key,
-                    modifiers: modifiers,
-                    expectedFocusedTargetSignature: preflight.targetSignature,
-                    allowUnboundFocusedTargetDispatch: preflight.allowUnboundFocusedTargetDispatch
-                )
                 syncDisplayedStateForEngine()
                 publishBridgeState()
-            } else {
-                json = try await evaluateJavaScriptString(BrowserAutomationScripts.keypressScript(
-                    key: key,
-                    modifiers: modifiers,
-                    expectedFocusedTargetSignature: preflight.targetSignature,
-                    allowUnboundFocusedTargetDispatch: preflight.allowUnboundFocusedTargetDispatch
-                ))
             }
             logBrowserAction(
                 phase: "completed",
@@ -3654,13 +3595,10 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 )
             )
             if let result = preflight.blockedResultJSON { return result }
-            let json: String
+            let json = try await automationEngine.insertText(text, expectedFocusedTargetSignature: preflight.targetSignature)
             if isUsingControlledBrowser {
-                json = try await controlledBrowser.insertText(text, expectedFocusedTargetSignature: preflight.targetSignature)
                 syncDisplayedStateForEngine()
                 publishBridgeState()
-            } else {
-                json = try await evaluateJavaScriptString(BrowserAutomationScripts.insertTextScript(text, expectedFocusedTargetSignature: preflight.targetSignature))
             }
             logBrowserAction(
                 phase: "completed",
