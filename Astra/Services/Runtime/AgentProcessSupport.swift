@@ -156,9 +156,9 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
         }
         try addWorkingDirectory(to: &actions)
 
-        let flags = Int16(POSIX_SPAWN_SETPGROUP)
-        try check(posix_spawnattr_setflags(&attr, flags), operation: "posix_spawnattr_setflags")
-        try check(posix_spawnattr_setpgroup(&attr, 0), operation: "posix_spawnattr_setpgroup")
+        guard ProcessGroupSpawn.configureNewProcessGroup(&attr) else {
+            throw AgentExecutionScopedProcessError(operation: "posix_spawnattr_setflags", code: errno)
+        }
 
         var argv = makeCStringArray([executablePath] + arguments)
         var envp = makeCStringArray(environment.map { "\($0.key)=\($0.value)" }.sorted())
@@ -202,21 +202,24 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
         let ids = currentIDs()
         guard ids.isRunning else { return }
 
-        if ids.processGroupID > 0 && ids.processGroupID != getpgrp() {
-            kill(-ids.processGroupID, SIGTERM)
-        } else if ids.processID > 0 {
-            kill(ids.processID, SIGTERM)
-        }
+        Self.signal(processGroupID: ids.processGroupID, processID: ids.processID, signal: SIGTERM)
 
         DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + .seconds(3)) { [weak self] in
             guard let self else { return }
             let latest = self.currentIDs()
             guard latest.isRunning else { return }
-            if latest.processGroupID > 0 && latest.processGroupID != getpgrp() {
-                kill(-latest.processGroupID, SIGKILL)
-            } else if latest.processID > 0 {
-                kill(latest.processID, SIGKILL)
-            }
+            Self.signal(processGroupID: latest.processGroupID, processID: latest.processID, signal: SIGKILL)
+        }
+    }
+
+    /// Signals the whole process group (guarded against signalling our own
+    /// foreground group) so background children the provider spawned can't
+    /// outlive it, falling back to the bare pid if no group was recorded.
+    private static func signal(processGroupID: pid_t, processID: pid_t, signal: Int32) {
+        if processGroupID > 0, processGroupID != getpgrp() {
+            ProcessGroupSpawn.signalProcessGroup(processGroupID, signal: signal)
+        } else if processID > 0 {
+            kill(processID, signal)
         }
     }
 
@@ -259,15 +262,14 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
 
     private func cleanupResidualProcessGroup() {
         let ids = currentIDs()
-        guard ids.processGroupID > 0,
-              ids.processGroupID != getpgrp() else {
+        guard ids.processGroupID > 0, ids.processGroupID != getpgrp() else {
             return
         }
 
         if kill(-ids.processGroupID, SIGTERM) == 0 {
             usleep(200_000)
         }
-        kill(-ids.processGroupID, SIGKILL)
+        ProcessGroupSpawn.signalProcessGroup(ids.processGroupID, signal: SIGKILL)
     }
 
     private func currentIDs() -> (processID: pid_t, processGroupID: pid_t, isRunning: Bool) {

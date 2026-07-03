@@ -425,9 +425,7 @@ public struct ProcessBinaryRunner: BinaryRunner {
                     )
                     return
                 }
-                let attrFlags = Int16(POSIX_SPAWN_SETPGROUP)
-                guard posix_spawnattr_setflags(&spawnAttributes, attrFlags) == 0,
-                      posix_spawnattr_setpgroup(&spawnAttributes, 0) == 0 else {
+                guard ProcessGroupSpawn.configureNewProcessGroup(&spawnAttributes) else {
                     cleanupPipes()
                     state.finish(
                         outcome: .launchFailed("Could not configure spawn process group."),
@@ -868,10 +866,10 @@ private final class SpawnedProcessGroupRunState: @unchecked Sendable {
     }
 
     private func terminate(processGroupID: pid_t) {
-        kill(-processGroupID, SIGTERM)
+        ProcessGroupSpawn.signalProcessGroup(processGroupID, signal: SIGTERM)
         Task {
             try? await Task.sleep(nanoseconds: 500_000_000)
-            kill(-processGroupID, SIGKILL)
+            ProcessGroupSpawn.signalProcessGroup(processGroupID, signal: SIGKILL)
         }
     }
 }
