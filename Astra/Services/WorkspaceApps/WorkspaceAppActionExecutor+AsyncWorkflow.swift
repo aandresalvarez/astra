@@ -230,7 +230,11 @@ extension WorkspaceAppActionExecutor {
     }
 
     @MainActor
-    private func executeAsyncPipeline(
+    // Internal (not private) so the resume path in the main file can continue a
+    // suspended pipeline through the async step executor — a resumed workflow may
+    // have a connector `capability.read` step after the barrier that only the
+    // async resolver can service.
+    func executeAsyncPipeline(
         action: WorkspaceAppActionSpec,
         app: WorkspaceApp,
         workspace: Workspace,

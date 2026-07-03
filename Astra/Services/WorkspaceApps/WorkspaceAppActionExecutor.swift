@@ -405,7 +405,7 @@ struct WorkspaceAppActionExecutor {
         taskOutputRows: [[String: WorkspaceAppStorageValue]] = [],
         consumedTokens: Int = 0,
         modelContext: ModelContext
-    ) throws -> WorkspaceAppActionExecutionResult {
+    ) async throws -> WorkspaceAppActionExecutionResult {
         guard run.status == .waiting, let pipelineID = run.pendingActionID else {
             throw WorkspaceAppActionExecutionError.unsupportedActionType(
                 "resume requires a waiting run with a pending workflow action"
@@ -465,7 +465,10 @@ struct WorkspaceAppActionExecutor {
             modelContext: modelContext
         )
         do {
-            let result = try executePipeline(
+            // Continue on the ASYNC pipeline runner so a `capability.read` step
+            // after the resumed barrier resolves through the live async client
+            // (the synchronous `executePipeline` hits the unavailable one).
+            let result = try await executeAsyncPipeline(
                 action: action,
                 app: app,
                 workspace: workspace,
@@ -473,6 +476,7 @@ struct WorkspaceAppActionExecutor {
                 dependencyBindings: dependencyBindings,
                 input: WorkspaceAppActionInput(boundRows: boundRows),
                 run: run,
+                surface: .executor,
                 modelContext: modelContext,
                 startIndex: startIndex,
                 initialBoundRows: boundRows
@@ -577,7 +581,7 @@ struct WorkspaceAppActionExecutor {
         manifest: WorkspaceAppManifest,
         dependencyBindings: [WorkspaceAppDependencyBinding] = [],
         modelContext: ModelContext
-    ) throws -> WorkspaceAppActionExecutionResult {
+    ) async throws -> WorkspaceAppActionExecutionResult {
         guard run.status == .waiting,
               let gateID = run.pendingApprovalActionID,
               let pipelineID = run.pendingActionID else {
@@ -626,7 +630,9 @@ struct WorkspaceAppActionExecutor {
         )
         run.status = .running
         do {
-            let result = try executePipeline(
+            // Async continuation so a post-gate `capability.read` step resolves
+            // through the live async client (see `resume`).
+            let result = try await executeAsyncPipeline(
                 action: action,
                 app: app,
                 workspace: workspace,
@@ -634,6 +640,7 @@ struct WorkspaceAppActionExecutor {
                 dependencyBindings: dependencyBindings,
                 input: WorkspaceAppActionInput(confirmedApproval: true, boundRows: resumedBoundRows),
                 run: run,
+                surface: .executor,
                 modelContext: modelContext,
                 startIndex: startIndex,
                 initialBoundRows: resumedBoundRows

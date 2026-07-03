@@ -474,11 +474,15 @@ struct WorkspaceAppDetailView: View {
 
     private func resolveApproval(_ run: WorkspaceAppRun, approved: Bool) {
         guard let workspace, let manifest = dataSnapshot.manifest else { return }
-        _ = try? WorkspaceAppActionExecutor().resumeWithApproval(
-            run: run, approved: approved, app: app, workspace: workspace,
-            manifest: manifest, dependencyBindings: dependencyBindings, modelContext: modelContext
-        )
-        loadDataSnapshot()
+        // resumeWithApproval is async (a post-gate step may be a live connector
+        // read); dispatch on the main actor and refresh the snapshot after.
+        Task { @MainActor in
+            _ = try? await WorkspaceAppActionExecutor().resumeWithApproval(
+                run: run, approved: approved, app: app, workspace: workspace,
+                manifest: manifest, dependencyBindings: dependencyBindings, modelContext: modelContext
+            )
+            loadDataSnapshot()
+        }
     }
 
     private func setAutomationEnabled(_ automationID: String, _ isEnabled: Bool) {
