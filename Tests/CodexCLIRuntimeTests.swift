@@ -144,7 +144,7 @@ struct CodexCLIRuntimeTests {
             Issue.record("Expected command execution item completion to map to tool result")
         }
 
-        if case .fileChange(let path, let kind, let summary) = parsedEvents[3].first {
+        if case .fileChange(let path, let kind, let summary, _, _) = parsedEvents[3].first {
             #expect(path == ".astra/tasks/EBF58891/index.html")
             #expect(kind == "modified")
             #expect(summary == "Wrote the validation page")

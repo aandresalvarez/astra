@@ -492,6 +492,8 @@ final class AgentRuntimeStreamTelemetry: @unchecked Sendable {
             completedEventCount += 1
         case .failed:
             failedEventCount += 1
+        case .teamEvent:
+            break
         case .unknown(_, let type, let raw):
             unknownEventCount += 1
             unknownTypeCounts[type, default: 0] += 1

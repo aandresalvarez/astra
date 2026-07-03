@@ -762,16 +762,20 @@ enum AgentRuntimeRecordingMode {
     case followUp
 }
 
+/// Wraps the single event model every runtime now records through.
+///
+/// This used to be a two-case enum (`.parsed(ParsedEvent)` for Claude,
+/// `.agent(AgentEvent)` for the other five runtimes) because Claude recorded
+/// through Claude-only dispatch functions that switched on `ParsedEvent`
+/// directly. Claude now maps its stream to `AgentEvent` too (see
+/// `AgentEventRecorder.agentEvents(from:)`) and shares the same
+/// `recordProviderAgentEvent` dispatcher as every other provider, so this
+/// wrapper only has one case left. It stays a thin wrapper (rather than using
+/// `AgentEvent` bare) so `AgentRuntimeStreamEventBatch` and the
+/// `AgentRuntimeWorkerEventRecording` protocol keep a stable shape if a future
+/// runtime ever needs a second representation.
 enum AgentRuntimeRecordedEvent {
-    case parsed(ParsedEvent)
     case agent(AgentEvent)
-
-    var parsedEvent: ParsedEvent? {
-        if case .parsed(let event) = self {
-            return event
-        }
-        return nil
-    }
 
     var agentEvent: AgentEvent? {
         if case .agent(let event) = self {
@@ -781,32 +785,15 @@ enum AgentRuntimeRecordedEvent {
     }
 }
 
-enum AgentRuntimeStreamEventRepresentation {
-    case parsed
-    case agent
-}
-
 struct AgentRuntimeStreamEventBatch {
-    let representation: AgentRuntimeStreamEventRepresentation
     let events: [AgentRuntimeRecordedEvent]
 
-    init(representation: AgentRuntimeStreamEventRepresentation, events: [AgentRuntimeRecordedEvent]) {
-        self.representation = representation
+    init(events: [AgentRuntimeRecordedEvent]) {
         self.events = events
     }
 
-    init(parsedEvents: [ParsedEvent]) {
-        representation = .parsed
-        events = parsedEvents.map(AgentRuntimeRecordedEvent.parsed)
-    }
-
     init(agentEvents: [AgentEvent]) {
-        representation = .agent
         events = agentEvents.map(AgentRuntimeRecordedEvent.agent)
-    }
-
-    var parsedEvents: [ParsedEvent] {
-        events.compactMap(\.parsedEvent)
     }
 
     var agentEvents: [AgentEvent] {
@@ -814,21 +801,11 @@ struct AgentRuntimeStreamEventBatch {
     }
 
     func recordParsed(to capture: AgentRuntimeStreamDebugCapture?, rawLine: String) {
-        switch representation {
-        case .parsed:
-            capture?.recordParsed(parsedEvents, rawLine: rawLine)
-        case .agent:
-            capture?.recordParsed(agentEvents, rawLine: rawLine)
-        }
+        capture?.recordParsed(agentEvents, rawLine: rawLine)
     }
 
     func recordEmitted(to capture: AgentRuntimeStreamDebugCapture?) {
-        switch representation {
-        case .parsed:
-            capture?.recordEmitted(parsedEvents)
-        case .agent:
-            capture?.recordEmitted(agentEvents)
-        }
+        capture?.recordEmitted(agentEvents)
     }
 
     func recordParsed(to telemetry: AgentRuntimeStreamTelemetry?) {
@@ -1465,19 +1442,20 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
     }
 
     func parseWorkerStreamEvents(line: String, parsesJSONLines _: Bool) -> AgentRuntimeStreamEventBatch {
-        AgentRuntimeStreamEventBatch(parsedEvents: StreamEventParser.parseAll(line: line))
+        let agentEvents = StreamEventParser.parseAll(line: line).flatMap(AgentEventRecorder.agentEvents(from:))
+        return AgentRuntimeStreamEventBatch(agentEvents: agentEvents)
     }
 
     func processWorkerStreamEvent(
         _ event: AgentRuntimeRecordedEvent,
         pipeline: AgentRuntimeEventPipelineBox
     ) -> [AgentRuntimeRecordedEvent] {
-        guard case .parsed(let parsed) = event else { return [] }
-        return pipeline.process(parsed).map(AgentRuntimeRecordedEvent.parsed)
+        guard case .agent(let agentEvent) = event else { return [] }
+        return pipeline.process(agentEvent).map(AgentRuntimeRecordedEvent.agent)
     }
 
     func flushWorkerStreamEvents(pipeline: AgentRuntimeEventPipelineBox) -> AgentRuntimeStreamEventBatch {
-        AgentRuntimeStreamEventBatch(parsedEvents: pipeline.flushParsedEvents())
+        AgentRuntimeStreamEventBatch(agentEvents: pipeline.flushAgentEvents())
     }
 
     @MainActor
@@ -1489,29 +1467,20 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
         modelContext: ModelContext,
         recordingState: AgentEventRecordingState
     ) {
-        guard case .parsed(let parsed) = event else { return }
-        switch mode {
-        case .initial:
-            AgentEventRecorder.recordClaudeRunEvent(
-                parsed,
-                to: task,
-                run: run,
-                modelContext: modelContext,
-                recordingState: recordingState
-            )
-        case .followUp:
-            AgentEventRecorder.recordClaudeFollowUpEvent(
-                parsed,
-                to: task,
-                run: run,
-                modelContext: modelContext,
-                recordingState: recordingState
-            )
-        }
+        guard case .agent(let agentEvent) = event else { return }
+        AgentEventRecorder.recordClaudeEvent(
+            agentEvent,
+            to: task,
+            run: run,
+            modelContext: modelContext,
+            recordingMode: mode,
+            recordingState: recordingState
+        )
     }
 
     func callbackEvent(from event: AgentRuntimeRecordedEvent) -> ParsedEvent? {
-        event.parsedEvent
+        guard let agentEvent = event.agentEvent else { return nil }
+        return AgentEventRecorder.parsedEvent(from: agentEvent)
     }
 
     func runUtilityPrompt(
