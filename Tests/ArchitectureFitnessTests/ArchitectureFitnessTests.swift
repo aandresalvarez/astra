@@ -1550,7 +1550,7 @@ struct ArchitectureFitnessTests {
             "Tests/TaskCapabilityResolverTests.swift": .init(2_950, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
             "Tests/AgentRuntimeAdapterTests.swift": .init(3_200, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
             "Tests/AgentRuntimeWorkerTests.swift": .init(2_550, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
-            "Tests/AgentPolicyTests.swift": .init(2_500, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
+            "Tests/AgentPolicyTests.swift": .init(2_650, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
             "Tests/WorkspaceAppActionExecutorTests.swift": .init(2_500, .companion(of: "Astra/Services/WorkspaceApps/WorkspaceAppActionExecutor.swift")),
             "Tests/WorkspacePersistenceTests.swift": .init(2_400, .companion(of: "Astra/Services/Persistence/WorkspaceConfigManager.swift")),
             "Tests/CopilotRuntimeTests.swift": .init(2_300, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),

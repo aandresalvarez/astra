@@ -292,6 +292,67 @@ struct AgentPolicyTests {
         #expect(ProviderPolicyModeResolver.mode(for: policy, runtime: .claudeCode) == .interactive)
     }
 
+    @Test("Locked and review render genuinely different Claude enforcement despite sharing restricted mode")
+    func lockedAndReviewRenderDifferentClaudeEnforcement() {
+        // PermissionPolicy has only 3 cases (autonomous/restricted/interactive) and
+        // both .locked and .review collapse to .restricted there — but that value
+        // only selects the provider's coarse SANDBOX MODE, not the actual allowed/
+        // denied/ask-first tool set. For a provider with fine-grained support
+        // (Claude: supportsAllowTools && supportsDenyTools), the real distinction
+        // between locked (read-only, hard deny) and review (ask-before-write) is
+        // carried by AgentPolicy's allowedTools/deniedTools/askFirstTools fields
+        // and DOES flow through to genuinely different rendered permissions. This
+        // proves the "collapse" does not erase enforcement for providers that can
+        // express it — see PermissionPolicy.swift's doc comment on
+        // fromAgentPolicyLevel for the full explanation.
+        let adapter = ClaudePolicyAdapter()
+        let lockedPolicy = AgentPolicy.preset(.locked)
+        let reviewPolicy = AgentPolicy.preset(.review)
+
+        let lockedRender = adapter.render(
+            policy: lockedPolicy,
+            context: policyRenderContext(runtime: .claudeCode, features: adapter.supportedFeatures)
+        )
+        let reviewRender = adapter.render(
+            policy: reviewPolicy,
+            context: policyRenderContext(runtime: .claudeCode, features: adapter.supportedFeatures)
+        )
+
+        // Both share the same coarse sandbox mode...
+        #expect(lockedRender.permissionMode == .restricted)
+        #expect(reviewRender.permissionMode == .restricted)
+        #expect(PermissionPolicy(providerMode: lockedRender.permissionMode)
+            == PermissionPolicy(providerMode: reviewRender.permissionMode))
+
+        // ...but the actual enforced tool sets genuinely differ: locked hard-denies
+        // writes, review only asks-first (and denies nothing).
+        #expect(lockedRender.deniedTools.contains("Write"))
+        #expect(lockedRender.askFirstTools.isEmpty)
+        #expect(reviewRender.deniedTools.isEmpty)
+        #expect(reviewRender.askFirstTools.contains("Write"))
+        #expect(lockedRender.generatedConfigPreview != reviewRender.generatedConfigPreview)
+    }
+
+    @Test("Codex surfaces a fine-grained-rules gap diagnostic for a locked policy")
+    func codexSurfacesFineGrainedRulesGapForLockedPolicy() {
+        // Codex (and Cursor/Antigravity/OpenCode) support neither allow nor deny
+        // tool lists (supportsAllowTools == false, supportsDenyTools == false) —
+        // PermissionPolicy's 3-case sandbox-mode signal genuinely IS the finest
+        // distinction those CLIs can express, so locked and review are truly
+        // indistinguishable there. The adapter surfaces that gap explicitly via a
+        // diagnostic rather than silently under-enforcing; this locks that warning
+        // in so it can't regress silently.
+        let adapter = CodexPolicyAdapter()
+        #expect(!adapter.supportedFeatures.supportsAllowTools)
+        #expect(!adapter.supportedFeatures.supportsDenyTools)
+
+        let render = adapter.render(
+            policy: .preset(.locked),
+            context: policyRenderContext(runtime: .codexCLI, features: adapter.supportedFeatures)
+        )
+        #expect(render.diagnostics.contains { $0.id == "codex_cli.fine-grained-provider-native-gap" })
+    }
+
     @Test("Copilot autonomous render uses allow-all only when capability supports it")
     func copilotAutonomousRenderUsesAllowAllWhenSupported() {
         let capabilities = CopilotCLICapabilities(helpText: """
