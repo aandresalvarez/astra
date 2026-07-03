@@ -107,6 +107,65 @@ struct WorkspaceAppActionExecutorConnectorReadTests {
         #expect(client.syncReadCount == 0)
         #expect(client.asyncReadCount == 1)
     }
+
+    @MainActor
+    @Test("executeAsync routes connector-read workflow writes through the async writer")
+    func executeAsyncRoutesConnectorReadWorkflowWritesThroughAsyncWriter() async throws {
+        let fixture = try WorkspaceAppActionExecutorTests.makePublishedApp(permissionMode: .preApproved)
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        var manifest = fixture.manifest
+        manifest.actions.append(WorkspaceAppActionSpec(
+            id: "readThenSubmit",
+            type: "pipeline.run",
+            label: "Read Then Submit",
+            steps: ["readWarehouse", "submitRedcapRecord"]
+        ))
+        let readBinding = WorkspaceAppActionExecutorTests.warehouseBinding(for: fixture)
+        let writeBinding = WorkspaceAppDependencyBinding(
+            workspaceID: fixture.workspace.id,
+            appID: fixture.app.id,
+            appLogicalID: fixture.app.logicalID,
+            requirementID: "redcapWrite",
+            contract: "recordProject.write",
+            operations: ["submitCreate"],
+            optional: false,
+            status: .mapped,
+            implementationID: "redcap-write-native",
+            provider: "redcap",
+            transport: .native
+        )
+        let readClient = CapturingWorkspaceAppCapabilitySourceClient(rows: [
+            ["participant_id": .text("P-001")]
+        ])
+        let writeClient = CapturingWorkspaceAppAsyncWriteClient(result: WorkspaceAppCapabilityWriteResult(
+            outputSummary: "Imported 1 record",
+            rows: [["status": .text("submitted")]]
+        ))
+        let executor = WorkspaceAppActionExecutor(
+            sourceResolver: WorkspaceAppSourceResolver(asyncCapabilityClient: readClient),
+            asyncCapabilityWriteClient: writeClient,
+            readPolicy: WorkspaceAppReadPolicy(
+                rateLimiter: WorkspaceAppConnectorReadRateLimiter(maxPerWindow: 10, window: 60)
+            )
+        )
+
+        let result = try await executor.executeAsync(
+            actionID: "readThenSubmit",
+            app: fixture.app,
+            workspace: fixture.workspace,
+            manifest: manifest,
+            dependencyBindings: [readBinding, writeBinding],
+            modelContext: fixture.context
+        )
+
+        #expect(result.run.status == WorkspaceAppRunStatus.completed)
+        #expect(readClient.asyncReadCount == 1)
+        #expect(writeClient.writeCount == 1)
+        let expectedRecords: [[String: WorkspaceAppStorageValue]] = [
+            ["participant_id": .text("P-001")]
+        ]
+        #expect(writeClient.records == expectedRecords)
+    }
 }
 
 private final class CapturingWorkspaceAppCapabilitySourceClient:
@@ -173,6 +232,51 @@ private final class CapturingWorkspaceAppCapabilitySourceClient:
         } else {
             syncReads += 1
         }
+        lock.unlock()
+    }
+}
+
+private final class CapturingWorkspaceAppAsyncWriteClient:
+    WorkspaceAppAsyncCapabilityWriteClient,
+    @unchecked Sendable
+{
+    private let lock = NSLock()
+    private let result: WorkspaceAppCapabilityWriteResult
+    private var writes = 0
+    private var observedRecords: [[String: WorkspaceAppStorageValue]] = []
+
+    init(result: WorkspaceAppCapabilityWriteResult) {
+        self.result = result
+    }
+
+    var writeCount: Int {
+        lock.lock()
+        let count = writes
+        lock.unlock()
+        return count
+    }
+
+    var records: [[String: WorkspaceAppStorageValue]] {
+        lock.lock()
+        let snapshot = observedRecords
+        lock.unlock()
+        return snapshot
+    }
+
+    func write(
+        action: WorkspaceAppActionSpec,
+        requirement: WorkspaceAppRequirement,
+        binding: WorkspaceAppDependencyBinding,
+        input: WorkspaceAppActionInput
+    ) async throws -> WorkspaceAppCapabilityWriteResult {
+        record(input.effectiveRecord)
+        return result
+    }
+
+    private func record(_ record: [String: WorkspaceAppStorageValue]) {
+        lock.lock()
+        writes += 1
+        observedRecords.append(record)
         lock.unlock()
     }
 }

@@ -726,20 +726,20 @@ struct WorkspaceAppActionExecutor {
                 surface: bridgeSurface, modelContext: modelContext
             )
         }
-        if try workflowContainsCapabilityRead(action: action, manifest: manifest) {
-            return try await executeAsyncWorkflow(
-                action: action,
-                app: app,
-                workspace: workspace,
-                manifest: manifest,
-                dependencyBindings: dependencyBindings,
-                input: input,
-                trigger: trigger,
-                surface: bridgeSurface,
-                modelContext: modelContext
-            )
-        }
         guard action.type == "capability.write" else {
+            if try workflowRequiresAsyncExecution(action: action, manifest: manifest) {
+                return try await executeAsyncWorkflow(
+                    action: action,
+                    app: app,
+                    workspace: workspace,
+                    manifest: manifest,
+                    dependencyBindings: dependencyBindings,
+                    input: input,
+                    trigger: trigger,
+                    surface: bridgeSurface,
+                    modelContext: modelContext
+                )
+            }
             return try execute(
                 actionID: actionID, app: app, workspace: workspace, manifest: manifest,
                 dependencyBindings: dependencyBindings, input: input, trigger: trigger, modelContext: modelContext
@@ -751,30 +751,13 @@ struct WorkspaceAppActionExecutor {
         )
         do {
             try enforcePermission(for: action, app: app, input: input)
-            guard !input.record.isEmpty else { throw WorkspaceAppActionExecutionError.missingRecord }
-            let requirementID = normalized(action.requirementRef, fallback: "")
-            guard !requirementID.isEmpty else { throw WorkspaceAppActionExecutionError.missingRequirement("") }
-            guard let requirement = manifest.requirements.first(where: { $0.id == requirementID }) else {
-                throw WorkspaceAppActionExecutionError.missingRequirement(requirementID)
-            }
-            guard let binding = dependencyBindings.first(where: {
-                $0.appID == app.id && $0.requirementID == requirementID && $0.status == .mapped
-            }) else {
-                throw WorkspaceAppActionExecutionError.missingMappedBinding(requirementID)
-            }
-            let result = try await asyncCapabilityWriteClient.write(
-                action: action, requirement: requirement, binding: binding, input: input
-            )
-            recorder.recordEvent(
+            let result = try await executeCapabilityWriteAsyncStep(
+                action: action,
+                app: app,
+                manifest: manifest,
+                dependencyBindings: dependencyBindings,
+                input: input,
                 run: run,
-                type: "workspaceApp.capability.write",
-                payload: [
-                    "actionID": .text(action.id),
-                    "requirementID": .text(requirementID),
-                    "contract": .text(binding.contract),
-                    "operation": .text(action.operation ?? ""),
-                    "async": .bool(true)
-                ],
                 modelContext: modelContext
             )
             recorder.completeRun(run, outputSummary: result.outputSummary, modelContext: modelContext)
@@ -1470,7 +1453,8 @@ struct WorkspaceAppActionExecutor {
         linkedTaskID: UUID?,
         linkedArtifactPath: String?
     ) {
-        guard !input.record.isEmpty else { throw WorkspaceAppActionExecutionError.missingRecord }
+        let effectiveRecord = input.effectiveRecord
+        guard !effectiveRecord.isEmpty else { throw WorkspaceAppActionExecutionError.missingRecord }
         let requirementID = normalized(action.requirementRef, fallback: "")
         guard !requirementID.isEmpty else {
             throw WorkspaceAppActionExecutionError.missingRequirement("")
@@ -1483,18 +1467,80 @@ struct WorkspaceAppActionExecutor {
         }) else {
             throw WorkspaceAppActionExecutionError.missingMappedBinding(requirementID)
         }
+        var writeInput = input
+        writeInput.record = effectiveRecord
         let result = try capabilityWriteClient.write(
             action: action,
             requirement: requirement,
             binding: binding,
-            input: input
+            input: writeInput
         )
         var payload: [String: WorkspaceAppStorageValue] = [
             "actionID": .text(action.id),
             "requirementID": .text(requirementID),
             "contract": .text(binding.contract),
             "operation": .text(action.operation ?? ""),
-            "recordKeys": .text(input.record.keys.sorted().joined(separator: ","))
+            "recordKeys": .text(effectiveRecord.keys.sorted().joined(separator: ","))
+        ]
+        if let implementationID = binding.implementationID {
+            payload["implementationID"] = .text(implementationID)
+        }
+        if let provider = binding.provider {
+            payload["provider"] = .text(provider)
+        }
+        recorder.recordEvent(
+            run: run,
+            type: "workspaceApp.capability.write",
+            payload: payload,
+            modelContext: modelContext
+        )
+        return (result.rows, result.outputSummary, nil, nil)
+    }
+
+    @MainActor
+    func executeCapabilityWriteAsyncStep(
+        action: WorkspaceAppActionSpec,
+        app: WorkspaceApp,
+        manifest: WorkspaceAppManifest,
+        dependencyBindings: [WorkspaceAppDependencyBinding],
+        input: WorkspaceAppActionInput,
+        run: WorkspaceAppRun,
+        modelContext: ModelContext
+    ) async throws -> (
+        rows: [[String: WorkspaceAppStorageValue]],
+        outputSummary: String,
+        linkedTaskID: UUID?,
+        linkedArtifactPath: String?
+    ) {
+        let effectiveRecord = input.effectiveRecord
+        guard !effectiveRecord.isEmpty else { throw WorkspaceAppActionExecutionError.missingRecord }
+        let requirementID = normalized(action.requirementRef, fallback: "")
+        guard !requirementID.isEmpty else {
+            throw WorkspaceAppActionExecutionError.missingRequirement("")
+        }
+        guard let requirement = manifest.requirements.first(where: { $0.id == requirementID }) else {
+            throw WorkspaceAppActionExecutionError.missingRequirement(requirementID)
+        }
+        guard let binding = dependencyBindings.first(where: {
+            $0.appID == app.id && $0.requirementID == requirementID && $0.status == .mapped
+        }) else {
+            throw WorkspaceAppActionExecutionError.missingMappedBinding(requirementID)
+        }
+        var writeInput = input
+        writeInput.record = effectiveRecord
+        let result = try await asyncCapabilityWriteClient.write(
+            action: action,
+            requirement: requirement,
+            binding: binding,
+            input: writeInput
+        )
+        var payload: [String: WorkspaceAppStorageValue] = [
+            "actionID": .text(action.id),
+            "requirementID": .text(requirementID),
+            "contract": .text(binding.contract),
+            "operation": .text(action.operation ?? ""),
+            "recordKeys": .text(effectiveRecord.keys.sorted().joined(separator: ",")),
+            "async": .bool(true)
         ]
         if let implementationID = binding.implementationID {
             payload["implementationID"] = .text(implementationID)

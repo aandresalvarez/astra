@@ -86,11 +86,11 @@ extension WorkspaceAppActionExecutor {
         }
     }
 
-    func workflowContainsCapabilityRead(
+    func workflowRequiresAsyncExecution(
         action: WorkspaceAppActionSpec,
         manifest: WorkspaceAppManifest
     ) throws -> Bool {
-        if action.type == "capability.read" {
+        if action.type == "capability.read" || action.type == "capability.write" {
             return true
         }
         let childIDs: [String]
@@ -104,7 +104,7 @@ extension WorkspaceAppActionExecutor {
         }
         for childID in childIDs {
             let child = try actionSpec(actionID: childID, manifest: manifest)
-            if try workflowContainsCapabilityRead(action: child, manifest: manifest) {
+            if try workflowRequiresAsyncExecution(action: child, manifest: manifest) {
                 return true
             }
         }
@@ -139,6 +139,16 @@ extension WorkspaceAppActionExecutor {
                 input: input,
                 run: run,
                 surface: surface,
+                modelContext: modelContext
+            )
+        case "capability.write":
+            return try await executeCapabilityWriteAsyncStep(
+                action: action,
+                app: app,
+                manifest: manifest,
+                dependencyBindings: dependencyBindings,
+                input: input,
+                run: run,
                 modelContext: modelContext
             )
         case "pipeline.run":

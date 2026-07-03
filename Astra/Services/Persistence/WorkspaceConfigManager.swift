@@ -979,6 +979,7 @@ enum WorkspaceConfigManager {
                 )
             }
         }
+        replaceWorkspaceAppMirrorRows(for: workspace.id, modelContext: modelContext)
         importWorkspaceApps(config.workspaceApps ?? [], modelContext: modelContext)
         importWorkspaceAppRuns(config.workspaceAppRuns ?? [], modelContext: modelContext)
         importWorkspaceAppRunEvents(config.workspaceAppRunEvents ?? [], modelContext: modelContext)

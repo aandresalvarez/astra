@@ -137,6 +137,217 @@ struct WorkspacePersistenceReviewRegressionTests {
         })
     }
 
+    @Test("workspace app mirrors are replaced instead of duplicated on import")
+    @MainActor
+    func workspaceAppMirrorsAreReplacedInsteadOfDuplicatedOnImport() throws {
+        let container = try makeWorkspacePersistenceReviewContainer()
+        let context = container.mainContext
+        let workspaceID = UUID()
+        let staleAppID = UUID()
+        let replacementAppID = UUID()
+        let staleRunID = UUID()
+        let replacementRunID = UUID()
+
+        context.insert(WorkspaceApp(
+            id: staleAppID,
+            workspaceID: workspaceID,
+            logicalID: "stale-dashboard",
+            name: "Stale Dashboard",
+            icon: "xmark.circle",
+            appDescription: "Old app surface",
+            lifecycleStatus: .published,
+            permissionMode: .readOnly,
+            dependencyStatus: .ready,
+            manifestRelativePath: ".astra/apps/stale/manifest.json",
+            appDirectoryRelativePath: ".astra/apps/stale",
+            manifestDigest: "stale-digest"
+        ))
+        context.insert(WorkspaceAppRun(
+            id: staleRunID,
+            workspaceID: workspaceID,
+            appID: staleAppID,
+            appLogicalID: "stale-dashboard",
+            actionID: "refresh",
+            trigger: .user,
+            status: .completed,
+            startedAt: Date(timeIntervalSince1970: 1),
+            inputSummary: "stale",
+            outputSummary: "stale",
+            errorMessage: nil
+        ))
+        context.insert(WorkspaceAppRunEvent(
+            runID: staleRunID,
+            workspaceID: workspaceID,
+            appID: staleAppID,
+            actionID: "refresh",
+            type: "workspaceApp.stale",
+            payload: "{}",
+            timestamp: Date(timeIntervalSince1970: 2)
+        ))
+        context.insert(WorkspaceAppDependencyBinding(
+            workspaceID: workspaceID,
+            appID: staleAppID,
+            appLogicalID: "stale-dashboard",
+            requirementID: "stale",
+            contract: "stale.read",
+            operations: ["read"],
+            optional: false,
+            status: .mapped
+        ))
+        context.insert(WorkspaceAppAutomationState(
+            workspaceID: workspaceID,
+            appID: staleAppID,
+            appLogicalID: "stale-dashboard",
+            automationID: "stale-auto",
+            automationType: "schedule",
+            actionID: "refresh",
+            isEnabled: true,
+            status: .enabled
+        ))
+        try context.save()
+
+        let config = WorkspaceConfigManager.WorkspaceConfig(
+            id: workspaceID.uuidString,
+            name: "Replacement Workspace",
+            primaryPath: "/tmp/replacement-workspace",
+            additionalPaths: [],
+            icon: "sparkles",
+            instructions: "",
+            lastUsedSkillNames: nil,
+            enabledGlobalSkillIDs: nil,
+            enabledGlobalConnectorIDs: nil,
+            enabledGlobalToolIDs: nil,
+            enabledCapabilityIDs: nil,
+            enabledPackIDs: nil,
+            shelfVisibilityOverrides: nil,
+            memories: nil,
+            createdAt: nil,
+            updatedAt: nil,
+            skills: [],
+            connectors: nil,
+            localTools: nil,
+            templates: nil,
+            schedules: nil,
+            sshConnections: [],
+            tasks: nil,
+            workspaceApps: [
+                WorkspaceConfigManager.WorkspaceAppConfig(
+                    id: replacementAppID.uuidString,
+                    workspaceID: workspaceID.uuidString,
+                    logicalID: "replacement-dashboard",
+                    name: "Replacement Dashboard",
+                    icon: "checkmark.circle",
+                    description: "Current app surface",
+                    lifecycleStatus: "published",
+                    permissionMode: "readOnly",
+                    dependencyStatus: "ready",
+                    manifestRelativePath: ".astra/apps/replacement/manifest.json",
+                    appDirectoryRelativePath: ".astra/apps/replacement",
+                    manifestDigest: "replacement-digest",
+                    publishedManifestDigest: nil,
+                    lastKnownGoodManifestDigest: nil,
+                    latestVersionNumber: nil,
+                    sourcePackageID: nil,
+                    sourcePackageVersion: nil,
+                    sourcePackageDigest: nil,
+                    lastOpenedAt: nil,
+                    lastRefreshedAt: nil,
+                    lastRunAt: nil,
+                    createdAt: nil,
+                    updatedAt: nil
+                )
+            ],
+            workspaceAppRuns: [
+                WorkspaceConfigManager.WorkspaceAppRunConfig(
+                    id: replacementRunID.uuidString,
+                    workspaceID: workspaceID.uuidString,
+                    appID: replacementAppID.uuidString,
+                    appLogicalID: "replacement-dashboard",
+                    actionID: "refresh",
+                    trigger: "user",
+                    status: "completed",
+                    startedAt: Date(timeIntervalSince1970: 3),
+                    completedAt: nil,
+                    inputSummary: "replacement",
+                    outputSummary: "replacement",
+                    errorMessage: nil,
+                    linkedTaskID: nil,
+                    linkedArtifactPath: nil,
+                    pendingActionID: nil,
+                    pendingStepIndex: nil,
+                    consumedTokens: nil,
+                    awaitedTaskIDsJSON: nil,
+                    pendingApprovalActionID: nil
+                )
+            ],
+            workspaceAppRunEvents: [
+                WorkspaceConfigManager.WorkspaceAppRunEventConfig(
+                    id: UUID().uuidString,
+                    runID: replacementRunID.uuidString,
+                    workspaceID: workspaceID.uuidString,
+                    appID: replacementAppID.uuidString,
+                    actionID: "refresh",
+                    type: "workspaceApp.replacement",
+                    payload: "{}",
+                    timestamp: Date(timeIntervalSince1970: 4)
+                )
+            ],
+            workspaceAppDependencyBindings: [
+                WorkspaceConfigManager.WorkspaceAppDependencyBindingConfig(
+                    id: UUID().uuidString,
+                    workspaceID: workspaceID.uuidString,
+                    appID: replacementAppID.uuidString,
+                    appLogicalID: "replacement-dashboard",
+                    requirementID: "replacement",
+                    contract: "replacement.read",
+                    operationsSummary: "read",
+                    optional: false,
+                    status: "mapped",
+                    implementationID: nil,
+                    provider: nil,
+                    transport: nil,
+                    createdAt: nil,
+                    updatedAt: nil
+                )
+            ],
+            workspaceAppAutomationStates: [
+                WorkspaceConfigManager.WorkspaceAppAutomationStateConfig(
+                    id: UUID().uuidString,
+                    workspaceID: workspaceID.uuidString,
+                    appID: replacementAppID.uuidString,
+                    appLogicalID: "replacement-dashboard",
+                    automationID: "replacement-auto",
+                    automationType: "schedule",
+                    actionID: "refresh",
+                    isEnabled: true,
+                    status: "enabled",
+                    lastRunAt: nil,
+                    nextRunAt: nil,
+                    createdAt: nil,
+                    updatedAt: nil
+                )
+            ],
+            googleOAuthAccountProfiles: nil,
+            installedPlugins: nil,
+            exportedAt: Date()
+        )
+
+        _ = WorkspaceConfigManager.importWorkspaceResult(from: config, modelContext: context)
+        try context.save()
+
+        let apps = try context.fetch(FetchDescriptor<WorkspaceApp>()).filter { $0.workspaceID == workspaceID }
+        let runs = try context.fetch(FetchDescriptor<WorkspaceAppRun>()).filter { $0.workspaceID == workspaceID }
+        let events = try context.fetch(FetchDescriptor<WorkspaceAppRunEvent>()).filter { $0.workspaceID == workspaceID }
+        let bindings = try context.fetch(FetchDescriptor<WorkspaceAppDependencyBinding>()).filter { $0.workspaceID == workspaceID }
+        let automationStates = try context.fetch(FetchDescriptor<WorkspaceAppAutomationState>()).filter { $0.workspaceID == workspaceID }
+
+        #expect(apps.map(\.id) == [replacementAppID])
+        #expect(runs.map(\.id) == [replacementRunID])
+        #expect(events.map(\.type) == ["workspaceApp.replacement"])
+        #expect(bindings.map(\.requirementID) == ["replacement"])
+        #expect(automationStates.map(\.automationID) == ["replacement-auto"])
+    }
+
     private func writeLinkedWorktree(
         activeDirectory: URL,
         adminDirectory: URL,
