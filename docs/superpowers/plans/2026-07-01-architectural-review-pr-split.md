@@ -599,6 +599,43 @@ script/precommit.sh
 script/prepush.sh
 ```
 
+**Investigation evidence (2026-07-03):** A full symbol-level dependency sweep
+(not just `import` statements, since the whole app is one Swift module today)
+found both candidate directories more entangled than the "models are pure
+data" hypothesis assumed:
+
+- `Astra/Models/` — 9 of 27 files reach outside Models into
+  `Services/Runtime`, `Services/Capabilities`, `Services/Tasks`,
+  `Services/Settings`, `Services/WorkspaceApps`, and `Services/Diagnostics`
+  (`AppLogger`). Worse, `Services/Runtime/ExecutionEnvironment.swift` and
+  `AgentRuntimeAdapter.swift` take `Models/AgentTask.swift`'s `@Model` type as
+  a parameter/stored property — a genuine circular dependency, not a
+  one-directional layering gap. SwiftData `@Relationship` graph
+  (`SchemaVersions.swift`'s `ASTRASchemaV1`…`V11`, `Workspace.tasks: [AgentTask]`
+  etc.) also ties all 15 `@Model` types — clean and entangled files alike —
+  into one indivisible compilation unit, so there is no partial-file split
+  available even ignoring the cycle.
+- `Astra/Services/Persistence/` — at least as entangled: 14/40 files touch
+  `AppLogger`, and named subsystem files this PR was meant to extract
+  (`WorkspaceConfigManager.swift`, `TaskContextStateManager.swift`,
+  `WorkspaceRecoveryService.swift`) reach into `Runtime`, `Capabilities`,
+  `Security` (`HostFileAccessBroker`), `Settings`, `Tasks`, and `Validation`.
+  Only a handful of small incidental files are actually clean.
+- Forcing either extraction as originally scoped would pull in ~296 additional
+  files transitively (`Runtime` 94 + `Capabilities` 69 + `Tasks` 42 +
+  `Settings` 19 + `WorkspaceApps` 72) — most of the non-View app — which is
+  the scope creep this PR was explicitly meant to avoid, and the
+  `AgentTask`/`Runtime` cycle makes the Models half impossible outright
+  without a protocol-seam PR first.
+- **Decision: deferred, no `Package.swift`/source changes landed.** Full
+  findings, file:line citations, and the unblock order (extract
+  `AppLogger`/Diagnostics as a leaf first, then break the `AgentTask` ↔
+  `Runtime` cycle with a protocol seam, then re-attempt Models, then
+  Persistence) are in
+  `docs/architecture/swiftpm-target-extraction-models-persistence.md`.
+  `swift build` and the fitness/persistence test suites were confirmed green
+  as a no-op baseline check; no code moved.
+
 ## PR 14: Extract a Shared Chat Transcript Component
 
 **Root cause:** Task chat, App Studio chat, and related transcript surfaces reimplement message rendering, paste handling, provider settings snapshots, and streaming behavior with drift.
