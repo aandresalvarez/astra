@@ -1002,7 +1002,10 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         return response
     }
 
-    private func handleBridgeRequestCore(_ request: BrowserBridgeRequest) async -> BrowserBridgeResponse {
+    private func handleBridgeRequestCore(
+        _ request: BrowserBridgeRequest,
+        enforceRunGuard: Bool = true
+    ) async -> BrowserBridgeResponse {
         let route = ShelfBrowserBridgeCommandRouter.route(method: request.method, path: request.path)
 
         if let response = browserEngineRequirementResponse(for: request) {
@@ -1102,7 +1105,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             return response
         }
 
-        if let budgetResponse = browserRunGuardResponse(for: request) {
+        if enforceRunGuard, let budgetResponse = browserRunGuardResponse(for: request) {
             return .json(budgetResponse, statusCode: 429)
         }
 
@@ -1228,7 +1231,9 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 var object = try await openControl(
                     control,
                     controlRef: resolved.currentControlRef,
-                    allowDangerous: BrowserDangerousActionApproval.trustedProviderApproval(command.allowDangerous)
+                    allowDangerous: BrowserDangerousActionApproval.trustedProviderApproval(command.allowDangerous),
+                    timeoutSeconds: command.timeoutSeconds ?? 12,
+                    intervalMilliseconds: command.intervalMilliseconds ?? 500
                 )
                 object["preflight"] = resolved.response
                 return .json(object)
@@ -5109,11 +5114,47 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
     private func runBatch(_ command: BatchCommand) async throws -> [String: Any] {
         var results: [[String: Any]] = []
         var stopReason: String?
-        func appendBatchResult(_ result: [String: Any]) -> Bool {
+
+        func stopReasonForBatchResult(
+            route: ShelfBrowserBridgeRoute,
+            action: BatchActionCommand,
+            result: [String: Any]
+        ) -> String? {
+            if let terminalStopReason = BrowserTextEntryPreflight.terminalStopReason(for: result) {
+                return terminalStopReason
+            }
+            if route == .preflight, !Self.boolValue(result["ok"]) {
+                return result["error"] as? String ?? "preflight_failed"
+            }
+            guard action.hasAnalysisControl, !Self.boolValue(result["ok"]), result["preflight"] == nil else {
+                return nil
+            }
+            let preflightStoppingRoutes: Set<ShelfBrowserBridgeRoute> = [
+                .click,
+                .open,
+                .doubleClick,
+                .type,
+                .setValue,
+                .fill,
+                .replaceText,
+                .clickControl
+            ]
+            if preflightStoppingRoutes.contains(route) {
+                return result["error"] as? String ?? "preflight_failed"
+            }
+            return nil
+        }
+
+        func appendBatchResult(
+            _ result: [String: Any],
+            route: ShelfBrowserBridgeRoute,
+            action: BatchActionCommand
+        ) -> Bool {
             results.append(result)
-            stopReason = BrowserTextEntryPreflight.terminalStopReason(for: result)
+            stopReason = stopReasonForBatchResult(route: route, action: action, result: result)
             return stopReason != nil
         }
+
         batchLoop: for action in command.actions.prefix(20) {
             if let denialResult = BrowserSiteActionPolicy.batchDenialResult(
                 action: action.action,
@@ -5130,468 +5171,28 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 results.append(["ok": false, "action": action.action, "error": "unknown_action"])
                 continue
             }
-            switch route {
-            case .analyze:
-                let hasExplicitVersion = action.v2 != nil || action.version != nil || action.analysisVersion != nil
-                let requestedVersion = BrowserAnalysisVersion.requested(
-                    version: action.analysisVersion ?? action.version,
-                    v2: action.v2 ?? false
-                )
-                let rollout = BrowserAnalysisV2RolloutMode.configured()
-                let version = rollout.effectiveVersion(requested: requestedVersion, explicit: hasExplicitVersion)
-                let result = try await analyze(
-                    query: action.query,
-                    full: action.full ?? (action.mode?.lowercased() == "full"),
-                    limit: action.limit,
-                    debug: action.debug ?? false,
-                    version: version,
-                    rolloutMode: rollout,
-                    includeShadowV2: rollout.shouldAttachShadowAnalysis && !hasExplicitVersion
-                )
-                results.append(result.merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
-            case .preflight:
-                guard action.hasAnalysisControl else {
-                    results.append(["ok": false, "action": action.action, "error": "missing_analysis_or_control"])
-                    stopReason = "missing_analysis_or_control"
+
+            let conversion = try ShelfBrowserBridgeBatchRequestFactory.makeRequest(route: route, action: action)
+            switch conversion {
+            case .failure(let result, let conversionStopReason):
+                results.append(result)
+                if let conversionStopReason {
+                    stopReason = conversionStopReason
                     break batchLoop
                 }
-                let result = try await preflightResponse(BrowserPreflightCommand(
-                    analysisID: action.analysisID,
-                    controlID: action.controlID,
-                    action: action.preflightAction ?? action.action,
-                    allowDangerous: BrowserDangerousActionApproval.trustedProviderApproval(action.allowDangerous)
-                ))
-                results.append(result.merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
-                if !Self.boolValue(result["ok"]) {
-                    stopReason = result["error"] as? String ?? "preflight_failed"
+            case .request(let request):
+                let response = await handleBridgeRequestCore(request, enforceRunGuard: false)
+                var result = Self.responseObject(from: response) ?? [
+                    "ok": false,
+                    "error": "browser_bridge_invalid_response",
+                    "statusCode": response.statusCode
+                ]
+                if result["action"] == nil {
+                    result["action"] = action.action
+                }
+                if appendBatchResult(result, route: route, action: action) {
                     break batchLoop
                 }
-            case .navigate:
-                guard let urlText = action.url,
-                      let url = BrowserBridgeNavigationPolicy.normalizedProviderURL(from: urlText) else {
-                    results.append(["ok": false, "action": action.action, "error": "invalid_url"])
-                    continue
-                }
-                let wait = await navigateForBridge(to: url, source: "bridge_batch")
-                results.append([
-                    "ok": true,
-                    "action": action.action,
-                    "url": wait["url"] as? String ?? url.absoluteString,
-                    "title": wait["title"] as? String ?? "",
-                    "navigationWait": wait
-                ])
-            case .click:
-                if action.hasAnalysisControl {
-                    let resolved = try await resolvePreflight(
-                        analysisID: action.analysisID,
-                        controlID: action.controlID,
-                        action: BrowserActionKind.click.rawValue,
-                        allowDangerous: BrowserDangerousActionApproval.trustedProviderApproval(action.allowDangerous)
-                    )
-                    guard resolved.ok, let control = resolved.currentControl else {
-                        results.append(resolved.response.merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
-                        stopReason = resolved.response["error"] as? String ?? "preflight_failed"
-                        break batchLoop
-                    }
-                    let target = actionTarget(for: control, controlRef: resolved.currentControlRef)
-                    let before = try? await rawSnapshotObject()
-                    let json = try await click(
-                        selector: target.selector,
-                        x: target.x,
-                        y: target.y,
-                        allowDangerous: BrowserDangerousActionApproval.trustedProviderApproval(action.allowDangerous),
-                        label: target.label,
-                        role: target.role,
-                        text: nil,
-                        placeholder: target.placeholder,
-                        testID: target.testID
-                    )
-                    var object = try Self.jsonObject(from: json)
-                    let after = await snapshotAfterActionDelay()
-                    addOutcomeFields(to: &object, action: .click, control: control, before: before, after: after)
-                    object["preflight"] = resolved.response
-                    results.append(object.merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
-                } else {
-                    let json = try await click(
-                        selector: action.normalizedSelector,
-                        x: action.x,
-                        y: action.y,
-                        allowDangerous: BrowserDangerousActionApproval.trustedProviderApproval(action.allowDangerous),
-                        label: action.normalizedLabel,
-                        role: action.normalizedRole,
-                        text: action.text,
-                        placeholder: action.normalizedPlaceholder,
-                        testID: action.normalizedTestID
-                    )
-                    results.append(try Self.jsonObject(from: json).merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
-                }
-            case .open:
-                guard action.hasAnalysisControl else {
-                    results.append(["ok": false, "action": action.action, "error": "missing_analysis_or_control"])
-                    stopReason = "missing_analysis_or_control"
-                    break batchLoop
-                }
-                let resolved = try await resolvePreflight(
-                    analysisID: action.analysisID,
-                    controlID: action.controlID,
-                    action: BrowserActionKind.open.rawValue,
-                    allowDangerous: BrowserDangerousActionApproval.trustedProviderApproval(action.allowDangerous)
-                )
-                guard resolved.ok, let control = resolved.currentControl else {
-                    results.append(resolved.response.merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
-                    stopReason = resolved.response["error"] as? String ?? "preflight_failed"
-                    break batchLoop
-                }
-                var object = try await openControl(
-                    control,
-                    controlRef: resolved.currentControlRef,
-                    allowDangerous: BrowserDangerousActionApproval.trustedProviderApproval(action.allowDangerous),
-                    timeoutSeconds: action.timeoutSeconds ?? 12,
-                    intervalMilliseconds: action.intervalMilliseconds ?? 500
-                )
-                object["preflight"] = resolved.response
-                results.append(object.merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
-            case .doubleClick:
-                if action.hasAnalysisControl {
-                    let resolved = try await resolvePreflight(
-                        analysisID: action.analysisID,
-                        controlID: action.controlID,
-                        action: BrowserActionKind.doubleClick.rawValue,
-                        allowDangerous: BrowserDangerousActionApproval.trustedProviderApproval(action.allowDangerous)
-                    )
-                    guard resolved.ok, let control = resolved.currentControl else {
-                        results.append(resolved.response.merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
-                        stopReason = resolved.response["error"] as? String ?? "preflight_failed"
-                        break batchLoop
-                    }
-                    let target = actionTarget(for: control, controlRef: resolved.currentControlRef)
-                    let before = try? await rawSnapshotObject()
-                    let json = try await doubleClick(
-                        selector: target.selector,
-                        x: target.x,
-                        y: target.y,
-                        allowDangerous: BrowserDangerousActionApproval.trustedProviderApproval(action.allowDangerous),
-                        label: target.label,
-                        role: target.role,
-                        text: nil,
-                        placeholder: target.placeholder,
-                        testID: target.testID
-                    )
-                    var object = try Self.jsonObject(from: json)
-                    let after = await snapshotAfterActionDelay()
-                    addOutcomeFields(to: &object, action: .doubleClick, control: control, before: before, after: after)
-                    object["preflight"] = resolved.response
-                    results.append(object.merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
-                } else {
-                    let json = try await doubleClick(
-                        selector: action.normalizedSelector,
-                        x: action.x,
-                        y: action.y,
-                        allowDangerous: BrowserDangerousActionApproval.trustedProviderApproval(action.allowDangerous),
-                        label: action.normalizedLabel,
-                        role: action.normalizedRole,
-                        text: action.text,
-                        placeholder: action.normalizedPlaceholder,
-                        testID: action.normalizedTestID
-                    )
-                    results.append(try Self.jsonObject(from: json).merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
-                }
-            case .type:
-                guard let text = action.text else {
-                    results.append(["ok": false, "action": action.action, "error": "missing_text"])
-                    continue
-                }
-                if action.hasAnalysisControl {
-                    let resolved = try await resolvePreflight(
-                        analysisID: action.analysisID,
-                        controlID: action.controlID,
-                        action: BrowserActionKind.fill.rawValue,
-                        allowDangerous: BrowserDangerousActionApproval.trustedProviderApproval(action.allowDangerous)
-                    )
-                    guard resolved.ok, let control = resolved.currentControl else {
-                        results.append(resolved.response.merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
-                        stopReason = resolved.response["error"] as? String ?? "preflight_failed"
-                        break batchLoop
-                    }
-                    let target = actionTarget(for: control, controlRef: resolved.currentControlRef)
-                    let before = try? await rawSnapshotObject()
-                    let json = try await type(
-                        selector: target.selector,
-                        text: text,
-                        clear: action.clear ?? true,
-                        label: target.label,
-                        role: target.role,
-                        placeholder: target.placeholder,
-                        testID: target.testID
-                    )
-                    var object = try Self.jsonObject(from: json)
-                    let after = await snapshotAfterActionDelay()
-                    addOutcomeFields(to: &object, action: .fill, control: control, before: before, after: after)
-                    object["preflight"] = resolved.response
-                    let result = object.merging(["action": action.action], uniquingKeysWith: { current, _ in current })
-                    if appendBatchResult(result) { break batchLoop }
-                } else {
-                    let json = try await type(
-                        selector: action.normalizedSelector,
-                        text: text,
-                        clear: action.clear ?? true,
-                        label: action.normalizedLabel,
-                        role: action.normalizedRole,
-                        placeholder: action.normalizedPlaceholder,
-                        testID: action.normalizedTestID
-                    )
-                    let result = try Self.jsonObject(from: json).merging(["action": action.action], uniquingKeysWith: { current, _ in current })
-                    if appendBatchResult(result) { break batchLoop }
-                }
-            case .setValue, .fill:
-                guard let text = action.text else {
-                    results.append(["ok": false, "action": action.action, "error": "missing_text"])
-                    continue
-                }
-                if action.hasAnalysisControl {
-                    let resolved = try await resolvePreflight(
-                        analysisID: action.analysisID,
-                        controlID: action.controlID,
-                        action: action.normalizedAction == "fill" ? BrowserActionKind.fill.rawValue : BrowserActionKind.setValue.rawValue,
-                        allowDangerous: BrowserDangerousActionApproval.trustedProviderApproval(action.allowDangerous)
-                    )
-                    guard resolved.ok, let control = resolved.currentControl else {
-                        results.append(resolved.response.merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
-                        stopReason = resolved.response["error"] as? String ?? "preflight_failed"
-                        break batchLoop
-                    }
-                    let browserAction = action.normalizedAction == "fill" ? BrowserActionKind.fill : BrowserActionKind.setValue
-                    let target = actionTarget(for: control, controlRef: resolved.currentControlRef)
-                    let before = try? await rawSnapshotObject()
-                    let json = try await type(
-                        selector: target.selector,
-                        text: text,
-                        clear: true,
-                        label: target.label,
-                        role: target.role,
-                        placeholder: target.placeholder,
-                        testID: target.testID
-                    )
-                    var object = try Self.jsonObject(from: json)
-                    let after = await snapshotAfterActionDelay()
-                    addOutcomeFields(to: &object, action: browserAction, control: control, before: before, after: after)
-                    object["preflight"] = resolved.response
-                    let result = object.merging(["action": action.action], uniquingKeysWith: { current, _ in current })
-                    if appendBatchResult(result) { break batchLoop }
-                } else {
-                    let json = try await type(
-                        selector: action.normalizedSelector,
-                        text: text,
-                        clear: true,
-                        label: action.normalizedLabel,
-                        role: action.normalizedRole,
-                        placeholder: action.normalizedPlaceholder,
-                        testID: action.normalizedTestID
-                    )
-                    let result = try Self.jsonObject(from: json).merging(["action": action.action], uniquingKeysWith: { current, _ in current })
-                    if appendBatchResult(result) { break batchLoop }
-                }
-            case .replaceText:
-                guard let find = action.find,
-                      let replacement = action.replacement ?? action.text else {
-                    results.append(["ok": false, "action": action.action, "error": "missing_find_or_replacement"])
-                    continue
-                }
-                var selector = action.normalizedSelector
-                var preflight: [String: Any]?
-                var matchedControl: BrowserControl?
-                if action.hasAnalysisControl {
-                    let resolved = try await resolvePreflight(
-                        analysisID: action.analysisID,
-                        controlID: action.controlID,
-                        action: BrowserActionKind.setValue.rawValue,
-                        allowDangerous: BrowserDangerousActionApproval.trustedProviderApproval(action.allowDangerous)
-                    )
-                    guard resolved.ok, let control = resolved.currentControl else {
-                        results.append(resolved.response.merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
-                        stopReason = resolved.response["error"] as? String ?? "preflight_failed"
-                        break batchLoop
-                    }
-                    let target = actionTarget(for: control, controlRef: resolved.currentControlRef)
-                    selector = target.selector ?? selector
-                    preflight = resolved.response
-                    matchedControl = control
-                }
-                let before = matchedControl == nil ? nil : (try? await rawSnapshotObject())
-                let json = try await replaceText(
-                    find: find,
-                    replacement: replacement,
-                    selector: selector,
-                    all: action.all ?? true
-                )
-                var object = try Self.jsonObject(from: json)
-                if let preflight {
-                    let after = await snapshotAfterActionDelay()
-                    addOutcomeFields(to: &object, action: .setValue, control: matchedControl, before: before, after: after)
-                    object["preflight"] = preflight
-                }
-                let result = object.merging(["action": action.action], uniquingKeysWith: { current, _ in current })
-                if appendBatchResult(result) { break batchLoop }
-            case .findControl:
-                let result = try await findControl(
-                    query: action.query ?? action.label ?? "",
-                    role: action.role,
-                    limit: action.limit ?? 10
-                )
-                results.append(result.merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
-            case .clickControl:
-                if action.hasAnalysisControl {
-                    let resolved = try await resolvePreflight(
-                        analysisID: action.analysisID,
-                        controlID: action.controlID,
-                        action: BrowserActionKind.click.rawValue,
-                        allowDangerous: BrowserDangerousActionApproval.trustedProviderApproval(action.allowDangerous)
-                    )
-                    guard resolved.ok, let control = resolved.currentControl else {
-                        results.append(resolved.response.merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
-                        stopReason = resolved.response["error"] as? String ?? "preflight_failed"
-                        break batchLoop
-                    }
-                    let target = actionTarget(for: control, controlRef: resolved.currentControlRef)
-                    let before = try? await rawSnapshotObject()
-                    let json = try await click(
-                        selector: target.selector,
-                        x: target.x,
-                        y: target.y,
-                        allowDangerous: BrowserDangerousActionApproval.trustedProviderApproval(action.allowDangerous),
-                        label: target.label,
-                        role: target.role,
-                        text: nil,
-                        placeholder: target.placeholder,
-                        testID: target.testID
-                    )
-                    var object = try Self.jsonObject(from: json)
-                    let after = await snapshotAfterActionDelay()
-                    addOutcomeFields(to: &object, action: .click, control: control, before: before, after: after)
-                    object["preflight"] = resolved.response
-                    results.append(object.merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
-                    break
-                }
-                guard let label = action.label ?? action.query else {
-                    results.append(["ok": false, "action": action.action, "error": "missing_label"])
-                    continue
-                }
-                let result = try await clickControl(
-                    label: label,
-                    role: action.role,
-                    allowDangerous: BrowserDangerousActionApproval.trustedProviderApproval(action.allowDangerous)
-                )
-                results.append(result.merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
-            case .verifyText, .waitSaved, .waitForText, .waitForSelector:
-                if let result = try await verificationCommandHandler.handleBatch(route: route, action: action) {
-                    results.append(result)
-                } else {
-                    results.append(["ok": false, "action": action.action, "error": "unknown_action"])
-                }
-            case .googleFindReplace:
-                guard let find = action.find,
-                      let replacement = action.replacement ?? action.text else {
-                    results.append(["ok": false, "action": action.action, "error": "missing_find_or_replacement"])
-                    continue
-                }
-                let result = try await googleFindReplace(find: find, replacement: replacement, all: action.all ?? true)
-                results.append(result.merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
-            case .googleDocsFind:
-                guard let query = action.query ?? action.text ?? action.verify else {
-                    results.append(["ok": false, "action": action.action, "error": "missing_query"])
-                    continue
-                }
-                let result = try await googleDocsFind(query: query, closeFindBar: action.closeFindBar ?? true)
-                results.append(result.merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
-            case .googleDocsInsert:
-                guard let text = action.text else {
-                    results.append(["ok": false, "action": action.action, "error": "missing_text"])
-                    continue
-                }
-                let result = try await googleDocsInsert(
-                    text: text,
-                    verifyText: action.verify ?? action.query,
-                    waitSaved: action.waitSaved ?? true
-                )
-                results.append(result.merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
-            case .googleDocsReadDocument:
-                let result = try await googleDocsReadDocument()
-                results.append(result.merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
-            case .googleDocsReadVisiblePage:
-                let result = try await googleDocsReadVisiblePage(
-                    format: action.format ?? "markdown",
-                    limit: action.limit,
-                    chunkSize: action.chunkSize
-                )
-                results.append(result.merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
-            case .googleDocsReplaceDocument:
-                guard let text = action.text else {
-                    results.append(["ok": false, "action": action.action, "error": "missing_text"])
-                    continue
-                }
-                let result = try await googleDocsReplaceDocument(
-                    text: text,
-                    verifyText: action.verify ?? action.query
-                )
-                results.append(result.merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
-            case .googleDriveOpen:
-                guard let name = action.name ?? action.query ?? action.text else {
-                    results.append(["ok": false, "action": action.action, "error": "missing_name"])
-                    continue
-                }
-                let result = try await googleDriveOpen(
-                    name: name,
-                    timeoutSeconds: action.timeoutSeconds ?? GoogleWorkspaceBrowserService.googleDriveOpenDefaultTimeoutSeconds,
-                    intervalMilliseconds: action.intervalMilliseconds ?? 500
-                )
-                results.append(result.merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
-            case .act:
-                let result = try await act(ActCommand(
-                    analysisID: action.analysisID,
-                    controlID: action.controlID,
-                    setAnalysisID: nil,
-                    setControlID: nil,
-                    clickAnalysisID: nil,
-                    clickControlID: nil,
-                    find: action.find ?? action.query,
-                    set: action.set ?? action.text,
-                    role: action.role,
-                    click: action.click ?? action.label,
-                    clickRole: action.clickRole,
-                    allowDangerous: BrowserDangerousActionApproval.trustedProviderApproval(action.allowDangerous),
-                    waitSaved: action.waitSaved,
-                    verify: action.verify,
-                    absent: action.absentText ?? (action.absent == true ? action.text : nil),
-                    timeoutSeconds: action.timeoutSeconds,
-                    intervalMilliseconds: action.intervalMilliseconds
-                ))
-                let batchResult = result.merging(["action": action.action], uniquingKeysWith: { current, _ in current })
-                if appendBatchResult(batchResult) { break batchLoop }
-            case .keypress:
-                guard let key = action.key else {
-                    results.append(["ok": false, "action": action.action, "error": "missing_key"])
-                    continue
-                }
-                let json = try await keypress(key: key, modifiers: action.modifiers ?? [])
-                let result = try Self.jsonObject(from: json).merging(["action": action.action], uniquingKeysWith: { current, _ in current })
-                if appendBatchResult(result) { break batchLoop }
-            case .text:
-                guard let text = action.text else {
-                    results.append(["ok": false, "action": action.action, "error": "missing_text"])
-                    continue
-                }
-                let json = try await insertText(text)
-                let result = try Self.jsonObject(from: json).merging(["action": action.action], uniquingKeysWith: { current, _ in current })
-                if appendBatchResult(result) { break batchLoop }
-            case .snapshot:
-                let json = try await snapshot(
-                    mode: BrowserSnapshotMode(rawValue: action.mode ?? "summary") ?? .summary,
-                    query: action.query,
-                    limit: action.limit
-                )
-                results.append(try Self.jsonObject(from: json).merging(["action": action.action], uniquingKeysWith: { current, _ in current }))
-            case .health, .actions, .trace, .benchmark, .readPage, .locator, .batch:
-                results.append(["ok": false, "action": action.action, "error": "unknown_action"])
             }
         }
         var response: [String: Any] = [

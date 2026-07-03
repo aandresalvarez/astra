@@ -428,6 +428,10 @@ enum ShelfBrowserBridgeCommandRouter {
         registeredCommands.first { $0.matches(batchAction: batchAction) }?.route
     }
 
+    static func command(for route: ShelfBrowserBridgeRoute) -> ShelfBrowserBridgeCommandSpec? {
+        registeredCommands.first { $0.route == route }
+    }
+
     static func actionsResponse(
         backend: String,
         automationEngine: BrowserAutomationEngineDescriptor,

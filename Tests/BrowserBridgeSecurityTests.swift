@@ -260,6 +260,77 @@ struct BrowserBridgeSecurityTests {
         #expect(ShelfBrowserBridgeCommandRouter.route(batchAction: "unknown") == nil)
     }
 
+    @Test("Batch request factory covers every registered batch alias")
+    func batchRequestFactoryCoversEveryRegisteredBatchAlias() {
+        let aliasedRoutes = Set(ShelfBrowserBridgeCommandRouter.registeredCommands
+            .filter { !$0.batchAliases.isEmpty }
+            .map(\.route))
+
+        #expect(ShelfBrowserBridgeBatchRequestFactory.supportedRoutes == aliasedRoutes)
+        for route in aliasedRoutes {
+            #expect(ShelfBrowserBridgeCommandRouter.command(for: route) != nil)
+        }
+    }
+
+    @Test("Batch request factory delegates actions through normal bridge requests")
+    func batchRequestFactoryDelegatesActionsThroughNormalBridgeRequests() throws {
+        let setValueAction = try JSONDecoder().decode(BatchActionCommand.self, from: bridgeBody([
+            "action": "set-value",
+            "selector": " input[name=email] ",
+            "text": "hello@example.com",
+            "clear": false
+        ]))
+        let setValueConversion = try ShelfBrowserBridgeBatchRequestFactory.makeRequest(
+            route: .setValue,
+            action: setValueAction
+        )
+        guard case .request(let setValueRequest) = setValueConversion else {
+            Issue.record("Expected set-value to produce a bridge request")
+            return
+        }
+
+        #expect(setValueRequest.method == "POST")
+        #expect(setValueRequest.path == "/setValue")
+        let setValueBody = try requestBodyObject(setValueRequest)
+        #expect(setValueBody["selector"] as? String == "input[name=email]")
+        #expect(setValueBody["text"] as? String == "hello@example.com")
+        #expect(setValueBody["clear"] as? Bool == true)
+
+        let snapshotAction = try JSONDecoder().decode(BatchActionCommand.self, from: bridgeBody([
+            "action": "snapshot",
+            "mode": "not-a-mode",
+            "query": "Save"
+        ]))
+        let snapshotConversion = try ShelfBrowserBridgeBatchRequestFactory.makeRequest(
+            route: .snapshot,
+            action: snapshotAction
+        )
+        guard case .request(let snapshotRequest) = snapshotConversion else {
+            Issue.record("Expected snapshot to produce a bridge request")
+            return
+        }
+
+        #expect(snapshotRequest.method == "GET")
+        #expect(snapshotRequest.path == "/snapshot")
+        #expect(snapshotRequest.queryItems["mode"] == "summary")
+        #expect(snapshotRequest.queryItems["query"] == "Save")
+
+        let preflightAction = try JSONDecoder().decode(BatchActionCommand.self, from: bridgeBody([
+            "action": "preflight"
+        ]))
+        let preflightConversion = try ShelfBrowserBridgeBatchRequestFactory.makeRequest(
+            route: .preflight,
+            action: preflightAction
+        )
+        guard case .failure(let failure, let stopReason) = preflightConversion else {
+            Issue.record("Expected missing preflight identifiers to produce a stopping failure")
+            return
+        }
+
+        #expect(failure["error"] as? String == "missing_analysis_or_control")
+        #expect(stopReason == "missing_analysis_or_control")
+    }
+
     @Test("Verification command handler supports direct and batch execution")
     func verificationCommandHandlerSupportsDirectAndBatchExecution() async throws {
         let handler = ShelfBrowserBridgeVerificationCommandHandler(
@@ -635,6 +706,10 @@ struct BrowserBridgeSecurityTests {
 
     private func responseObject(_ response: BrowserBridgeResponse) throws -> [String: Any] {
         try #require(JSONSerialization.jsonObject(with: response.body) as? [String: Any])
+    }
+
+    private func requestBodyObject(_ request: BrowserBridgeRequest) throws -> [String: Any] {
+        try #require(JSONSerialization.jsonObject(with: request.body) as? [String: Any])
     }
 }
 
