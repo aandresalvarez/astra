@@ -21,6 +21,7 @@ struct ExecutionSandboxRunnerTests {
     private final class FakeLaunchAdapter: AgentRuntimeProcessLaunchPlanning, AgentRuntimeProcessEventParsing {
         let id: AgentRuntimeID
         let descriptor: AgentRuntimeDescriptor
+        let providerRuntimeMessages = ProviderRuntimeMessages.claudeCode
         let planCurrentDirectory: String
         let planExecutablePath: String
         let planArguments: [String]

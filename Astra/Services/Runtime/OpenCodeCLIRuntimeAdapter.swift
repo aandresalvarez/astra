@@ -26,6 +26,7 @@ struct OpenCodeCLIRuntimeAdapter: AgentRuntimeAdapter {
     let budgetProfile = AgentRuntimeBudgetProfile(runtime: .openCodeCLI, launchOverheadTokens: 0)
     let recordsStreamTelemetry = true
     let recordsInferredFileChanges = true
+    let providerRuntimeMessages = ProviderRuntimeMessages.openCode
 
     func launchSettings(configuration: AgentRuntimeConfiguration) -> AgentRuntimeLaunchSettings {
         let configuredPath = configuration.executablePath(for: id)
@@ -33,26 +34,6 @@ struct OpenCodeCLIRuntimeAdapter: AgentRuntimeAdapter {
             executablePath: configuredPath.isEmpty ? OpenCodeCLIRuntime.detectPath() : configuredPath,
             homeDirectory: configuration.homeDirectory(for: id)
         )
-    }
-
-    func missingExecutableAuditReason() -> String {
-        "opencode_cli_not_found"
-    }
-
-    func missingExecutableStopReason() -> String? {
-        "missing_opencode"
-    }
-
-    func missingExecutableMessage(executablePath _: String) -> String {
-        ProviderMessages.missingExecutable(
-            providerName: "OpenCode",
-            installAction: "Install OpenCode",
-            authAction: "authenticate with `opencode auth login`."
-        )
-    }
-
-    func defaultStartEventPayload(task: AgentTask) -> String {
-        ProviderMessages.start(providerName: "OpenCode", goal: task.goal)
     }
 
     func connectorPreflightContextText(
@@ -77,22 +58,6 @@ struct OpenCodeCLIRuntimeAdapter: AgentRuntimeAdapter {
         true
     }
 
-    func manualCompletionPayload(phase _: RunPhase) -> String {
-        ProviderMessages.manualCompletion(providerName: "OpenCode", phase: .run)
-    }
-
-    func failurePayloadPrefix(phase _: RunPhase, exitCode: Int) -> String {
-        ProviderMessages.failurePrefix(providerName: "OpenCode", phase: .run, exitCode: exitCode)
-    }
-
-    func timeoutPayload(phase _: RunPhase, timeoutSeconds: TimeInterval) -> String {
-        ProviderMessages.timeout(phase: .run, timeoutSeconds: timeoutSeconds)
-    }
-
-    func maxTurnsPayload(phase _: RunPhase, task: AgentTask) -> String {
-        ProviderMessages.maxTurns(phase: .run, maxTurns: task.maxTurns)
-    }
-
     func sessionTurnMessage(
         task: AgentTask,
         promptOverride: String?,
@@ -100,7 +65,7 @@ struct OpenCodeCLIRuntimeAdapter: AgentRuntimeAdapter {
         sessionMessage _: String?,
         phase _: RunPhase
     ) -> String {
-        promptOverride == nil ? task.goal : (startPayload ?? task.goal)
+        providerRuntimeMessages.sessionTurnMessage(task: task, promptOverride: promptOverride, startPayload: startPayload)
     }
 
     func policyAdapter(runtimeCapabilities _: AgentRuntimePolicyCapabilities) -> any ProviderPolicyAdapter {

@@ -429,6 +429,71 @@ struct AgentRuntimeAdapterTests {
         ) == "start")
     }
 
+    @Test("Adapters expose one providerRuntimeMessages value backing every diagnostic-copy accessor")
+    @MainActor
+    func adaptersExposeOneProviderRuntimeMessagesValueBackingDiagnosticCopy() {
+        let task = AgentTask(title: "Diagnostics", goal: "Say hi")
+        let claude = AgentRuntimeAdapterRegistry.adapter(for: .claudeCode)
+
+        // Claude renders generic "Agent"/"Follow-up" copy that varies by
+        // phase, and reports the resolved executable path (unlike the
+        // install/auth hint every CLI-style adapter below reports).
+        #expect(claude.missingExecutableAuditReason() == "provider_cli_not_found")
+        #expect(claude.missingExecutableStopReason() == nil)
+        #expect(claude.missingExecutableMessage(executablePath: "/tmp/claude") == "Claude Code CLI not found at '/tmp/claude'. Check Settings.")
+        #expect(claude.manualCompletionPayload(phase: "run") == "Agent finished.")
+        #expect(claude.manualCompletionPayload(phase: "resume") == "Follow-up completed.")
+        #expect(claude.failurePayloadPrefix(phase: "run", exitCode: 2) == "Agent exited with code 2.")
+        #expect(claude.failurePayloadPrefix(phase: "resume", exitCode: 2) == "Follow-up failed (exit 2).")
+        #expect(claude.timeoutPayload(phase: "resume", timeoutSeconds: 12) == "Resume idle timeout - no output for 12s. Process killed.")
+        #expect(claude.maxTurnsPayload(phase: "resume", task: task) == "Max turns reached (\(task.maxTurns)) during resume. Process killed.")
+
+        // Every CLI-style adapter renders its own provider name and ignores
+        // phase for completion/failure copy (pre-collapse behavior, since
+        // ProviderMessages ignores phase once a provider name is supplied).
+        // Only Antigravity varies timeout/max-turns copy by the live phase;
+        // Copilot, Codex, Cursor, and OpenCode always render as `.run`.
+        // Copilot and Antigravity use a longer name in the missing-executable
+        // hint than in their other diagnostic copy, matching pre-collapse
+        // adapters exactly.
+        let cliAdapters: [(
+            runtime: AgentRuntimeID, auditReason: String, stopReason: String,
+            missingExecutableMessage: String, name: String, variesTimeoutByPhase: Bool
+        )] = [
+            (.copilotCLI, "copilot_cli_not_found", "missing_copilot",
+             "GitHub Copilot CLI not found. Install with `brew install copilot-cli` or `npm install -g @github/copilot`, then authenticate with `copilot`.",
+             "Copilot", false),
+            (.antigravityCLI, "antigravity_cli_not_found", "missing_antigravity",
+             "Google Antigravity CLI not found. Install it from the official setup docs, then run `agy` once to authenticate.",
+             "Antigravity", true),
+            (.codexCLI, "codex_cli_not_found", "missing_codex",
+             "Codex CLI not found. Install Codex CLI, then authenticate with `codex login`.",
+             "Codex", false),
+            (.cursorCLI, "cursor_cli_not_found", "missing_cursor",
+             "Cursor CLI not found. Install Cursor CLI, then authenticate with `cursor-agent login`.",
+             "Cursor", false),
+            (.openCodeCLI, "opencode_cli_not_found", "missing_opencode",
+             "OpenCode CLI not found. Install OpenCode, then authenticate with `opencode auth login`.",
+             "OpenCode", false)
+        ]
+        for entry in cliAdapters {
+            let adapter = AgentRuntimeAdapterRegistry.adapter(for: entry.runtime)
+            #expect(adapter.missingExecutableAuditReason() == entry.auditReason)
+            #expect(adapter.missingExecutableStopReason() == entry.stopReason)
+            #expect(adapter.missingExecutableMessage(executablePath: "/tmp/x") == entry.missingExecutableMessage)
+            #expect(adapter.defaultStartEventPayload(task: task) == "\(entry.name) started working on: Say hi")
+            #expect(adapter.manualCompletionPayload(phase: "resume") == "\(entry.name) finished.")
+            #expect(adapter.failurePayloadPrefix(phase: "resume", exitCode: 3) == "\(entry.name) exited with code 3.")
+            let expectedTimeoutLabel = entry.variesTimeoutByPhase ? "Resume" : "Task"
+            #expect(adapter.timeoutPayload(phase: "resume", timeoutSeconds: 12) == "\(expectedTimeoutLabel) idle timeout - no output for 12s. Process killed.")
+            let expectedMaxTurnsSuffix = entry.variesTimeoutByPhase ? " during resume" : ""
+            #expect(adapter.maxTurnsPayload(phase: "resume", task: task) == "Max turns reached (\(task.maxTurns))\(expectedMaxTurnsSuffix). Process killed.")
+            #expect(adapter.sessionTurnMessage(
+                task: task, promptOverride: "prompt", startPayload: "start", sessionMessage: "message", phase: "resume"
+            ) == "start")
+        }
+    }
+
     @Test("Adapter readiness check IDs match service reports")
     func adapterReadinessCheckIDsMatchServiceReports() async {
         let runner = StubBinaryRunner()
