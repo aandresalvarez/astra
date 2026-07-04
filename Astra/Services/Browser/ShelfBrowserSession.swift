@@ -127,6 +127,26 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
     var isWebViewLoaded: Bool { _webView != nil }
     let controlledBrowser = ControlledBrowserController()
 
+    /// The active backend's raw operation surface (see
+    /// `BrowserAutomationEngineOperating`), resolved fresh from `engine` on
+    /// every access. A computed property rather than a stored one so it never
+    /// forces `_webView` creation for a session that is currently using the
+    /// controlled engine, and so it always reflects same-turn engine
+    /// switches. `EmbeddedWebKitEngine` closes over `evaluateJavaScriptString`
+    /// (which lazily creates `webView` on first real use) rather than
+    /// capturing `webView` directly, preserving that laziness.
+    private var automationEngine: any BrowserAutomationEngineOperating {
+        if isUsingControlledBrowser {
+            return ControlledBrowserEngineAdapter(controller: controlledBrowser)
+        }
+        return EmbeddedWebKitEngine(evaluateJavaScript: { [weak self] script in
+            guard let self else {
+                throw ControlledBrowserError.commandFailed("Browser session deallocated.")
+            }
+            return try await self.evaluateJavaScriptString(script)
+        })
+    }
+
     private var observations: [NSKeyValueObservation] = []
     private var controlledBrowserCancellable: AnyCancellable?
     private var bridgeServer: BrowserBridgeServer?
@@ -181,6 +201,107 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 )
             }
         )
+    }
+
+    /// Context bundle handed to `GoogleWorkspaceBrowserWorkflowAdapter` —
+    /// see `GoogleWorkspaceBrowserWorkflowContext`'s doc comment for why
+    /// this needs to be a superset of the Gap-1 engine protocol rather than
+    /// just that protocol.
+    private var googleWorkspaceWorkflowContext: GoogleWorkspaceBrowserWorkflowContext {
+        GoogleWorkspaceBrowserWorkflowContext(
+            currentURL: { [self] in currentURL },
+            pageTitle: { [self] in pageTitle },
+            engine: { [self] in engine },
+            isUsingControlledBrowser: { [self] in isUsingControlledBrowser },
+            isGoogleDocsEditor: { [self] in isGoogleDocsEditor },
+            isGoogleWorkspaceEditor: { [self] in isGoogleWorkspaceEditor },
+            canUseGoogleDriveOpen: { [self] in canUseGoogleDriveOpen },
+            updateLastPageReadState: { [self] response in updateLastPageReadState(from: response) },
+            ensureControlledBrowserForGoogleWorkspaceAction: { [self] action, started in
+                await ensureControlledBrowserForGoogleWorkspaceAction(action: action, started: started)
+            },
+            logBrowserAction: { [self] phase, action, fields, resultJSON, started, error in
+                logBrowserAction(
+                    phase: phase,
+                    action: action,
+                    selector: nil,
+                    label: nil,
+                    role: nil,
+                    text: nil,
+                    placeholder: nil,
+                    testID: nil,
+                    fields: fields,
+                    resultJSON: resultJSON,
+                    started: started,
+                    error: error
+                )
+            },
+            navigateForBridge: { [self] url, source in
+                await navigateForBridge(to: url, source: source)
+            },
+            waitForNavigationSettle: { [self] targetURL, timeoutSeconds in
+                await waitForNavigationSettle(targetURL: targetURL, timeoutSeconds: timeoutSeconds)
+            },
+            rawSnapshotObject: { [self] in try await rawSnapshotObject() },
+            snapshot: { [self] mode, query, limit in try await snapshot(mode: mode, query: query, limit: limit) },
+            readPage: { [self] format, limit, chunkSize in try await readPage(format: format, limit: limit, chunkSize: chunkSize) },
+            waitSaved: { [self] timeoutSeconds, intervalMilliseconds in
+                try await waitSaved(timeoutSeconds: timeoutSeconds, intervalMilliseconds: intervalMilliseconds)
+            },
+            verifyText: { [self] text, absent in try await verifyText(text, absent: absent) },
+            findControl: { [self] query, role, limit in try await findControl(query: query, role: role, limit: limit) },
+            clickControl: { [self] label, role, allowDangerous in
+                try await clickControl(label: label, role: role, allowDangerous: allowDangerous)
+            },
+            browserAdapterDisabledResponse: { [self] adapterID, action in
+                browserAdapterDisabledResponse(adapterID: adapterID, action: action)
+            },
+            click: { [self] selector, x, y, allowDangerous, label, role, text, placeholder, testID in
+                try await click(
+                    selector: selector,
+                    x: x,
+                    y: y,
+                    allowDangerous: allowDangerous,
+                    label: label,
+                    role: role,
+                    text: text,
+                    placeholder: placeholder,
+                    testID: testID
+                )
+            },
+            doubleClick: { [self] selector, x, y, allowDangerous, label, role, text, placeholder, testID in
+                try await doubleClick(
+                    selector: selector,
+                    x: x,
+                    y: y,
+                    allowDangerous: allowDangerous,
+                    label: label,
+                    role: role,
+                    text: text,
+                    placeholder: placeholder,
+                    testID: testID
+                )
+            },
+            type: { [self] selector, text, clear, label, role, placeholder, testID in
+                try await type(
+                    selector: selector,
+                    text: text,
+                    clear: clear,
+                    label: label,
+                    role: role,
+                    placeholder: placeholder,
+                    testID: testID
+                )
+            },
+            keypress: { [self] key, modifiers, skipTextEntryPreflight in
+                try await keypress(key: key, modifiers: modifiers, skipTextEntryPreflight: skipTextEntryPreflight)
+            },
+            insertText: { [self] text in try await insertText(text) }
+        )
+    }
+
+    private var googleWorkspaceAdapter: GoogleWorkspaceBrowserWorkflowAdapter {
+        GoogleWorkspaceBrowserWorkflowAdapter(context: googleWorkspaceWorkflowContext)
     }
 
     var isUsingControlledBrowser: Bool {
@@ -1449,42 +1570,42 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 return .json(["ok": false, "error": "handler_not_registered"], statusCode: 500)
             case .googleFindReplace:
                 let command = try request.decodeJSON(GoogleFindReplaceCommand.self)
-                return .json(try await googleFindReplace(
+                return .json(try await googleWorkspaceAdapter.googleFindReplace(
                     find: command.find,
                     replacement: command.replacement,
                     all: command.all ?? true
                 ))
             case .googleDocsFind:
                 let command = try request.decodeJSON(GoogleDocsFindCommand.self)
-                return .json(try await googleDocsFind(
+                return .json(try await googleWorkspaceAdapter.googleDocsFind(
                     query: command.query,
                     closeFindBar: command.closeFindBar ?? true
                 ))
             case .googleDocsInsert:
                 let command = try request.decodeJSON(GoogleDocsInsertCommand.self)
-                return .json(try await googleDocsInsert(
+                return .json(try await googleWorkspaceAdapter.googleDocsInsert(
                     text: command.text,
                     verifyText: command.normalizedVerifyText,
                     waitSaved: command.waitSaved ?? true
                 ))
             case .googleDocsReadVisiblePage:
                 let command = try request.decodeJSON(PageReadCommand.self)
-                return .json(try await googleDocsReadVisiblePage(
+                return .json(try await googleWorkspaceAdapter.googleDocsReadVisiblePage(
                     format: command.format,
                     limit: command.limit,
                     chunkSize: command.chunkSize
                 ))
             case .googleDocsReadDocument:
-                return .json(try await googleDocsReadDocument())
+                return .json(try await googleWorkspaceAdapter.googleDocsReadDocument())
             case .googleDocsReplaceDocument:
                 let command = try request.decodeJSON(GoogleDocsReplaceDocumentCommand.self)
-                return .json(try await googleDocsReplaceDocument(
+                return .json(try await googleWorkspaceAdapter.googleDocsReplaceDocument(
                     text: command.text,
                     verifyText: command.normalizedVerifyText
                 ))
             case .googleDriveOpen:
                 let command = try request.decodeJSON(GoogleDriveOpenCommand.self)
-                return .json(try await googleDriveOpen(
+                return .json(try await googleWorkspaceAdapter.googleDriveOpen(
                     name: command.normalizedName,
                     timeoutSeconds: command.timeoutSeconds ?? GoogleWorkspaceBrowserService.googleDriveOpenDefaultTimeoutSeconds,
                     intervalMilliseconds: command.intervalMilliseconds ?? 500
@@ -1866,13 +1987,12 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
     }
 
     private func rawSnapshotJSON() async throws -> String {
+        let json = try await automationEngine.snapshot()
         if isUsingControlledBrowser {
-            let json = try await controlledBrowser.snapshot()
             syncDisplayedStateForEngine()
             publishBridgeState()
-            return json
         }
-        return try await evaluateJavaScriptString(BrowserAutomationScripts.snapshotScript)
+        return json
     }
 
     private func rawSnapshotObject() async throws -> [String: Any] {
@@ -2546,20 +2666,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
 
     private func targetInfo(for control: BrowserControl, controlRef: BrowserControlRef?, allowDangerous: Bool) async throws -> String {
         let target = actionTarget(for: control, controlRef: controlRef)
-        if isUsingControlledBrowser {
-            return try await controlledBrowser.targetInfo(
-                selector: target.selector,
-                x: target.x,
-                y: target.y,
-                allowDangerous: allowDangerous,
-                label: target.label,
-                role: target.role,
-                text: nil,
-                placeholder: target.placeholder,
-                testID: target.testID
-            )
-        }
-        return try await evaluateJavaScriptString(BrowserAutomationScripts.targetInfoScript(
+        return try await automationEngine.targetInfo(
             selector: target.selector,
             x: target.x,
             y: target.y,
@@ -2569,7 +2676,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             text: nil,
             placeholder: target.placeholder,
             testID: target.testID
-        ))
+        )
     }
 
     private func actionTarget(for control: BrowserControl, controlRef: BrowserControlRef?) -> BrowserControlActionTarget {
@@ -2810,33 +2917,20 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             }
             let beforeSettle = try? await rawSnapshotObject()
 
-            let json: String
+            let json = try await automationEngine.click(
+                selector: selector,
+                x: x,
+                y: y,
+                allowDangerous: allowDangerous,
+                label: label,
+                role: role,
+                text: text,
+                placeholder: placeholder,
+                testID: testID
+            )
             if isUsingControlledBrowser {
-                json = try await controlledBrowser.click(
-                    selector: selector,
-                    x: x,
-                    y: y,
-                    allowDangerous: allowDangerous,
-                    label: label,
-                    role: role,
-                    text: text,
-                    placeholder: placeholder,
-                    testID: testID
-                )
                 syncDisplayedStateForEngine()
                 publishBridgeState()
-            } else {
-                json = try await evaluateJavaScriptString(BrowserAutomationScripts.clickScript(
-                    selector: selector,
-                    x: x,
-                    y: y,
-                    allowDangerous: allowDangerous,
-                    label: label,
-                    role: role,
-                    text: text,
-                    placeholder: placeholder,
-                    testID: testID
-                ))
             }
 
             var object = try Self.jsonObject(from: try annotateBrowserLoopHint(json: json, action: action, target: BrowserControlActionService.targetIdentifier(
@@ -2929,33 +3023,20 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             }
             let beforeSettle = try? await rawSnapshotObject()
 
-            let json: String
+            let json = try await automationEngine.doubleClick(
+                selector: selector,
+                x: x,
+                y: y,
+                allowDangerous: allowDangerous,
+                label: label,
+                role: role,
+                text: text,
+                placeholder: placeholder,
+                testID: testID
+            )
             if isUsingControlledBrowser {
-                json = try await controlledBrowser.doubleClick(
-                    selector: selector,
-                    x: x,
-                    y: y,
-                    allowDangerous: allowDangerous,
-                    label: label,
-                    role: role,
-                    text: text,
-                    placeholder: placeholder,
-                    testID: testID
-                )
                 syncDisplayedStateForEngine()
                 publishBridgeState()
-            } else {
-                json = try await evaluateJavaScriptString(BrowserAutomationScripts.doubleClickScript(
-                    selector: selector,
-                    x: x,
-                    y: y,
-                    allowDangerous: allowDangerous,
-                    label: label,
-                    role: role,
-                    text: text,
-                    placeholder: placeholder,
-                    testID: testID
-                ))
             }
 
             var object = try Self.jsonObject(from: try annotateBrowserLoopHint(json: json, action: action, target: BrowserControlActionService.targetIdentifier(
@@ -3025,7 +3106,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         ) {
             let nameHintSource = control.label.isEmpty ? control.name : control.label
             let nameHint = GoogleDriveBrowserAdapter.nameHint(from: nameHintSource)
-            object = try await googleDriveOpen(
+            object = try await googleWorkspaceAdapter.googleDriveOpen(
                 name: nameHint.isEmpty ? nameHintSource : nameHint,
                 timeoutSeconds: timeoutSeconds,
                 intervalMilliseconds: intervalMilliseconds
@@ -3132,29 +3213,18 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             }
             let beforeSettle = try? await rawSnapshotObject()
 
-            let json: String
+            let json = try await automationEngine.type(
+                selector: selector,
+                text: text,
+                clear: clear,
+                label: label,
+                role: role,
+                placeholder: placeholder,
+                testID: testID
+            )
             if isUsingControlledBrowser {
-                json = try await controlledBrowser.type(
-                    selector: selector,
-                    text: text,
-                    clear: clear,
-                    label: label,
-                    role: role,
-                    placeholder: placeholder,
-                    testID: testID
-                )
                 syncDisplayedStateForEngine()
                 publishBridgeState()
-            } else {
-                json = try await evaluateJavaScriptString(BrowserAutomationScripts.typeScript(
-                    selector: selector,
-                    text: text,
-                    clear: clear,
-                    label: label,
-                    role: role,
-                    placeholder: placeholder,
-                    testID: testID
-                ))
             }
 
             var object = try Self.jsonObject(from: try annotateBrowserLoopHint(json: json, action: action, target: BrowserControlActionService.targetIdentifier(
@@ -3299,33 +3369,20 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         placeholder: String?,
         testID: String?
     ) async throws -> [String: Any] {
-        let json: String
+        let json = try await automationEngine.targetInfo(
+            selector: selector,
+            x: x,
+            y: y,
+            allowDangerous: allowDangerous,
+            label: label,
+            role: role,
+            text: text,
+            placeholder: placeholder,
+            testID: testID
+        )
         if isUsingControlledBrowser {
-            json = try await controlledBrowser.targetInfo(
-                selector: selector,
-                x: x,
-                y: y,
-                allowDangerous: allowDangerous,
-                label: label,
-                role: role,
-                text: text,
-                placeholder: placeholder,
-                testID: testID
-            )
             syncDisplayedStateForEngine()
             publishBridgeState()
-        } else {
-            json = try await evaluateJavaScriptString(BrowserAutomationScripts.targetInfoScript(
-                selector: selector,
-                x: x,
-                y: y,
-                allowDangerous: allowDangerous,
-                label: label,
-                role: role,
-                text: text,
-                placeholder: placeholder,
-                testID: testID
-            ))
         }
         return try Self.jsonObject(from: json)
     }
@@ -3505,18 +3562,11 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         if let blocked = try await blockedReplacementTextEntryResult(find: find, selector: resolvedSelector ?? BrowserAutomationScripts.defaultEditableSelector, all: all) {
             return try Self.jsonString(blocked)
         }
+        let json = try await automationEngine.replaceText(find: find, replacement: replacement, selector: resolvedSelector, all: all)
         if isUsingControlledBrowser {
-            let json = try await controlledBrowser.replaceText(find: find, replacement: replacement, selector: resolvedSelector, all: all)
             syncDisplayedStateForEngine()
             publishBridgeState()
-            return try annotateBrowserLoopHint(json: json, action: "replaceText", target: resolvedSelector ?? find)
         }
-        let json = try await evaluateJavaScriptString(BrowserAutomationScripts.replaceTextScript(
-            find: find,
-            replacement: replacement,
-            selector: resolvedSelector,
-            all: all
-        ))
         return try annotateBrowserLoopHint(json: json, action: "replaceText", target: resolvedSelector ?? find)
     }
 
@@ -3575,23 +3625,15 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         let preflight = try await keypressTextEntryDispatchValidation(key: key, modifiers: modifiers, started: started, skipTextEntryPreflight: skipTextEntryPreflight)
         if let result = preflight.blockedResultJSON { return result }
         do {
-            let json: String
+            let json = try await automationEngine.keypress(
+                key: key,
+                modifiers: modifiers,
+                expectedFocusedTargetSignature: preflight.targetSignature,
+                allowUnboundFocusedTargetDispatch: preflight.allowUnboundFocusedTargetDispatch
+            )
             if isUsingControlledBrowser {
-                json = try await controlledBrowser.keypress(
-                    key: key,
-                    modifiers: modifiers,
-                    expectedFocusedTargetSignature: preflight.targetSignature,
-                    allowUnboundFocusedTargetDispatch: preflight.allowUnboundFocusedTargetDispatch
-                )
                 syncDisplayedStateForEngine()
                 publishBridgeState()
-            } else {
-                json = try await evaluateJavaScriptString(BrowserAutomationScripts.keypressScript(
-                    key: key,
-                    modifiers: modifiers,
-                    expectedFocusedTargetSignature: preflight.targetSignature,
-                    allowUnboundFocusedTargetDispatch: preflight.allowUnboundFocusedTargetDispatch
-                ))
             }
             logBrowserAction(
                 phase: "completed",
@@ -3654,13 +3696,10 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
                 )
             )
             if let result = preflight.blockedResultJSON { return result }
-            let json: String
+            let json = try await automationEngine.insertText(text, expectedFocusedTargetSignature: preflight.targetSignature)
             if isUsingControlledBrowser {
-                json = try await controlledBrowser.insertText(text, expectedFocusedTargetSignature: preflight.targetSignature)
                 syncDisplayedStateForEngine()
                 publishBridgeState()
-            } else {
-                json = try await evaluateJavaScriptString(BrowserAutomationScripts.insertTextScript(text, expectedFocusedTargetSignature: preflight.targetSignature))
             }
             logBrowserAction(
                 phase: "completed",
@@ -3764,405 +3803,6 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
             "capabilities": bridgeCapabilities,
             "summary": "Enable the matching browser capability for this workspace before using this site-specific action."
         ]
-    }
-
-    private func googleDriveOpen(
-        name: String,
-        timeoutSeconds: Double,
-        intervalMilliseconds: Int
-    ) async throws -> [String: Any] {
-        let started = Date()
-        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        logBrowserAction(
-            phase: "requested",
-            action: "googleDriveOpen",
-            selector: nil,
-            label: nil,
-            role: nil,
-            text: nil,
-            placeholder: nil,
-            testID: nil,
-            fields: [
-                "name_length": String(trimmedName.count),
-                "timeout_seconds": String(timeoutSeconds)
-            ]
-        )
-
-        guard canUseGoogleDriveOpen else {
-            let result = browserAdapterDisabledResponse(
-                adapterID: BrowserSiteAdapterID.googleDrive,
-                action: "googleDriveOpen"
-            )
-            logBrowserAction(
-                phase: "completed",
-                action: "googleDriveOpen",
-                selector: nil,
-                label: nil,
-                role: nil,
-                text: nil,
-                placeholder: nil,
-                testID: nil,
-                resultJSON: try Self.jsonString(result),
-                started: started
-            )
-            return result
-        }
-
-        guard !trimmedName.isEmpty else {
-            let result: [String: Any] = [
-                "ok": false,
-                "error": "missing_name"
-            ]
-            logBrowserAction(
-                phase: "completed",
-                action: "googleDriveOpen",
-                selector: nil,
-                label: nil,
-                role: nil,
-                text: nil,
-                placeholder: nil,
-                testID: nil,
-                resultJSON: try Self.jsonString(result),
-                started: started
-            )
-            return result
-        }
-
-        if let promotionError = await ensureControlledBrowserForGoogleWorkspaceAction(
-            action: "googleDriveOpen",
-            started: started
-        ) {
-            logBrowserAction(
-                phase: "completed",
-                action: "googleDriveOpen",
-                selector: nil,
-                label: nil,
-                role: nil,
-                text: nil,
-                placeholder: nil,
-                testID: nil,
-                resultJSON: try Self.jsonString(promotionError),
-                started: started
-            )
-            return promotionError
-        }
-
-        do {
-            if GoogleWorkspaceBrowserService.isOpenedDriveTarget(urlString: currentURL, title: pageTitle, name: trimmedName, startURL: nil) {
-                let result: [String: Any] = [
-                    "ok": true,
-                    "opened": true,
-                    "alreadyOpen": true,
-                    "name": trimmedName,
-                    "url": currentURL,
-                    "title": pageTitle,
-                    "elapsedSeconds": Date().timeIntervalSince(started)
-                ]
-                logBrowserAction(
-                    phase: "completed",
-                    action: "googleDriveOpen",
-                    selector: nil,
-                    label: nil,
-                    role: nil,
-                    text: nil,
-                    placeholder: nil,
-                    testID: nil,
-                    resultJSON: try Self.jsonString(result),
-                    started: started
-                )
-                return result
-            }
-
-            let startURL = currentURL
-            let searchURL = GoogleWorkspaceBrowserService.googleDriveSearchURL(for: trimmedName)
-            let searchNavigation = await navigateForBridge(to: searchURL, source: "googleDriveOpenSearch")
-            let searchStarted = Date()
-            var result = try await waitForGoogleDriveOpen(
-                name: trimmedName,
-                startURL: startURL,
-                started: started,
-                waitStarted: searchStarted,
-                timeoutSeconds: timeoutSeconds,
-                intervalMilliseconds: intervalMilliseconds
-            )
-            result["searchMethod"] = "direct_url"
-            result["searchNavigation"] = [
-                "ok": Self.boolValue(searchNavigation["targetReached"]),
-                "url": searchNavigation["url"] as? String ?? "",
-                "title": searchNavigation["title"] as? String ?? ""
-            ]
-            logBrowserAction(
-                phase: "completed",
-                action: "googleDriveOpen",
-                selector: nil,
-                label: nil,
-                role: nil,
-                text: nil,
-                placeholder: nil,
-                testID: nil,
-                fields: [
-                    "opened": String(Self.boolValue(result["opened"])),
-                    "search_method": result["searchMethod"] as? String ?? "unknown",
-                    "candidate_count": String(Self.intValue(result["candidateCount"]) ?? 0),
-                    "last_open_method": (result["lastOpenAttempt"] as? [String: Any])?["method"] as? String ?? "",
-                    "last_open_error": (result["lastOpenAttempt"] as? [String: Any])?["error"] as? String ?? ""
-                ],
-                resultJSON: try Self.jsonString(result),
-                started: started
-            )
-            return result
-        } catch {
-            logBrowserAction(
-                phase: "failed",
-                action: "googleDriveOpen",
-                selector: nil,
-                label: nil,
-                role: nil,
-                text: nil,
-                placeholder: nil,
-                testID: nil,
-                started: started,
-                error: error
-            )
-            throw error
-        }
-    }
-
-    private func fillGoogleDriveSearch(with name: String) async throws -> [String: Any] {
-        struct SearchTarget {
-            let method: String
-            let selector: String?
-            let label: String?
-            let placeholder: String?
-        }
-
-        let targets = [
-            SearchTarget(method: "label", selector: nil, label: "Search in Drive", placeholder: nil),
-            SearchTarget(method: "placeholder", selector: nil, label: nil, placeholder: "Search in Drive"),
-            SearchTarget(method: "selector", selector: #"input[aria-label="Search in Drive"], input[placeholder="Search in Drive"]"#, label: nil, placeholder: nil)
-        ]
-
-        var lastResult: [String: Any] = [
-            "ok": false,
-            "error": "not_attempted"
-        ]
-
-        for target in targets {
-            let json = try await type(
-                selector: target.selector,
-                text: name,
-                clear: true,
-                label: target.label,
-                role: nil,
-                placeholder: target.placeholder,
-                testID: nil
-            )
-            var result = try Self.jsonObject(from: json)
-            result["method"] = target.method
-            lastResult = result
-            if Self.boolValue(result["ok"]) {
-                return result
-            }
-        }
-
-        return lastResult
-    }
-
-    private func waitForGoogleDriveOpen(
-        name: String,
-        startURL: String,
-        started: Date,
-        waitStarted: Date,
-        timeoutSeconds: Double,
-        intervalMilliseconds: Int
-    ) async throws -> [String: Any] {
-        let timeout = max(0.5, min(timeoutSeconds, GoogleWorkspaceBrowserService.googleDriveOpenMaximumTimeoutSeconds))
-        let interval = UInt64(max(100, min(intervalMilliseconds, 2_000))) * 1_000_000
-        var lastURL = currentURL
-        var lastTitle = pageTitle
-        var lastCandidateCount = 0
-        var lastOpenAttempt: [String: Any]?
-        var attemptedCandidateKeys = Set<String>()
-        var retriedOpenKey = false
-        var retriedDriveOpenShortcut = false
-
-        while Date().timeIntervalSince(waitStarted) <= timeout {
-            try await Task.sleep(nanoseconds: interval)
-
-            let object = try await rawSnapshotObject()
-            lastURL = object["url"] as? String ?? currentURL
-            lastTitle = object["title"] as? String ?? pageTitle
-
-            if GoogleWorkspaceBrowserService.isOpenedDriveTarget(urlString: lastURL, title: lastTitle, name: name, startURL: startURL) {
-                return [
-                    "ok": true,
-                    "opened": true,
-                    "name": name,
-                    "url": lastURL,
-                    "title": lastTitle,
-                    "matchedName": GoogleWorkspaceBrowserService.googleDriveOpenedTitleMatches(lastTitle, name),
-                    "elapsedSeconds": Date().timeIntervalSince(started)
-                ]
-            }
-            if GoogleWorkspaceBrowserService.isGoogleWorkspaceEditorURL(lastURL),
-               !GoogleWorkspaceBrowserService.isPendingGoogleWorkspaceTitle(lastTitle),
-               !GoogleWorkspaceBrowserService.googleDriveOpenedTitleMatches(lastTitle, name) {
-                return [
-                    "ok": false,
-                    "opened": false,
-                    "error": "drive_file_name_mismatch",
-                    "safeEditUnavailable": true,
-                    "name": name,
-                    "url": lastURL,
-                    "title": lastTitle,
-                    "matchedName": false,
-                    "candidateCount": lastCandidateCount,
-                    "lastOpenAttempt": lastOpenAttempt ?? [:],
-                    "elapsedSeconds": Date().timeIntervalSince(started),
-                    "hint": "Google Drive opened a different Google editor than the requested file. Stop before reading or editing the wrong file."
-                ]
-            }
-
-            let controls = object["controls"] as? [[String: Any]] ?? []
-            let candidates = GoogleWorkspaceBrowserService.googleDriveOpenCandidates(
-                controls: controls,
-                name: name,
-                pageURL: lastURL
-            )
-            lastCandidateCount = candidates.count
-            if let candidate = candidates.first {
-                let candidateKey = GoogleWorkspaceBrowserService.googleDriveOpenCandidateKey(candidate)
-                if !attemptedCandidateKeys.contains(candidateKey) {
-                    attemptedCandidateKeys.insert(candidateKey)
-                    lastOpenAttempt = try await openGoogleDriveCandidate(candidate)
-                    let wait = await waitForNavigationSettle(targetURL: nil, timeoutSeconds: 3)
-                    lastURL = wait["url"] as? String ?? currentURL
-                    lastTitle = wait["title"] as? String ?? pageTitle
-
-                    if GoogleWorkspaceBrowserService.isOpenedDriveTarget(urlString: lastURL, title: lastTitle, name: name, startURL: startURL) {
-                        return [
-                            "ok": true,
-                            "opened": true,
-                            "name": name,
-                            "url": lastURL,
-                            "title": lastTitle,
-                            "matchedName": true,
-                            "candidateCount": lastCandidateCount,
-                            "openMethod": lastOpenAttempt?["method"] as? String ?? "drive_result",
-                            "elapsedSeconds": Date().timeIntervalSince(started)
-                        ]
-                    }
-                    if GoogleWorkspaceBrowserService.isGoogleWorkspaceEditorURL(lastURL),
-                       !GoogleWorkspaceBrowserService.isPendingGoogleWorkspaceTitle(lastTitle),
-                       !GoogleWorkspaceBrowserService.googleDriveOpenedTitleMatches(lastTitle, name) {
-                        return [
-                            "ok": false,
-                            "opened": false,
-                            "error": "drive_file_name_mismatch",
-                            "safeEditUnavailable": true,
-                            "name": name,
-                            "url": lastURL,
-                            "title": lastTitle,
-                            "matchedName": false,
-                            "candidateCount": lastCandidateCount,
-                            "openMethod": lastOpenAttempt?["method"] as? String ?? "drive_result",
-                            "lastOpenAttempt": lastOpenAttempt ?? [:],
-                            "elapsedSeconds": Date().timeIntervalSince(started),
-                            "hint": "Google Drive opened a different Google editor than the requested file. Stop before reading or editing the wrong file."
-                        ]
-                    }
-                }
-            }
-
-            let waitElapsed = Date().timeIntervalSince(waitStarted)
-            if !retriedOpenKey, !attemptedCandidateKeys.isEmpty, waitElapsed >= 2.0 {
-                _ = try? await keypress(key: "Enter", modifiers: [])
-                retriedOpenKey = true
-            }
-            if !retriedDriveOpenShortcut, !attemptedCandidateKeys.isEmpty, waitElapsed >= 4.0 {
-                _ = try? await keypress(key: "o", modifiers: [])
-                retriedDriveOpenShortcut = true
-            }
-        }
-
-        return [
-            "ok": false,
-            "opened": false,
-            "error": "drive_file_not_opened",
-            "name": name,
-            "url": lastURL,
-            "title": lastTitle,
-            "matchedName": GoogleWorkspaceBrowserService.googleDriveOpenedTitleMatches(lastTitle, name),
-            "candidateCount": lastCandidateCount,
-            "lastOpenAttempt": lastOpenAttempt ?? [:],
-            "elapsedSeconds": Date().timeIntervalSince(started)
-        ]
-    }
-
-    private func openGoogleDriveCandidate(_ control: [String: Any]) async throws -> [String: Any] {
-        let selector = ShelfBrowserCommandNormalization.normalized(control["selector"] as? String)
-        let bounds = control["bounds"] as? [String: Any]
-        let x = Self.doubleValue(bounds?["centerX"])
-        let y = Self.doubleValue(bounds?["centerY"])
-        let canUseSelector = selector != nil
-        let canUsePoint = x != nil && y != nil && (x ?? -1) >= 0 && (y ?? -1) >= 0
-
-        let primaryJSON = try await doubleClick(
-            selector: canUseSelector ? selector : nil,
-            x: canUseSelector ? nil : x,
-            y: canUseSelector ? nil : y,
-            allowDangerous: false
-        )
-        var primary = try Self.jsonObject(from: primaryJSON)
-        primary["method"] = canUseSelector ? "candidate_double_click_selector" : "candidate_double_click_point"
-        primary["candidate"] = GoogleWorkspaceBrowserService.compactGoogleDriveCandidate(control)
-        if Self.boolValue(primary["ok"]) {
-            return primary
-        }
-
-        if canUseSelector && canUsePoint {
-            let pointJSON = try await doubleClick(
-                selector: nil,
-                x: x,
-                y: y,
-                allowDangerous: false
-            )
-            var point = try Self.jsonObject(from: pointJSON)
-            point["method"] = "candidate_double_click_point"
-            point["candidate"] = GoogleWorkspaceBrowserService.compactGoogleDriveCandidate(control)
-            if Self.boolValue(point["ok"]) {
-                return point
-            }
-        }
-
-        let fallbackJSON = try await click(
-            selector: canUseSelector ? selector : nil,
-            x: canUseSelector ? nil : x,
-            y: canUseSelector ? nil : y,
-            allowDangerous: false
-        )
-        var fallback = try Self.jsonObject(from: fallbackJSON)
-        fallback["method"] = canUseSelector ? "candidate_click_enter_selector" : "candidate_click_enter_point"
-        fallback["candidate"] = GoogleWorkspaceBrowserService.compactGoogleDriveCandidate(control)
-        if Self.boolValue(fallback["ok"]) {
-            _ = try? await keypress(key: "Enter", modifiers: [])
-        }
-        if canUseSelector && canUsePoint && !Self.boolValue(fallback["ok"]) {
-            let pointFallbackJSON = try await click(
-                selector: nil,
-                x: x,
-                y: y,
-                allowDangerous: false
-            )
-            var pointFallback = try Self.jsonObject(from: pointFallbackJSON)
-            pointFallback["method"] = "candidate_click_enter_point"
-            pointFallback["candidate"] = GoogleWorkspaceBrowserService.compactGoogleDriveCandidate(control)
-            if Self.boolValue(pointFallback["ok"]) {
-                _ = try? await keypress(key: "Enter", modifiers: [])
-            }
-            return pointFallback
-        }
-        return fallback
     }
 
     private func findControl(query: String, role: String?, limit: Int) async throws -> [String: Any] {
@@ -4293,700 +3933,6 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         ]
     }
 
-    private func googleFindReplace(find: String, replacement: String, all: Bool) async throws -> [String: Any] {
-        guard isGoogleWorkspaceEditor else {
-            return [
-                "ok": false,
-                "error": "not_google_workspace_editor",
-                "hint": "Use replace-text for normal editable controls, or open a Google Docs, Sheets, or Slides editor page first."
-            ]
-        }
-        let started = Date()
-        if let promotionError = await ensureControlledBrowserForGoogleWorkspaceAction(
-            action: "googleFindReplace",
-            started: started
-        ) {
-            return promotionError
-        }
-
-        _ = try await keypress(key: "h", modifiers: ["command", "shift"])
-        try await Task.sleep(nanoseconds: 500_000_000)
-
-        let controlsJSON = try await snapshot(mode: .controls, query: nil, limit: 80)
-        let controlsObject = try Self.jsonObject(from: controlsJSON)
-        let controls = controlsObject["controls"] as? [[String: Any]] ?? []
-        let editableControls = controls.filter { control in
-            let tag = (control["tag"] as? String ?? "").lowercased()
-            return tag == "input" || tag == "textarea" || (control["role"] as? String ?? "").lowercased().contains("textbox")
-        }
-
-        guard editableControls.count >= 2,
-              let findSelector = editableControls.first?["selector"] as? String,
-              let replaceSelector = editableControls.dropFirst().first?["selector"] as? String else {
-            return [
-                "ok": false,
-                "error": "find_replace_fields_not_found",
-                "hint": "Open the Find and Replace dialog, then use find-control and set-value on the Find and Replace fields.",
-                "controls": Array(controls.prefix(12))
-            ]
-        }
-
-        let findJSON = try await type(selector: findSelector, text: find, clear: true)
-        let replaceJSON = try await type(selector: replaceSelector, text: replacement, clear: true)
-        let buttonLabel = all ? "Replace all" : "Replace"
-        let clickResult = try await clickControl(label: buttonLabel, role: nil, allowDangerous: true)
-        try await Task.sleep(nanoseconds: 500_000_000)
-        let saved = try await waitSaved(timeoutSeconds: 8, intervalMilliseconds: 500)
-        let present = try await verifyText(replacement, absent: false)
-        let oldAbsent = try await verifyText(find, absent: true)
-
-        return [
-            "ok": Self.boolValue(clickResult["ok"]) && Self.boolValue(present["ok"]),
-            "find": find,
-            "replacement": replacement,
-            "findField": try Self.jsonObject(from: findJSON),
-            "replaceField": try Self.jsonObject(from: replaceJSON),
-            "click": clickResult,
-            "saved": saved,
-            "verification": [
-                "replacementPresent": present,
-                "oldTextAbsent": oldAbsent
-            ]
-        ]
-    }
-
-    private func googleDocsFind(query: String, closeFindBar: Bool) async throws -> [String: Any] {
-        let normalizedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !normalizedQuery.isEmpty else {
-            return ["ok": false, "error": "empty_query"]
-        }
-        guard isGoogleDocsEditor else {
-            return [
-                "ok": false,
-                "error": "not_google_docs_editor",
-                "hint": "Open a Google Docs document editor page first."
-            ]
-        }
-
-        let started = Date()
-        if let promotionError = await ensureControlledBrowserForGoogleWorkspaceAction(
-            action: "googleDocsFind",
-            started: started
-        ) {
-            return promotionError
-        }
-        logBrowserAction(
-            phase: "requested",
-            action: "googleDocsFind",
-            selector: nil,
-            label: nil,
-            role: nil,
-            text: nil,
-            placeholder: nil,
-            testID: nil,
-            fields: [
-                "query_length": String(normalizedQuery.count),
-                "close_find_bar": String(closeFindBar)
-            ]
-        )
-
-        do {
-            _ = try await keypress(key: "f", modifiers: ["command"])
-            try await Task.sleep(nanoseconds: 250_000_000)
-            let findFieldJSON = try await type(
-                selector: nil,
-                text: normalizedQuery,
-                clear: true,
-                label: "Find in document",
-                role: nil,
-                placeholder: nil,
-                testID: nil
-            )
-            _ = try await keypress(key: "Enter", modifiers: [])
-            try await Task.sleep(nanoseconds: 300_000_000)
-
-            let snapshotJSON = try await snapshot(mode: .text, query: normalizedQuery, limit: 2_000)
-            let snapshot = try Self.jsonObject(from: snapshotJSON)
-            let text = snapshot["text"] as? String ?? ""
-            let matches = snapshot["matches"] as? [[String: Any]] ?? []
-            let countText = Self.googleFindCountText(in: text)
-            let foundByCount = countText.map { !$0.hasPrefix("0 of ") } ?? false
-            let found = foundByCount || !matches.isEmpty || text.localizedCaseInsensitiveContains(normalizedQuery)
-            var closeResult: [String: Any]?
-            if closeFindBar,
-               let closeJSON = try? await keypress(key: "Escape", modifiers: []) {
-                closeResult = try? Self.jsonObject(from: closeJSON)
-            }
-
-            let result: [String: Any] = [
-                "ok": found,
-                "query": normalizedQuery,
-                "found": found,
-                "matchCountText": countText ?? "",
-                "findField": try Self.jsonObject(from: findFieldJSON),
-                "close": closeResult ?? [:],
-                "elapsedSeconds": Date().timeIntervalSince(started),
-                "url": snapshot["url"] as? String ?? "",
-                "title": snapshot["title"] as? String ?? ""
-            ]
-            logBrowserAction(
-                phase: "completed",
-                action: "googleDocsFind",
-                selector: nil,
-                label: nil,
-                role: nil,
-                text: nil,
-                placeholder: nil,
-                testID: nil,
-                fields: [
-                    "query_length": String(normalizedQuery.count),
-                    "found": String(found),
-                    "match_count_present": String(countText != nil)
-                ],
-                resultJSON: try Self.jsonString(result),
-                started: started
-            )
-            return result
-        } catch {
-            logBrowserAction(
-                phase: "failed",
-                action: "googleDocsFind",
-                selector: nil,
-                label: nil,
-                role: nil,
-                text: nil,
-                placeholder: nil,
-                testID: nil,
-                fields: ["query_length": String(normalizedQuery.count)],
-                started: started,
-                error: error
-            )
-            throw error
-        }
-    }
-
-    private func googleDocsInsert(text: String, verifyText: String?, waitSaved shouldWaitSaved: Bool) async throws -> [String: Any] {
-        let normalizedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !normalizedText.isEmpty else {
-            return ["ok": false, "error": "empty_text"]
-        }
-        guard isGoogleDocsEditor else {
-            return [
-                "ok": false,
-                "error": "not_google_docs_editor",
-                "hint": "Open a Google Docs document editor page first."
-            ]
-        }
-
-        let started = Date()
-        if let promotionError = await ensureControlledBrowserForGoogleWorkspaceAction(
-            action: "googleDocsInsert",
-            started: started
-        ) {
-            return promotionError
-        }
-        logBrowserAction(
-            phase: "requested",
-            action: "googleDocsInsert",
-            selector: nil,
-            label: nil,
-            role: nil,
-            text: nil,
-            placeholder: nil,
-            testID: nil,
-            fields: [
-                "text_length": String(normalizedText.count),
-                "verify_text_length": String(verifyText?.count ?? 0),
-                "wait_saved": String(shouldWaitSaved)
-            ]
-        )
-
-        do {
-            let focusJSON = try await click(
-                selector: nil,
-                x: 0.47,
-                y: 0.45,
-                allowDangerous: false
-            )
-            let insertJSON = try await insertText(normalizedText)
-            let saved: [String: Any] = shouldWaitSaved
-                ? try await waitSaved(timeoutSeconds: 10, intervalMilliseconds: 500)
-                : ["ok": true, "skipped": true]
-            let verification: [String: Any]
-            if let verifyText, !verifyText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                verification = try await googleDocsFind(query: verifyText, closeFindBar: true)
-            } else {
-                verification = ["ok": true, "skipped": true]
-            }
-
-            let focus = try Self.jsonObject(from: focusJSON)
-            let insert = try Self.jsonObject(from: insertJSON)
-            let ok = Self.boolValue(focus["ok"])
-                && Self.boolValue(insert["ok"])
-                && Self.boolValue(saved["ok"])
-                && Self.boolValue(verification["ok"])
-            let result: [String: Any] = [
-                "ok": ok,
-                "textLength": normalizedText.count,
-                "verifyText": verifyText ?? "",
-                "focus": focus,
-                "insert": insert,
-                "saved": saved,
-                "verification": verification,
-                "elapsedSeconds": Date().timeIntervalSince(started)
-            ]
-            logBrowserAction(
-                phase: "completed",
-                action: "googleDocsInsert",
-                selector: nil,
-                label: nil,
-                role: nil,
-                text: nil,
-                placeholder: nil,
-                testID: nil,
-                fields: [
-                    "text_length": String(normalizedText.count),
-                    "verified": String(Self.boolValue(verification["ok"]))
-                ],
-                resultJSON: try Self.jsonString(result),
-                started: started
-            )
-            return result
-        } catch {
-            logBrowserAction(
-                phase: "failed",
-                action: "googleDocsInsert",
-                selector: nil,
-                label: nil,
-                role: nil,
-                text: nil,
-                placeholder: nil,
-                testID: nil,
-                fields: ["text_length": String(normalizedText.count)],
-                started: started,
-                error: error
-            )
-            throw error
-        }
-    }
-
-    private func googleDocsReadDocument() async throws -> [String: Any] {
-        guard isGoogleDocsEditor else {
-            return [
-                "ok": false,
-                "error": "not_google_docs_editor",
-                "hint": "Open a Google Docs document editor page first."
-            ]
-        }
-
-        let started = Date()
-        if let promotionError = await ensureControlledBrowserForGoogleWorkspaceAction(
-            action: "googleDocsReadDocument",
-            started: started
-        ) {
-            return promotionError
-        }
-        if let browserRequirement = googleDocsControlledBrowserRequiredResult(
-            action: "googleDocsReadDocument",
-            method: "browser_select_all_copy",
-            started: started
-        ) {
-            return browserRequirement
-        }
-
-        let browserResult = try await googleDocsReadDocumentViaBrowser()
-        if Self.boolValue(browserResult["ok"]) {
-            return browserResult
-        }
-
-        var result = browserResult
-        result["apiFallbackSkipped"] = true
-        result["apiFallbackSkippedReason"] = "browser_use_mode"
-        return result
-    }
-
-    private func googleDocsReadVisiblePage(format: String?, limit: Int?, chunkSize: Int?) async throws -> [String: Any] {
-        guard isGoogleDocsEditor else {
-            return [
-                "ok": false,
-                "error": "not_google_docs_editor",
-                "hint": "Open a Google Docs document editor page first."
-            ]
-        }
-
-        var response = try await readPage(
-            format: format ?? "markdown",
-            limit: limit,
-            chunkSize: chunkSize
-        )
-        response["source"] = "browser_page_read"
-        response["googleDocsMode"] = "visible_page"
-        response["fullDocument"] = false
-        response["partialSummaryAllowed"] = true
-        response["coverage"] = "partial"
-
-        var warnings = response["warnings"] as? [String] ?? []
-        warnings.append("Google Docs visible-page reads are partial by design; summarize only the returned content unless the user explicitly accepts that limitation.")
-        warnings.append("Use google-docs-read-document in Controlled mode for a full-document summary.")
-        response["warnings"] = Array(Set(warnings)).sorted()
-        updateLastPageReadState(from: response)
-        return response
-    }
-
-    private func googleDocsReplaceDocument(text: String, verifyText: String?) async throws -> [String: Any] {
-        let normalizedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !normalizedText.isEmpty else {
-            return ["ok": false, "error": "empty_text"]
-        }
-        guard isGoogleDocsEditor else {
-            return [
-                "ok": false,
-                "error": "not_google_docs_editor",
-                "hint": "Open a Google Docs document editor page first."
-            ]
-        }
-
-        let started = Date()
-        if let promotionError = await ensureControlledBrowserForGoogleWorkspaceAction(
-            action: "googleDocsReplaceDocument",
-            started: started
-        ) {
-            return promotionError
-        }
-        if let browserRequirement = googleDocsControlledBrowserRequiredResult(
-            action: "googleDocsReplaceDocument",
-            method: "browser_select_all_paste",
-            started: started
-        ) {
-            return browserRequirement
-        }
-
-        return try await googleDocsReplaceDocumentViaBrowser(
-            text: normalizedText,
-            verifyText: verifyText
-        )
-    }
-
-    private func googleDocsControlledBrowserRequiredResult(
-        action: String,
-        method: String,
-        started: Date
-    ) -> [String: Any]? {
-        let autoPromote = UserDefaults.standard.bool(forKey: AppStorageKeys.browserAutoPromoteGoogleWorkspace)
-        guard GoogleWorkspaceBrowserService.googleDocsFullDocumentClipboardRequiresControlled(
-            engine: engine,
-            autoPromoteGoogleWorkspace: autoPromote
-        ) else {
-            return nil
-        }
-
-        logBrowserAction(
-            phase: "failed",
-            action: action,
-            selector: nil,
-            label: nil,
-            role: nil,
-            text: nil,
-            placeholder: nil,
-            testID: nil,
-            fields: [
-                "error": "google_docs_controlled_browser_required",
-                "reason": "embedded_webkit_clipboard_unavailable",
-                "required_engine": ShelfBrowserEngine.controlled.rawValue,
-                "selected_engine": engine.rawValue,
-                "auto_promote_google_workspace": String(autoPromote)
-            ],
-            started: started
-        )
-
-        var response: [String: Any] = [
-            "ok": false,
-            "error": "google_docs_controlled_browser_required",
-            "reason": "embedded_webkit_clipboard_unavailable",
-            "safeEditUnavailable": true,
-            "method": method,
-            "url": currentURL,
-            "title": pageTitle,
-            "requiredEngine": ShelfBrowserEngine.controlled.rawValue,
-            "selectedEngine": engine.rawValue,
-            "autoPromoteGoogleWorkspace": autoPromote,
-            "copyAttempted": false,
-            "elapsedSeconds": Date().timeIntervalSince(started),
-            "hint": "Full-document Google Docs browser read/replace requires Controlled mode, or Settings > Appearance > Privacy & Logging > Auto-promote Google Workspace helpers. Embedded WebKit does not expose a reliable fresh clipboard copy from the Docs editor iframe, so ASTRA stopped before selecting or replacing document content."
-        ]
-        BrowserBridgeRecoveryHints.attach(
-            to: &response,
-            error: "google_docs_controlled_browser_required",
-            action: action
-        )
-        return response
-    }
-
-    private func googleDocsReadDocumentViaBrowser() async throws -> [String: Any] {
-        let started = Date()
-        let pasteboardSnapshot = Self.capturePasteboardSnapshot()
-        defer { Self.restorePasteboardSnapshot(pasteboardSnapshot) }
-
-        let closeJSON = try? await keypress(key: "Escape", modifiers: [])
-        let focusJSON = try await click(
-            selector: nil,
-            x: 0.47,
-            y: 0.45,
-            allowDangerous: false
-        )
-        try await Task.sleep(nanoseconds: 250_000_000)
-        let selectJSON = try await keypress(key: "a", modifiers: ["command"])
-        try await Task.sleep(nanoseconds: 250_000_000)
-
-        let copyStartChangeCount = NSPasteboard.general.changeCount
-        let copyJSON = try await keypress(key: "c", modifiers: ["command"])
-        let copiedText = await waitForPasteboardString(
-            afterChangeCount: copyStartChangeCount,
-            timeoutSeconds: 2.5,
-            requireChange: true
-        )
-        _ = try? await keypress(key: "Escape", modifiers: [])
-
-        let focus = try Self.jsonObject(from: focusJSON)
-        let select = try Self.jsonObject(from: selectJSON)
-        let copy = try Self.jsonObject(from: copyJSON)
-        let close = closeJSON.flatMap { try? Self.jsonObject(from: $0) } ?? [:]
-        let text = copiedText?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        guard !text.isEmpty else {
-            return [
-                "ok": false,
-                "error": "google_docs_browser_copy_unavailable",
-                "safeEditUnavailable": true,
-                "method": "browser_select_all_copy",
-                "url": currentURL,
-                "title": pageTitle,
-                "focus": focus,
-                "selectAll": select,
-                "copy": copy,
-                "close": close,
-                "copyChangeObserved": false,
-                "elapsedSeconds": Date().timeIntervalSince(started),
-                "hint": "ASTRA could not copy a fresh non-empty document backup through the browser. Stop instead of editing without a verified backup."
-            ]
-        }
-
-        return [
-            "ok": true,
-            "method": "browser_select_all_copy",
-            "text": text,
-            "textLength": text.count,
-            "url": currentURL,
-            "title": pageTitle,
-            "focus": focus,
-            "selectAll": select,
-            "copy": copy,
-            "close": close,
-            "copyChangeObserved": true,
-            "elapsedSeconds": Date().timeIntervalSince(started)
-        ]
-    }
-
-    private func googleDocsReplaceDocumentViaBrowser(text: String, verifyText: String?) async throws -> [String: Any] {
-        let started = Date()
-        let backup = try await googleDocsReadDocumentViaBrowser()
-        guard Self.boolValue(backup["ok"]),
-              let originalText = backup["text"] as? String,
-              !originalText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return [
-                "ok": false,
-                "error": "google_docs_safe_edit_unavailable",
-                "safeEditUnavailable": true,
-                "method": "browser_select_all_paste",
-                "url": currentURL,
-                "title": pageTitle,
-                "backup": backup,
-                "hint": "Full-document browser replacement requires a browser-copied backup first. ASTRA stopped instead of editing without rollback data."
-            ]
-        }
-
-        let pasteboardSnapshot = Self.capturePasteboardSnapshot()
-        defer { Self.restorePasteboardSnapshot(pasteboardSnapshot) }
-
-        let paste = try await googleDocsPasteFullDocumentText(text)
-        let saved = try await waitSaved(timeoutSeconds: 12, intervalMilliseconds: 500)
-        let verificationQuery = GoogleWorkspaceBrowserService.googleDocsVerificationQuery(explicit: verifyText, text: text)
-        let verification: [String: Any]
-        if let verificationQuery {
-            verification = try await googleDocsFind(query: verificationQuery, closeFindBar: true)
-        } else {
-            verification = ["ok": true, "skipped": true]
-        }
-
-        let pasteOK = Self.boolValue(paste["ok"])
-        let savedOK = Self.boolValue(saved["ok"])
-        let verified = Self.boolValue(verification["ok"])
-        if pasteOK, verified, savedOK {
-            return [
-                "ok": true,
-                "method": "browser_select_all_paste",
-                "textLength": text.count,
-                "verifyText": verificationQuery ?? "",
-                "url": currentURL,
-                "title": pageTitle,
-                "backupTextLength": originalText.count,
-                "backupMethod": backup["method"] as? String ?? "",
-                "paste": paste,
-                "saved": saved,
-                "verification": verification,
-                "elapsedSeconds": Date().timeIntervalSince(started)
-            ]
-        }
-
-        if !verified {
-            let rollback = try? await googleDocsPasteFullDocumentText(originalText)
-            let rollbackSaved = try? await waitSaved(timeoutSeconds: 12, intervalMilliseconds: 500)
-            return [
-                "ok": false,
-                "error": "google_docs_safe_edit_verification_failed",
-                "method": "browser_select_all_paste",
-                "textLength": text.count,
-                "verifyText": verificationQuery ?? "",
-                "url": currentURL,
-                "title": pageTitle,
-                "backupTextLength": originalText.count,
-                "paste": paste,
-                "saved": saved,
-                "verification": verification,
-                "rollback": rollback ?? [:],
-                "rollbackSaved": rollbackSaved ?? [:],
-                "elapsedSeconds": Date().timeIntervalSince(started),
-                "hint": "ASTRA pasted the replacement but could not verify it, so it attempted to restore the browser-copied backup. Stop for user review."
-            ]
-        }
-
-        return [
-            "ok": false,
-            "error": savedOK ? "google_docs_browser_paste_failed" : "saved_indicator_not_found",
-            "method": "browser_select_all_paste",
-            "textLength": text.count,
-            "verifyText": verificationQuery ?? "",
-            "url": currentURL,
-            "title": pageTitle,
-            "backupTextLength": originalText.count,
-            "paste": paste,
-            "saved": saved,
-            "verification": verification,
-            "elapsedSeconds": Date().timeIntervalSince(started),
-            "hint": "ASTRA did not report success because the paste or save check did not complete cleanly. It did not use raw select-all/delete."
-        ]
-    }
-
-    private func googleDocsPasteFullDocumentText(_ text: String) async throws -> [String: Any] {
-        let started = Date()
-        let closeJSON = try? await keypress(key: "Escape", modifiers: [])
-        let focusJSON = try await click(
-            selector: nil,
-            x: 0.47,
-            y: 0.45,
-            allowDangerous: false
-        )
-        try await Task.sleep(nanoseconds: 250_000_000)
-        let selectJSON = try await keypress(key: "a", modifiers: ["command"])
-        try await Task.sleep(nanoseconds: 250_000_000)
-
-        let inputJSON: String
-        let method: String
-        if isUsingControlledBrowser {
-            guard Self.writePasteboardString(text) else {
-                return [
-                    "ok": false,
-                    "error": "pasteboard_write_failed",
-                    "method": "browser_select_all_paste",
-                    "textLength": text.count
-                ]
-            }
-            inputJSON = try await keypress(key: "v", modifiers: ["command"], skipTextEntryPreflight: true)
-            method = "browser_select_all_paste"
-            try await Task.sleep(nanoseconds: 500_000_000)
-        } else {
-            inputJSON = try await insertText(text)
-            method = "browser_select_all_insert_text"
-        }
-
-        let focus = try Self.jsonObject(from: focusJSON)
-        let select = try Self.jsonObject(from: selectJSON)
-        let input = try Self.jsonObject(from: inputJSON)
-        let close = closeJSON.flatMap { try? Self.jsonObject(from: $0) } ?? [:]
-        return [
-            "ok": Self.boolValue(focus["ok"]) && Self.boolValue(select["ok"]) && Self.boolValue(input["ok"]),
-            "method": method,
-            "textLength": text.count,
-            "close": close,
-            "focus": focus,
-            "selectAll": select,
-            "input": input,
-            "elapsedSeconds": Date().timeIntervalSince(started)
-        ]
-    }
-
-    private func waitForPasteboardString(
-        afterChangeCount: Int,
-        timeoutSeconds: Double,
-        requireChange: Bool = false
-    ) async -> String? {
-        let started = Date()
-        let timeout = max(0.1, min(timeoutSeconds, 10))
-        var latest: String?
-        while Date().timeIntervalSince(started) <= timeout {
-            let pasteboard = NSPasteboard.general
-            if let value = pasteboard.string(forType: .string),
-               !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                if pasteboard.changeCount != afterChangeCount {
-                    return value
-                }
-                if !requireChange {
-                    latest = value
-                }
-            }
-            try? await Task.sleep(nanoseconds: 100_000_000)
-        }
-        return latest
-    }
-
-    private struct PasteboardSnapshot {
-        let items: [[NSPasteboard.PasteboardType: Data]]
-    }
-
-    private static func capturePasteboardSnapshot() -> PasteboardSnapshot {
-        let pasteboard = NSPasteboard.general
-        let items = pasteboard.pasteboardItems?.map { item -> [NSPasteboard.PasteboardType: Data] in
-            var values: [NSPasteboard.PasteboardType: Data] = [:]
-            for type in item.types {
-                if let data = item.data(forType: type) {
-                    values[type] = data
-                }
-            }
-            return values
-        } ?? []
-        return PasteboardSnapshot(items: items)
-    }
-
-    private static func restorePasteboardSnapshot(_ snapshot: PasteboardSnapshot) {
-        let pasteboard = NSPasteboard.general
-        pasteboard.clearContents()
-        let items = snapshot.items.compactMap { values -> NSPasteboardItem? in
-            guard !values.isEmpty else { return nil }
-            let item = NSPasteboardItem()
-            for (type, data) in values {
-                item.setData(data, forType: type)
-            }
-            return item
-        }
-        if !items.isEmpty {
-            pasteboard.writeObjects(items)
-        }
-    }
-
-    private static func writePasteboardString(_ text: String) -> Bool {
-        let pasteboard = NSPasteboard.general
-        pasteboard.clearContents()
-        return pasteboard.setString(text, forType: .string)
-    }
     private func act(_ command: ActCommand) async throws -> [String: Any] {
         var results: [[String: Any]] = []
         func appendActResult(_ result: [String: Any]) -> String? {
@@ -5341,18 +4287,6 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         return score
     }
 
-    private static func googleFindCountText(in text: String) -> String? {
-        guard let range = text.range(
-            of: #"(?i)\b\d+\s+of\s+\d+\b"#,
-            options: .regularExpression
-        ) else {
-            return nil
-        }
-        return String(text[range])
-            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
-            .lowercased()
-    }
-
     static func jsonObject(from json: String) throws -> [String: Any] {
         guard let data = json.data(using: .utf8),
               let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
@@ -5361,7 +4295,7 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         return object
     }
 
-    private static func jsonString(_ object: [String: Any]) throws -> String {
+    static func jsonString(_ object: [String: Any]) throws -> String {
         let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
         return String(data: data, encoding: .utf8) ?? #"{"ok":false,"error":"encoding_failed"}"#
     }
@@ -5424,20 +4358,20 @@ final class ShelfBrowserSession: NSObject, ObservableObject, WKNavigationDelegat
         ].joined(separator: "\u{1f}")
     }
 
-    private static func boolValue(_ value: Any?) -> Bool {
+    static func boolValue(_ value: Any?) -> Bool {
         if let bool = value as? Bool { return bool }
         if let number = value as? NSNumber { return number.boolValue }
         return false
     }
 
-    private static func intValue(_ value: Any?) -> Int? {
+    static func intValue(_ value: Any?) -> Int? {
         if let int = value as? Int { return int }
         if let number = value as? NSNumber { return number.intValue }
         if let string = value as? String { return Int(string) }
         return nil
     }
 
-    private static func doubleValue(_ value: Any?) -> Double? {
+    static func doubleValue(_ value: Any?) -> Double? {
         if let double = value as? Double { return double }
         if let int = value as? Int { return Double(int) }
         if let number = value as? NSNumber { return number.doubleValue }
