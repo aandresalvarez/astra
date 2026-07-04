@@ -100,6 +100,196 @@ struct TaskLaunchResourcePlanTests {
         #expect(!plan.credentialGrants.contains { $0.source == .gitCredential })
     }
 
+    @Test("Launch resource contract distinguishes file Git credentials from env secrets")
+    func launchResourceContractDistinguishesFileGitCredentialFromEnvironmentSecret() throws {
+        let plan = makeContractFixturePlan(
+            credentialGrants: [
+                RuntimeCredentialGrant(
+                    label: "git:credential-context:read-only",
+                    source: .gitCredential,
+                    reason: "Git HTTPS credential helper context is projected for this run.",
+                    projectedAsEnvironment: false,
+                    projectedAsFile: true
+                )
+            ]
+        )
+
+        let contract = LaunchResourceContract(plan: plan)
+
+        let gitCredential = try #require(contract.resources.first {
+            $0.credentialLabel == "git:credential-context:read-only" &&
+                $0.deliveryChannel == .file
+        })
+        #expect(gitCredential.source == .gitCredential)
+        #expect(gitCredential.consumer == .providerProcess)
+        #expect(gitCredential.sensitivity == .credential)
+        #expect(gitCredential.enforcementBoundary == .launchResourceProjection)
+        #expect(gitCredential.visibility == .providerReadableFile)
+        #expect(gitCredential.redactionAssumption == .fileContentsNotProviderRedacted)
+        #expect(contract.providerEnvironmentSecretResources.isEmpty)
+        #expect(contract.providerFileCredentialResources == [gitCredential])
+    }
+
+    @Test("Launch resource contract represents env secret credential delivery")
+    func launchResourceContractRepresentsEnvironmentSecretCredentialDelivery() throws {
+        let plan = makeContractFixturePlan(
+            environmentGrants: [
+                RuntimeEnvironmentGrant(
+                    key: "JIRA_API_TOKEN",
+                    source: .connector,
+                    reason: "Connector credential key is projected when the provider launches.",
+                    sensitivity: .credential,
+                    valueProjected: true
+                )
+            ],
+            credentialGrants: [
+                RuntimeCredentialGrant(
+                    label: "Jira:JIRA_API_TOKEN",
+                    source: .connector,
+                    reason: "Connector declares credential key JIRA_API_TOKEN.",
+                    projectedAsEnvironment: true,
+                    projectedAsFile: false
+                )
+            ]
+        )
+
+        let contract = LaunchResourceContract(plan: plan)
+
+        let environmentSecret = try #require(contract.providerEnvironmentSecretResources.first {
+            $0.environmentKey == "JIRA_API_TOKEN"
+        })
+        #expect(environmentSecret.source == .connector)
+        #expect(environmentSecret.deliveryChannel == .environment)
+        #expect(environmentSecret.consumer == .providerProcess)
+        #expect(environmentSecret.sensitivity == .credential)
+        #expect(environmentSecret.visibility == .providerEnvironmentValue)
+        #expect(environmentSecret.redactionAssumption == .providerSecretEnvironmentRedaction)
+        #expect(contract.providerFileCredentialResources.isEmpty)
+    }
+
+    @Test("Launch resource contract treats connector file credentials as provider-readable")
+    func launchResourceContractTreatsConnectorFileCredentialsAsProviderReadable() throws {
+        let credentialPath = "/tmp/astra-launch-resource-contract/.config/gcloud"
+        let plan = makeContractFixturePlan(
+            hostPathGrants: [
+                RuntimePathGrant(
+                    path: credentialPath,
+                    access: .readWrite,
+                    source: .connector,
+                    reason: "Google Cloud connector uses local gcloud authentication state.",
+                    sensitivity: .cloudAuth,
+                    lifetime: .run,
+                    exists: true
+                )
+            ]
+        )
+
+        let contract = LaunchResourceContract(plan: plan)
+
+        let fileCredential = try #require(contract.providerFileCredentialResources.first {
+            $0.path == credentialPath
+        })
+        #expect(fileCredential.source == .connector)
+        #expect(fileCredential.consumer == .providerProcess)
+        #expect(fileCredential.sensitivity == .cloudAuth)
+        #expect(fileCredential.visibility == .providerReadableFile)
+        #expect(fileCredential.redactionAssumption == .fileContentsNotProviderRedacted)
+    }
+
+    @Test("Launch resource contract represents host control-plane-only resources")
+    func launchResourceContractRepresentsHostControlPlaneOnlyResources() throws {
+        let plan = makeContractFixturePlan(
+            providerRequirements: [
+                RuntimeProviderRequirement(
+                    capability: "host_control_plane_capabilities",
+                    source: .controlPlane,
+                    reason: "Provider stays host-managed while shell commands run elsewhere.",
+                    required: true
+                )
+            ],
+            controlPlaneResources: [
+                RuntimeControlPlaneResource(
+                    capability: "github",
+                    source: .controlPlane,
+                    placement: "host_capability",
+                    readiness: .configured,
+                    reason: "GitHub metadata should flow through ASTRA's host capability layer.",
+                    failureText: nil,
+                    repairAction: "Enable or repair the GitHub capability."
+                )
+            ]
+        )
+
+        let contract = LaunchResourceContract(plan: plan)
+
+        let resource = try #require(contract.resources.first {
+            $0.capability == "github" &&
+                $0.deliveryChannel == .hostControlPlane
+        })
+        #expect(resource.consumer == .hostControlPlane)
+        #expect(resource.enforcementBoundary == .hostControlPlane)
+        #expect(resource.visibility == .hostControlPlaneOnly)
+        #expect(resource.redactionAssumption == .astraManagedBoundary)
+        #expect(contract.providerVisibleSensitiveResources.isEmpty)
+    }
+
+    @Test("Launch resource contract preserves container mount access in identity")
+    func launchResourceContractPreservesContainerMountAccessInIdentity() {
+        let hostPath = "/tmp/astra-launch-resource-contract/workspace"
+        let containerPath = "/workspace"
+        let plan = makeContractFixturePlan(
+            containerMounts: [
+                RuntimeContainerMountGrant(
+                    hostPath: hostPath,
+                    containerPath: containerPath,
+                    access: ExecutionEnvironmentMountAccess.readOnly.rawValue,
+                    role: ExecutionEnvironmentMountRole.workspace.rawValue
+                ),
+                RuntimeContainerMountGrant(
+                    hostPath: hostPath,
+                    containerPath: containerPath,
+                    access: ExecutionEnvironmentMountAccess.readWrite.rawValue,
+                    role: ExecutionEnvironmentMountRole.workspace.rawValue
+                )
+            ]
+        )
+
+        let contract = LaunchResourceContract(plan: plan)
+
+        let mounts = contract.resources.filter {
+            $0.deliveryChannel == .containerMount &&
+                $0.path == hostPath &&
+                $0.placement == containerPath
+        }
+        #expect(mounts.count == 2)
+        #expect(Set(mounts.compactMap(\.access)) == Set([TaskLaunchResourceAccess.read, .readWrite]))
+    }
+
+    @Test("Launch resource contract derivation leaves the resource plan intact")
+    func launchResourceContractDerivationLeavesResourcePlanIntact() {
+        let plan = makeContractFixturePlan(
+            credentialGrants: [
+                RuntimeCredentialGrant(
+                    label: "git:credential-context:read-only",
+                    source: .gitCredential,
+                    reason: "Git HTTPS credential helper context is projected for this run.",
+                    projectedAsEnvironment: false,
+                    projectedAsFile: true
+                )
+            ]
+        )
+        let originalPlan = plan
+        let originalFields = plan.commandPlannedFields
+
+        _ = LaunchResourceContract(plan: plan)
+
+        #expect(plan == originalPlan)
+        #expect(plan.commandPlannedFields == originalFields)
+        #expect(plan.commandPlannedFields["launch_resource_credential_label_count"] == "1")
+        #expect(plan.credentialGrants.first?.projectedAsFile == true)
+        #expect(plan.credentialGrants.first?.projectedAsEnvironment == false)
+    }
+
     @Test("Resource resolver projects remote workspace SSH resources")
     func resolverProjectsRemoteWorkspaceSSHResources() throws {
         let fm = FileManager.default
@@ -538,5 +728,34 @@ struct TaskLaunchResourcePlanTests {
             .appendingPathComponent("\(name)-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         return url
+    }
+
+    private func makeContractFixturePlan(
+        hostPathGrants: [RuntimePathGrant] = [],
+        containerMounts: [RuntimeContainerMountGrant] = [],
+        environmentGrants: [RuntimeEnvironmentGrant] = [],
+        credentialGrants: [RuntimeCredentialGrant] = [],
+        providerRequirements: [RuntimeProviderRequirement] = [],
+        controlPlaneResources: [RuntimeControlPlaneResource] = []
+    ) -> TaskLaunchResourcePlan {
+        TaskLaunchResourcePlan(
+            taskID: UUID(),
+            runID: UUID(),
+            runtime: AgentRuntimeID.cursorCLI.rawValue,
+            phase: "resume",
+            workspacePath: "/tmp/astra-launch-resource-contract",
+            executionEnvironmentID: ExecutionEnvironmentKind.host.rawValue,
+            executionEnvironmentKind: ExecutionEnvironmentKind.host.rawValue,
+            providerPlacement: ExecutionEnvironmentProviderPlacement.host.rawValue,
+            workspaceCommandPlacement: "host",
+            controlPlaneToolPlacement: "host",
+            shellRoute: "native_host",
+            hostPathGrants: hostPathGrants,
+            containerMounts: containerMounts,
+            environmentGrants: environmentGrants,
+            credentialGrants: credentialGrants,
+            providerRequirements: providerRequirements,
+            controlPlaneResources: controlPlaneResources
+        )
     }
 }
