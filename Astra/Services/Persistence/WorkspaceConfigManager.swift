@@ -980,11 +980,18 @@ enum WorkspaceConfigManager {
             }
         }
         replaceWorkspaceAppMirrorRows(for: workspace.id, modelContext: modelContext)
-        importWorkspaceApps(config.workspaceApps ?? [], modelContext: modelContext)
-        importWorkspaceAppRuns(config.workspaceAppRuns ?? [], modelContext: modelContext)
-        importWorkspaceAppRunEvents(config.workspaceAppRunEvents ?? [], modelContext: modelContext)
-        importWorkspaceAppDependencyBindings(config.workspaceAppDependencyBindings ?? [], modelContext: modelContext)
-        importWorkspaceAppAutomationStates(config.workspaceAppAutomationStates ?? [], modelContext: modelContext)
+        // Re-tag every imported row to the workspace actually being created
+        // here, not whatever workspaceID its exported config snapshot froze
+        // in — those only match when config.id was reused verbatim (a true
+        // replace/recovery re-import); a duplicate import intentionally gets
+        // a fresh workspace.id (see TaskLifecycleCoordinator.importFromConfig),
+        // and without this the freshly-imported rows would silently end up
+        // scoped to the ORIGINAL workspace instead of the new one.
+        importWorkspaceApps(config.workspaceApps ?? [], workspaceID: workspace.id, modelContext: modelContext)
+        importWorkspaceAppRuns(config.workspaceAppRuns ?? [], workspaceID: workspace.id, modelContext: modelContext)
+        importWorkspaceAppRunEvents(config.workspaceAppRunEvents ?? [], workspaceID: workspace.id, modelContext: modelContext)
+        importWorkspaceAppDependencyBindings(config.workspaceAppDependencyBindings ?? [], workspaceID: workspace.id, modelContext: modelContext)
+        importWorkspaceAppAutomationStates(config.workspaceAppAutomationStates ?? [], workspaceID: workspace.id, modelContext: modelContext)
         importGoogleOAuthProfiles(config.googleOAuthAccountProfiles ?? [], modelContext: modelContext)
 
         let result = WorkspaceConfigImportResult(
@@ -2149,11 +2156,11 @@ enum WorkspaceConfigManager {
         }
     }
 
-    private static func importWorkspaceApps(_ configs: [WorkspaceAppConfig], modelContext: ModelContext) {
+    private static func importWorkspaceApps(_ configs: [WorkspaceAppConfig], workspaceID: UUID, modelContext: ModelContext) {
         for config in configs {
             let app = WorkspaceApp(
                 id: config.id.flatMap(UUID.init(uuidString:)) ?? UUID(),
-                workspaceID: UUID(uuidString: config.workspaceID) ?? UUID(),
+                workspaceID: workspaceID,
                 logicalID: config.logicalID,
                 name: config.name,
                 icon: config.icon,
@@ -2180,11 +2187,11 @@ enum WorkspaceConfigManager {
         }
     }
 
-    private static func importWorkspaceAppRuns(_ configs: [WorkspaceAppRunConfig], modelContext: ModelContext) {
+    private static func importWorkspaceAppRuns(_ configs: [WorkspaceAppRunConfig], workspaceID: UUID, modelContext: ModelContext) {
         for config in configs {
             let run = WorkspaceAppRun(
                 id: config.id.flatMap(UUID.init(uuidString:)) ?? UUID(),
-                workspaceID: UUID(uuidString: config.workspaceID) ?? UUID(),
+                workspaceID: workspaceID,
                 appID: UUID(uuidString: config.appID) ?? UUID(),
                 appLogicalID: config.appLogicalID,
                 actionID: config.actionID,
@@ -2209,13 +2216,14 @@ enum WorkspaceConfigManager {
 
     private static func importWorkspaceAppRunEvents(
         _ configs: [WorkspaceAppRunEventConfig],
+        workspaceID: UUID,
         modelContext: ModelContext
     ) {
         for config in configs {
             let event = WorkspaceAppRunEvent(
                 id: config.id.flatMap(UUID.init(uuidString:)) ?? UUID(),
                 runID: UUID(uuidString: config.runID) ?? UUID(),
-                workspaceID: UUID(uuidString: config.workspaceID) ?? UUID(),
+                workspaceID: workspaceID,
                 appID: UUID(uuidString: config.appID) ?? UUID(),
                 actionID: config.actionID,
                 type: config.type,
@@ -2228,12 +2236,13 @@ enum WorkspaceConfigManager {
 
     private static func importWorkspaceAppDependencyBindings(
         _ configs: [WorkspaceAppDependencyBindingConfig],
+        workspaceID: UUID,
         modelContext: ModelContext
     ) {
         for config in configs {
             let binding = WorkspaceAppDependencyBinding(
                 id: config.id.flatMap(UUID.init(uuidString:)) ?? UUID(),
-                workspaceID: UUID(uuidString: config.workspaceID) ?? UUID(),
+                workspaceID: workspaceID,
                 appID: UUID(uuidString: config.appID) ?? UUID(),
                 appLogicalID: config.appLogicalID,
                 requirementID: config.requirementID,
@@ -2256,12 +2265,13 @@ enum WorkspaceConfigManager {
 
     private static func importWorkspaceAppAutomationStates(
         _ configs: [WorkspaceAppAutomationStateConfig],
+        workspaceID: UUID,
         modelContext: ModelContext
     ) {
         for config in configs {
             let state = WorkspaceAppAutomationState(
                 id: config.id.flatMap(UUID.init(uuidString:)) ?? UUID(),
-                workspaceID: UUID(uuidString: config.workspaceID) ?? UUID(),
+                workspaceID: workspaceID,
                 appID: UUID(uuidString: config.appID) ?? UUID(),
                 appLogicalID: config.appLogicalID,
                 automationID: config.automationID,

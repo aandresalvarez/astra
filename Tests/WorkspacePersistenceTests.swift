@@ -453,6 +453,69 @@ struct WorkspacePersistenceTests {
         #expect(try importedContext.fetch(FetchDescriptor<GoogleOAuthAccountProfile>()).isEmpty)
     }
 
+    @Test("Duplicate workspace import does not delete the original workspace's app mirror rows")
+    @MainActor
+    func duplicateWorkspaceImportPreservesOriginalAppMirrorRows() throws {
+        let root = "/tmp/astra_duplicate_import_\(UUID().uuidString)"
+        let configDirectory = URL(fileURLWithPath: root).appendingPathComponent(".astra", isDirectory: true)
+        try FileManager.default.createDirectory(at: configDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: root) }
+
+        let container = try makeWorkspacePersistenceContainer()
+        let context = container.mainContext
+        let existing = Workspace(name: "Original", primaryPath: root)
+        context.insert(existing)
+
+        let app = WorkspaceApp(
+            workspaceID: existing.id,
+            logicalID: "review-dashboard",
+            name: "Review Dashboard",
+            icon: "chart.bar",
+            appDescription: "Tracks review status",
+            lifecycleStatus: .published,
+            permissionMode: .approvalRequired,
+            dependencyStatus: .ready,
+            manifestRelativePath: ".astra/apps/review-dashboard/manifest.json",
+            appDirectoryRelativePath: ".astra/apps/review-dashboard",
+            manifestDigest: "digest-current",
+            publishedManifestDigest: "digest-published",
+            lastKnownGoodManifestDigest: "digest-good",
+            latestVersionNumber: 7,
+            sourcePackageID: "review.pack",
+            sourcePackageVersion: "2.0.0",
+            sourcePackageDigest: "pack-digest"
+        )
+        context.insert(app)
+        try context.save()
+
+        let config = try #require(WorkspaceConfigManager.export(workspace: existing, modelContext: context))
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        let configURL = configDirectory.appendingPathComponent(WorkspaceFileLayout.workspaceConfigFileName)
+        try encoder.encode(config).write(to: configURL)
+
+        let queue = TaskQueue(poolSize: 0)
+        let coordinator = TaskLifecycleCoordinator(modelContext: context, taskQueue: queue)
+        let duplicate = try #require(coordinator.importFromConfig(
+            at: configURL,
+            existingWorkspaces: [existing],
+            askDuplicateAction: { _, _ in .duplicate }
+        ))
+
+        // A duplicate is a new, independent workspace — it must not collide
+        // with (and thereby wipe) the original's id-scoped Workspace App rows.
+        #expect(duplicate.id != existing.id)
+        #expect(duplicate.name == "Original (Imported)")
+
+        let existingWorkspaceID = existing.id
+        let originalAppRows = try context.fetch(FetchDescriptor<WorkspaceApp>(
+            predicate: #Predicate { $0.workspaceID == existingWorkspaceID }
+        ))
+        #expect(originalAppRows.count == 1)
+        #expect(originalAppRows.first?.logicalID == "review-dashboard")
+    }
+
     @Test("legacy task configs without done state import as not done")
     @MainActor
     func legacyTaskConfigsWithoutDoneStateDefaultToOpen() throws {

@@ -576,6 +576,13 @@ final class TaskLifecycleCoordinator {
                 case .duplicate:
                     var dupConfig = config
                     dupConfig.name = config.name + " (Imported)"
+                    // A duplicate is a new, independent workspace, not the
+                    // existing one — clear the carried-over id (importWorkspace
+                    // reuses config.id for the new Workspace's id when present)
+                    // so it doesn't collide with `existing`'s id. Reusing it
+                    // made replaceWorkspaceAppMirrorRows(for: workspace.id...)
+                    // delete and re-tag `existing`'s own Workspace App rows.
+                    dupConfig.id = nil
                     if (dupConfig.tasks ?? []).isEmpty && !existing.tasks.isEmpty {
                         if let freshExport = WorkspaceConfigManager.export(workspace: existing, modelContext: modelContext) {
                             dupConfig.tasks = freshExport.tasks
