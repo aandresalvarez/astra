@@ -343,6 +343,33 @@ struct AgentEventRecorderTests {
         #expect(run.output == "**Findings**\n1. High: resume flows can leave tasks stuck running.")
     }
 
+    @Test("Failed Claude result still preserves token/cost accounting and output text")
+    func failedClaudeResultPreservesAccountingAndOutput() throws {
+        let container = try makeAgentEventRecorderContainer()
+        let context = container.mainContext
+        let task = AgentTask(title: "Errored run", goal: "Should still record its final accounting")
+        let run = TaskRun(task: task)
+        context.insert(task)
+        context.insert(run)
+
+        let parsed = ParsedEvent.result(
+            text: "Ran out of context before finishing.",
+            costUSD: 0.42,
+            totalInputTokens: 100,
+            totalOutputTokens: 50,
+            durationMs: 1234,
+            numTurns: 3,
+            isError: true
+        )
+        for agentEvent in AgentEventRecorder.agentEvents(from: parsed) {
+            AgentEventRecorder.recordClaudeEvent(agentEvent, to: task, run: run, modelContext: context)
+        }
+
+        #expect(run.tokensUsed == 150)
+        #expect(run.costUSD == 0.42)
+        #expect(run.output == "Ran out of context before finishing.")
+    }
+
     @Test("Claude Edit tool use preserves old/new string diff through the shared recorder")
     func claudeEditToolUsePreservesDiff() throws {
         let container = try makeAgentEventRecorderContainer()
@@ -379,6 +406,33 @@ struct AgentEventRecorderTests {
         #expect(run.fileChanges.count == 1)
         #expect(run.fileChanges.first?.oldString == "let x = 1")
         #expect(run.fileChanges.first?.newString == "let x = 2")
+    }
+
+    @Test("Claude preserves every edit to the same file within one run, not just the first")
+    func claudePreservesRepeatedEditsToSamePath() throws {
+        let container = try makeAgentEventRecorderContainer()
+        let context = container.mainContext
+        let task = AgentTask(title: "Multi-edit", goal: "Edit the same file twice")
+        let run = TaskRun(task: task)
+        context.insert(task)
+        context.insert(run)
+
+        func recordEdit(id: String, old: String, new: String) {
+            let parsed = ParsedEvent.toolUse(
+                name: "Edit",
+                id: id,
+                input: ["file_path": "/tmp/example.swift", "old_string": old, "new_string": new]
+            )
+            for agentEvent in AgentEventRecorder.agentEvents(from: parsed) {
+                AgentEventRecorder.recordClaudeEvent(agentEvent, to: task, run: run, modelContext: context)
+            }
+        }
+
+        recordEdit(id: "tool-1", old: "let x = 1", new: "let x = 2")
+        recordEdit(id: "tool-2", old: "let x = 2", new: "let x = 3")
+
+        #expect(run.fileChanges.count == 2)
+        #expect(run.fileChanges.map(\.newString) == ["let x = 2", "let x = 3"])
     }
 
     @Test("Claude in-process teammate events still record through the shared recorder")

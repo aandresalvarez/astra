@@ -542,17 +542,18 @@ enum AgentEventRecorder {
         case .usage(let totalInput, let totalOutput):
             return [.stats(inputTokens: totalInput, outputTokens: totalOutput, costUSD: nil, durationMs: nil, turns: nil)]
         case .result(let text, let costUSD, let totalInput, let totalOutput, let durationMs, let numTurns, let isError):
-            if isError {
-                return [.failed(message: text ?? "Claude Code run failed.")]
-            }
             var events: [AgentEvent] = []
             if let text, !text.isEmpty {
                 events.append(.completed(summary: text))
             }
+            if isError {
+                events.append(.failed(message: text ?? "Claude Code run failed."))
+            }
             // A `.result` event always carries the authoritative final totals
-            // (even when zero), so it must reach `recordProviderAgentEvent` as
-            // `.stats` unconditionally rather than only when a value is
-            // present, unlike other providers' best-effort stats extraction.
+            // (even when zero) regardless of isError, so it must reach
+            // `recordProviderAgentEvent` as `.stats` unconditionally rather
+            // than only on the success path, unlike other providers'
+            // best-effort stats extraction — a failed run still spent tokens.
             events.append(.stats(inputTokens: totalInput, outputTokens: totalOutput, costUSD: costUSD, durationMs: durationMs, turns: numTurns))
             return events
         case .permissionDenied(let tool, let reason):
@@ -720,11 +721,15 @@ enum AgentEventRecorder {
         modelContext: ModelContext
     ) {
         guard !path.isEmpty else { return }
-        guard !run.fileChanges.contains(where: { $0.path == path }) else { return }
         let changeType: FileChange.FileChangeType = kind.lowercased().contains("write") ? .write : .edit
         // A precise before/after diff (Claude's `Edit` tool) takes precedence
         // over the plain-text summary other providers fall back to.
         let hasDiff = oldString != nil || newString != nil
+        // Providers without a diff can resend the same notification for one
+        // edit, so those dedupe by path. A diff uniquely identifies a
+        // distinct edit, so every one of Claude's own diffs is preserved even
+        // when it repeats a path already recorded this run.
+        guard hasDiff || !run.fileChanges.contains(where: { $0.path == path }) else { return }
         let change = FileChange(
             path: path,
             changeType: changeType,
