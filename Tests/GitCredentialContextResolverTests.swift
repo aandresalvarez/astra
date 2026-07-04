@@ -383,6 +383,16 @@ struct GitCredentialContextResolverTests {
             prefersHostControlGitHub: true
         ))
         #expect(GitOperationIntentDetector.detectsNativeGitCredentialOperation(
+            prompt: "gh auth status",
+            task: AgentTask(title: "Check auth", goal: "Check GitHub CLI authentication state"),
+            prefersHostControlGitHub: true
+        ))
+        #expect(!GitOperationIntentDetector.routesGitHubMetadataThroughHostControl(
+            prompt: "gh auth status",
+            task: AgentTask(title: "Check auth", goal: "Check GitHub CLI authentication state"),
+            hostControlGitHubAvailable: true
+        ))
+        #expect(GitOperationIntentDetector.detectsNativeGitCredentialOperation(
             prompt: "git pull origin main",
             task: AgentTask(title: "Native Git", goal: "Sync branch"),
             prefersHostControlGitHub: true

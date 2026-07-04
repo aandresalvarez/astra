@@ -103,6 +103,46 @@ struct AgentPolicyGitHubRoutingTests {
     }
 
     @MainActor
+    @Test("Native gh auth still declares credential projection with GitHub capability enabled")
+    func nativeGhAuthStillDeclaresCredentialProjectionWithGitHubCapabilityEnabled() throws {
+        let container = try makeAgentPolicyGitHubRoutingContainer()
+        let context = container.mainContext
+        let package = try #require(PluginCatalog.builtInPackages.first {
+            $0.id == HostControlPlaneMCPProjection.githubPackageID
+        })
+        let workspace = Workspace(name: "Native gh Auth Policy", primaryPath: "/tmp/astra-native-gh-auth-policy")
+        workspace.enabledCapabilityIDs = [package.id]
+        let task = AgentTask(
+            title: "Check auth",
+            goal: "Check GitHub CLI authentication state",
+            workspace: workspace,
+            runtime: .claudeCode
+        )
+        let run = TaskRun(task: task)
+        context.insert(workspace)
+        context.insert(task)
+        context.insert(run)
+
+        let manifest = AgentPolicyManifestService.recordPreflightManifest(
+            task: task,
+            run: run,
+            runtime: .claudeCode,
+            model: "claude-sonnet-4-6",
+            workspacePath: workspace.primaryPath,
+            phase: "resume",
+            permissionPolicy: .restricted,
+            executionPolicy: .default,
+            defaultPolicyLevelRaw: AgentPolicyLevel.review.rawValue,
+            capabilityPackages: [package],
+            contextText: "gh auth status",
+            modelContext: context
+        )
+
+        #expect(manifest.credentialLabels.contains("git:credential-context:read-only"))
+        #expect(manifest.providerRender.diagnostics.contains { $0.id == "git.credential-projection" })
+    }
+
+    @MainActor
     @Test("Cursor preflight names host-control incompatibility for GitHub metadata")
     func cursorPreflightNamesHostControlIncompatibilityForGitHubMetadata() throws {
         let container = try makeAgentPolicyGitHubRoutingContainer()
