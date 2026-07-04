@@ -40,7 +40,11 @@ struct GitLocalEnvironmentScrubbingTests {
         process.environment = environment
         process.standardOutput = Pipe()
         process.standardError = Pipe()
-        try? process.run()
+        do {
+            try process.run()
+        } catch {
+            return -1
+        }
         process.waitUntilExit()
         return Int(process.terminationStatus)
     }
