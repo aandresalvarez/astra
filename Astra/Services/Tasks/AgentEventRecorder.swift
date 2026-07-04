@@ -527,16 +527,24 @@ enum AgentEventRecorder {
         case .text(let text):
             return [.text(text: text)]
         case .toolUse(let name, let id, let input):
+            let inputSummary = AgentEventRecordingPresentation.toolInputSummary(name: name, input: input)
             if let fileChange = StreamEventParser.extractFileChange(from: parsed) {
-                return [.fileChange(
-                    path: fileChange.path,
-                    kind: fileChange.changeType.rawValue,
-                    summary: fileChange.content,
-                    oldString: fileChange.oldString,
-                    newString: fileChange.newString
-                )]
+                // The pre-convergence Claude recorder always logged the tool
+                // invocation itself before recording the file change; the
+                // shared file-change path only appends the artifact, so both
+                // events are needed to keep the transcript/audit trail intact.
+                return [
+                    .toolUse(name: name, id: id, inputSummary: inputSummary),
+                    .fileChange(
+                        path: fileChange.path,
+                        kind: fileChange.changeType.rawValue,
+                        summary: fileChange.content,
+                        oldString: fileChange.oldString,
+                        newString: fileChange.newString
+                    )
+                ]
             }
-            return [.toolUse(name: name, id: id, inputSummary: AgentEventRecordingPresentation.toolInputSummary(name: name, input: input))]
+            return [.toolUse(name: name, id: id, inputSummary: inputSummary)]
         case .toolResult(let toolId, let content):
             return [.toolResult(id: toolId, content: content)]
         case .usage(let totalInput, let totalOutput):

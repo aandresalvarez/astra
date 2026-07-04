@@ -389,8 +389,17 @@ struct AgentEventRecorderTests {
             ]
         )
         let agentEvents = AgentEventRecorder.agentEvents(from: parsed)
-        #expect(agentEvents.count == 1)
-        guard case .fileChange(let path, let kind, _, let oldString, let newString) = agentEvents.first else {
+        // A Write/Edit tool use must still surface as a generic tool-use
+        // event (for the transcript/audit trail) in addition to the precise
+        // .fileChange it maps to.
+        #expect(agentEvents.count == 2)
+        guard case .toolUse(let toolName, let toolID, _) = agentEvents.first else {
+            Issue.record("Expected Edit tool use to also emit .toolUse")
+            return
+        }
+        #expect(toolName == "Edit")
+        #expect(toolID == "tool-1")
+        guard case .fileChange(let path, let kind, _, let oldString, let newString) = agentEvents.last else {
             Issue.record("Expected Edit tool use to map to .fileChange")
             return
         }
