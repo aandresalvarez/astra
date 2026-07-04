@@ -706,6 +706,7 @@ final class AgentRuntimeWorker {
             providerCapabilities: providerCapabilities,
             contextText: providerLaunchContextText,
             capabilityResolutionSnapshot: capabilityResolutionSnapshot,
+            launchResourcePlan: launchResourcePlan,
             modelContext: modelContext
         )
         guard shouldStartProvider(with: manifest, task: task, run: run, modelContext: modelContext, phase: auditPhase) else {
