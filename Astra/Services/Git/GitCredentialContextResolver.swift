@@ -29,13 +29,58 @@ enum GitOperationIntentDetector {
     }
 
     static func detectsNetworkGitOperation(prompt: String, task: AgentTask, contextText: String = "") -> Bool {
-        let haystack = networkGitIntentText(prompt: prompt, task: task, contextText: contextText)
+        detectsNativeGitCredentialOperation(
+            prompt: prompt,
+            task: task,
+            contextText: contextText,
+            prefersHostControlGitHub: false
+        )
+    }
 
+    static func detectsNativeGitCredentialOperation(
+        prompt: String,
+        task: AgentTask,
+        contextText: String = "",
+        prefersHostControlGitHub: Bool
+    ) -> Bool {
+        let haystack = networkGitIntentText(prompt: prompt, task: task, contextText: contextText)
+        if detectsNativeGitTransportOperation(in: haystack) {
+            return true
+        }
+        if detectsExplicitGitHubCLIAPICommand(in: haystack) {
+            return !prefersHostControlGitHub || detectsNativeGitHubShellPreference(in: haystack)
+        }
+        return false
+    }
+
+    static func routesGitHubMetadataThroughHostControl(
+        prompt: String,
+        task: AgentTask,
+        contextText: String = "",
+        hostControlGitHubAvailable: Bool
+    ) -> Bool {
+        guard hostControlGitHubAvailable else { return false }
+        let haystack = networkGitIntentText(prompt: prompt, task: task, contextText: contextText)
+        guard !detectsNativeGitTransportOperation(in: haystack),
+              !detectsNativeGitHubShellPreference(in: haystack) else {
+            return false
+        }
+        return detectsGitHubMetadataOrAPIIntent(in: haystack)
+            || detectsExplicitGitHubCLIAPICommand(in: haystack)
+    }
+
+    static func detectsGitHubMetadataOrAPIIntent(prompt: String, task: AgentTask, contextText: String = "") -> Bool {
+        detectsGitHubMetadataOrAPIIntent(
+            in: networkGitIntentText(prompt: prompt, task: task, contextText: contextText)
+        )
+    }
+
+    private static func detectsNativeGitTransportOperation(in haystack: String) -> Bool {
         let exactCommands = [
             "git pull", "git fetch", "git push", "git clone", "git ls-remote",
-            "git remote update", "git submodule update", "gh pr", "gh repo", "gh auth"
+            "git remote update", "git submodule update", "gh repo clone", "gh pr checkout"
         ]
-        if exactCommands.contains(where: { haystack.contains($0) }) {
+        if exactCommands.contains(where: { containsTokenPhrase($0, in: haystack) }) {
             return true
         }
 
@@ -61,9 +106,7 @@ enum GitOperationIntentDetector {
             "clone from git hub",
             "clone the repo",
             "clone this repo",
-            "clone repository",
-            "create pull request",
-            "open pull request"
+            "clone repository"
         ]
         if naturalLanguageSignals.contains(where: { haystack.contains($0) }) {
             return true
@@ -84,6 +127,80 @@ enum GitOperationIntentDetector {
             ["latest", "code", "main"]
         ]
         return orderedSignals.contains { containsOrderedWords($0, in: haystack) }
+    }
+
+    private static func detectsGitHubMetadataOrAPIIntent(in haystack: String) -> Bool {
+        let directSignals = [
+            "pull request",
+            "pull requests",
+            "pr metadata",
+            "issue metadata",
+            "github api",
+            "github metadata"
+        ]
+        if directSignals.contains(where: { containsTokenPhrase($0, in: haystack) }) {
+            return true
+        }
+
+        let hasGitHubQualifier = containsTokenPhrase("github", in: haystack) || haystack.contains("git hub")
+        let githubQualifiedSignals = [
+            "issues",
+            "issue links",
+            "checks",
+            "check statuses",
+            "ci failure",
+            "workflow run",
+            "workflow runs"
+        ]
+        if hasGitHubQualifier,
+           githubQualifiedSignals.contains(where: { containsTokenPhrase($0, in: haystack) }) {
+            return true
+        }
+
+        let orderedSignals = [
+            ["github", "pr"],
+            ["github", "prs"],
+            ["github", "issue"],
+            ["github", "issues"],
+            ["github", "checks"],
+            ["review", "pr"],
+            ["review", "prs"],
+            ["inspect", "pr"],
+            ["inspect", "prs"],
+            ["list", "pr"],
+            ["list", "prs"],
+            ["open", "pr"],
+            ["open", "prs"]
+        ]
+        return orderedSignals.contains { containsOrderedWords($0, in: haystack) }
+    }
+
+    private static func detectsExplicitGitHubCLIAPICommand(in haystack: String) -> Bool {
+        let exactCommands = [
+            "gh pr",
+            "gh issue",
+            "gh run",
+            "gh workflow",
+            "gh api",
+            "gh repo view",
+            "gh repo list",
+            "gh auth"
+        ]
+        return exactCommands.contains(where: { containsTokenPhrase($0, in: haystack) })
+    }
+
+    private static func detectsNativeGitHubShellPreference(in haystack: String) -> Bool {
+        let exactSignals = [
+            "native gh",
+            "native git",
+            "provider bash",
+            "provider shell",
+            "use bash to run gh",
+            "run gh in bash",
+            "run `gh",
+            "run gh "
+        ]
+        return exactSignals.contains(where: { haystack.contains($0) })
     }
 
     static func detectsLocalGitInspectionOperation(prompt: String, task: AgentTask, contextText: String = "") -> Bool {
@@ -137,6 +254,11 @@ enum GitOperationIntentDetector {
             searchStart = range.upperBound
         }
         return true
+    }
+
+    private static func containsTokenPhrase(_ phrase: String, in text: String) -> Bool {
+        let pattern = #"(?<![a-z0-9_-])"# + NSRegularExpression.escapedPattern(for: phrase) + #"(?![a-z0-9_-])"#
+        return text.range(of: pattern, options: .regularExpression) != nil
     }
 }
 

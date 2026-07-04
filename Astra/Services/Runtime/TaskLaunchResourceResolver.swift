@@ -28,6 +28,10 @@ enum TaskLaunchResourceResolver {
         var providerRequirements: [RuntimeProviderRequirement] = []
         var controlPlaneResources: [RuntimeControlPlaneResource] = []
         var diagnostics: [RuntimeResourceDiagnostic] = []
+        let capabilityScope = capabilityResolutionSnapshot?.providerLaunch ?? TaskCapabilityResolutionSnapshot.capture(
+            for: task,
+            providerLaunchContextText: contextText
+        ).providerLaunch
 
         appendWorkspacePathGrants(
             task: task,
@@ -42,7 +46,16 @@ enum TaskLaunchResourceResolver {
             diagnostics: &diagnostics
         )
 
-        let gitCredentialContext = gitCredentialContextProvider(prompt, task, contextText, workspacePath)
+        let routesGitHubMetadataThroughHostControl = routesGitHubMetadataThroughHostControl(
+            task: task,
+            prompt: prompt,
+            contextText: contextText,
+            environment: environment,
+            capabilityScope: capabilityScope
+        )
+        let gitCredentialContext = routesGitHubMetadataThroughHostControl
+            ? .empty
+            : gitCredentialContextProvider(prompt, task, contextText, workspacePath)
         let gitResource = gitCredentialContext.isEmpty ? nil : RuntimeGitCredentialResource(
             readablePaths: uniquePaths(gitCredentialContext.readablePaths),
             writablePaths: uniquePaths(gitCredentialContext.writablePaths),
@@ -82,7 +95,8 @@ enum TaskLaunchResourceResolver {
         appendCapabilityGrants(
             task: task,
             contextText: contextText,
-            capabilityResolutionSnapshot: capabilityResolutionSnapshot,
+            capabilityScope: capabilityScope,
+            routesGitHubMetadataThroughHostControl: routesGitHubMetadataThroughHostControl,
             executionEnvironment: environment,
             homeDirectoryPath: homeDirectoryPath,
             fileManager: fileManager,
@@ -114,6 +128,27 @@ enum TaskLaunchResourceResolver {
             controlPlaneResources: uniqueControlPlaneResources(controlPlaneResources),
             diagnostics: diagnostics,
             gitCredential: gitResource
+        )
+    }
+
+    private static func routesGitHubMetadataThroughHostControl(
+        task: AgentTask,
+        prompt: String,
+        contextText: String,
+        environment: WorkspaceExecutionEnvironment,
+        capabilityScope: TaskCapabilityPromptScope
+    ) -> Bool {
+        let hostControlGitHubAvailable = HostControlPlaneMCPProjection.enabledToolNames(
+            task: task,
+            environment: environment,
+            contextText: contextText,
+            capabilityScope: capabilityScope
+        ).contains("github")
+        return GitOperationIntentDetector.routesGitHubMetadataThroughHostControl(
+            prompt: prompt,
+            task: task,
+            contextText: contextText,
+            hostControlGitHubAvailable: hostControlGitHubAvailable
         )
     }
 
@@ -477,7 +512,8 @@ enum TaskLaunchResourceResolver {
     private static func appendCapabilityGrants(
         task: AgentTask,
         contextText: String,
-        capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot?,
+        capabilityScope: TaskCapabilityPromptScope,
+        routesGitHubMetadataThroughHostControl: Bool,
         executionEnvironment: WorkspaceExecutionEnvironment,
         homeDirectoryPath: String,
         fileManager: FileManager,
@@ -489,11 +525,6 @@ enum TaskLaunchResourceResolver {
         controlPlaneResources: inout [RuntimeControlPlaneResource],
         diagnostics: inout [RuntimeResourceDiagnostic]
     ) {
-        let capabilityScope = capabilityResolutionSnapshot?.providerLaunch ?? TaskCapabilityResolutionSnapshot.capture(
-            for: task,
-            providerLaunchContextText: contextText
-        ).providerLaunch
-
         if capabilityScope.exposesBrowserBridge ||
             TaskCapabilityResolver.shouldExposeBrowserBridge(for: task, contextText: contextText) {
             providerRequirements.append(RuntimeProviderRequirement(
@@ -510,6 +541,24 @@ enum TaskLaunchResourceResolver {
                 reason: "Browser tasks use ASTRA's host browser bridge instead of provider-native shell.",
                 failureText: "Browser access was requested but the browser bridge is not available to this runtime.",
                 repairAction: "Enable the Browser capability or choose a provider runtime with browser bridge support."
+            ))
+        }
+
+        if routesGitHubMetadataThroughHostControl {
+            providerRequirements.append(RuntimeProviderRequirement(
+                capability: "github",
+                source: .controlPlane,
+                reason: "GitHub metadata/API intent is routed through ASTRA's host control plane.",
+                required: true
+            ))
+            controlPlaneResources.append(RuntimeControlPlaneResource(
+                capability: "github",
+                source: .controlPlane,
+                placement: "host_capability",
+                readiness: .configured,
+                reason: "GitHub metadata/API work uses ASTRA's host control-plane GitHub route instead of provider-native Git or gh credentials.",
+                failureText: "GitHub metadata/API work was requested, but no GitHub host-control route was available to the provider.",
+                repairAction: "Use a runtime that supports ASTRA host-control MCP tools, such as Codex CLI, Claude Code, or a Copilot CLI build with MCP config support."
             ))
         }
 
