@@ -972,7 +972,12 @@ enum AgentPolicyManifestService {
         let manifestCredentialLabels = uniqueStrings(
             credentialLabels(for: task, capabilityScope: taskCapabilityScope)
                 + dockerCredentialLabels(environment: executionEnvironment)
-                + gitCredentialLabels(task: task, contextText: contextText)
+                + gitCredentialLabels(
+                    task: task,
+                    contextText: contextText,
+                    executionEnvironment: executionEnvironment,
+                    capabilityScope: taskCapabilityScope
+                )
         )
         let launchResourceExposure = launchResourcePlan
             .map { LaunchResourcePolicyExposure(contract: LaunchResourceContract(plan: $0)) }
@@ -1026,7 +1031,12 @@ enum AgentPolicyManifestService {
             capabilityScope: taskCapabilityScope
         )
         render.diagnostics = providerPolicyAdapter.validate(render: render, context: context)
-        if shouldProjectGitCredentials(task: task, contextText: contextText) {
+        if shouldProjectGitCredentials(
+            task: task,
+            contextText: contextText,
+            executionEnvironment: executionEnvironment,
+            capabilityScope: taskCapabilityScope
+        ) {
             render.diagnostics.append(PolicyDiagnostic(
                 id: "git.credential-projection",
                 severity: .info,
@@ -1173,6 +1183,21 @@ enum AgentPolicyManifestService {
                     HostControlPlaneMCPProjection.providerToolPermission(for: $0)
                 }
             )
+            if !HostControlPlaneMCPProjection.supportsHostControlPlane(runtime: runtime) {
+                updated.diagnostics.append(PolicyDiagnostic(
+                    id: "\(runtime.rawValue).host-control-plane-unsupported",
+                    severity: .blocked,
+                    title: "Host control-plane route is unavailable",
+                    message: HostControlPlaneRuntimeLaunchGuard.unsupportedRuntimeDetail(
+                        runtime: runtime,
+                        requiredTools: hostControlTools
+                    ),
+                    affectedCapability: "control_plane",
+                    remediation: HostControlPlaneRuntimeLaunchGuard.unsupportedRuntimeRemediation(
+                        requiredTools: hostControlTools
+                    )
+                ))
+            }
         }
         updated.deniedTools = uniqueStrings(updated.deniedTools + ["Bash", "shell"])
         updated.diagnostics.append(PolicyDiagnostic(
@@ -1238,7 +1263,12 @@ enum AgentPolicyManifestService {
                 localToolCommands,
                 requiredTools: hostControlTools
             )
-        let shouldAllowAllPaths = shouldProjectGitCredentials(task: task, contextText: contextText)
+        let shouldAllowAllPaths = shouldProjectGitCredentials(
+            task: task,
+            contextText: contextText,
+            executionEnvironment: executionEnvironment,
+            capabilityScope: capabilityScope
+        )
             || AgentRuntimeProcessRunner.hasWorkspaceSSHConnections(for: task)
         var updated = render
         let launchPermissionMode = AgentRuntimeProviderLaunchPolicy.mode(
@@ -1344,19 +1374,39 @@ enum AgentPolicyManifestService {
         })
     }
 
-    @MainActor
-    private static func gitCredentialLabels(task: AgentTask, contextText: String) -> [String] {
-        shouldProjectGitCredentials(task: task, contextText: contextText)
+    private static func gitCredentialLabels(
+        task: AgentTask,
+        contextText: String,
+        executionEnvironment: WorkspaceExecutionEnvironment,
+        capabilityScope: TaskCapabilityPromptScope
+    ) -> [String] {
+        shouldProjectGitCredentials(
+            task: task,
+            contextText: contextText,
+            executionEnvironment: executionEnvironment,
+            capabilityScope: capabilityScope
+        )
             ? ["git:credential-context:read-only"]
             : []
     }
 
-    @MainActor
-    private static func shouldProjectGitCredentials(task: AgentTask, contextText: String) -> Bool {
-        GitOperationIntentDetector.detectsNetworkGitOperation(
+    private static func shouldProjectGitCredentials(
+        task: AgentTask,
+        contextText: String,
+        executionEnvironment: WorkspaceExecutionEnvironment,
+        capabilityScope: TaskCapabilityPromptScope
+    ) -> Bool {
+        let hostControlGitHubAvailable = HostControlPlaneMCPProjection.enabledToolNames(
+            task: task,
+            environment: executionEnvironment,
+            contextText: contextText,
+            capabilityScope: capabilityScope
+        ).contains("github")
+        return GitOperationIntentDetector.detectsNativeGitCredentialOperation(
             prompt: "",
             task: task,
-            contextText: contextText
+            contextText: contextText,
+            prefersHostControlGitHub: hostControlGitHubAvailable
         )
     }
 

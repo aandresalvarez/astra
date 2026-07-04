@@ -2939,7 +2939,8 @@ struct AgentRuntimeAdapterTests {
             #expect(plan.commandPlannedFields["host_control_plane_tool_count"] == "1")
             #expect(plan.commandPlannedFields["host_control_plane_supported"] == "false")
             #expect(plan.commandPlannedFields["host_control_plane_launch_block_reason"] == "host_control_plane_unsupported_runtime")
-            #expect(plan.commandPlannedFields["host_control_plane_unsupported_detail"]?.contains("host-control MCP server for github") == true)
+            #expect(plan.commandPlannedFields["host_control_plane_unsupported_detail"]?.contains("GitHub metadata/API") == true)
+            #expect(plan.commandPlannedFields["host_control_plane_unsupported_detail"]?.contains("Codex CLI") == true)
             #expect(HostControlPlaneRuntimeLaunchGuard.launchBlock(for: plan)?.runtimeStopReason == "host_control_plane_unsupported_runtime")
         }
     }

@@ -100,6 +100,55 @@ struct TaskLaunchResourcePlanTests {
         #expect(!plan.credentialGrants.contains { $0.source == .gitCredential })
     }
 
+    @Test("GitHub metadata routes through host control without native Git credential projection")
+    func githubMetadataRoutesThroughHostControlWithoutGitCredentialProjection() throws {
+        let workspaceRoot = try makeTempDir("resource-plan-github-metadata")
+        defer { try? FileManager.default.removeItem(atPath: workspaceRoot.path) }
+
+        let gitCredentialPath = workspaceRoot.appendingPathComponent("host-gitconfig")
+        try "[credential]\nhelper = osxkeychain\n".write(to: gitCredentialPath, atomically: true, encoding: .utf8)
+
+        let workspace = Workspace(name: "GitHub Metadata", primaryPath: workspaceRoot.path)
+        workspace.enabledCapabilityIDs = [HostControlPlaneMCPProjection.githubPackageID]
+        let task = AgentTask(
+            title: "Review PR metadata",
+            goal: "Use GitHub to inspect pull request metadata and checks",
+            workspace: workspace
+        )
+        let snapshot = TaskCapabilityResolutionSnapshot.capture(
+            for: task,
+            providerLaunchContextText: "Use GitHub to list open pull requests and check statuses."
+        )
+        var gitCredentialProviderWasCalled = false
+
+        let plan = TaskLaunchResourceResolver.resolve(
+            task: task,
+            runID: UUID(),
+            runtime: .claudeCode,
+            phase: "resume",
+            prompt: "Review PR metadata",
+            contextText: "Use GitHub to list open pull requests and check statuses.",
+            workspacePath: workspaceRoot.path,
+            capabilityResolutionSnapshot: snapshot,
+            gitCredentialContextProvider: { _, _, _, _ in
+                gitCredentialProviderWasCalled = true
+                return GitCredentialSandboxContext(
+                    readablePaths: [gitCredentialPath.path],
+                    writablePaths: [],
+                    transports: [.https],
+                    diagnostics: []
+                )
+            }
+        )
+
+        #expect(!gitCredentialProviderWasCalled)
+        #expect(plan.gitCredential == nil)
+        #expect(!plan.credentialGrants.contains { $0.source == .gitCredential })
+        #expect(plan.controlPlaneResources.contains {
+            $0.capability == "github" && $0.placement == "host_capability"
+        })
+    }
+
     @Test("Launch resource contract distinguishes file Git credentials from env secrets")
     func launchResourceContractDistinguishesFileGitCredentialFromEnvironmentSecret() throws {
         let plan = makeContractFixturePlan(
