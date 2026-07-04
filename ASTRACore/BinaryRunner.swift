@@ -641,7 +641,12 @@ private final class PipeCollector: @unchecked Sendable {
         lock.lock()
         let snapshot = buffer
         lock.unlock()
-        return String(data: snapshot, encoding: .utf8) ?? ""
+        // The byte-prefix truncation above can land mid-multi-byte character,
+        // leaving an invalid trailing sequence that a strict UTF-8 decode
+        // rejects wholesale (empty string, losing the entire valid prefix
+        // too). Decode lossily instead: every valid byte before the cut is
+        // preserved, with only the truncated character itself becoming U+FFFD.
+        return String(decoding: snapshot, as: UTF8.self)
     }
 
     var wasTruncated: Bool {

@@ -53,6 +53,26 @@ struct ProcessBinaryRunnerTests {
         #expect(!result.stderrTruncated)
     }
 
+    @Test("Hardened process executor preserves the valid UTF-8 prefix when truncation lands mid-character")
+    func hardenedProcessExecutorPreservesValidPrefixOnMidCharacterTruncation() {
+        // \346\227\245 is the 3-byte UTF-8 encoding of 日 (U+65E5); capping at
+        // 4 bytes keeps "AB" plus only the first 2 of those 3 bytes, landing
+        // mid multi-byte character. A strict UTF-8 decode of that buffer
+        // fails wholesale and used to return "", losing "AB" too.
+        let result = HardenedProcessExecutor().runSynchronously(
+            HardenedProcessRequest(
+                executable: "/bin/sh",
+                arguments: ["-c", "printf 'AB\\346\\227\\245'"],
+                timeout: 3,
+                maximumOutputBytes: 4
+            )
+        )
+
+        #expect(result.exitCode == 0)
+        #expect(result.stdoutTruncated)
+        #expect(result.stdout.hasPrefix("AB"))
+    }
+
     @Test("RunResult exposes exit contract fields")
     func runResultExitContractFields() {
         let result = RunResult.exited(code: 0, stdout: "ok", stderr: "")
