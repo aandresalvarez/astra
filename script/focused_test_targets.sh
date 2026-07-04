@@ -43,6 +43,9 @@ target_for_path() {
     Tests/MailToolSupportTests/*|Tools/MailToolSupport/*|Tools/StanfordAppleMailTool/*|Tools/StanfordGraphMailTool/*|Tools/StanfordMailTool/*)
       add_target "MailToolSupportTests"
       ;;
+    Tests/HostControlToolSupportTests.swift|Tools/AstraHostControlTool/*|Tools/HostControlToolSupport/*)
+      add_target "HostControlToolSupportTests"
+      ;;
   esac
 }
 
