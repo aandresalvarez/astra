@@ -29,6 +29,11 @@ assert_targets "MailToolSupportTests" \
   "Tools/StanfordAppleMailTool/main.swift" \
   "Tests/MailToolSupportTests/StanfordAppleMailToolTests.swift"
 
+assert_targets "HostControlToolSupportTests" \
+  "Tools/HostControlToolSupport/HostControlToolSupport.swift" \
+  "Tools/AstraHostControlTool/main.swift" \
+  "Tests/HostControlToolSupportTests.swift"
+
 assert_targets $'ArchitectureFitnessTests.ArchitectureFitnessTests\nMCPGatewaySupportTests\nMCPServerKitTests\nMailToolSupportTests' \
   "Package.swift"
 

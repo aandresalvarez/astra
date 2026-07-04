@@ -24,6 +24,7 @@ struct GitWorktreeTests {
         process.executableURL = URL(fileURLWithPath: "/bin/zsh")
         process.arguments = ["-c", command]
         process.currentDirectoryURL = URL(fileURLWithPath: directory)
+        process.environment = GitLocalEnvironment.scrubbing(ProcessInfo.processInfo.environment)
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = pipe
