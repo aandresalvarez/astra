@@ -381,8 +381,30 @@ public struct PolicyRenderContext: Codable, Equatable, Sendable {
     public var environmentKeyNames: [String]
     public var credentialLabels: [String]
     public var providerFeatures: ProviderPolicyFeatures
+    public var launchResourceContractAvailable: Bool
+    public var providerEnvironmentSecretResourceLabels: [String]
+    public var providerFileCredentialResourceLabels: [String]
+    public var providerUnenforcedFileCredentialResourceLabels: [String]
     public var providerConfigOwnership: PolicyConfigOwnership
     public var existingProviderConfigSummary: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case runtimeID
+        case model
+        case workspacePath
+        case additionalPaths
+        case requestedAllowedTools
+        case localToolCommands
+        case environmentKeyNames
+        case credentialLabels
+        case providerFeatures
+        case launchResourceContractAvailable
+        case providerEnvironmentSecretResourceLabels
+        case providerFileCredentialResourceLabels
+        case providerUnenforcedFileCredentialResourceLabels
+        case providerConfigOwnership
+        case existingProviderConfigSummary
+    }
 
     public init(
         runtimeID: AgentRuntimeID,
@@ -394,6 +416,10 @@ public struct PolicyRenderContext: Codable, Equatable, Sendable {
         environmentKeyNames: [String],
         credentialLabels: [String],
         providerFeatures: ProviderPolicyFeatures,
+        launchResourceContractAvailable: Bool = false,
+        providerEnvironmentSecretResourceLabels: [String] = [],
+        providerFileCredentialResourceLabels: [String] = [],
+        providerUnenforcedFileCredentialResourceLabels: [String] = [],
         providerConfigOwnership: PolicyConfigOwnership = .generated,
         existingProviderConfigSummary: String? = nil
     ) {
@@ -406,8 +432,73 @@ public struct PolicyRenderContext: Codable, Equatable, Sendable {
         self.environmentKeyNames = Array(Set(environmentKeyNames)).sorted()
         self.credentialLabels = Array(Set(credentialLabels)).sorted()
         self.providerFeatures = providerFeatures
+        self.launchResourceContractAvailable = launchResourceContractAvailable
+        self.providerEnvironmentSecretResourceLabels = Array(Set(providerEnvironmentSecretResourceLabels)).sorted()
+        self.providerFileCredentialResourceLabels = Array(Set(providerFileCredentialResourceLabels)).sorted()
+        self.providerUnenforcedFileCredentialResourceLabels = Array(Set(providerUnenforcedFileCredentialResourceLabels)).sorted()
         self.providerConfigOwnership = providerConfigOwnership
         self.existingProviderConfigSummary = existingProviderConfigSummary
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            runtimeID: try container.decode(AgentRuntimeID.self, forKey: .runtimeID),
+            model: try container.decode(String.self, forKey: .model),
+            workspacePath: try container.decode(String.self, forKey: .workspacePath),
+            additionalPaths: try container.decode([String].self, forKey: .additionalPaths),
+            requestedAllowedTools: try container.decode([String].self, forKey: .requestedAllowedTools),
+            localToolCommands: try container.decode([String].self, forKey: .localToolCommands),
+            environmentKeyNames: try container.decode([String].self, forKey: .environmentKeyNames),
+            credentialLabels: try container.decode([String].self, forKey: .credentialLabels),
+            providerFeatures: try container.decode(ProviderPolicyFeatures.self, forKey: .providerFeatures),
+            launchResourceContractAvailable: try container.decodeIfPresent(
+                Bool.self,
+                forKey: .launchResourceContractAvailable
+            ) ?? false,
+            providerEnvironmentSecretResourceLabels: try container.decodeIfPresent(
+                [String].self,
+                forKey: .providerEnvironmentSecretResourceLabels
+            ) ?? [],
+            providerFileCredentialResourceLabels: try container.decodeIfPresent(
+                [String].self,
+                forKey: .providerFileCredentialResourceLabels
+            ) ?? [],
+            providerUnenforcedFileCredentialResourceLabels: try container.decodeIfPresent(
+                [String].self,
+                forKey: .providerUnenforcedFileCredentialResourceLabels
+            ) ?? [],
+            providerConfigOwnership: try container.decodeIfPresent(
+                PolicyConfigOwnership.self,
+                forKey: .providerConfigOwnership
+            ) ?? .generated,
+            existingProviderConfigSummary: try container.decodeIfPresent(
+                String.self,
+                forKey: .existingProviderConfigSummary
+            )
+        )
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(runtimeID, forKey: .runtimeID)
+        try container.encode(model, forKey: .model)
+        try container.encode(workspacePath, forKey: .workspacePath)
+        try container.encode(additionalPaths, forKey: .additionalPaths)
+        try container.encode(requestedAllowedTools, forKey: .requestedAllowedTools)
+        try container.encode(localToolCommands, forKey: .localToolCommands)
+        try container.encode(environmentKeyNames, forKey: .environmentKeyNames)
+        try container.encode(credentialLabels, forKey: .credentialLabels)
+        try container.encode(providerFeatures, forKey: .providerFeatures)
+        try container.encode(launchResourceContractAvailable, forKey: .launchResourceContractAvailable)
+        try container.encode(providerEnvironmentSecretResourceLabels, forKey: .providerEnvironmentSecretResourceLabels)
+        try container.encode(providerFileCredentialResourceLabels, forKey: .providerFileCredentialResourceLabels)
+        try container.encode(
+            providerUnenforcedFileCredentialResourceLabels,
+            forKey: .providerUnenforcedFileCredentialResourceLabels
+        )
+        try container.encode(providerConfigOwnership, forKey: .providerConfigOwnership)
+        try container.encodeIfPresent(existingProviderConfigSummary, forKey: .existingProviderConfigSummary)
     }
 }
 

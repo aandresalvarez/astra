@@ -922,6 +922,7 @@ enum AgentPolicyManifestService {
         approvalRecords: [CapabilityApprovalRecord]? = nil,
         contextText: String = "",
         capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot? = nil,
+        launchResourcePlan: TaskLaunchResourcePlan? = nil,
         modelContext: ModelContext
     ) -> RunPermissionManifest {
         let defaultLevel = AgentPolicyDefaults.effectiveUserFacingLevel(
@@ -973,6 +974,9 @@ enum AgentPolicyManifestService {
                 + dockerCredentialLabels(environment: executionEnvironment)
                 + gitCredentialLabels(task: task, contextText: contextText)
         )
+        let launchResourceExposure = launchResourcePlan
+            .map { LaunchResourcePolicyExposure(contract: LaunchResourceContract(plan: $0)) }
+            ?? .absent
         let runtimeAdapter = AgentRuntimeAdapterRegistry.adapter(for: runtime)
         let providerPolicyAdapter = runtimeAdapter.policyAdapter(runtimeCapabilities: providerCapabilities)
         let configOwnership = runtimeAdapter.providerConfigOwnership(workspacePath: workspacePath)
@@ -991,6 +995,10 @@ enum AgentPolicyManifestService {
             environmentKeyNames: envKeys,
             credentialLabels: manifestCredentialLabels,
             providerFeatures: providerPolicyAdapter.supportedFeatures,
+            launchResourceContractAvailable: launchResourceExposure.launchResourceContractAvailable,
+            providerEnvironmentSecretResourceLabels: launchResourceExposure.providerEnvironmentSecretResourceLabels,
+            providerFileCredentialResourceLabels: launchResourceExposure.providerFileCredentialResourceLabels,
+            providerUnenforcedFileCredentialResourceLabels: launchResourceExposure.providerUnenforcedFileCredentialResourceLabels,
             providerConfigOwnership: configOwnership,
             existingProviderConfigSummary: runtimeAdapter.existingProviderConfigSummary(workspacePath: workspacePath)
         )
@@ -1638,15 +1646,50 @@ private func diagnostics(for policy: AgentPolicy, context: PolicyRenderContext) 
             remediation: "Use connector-specific credentials and ASTRA brokered network tools for strict enforcement."
         ))
     }
-    let credentialLabels = Array(Set(policy.credentialLabels + context.credentialLabels)).sorted()
-    if !credentialLabels.isEmpty, !context.providerFeatures.supportsSecretEnvRedaction {
+    let environmentSecretLabels = context.providerEnvironmentSecretResourceLabels
+    if !environmentSecretLabels.isEmpty, !context.providerFeatures.supportsSecretEnvRedaction {
         diagnostics.append(PolicyDiagnostic(
             id: "\(context.runtimeID.rawValue).secret-redaction-unsupported",
             severity: .blocked,
             title: "Secret redaction is unsupported",
-            message: "This provider render cannot mark injected environment keys as secrets.",
+            message: "This provider render cannot mark provider-visible credential environment values as secrets.",
             affectedCapability: "credentials",
-            remediation: "Remove credential injection or use a provider/version with secret env support."
+            remediation: "Remove provider environment credential injection or use a provider/version with secret env support."
+        ))
+    }
+    if !context.providerUnenforcedFileCredentialResourceLabels.isEmpty {
+        diagnostics.append(PolicyDiagnostic(
+            id: "\(context.runtimeID.rawValue).credential-file-enforcement-unsupported",
+            severity: .blocked,
+            title: "Credential file enforcement is unsupported",
+            message: "This provider render would expose credential files without a safe launch-resource enforcement boundary.",
+            affectedCapability: "credentials",
+            remediation: "Use a runtime path with launch-resource file projection, route the credential through a host control-plane tool, or remove the file credential grant."
+        ))
+    }
+    if !context.launchResourceContractAvailable {
+        let credentialLabels = Array(Set(policy.credentialLabels + context.credentialLabels)).sorted()
+        if !credentialLabels.isEmpty {
+            diagnostics.append(PolicyDiagnostic(
+                id: "\(context.runtimeID.rawValue).credential-contract-unavailable",
+                severity: .blocked,
+                title: "Credential exposure contract is unavailable",
+                message: "This provider render includes credential labels but no launch-resource contract to classify environment versus file exposure.",
+                affectedCapability: "credentials",
+                remediation: "Resolve and attach the launch-resource contract before launching credentialed provider work."
+            ))
+        }
+    }
+    if !context.providerFileCredentialResourceLabels.isEmpty,
+       context.providerFeatures.supportsPathScoping == false,
+       context.providerUnenforcedFileCredentialResourceLabels.isEmpty {
+        diagnostics.append(PolicyDiagnostic(
+            id: "\(context.runtimeID.rawValue).credential-file-projected",
+            severity: .info,
+            title: "Credential files use launch-resource projection",
+            message: "ASTRA will expose selected credential files through its launch-resource boundary instead of provider environment secret injection.",
+            affectedCapability: "credentials",
+            remediation: "Review the launch resource manifest if credential file projection was unexpected."
         ))
     }
     let usesAskCheckpoints = policy.level == .review
