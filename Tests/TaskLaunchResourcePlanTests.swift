@@ -233,6 +233,38 @@ struct TaskLaunchResourcePlanTests {
         #expect(contract.providerVisibleSensitiveResources.isEmpty)
     }
 
+    @Test("Launch resource contract preserves container mount access in identity")
+    func launchResourceContractPreservesContainerMountAccessInIdentity() {
+        let hostPath = "/tmp/astra-launch-resource-contract/workspace"
+        let containerPath = "/workspace"
+        let plan = makeContractFixturePlan(
+            containerMounts: [
+                RuntimeContainerMountGrant(
+                    hostPath: hostPath,
+                    containerPath: containerPath,
+                    access: ExecutionEnvironmentMountAccess.readOnly.rawValue,
+                    role: ExecutionEnvironmentMountRole.workspace.rawValue
+                ),
+                RuntimeContainerMountGrant(
+                    hostPath: hostPath,
+                    containerPath: containerPath,
+                    access: ExecutionEnvironmentMountAccess.readWrite.rawValue,
+                    role: ExecutionEnvironmentMountRole.workspace.rawValue
+                )
+            ]
+        )
+
+        let contract = LaunchResourceContract(plan: plan)
+
+        let mounts = contract.resources.filter {
+            $0.deliveryChannel == .containerMount &&
+                $0.path == hostPath &&
+                $0.placement == containerPath
+        }
+        #expect(mounts.count == 2)
+        #expect(Set(mounts.compactMap(\.access)) == Set([TaskLaunchResourceAccess.read, .readWrite]))
+    }
+
     @Test("Launch resource contract derivation leaves the resource plan intact")
     func launchResourceContractDerivationLeavesResourcePlanIntact() {
         let plan = makeContractFixturePlan(
@@ -700,6 +732,7 @@ struct TaskLaunchResourcePlanTests {
 
     private func makeContractFixturePlan(
         hostPathGrants: [RuntimePathGrant] = [],
+        containerMounts: [RuntimeContainerMountGrant] = [],
         environmentGrants: [RuntimeEnvironmentGrant] = [],
         credentialGrants: [RuntimeCredentialGrant] = [],
         providerRequirements: [RuntimeProviderRequirement] = [],
@@ -718,6 +751,7 @@ struct TaskLaunchResourcePlanTests {
             controlPlaneToolPlacement: "host",
             shellRoute: "native_host",
             hostPathGrants: hostPathGrants,
+            containerMounts: containerMounts,
             environmentGrants: environmentGrants,
             credentialGrants: credentialGrants,
             providerRequirements: providerRequirements,

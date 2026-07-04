@@ -92,7 +92,7 @@ private extension LaunchResourceContract {
     static func resource(from mount: RuntimeContainerMountGrant) -> Resource {
         let sensitivity: TaskLaunchResourceSensitivity = mount.role == "credential" ? .credential : .normal
         return Resource(
-            id: "container-mount:\(mount.role):\(mount.hostPath):\(mount.containerPath)",
+            id: "container-mount:\(mount.role):\(mount.access):\(mount.hostPath):\(mount.containerPath)",
             source: mount.role == "credential" ? .dockerCredential : .workspace,
             consumer: .containerRuntime,
             deliveryChannel: .containerMount,
@@ -102,9 +102,20 @@ private extension LaunchResourceContract {
             redactionAssumption: sensitivity == .normal ? .notSensitive : .containerBoundary,
             reason: "Container mount \(mount.role) exposes \(mount.hostPath) at \(mount.containerPath).",
             path: mount.hostPath,
-            access: TaskLaunchResourceAccess(rawValue: mount.access),
+            access: contractAccess(forContainerMountAccess: mount.access),
             placement: mount.containerPath
         )
+    }
+
+    static func contractAccess(forContainerMountAccess rawValue: String) -> TaskLaunchResourceAccess? {
+        switch ExecutionEnvironmentMountAccess(rawValue: rawValue) {
+        case .readOnly:
+            return .read
+        case .readWrite:
+            return .readWrite
+        case nil:
+            return TaskLaunchResourceAccess(rawValue: rawValue)
+        }
     }
 
     static func resource(from requirement: RuntimeProviderRequirement) -> Resource {
