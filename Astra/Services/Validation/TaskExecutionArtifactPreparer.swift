@@ -351,7 +351,12 @@ enum TaskExecutionArtifactPreparer {
             "reason": reason,
             "phase": phase
         ], level: .error)
-        try? modelContext.save()
+        WorkspacePersistenceCoordinator.saveAndAutoExport(
+            workspace: task.workspace,
+            modelContext: modelContext,
+            taskID: task.id,
+            auditFields: ["operation": "artifact_preparation_failure"]
+        )
     }
 
 }

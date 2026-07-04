@@ -98,7 +98,12 @@ enum AgentRuntimeBudgetPolicy {
             run: run
         ))
         AppLogger.audit(.workerBudgetExceeded, category: "Worker", taskID: task.id, fields: fields, level: .error)
-        try? modelContext.save()
+        WorkspacePersistenceCoordinator.saveAndAutoExport(
+            workspace: task.workspace,
+            modelContext: modelContext,
+            taskID: task.id,
+            auditFields: ["operation": "prompt_budget_exceeded_stop"]
+        )
         return false
     }
 

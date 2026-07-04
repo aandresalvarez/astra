@@ -464,14 +464,12 @@ final class TaskLifecycleCoordinator {
         task.isDone = isDone
         task.updatedAt = Date()
         task.markRead()
-        do {
-            try modelContext.save()
-        } catch {
-            AppLogger.audit(.taskFailed, category: "UI", taskID: task.id, fields: [
-                "operation": "apply_done_state",
-                "error_type": String(describing: type(of: error))
-            ], level: .error)
-        }
+        WorkspacePersistenceCoordinator.saveAndAutoExport(
+            workspace: task.workspace,
+            modelContext: modelContext,
+            taskID: task.id,
+            auditFields: ["operation": "apply_done_state"]
+        )
     }
 
     func activeSameThreadSchedules(for task: AgentTask) -> [TaskSchedule] {
@@ -876,14 +874,11 @@ final class TaskLifecycleCoordinator {
         for skill in [readOnly, testRunner, safeBash] {
             modelContext.insert(skill)
         }
-        do {
-            try modelContext.save()
-        } catch {
-            AppLogger.audit(.skillToolPermissionChanged, category: "UI", fields: [
-                "operation": "seed_skills",
-                "error_type": String(describing: type(of: error))
-            ], level: .error)
-        }
+        WorkspacePersistenceCoordinator.saveAndAutoExport(
+            workspace: workspace,
+            modelContext: modelContext,
+            auditFields: ["operation": "seed_skills"]
+        )
     }
 
     enum DuplicateAction {

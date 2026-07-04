@@ -600,7 +600,12 @@ final class TaskQueue {
                 type: "error",
                 payload: "ASTRA could not create this task's output folder before launching the agent: \(error.localizedDescription)"
             ))
-            try? modelContext.save()
+            WorkspacePersistenceCoordinator.saveAndAutoExport(
+                workspace: task.workspace,
+                modelContext: modelContext,
+                taskID: task.id,
+                auditFields: ["operation": "task_folder_create_failed"]
+            )
             return false
         }
     }
@@ -996,7 +1001,12 @@ final class TaskQueue {
         )
         if let modelContext {
             modelContext.insert(TaskEvent(task: task, type: type, payload: encodeResourceLockPayload(payload)))
-            try? modelContext.save()
+            WorkspacePersistenceCoordinator.saveAndAutoExport(
+                workspace: task.workspace,
+                modelContext: modelContext,
+                taskID: task.id,
+                auditFields: ["operation": "resource_lock_event"]
+            )
         }
         AppLogger.audit(auditEvent, category: "Queue", taskID: task.id, fields: [
             "resource_key": claim.resourceKey,

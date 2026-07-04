@@ -689,7 +689,7 @@ enum TaskStateMachine {
         apply(completedAt, to: task)
         task.updatedAt = date
         apply(readState, to: task, at: date)
-        persistIfNeeded(modelContext: modelContext, savePolicy: savePolicy)
+        persistIfNeeded(task: task, modelContext: modelContext, savePolicy: savePolicy)
 
         AppLogger.audit(.taskStatusChanged, category: "TaskState", taskID: task.id, fields: [
             "intent": intent,
@@ -749,16 +749,26 @@ enum TaskStateMachine {
         }
     }
 
-    private static func persistIfNeeded(modelContext: ModelContext, savePolicy: SavePolicy) {
+    private static func persistIfNeeded(
+        task: AgentTask,
+        modelContext: ModelContext,
+        savePolicy: SavePolicy
+    ) {
         guard savePolicy == .save else { return }
-        do {
-            try modelContext.save()
-        } catch {
-            AppLogger.audit(.runtimePersistenceSummary, category: "Persistence", fields: [
-                "operation": "task_state_machine_save",
-                "result": "swiftdata_save_failed",
-                "error_type": String(describing: type(of: error))
-            ], level: .error)
+        // Status transitions must be durably persisted before workers observe
+        // them, so this always uses the coordinator's synchronous save path,
+        // never the debounced `scheduleAutoExport`. `AgentTask` and the main
+        // `ModelContext` are main-actor-bound throughout the app, so any caller
+        // that reaches a `.save` policy is already on the main actor;
+        // `assumeIsolated` makes that contract explicit instead of hopping
+        // actors (which would defer the save past the caller's next read).
+        MainActor.assumeIsolated {
+            WorkspacePersistenceCoordinator.saveAndAutoExport(
+                workspace: task.workspace,
+                modelContext: modelContext,
+                taskID: task.id,
+                auditFields: ["operation": "task_state_machine_save"]
+            )
         }
     }
 }
