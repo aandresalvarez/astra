@@ -284,6 +284,43 @@ struct CapabilityLibraryTests {
         #expect(secondIDs.contains(second.id))
     }
 
+    @Test("Package definitions fingerprint changes when an asset-backed directory package is installed")
+    func packageDefinitionsFingerprintChangesForDirectoryPackage() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-capability-fingerprint-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sourceRoot = root.appendingPathComponent("source", isDirectory: true)
+        let sourceAssets = sourceRoot.appendingPathComponent("assets", isDirectory: true)
+        try FileManager.default.createDirectory(at: sourceAssets, withIntermediateDirectories: true)
+        try Data("<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 1 1\"><path d=\"M0 0h1v1H0z\"/></svg>".utf8)
+            .write(to: sourceAssets.appendingPathComponent("icon.svg"))
+
+        let library = CapabilityLibrary(directory: root.appendingPathComponent("library", isDirectory: true))
+        let beforeFingerprint = CapabilityRuntimeResourceMatcher.packageDefinitionsFingerprint(library: library)
+
+        var package = PluginPackage(
+            id: "local.fingerprint-asset-package",
+            name: "Fingerprint Asset Package",
+            icon: "puzzlepiece.extension",
+            iconDescriptor: .asset("assets/icon.svg", fallbackSystemName: "puzzlepiece.extension"),
+            description: "Directory-backed package for fingerprint coverage",
+            author: "Tests",
+            category: "Tests",
+            tags: [],
+            version: "1.0.0",
+            skills: [],
+            connectors: [],
+            localTools: [],
+            templates: [],
+            governance: .localDraft()
+        )
+        package.sourceMetadata = .localLibrary()
+        try library.install(CapabilityPackageSource(package: package, manifestURL: nil, assetRootURL: sourceRoot))
+
+        let afterInstallFingerprint = CapabilityRuntimeResourceMatcher.packageDefinitionsFingerprint(library: library)
+        #expect(afterInstallFingerprint != beforeFingerprint)
+    }
+
     @Test("in-memory enabledPackages filters to enabled ids, merges built-ins, and de-dupes")
     func enabledPackagesInMemoryOverloadResolvesWithoutFilesystem() throws {
         let builtInID = try #require(PluginCatalog.builtInPackages.first?.id)

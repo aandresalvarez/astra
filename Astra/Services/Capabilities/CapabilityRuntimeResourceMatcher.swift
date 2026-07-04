@@ -202,7 +202,7 @@ enum CapabilityRuntimeResourceMatcher {
     private static func directoryFingerprint(for directory: URL) -> DirectoryFingerprint {
         guard let urls = try? HostFileAccessBroker().contentsOfDirectory(
             at: directory,
-            includingPropertiesForKeys: [.contentModificationDateKey],
+            includingPropertiesForKeys: [.contentModificationDateKey, .isDirectoryKey],
             options: [.skipsHiddenFiles],
             intent: .astraManagedStorage(root: directory)
         ) else {
@@ -211,7 +211,25 @@ enum CapabilityRuntimeResourceMatcher {
 
         var latestModificationTime: TimeInterval = 0
         var fileCount = 0
-        for url in urls where url.pathExtension == "json" {
+        for url in urls {
+            // Asset-backed packages (CapabilityLibrary.install(_:) for a
+            // package whose icon is .asset) install as a directory holding
+            // CapabilityPackageSourceReader.manifestFileName plus the icon
+            // file, not a top-level JSON file — mirror installedPackages()'s
+            // directory-vs-JSON-file split so those installs/updates/removals
+            // change this fingerprint too, instead of only top-level packages.
+            let isDirectory = (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
+            if isDirectory == true {
+                let manifestURL = url.appendingPathComponent(CapabilityPackageSourceReader.manifestFileName)
+                guard let manifestDate = try? manifestURL.resourceValues(forKeys: [.contentModificationDateKey])
+                    .contentModificationDate else {
+                    continue
+                }
+                fileCount += 1
+                latestModificationTime = max(latestModificationTime, manifestDate.timeIntervalSince1970)
+                continue
+            }
+            guard url.pathExtension == "json" else { continue }
             fileCount += 1
             let modificationDate = (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
                 ?? .distantPast
