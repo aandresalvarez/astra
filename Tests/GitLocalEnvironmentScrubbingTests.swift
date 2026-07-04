@@ -40,9 +40,13 @@ struct GitLocalEnvironmentScrubbingTests {
         process.environment = environment
         process.standardOutput = Pipe()
         process.standardError = Pipe()
-        try? process.run()
-        process.waitUntilExit()
-        return Int(process.terminationStatus)
+        do {
+            try process.run()
+            process.waitUntilExit()
+            return Int(process.terminationStatus)
+        } catch {
+            return -1
+        }
     }
 
     private func isBare(gitDir: String) -> Bool {
