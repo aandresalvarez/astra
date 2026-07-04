@@ -540,6 +540,51 @@ struct WorkspaceAppActionExecutorTests {
     }
 
     @MainActor
+    @Test("capability read pipeline owns rate limits and source normalization")
+    func capabilityReadPipelineOwnsRateLimitsAndSourceNormalization() throws {
+        let fixture = try Self.makePublishedApp(permissionMode: .readOnly)
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let binding = WorkspaceAppDependencyBinding(
+            workspaceID: fixture.workspace.id,
+            appID: fixture.app.id,
+            appLogicalID: fixture.app.logicalID,
+            requirementID: "warehouse",
+            contract: "tabularQuery.read",
+            operations: ["runReadOnlyQuery"],
+            optional: false,
+            status: .mapped,
+            implementationID: "bigquery-read-task-backed",
+            provider: "bigQuery",
+            transport: .taskBacked
+        )
+        let pipeline = WorkspaceAppCapabilityReadPipeline(
+            sourceResolver: WorkspaceAppSourceResolver(
+                capabilityClient: MockWorkspaceAppCapabilitySourceClient(rowsBySourceID: [:])
+            ),
+            readPolicy: WorkspaceAppReadPolicy(
+                rateLimiter: WorkspaceAppConnectorReadRateLimiter(maxPerWindow: 0, window: 60)
+            )
+        )
+        let request = WorkspaceAppCapabilityReadRequest(
+            action: fixture.manifest.actions.first { $0.id == "readWarehouse" }!,
+            app: fixture.app,
+            workspace: fixture.workspace,
+            manifest: fixture.manifest,
+            dependencyBindings: [binding],
+            input: WorkspaceAppActionInput(limit: 25),
+            surface: .executor
+        )
+
+        #expect(throws: WorkspaceAppSourceResolutionError.capabilityReadUnavailable(
+            "readWarehouse: connector reads are rate-limited; try again shortly"
+        )) {
+            _ = try pipeline.resolve(request)
+        }
+        #expect(WorkspaceAppReadPolicy.connectorLimit(nil as Int?) == WorkspaceAppDataBridge.defaultConnectorReadLimit)
+        #expect(WorkspaceAppReadPolicy.connectorLimit(100_000) == WorkspaceAppDataBridge.maxConnectorReadLimit)
+    }
+
+    @MainActor
     @Test("capability write actions require approval and record audited writes")
     func capabilityWriteActionsRequireApprovalAndRecordAuditedWrites() throws {
         let fixture = try Self.makePublishedApp(permissionMode: .approvalRequired)
@@ -858,7 +903,7 @@ struct WorkspaceAppActionExecutorTests {
 
     @MainActor
     @Test("pipeline suspends on an async agent step and resumes to completion (B2)")
-    func pipelineSuspendsOnAgentStepAndResumes() throws {
+    func pipelineSuspendsOnAgentStepAndResumes() async throws {
         let fixture = try Self.makePublishedApp(permissionMode: .preApproved)
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         // Seed the record the resumed update step will modify.
@@ -889,7 +934,7 @@ struct WorkspaceAppActionExecutorTests {
         #expect(suspended.run.pendingStepIndex == 1)
 
         // The awaited task "completes" with an output row; resume binds it into updateItem.
-        let resumed = try WorkspaceAppActionExecutor().resume(
+        let resumed = try await WorkspaceAppActionExecutor().resume(
             run: suspended.run,
             app: fixture.app,
             workspace: fixture.workspace,
@@ -915,7 +960,7 @@ struct WorkspaceAppActionExecutorTests {
 
     @MainActor
     @Test("approval resume preserves bound rows from async task output")
-    func approvalResumePreservesBoundRowsFromAsyncTaskOutput() throws {
+    func approvalResumePreservesBoundRowsFromAsyncTaskOutput() async throws {
         let fixture = try Self.makePublishedApp(permissionMode: .preApproved)
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         _ = try WorkspaceAppActionExecutor().execute(
@@ -949,7 +994,7 @@ struct WorkspaceAppActionExecutorTests {
         #expect(suspended.run.pendingActionID == "awaitApprovalBindingPipeline")
         #expect(suspended.run.pendingStepIndex == 1)
 
-        let waitingForApproval = try WorkspaceAppActionExecutor().resume(
+        let waitingForApproval = try await WorkspaceAppActionExecutor().resume(
             run: suspended.run,
             app: fixture.app,
             workspace: fixture.workspace,
@@ -974,7 +1019,7 @@ struct WorkspaceAppActionExecutorTests {
                 && $0.payload.contains("FromApprovedTask")
         })
 
-        let approved = try WorkspaceAppActionExecutor().resumeWithApproval(
+        let approved = try await WorkspaceAppActionExecutor().resumeWithApproval(
             run: waitingForApproval.run,
             approved: true,
             app: fixture.app,
@@ -1006,7 +1051,7 @@ struct WorkspaceAppActionExecutorTests {
 
     @MainActor
     @Test("resumption service resumes a waiting run when its task completes (B2)")
-    func resumptionServiceResumesWaitingRun() throws {
+    func resumptionServiceResumesWaitingRun() async throws {
         let fixture = try Self.makePublishedApp(permissionMode: .preApproved)
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         _ = try WorkspaceAppActionExecutor().execute(
@@ -1031,7 +1076,7 @@ struct WorkspaceAppActionExecutorTests {
 
         // Simulate the awaited task completing: the resumption service finds the
         // waiting run, loads its manifest, and resumes it to completion.
-        let results = WorkspaceAppRunResumptionService().resumeRuns(
+        let results = await WorkspaceAppRunResumptionService().resumeRuns(
             awaitingTaskID: taskID,
             taskOutputRows: [["id": .text("item-1"), "name": .text("FromTask"), "category": .text("Produce")]],
             workspace: fixture.workspace,
@@ -1042,7 +1087,7 @@ struct WorkspaceAppActionExecutorTests {
 
         // An unknown task id resumes nothing.
         #expect(
-            WorkspaceAppRunResumptionService().resumeRuns(
+            await WorkspaceAppRunResumptionService().resumeRuns(
                 awaitingTaskID: UUID(),
                 workspace: fixture.workspace,
                 modelContext: fixture.context
@@ -1052,7 +1097,7 @@ struct WorkspaceAppActionExecutorTests {
 
     @MainActor
     @Test("resumption sweep resumes runs only once their awaited task completes (B2-live)")
-    func resumptionSweepResumesCompletedTaskRuns() throws {
+    func resumptionSweepResumesCompletedTaskRuns() async throws {
         let fixture = try Self.makePublishedApp(permissionMode: .preApproved)
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         let suspended = try WorkspaceAppActionExecutor().execute(
@@ -1066,7 +1111,7 @@ struct WorkspaceAppActionExecutorTests {
         let taskID = try #require(suspended.run.linkedTaskID)
 
         // The launched task is still queued -> the sweep resumes nothing.
-        #expect(WorkspaceAppRunResumptionService().resumeCompletedRuns(modelContext: fixture.context).isEmpty)
+        #expect(await WorkspaceAppRunResumptionService().resumeCompletedRuns(modelContext: fixture.context).isEmpty)
 
         // Mark the awaited task completed, as the runtime would on finish.
         let task = try #require(
@@ -1076,14 +1121,14 @@ struct WorkspaceAppActionExecutorTests {
         try fixture.context.save()
 
         // Now the sweep finds the waiting run and resumes it to completion.
-        let results = WorkspaceAppRunResumptionService().resumeCompletedRuns(modelContext: fixture.context)
+        let results = await WorkspaceAppRunResumptionService().resumeCompletedRuns(modelContext: fixture.context)
         #expect(results.count == 1)
         #expect(results.first?.run.status == .completed)
     }
 
     @MainActor
     @Test("token accounting counts TOTAL agent spend (input+output), not output-only")
-    func appBudgetCountsTotalTokens() throws {
+    func appBudgetCountsTotalTokens() async throws {
         let fixture = try Self.makePublishedApp(permissionMode: .preApproved)
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         let suspended = try WorkspaceAppActionExecutor().execute(
@@ -1108,14 +1153,14 @@ struct WorkspaceAppActionExecutorTests {
         task.status = .completed
         try fixture.context.save()
 
-        let results = WorkspaceAppRunResumptionService().resumeCompletedRuns(modelContext: fixture.context)
+        let results = await WorkspaceAppRunResumptionService().resumeCompletedRuns(modelContext: fixture.context)
         #expect(results.count == 1)
         #expect(results.first?.run.consumedTokens == 5000)
     }
 
     @MainActor
     @Test("whole-run token budget blocks a resume that overruns (B3)")
-    func workflowTokenBudgetBlocksOverrun() throws {
+    func workflowTokenBudgetBlocksOverrun() async throws {
         let fixture = try Self.makePublishedApp(permissionMode: .preApproved)
         defer { try? FileManager.default.removeItem(at: fixture.root) }
 
@@ -1139,7 +1184,7 @@ struct WorkspaceAppActionExecutorTests {
 
         // Resume reporting more consumption than the 500-token budget -> the run is
         // BLOCKED (held for review), not continued to the next step.
-        let blocked = try WorkspaceAppActionExecutor().resume(
+        let blocked = try await WorkspaceAppActionExecutor().resume(
             run: suspended.run,
             app: fixture.app,
             workspace: fixture.workspace,
@@ -1221,7 +1266,7 @@ struct WorkspaceAppActionExecutorTests {
 
     @MainActor
     @Test("task.fanOut launches N tasks, suspends on a barrier, resumes when all complete (C1)")
-    func fanOutSuspendsOnBarrierAndResumesWhenAllComplete() throws {
+    func fanOutSuspendsOnBarrierAndResumesWhenAllComplete() async throws {
         let fixture = try Self.makePublishedApp(permissionMode: .preApproved)
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         for id in ["item-1", "item-2"] {
@@ -1257,12 +1302,12 @@ struct WorkspaceAppActionExecutorTests {
         // Only one task completed -> the barrier holds, nothing resumes.
         tasks[0].status = .completed
         try fixture.context.save()
-        #expect(WorkspaceAppRunResumptionService().resumeCompletedRuns(modelContext: fixture.context).isEmpty)
+        #expect(await WorkspaceAppRunResumptionService().resumeCompletedRuns(modelContext: fixture.context).isEmpty)
 
         // All tasks completed -> the barrier resolves; the run resumes through reduce.
         tasks[1].status = .completed
         try fixture.context.save()
-        let results = WorkspaceAppRunResumptionService().resumeCompletedRuns(modelContext: fixture.context)
+        let results = await WorkspaceAppRunResumptionService().resumeCompletedRuns(modelContext: fixture.context)
         #expect(results.count == 1)
         #expect(results.first?.run.status == .completed)
         #expect(results.first?.rows.first?["count"] == .integer(2))
@@ -1287,7 +1332,7 @@ struct WorkspaceAppActionExecutorTests {
 
     @MainActor
     @Test("fan-out barrier fails the run (not strands) when an awaited task fails (C1 review)")
-    func fanOutBarrierFailsRunWhenAwaitedTaskFails() throws {
+    func fanOutBarrierFailsRunWhenAwaitedTaskFails() async throws {
         let fixture = try Self.makePublishedApp(permissionMode: .preApproved)
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         for id in ["item-1", "item-2"] {
@@ -1317,7 +1362,7 @@ struct WorkspaceAppActionExecutorTests {
         tasks[0].status = .completed
         tasks[1].status = .failed
         try fixture.context.save()
-        let results = WorkspaceAppRunResumptionService().resumeCompletedRuns(modelContext: fixture.context)
+        let results = await WorkspaceAppRunResumptionService().resumeCompletedRuns(modelContext: fixture.context)
         #expect(results.isEmpty)
         #expect(suspended.run.status == .failed) // failed, not stranded in .waiting
         #expect(suspended.run.errorMessage?.contains("Fan-out failed") == true)
@@ -1470,7 +1515,7 @@ struct WorkspaceAppActionExecutorTests {
 
     @MainActor
     @Test("pipeline human approval gates suspend to .waiting until approved")
-    func pipelineHumanApprovalGatesSuspendUntilApproved() throws {
+    func pipelineHumanApprovalGatesSuspendUntilApproved() async throws {
         let fixture = try Self.makePublishedApp(permissionMode: .draftOnly)
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         _ = try WorkspaceAppActionExecutor().execute(
@@ -1512,7 +1557,7 @@ struct WorkspaceAppActionExecutorTests {
         #expect(!approvalEvents.contains { $0.type == "workspaceApp.pipeline.step.completed" && $0.payload.contains("exportItems") })
 
         // Approving resumes the run from the gate to completion.
-        let approvedResult = try WorkspaceAppActionExecutor().resumeWithApproval(
+        let approvedResult = try await WorkspaceAppActionExecutor().resumeWithApproval(
             run: waitingRun,
             approved: true,
             app: fixture.app,
@@ -1533,7 +1578,7 @@ struct WorkspaceAppActionExecutorTests {
 
     @MainActor
     @Test("pipeline approval carries to the following agent task launch")
-    func pipelineApprovalCarriesToFollowingAgentTaskLaunch() throws {
+    func pipelineApprovalCarriesToFollowingAgentTaskLaunch() async throws {
         let fixture = try Self.makePublishedApp(permissionMode: .approvalRequired)
         defer { try? FileManager.default.removeItem(at: fixture.root) }
 
@@ -1560,7 +1605,7 @@ struct WorkspaceAppActionExecutorTests {
         let waitingRun = try #require(try fixture.context.fetch(FetchDescriptor<WorkspaceAppRun>())
             .first { $0.actionID == "approvalTaskPipeline" })
 
-        let approvedResult = try WorkspaceAppActionExecutor().resumeWithApproval(
+        let approvedResult = try await WorkspaceAppActionExecutor().resumeWithApproval(
             run: waitingRun,
             approved: true,
             app: fixture.app,
@@ -1918,6 +1963,31 @@ struct WorkspaceAppActionExecutorTests {
         )
 
         return (root, container, context, workspace, result.app, resolvedManifest)
+    }
+
+    static func warehouseBinding(
+        for fixture: (
+            root: URL,
+            container: ModelContainer,
+            context: ModelContext,
+            workspace: Workspace,
+            app: WorkspaceApp,
+            manifest: WorkspaceAppManifest
+        )
+    ) -> WorkspaceAppDependencyBinding {
+        WorkspaceAppDependencyBinding(
+            workspaceID: fixture.workspace.id,
+            appID: fixture.app.id,
+            appLogicalID: fixture.app.logicalID,
+            requirementID: "warehouse",
+            contract: "tabularQuery.read",
+            operations: ["runReadOnlyQuery"],
+            optional: false,
+            status: .mapped,
+            implementationID: "bigquery-read-task-backed",
+            provider: "bigQuery",
+            transport: .taskBacked
+        )
     }
 
     static func metricExportManifest(permissionMode: WorkspaceAppPermissionMode) -> WorkspaceAppManifest {

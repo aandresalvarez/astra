@@ -88,9 +88,15 @@ enum ContentDetailPresentation: Equatable {
 }
 
 struct ContentWorkspaceSelectionUpdate {
+    enum WorkspaceAppSurfacePolicy {
+        case clear
+        case preserveIfWorkspaceMatches
+    }
+
     let selectedTask: AgentTask?
     let selectedWorkspace: Workspace?
     let isComposingTask: Bool
+    let workspaceAppSurfacePolicy: WorkspaceAppSurfacePolicy
     let shouldPresentRightRail: Bool
     let shouldRememberShelfStateWhenPresentingRightRail: Bool
 }
@@ -107,6 +113,7 @@ struct ContentWorkspaceSelectionCoordinator {
                 selectedTask: nil,
                 selectedWorkspace: nil,
                 isComposingTask: false,
+                workspaceAppSurfacePolicy: .preserveIfWorkspaceMatches,
                 shouldPresentRightRail: false,
                 shouldRememberShelfStateWhenPresentingRightRail: true
             )
@@ -116,6 +123,7 @@ struct ContentWorkspaceSelectionCoordinator {
             selectedTask: selectedTask,
             selectedWorkspace: restored,
             isComposingTask: isComposingTask,
+            workspaceAppSurfacePolicy: .preserveIfWorkspaceMatches,
             shouldPresentRightRail: false,
             shouldRememberShelfStateWhenPresentingRightRail: true
         )
@@ -126,6 +134,7 @@ struct ContentWorkspaceSelectionCoordinator {
             selectedTask: nil,
             selectedWorkspace: workspace,
             isComposingTask: false,
+            workspaceAppSurfacePolicy: .clear,
             shouldPresentRightRail: true,
             shouldRememberShelfStateWhenPresentingRightRail: false
         )
@@ -136,6 +145,7 @@ struct ContentWorkspaceSelectionCoordinator {
             selectedTask: task,
             selectedWorkspace: task.workspace ?? selectedWorkspace,
             isComposingTask: false,
+            workspaceAppSurfacePolicy: .clear,
             shouldPresentRightRail: true,
             shouldRememberShelfStateWhenPresentingRightRail: false
         )
@@ -146,6 +156,7 @@ struct ContentWorkspaceSelectionCoordinator {
             selectedTask: selectedTask,
             selectedWorkspace: workspace,
             isComposingTask: isComposingTask,
+            workspaceAppSurfacePolicy: .preserveIfWorkspaceMatches,
             shouldPresentRightRail: false,
             shouldRememberShelfStateWhenPresentingRightRail: true
         )
@@ -156,6 +167,7 @@ struct ContentWorkspaceSelectionCoordinator {
             selectedTask: selectedTask,
             selectedWorkspace: workspace ?? selectedWorkspace,
             isComposingTask: isComposingTask,
+            workspaceAppSurfacePolicy: .preserveIfWorkspaceMatches,
             shouldPresentRightRail: false,
             shouldRememberShelfStateWhenPresentingRightRail: true
         )
@@ -169,6 +181,7 @@ struct ContentWorkspaceSelectionCoordinator {
             selectedTask: deletedSelectedTaskWorkspace ? nil : selectedTask,
             selectedWorkspace: deletedCurrentWorkspace ? nextWorkspace : selectedWorkspace,
             isComposingTask: deletedSelectedTaskWorkspace ? false : isComposingTask,
+            workspaceAppSurfacePolicy: .preserveIfWorkspaceMatches,
             shouldPresentRightRail: false,
             shouldRememberShelfStateWhenPresentingRightRail: true
         )

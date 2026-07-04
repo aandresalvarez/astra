@@ -1,4 +1,5 @@
 import Foundation
+import SwiftData
 @testable import ASTRA
 import ASTRACore
 
@@ -57,6 +58,32 @@ extension TaskQueue {
         TaskQueue(poolSize: poolSize) {
             AgentRuntimeWorker.scenarioWorker()
         }
+    }
+}
+
+enum DirectWorkerLaunchAdmission {
+    @MainActor
+    @discardableResult
+    static func admitInitialRun(_ task: AgentTask, modelContext: ModelContext) -> TaskStateMachine.TransitionResult {
+        if task.status == .draft {
+            TaskStateMachine.enqueueFromUITestSeed(task, modelContext: modelContext)
+        }
+        return TaskStateMachine.admitQueuedTaskToRuntime(task, modelContext: modelContext)
+    }
+
+    @MainActor
+    @discardableResult
+    static func admitContinuation(_ task: AgentTask, modelContext: ModelContext) -> TaskStateMachine.TransitionResult {
+        TaskStateMachine.admitContinuationToRuntime(task, modelContext: modelContext)
+    }
+
+    @MainActor
+    @discardableResult
+    static func admitApprovedPlanRun(_ task: AgentTask, modelContext: ModelContext) -> TaskStateMachine.TransitionResult {
+        if task.status != .queued {
+            TaskStateMachine.enqueueApprovedPlanRun(task, modelContext: modelContext)
+        }
+        return TaskStateMachine.admitQueuedTaskToRuntime(task, modelContext: modelContext)
     }
 }
 

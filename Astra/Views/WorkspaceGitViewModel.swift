@@ -628,7 +628,6 @@ final class WorkspaceGitViewModel: ObservableObject {
             model: model,
             runtime: runtime
         )
-        task.status = .draft
         task.executionRootPath = path
         task.draftMessages = AstraTaskIntentSupport.draftMessagesJSON(for: goal)
         modelContext.insert(task)

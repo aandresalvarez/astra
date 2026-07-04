@@ -12,10 +12,13 @@ import SwiftUI
 /// from its in-memory sandbox store).
 struct WorkspaceAppSurfaceView: View {
     let snapshot: WorkspaceAppDetailDataSnapshot
-    let onRunAction: (WorkspaceAppActionSpec, WorkspaceAppManifest, WorkspaceAppActionInput) throws -> WorkspaceAppActionExecutionResult
-    /// The ASYNC executor path the bridge uses for `astra.read` (a live connector read is network I/O
-    /// `onRunAction` can't await). nil on the preview surface — preview has no real dependency bindings,
-    /// so connector reads resolve only on a PUBLISHED app.
+    /// Async because an action can be a workflow (`pipeline.run`/`loop.run`) containing a connector
+    /// `capability.read` step, which only resolves on the executor's async path. Native buttons dispatch
+    /// it on the main actor (see `runAction`/`runNativeFormSubmission`).
+    let onRunAction: (WorkspaceAppActionSpec, WorkspaceAppManifest, WorkspaceAppActionInput) async throws -> WorkspaceAppActionExecutionResult
+    /// The ASYNC executor path the bridge uses for `astra.read` (a live connector read is network I/O).
+    /// nil on the preview surface — preview has no real dependency bindings, so connector reads resolve
+    /// only on a PUBLISHED app.
     let onCapabilityRead: ((WorkspaceAppActionSpec, WorkspaceAppManifest, WorkspaceAppActionInput) async throws -> WorkspaceAppActionExecutionResult)?
     let onReload: () -> Void
     /// Live, UNCAPPED check for a non-terminal workflow run — the bridge's durable runAction throttle.
@@ -44,10 +47,14 @@ struct WorkspaceAppSurfaceView: View {
     @State private var recordFormError = ""
     @State private var pendingDeleteRecordID: String?
     @State private var pendingNativeFormSubmission: PendingNativeFormSubmission?
+    /// Serializes native action dispatch. `onRunAction` is now async, so the main
+    /// thread no longer implicitly blocks re-entry between a tap and its result;
+    /// this preserves the old no-double-submit behavior for native buttons.
+    @State private var actionInFlight = false
 
     init(
         snapshot: WorkspaceAppDetailDataSnapshot,
-        onRunAction: @escaping (WorkspaceAppActionSpec, WorkspaceAppManifest, WorkspaceAppActionInput) throws -> WorkspaceAppActionExecutionResult,
+        onRunAction: @escaping (WorkspaceAppActionSpec, WorkspaceAppManifest, WorkspaceAppActionInput) async throws -> WorkspaceAppActionExecutionResult,
         onReload: @escaping () -> Void,
         isWorkflowRunPending: (@MainActor () -> Bool)? = nil,
         onCapabilityRead: ((WorkspaceAppActionSpec, WorkspaceAppManifest, WorkspaceAppActionInput) async throws -> WorkspaceAppActionExecutionResult)? = nil
@@ -270,19 +277,26 @@ struct WorkspaceAppSurfaceView: View {
         manifest: WorkspaceAppManifest,
         confirmedApproval: Bool = false
     ) {
+        guard !actionInFlight else { return }
         var input = submission.input
         input.confirmedApproval = confirmedApproval
-        do {
-            let result = try onRunAction(
-                submission.action,
-                manifest,
-                input
-            )
-            actionStatusMessage = result.outputSummary
-            pendingNativeFormSubmission = nil
-            onReload()
-        } catch {
-            actionStatusMessage = WorkspaceAppActionStatusPresentation.errorMessage(for: error)
+        actionInFlight = true
+        // `onRunAction` is async (a read-containing workflow is network I/O).
+        // Dispatch on the main actor and apply the result when it resolves.
+        Task { @MainActor in
+            defer { actionInFlight = false }
+            do {
+                let result = try await onRunAction(
+                    submission.action,
+                    manifest,
+                    input
+                )
+                actionStatusMessage = result.outputSummary
+                pendingNativeFormSubmission = nil
+                onReload()
+            } catch {
+                actionStatusMessage = WorkspaceAppActionStatusPresentation.errorMessage(for: error)
+            }
         }
     }
 
@@ -692,13 +706,20 @@ struct WorkspaceAppSurfaceView: View {
             actionStatusMessage = "Action is unavailable."
             return
         }
-
-        do {
-            let result = try onRunAction(actionSpec, manifest, action.input)
-            actionStatusMessage = result.outputSummary
-            onReload()
-        } catch {
-            actionStatusMessage = WorkspaceAppActionStatusPresentation.errorMessage(for: error)
+        guard !actionInFlight else { return }
+        actionInFlight = true
+        // `onRunAction` is async: a workflow action may contain a connector
+        // `capability.read` step that only resolves on the executor's async
+        // path. Dispatch on the main actor; the guard preserves no-double-submit.
+        Task { @MainActor in
+            defer { actionInFlight = false }
+            do {
+                let result = try await onRunAction(actionSpec, manifest, action.input)
+                actionStatusMessage = result.outputSummary
+                onReload()
+            } catch {
+                actionStatusMessage = WorkspaceAppActionStatusPresentation.errorMessage(for: error)
+            }
         }
     }
 }

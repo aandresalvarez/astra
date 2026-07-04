@@ -129,31 +129,43 @@ enum AgentPromptBuilder {
 
     static func buildPrompt(
         for task: AgentTask,
-        budgetProfile: PromptContextBudgetProfile = .standard
+        budgetProfile: PromptContextBudgetProfile = .standard,
+        executionPolicy: AgentRuntimeExecutionPolicy = .default
     ) -> String {
-        buildPromptAssembly(for: task, budgetProfile: budgetProfile).prompt
+        buildPromptAssembly(for: task, budgetProfile: budgetProfile, executionPolicy: executionPolicy).prompt
     }
 
     static func buildPromptAssembly(
         for task: AgentTask,
-        budgetProfile: PromptContextBudgetProfile = .standard
+        budgetProfile: PromptContextBudgetProfile = .standard,
+        executionPolicy: AgentRuntimeExecutionPolicy = .default
     ) -> PromptAssemblyManifest {
         assemblePrompt(
-            buildPromptSections(for: task),
+            buildPromptSections(for: task, executionPolicy: executionPolicy),
             mode: .initialRun,
             budgetProfile: budgetProfile
         )
     }
 
-    private static func buildPromptSections(for task: AgentTask) -> [PromptContextSection] {
+    private static func buildPromptSections(
+        for task: AgentTask,
+        executionPolicy: AgentRuntimeExecutionPolicy = .default
+    ) -> [PromptContextSection] {
         buildPromptSections(
             using: PromptContextSectionProviderRegistry.providerIDs(for: .initialRun),
             context: PromptContextSectionProviderContext(
                 mode: .initialRun,
                 task: task,
                 followUpMessage: "",
-                capabilityScope: TaskCapabilityResolver(task: task).promptScope(),
-                ioSnapshot: .empty
+                capabilityScope: TaskCapabilityResolver(
+                    task: task,
+                    additionalCredentialGrants: executionPolicy.permissionGrantsOverride ?? []
+                ).promptScope(),
+                ioSnapshot: .empty,
+                connectorCredentialExposurePolicy: connectorCredentialExposurePolicy(
+                    for: task,
+                    executionPolicy: executionPolicy
+                )
             )
         )
     }
@@ -527,9 +539,14 @@ enum AgentPromptBuilder {
     private static func appendConnectorContext(
         from capabilityScope: TaskCapabilityPromptScope,
         task: AgentTask,
+        credentialExposurePolicy: ConnectorRuntimeProjection.CredentialExposurePolicy?,
         to sections: inout [PromptContextSection]
     ) {
-        if let section = AgentPromptConnectorContextBuilder.section(from: capabilityScope, task: task) {
+        if let section = AgentPromptConnectorContextBuilder.section(
+            from: capabilityScope,
+            task: task,
+            credentialExposurePolicy: credentialExposurePolicy
+        ) {
             sections.append(section)
         }
     }
@@ -611,12 +628,14 @@ enum AgentPromptBuilder {
     static func buildFreshFollowUpPrompt(
         message: String,
         task: AgentTask,
-        budgetProfile: PromptContextBudgetProfile? = nil
+        budgetProfile: PromptContextBudgetProfile? = nil,
+        executionPolicy: AgentRuntimeExecutionPolicy = .default
     ) -> String {
         buildFreshFollowUpPromptAssembly(
             message: message,
             task: task,
-            budgetProfile: budgetProfile
+            budgetProfile: budgetProfile,
+            executionPolicy: executionPolicy
         ).prompt
     }
 
@@ -632,7 +651,8 @@ enum AgentPromptBuilder {
         message: String,
         task: AgentTask,
         budgetProfile: PromptContextBudgetProfile? = nil,
-        ioSnapshot: PromptContextIOSnapshot? = nil
+        ioSnapshot: PromptContextIOSnapshot? = nil,
+        executionPolicy: AgentRuntimeExecutionPolicy = .default
     ) -> PromptAssemblyManifest {
         let runtime = task.resolvedRuntimeID
         return assemblePrompt(
@@ -642,7 +662,8 @@ enum AgentPromptBuilder {
                 ioSnapshot: ioSnapshot ?? PromptContextIOSnapshotLoader.snapshot(
                     for: task,
                     window: continuityTranscriptWindow(for: runtime)
-                )
+                ),
+                executionPolicy: executionPolicy
             ),
             mode: .followUp,
             budgetProfile: budgetProfile ?? continuityBudgetProfile(for: runtime)
@@ -652,7 +673,8 @@ enum AgentPromptBuilder {
     private static func buildFreshFollowUpPromptSections(
         message: String,
         task: AgentTask,
-        ioSnapshot: PromptContextIOSnapshot
+        ioSnapshot: PromptContextIOSnapshot,
+        executionPolicy: AgentRuntimeExecutionPolicy = .default
     ) -> [PromptContextSection] {
         buildPromptSections(
             using: PromptContextSectionProviderRegistry.providerIDs(for: .followUp),
@@ -660,10 +682,27 @@ enum AgentPromptBuilder {
                 mode: .followUp,
                 task: task,
                 followUpMessage: message,
-                capabilityScope: TaskCapabilityResolver(task: task).promptScope(contextText: message),
-                ioSnapshot: ioSnapshot
+                capabilityScope: TaskCapabilityResolver(
+                    task: task,
+                    additionalCredentialGrants: executionPolicy.permissionGrantsOverride ?? []
+                ).promptScope(contextText: message),
+                ioSnapshot: ioSnapshot,
+                connectorCredentialExposurePolicy: connectorCredentialExposurePolicy(
+                    for: task,
+                    executionPolicy: executionPolicy
+                )
             )
         )
+    }
+
+    private static func connectorCredentialExposurePolicy(
+        for task: AgentTask,
+        executionPolicy: AgentRuntimeExecutionPolicy
+    ) -> ConnectorRuntimeProjection.CredentialExposurePolicy {
+        .approvedLabels(Set(TaskRuntimePermissionGrants.approvedCredentialLabels(
+            for: task,
+            additionalGrants: executionPolicy.permissionGrantsOverride ?? []
+        )))
     }
 
     static func promptSectionProviderIDs(for mode: PromptAssemblyMode) -> [PromptContextSectionProviderID] {
@@ -1172,7 +1211,12 @@ enum AgentPromptBuilder {
                 }
                 appendSkillInstructions(from: context.capabilityScope, to: &sections)
             }
-            appendConnectorContext(from: context.capabilityScope, task: context.task, to: &sections)
+            appendConnectorContext(
+                from: context.capabilityScope,
+                task: context.task,
+                credentialExposurePolicy: context.connectorCredentialExposurePolicy,
+                to: &sections
+            )
             if context.mode == .initialRun {
                 appendToolContext(from: context.capabilityScope, to: &sections)
             }

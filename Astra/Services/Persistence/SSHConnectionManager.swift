@@ -45,6 +45,7 @@ struct SSHConnection: Codable, Identifiable, Hashable {
 /// Manages SSH connections stored as a JSON file in the workspace folder.
 enum SSHConnectionManager {
     private static let emptyConnectionsFileMaximumByteCount = 4
+    private static let defaultFileWriter: any SSHConnectionFileWriting = AtomicSSHConnectionFileWriter()
 
     static func connectionsFilePath(for workspacePath: String) -> String {
         WorkspaceFileLayout.sshConnectionsFile(for: workspacePath)
@@ -87,13 +88,17 @@ enum SSHConnectionManager {
         }
     }
 
-    static func save(_ connections: [SSHConnection], workspacePath: String) {
+    static func save(
+        _ connections: [SSHConnection],
+        workspacePath: String,
+        fileWriter: any SSHConnectionFileWriting = defaultFileWriter
+    ) {
         WorkspaceFileLayout.ensureSupportDirectory(for: workspacePath)
         let path = connectionsFilePath(for: workspacePath)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         guard let data = try? encoder.encode(connections) else { return }
-        try? data.write(to: URL(fileURLWithPath: path))
+        try? fileWriter.writeAtomically(data, to: URL(fileURLWithPath: path))
     }
 
     private static func migrateLegacyConnectionsIfNeeded(workspacePath: String) {
@@ -267,5 +272,15 @@ enum SSHConnectionManager {
                 continuation.resume(returning: (false, msg))
             }
         }
+    }
+}
+
+protocol SSHConnectionFileWriting {
+    func writeAtomically(_ data: Data, to url: URL) throws
+}
+
+struct AtomicSSHConnectionFileWriter: SSHConnectionFileWriting {
+    func writeAtomically(_ data: Data, to url: URL) throws {
+        try data.write(to: url, options: [.atomic])
     }
 }

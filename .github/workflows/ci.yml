@@ -1,6 +1,9 @@
 name: CI
 
 on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 9 * * *"
   pull_request:
   push:
     branches:
@@ -14,18 +17,66 @@ jobs:
   focused-swift-tests:
     name: Focused Swift tests
     runs-on: macos-26
+    # Typical green run is ~10 minutes; a hang must fail fast instead of
+    # holding a macOS runner (10x billing) for the 6-hour default cap.
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
+      - name: Cache SwiftPM
+        uses: actions/cache@v4
+        with:
+          path: |
+            .build
+            ~/.swiftpm
+          key: ${{ runner.os }}-swiftpm-${{ hashFiles('Package.swift', 'Package.resolved') }}
+          restore-keys: |
+            ${{ runner.os }}-swiftpm-
+
       - name: Run focused Swift protection suites
         run: script/prepush.sh
+
+  full-swift-test-suite:
+    name: Full Swift test suite
+    # Nightly + manual only, NOT per-PR (yet). Running the full suite on every
+    # pull_request deadlocked 100% of the time on CI: Swift Testing executes
+    # tests concurrently, and the suite's synchronous process-spawning tests
+    # exhaust the 3-4 core runner's cooperative thread pool - every test
+    # reports "started", zero ever complete, and the job burns a macOS runner
+    # until the 6-hour cap (evidence: run 28639570525 - 4,002 started / 0
+    # finished / orphaned bash+sleep children at cleanup; three more runs hung
+    # identically). Locally the wider core count masks the deadlock. The
+    # --no-parallel below serializes execution as a mitigation; re-enable
+    # per-PR gating only after a manual dispatch of this job proves green.
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    runs-on: macos-26
+    timeout-minutes: 150
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Cache SwiftPM
+        uses: actions/cache@v4
+        with:
+          path: |
+            .build
+            ~/.swiftpm
+          key: ${{ runner.os }}-swiftpm-${{ hashFiles('Package.swift', 'Package.resolved') }}
+          restore-keys: |
+            ${{ runner.os }}-swiftpm-
+
+      - name: Run full Swift test suite
+        run: swift test --no-parallel
 
   whitespace:
     name: Whitespace
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@v4

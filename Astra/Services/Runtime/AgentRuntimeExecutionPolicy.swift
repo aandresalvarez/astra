@@ -5,8 +5,21 @@ struct AgentRuntimeExecutionPolicy: Equatable {
     var permissionPolicyOverride: PermissionPolicy?
     var allowedToolsOverride: [String]?
     var permissionGrantsOverride: [PermissionGrant]?
+    var providerRenderOverride: ProviderPolicyRender?
 
     static let `default` = AgentRuntimeExecutionPolicy()
+
+    init(
+        permissionPolicyOverride: PermissionPolicy? = nil,
+        allowedToolsOverride: [String]? = nil,
+        permissionGrantsOverride: [PermissionGrant]? = nil,
+        providerRenderOverride: ProviderPolicyRender? = nil
+    ) {
+        self.permissionPolicyOverride = permissionPolicyOverride
+        self.allowedToolsOverride = allowedToolsOverride
+        self.permissionGrantsOverride = permissionGrantsOverride
+        self.providerRenderOverride = providerRenderOverride
+    }
 
     func permissionPolicy(default defaultPolicy: PermissionPolicy) -> PermissionPolicy {
         permissionPolicyOverride ?? defaultPolicy
@@ -18,9 +31,10 @@ struct AgentRuntimeExecutionPolicy: Equatable {
 
     func applyingProviderRender(_ render: ProviderPolicyRender) -> AgentRuntimeExecutionPolicy {
         AgentRuntimeExecutionPolicy(
-            permissionPolicyOverride: PermissionPolicy(rawValue: render.permissionMode) ?? permissionPolicyOverride,
+            permissionPolicyOverride: PermissionPolicy(providerMode: render.permissionMode),
             allowedToolsOverride: render.allowedTools,
-            permissionGrantsOverride: permissionGrantsOverride
+            permissionGrantsOverride: permissionGrantsOverride,
+            providerRenderOverride: render
         )
     }
 
@@ -32,7 +46,8 @@ struct AgentRuntimeExecutionPolicy: Equatable {
         AgentRuntimeExecutionPolicy(
             permissionPolicyOverride: currentPermissionPolicy,
             allowedToolsOverride: allowedTools,
-            permissionGrantsOverride: nil
+            permissionGrantsOverride: nil,
+            providerRenderOverride: nil
         )
     }
 
@@ -48,7 +63,37 @@ struct AgentRuntimeExecutionPolicy: Equatable {
         AgentRuntimeExecutionPolicy(
             permissionPolicyOverride: .restricted,
             allowedToolsOverride: allowedTools,
-            permissionGrantsOverride: grants
+            permissionGrantsOverride: grants,
+            providerRenderOverride: nil
         )
+    }
+}
+
+enum AgentRuntimeProviderLaunchPolicy {
+    static func mode(
+        runtime: AgentRuntimeID,
+        effectiveProviderMode: ProviderPermissionMode,
+        executionEnvironment: WorkspaceExecutionEnvironment
+    ) -> ProviderPermissionMode {
+        // Single source of truth for the Copilot+Docker autonomous→restricted
+        // clamp lives in ProviderPolicyModeResolver so the launch-time path and
+        // the policy-render path cannot diverge.
+        ProviderPolicyModeResolver.applyingRuntimeExecutionClamp(
+            effectiveProviderMode,
+            runtime: runtime,
+            executionEnvironment: executionEnvironment
+        )
+    }
+
+    static func permissionPolicy(
+        runtime: AgentRuntimeID,
+        effectivePermissionPolicy: PermissionPolicy,
+        executionEnvironment: WorkspaceExecutionEnvironment
+    ) -> PermissionPolicy {
+        PermissionPolicy(providerMode: mode(
+            runtime: runtime,
+            effectiveProviderMode: effectivePermissionPolicy.providerPermissionMode,
+            executionEnvironment: executionEnvironment
+        ))
     }
 }

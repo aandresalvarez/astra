@@ -231,6 +231,152 @@ struct BrowserBridgeSecurityTests {
         #expect(ShelfBrowserBridgeCommandRouter.route(method: "POST", path: "/missing") == nil)
     }
 
+    @Test("Bridge command registry owns route specs and batch aliases")
+    func bridgeCommandRegistryOwnsRouteSpecsAndBatchAliases() throws {
+        let commands = ShelfBrowserBridgeCommandRouter.registeredCommands
+        let registeredRoutes = commands.map(\.route)
+
+        #expect(commands.count == ShelfBrowserBridgeRoute.allCases.count)
+        for route in ShelfBrowserBridgeRoute.allCases {
+            #expect(
+                registeredRoutes.filter { $0 == route }.count == 1,
+                "Expected one command spec for \(route)"
+            )
+        }
+
+        for command in commands {
+            #expect(
+                ShelfBrowserBridgeCommandRouter.route(method: command.method, path: command.path) == command.route,
+                "Registry route lookup should recognize \(command.method) \(command.path)"
+            )
+        }
+
+        #expect(ShelfBrowserBridgeCommandRouter.route(batchAction: "double-click") == .doubleClick)
+        #expect(ShelfBrowserBridgeCommandRouter.route(batchAction: "set-value") == .setValue)
+        #expect(ShelfBrowserBridgeCommandRouter.route(batchAction: "google-docs-read") == .googleDocsReadDocument)
+        #expect(ShelfBrowserBridgeCommandRouter.route(batchAction: "google-docs-read-visible") == .googleDocsReadVisiblePage)
+        #expect(ShelfBrowserBridgeCommandRouter.route(batchAction: "drive-open") == .googleDriveOpen)
+        #expect(ShelfBrowserBridgeCommandRouter.route(batchAction: "wait-selector") == .waitForSelector)
+        #expect(ShelfBrowserBridgeCommandRouter.route(batchAction: "unknown") == nil)
+    }
+
+    @Test("Batch request factory covers every registered batch alias")
+    func batchRequestFactoryCoversEveryRegisteredBatchAlias() {
+        let aliasedRoutes = Set(ShelfBrowserBridgeCommandRouter.registeredCommands
+            .filter { !$0.batchAliases.isEmpty }
+            .map(\.route))
+
+        #expect(ShelfBrowserBridgeBatchRequestFactory.supportedRoutes == aliasedRoutes)
+        for route in aliasedRoutes {
+            #expect(ShelfBrowserBridgeCommandRouter.command(for: route) != nil)
+        }
+    }
+
+    @Test("Batch request factory delegates actions through normal bridge requests")
+    func batchRequestFactoryDelegatesActionsThroughNormalBridgeRequests() throws {
+        let setValueAction = try JSONDecoder().decode(BatchActionCommand.self, from: bridgeBody([
+            "action": "set-value",
+            "selector": " input[name=email] ",
+            "text": "hello@example.com",
+            "clear": false
+        ]))
+        let setValueConversion = try ShelfBrowserBridgeBatchRequestFactory.makeRequest(
+            route: .setValue,
+            action: setValueAction
+        )
+        guard case .request(let setValueRequest) = setValueConversion else {
+            Issue.record("Expected set-value to produce a bridge request")
+            return
+        }
+
+        #expect(setValueRequest.method == "POST")
+        #expect(setValueRequest.path == "/setValue")
+        let setValueBody = try requestBodyObject(setValueRequest)
+        #expect(setValueBody["selector"] as? String == "input[name=email]")
+        #expect(setValueBody["text"] as? String == "hello@example.com")
+        #expect(setValueBody["clear"] as? Bool == true)
+
+        let snapshotAction = try JSONDecoder().decode(BatchActionCommand.self, from: bridgeBody([
+            "action": "snapshot",
+            "mode": "not-a-mode",
+            "query": "Save"
+        ]))
+        let snapshotConversion = try ShelfBrowserBridgeBatchRequestFactory.makeRequest(
+            route: .snapshot,
+            action: snapshotAction
+        )
+        guard case .request(let snapshotRequest) = snapshotConversion else {
+            Issue.record("Expected snapshot to produce a bridge request")
+            return
+        }
+
+        #expect(snapshotRequest.method == "GET")
+        #expect(snapshotRequest.path == "/snapshot")
+        #expect(snapshotRequest.queryItems["mode"] == "summary")
+        #expect(snapshotRequest.queryItems["query"] == "Save")
+
+        let preflightAction = try JSONDecoder().decode(BatchActionCommand.self, from: bridgeBody([
+            "action": "preflight"
+        ]))
+        let preflightConversion = try ShelfBrowserBridgeBatchRequestFactory.makeRequest(
+            route: .preflight,
+            action: preflightAction
+        )
+        guard case .failure(let failure, let stopReason) = preflightConversion else {
+            Issue.record("Expected missing preflight identifiers to produce a stopping failure")
+            return
+        }
+
+        #expect(failure["error"] as? String == "missing_analysis_or_control")
+        #expect(stopReason == "missing_analysis_or_control")
+    }
+
+    @Test("Verification command handler supports direct and batch execution")
+    func verificationCommandHandlerSupportsDirectAndBatchExecution() async throws {
+        let handler = ShelfBrowserBridgeVerificationCommandHandler(
+            automationEngine: ShelfBrowserEngine.controlled,
+            verifyText: { text, absent in ["ok": true, "text": text, "absent": absent] },
+            waitSaved: { timeoutSeconds, intervalMilliseconds in
+                ["ok": true, "timeoutSeconds": timeoutSeconds, "intervalMilliseconds": intervalMilliseconds]
+            },
+            waitForText: { text, timeoutSeconds, intervalMilliseconds in
+                ["ok": true, "text": text, "timeoutSeconds": timeoutSeconds, "intervalMilliseconds": intervalMilliseconds]
+            },
+            waitForSelector: { selector, timeoutSeconds, intervalMilliseconds in
+                ["ok": true, "selector": selector, "timeoutSeconds": timeoutSeconds, "intervalMilliseconds": intervalMilliseconds]
+            }
+        )
+
+        #expect(handler.automationEngine.automationDescriptor.kind == .controlledCDP)
+        #expect(handler.supportedRoutes == [.verifyText, .waitSaved, .waitForText, .waitForSelector])
+
+        let directResponse = try #require(try await handler.handleDirect(
+            route: .verifyText,
+            request: BrowserBridgeRequest(
+                method: "POST",
+                path: "/verifyText",
+                headers: [:],
+                queryItems: [:],
+                body: bridgeBody(["text": "Saved", "absent": true])
+            )
+        ))
+        let directObject = try responseObject(directResponse)
+        #expect(directObject["text"] as? String == "Saved")
+        #expect(directObject["absent"] as? Bool == true)
+
+        let batchAction = try JSONDecoder().decode(BatchActionCommand.self, from: bridgeBody([
+            "action": "wait-selector",
+            "selector": "input[name=q]",
+            "timeoutSeconds": 2.0,
+            "intervalMilliseconds": 100
+        ]))
+        let batchObject = try #require(try await handler.handleBatch(route: .waitForSelector, action: batchAction))
+        #expect(batchObject["action"] as? String == "wait-selector")
+        #expect(batchObject["selector"] as? String == "input[name=q]")
+        #expect(batchObject["timeoutSeconds"] as? Double == 2.0)
+        #expect(batchObject["intervalMilliseconds"] as? Int == 100)
+    }
+
     @Test("Bridge command router centralizes request accounting policy")
     func bridgeCommandRouterCentralizesRequestAccountingPolicy() throws {
         let unaccountedRoutes: Set<ShelfBrowserBridgeRoute> = [
@@ -362,26 +508,23 @@ struct BrowserBridgeSecurityTests {
 
     @Test("GitHub read-only mode reuses route policy for batch subactions")
     func githubReadOnlyModeReusesRoutePolicyForBatchSubactions() throws {
-        #expect(BrowserSiteActionPolicy.denialReason(
-            batchAction: "navigate",
-            currentURL: "https://github.com/owner/repo/pull/1",
-            enabledBrowserAdapters: [],
-            githubReadOnlyMode: true
-        ) == nil)
-        #expect(BrowserSiteActionPolicy.denialReason(
-            batchAction: "snapshot",
-            currentURL: "https://github.com/owner/repo/pull/1",
-            enabledBrowserAdapters: [],
-            githubReadOnlyMode: true
-        ) == nil)
-
-        for action in ["click", "double-click", "fill", "set-value", "act", "keypress", "text"] {
-            #expect(BrowserSiteActionPolicy.denialReason(
-                batchAction: action,
-                currentURL: "https://github.com/owner/repo/pull/1",
-                enabledBrowserAdapters: [],
-                githubReadOnlyMode: true
-            )?.contains("GitHub browser control is read-only") == true)
+        for command in ShelfBrowserBridgeCommandRouter.registeredCommands where !command.batchAliases.isEmpty {
+            for alias in command.batchAliases {
+                let denial = BrowserSiteActionPolicy.denialReason(
+                    batchAction: alias,
+                    currentURL: "https://github.com/owner/repo/pull/1",
+                    enabledBrowserAdapters: [],
+                    githubReadOnlyMode: true
+                )
+                if command.route.isAllowedInGitHubReadOnlyContext {
+                    #expect(denial == nil, "\(alias) should be allowed in GitHub read-only mode")
+                } else {
+                    #expect(
+                        denial?.contains("GitHub browser control is read-only") == true,
+                        "\(alias) should be blocked in GitHub read-only mode"
+                    )
+                }
+            }
         }
 
         #expect(BrowserSiteActionPolicy.denialReason(
@@ -555,6 +698,18 @@ struct BrowserBridgeSecurityTests {
             }
         }
         return String(data: data, encoding: .utf8) ?? ""
+    }
+
+    private func bridgeBody(_ object: [String: Any]) throws -> Data {
+        try JSONSerialization.data(withJSONObject: object)
+    }
+
+    private func responseObject(_ response: BrowserBridgeResponse) throws -> [String: Any] {
+        try #require(JSONSerialization.jsonObject(with: response.body) as? [String: Any])
+    }
+
+    private func requestBodyObject(_ request: BrowserBridgeRequest) throws -> [String: Any] {
+        try #require(JSONSerialization.jsonObject(with: request.body) as? [String: Any])
     }
 }
 

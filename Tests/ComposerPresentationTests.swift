@@ -1,6 +1,7 @@
 import Testing
 @testable import ASTRA
 import ASTRACore
+import AppKit
 import SwiftUI
 
 @Suite("Composer Presentation")
@@ -43,6 +44,57 @@ struct ComposerPresentationTests {
         #expect(ComposerToolbarPresentation.verticalPadding == 7)
         #expect(ComposerToolbarPresentation.chipVerticalPadding == 6)
         #expect(ComposerToolbarPresentation.permissionModeUsesFlatChrome == true)
+    }
+
+    @Test("chat transcript bubbles are shared across chat surfaces")
+    func chatTranscriptBubblesAreSharedAcrossChatSurfaces() throws {
+        let chatPanel = try sourceFile("Astra/Views/ChatPanelView.swift")
+        let taskMain = try sourceFile("Astra/Views/TaskMainView.swift")
+        let appStudio = try sourceFile("Astra/Views/WorkspaceAppStudioChatView.swift")
+
+        #expect(chatPanel.contains("ChatTranscriptUserBubble("))
+        #expect(taskMain.contains("ChatTranscriptUserBubble("))
+        #expect(appStudio.contains("ChatTranscriptCompactBubble("))
+        #expect(chatPanel.contains("ComposerPasteIntake.intake("))
+        #expect(taskMain.contains("ComposerPasteIntake.intake("))
+    }
+
+    @Test("composer paste intake classifies native text and file attachments")
+    func composerPasteIntakeClassifiesNativeTextAndFileAttachments() {
+        let multilineText = Array(repeating: "review this line", count: 11).joined(separator: "\n")
+        let longPlainText = String(repeating: "plain", count: 101)
+        let longJSONText = "  {\n" + String(repeating: "\"key\": true,\n", count: 45) + "\"done\": true\n}"
+        let longArrayText = "\n[\n" + String(repeating: "\"item\",\n", count: 80) + "\"done\"\n]"
+
+        #expect(!ComposerPasteIntake.shouldAttachText("short inline paste"))
+        #expect(ComposerPasteIntake.shouldAttachText(multilineText))
+        #expect(ComposerPasteIntake.shouldAttachText(longPlainText))
+        #expect(ComposerPasteIntake.textAttachmentExtension(for: multilineText) == "txt")
+        #expect(ComposerPasteIntake.textAttachmentExtension(for: longPlainText) == "txt")
+        #expect(ComposerPasteIntake.textAttachmentExtension(for: longJSONText) == "json")
+        #expect(ComposerPasteIntake.textAttachmentExtension(for: longArrayText) == "json")
+    }
+
+    @Test("composer paste intake attaches long text without taking over short native text")
+    func composerPasteIntakeAttachesLongTextWithoutTakingOverShortNativeText() throws {
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("astra.composer-paste-intake.\(UUID().uuidString)"))
+        pasteboard.clearContents()
+        pasteboard.setString("short inline text", forType: .string)
+
+        let shortResult = ComposerPasteIntake.intake(pasteboard: pasteboard, existingAttachments: [])
+        #expect(!shortResult.handled)
+        #expect(shortResult.attachmentPaths.isEmpty)
+
+        let longJSONText = "  {\n" + String(repeating: "\"key\": true,\n", count: 45) + "\"done\": true\n}"
+        pasteboard.clearContents()
+        pasteboard.setString(longJSONText, forType: .string)
+
+        let longResult = ComposerPasteIntake.intake(pasteboard: pasteboard, existingAttachments: [])
+        #expect(longResult.handled)
+        let attachmentPath = try #require(longResult.attachmentPaths.first)
+        defer { try? FileManager.default.removeItem(atPath: attachmentPath) }
+        #expect(attachmentPath.hasSuffix(".json"))
+        #expect(try String(contentsOfFile: attachmentPath, encoding: .utf8) == longJSONText)
     }
 
     @Test("slash menu follows compact command list presentation")
@@ -236,5 +288,12 @@ struct ComposerPresentationTests {
         #expect(update.runtime == AgentRuntimeID.copilotCLI.rawValue)
         #expect(update.resolvedModel == "gpt-5.1")
         #expect(update.modelChanged)
+    }
+
+    private func sourceFile(_ relativePath: String) throws -> String {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        return try String(contentsOf: root.appendingPathComponent(relativePath), encoding: .utf8)
     }
 }

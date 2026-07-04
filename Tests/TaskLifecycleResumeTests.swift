@@ -15,6 +15,7 @@ struct TaskLifecycleResumeTests {
 
     private struct Environment {
         let coordinator: TaskLifecycleCoordinator
+        let queue: TaskQueue
         let context: ModelContext
         let container: ModelContainer
         let root: String
@@ -32,7 +33,7 @@ struct TaskLifecycleResumeTests {
         let context = ModelContext(container)
         let queue = TaskQueue(poolSize: 0)
         let coordinator = TaskLifecycleCoordinator(modelContext: context, taskQueue: queue)
-        return Environment(coordinator: coordinator, context: context, container: container, root: url.path)
+        return Environment(coordinator: coordinator, queue: queue, context: context, container: container, root: url.path)
     }
 
     @Test("Resume without a session id does not start a continuation")
@@ -53,8 +54,8 @@ struct TaskLifecycleResumeTests {
         #expect(task.events.contains { $0.type == "task.resumed" } == false)
     }
 
-    @Test("Resume with a session id marks running and records a resume event")
-    func resumeWithSessionIDMarksRunningAndRecordsEvent() async throws {
+    @Test("Resume with a session id records a resume event before queue admission")
+    func resumeWithSessionIDRecordsEventBeforeQueueAdmission() async throws {
         let env = try makeEnvironment()
         defer { try? FileManager.default.removeItem(atPath: env.root) }
 
@@ -67,22 +68,22 @@ struct TaskLifecycleResumeTests {
 
         let continuation = env.coordinator.resumeTask(task)
 
-        // resumeTask performs these mutations synchronously, before the
-        // continuation Task is scheduled, so they are deterministic to assert.
-        #expect(task.status == .running)
+        // resumeTask records the user's resume request synchronously, but the
+        // queue owns the transition to .running once launch admission succeeds.
+        #expect(task.status == .pendingUser)
         let resumeEvents = task.events.filter { $0.type == "task.resumed" }
         #expect(resumeEvents.count == 1)
         #expect(resumeEvents.first?.payload.contains("Resuming previous session") == true)
 
         // Drain the continuation; with a zero-size pool `continueSession` cannot
-        // admit a worker and returns false, so the optimistic `.running` must be
-        // rolled back to the prior status rather than stranding the task.
+        // admit a worker, so the task must remain non-running.
         await continuation?.value
+        #expect(task.status == .pendingUser)
         _ = env.container
     }
 
-    @Test("Resume reverts to the prior status when no worker can continue")
-    func resumeRevertsWhenNoWorkerCanContinue() async throws {
+    @Test("Resume remains at the prior status when no worker can continue")
+    func resumeRemainsAtPriorStatusWhenNoWorkerCanContinue() async throws {
         let env = try makeEnvironment()
         defer { try? FileManager.default.removeItem(atPath: env.root) }
 
@@ -97,6 +98,38 @@ struct TaskLifecycleResumeTests {
         await env.coordinator.resumeTask(task)?.value
 
         #expect(task.status == .pendingUser)
+        #expect(task.runs.filter { $0.status == .running }.isEmpty)
+        #expect(task.events.contains { $0.type == "error" })
+    }
+
+    @Test("TaskMainView-style continuation leaves task non-running when the queue rejects admission")
+    func directContinuationRejectsWithoutOptimisticRunningStatus() async throws {
+        let env = try makeEnvironment()
+        defer { try? FileManager.default.removeItem(atPath: env.root) }
+
+        let completedAt = Date(timeIntervalSince1970: 1_234)
+        let workspace = Workspace(name: "Direct Continue", primaryPath: env.root)
+        let task = AgentTask(title: "Direct Continue", goal: "Answer the follow-up", workspace: workspace)
+        task.status = .completed
+        task.completedAt = completedAt
+        task.sessionId = "sess-direct-continue"
+        env.context.insert(workspace)
+        env.context.insert(task)
+
+        _ = TaskRunLifecycleService.cancelTask(
+            task,
+            modelContext: env.context,
+            source: .supersededByNewRun
+        )
+        let didStart = await env.queue.continueSession(
+            task: task,
+            message: "Continue from the UI",
+            modelContext: env.context
+        )
+
+        #expect(!didStart)
+        #expect(task.status == .completed)
+        #expect(task.completedAt == completedAt)
         #expect(task.runs.filter { $0.status == .running }.isEmpty)
         #expect(task.events.contains { $0.type == "error" })
     }
@@ -135,6 +168,47 @@ struct TaskLifecycleResumeTests {
         #expect(task.status == .pendingUser)
         #expect(task.runs.filter { $0.status == .running }.isEmpty)
         #expect(task.events.contains { $0.type == "error" })
+    }
+
+    @Test("Allow once credential approval does not persist task-scoped credential grants")
+    func allowOnceCredentialApprovalDoesNotPersistTaskScopedCredentialGrant() async throws {
+        let env = try makeEnvironment()
+        defer { try? FileManager.default.removeItem(atPath: env.root) }
+
+        let workspace = Workspace(name: "Credential Approval", primaryPath: env.root)
+        let task = AgentTask(title: "Credential Approval", goal: "Use the API", workspace: workspace)
+        task.status = .pendingUser
+        task.runtimeID = AgentRuntimeID.claudeCode.rawValue
+        task.sessionId = "sess-credential-approval"
+        env.context.insert(workspace)
+        env.context.insert(task)
+
+        let approvalRun = TaskRun(task: task)
+        approvalRun.status = .failed
+        approvalRun.stopReason = "permission_approval_required"
+        approvalRun.completedAt = Date()
+        env.context.insert(approvalRun)
+
+        let label = "connector:11111111-1111-1111-1111-111111111111:JIRA_API_TOKEN"
+        let grants = PermissionBroker.approvalGrants(for: .credential(label: label))
+        env.context.insert(TaskEvent(
+            task: task,
+            eventType: TaskEventTypes.Tool.permissionApprovalRequested,
+            payload: PermissionBroker.approvalPayloadString(
+                providerID: .claudeCode,
+                request: .credential(label: label),
+                reason: "Connector credential egress requires user approval.",
+                grants: grants
+            ),
+            run: approvalRun
+        ))
+        try env.context.save()
+
+        await env.coordinator.approveTask(task)?.value
+
+        #expect(TaskRuntimePermissionGrants.approvedCredentialLabels(for: task).isEmpty)
+        #expect(task.events.contains { $0.type == TaskRuntimePermissionGrants.eventType } == false)
+        #expect(task.status == .pendingUser)
     }
 
     @Test("Resume preserves a queue-recorded .failed instead of reverting over it")

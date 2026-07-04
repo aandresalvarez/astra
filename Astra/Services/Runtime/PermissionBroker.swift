@@ -156,7 +156,8 @@ enum PermissionBroker {
     static func executionPolicy(forRuntime runtime: AgentRuntimeID, grants: [PermissionGrant]) -> AgentRuntimeExecutionPolicy {
         let sanitizedGrants = sanitizeGrants(grants)
         let providerGrants = providerGrantStrings(for: sanitizedGrants, runtime: runtime)
-        let allowedTools = Array(Set(AgentPolicy.preset(.review).allowedTools + providerGrants)).sorted()
+        let runtimeGrants = providerRuntimeGrantStrings(for: sanitizedGrants, runtime: runtime)
+        let allowedTools = Array(Set(AgentPolicy.preset(.review).allowedTools + providerGrants + runtimeGrants)).sorted()
         return .approvedRuntimePermission(
             runtime: runtime,
             allowedTools: allowedTools,
@@ -207,8 +208,8 @@ enum PermissionBroker {
             return grants
         case .network(_, let toolName):
             return toolName.flatMap(safeProviderToolGrant).map { [$0] } ?? []
-        case .credential:
-            return []
+        case .credential(let label):
+            return safeCredentialGrant(label).map { [$0] } ?? []
         case .providerNativePrompt(let toolName, let context):
             if isShellTool(toolName),
                let command = shellCommandHint(toolName: toolName, context: context) {
@@ -414,6 +415,8 @@ enum PermissionBroker {
             return nonEmpty(path) != nil && nonEmpty(access) != nil
         case .networkPattern(let pattern):
             return nonEmpty(pattern) != nil
+        case .credential(let label):
+            return isSafeCredentialLabel(label)
         }
     }
 
@@ -438,6 +441,22 @@ enum PermissionBroker {
               !lower.hasPrefix("bash("),
               !lower.hasPrefix("shell("),
               trimmed.rangeOfCharacter(from: grantMetacharacters) == nil else {
+            return false
+        }
+        return true
+    }
+
+    private static func safeCredentialGrant(_ label: String) -> PermissionGrant? {
+        let trimmed = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard isSafeCredentialLabel(trimmed) else { return nil }
+        return .credential(label: trimmed)
+    }
+
+    private static func isSafeCredentialLabel(_ label: String) -> Bool {
+        let trimmed = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              trimmed.count <= 200,
+              trimmed.rangeOfCharacter(from: .controlCharacters) == nil else {
             return false
         }
         return true

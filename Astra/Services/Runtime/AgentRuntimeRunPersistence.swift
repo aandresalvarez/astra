@@ -1,5 +1,6 @@
 import Foundation
 import SwiftData
+import ASTRACore
 
 @MainActor
 enum AgentRuntimeRunPersistence {
@@ -47,7 +48,7 @@ enum AgentRuntimeRunPersistence {
         task: AgentTask,
         run: TaskRun,
         modelContext: ModelContext,
-        phase: String,
+        phase: RunPhase,
         handoffDiscoveredFiles: [TaskOutputDiscoveredFile]? = nil
     ) {
         let start = DispatchTime.now().uptimeNanoseconds
@@ -108,7 +109,7 @@ enum AgentRuntimeRunPersistence {
     static func fields(
         task: AgentTask,
         run: TaskRun,
-        phase: String,
+        phase: RunPhase,
         persistedArtifactCount: Int = 0
     ) -> [String: String] {
         let start = DispatchTime.now().uptimeNanoseconds
@@ -120,7 +121,7 @@ enum AgentRuntimeRunPersistence {
         let errorEventCount = runEvents.filter { $0.type == "error" }.count
         let artifactCount = task.artifacts.count
         var fields: [String: String] = [
-            "phase": phase,
+            "phase": phase.rawValue,
             "runtime": run.runtimeID ?? task.resolvedRuntimeID.rawValue,
             "task_status": task.status.rawValue,
             "run_status": run.status.rawValue,

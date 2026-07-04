@@ -28,6 +28,7 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
     let budgetProfile = AgentRuntimeBudgetProfile(runtime: .codexCLI, launchOverheadTokens: 0)
     let recordsStreamTelemetry = true
     let recordsInferredFileChanges = true
+    let providerRuntimeMessages = ProviderRuntimeMessages.codex
 
     func launchSettings(configuration: AgentRuntimeConfiguration) -> AgentRuntimeLaunchSettings {
         let configuredPath = configuration.executablePath(for: id)
@@ -37,58 +38,26 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
         )
     }
 
-    func missingExecutableAuditReason() -> String {
-        "codex_cli_not_found"
-    }
-
-    func missingExecutableStopReason() -> String? {
-        "missing_codex"
-    }
-
-    func missingExecutableMessage(executablePath _: String) -> String {
-        "Codex CLI not found. Install Codex CLI, then authenticate with `codex login`."
-    }
-
-    func defaultStartEventPayload(task: AgentTask) -> String {
-        "Codex started working on: \(task.goal)"
-    }
-
     func connectorPreflightContextText(
         task _: AgentTask,
         promptOverride: String?,
         startPayload: String,
         sessionMessage _: String?,
-        phase _: String
+        phase _: RunPhase
     ) -> String {
         promptOverride ?? startPayload
     }
 
-    func shouldPrepareIsolation(phase _: String) -> Bool {
+    func shouldPrepareIsolation(phase _: RunPhase) -> Bool {
         true
     }
 
-    func shouldValidateSuccessfulRun(phase _: String) -> Bool {
+    func shouldValidateSuccessfulRun(phase _: RunPhase) -> Bool {
         true
     }
 
-    func requiresVisibleResultForSuccessfulRun(phase _: String) -> Bool {
+    func requiresVisibleResultForSuccessfulRun(phase _: RunPhase) -> Bool {
         true
-    }
-
-    func manualCompletionPayload(phase _: String) -> String {
-        "Codex finished."
-    }
-
-    func failurePayloadPrefix(phase _: String, exitCode: Int) -> String {
-        "Codex exited with code \(exitCode)."
-    }
-
-    func timeoutPayload(phase _: String, timeoutSeconds: TimeInterval) -> String {
-        "Task idle timeout - no output for \(Int(timeoutSeconds))s. Process killed."
-    }
-
-    func maxTurnsPayload(phase _: String, task: AgentTask) -> String {
-        "Max turns reached (\(task.maxTurns)). Process killed."
     }
 
     func sessionTurnMessage(
@@ -96,9 +65,9 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
         promptOverride: String?,
         startPayload: String?,
         sessionMessage _: String?,
-        phase _: String
+        phase _: RunPhase
     ) -> String {
-        promptOverride == nil ? task.goal : (startPayload ?? task.goal)
+        providerRuntimeMessages.sessionTurnMessage(task: task, promptOverride: promptOverride, startPayload: startPayload)
     }
 
     func policyAdapter(runtimeCapabilities _: AgentRuntimePolicyCapabilities) -> any ProviderPolicyAdapter {
@@ -218,7 +187,8 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
     func makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext) -> AgentRuntimeProcessLaunchPlan {
         let taskEnv = AgentRuntimeProcessRunner.scopedEnvironmentVariables(
             for: context.task,
-            contextText: context.contextText
+            contextText: context.contextText,
+            executionPolicy: context.executionPolicy
         )
         let browserShimDirectory = AgentRuntimeProcessRunner.browserToolShimDirectory(
             for: context.task,
@@ -231,6 +201,9 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
         let model = AgentRuntimeProcessRunner.model(context.task.model, for: id)
         let providerModel = CodexCLIRuntime.resolvedModelName(model)
         let additionalPaths = AgentRuntimeProcessRunner.runtimeAdditionalPaths(for: context.task)
+        let resumingNativeSession = !(context.nativeContinuationSessionID ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .isEmpty
         let executionEnvironment = DockerExecutionPlanner.resolveEnvironment(for: context.task)
         let mcpProjection = CodexMCPLaunchProjection.resolve(
             task: context.task,
@@ -260,7 +233,10 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
             )
                 || taskEnv["ASTRA_BROWSER_URL"] != nil,
             mcpConfigArguments: mcpProjection.configArguments,
-            resumeSessionID: context.nativeContinuationSessionID
+            resumeSessionID: context.nativeContinuationSessionID,
+            permissionArguments: context.requiredProviderPolicyRender(for: id).codexLaunchPermissionArguments(
+                resumingNativeSession: resumingNativeSession
+            )
         )
         let directoriesToCreate = CodexCLIRuntime.directoriesToCreate(
             providerHomeDirectory: context.providerHomeDirectory,
@@ -293,7 +269,7 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
             ],
             commandPlannedFields: [
                 "runtime": id.rawValue,
-                "phase": context.phase,
+                "phase": context.phase.rawValue,
                 "model": model,
                 "provider_model": providerModel,
                 "permission_policy": effectivePermissionPolicy.rawValue,
@@ -323,8 +299,8 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
         )
     }
 
-    func shouldClearStaleSessionOnFailure(phase: String, result: AgentProcessResult) -> Bool {
-        guard phase == "resume" else { return false }
+    func shouldClearStaleSessionOnFailure(phase: RunPhase, result: AgentProcessResult) -> Bool {
+        guard phase == .resume else { return false }
         let error = result.error?.lowercased() ?? ""
         return error.contains("session") && (error.contains("not found") || error.contains("no such"))
     }
@@ -359,7 +335,7 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
     @MainActor
     func recordWorkerStreamEvent(
         _ event: AgentRuntimeRecordedEvent,
-        mode _: AgentRuntimeRecordingMode,
+        mode: AgentRuntimeRecordingMode,
         task: AgentTask,
         run: TaskRun,
         modelContext: ModelContext,
@@ -371,6 +347,7 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
             to: task,
             run: run,
             modelContext: modelContext,
+            recordingMode: mode,
             recordingState: recordingState
         )
     }
@@ -399,15 +376,12 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
             permissionPolicy: permissionPolicy,
             timeoutSeconds: configuration.timeoutSeconds,
             taskEnvironment: [:],
-            providerHomeDirectory: configuration.homeDirectory(for: id)
-        )
-
-        for directory in CodexCLIRuntime.directoriesToCreate(
             providerHomeDirectory: configuration.homeDirectory(for: id),
-            environment: plan.environment
-        ) {
-            try? FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
-        }
+            permissionArguments: ProviderPolicyRender.codexLaunchPermissionArguments(
+                policy: permissionPolicy,
+                resumingNativeSession: false
+            )
+        )
 
         // Utility prompts are one-shot structured generations (e.g. App Studio manifests), not
         // interactive agent sessions. Run codex at LOW reasoning so it answers promptly instead
@@ -417,27 +391,34 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
         if let execIndex = arguments.firstIndex(of: "exec") {
             arguments.insert(contentsOf: ["-c", "model_reasoning_effort=\"low\""], at: execIndex + 1)
         }
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: plan.executablePath)
-        process.arguments = arguments
-        process.currentDirectoryURL = URL(fileURLWithPath: workspacePath)
-        process.environment = plan.environment
-
-        let stdoutPipe = Pipe()
-        let stderrPipe = Pipe()
-        process.standardOutput = stdoutPipe
-        process.standardError = stderrPipe
-        process.standardInput = FileHandle.nullDevice
-        let result = await AsyncProcessRunner.run(
-            process,
-            stdout: stdoutPipe,
-            stderr: stderrPipe,
-            timeoutSeconds: configuration.timeoutSeconds
+        let processPlan = AgentRuntimeProcessLaunchPlan(
+            runtime: id,
+            executablePath: plan.executablePath,
+            arguments: arguments,
+            currentDirectory: workspacePath,
+            environment: plan.environment,
+            browserShimDirectory: nil,
+            providerVersion: nil,
+            parsesJSONLines: plan.parsesJSONLines,
+            directoriesToCreate: CodexCLIRuntime.directoriesToCreate(
+                providerHomeDirectory: configuration.homeDirectory(for: id),
+                environment: plan.environment
+            ),
+            sandboxReadablePaths: CodexCLIRuntime.sandboxReadablePaths(
+                providerHomeDirectory: configuration.homeDirectory(for: id),
+                environment: plan.environment
+            )
         )
-        return AgentUtilityRunResult(
-            exitCode: result.exitCode,
-            output: CodexCLIRuntime.extractUtilityText(from: result.stdout),
-            error: result.stderr
+        return await AgentRuntimeProcessRunner().runUtilityProcess(
+            AgentUtilityLaunchPlan(
+                process: processPlan,
+                providerHomeDirectory: configuration.homeDirectory(for: id),
+                permissionPolicy: permissionPolicy,
+                timeoutSeconds: configuration.timeoutSeconds
+            ),
+            outputTransform: { output in
+                CodexCLIRuntime.extractUtilityText(from: output)
+            }
         )
     }
 }

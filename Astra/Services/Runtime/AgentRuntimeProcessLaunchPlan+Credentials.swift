@@ -38,52 +38,6 @@ extension AgentRuntimeProcessLaunchPlan {
         )
     }
 
-    func enablingProviderNativeGitCredentialReads(
-        for context: GitCredentialSandboxContext,
-        permissionPolicy: PermissionPolicy
-    ) -> AgentRuntimeProcessLaunchPlan {
-        guard context.needsExternalCredentialAccess,
-              permissionPolicy != .autonomous else {
-            return self
-        }
-
-        var updatedArguments = arguments
-        var plannedFields = commandPlannedFields
-        switch runtime {
-        case .codexCLI:
-            return self
-        case .copilotCLI:
-            guard commandPlannedFields["supports_allow_all_paths"] == "true",
-                  !updatedArguments.contains("--allow-all-paths") else {
-                return self
-            }
-            updatedArguments.append("--allow-all-paths")
-            plannedFields["git_provider_native_read_access"] = "copilot_allow_all_paths"
-        default:
-            return self
-        }
-
-        return AgentRuntimeProcessLaunchPlan(
-            runtime: runtime,
-            executablePath: executablePath,
-            arguments: updatedArguments,
-            currentDirectory: currentDirectory,
-            environment: environment,
-            browserShimDirectory: browserShimDirectory,
-            providerVersion: providerVersion,
-            parsesJSONLines: parsesJSONLines,
-            directoriesToCreate: directoriesToCreate,
-            sandboxReadablePaths: sandboxReadablePaths,
-            sandboxHomeStateAccess: sandboxHomeStateAccess,
-            sandboxProtectedWriteDenyPaths: sandboxProtectedWriteDenyPaths,
-            providerDetectedFields: providerDetectedFields,
-            commandPlannedFields: plannedFields,
-            interactiveAsk: interactiveAsk,
-            pathMapper: pathMapper,
-            executionEnvironment: executionEnvironment
-        )
-    }
-
     func unsupportedProviderNativeCredentialReadBlock(
         for launchResourcePlan: TaskLaunchResourcePlan,
         permissionPolicy: PermissionPolicy,

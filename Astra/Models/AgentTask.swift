@@ -71,6 +71,12 @@ final class AgentTask {
     /// JSON-encoded immutable execution environment for this thread. Nil means
     /// host unless the first run snapshots the workspace default.
     var executionEnvironmentSnapshotJSON: String?
+    /// JSON-encoded runtime permission requests that are currently open for
+    /// user action. Events remain the audit trail; this field owns live state.
+    var runtimePermissionOpenRequestsJSON: String?
+    /// JSON-encoded task-scoped runtime permission grants approved for reuse.
+    /// Events remain the audit trail; this field owns replay decisions.
+    var runtimePermissionGrantsJSON: String?
     var createdAt: Date
     var updatedAt: Date
     var completedAt: Date?
@@ -133,6 +139,8 @@ final class AgentTask {
         self.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encodeSnapshot(
             ExecutionEnvironmentStore.decode(workspace?.activeExecutionEnvironmentJSON)
         )
+        self.runtimePermissionOpenRequestsJSON = "[]"
+        self.runtimePermissionGrantsJSON = "[]"
         self.createdAt = Date()
         self.updatedAt = Date()
     }

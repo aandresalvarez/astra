@@ -347,6 +347,7 @@ public struct ASTRAApp: App {
                 modelContainerResult: "initial_failed",
                 level: .warning
             )
+            WorkspaceRecoveryService.exportReadableWorkspacesBeforeStoreReset(at: config.url)
             WorkspaceRecoveryService.backupStore(at: config.url)
             do {
                 modelContainer = try ModelContainer(

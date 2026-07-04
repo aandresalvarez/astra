@@ -6,14 +6,18 @@ enum AgentRuntimeCapabilityLaunchAudit {
     static func logResolution(
         for task: AgentTask,
         runtime: AgentRuntimeID,
-        phase: String,
-        contextText: String
+        phase: RunPhase,
+        contextText: String,
+        capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot? = nil
     ) {
-        let scope = TaskCapabilityResolver(task: task).promptScope(contextText: contextText)
+        let scope = capabilityResolutionSnapshot?.providerLaunch ?? TaskCapabilityResolutionSnapshot.capture(
+            for: task,
+            providerLaunchContextText: contextText
+        ).providerLaunch
         let buildInfo = AppBuildInfo.current
         var fields = buildInfo.auditFields
         fields["runtime"] = runtime.rawValue
-        fields["phase"] = phase
+        fields["phase"] = phase.rawValue
         fields["scope_pruned"] = String(scope.prunedForBrowserTask)
         fields["scope_excluded_skill_names"] = CapabilityAudit.compactNames(scope.excludedSkillNames)
         fields["workspace_id"] = task.workspace?.id.uuidString ?? "none"
@@ -39,10 +43,14 @@ enum AgentRuntimeCapabilityLaunchAudit {
     static func logGitHubCLIPreflightIfNeeded(
         for task: AgentTask,
         runtime: AgentRuntimeID,
-        phase: String,
-        contextText: String
+        phase: RunPhase,
+        contextText: String,
+        capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot? = nil
     ) async {
-        let scope = TaskCapabilityResolver(task: task).promptScope(contextText: contextText)
+        let scope = capabilityResolutionSnapshot?.providerLaunch ?? TaskCapabilityResolutionSnapshot.capture(
+            for: task,
+            providerLaunchContextText: contextText
+        ).providerLaunch
         let hasGitHubTool = scope.localTools.contains { tool in
             tool.command.trimmingCharacters(in: .whitespacesAndNewlines) == "gh"
         }
@@ -55,7 +63,7 @@ enum AgentRuntimeCapabilityLaunchAudit {
         let gh = RuntimePathResolver.detectExecutablePath(named: "gh")
         var fields: [String: String] = [
             "source": "task_preflight",
-            "phase": phase,
+            "phase": phase.rawValue,
             "command": "gh",
             "matched_tool": String(hasGitHubTool),
             "matched_skill": String(hasGitHubSkill),

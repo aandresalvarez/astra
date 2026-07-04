@@ -6,9 +6,10 @@ import Foundation
 /// connector. Shared in-process: durable across a session's surfaces (it resets on relaunch — but the run
 /// log resets then too, so that's the right granularity for "bound audit-run growth").
 ///
-/// Enforced in `WorkspaceAppActionExecutor.executeAsyncCapabilityRead` BEFORE a run record is created, so
-/// a rejected read leaves no audit row (the whole point). Native UI reads (the sync path) are user clicks,
-/// not a flood, and are intentionally not limited here.
+/// Owned by `WorkspaceAppReadPolicy` / `WorkspaceAppCapabilityReadPipeline`. Async bridge reads are
+/// admitted before a run record is created, so a rejected read leaves no audit row. Sync pipeline reads
+/// share the same app-scoped budget once a run is already open, which prevents `astra.runAction` from
+/// bypassing the connector-read cap.
 final class WorkspaceAppConnectorReadRateLimiter: @unchecked Sendable {
     /// The shared limiter the executor consults. It MUST be process-wide (each read constructs a fresh
     /// `WorkspaceAppActionExecutor`, so a per-executor limiter would never accumulate and never limit).

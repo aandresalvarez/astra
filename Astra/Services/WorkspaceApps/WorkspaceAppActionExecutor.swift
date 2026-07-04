@@ -77,6 +77,7 @@ struct WorkspaceAppActionInput: Codable, Sendable, Equatable {
     var table: String?
     var record: [String: WorkspaceAppStorageValue]
     var limit: Int
+    var requestedLimit: Int?
     var exportFormat: String?
     var taskTitle: String?
     var taskGoal: String?
@@ -90,7 +91,7 @@ struct WorkspaceAppActionInput: Codable, Sendable, Equatable {
     init(
         table: String? = nil,
         record: [String: WorkspaceAppStorageValue] = [:],
-        limit: Int = 100,
+        limit: Int? = nil,
         exportFormat: String? = nil,
         taskTitle: String? = nil,
         taskGoal: String? = nil,
@@ -101,7 +102,8 @@ struct WorkspaceAppActionInput: Codable, Sendable, Equatable {
     ) {
         self.table = table
         self.record = record
-        self.limit = limit
+        self.limit = limit ?? 100
+        self.requestedLimit = limit
         self.exportFormat = exportFormat
         self.taskTitle = taskTitle
         self.taskGoal = taskGoal
@@ -274,7 +276,7 @@ struct WorkspaceAppRunRecorder {
 // must await. The top-level execute() catches it, persists the resume point on the
 // run, and marks the run `.waiting` (not failed). resume() continues from there
 // once the task completes.
-private struct WorkspaceAppPipelineSuspension: Error {
+struct WorkspaceAppPipelineSuspension: Error {
     // A SET of awaited task ids (one element for a B2 single task.createAndRun step,
     // N for a C1 task.fanOut barrier).
     let taskIDs: [UUID]
@@ -285,7 +287,7 @@ private struct WorkspaceAppPipelineSuspension: Error {
 /// Human-in-the-loop: thrown when a pipeline reaches an un-approved `gate.humanApproval` step, so the
 /// run suspends to `.waiting` pending a HUMAN decision (resumed via `resumeWithApproval`) instead of
 /// failing — the executor analogue of the task suspension above.
-private struct WorkspaceAppApprovalSuspension: Error {
+struct WorkspaceAppApprovalSuspension: Error {
     let pipelineActionID: String
     let gateStepIndex: Int
     let gateActionID: String
@@ -298,6 +300,8 @@ struct WorkspaceAppActionExecutor {
     var capabilityWriteClient: any WorkspaceAppCapabilityWriteClient = WorkspaceAppNativeCapabilityWriteClient()
     var asyncCapabilityWriteClient: any WorkspaceAppAsyncCapabilityWriteClient = WorkspaceAppNativeAsyncCapabilityWriteClient()
     var utilityActionClient: any WorkspaceAppUtilityActionClient = WorkspaceAppDefaultUtilityActionClient()
+    var permissionGate: any WorkspaceAppPermissionChecking = WorkspaceAppPermissionGate()
+    var readPolicy = WorkspaceAppReadPolicy()
     var recorder = WorkspaceAppRunRecorder()
 
     @MainActor
@@ -353,21 +357,24 @@ struct WorkspaceAppActionExecutor {
             recorder.completeRun(run, outputSummary: result.outputSummary, modelContext: modelContext)
             app.lastRunAt = Date()
             app.updatedAt = Date()
-            try modelContext.save()
+            try WorkspacePersistenceCoordinator.saveAndAutoExportOrThrow(
+                workspace: workspace,
+                modelContext: modelContext
+            )
             return WorkspaceAppActionExecutionResult(
                 run: run,
                 rows: result.rows,
                 outputSummary: result.outputSummary
             )
         } catch let suspension as WorkspaceAppPipelineSuspension {
-            markWaiting(run: run, suspension: suspension, modelContext: modelContext)
+            markWaiting(run: run, suspension: suspension, workspace: workspace, modelContext: modelContext)
             return WorkspaceAppActionExecutionResult(
                 run: run,
                 rows: [],
                 outputSummary: "Workflow '\(suspension.pipelineActionID)' is waiting on \(suspension.taskIDs.count) task(s)."
             )
         } catch let approval as WorkspaceAppApprovalSuspension {
-            markWaitingForApproval(run: run, suspension: approval, modelContext: modelContext)
+            markWaitingForApproval(run: run, suspension: approval, workspace: workspace, modelContext: modelContext)
             return WorkspaceAppActionExecutionResult(
                 run: run,
                 rows: [],
@@ -380,7 +387,7 @@ struct WorkspaceAppActionExecutor {
                 blocked: isPermissionError(error),
                 modelContext: modelContext
             )
-            try? modelContext.save()
+            WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
             throw error
         }
     }
@@ -398,7 +405,7 @@ struct WorkspaceAppActionExecutor {
         taskOutputRows: [[String: WorkspaceAppStorageValue]] = [],
         consumedTokens: Int = 0,
         modelContext: ModelContext
-    ) throws -> WorkspaceAppActionExecutionResult {
+    ) async throws -> WorkspaceAppActionExecutionResult {
         guard run.status == .waiting, let pipelineID = run.pendingActionID else {
             throw WorkspaceAppActionExecutionError.unsupportedActionType(
                 "resume requires a waiting run with a pending workflow action"
@@ -425,7 +432,7 @@ struct WorkspaceAppActionExecutor {
                 ],
                 modelContext: modelContext
             )
-            try? modelContext.save()
+            WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
             return WorkspaceAppActionExecutionResult(
                 run: run,
                 rows: [],
@@ -458,7 +465,10 @@ struct WorkspaceAppActionExecutor {
             modelContext: modelContext
         )
         do {
-            let result = try executePipeline(
+            // Continue on the ASYNC pipeline runner so a `capability.read` step
+            // after the resumed barrier resolves through the live async client
+            // (the synchronous `executePipeline` hits the unavailable one).
+            let result = try await executeAsyncPipeline(
                 action: action,
                 app: app,
                 workspace: workspace,
@@ -466,6 +476,7 @@ struct WorkspaceAppActionExecutor {
                 dependencyBindings: dependencyBindings,
                 input: WorkspaceAppActionInput(boundRows: boundRows),
                 run: run,
+                surface: .executor,
                 modelContext: modelContext,
                 startIndex: startIndex,
                 initialBoundRows: boundRows
@@ -475,21 +486,24 @@ struct WorkspaceAppActionExecutor {
             recorder.completeRun(run, outputSummary: result.outputSummary, modelContext: modelContext)
             app.lastRunAt = Date()
             app.updatedAt = Date()
-            try modelContext.save()
+            try WorkspacePersistenceCoordinator.saveAndAutoExportOrThrow(
+                workspace: workspace,
+                modelContext: modelContext
+            )
             return WorkspaceAppActionExecutionResult(
                 run: run,
                 rows: result.rows,
                 outputSummary: result.outputSummary
             )
         } catch let suspension as WorkspaceAppPipelineSuspension {
-            markWaiting(run: run, suspension: suspension, modelContext: modelContext)
+            markWaiting(run: run, suspension: suspension, workspace: workspace, modelContext: modelContext)
             return WorkspaceAppActionExecutionResult(
                 run: run,
                 rows: [],
                 outputSummary: "Workflow '\(suspension.pipelineActionID)' is waiting on \(suspension.taskIDs.count) task(s)."
             )
         } catch let approval as WorkspaceAppApprovalSuspension {
-            markWaitingForApproval(run: run, suspension: approval, modelContext: modelContext)
+            markWaitingForApproval(run: run, suspension: approval, workspace: workspace, modelContext: modelContext)
             return WorkspaceAppActionExecutionResult(
                 run: run,
                 rows: [],
@@ -497,14 +511,16 @@ struct WorkspaceAppActionExecutor {
             )
         } catch {
             recorder.failRun(run, error: error, blocked: isPermissionError(error), modelContext: modelContext)
-            try? modelContext.save()
+            WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
             throw error
         }
     }
 
-    private func markWaiting(
+    @MainActor
+    func markWaiting(
         run: WorkspaceAppRun,
         suspension: WorkspaceAppPipelineSuspension,
+        workspace: Workspace,
         modelContext: ModelContext
     ) {
         run.status = .waiting
@@ -523,12 +539,14 @@ struct WorkspaceAppActionExecutor {
             ],
             modelContext: modelContext
         )
-        try? modelContext.save()
+        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
     }
 
-    private func markWaitingForApproval(
+    @MainActor
+    func markWaitingForApproval(
         run: WorkspaceAppRun,
         suspension: WorkspaceAppApprovalSuspension,
+        workspace: Workspace,
         modelContext: ModelContext
     ) {
         run.status = .waiting
@@ -547,7 +565,7 @@ struct WorkspaceAppActionExecutor {
             ],
             modelContext: modelContext
         )
-        try? modelContext.save()
+        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
     }
 
     /// Resume a run suspended on a human-approval gate: on approve, re-run the pipeline from the
@@ -563,7 +581,7 @@ struct WorkspaceAppActionExecutor {
         manifest: WorkspaceAppManifest,
         dependencyBindings: [WorkspaceAppDependencyBinding] = [],
         modelContext: ModelContext
-    ) throws -> WorkspaceAppActionExecutionResult {
+    ) async throws -> WorkspaceAppActionExecutionResult {
         guard run.status == .waiting,
               let gateID = run.pendingApprovalActionID,
               let pipelineID = run.pendingActionID else {
@@ -584,7 +602,7 @@ struct WorkspaceAppActionExecutor {
             run.completedAt = Date()
             run.errorMessage = "Approval rejected for '\(gateID)'."
             run.pendingActionID = nil
-            try? modelContext.save()
+            WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
             return WorkspaceAppActionExecutionResult(
                 run: run, rows: [],
                 outputSummary: "Workflow '\(pipelineID)' rejected at approval gate '\(gateID)'."
@@ -612,7 +630,9 @@ struct WorkspaceAppActionExecutor {
         )
         run.status = .running
         do {
-            let result = try executePipeline(
+            // Async continuation so a post-gate `capability.read` step resolves
+            // through the live async client (see `resume`).
+            let result = try await executeAsyncPipeline(
                 action: action,
                 app: app,
                 workspace: workspace,
@@ -620,6 +640,7 @@ struct WorkspaceAppActionExecutor {
                 dependencyBindings: dependencyBindings,
                 input: WorkspaceAppActionInput(confirmedApproval: true, boundRows: resumedBoundRows),
                 run: run,
+                surface: .executor,
                 modelContext: modelContext,
                 startIndex: startIndex,
                 initialBoundRows: resumedBoundRows
@@ -629,80 +650,49 @@ struct WorkspaceAppActionExecutor {
             recorder.completeRun(run, outputSummary: result.outputSummary, modelContext: modelContext)
             app.lastRunAt = Date()
             app.updatedAt = Date()
-            try modelContext.save()
+            try WorkspacePersistenceCoordinator.saveAndAutoExportOrThrow(
+                workspace: workspace,
+                modelContext: modelContext
+            )
             return WorkspaceAppActionExecutionResult(run: run, rows: result.rows, outputSummary: result.outputSummary)
         } catch let suspension as WorkspaceAppPipelineSuspension {
-            markWaiting(run: run, suspension: suspension, modelContext: modelContext)
+            markWaiting(run: run, suspension: suspension, workspace: workspace, modelContext: modelContext)
             return WorkspaceAppActionExecutionResult(
                 run: run, rows: [],
                 outputSummary: "Workflow '\(suspension.pipelineActionID)' is waiting on \(suspension.taskIDs.count) task(s)."
             )
         } catch let approval as WorkspaceAppApprovalSuspension {
-            markWaitingForApproval(run: run, suspension: approval, modelContext: modelContext)
+            markWaitingForApproval(run: run, suspension: approval, workspace: workspace, modelContext: modelContext)
             return WorkspaceAppActionExecutionResult(
                 run: run, rows: [],
                 outputSummary: "Workflow '\(approval.pipelineActionID)' is waiting for approval of '\(approval.gateActionID)'."
             )
         } catch {
             recorder.failRun(run, error: error, blocked: isPermissionError(error), modelContext: modelContext)
-            try? modelContext.save()
+            WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
             throw error
         }
     }
 
-    private func actionSpec(actionID: String, manifest: WorkspaceAppManifest) throws -> WorkspaceAppActionSpec {
+    func actionSpec(actionID: String, manifest: WorkspaceAppManifest) throws -> WorkspaceAppActionSpec {
         guard let action = manifest.actions.first(where: { $0.id == actionID }) else {
             throw WorkspaceAppActionExecutionError.missingAction(actionID)
         }
         return action
     }
 
-    private func enforcePermission(
+    func enforcePermission(
         for action: WorkspaceAppActionSpec,
         app: WorkspaceApp,
-        input: WorkspaceAppActionInput
+        input: WorkspaceAppActionInput,
+        surface: WorkspaceAppBridgeSurface = .executor
     ) throws {
-        switch effect(for: action.type) {
-        case .read:
-            return
-        case .localWrite:
-            guard app.permissionMode != .readOnly else {
-                throw WorkspaceAppActionExecutionError.permissionDenied(
-                    "Read-only workspace apps cannot perform local write action '\(action.id)'."
-                )
-            }
-        case .externalWrite:
-            if app.permissionMode == .preApproved {
-                return
-            }
-            if app.permissionMode == .approvalRequired {
-                guard input.confirmedApproval else {
-                    throw WorkspaceAppActionExecutionError.permissionDenied(
-                        "External write action '\(action.id)' requires explicit approval before execution."
-                    )
-                }
-                return
-            }
-            if app.permissionMode == .draftOnly {
-                throw WorkspaceAppActionExecutionError.permissionDenied(
-                    "Draft-only workspace apps cannot submit external write action '\(action.id)'."
-                )
-            }
-            throw WorkspaceAppActionExecutionError.permissionDenied(
-                "Read-only workspace apps cannot submit external write action '\(action.id)'."
-            )
-        case .destructive:
-            guard app.permissionMode != .readOnly else {
-                throw WorkspaceAppActionExecutionError.permissionDenied(
-                    "Read-only workspace apps cannot perform destructive action '\(action.id)'."
-                )
-            }
-            guard input.confirmedDestructive else {
-                throw WorkspaceAppActionExecutionError.permissionDenied(
-                    "Destructive action '\(action.id)' requires explicit confirmation before execution."
-                )
-            }
-        }
+        try permissionGate.enforce(
+            action: action,
+            mode: app.permissionMode,
+            input: input,
+            surface: surface
+        )
     }
 
     /// Async execution path for `capability.write` — the one action type that needs real network I/O
@@ -721,6 +711,7 @@ struct WorkspaceAppActionExecutor {
         dependencyBindings: [WorkspaceAppDependencyBinding] = [],
         input: WorkspaceAppActionInput = WorkspaceAppActionInput(),
         trigger: WorkspaceAppRunTrigger = .user,
+        bridgeSurface: WorkspaceAppBridgeSurface = .executor,
         modelContext: ModelContext
     ) async throws -> WorkspaceAppActionExecutionResult {
         let action = try actionSpec(actionID: actionID, manifest: manifest)
@@ -731,10 +722,24 @@ struct WorkspaceAppActionExecutor {
         if action.type == "capability.read" {
             return try await executeAsyncCapabilityRead(
                 action: action, app: app, workspace: workspace, manifest: manifest,
-                dependencyBindings: dependencyBindings, input: input, trigger: trigger, modelContext: modelContext
+                dependencyBindings: dependencyBindings, input: input, trigger: trigger,
+                surface: bridgeSurface, modelContext: modelContext
             )
         }
         guard action.type == "capability.write" else {
+            if try workflowRequiresAsyncExecution(action: action, manifest: manifest) {
+                return try await executeAsyncWorkflow(
+                    action: action,
+                    app: app,
+                    workspace: workspace,
+                    manifest: manifest,
+                    dependencyBindings: dependencyBindings,
+                    input: input,
+                    trigger: trigger,
+                    surface: bridgeSurface,
+                    modelContext: modelContext
+                )
+            }
             return try execute(
                 actionID: actionID, app: app, workspace: workspace, manifest: manifest,
                 dependencyBindings: dependencyBindings, input: input, trigger: trigger, modelContext: modelContext
@@ -746,45 +751,29 @@ struct WorkspaceAppActionExecutor {
         )
         do {
             try enforcePermission(for: action, app: app, input: input)
-            guard !input.record.isEmpty else { throw WorkspaceAppActionExecutionError.missingRecord }
-            let requirementID = normalized(action.requirementRef, fallback: "")
-            guard !requirementID.isEmpty else { throw WorkspaceAppActionExecutionError.missingRequirement("") }
-            guard let requirement = manifest.requirements.first(where: { $0.id == requirementID }) else {
-                throw WorkspaceAppActionExecutionError.missingRequirement(requirementID)
-            }
-            guard let binding = dependencyBindings.first(where: {
-                $0.appID == app.id && $0.requirementID == requirementID && $0.status == .mapped
-            }) else {
-                throw WorkspaceAppActionExecutionError.missingMappedBinding(requirementID)
-            }
-            let result = try await asyncCapabilityWriteClient.write(
-                action: action, requirement: requirement, binding: binding, input: input
-            )
-            recorder.recordEvent(
+            let result = try await executeCapabilityWriteAsyncStep(
+                action: action,
+                app: app,
+                manifest: manifest,
+                dependencyBindings: dependencyBindings,
+                input: input,
                 run: run,
-                type: "workspaceApp.capability.write",
-                payload: [
-                    "actionID": .text(action.id),
-                    "requirementID": .text(requirementID),
-                    "contract": .text(binding.contract),
-                    "operation": .text(action.operation ?? ""),
-                    "async": .bool(true)
-                ],
                 modelContext: modelContext
             )
             recorder.completeRun(run, outputSummary: result.outputSummary, modelContext: modelContext)
             app.lastRunAt = Date()
             app.updatedAt = Date()
-            try? modelContext.save()
+            WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
             return WorkspaceAppActionExecutionResult(run: run, rows: result.rows, outputSummary: result.outputSummary)
         } catch {
             recorder.failRun(run, error: error, blocked: isPermissionError(error), modelContext: modelContext)
-            try? modelContext.save()
+            WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
             throw error
         }
     }
 
-    private func execute(
+    @MainActor
+    func execute(
         action: WorkspaceAppActionSpec,
         app: WorkspaceApp,
         workspace: Workspace,
@@ -994,6 +983,7 @@ struct WorkspaceAppActionExecutor {
     // C2: evaluate a predicate against the upstream bound output and run exactly one
     // chosen target step inline (then/else). Synchronous, non-suspending — branch
     // targets are validator-restricted to non-task action types.
+    @MainActor
     private func executeBranch(
         action: WorkspaceAppActionSpec,
         app: WorkspaceApp,
@@ -1378,45 +1368,38 @@ struct WorkspaceAppActionExecutor {
         dependencyBindings: [WorkspaceAppDependencyBinding],
         input: WorkspaceAppActionInput,
         trigger: WorkspaceAppRunTrigger,
+        surface: WorkspaceAppBridgeSurface,
         modelContext: ModelContext
     ) async throws -> WorkspaceAppActionExecutionResult {
-        // App-scoped rate budget across ALL surfaces — checked BEFORE the run record so a runaway poller
-        // can't grow the audit log or hammer the connector (the per-WebView throttle only bounds one
-        // surface). A rejected read leaves no run row.
-        guard WorkspaceAppConnectorReadRateLimiter.shared.admit(appID: app.id) else {
-            throw WorkspaceAppSourceResolutionError.capabilityReadUnavailable("\(action.id): connector reads are rate-limited; try again shortly")
-        }
+        let request = capabilityReadRequest(
+            action: action,
+            app: app,
+            workspace: workspace,
+            manifest: manifest,
+            dependencyBindings: dependencyBindings,
+            input: input,
+            surface: surface
+        )
+        // App-scoped rate budget across ALL surfaces is checked BEFORE the run record. A rejected read
+        // leaves no run row; admitted reads still audit resolver failures below.
+        let pipeline = capabilityReadPipeline()
+        try pipeline.admit(request)
         let run = recorder.startRun(
             app: app, actionID: action.id, trigger: trigger, inputSummary: inputSummary(input), modelContext: modelContext
         )
         do {
-            try enforcePermission(for: action, app: app, input: input)
-            let sourceID = normalized(action.sourceRef, input.table, action.table, fallback: "")
-            guard !sourceID.isEmpty else { throw WorkspaceAppActionExecutionError.missingSource }
-            // Connector-ONLY resolution: a capability.read must go through its dependency binding, never
-            // fall through to app storage even if the source id shadows a storage table name.
-            let resolved = try await sourceResolver.resolveCapabilityReadAsync(
-                sourceID: sourceID, app: app, workspace: workspace, manifest: manifest,
-                dependencyBindings: dependencyBindings,
-                input: WorkspaceAppSourceResolutionInput(limit: input.limit, parameters: input.record)
-            )
-            var payload: [String: WorkspaceAppStorageValue] = [
-                "sourceID": .text(resolved.sourceID),
-                "rowCount": .integer(Int64(resolved.rows.count)),
-                "async": .bool(true)
-            ]
-            if let requirementID = resolved.requirementID { payload["requirementID"] = .text(requirementID) }
-            if let implementationID = resolved.implementationID { payload["implementationID"] = .text(implementationID) }
-            if let provider = resolved.provider { payload["provider"] = .text(provider) }
+            try enforcePermission(for: action, app: app, input: input, surface: surface)
+            let resolved = try await pipeline.resolveAdmittedAsync(request)
+            let payload = WorkspaceAppCapabilityReadPipeline.auditPayload(for: resolved, async: true)
             recorder.recordEvent(run: run, type: "workspaceApp.capability.read", payload: payload, modelContext: modelContext)
             recorder.completeRun(run, outputSummary: resolved.outputSummary, modelContext: modelContext)
             app.lastRunAt = Date()
             app.updatedAt = Date()
-            try? modelContext.save()
+            WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
             return WorkspaceAppActionExecutionResult(run: run, rows: resolved.rows, outputSummary: resolved.outputSummary)
         } catch {
             recorder.failRun(run, error: error, blocked: isPermissionError(error), modelContext: modelContext)
-            try? modelContext.save()
+            WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
             throw error
         }
     }
@@ -1436,40 +1419,17 @@ struct WorkspaceAppActionExecutor {
         linkedTaskID: UUID?,
         linkedArtifactPath: String?
     ) {
-        // Same app-scoped rate budget as the async direct path — this sync path is ALSO reachable from a
-        // page via `astra.runAction` → `pipeline.run` → a `capability.read` STEP, so the limiter must
-        // bound it too (else the budget is bypassable). Native user-click reads share the budget; 60/min is
-        // far above any human click rate.
-        guard WorkspaceAppConnectorReadRateLimiter.shared.admit(appID: app.id) else {
-            throw WorkspaceAppSourceResolutionError.capabilityReadUnavailable("\(action.id): connector reads are rate-limited; try again shortly")
-        }
-        let sourceID = normalized(action.sourceRef, input.table, action.table, fallback: "")
-        guard !sourceID.isEmpty else {
-            throw WorkspaceAppActionExecutionError.missingSource
-        }
-        // Connector-ONLY resolution (also used by a capability.read pipeline/loop step reachable from JS
-        // via astra.runAction): never falls through to app storage even if the source id shadows a table.
-        let resolved = try sourceResolver.resolveCapabilityRead(
-            sourceID: sourceID,
+        let request = capabilityReadRequest(
+            action: action,
             app: app,
             workspace: workspace,
             manifest: manifest,
             dependencyBindings: dependencyBindings,
-            input: WorkspaceAppSourceResolutionInput(limit: input.limit, parameters: input.record)
+            input: input,
+            surface: .executor
         )
-        var payload: [String: WorkspaceAppStorageValue] = [
-            "sourceID": .text(resolved.sourceID),
-            "rowCount": .integer(Int64(resolved.rows.count))
-        ]
-        if let requirementID = resolved.requirementID {
-            payload["requirementID"] = .text(requirementID)
-        }
-        if let implementationID = resolved.implementationID {
-            payload["implementationID"] = .text(implementationID)
-        }
-        if let provider = resolved.provider {
-            payload["provider"] = .text(provider)
-        }
+        let resolved = try capabilityReadPipeline().resolve(request)
+        let payload = WorkspaceAppCapabilityReadPipeline.auditPayload(for: resolved)
         recorder.recordEvent(
             run: run,
             type: "workspaceApp.capability.read",
@@ -1493,7 +1453,8 @@ struct WorkspaceAppActionExecutor {
         linkedTaskID: UUID?,
         linkedArtifactPath: String?
     ) {
-        guard !input.record.isEmpty else { throw WorkspaceAppActionExecutionError.missingRecord }
+        let effectiveRecord = input.effectiveRecord
+        guard !effectiveRecord.isEmpty else { throw WorkspaceAppActionExecutionError.missingRecord }
         let requirementID = normalized(action.requirementRef, fallback: "")
         guard !requirementID.isEmpty else {
             throw WorkspaceAppActionExecutionError.missingRequirement("")
@@ -1506,18 +1467,20 @@ struct WorkspaceAppActionExecutor {
         }) else {
             throw WorkspaceAppActionExecutionError.missingMappedBinding(requirementID)
         }
+        var writeInput = input
+        writeInput.record = effectiveRecord
         let result = try capabilityWriteClient.write(
             action: action,
             requirement: requirement,
             binding: binding,
-            input: input
+            input: writeInput
         )
         var payload: [String: WorkspaceAppStorageValue] = [
             "actionID": .text(action.id),
             "requirementID": .text(requirementID),
             "contract": .text(binding.contract),
             "operation": .text(action.operation ?? ""),
-            "recordKeys": .text(input.record.keys.sorted().joined(separator: ","))
+            "recordKeys": .text(effectiveRecord.keys.sorted().joined(separator: ","))
         ]
         if let implementationID = binding.implementationID {
             payload["implementationID"] = .text(implementationID)
@@ -1534,6 +1497,67 @@ struct WorkspaceAppActionExecutor {
         return (result.rows, result.outputSummary, nil, nil)
     }
 
+    @MainActor
+    func executeCapabilityWriteAsyncStep(
+        action: WorkspaceAppActionSpec,
+        app: WorkspaceApp,
+        manifest: WorkspaceAppManifest,
+        dependencyBindings: [WorkspaceAppDependencyBinding],
+        input: WorkspaceAppActionInput,
+        run: WorkspaceAppRun,
+        modelContext: ModelContext
+    ) async throws -> (
+        rows: [[String: WorkspaceAppStorageValue]],
+        outputSummary: String,
+        linkedTaskID: UUID?,
+        linkedArtifactPath: String?
+    ) {
+        let effectiveRecord = input.effectiveRecord
+        guard !effectiveRecord.isEmpty else { throw WorkspaceAppActionExecutionError.missingRecord }
+        let requirementID = normalized(action.requirementRef, fallback: "")
+        guard !requirementID.isEmpty else {
+            throw WorkspaceAppActionExecutionError.missingRequirement("")
+        }
+        guard let requirement = manifest.requirements.first(where: { $0.id == requirementID }) else {
+            throw WorkspaceAppActionExecutionError.missingRequirement(requirementID)
+        }
+        guard let binding = dependencyBindings.first(where: {
+            $0.appID == app.id && $0.requirementID == requirementID && $0.status == .mapped
+        }) else {
+            throw WorkspaceAppActionExecutionError.missingMappedBinding(requirementID)
+        }
+        var writeInput = input
+        writeInput.record = effectiveRecord
+        let result = try await asyncCapabilityWriteClient.write(
+            action: action,
+            requirement: requirement,
+            binding: binding,
+            input: writeInput
+        )
+        var payload: [String: WorkspaceAppStorageValue] = [
+            "actionID": .text(action.id),
+            "requirementID": .text(requirementID),
+            "contract": .text(binding.contract),
+            "operation": .text(action.operation ?? ""),
+            "recordKeys": .text(effectiveRecord.keys.sorted().joined(separator: ",")),
+            "async": .bool(true)
+        ]
+        if let implementationID = binding.implementationID {
+            payload["implementationID"] = .text(implementationID)
+        }
+        if let provider = binding.provider {
+            payload["provider"] = .text(provider)
+        }
+        recorder.recordEvent(
+            run: run,
+            type: "workspaceApp.capability.write",
+            payload: payload,
+            modelContext: modelContext
+        )
+        return (result.rows, result.outputSummary, nil, nil)
+    }
+
+    @MainActor
     private func executePipeline(
         action: WorkspaceAppActionSpec,
         app: WorkspaceApp,
@@ -1710,7 +1734,7 @@ struct WorkspaceAppActionExecutor {
         )
     }
 
-    private func hasHumanApprovalGate(
+    func hasHumanApprovalGate(
         before stepIndex: Int,
         in pipeline: WorkspaceAppActionSpec,
         manifest: WorkspaceAppManifest
@@ -1724,7 +1748,7 @@ struct WorkspaceAppActionExecutor {
         return false
     }
 
-    private func pipelineStepHasApproval(
+    func pipelineStepHasApproval(
         step: WorkspaceAppActionSpec,
         index: Int,
         startIndex: Int,
@@ -1737,6 +1761,7 @@ struct WorkspaceAppActionExecutor {
         return (index == startIndex && input.confirmedApproval) || carriesHumanApproval
     }
 
+    @MainActor
     private func executeLoop(
         action: WorkspaceAppActionSpec,
         app: WorkspaceApp,
@@ -1952,7 +1977,7 @@ struct WorkspaceAppActionExecutor {
         return columns
     }
 
-    private func createTask(
+    func createTask(
         action: WorkspaceAppActionSpec,
         app: WorkspaceApp,
         manifest: WorkspaceAppManifest,
@@ -1987,7 +2012,7 @@ struct WorkspaceAppActionExecutor {
         }
 
         let task = AgentTask(title: title, goal: goal, workspace: workspace)
-        task.status = status
+        TaskStateMachine.initializeFromWorkspaceAppAction(task, to: status, modelContext: modelContext)
         task.inputs = [
             "Created from Workspace App '\(manifest.app.name)' (\(manifest.app.id)).",
             "Workspace App action: \(action.id)"
@@ -2121,11 +2146,31 @@ struct WorkspaceAppActionExecutor {
         return .null
     }
 
-    private func effect(for actionType: String) -> WorkspaceAppContractEffect {
-        WorkspaceAppActionEffect.effect(for: actionType)
+    private func capabilityReadPipeline() -> WorkspaceAppCapabilityReadPipeline {
+        WorkspaceAppCapabilityReadPipeline(sourceResolver: sourceResolver, readPolicy: readPolicy)
     }
 
-    private func inputSummary(_ input: WorkspaceAppActionInput) -> String {
+    private func capabilityReadRequest(
+        action: WorkspaceAppActionSpec,
+        app: WorkspaceApp,
+        workspace: Workspace,
+        manifest: WorkspaceAppManifest,
+        dependencyBindings: [WorkspaceAppDependencyBinding],
+        input: WorkspaceAppActionInput,
+        surface: WorkspaceAppBridgeSurface
+    ) -> WorkspaceAppCapabilityReadRequest {
+        WorkspaceAppCapabilityReadRequest(
+            action: action,
+            app: app,
+            workspace: workspace,
+            manifest: manifest,
+            dependencyBindings: dependencyBindings,
+            input: input,
+            surface: surface
+        )
+    }
+
+    func inputSummary(_ input: WorkspaceAppActionInput) -> String {
         let table = input.table ?? "none"
         let taskGoal = input.taskGoal?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? "present" : "none"
         let exportFormat = input.exportFormat ?? "none"
@@ -2144,7 +2189,7 @@ struct WorkspaceAppActionExecutor {
     /// rare false block. `launching` is the number of agent tasks about to be created (1 for a single
     /// task step, N for a fan-out) so the pre-flight accounts for the whole batch. Called at EVERY
     /// queued-agent creation boundary (pipeline task step, fan-out, and the direct dispatcher).
-    private func enforceAppAgentBudget(
+    func enforceAppAgentBudget(
         app: WorkspaceApp,
         run: WorkspaceAppRun,
         launching: Int,
@@ -2203,7 +2248,7 @@ struct WorkspaceAppActionExecutor {
         )
     }
 
-    private func isPermissionError(_ error: Error) -> Bool {
+    func isPermissionError(_ error: Error) -> Bool {
         if case WorkspaceAppActionExecutionError.permissionDenied = error {
             return true
         }
@@ -2241,7 +2286,7 @@ struct WorkspaceAppActionExecutor {
         ]
     }
 
-    private func evaluateExpressionGate(
+    func evaluateExpressionGate(
         gateOperator: WorkspaceAppExpressionGateOperator,
         actualValue: WorkspaceAppStorageValue?,
         expectedValue: WorkspaceAppStorageValue?

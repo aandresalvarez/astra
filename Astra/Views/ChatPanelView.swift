@@ -10,6 +10,11 @@ struct ChatMessage: Identifiable {
     let timestamp = Date()
 }
 
+private struct DraftChatMessagePayload: Codable {
+    let role: String
+    let content: String
+}
+
 // MARK: - Slash Command Wizard
 
 enum SlashWizardType: String {
@@ -913,39 +918,7 @@ struct ChatPanelView: View {
     @ViewBuilder
     private func messageBubble(_ msg: ChatMessage) -> some View {
         if msg.role == "user" {
-            // User bubble — right-aligned, subtle fill
-            HStack(alignment: .top, spacing: 10) {
-                Spacer(minLength: 120)
-                VStack(alignment: .trailing, spacing: 4) {
-                    Text(msg.content)
-                        .font(Stanford.chatBody())
-                        .lineSpacing(Stanford.chatBodyLineSpacing)
-                        .textSelection(.enabled)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 12)
-                        .background(Stanford.sky.opacity(0.055))
-                        .foregroundStyle(Stanford.readingText)
-                        .clipShape(UnevenRoundedRectangle(
-                            topLeadingRadius: 16,
-                            bottomLeadingRadius: 16,
-                            bottomTrailingRadius: 4,
-                            topTrailingRadius: 16
-                        ))
-                        .overlay(
-                            UnevenRoundedRectangle(
-                                topLeadingRadius: 16,
-                                bottomLeadingRadius: 16,
-                                bottomTrailingRadius: 4,
-                                topTrailingRadius: 16
-                            )
-                            .stroke(Stanford.sky.opacity(0.11), lineWidth: 1)
-                        )
-
-                    Text(msg.timestamp, style: .time)
-                        .font(Stanford.chatMeta())
-                        .foregroundStyle(.tertiary)
-                        .padding(.trailing, 4)
-                }
+            ChatTranscriptUserBubble(text: msg.content, timestamp: msg.timestamp, style: .workspace)
                 .contextMenu {
                     Button {
                         NSPasteboard.general.clearContents()
@@ -959,7 +932,6 @@ struct ChatPanelView: View {
                         Label("Reuse in Composer", systemImage: "arrow.uturn.up")
                     }
                 }
-            }
         } else {
             // AI response — flows directly on background, no card
             VStack(alignment: .leading, spacing: 6) {
@@ -1652,7 +1624,7 @@ struct ChatPanelView: View {
             model: model,
             runtime: runtime
         )
-        task.status = .queued
+        TaskStateMachine.enqueueFromChatSubmission(task, modelContext: modelContext)
         task.inputs = attachedFiles
         task.skills = taskSkills
         TaskCapabilitySnapshotter.capture(for: task)
@@ -1756,8 +1728,6 @@ struct ChatPanelView: View {
         TaskPlanService.recordApproved(plan, task: task, modelContext: modelContext)
         task.title = plan.title
         task.goal = plan.goal.isEmpty ? task.goal : plan.goal
-        task.status = .draft
-        task.updatedAt = Date()
         pendingPlan = nil
         isApprovedPlanHistoryExpanded = false
         isPlanMode = false
@@ -1785,9 +1755,7 @@ struct ChatPanelView: View {
         TaskPlanService.recordApproved(plan, task: task, modelContext: modelContext)
         task.title = plan.title
         task.goal = plan.goal.isEmpty ? plan.title : plan.goal
-        task.status = .queued
-        task.completedAt = nil
-        task.updatedAt = Date()
+        TaskStateMachine.enqueueFromChatSubmission(task, modelContext: modelContext)
         pendingPlan = nil
         isApprovedPlanHistoryExpanded = false
         isPlanMode = false
@@ -1839,7 +1807,7 @@ struct ChatPanelView: View {
             model: model,
             runtime: runtime
         )
-        task.status = .queued
+        TaskStateMachine.enqueueFromChatSubmission(task, modelContext: modelContext)
         task.inputs = spec.inputs + attachedFiles
         task.constraints = spec.constraints
         task.acceptanceCriteria = spec.acceptanceCriteria
@@ -2074,42 +2042,12 @@ struct ChatPanelView: View {
 
     @discardableResult
     private func smartPaste() -> Bool {
-        let pb = NSPasteboard.general
-        let types = pb.types ?? []
-
-        if let urls = pb.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL], !urls.isEmpty {
-            for url in urls where !attachedFiles.contains(url.path) {
-                attachedFiles.append(url.path)
-            }
-            return true
-        }
-
-        if types.contains(.png) || types.contains(.tiff) {
-            if let image = pb.readObjects(forClasses: [NSImage.self]) as? [NSImage], let first = image.first {
-                if let tiff = first.tiffRepresentation,
-                   let bitmap = NSBitmapImageRep(data: tiff),
-                   let png = bitmap.representation(using: .png, properties: [:]) {
-                    let tempPath = NSTemporaryDirectory() + "astra_paste_\(UUID().uuidString.prefix(8)).png"
-                    try? png.write(to: URL(fileURLWithPath: tempPath))
-                    attachedFiles.append(tempPath)
-                    return true
-                }
-            }
-        }
-
-        if let text = pb.string(forType: .string), !text.isEmpty {
-            let lineCount = text.components(separatedBy: .newlines).count
-            if lineCount > 10 || text.count > 500 {
-                let ext = text.hasPrefix("{") || text.hasPrefix("[") ? "json" : "txt"
-                let tempPath = NSTemporaryDirectory() + "astra_paste_\(UUID().uuidString.prefix(8)).\(ext)"
-                try? text.write(toFile: tempPath, atomically: true, encoding: .utf8)
-                attachedFiles.append(tempPath)
-                return true
-            }
-            return false
-        }
-
-        return false
+        let result = ComposerPasteIntake.intake(
+            pasteboard: .general,
+            existingAttachments: Set(attachedFiles)
+        )
+        attachedFiles.append(contentsOf: result.attachmentPaths)
+        return result.handled
     }
 
     private func installPasteMonitor() {
@@ -2121,7 +2059,8 @@ struct ChatPanelView: View {
                 messageText.append("\n")
                 return nil
             }
-            if event.modifierFlags.contains(.command),
+            if isComposerFocused,
+               event.modifierFlags.contains(.command),
                event.charactersIgnoringModifiers == "v" {
                 if smartPaste() { return nil }
             }
@@ -2538,11 +2477,7 @@ struct ChatPanelView: View {
     private func saveDraft() -> AgentTask? {
         guard !messages.isEmpty else { return draftTask }
 
-        struct DraftMessage: Codable {
-            let role: String
-            let content: String
-        }
-        let draftMessages = messages.map { DraftMessage(role: $0.role, content: $0.content) }
+        let draftMessages = messages.map { DraftChatMessagePayload(role: $0.role, content: $0.content) }
         guard let data = try? JSONEncoder().encode(draftMessages),
               let json = String(data: data, encoding: .utf8) else { return draftTask }
 
@@ -2597,7 +2532,6 @@ struct ChatPanelView: View {
                 model: model,
                 runtime: runtime
             )
-            draft.status = .draft
             draft.draftMessages = json
             draft.inputs = attachedFiles
             draft.skills = scopedSelectedSkills(forTaskText: draft.goal, inputs: attachedFiles)
@@ -2682,15 +2616,10 @@ struct ChatPanelView: View {
     }
 
     private func loadDraftMessages(_ task: AgentTask) {
-        struct DraftMessage: Codable {
-            let role: String
-            let content: String
-        }
-
         // First try loading from draftMessages JSON
         if !task.draftMessages.isEmpty,
            let data = task.draftMessages.data(using: .utf8),
-           let decoded = try? JSONDecoder().decode([DraftMessage].self, from: data) {
+           let decoded = try? JSONDecoder().decode([DraftChatMessagePayload].self, from: data) {
             messages = decoded.map { ChatMessage(role: $0.role, content: $0.content) }
             draftTask = task
             isPlanMode = true
@@ -3089,40 +3018,6 @@ struct EditableListField: View {
                 .buttonStyle(.plain)
                 .disabled(newItem.trimmingCharacters(in: .whitespaces).isEmpty)
             }
-        }
-    }
-}
-
-struct ChatBubbleView: View {
-    let event: TaskEvent
-
-    var isUser: Bool {
-        event.type == "user.message"
-    }
-
-    var body: some View {
-        HStack {
-            if isUser { Spacer(minLength: 60) }
-
-            VStack(alignment: isUser ? .trailing : .leading, spacing: 4) {
-                Text(event.payload)
-                    .font(Stanford.chatBody())
-                    .lineSpacing(Stanford.chatBodyLineSpacing)
-                    .padding(10)
-                    .background(isUser ? Stanford.sky.opacity(0.055) : Stanford.fog)
-                    .foregroundStyle(Stanford.readingText)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 12)
-                            .stroke(isUser ? Stanford.sky.opacity(0.11) : Color.clear, lineWidth: 1)
-                    )
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
-
-                Text(event.timestamp, style: .time)
-                    .font(Stanford.chatMeta())
-                    .foregroundStyle(.tertiary)
-            }
-
-            if !isUser { Spacer(minLength: 60) }
         }
     }
 }

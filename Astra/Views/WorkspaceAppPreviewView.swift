@@ -87,12 +87,12 @@ struct WorkspaceAppPreviewView: View {
     /// Live, READ-ONLY connector read for the preview's `astra.read` bridge — so a connector app (e.g.
     /// a GitHub PR tracker) shows REAL data in the preview instead of "Invalid astra read request".
     ///
-    /// It reuses the PUBLISHED read path's full security stack and bypasses ONLY the audit run-record:
+    /// It reuses the shared connector-read pipeline and bypasses ONLY the audit run-record:
     /// the bridge's `resolveRead` allowlist + `WorkspaceAppSurfaceView.htmlManifestValid` fail-closed
     /// gate still front it; bindings are the SAME `.mapped` ones the publish path computes (via
     /// `registry(for: workspace)`, so the preview can resolve nothing a published app with the same
     /// requirements couldn't); and resolution runs the SAME hardened native/CLI clients with the
-    /// workspace as cwd. The connector-read rate limiter is preserved here keyed on the runner's STABLE
+    /// workspace as cwd. The pipeline keeps the connector-read rate limiter keyed on the runner's STABLE
     /// `sandboxAppID`, so a runaway `setInterval(astra.read)` poller can't flood real `gh`/CLI calls.
     /// The transient `WorkspaceApp`/`WorkspaceAppRun` are never inserted into any `ModelContext`.
     /// Returns nil with no workspace — a live connector read needs one, so reads stay simulated there.
@@ -101,11 +101,6 @@ struct WorkspaceAppPreviewView: View {
         guard let workspace else { return nil }
         let appID = runner.sandboxAppID
         return { action, manifest, input in
-            // Rate limit FIRST (mirrors executeAsyncCapabilityRead) — fail closed before any read.
-            guard WorkspaceAppConnectorReadRateLimiter.shared.admit(appID: appID) else {
-                throw WorkspaceAppSourceResolutionError.capabilityReadUnavailable(
-                    "\(action.id): connector reads are rate-limited; try again shortly")
-            }
             // Transient app — NEVER inserted. Its id MUST equal the synthesized bindings' appID.
             let app = WorkspaceApp(
                 id: appID,
@@ -118,15 +113,16 @@ struct WorkspaceAppPreviewView: View {
             )
             let bindings = WorkspaceAppService().previewDependencyBindings(
                 for: manifest.requirements, workspace: workspace, appID: appID, appLogicalID: manifest.app.id)
-            // sourceID precedence mirrors executeAsyncCapabilityRead's `normalized(sourceRef, table, table)`.
-            let sourceID = [action.sourceRef, input.table, action.table]
-                .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
-                .first(where: { !$0.isEmpty }) ?? ""
-            guard !sourceID.isEmpty else { throw WorkspaceAppActionExecutionError.missingSource }
-            let resolved = try await WorkspaceAppSourceResolver().resolveCapabilityReadAsync(
-                sourceID: sourceID, app: app, workspace: workspace, manifest: manifest,
-                dependencyBindings: bindings,
-                input: WorkspaceAppSourceResolutionInput(limit: input.limit, parameters: input.record)
+            let resolved = try await WorkspaceAppCapabilityReadPipeline().resolveAsync(
+                WorkspaceAppCapabilityReadRequest(
+                    action: action,
+                    app: app,
+                    workspace: workspace,
+                    manifest: manifest,
+                    dependencyBindings: bindings,
+                    input: input,
+                    surface: .preview
+                )
             )
             let run = WorkspaceAppRun(
                 workspaceID: workspace.id, appID: appID, appLogicalID: manifest.app.id,

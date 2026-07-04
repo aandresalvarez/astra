@@ -1,4 +1,5 @@
 import Foundation
+import ASTRACore
 
 /// Runs a connector READ for an ENABLED capability whose contract implementation declares a `.cli`
 /// `readExecution` spec — GENERICALLY, with no per-provider Swift. This is how "create a capability with
@@ -249,99 +250,34 @@ struct WorkspaceAppUnavailableCLIReadRunner: WorkspaceAppCLIReadRunning {
     }
 }
 
-/// The real CLI runner: a hardened `Process` invocation (explicit executable, argv array — NO shell,
-/// `nullDevice` stdin, cwd pinned to the workspace, stdout byte-capped + both pipes drained to avoid
-/// deadlock, hard timeout escalated SIGTERM→SIGKILL) modeled on the proven GitService path. Read-only by
-/// intent; the capability author's command does the work.
+/// The real CLI runner: explicit executable, argv array, no shell, `nullDevice` stdin, workspace-pinned
+/// cwd, enriched environment, stdout byte cap, drained stderr, and hard timeout delegated to the shared
+/// hardened executor.
 struct WorkspaceAppHardenedCLIRunner: WorkspaceAppCLIReadRunning {
     static let maxStdoutBytes = 4 * 1024 * 1024
 
     func run(executablePath: String, arguments: [String], currentDirectory: String?, timeout: TimeInterval) async throws -> WorkspaceAppCLIReadResult {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: executablePath)
-        process.arguments = arguments
-        process.environment = RuntimeProcessEnvironment.enriched()
         // Require a real working directory — never inherit ASTRA's launch cwd (defense in depth; the
         // caller already validated the workspace dir).
         guard let currentDirectory, FileManager.default.fileExists(atPath: currentDirectory) else {
             throw WorkspaceAppSourceResolutionError.capabilityReadUnavailable("cli: no working directory")
         }
-        process.currentDirectoryURL = URL(fileURLWithPath: currentDirectory, isDirectory: true)
-        let outPipe = Pipe()
-        let errPipe = Pipe()
-        process.standardOutput = outPipe
-        process.standardError = errPipe
-        process.standardInput = FileHandle.nullDevice
 
-        let box = CLIOutputBox(cap: Self.maxStdoutBytes)
-        outPipe.fileHandleForReading.readabilityHandler = { handle in
-            let chunk = handle.availableData
-            if chunk.isEmpty { handle.readabilityHandler = nil } else { box.append(chunk) }
+        let result = await HardenedProcessExecutor().run(HardenedProcessRequest(
+            executable: executablePath,
+            arguments: arguments,
+            timeout: timeout,
+            environment: RuntimeProcessEnvironment.enriched(),
+            currentDirectory: currentDirectory,
+            maximumOutputBytes: Self.maxStdoutBytes,
+            terminateProcessGroup: true
+        ))
+        if result.timedOut {
+            throw WorkspaceAppSourceResolutionError.capabilityReadUnavailable("cli: timed out")
         }
-        // Drain stderr too (prevents a full-pipe deadlock); its content is discarded from rows.
-        errPipe.fileHandleForReading.readabilityHandler = { handle in
-            if handle.availableData.isEmpty { handle.readabilityHandler = nil }
+        if let launchError = result.launchError {
+            throw WorkspaceAppSourceResolutionError.capabilityReadUnavailable("cli: \(launchError)")
         }
-
-        return try await withThrowingTaskGroup(of: WorkspaceAppCLIReadResult.self) { group in
-            group.addTask {
-                try process.run()
-                let pid = process.processIdentifier
-                // Put the child in its OWN process group (best-effort). setpgid from the parent loses the
-                // race iff the child already exec'd (macOS rejects it with EACCES), leaving the child in
-                // ASTRA's group. Capture ownership NOW, while the child is provably alive: at timeout the
-                // group LEADER may already have exited (a wrapper that forks a worker and exits on SIGTERM),
-                // which would make a re-query of getpgid() return ESRCH/-1 and wrongly skip the group reap.
-                setpgid(pid, pid)
-                let ownsGroup = (getpgid(pid) == pid)
-                let deadline = Date().addingTimeInterval(timeout)
-                while process.isRunning {
-                    if Date() > deadline {
-                        if ownsGroup {
-                            // Signal the WHOLE group, independent of the leader's own liveness, so a worker
-                            // the wrapper forked and orphaned is still reaped: SIGTERM to let a forking CLI
-                            // clean up, then SIGKILL after a grace period. `getpgid(pid) == pid` held, so
-                            // `-pid` can NEVER be ASTRA's group. ESRCH (group already empty) is the success
-                            // case and is intentionally ignored.
-                            kill(-pid, SIGTERM)
-                            try? await Task.sleep(nanoseconds: 1_500_000_000)
-                            kill(-pid, SIGKILL)
-                        } else {
-                            // setpgid lost the exec race; the child shares ASTRA's group, so we may only
-                            // ever target it directly (a fully-atomic group needs posix_spawn — documented
-                            // follow-up). A grandchild it forked can survive; realistic read CLIs don't.
-                            process.terminate()                               // SIGTERM (direct child)
-                            try? await Task.sleep(nanoseconds: 1_500_000_000)
-                            if process.isRunning { kill(pid, SIGKILL) }
-                        }
-                        outPipe.fileHandleForReading.readabilityHandler = nil
-                        errPipe.fileHandleForReading.readabilityHandler = nil
-                        throw WorkspaceAppSourceResolutionError.capabilityReadUnavailable("cli: timed out")
-                    }
-                    try? await Task.sleep(nanoseconds: 50_000_000)
-                }
-                outPipe.fileHandleForReading.readabilityHandler = nil
-                errPipe.fileHandleForReading.readabilityHandler = nil
-                box.append(outPipe.fileHandleForReading.readDataToEndOfFile())   // drain remainder
-                return WorkspaceAppCLIReadResult(stdout: box.string(), exitCode: process.terminationStatus)
-            }
-            let result = try await group.next() ?? WorkspaceAppCLIReadResult(stdout: "", exitCode: -1)
-            return result
-        }
+        return WorkspaceAppCLIReadResult(stdout: result.stdout, exitCode: result.exitCode ?? -1)
     }
-}
-
-/// Thread-safe, byte-capped accumulator for drained stdout (the readabilityHandler fires on a background
-/// queue). Caps total bytes so a CLI emitting unbounded output can't exhaust memory.
-private final class CLIOutputBox: @unchecked Sendable {
-    private let lock = NSLock()
-    private var data = Data()
-    private let cap: Int
-    init(cap: Int) { self.cap = cap }
-    func append(_ chunk: Data) {
-        lock.lock(); defer { lock.unlock() }
-        guard data.count < cap else { return }
-        data.append(chunk.prefix(cap - data.count))
-    }
-    func string() -> String { lock.lock(); defer { lock.unlock() }; return String(data: data, encoding: .utf8) ?? "" }
 }

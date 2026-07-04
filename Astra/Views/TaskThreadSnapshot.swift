@@ -1103,9 +1103,9 @@ struct TaskThreadSnapshotTrigger: Equatable {
 ///
 /// Requires *both* `task.status == .running` *and* the latest run's status ==
 /// `.running` — either alone is insufficient:
-/// - `task.status` alone: `sendConversationMessage` can optimistically set
-///   `.running` before `taskQueue.continueSession` has actually acquired a
-///   worker/resource lock (it can sit in `waitForResourceLock` first), so
+/// - `task.status` alone: `TaskQueue.continueSession` owns the continuation
+///   admission transition to `.running`, but the worker creates the follow-up
+///   run immediately after that. During that narrow launch handoff,
 ///   `task.status == .running` doesn't guarantee any run has started producing
 ///   events yet.
 /// - run status alone: `AgentInteractivePermissionChannel` sets
@@ -1114,8 +1114,8 @@ struct TaskThreadSnapshotTrigger: Equatable {
 ///   "open" but nothing is streaming while it waits on the user, so treating
 ///   that run status alone as live would poll a large history every tick for
 ///   as long as the prompt goes unanswered.
-/// Both conditions together correctly exclude `.queued`, the pre-lock-
-/// acquisition window, and a pending-user permission pause, leaving all of
+/// Both conditions together correctly exclude `.queued`, the launch handoff
+/// before a run exists, and a pending-user permission pause, leaving all of
 /// them on the cheap reactive path
 /// (`TaskThreadChangeObserver.reactiveTriggerWhenNotLive`,
 /// `UsageDashboardView`'s query-driven follow-up) until a run is actually

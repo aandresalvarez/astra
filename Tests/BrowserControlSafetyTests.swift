@@ -526,6 +526,12 @@ struct BrowserControlSafetyTests {
             .appendingPathComponent("Browser")
             .appendingPathComponent("ShelfBrowserSession.swift")
             .path
+        let enginePath = repoRoot
+            .appendingPathComponent("Astra")
+            .appendingPathComponent("Services")
+            .appendingPathComponent("Browser")
+            .appendingPathComponent("BrowserAutomationEngine.swift")
+            .path
         let controllerPath = repoRoot
             .appendingPathComponent("Astra")
             .appendingPathComponent("Services")
@@ -539,16 +545,28 @@ struct BrowserControlSafetyTests {
             .appendingPathComponent("ControlledBrowserTextEntryPreflight.swift")
             .path
         let sessionSource = try String(contentsOfFile: sessionPath, encoding: .utf8)
+        let engineSource = try String(contentsOfFile: enginePath, encoding: .utf8)
         let controllerSource = try String(contentsOfFile: controllerPath, encoding: .utf8)
         let controlledPreflightSource = try String(contentsOfFile: controlledPreflightPath, encoding: .utf8)
 
-        #expect(sessionSource.contains("controlledBrowser.keypress("))
-        #expect(sessionSource.contains("controlledBrowser.insertText("))
-        #expect(sessionSource.contains("expectedFocusedTargetSignature: preflight.targetSignature"))
-        #expect(sessionSource.contains("BrowserAutomationScripts.keypressScript("))
-        #expect(sessionSource.contains("BrowserAutomationScripts.insertTextScript("))
+        // The session no longer branches on isUsingControlledBrowser to pick
+        // between a raw controlledBrowser.* call and a raw
+        // BrowserAutomationScripts.*Script eval — it dispatches once through
+        // `automationEngine`, whose two conformances (ControlledBrowserEngineAdapter
+        // and EmbeddedWebKitEngine, both in BrowserAutomationEngine.swift) hold
+        // those raw calls now. The safety-relevant contract — that the
+        // preflighted focused-target signature is threaded into the dispatch —
+        // still lives at the session call sites.
+        #expect(sessionSource.contains("automationEngine.keypress("))
+        #expect(sessionSource.contains("automationEngine.insertText("))
         #expect(sessionSource.contains("expectedFocusedTargetSignature: preflight.targetSignature"))
         #expect(sessionSource.contains("allowUnboundFocusedTargetDispatch: preflight.allowUnboundFocusedTargetDispatch"))
+        #expect(engineSource.contains("controller.keypress("))
+        #expect(engineSource.contains("controller.insertText("))
+        #expect(engineSource.contains("BrowserAutomationScripts.keypressScript("))
+        #expect(engineSource.contains("BrowserAutomationScripts.insertTextScript("))
+        #expect(engineSource.contains("expectedFocusedTargetSignature: expectedFocusedTargetSignature"))
+        #expect(engineSource.contains("allowUnboundFocusedTargetDispatch: allowUnboundFocusedTargetDispatch"))
         let embeddedScript = BrowserAutomationScripts.keypressScript(
             key: "x",
             modifiers: [],
@@ -991,16 +1009,20 @@ struct BrowserControlSafetyTests {
 
     @Test("Trusted Google Docs paste shortcut stays outside generic keypress preflight")
     func trustedGoogleDocsPasteShortcutStaysOutsideGenericKeypressPreflight() throws {
+        // googleDocsPasteFullDocumentText (the caller of this trusted Cmd+V
+        // dispatch) now lives in GoogleWorkspaceBrowserWorkflowAdapter.swift,
+        // not ShelfBrowserSession.swift — see GoogleWorkspaceBrowserWorkflowContext's
+        // `keypress` closure, whose third parameter is `skipTextEntryPreflight`.
         let repoRoot = URL(filePath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-        let sessionPath = repoRoot
+        let adapterPath = repoRoot
             .appendingPathComponent("Astra")
             .appendingPathComponent("Services")
             .appendingPathComponent("Browser")
-            .appendingPathComponent("ShelfBrowserSession.swift")
+            .appendingPathComponent("GoogleWorkspaceBrowserWorkflowAdapter.swift")
             .path
-        let source = try String(contentsOfFile: sessionPath, encoding: .utf8)
+        let source = try String(contentsOfFile: adapterPath, encoding: .utf8)
 
-        #expect(source.contains(#"inputJSON = try await keypress(key: "v", modifiers: ["command"], skipTextEntryPreflight: true)"#))
+        #expect(source.contains(#"inputJSON = try await context.keypress("v", ["command"], true)"#))
         #expect(BrowserKeypressSafety.requiresTextEntryPreflight(key: "v", modifiers: ["command"]))
     }
 

@@ -94,6 +94,10 @@ protocol AgentRuntimePolicyRendering {
 protocol AgentRuntimeProcessLaunchPlanning {
     var id: AgentRuntimeID { get }
     var descriptor: AgentRuntimeDescriptor { get }
+    /// Presentation copy for missing-executable diagnostics and the default
+    /// start-event payload. See `ProviderRuntimeMessages` for the full set of
+    /// diagnostic-copy accessors this backs by default.
+    var providerRuntimeMessages: ProviderRuntimeMessages { get }
 
     func launchSettings(configuration: AgentRuntimeConfiguration) -> AgentRuntimeLaunchSettings
     func sharedLaunchStateKey(context: AgentRuntimeProcessLaunchContext) -> AgentRuntimeSharedStateKey?
@@ -106,10 +110,10 @@ protocol AgentRuntimeProcessLaunchPlanning {
         promptOverride: String?,
         startPayload: String,
         sessionMessage: String?,
-        phase: String
+        phase: RunPhase
     ) -> String
-    func shouldCheckWorkspaceDirectory(phase: String) -> Bool
-    func shouldPrepareIsolation(phase: String) -> Bool
+    func shouldCheckWorkspaceDirectory(phase: RunPhase) -> Bool
+    func shouldPrepareIsolation(phase: RunPhase) -> Bool
     @MainActor
     func makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext) -> AgentRuntimeProcessLaunchPlan
 }
@@ -154,21 +158,24 @@ protocol AgentUtilityRuntimeAdapter {
 protocol AgentRuntimePostRunDiagnostics {
     var id: AgentRuntimeID { get }
     var descriptor: AgentRuntimeDescriptor { get }
+    /// Presentation copy for completion/failure/timeout/max-turns diagnostics
+    /// and the resume session-turn message. See `ProviderRuntimeMessages`.
+    var providerRuntimeMessages: ProviderRuntimeMessages { get }
 
-    func shouldValidateSuccessfulRun(phase: String) -> Bool
-    func requiresVisibleResultForSuccessfulRun(phase: String) -> Bool
-    func manualCompletionPayload(phase: String) -> String
-    func failurePayloadPrefix(phase: String, exitCode: Int) -> String
-    func timeoutPayload(phase: String, timeoutSeconds: TimeInterval) -> String
-    func maxTurnsPayload(phase: String, task: AgentTask) -> String
-    func shouldClearStaleSessionOnFailure(phase: String, result: AgentProcessResult) -> Bool
-    func performsPostRunFollowUps(phase: String) -> Bool
+    func shouldValidateSuccessfulRun(phase: RunPhase) -> Bool
+    func requiresVisibleResultForSuccessfulRun(phase: RunPhase) -> Bool
+    func manualCompletionPayload(phase: RunPhase) -> String
+    func failurePayloadPrefix(phase: RunPhase, exitCode: Int) -> String
+    func timeoutPayload(phase: RunPhase, timeoutSeconds: TimeInterval) -> String
+    func maxTurnsPayload(phase: RunPhase, task: AgentTask) -> String
+    func shouldClearStaleSessionOnFailure(phase: RunPhase, result: AgentProcessResult) -> Bool
+    func performsPostRunFollowUps(phase: RunPhase) -> Bool
     func sessionTurnMessage(
         task: AgentTask,
         promptOverride: String?,
         startPayload: String?,
         sessionMessage: String?,
-        phase: String
+        phase: RunPhase
     ) -> String
     @MainActor
     func recordPostProcessEvents(context: AgentRuntimePostProcessContext)
@@ -177,7 +184,7 @@ protocol AgentRuntimePostRunDiagnostics {
         snapshot: AgentRuntimeStreamTelemetrySnapshot,
         task: AgentTask,
         run: TaskRun,
-        phase: String,
+        phase: RunPhase,
         exitCode: Int
     )
 }
@@ -223,19 +230,19 @@ extension AgentRuntimeProcessLaunchPlanning {
     }
 
     func missingExecutableAuditReason() -> String {
-        "provider_cli_not_found"
+        providerRuntimeMessages.missingExecutableAuditReason
     }
 
     func missingExecutableStopReason() -> String? {
-        nil
+        providerRuntimeMessages.missingExecutableStopReason
     }
 
     func missingExecutableMessage(executablePath: String) -> String {
-        "\(id.displayName) CLI not found at '\(executablePath)'. Check Settings."
+        providerRuntimeMessages.missingExecutableMessage(executablePath: executablePath, displayName: id.displayName)
     }
 
     func defaultStartEventPayload(task: AgentTask) -> String {
-        "Agent started working on: \(task.goal)"
+        providerRuntimeMessages.defaultStartEventPayload(goal: task.goal)
     }
 
     func connectorPreflightContextText(
@@ -243,17 +250,17 @@ extension AgentRuntimeProcessLaunchPlanning {
         promptOverride _: String?,
         startPayload _: String,
         sessionMessage: String?,
-        phase _: String
+        phase _: RunPhase
     ) -> String {
         sessionMessage ?? task.goal
     }
 
-    func shouldCheckWorkspaceDirectory(phase _: String) -> Bool {
+    func shouldCheckWorkspaceDirectory(phase _: RunPhase) -> Bool {
         true
     }
 
-    func shouldPrepareIsolation(phase: String) -> Bool {
-        phase == "run"
+    func shouldPrepareIsolation(phase: RunPhase) -> Bool {
+        phase == .run
     }
 }
 
@@ -264,39 +271,35 @@ extension AgentRuntimePolicyRendering {
 }
 
 extension AgentRuntimePostRunDiagnostics {
-    func shouldValidateSuccessfulRun(phase: String) -> Bool {
-        phase == "run"
+    func shouldValidateSuccessfulRun(phase: RunPhase) -> Bool {
+        phase == .run
     }
 
-    func requiresVisibleResultForSuccessfulRun(phase _: String) -> Bool {
+    func requiresVisibleResultForSuccessfulRun(phase _: RunPhase) -> Bool {
         false
     }
 
-    func manualCompletionPayload(phase: String) -> String {
-        phase == "resume" ? "Follow-up completed." : "Agent finished."
+    func manualCompletionPayload(phase: RunPhase) -> String {
+        providerRuntimeMessages.manualCompletionPayload(phase: phase)
     }
 
-    func failurePayloadPrefix(phase: String, exitCode: Int) -> String {
-        phase == "resume" ? "Follow-up failed (exit \(exitCode))." : "Agent exited with code \(exitCode)."
+    func failurePayloadPrefix(phase: RunPhase, exitCode: Int) -> String {
+        providerRuntimeMessages.failurePayloadPrefix(phase: phase, exitCode: exitCode)
     }
 
-    func timeoutPayload(phase: String, timeoutSeconds: TimeInterval) -> String {
-        let label = phase == "resume" ? "Resume" : "Task"
-        return "\(label) idle timeout - no output for \(Int(timeoutSeconds))s. Process killed."
+    func timeoutPayload(phase: RunPhase, timeoutSeconds: TimeInterval) -> String {
+        providerRuntimeMessages.timeoutPayload(phase: phase, timeoutSeconds: timeoutSeconds)
     }
 
-    func maxTurnsPayload(phase: String, task: AgentTask) -> String {
-        if phase == "resume" {
-            return "Max turns reached (\(task.maxTurns)) during resume. Process killed."
-        }
-        return "Max turns reached (\(task.maxTurns)). Process killed."
+    func maxTurnsPayload(phase: RunPhase, task: AgentTask) -> String {
+        providerRuntimeMessages.maxTurnsPayload(phase: phase, maxTurns: task.maxTurns)
     }
 
-    func shouldClearStaleSessionOnFailure(phase: String, result: AgentProcessResult) -> Bool {
+    func shouldClearStaleSessionOnFailure(phase: RunPhase, result: AgentProcessResult) -> Bool {
         false
     }
 
-    func performsPostRunFollowUps(phase _: String) -> Bool {
+    func performsPostRunFollowUps(phase _: RunPhase) -> Bool {
         false
     }
 
@@ -305,7 +308,7 @@ extension AgentRuntimePostRunDiagnostics {
         promptOverride _: String?,
         startPayload _: String?,
         sessionMessage: String?,
-        phase _: String
+        phase _: RunPhase
     ) -> String {
         sessionMessage ?? task.goal
     }
@@ -319,7 +322,7 @@ extension AgentRuntimePostRunDiagnostics {
         snapshot _: AgentRuntimeStreamTelemetrySnapshot,
         task _: AgentTask,
         run _: TaskRun,
-        phase _: String,
+        phase _: RunPhase,
         exitCode _: Int
     ) {
     }
@@ -637,12 +640,13 @@ struct AgentRuntimeProcessLaunchContext {
     let executionPolicy: AgentRuntimeExecutionPolicy
     let permissionManifest: RunPermissionManifest?
     let timeoutSeconds: TimeInterval
-    let phase: String
+    let phase: RunPhase
     let contextText: String
     let nativeContinuationSessionID: String?
     let runID: UUID?
     let liveApprovalsEnabled: Bool
     let launchResourcePlan: TaskLaunchResourcePlan?
+    let capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot
 
     init(
         prompt: String,
@@ -654,12 +658,13 @@ struct AgentRuntimeProcessLaunchContext {
         executionPolicy: AgentRuntimeExecutionPolicy,
         permissionManifest: RunPermissionManifest?,
         timeoutSeconds: TimeInterval,
-        phase: String = "run",
+        phase: RunPhase = .run,
         contextText: String = "",
         nativeContinuationSessionID: String? = nil,
         runID: UUID? = nil,
         liveApprovalsEnabled: Bool = false,
-        launchResourcePlan: TaskLaunchResourcePlan? = nil
+        launchResourcePlan: TaskLaunchResourcePlan? = nil,
+        capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot? = nil
     ) {
         self.prompt = prompt
         self.task = task
@@ -676,6 +681,11 @@ struct AgentRuntimeProcessLaunchContext {
         self.runID = runID
         self.liveApprovalsEnabled = liveApprovalsEnabled
         self.launchResourcePlan = launchResourcePlan
+        self.capabilityResolutionSnapshot = capabilityResolutionSnapshot ?? TaskCapabilityResolutionSnapshot.capture(
+            for: task,
+            providerLaunchContextText: contextText,
+            additionalCredentialGrants: executionPolicy.permissionGrantsOverride ?? []
+        )
     }
 }
 
@@ -759,16 +769,20 @@ enum AgentRuntimeRecordingMode {
     case followUp
 }
 
+/// Wraps the single event model every runtime now records through.
+///
+/// This used to be a two-case enum (`.parsed(ParsedEvent)` for Claude,
+/// `.agent(AgentEvent)` for the other five runtimes) because Claude recorded
+/// through Claude-only dispatch functions that switched on `ParsedEvent`
+/// directly. Claude now maps its stream to `AgentEvent` too (see
+/// `AgentEventRecorder.agentEvents(from:)`) and shares the same
+/// `recordProviderAgentEvent` dispatcher as every other provider, so this
+/// wrapper only has one case left. It stays a thin wrapper (rather than using
+/// `AgentEvent` bare) so `AgentRuntimeStreamEventBatch` and the
+/// `AgentRuntimeWorkerEventRecording` protocol keep a stable shape if a future
+/// runtime ever needs a second representation.
 enum AgentRuntimeRecordedEvent {
-    case parsed(ParsedEvent)
     case agent(AgentEvent)
-
-    var parsedEvent: ParsedEvent? {
-        if case .parsed(let event) = self {
-            return event
-        }
-        return nil
-    }
 
     var agentEvent: AgentEvent? {
         if case .agent(let event) = self {
@@ -778,32 +792,15 @@ enum AgentRuntimeRecordedEvent {
     }
 }
 
-enum AgentRuntimeStreamEventRepresentation {
-    case parsed
-    case agent
-}
-
 struct AgentRuntimeStreamEventBatch {
-    let representation: AgentRuntimeStreamEventRepresentation
     let events: [AgentRuntimeRecordedEvent]
 
-    init(representation: AgentRuntimeStreamEventRepresentation, events: [AgentRuntimeRecordedEvent]) {
-        self.representation = representation
+    init(events: [AgentRuntimeRecordedEvent]) {
         self.events = events
     }
 
-    init(parsedEvents: [ParsedEvent]) {
-        representation = .parsed
-        events = parsedEvents.map(AgentRuntimeRecordedEvent.parsed)
-    }
-
     init(agentEvents: [AgentEvent]) {
-        representation = .agent
         events = agentEvents.map(AgentRuntimeRecordedEvent.agent)
-    }
-
-    var parsedEvents: [ParsedEvent] {
-        events.compactMap(\.parsedEvent)
     }
 
     var agentEvents: [AgentEvent] {
@@ -811,21 +808,11 @@ struct AgentRuntimeStreamEventBatch {
     }
 
     func recordParsed(to capture: AgentRuntimeStreamDebugCapture?, rawLine: String) {
-        switch representation {
-        case .parsed:
-            capture?.recordParsed(parsedEvents, rawLine: rawLine)
-        case .agent:
-            capture?.recordParsed(agentEvents, rawLine: rawLine)
-        }
+        capture?.recordParsed(agentEvents, rawLine: rawLine)
     }
 
     func recordEmitted(to capture: AgentRuntimeStreamDebugCapture?) {
-        switch representation {
-        case .parsed:
-            capture?.recordEmitted(parsedEvents)
-        case .agent:
-            capture?.recordEmitted(agentEvents)
-        }
+        capture?.recordEmitted(agentEvents)
     }
 
     func recordParsed(to telemetry: AgentRuntimeStreamTelemetry?) {
@@ -1054,18 +1041,19 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
     let modelsCheckedAtStorageKey = AppStorageKeys.claudeModelsCheckedAt
     // Claude Code includes runtime context in billed input, so low budgets need the launch overhead.
     let budgetProfile = AgentRuntimeBudgetProfile(runtime: .claudeCode, launchOverheadTokens: 120_000)
+    let providerRuntimeMessages = ProviderRuntimeMessages.claudeCode
 
-    func shouldCheckWorkspaceDirectory(phase: String) -> Bool {
-        phase == "run"
+    func shouldCheckWorkspaceDirectory(phase: RunPhase) -> Bool {
+        phase == .run
     }
 
-    func shouldClearStaleSessionOnFailure(phase: String, result: AgentProcessResult) -> Bool {
-        guard phase == "resume" else { return false }
+    func shouldClearStaleSessionOnFailure(phase: RunPhase, result: AgentProcessResult) -> Bool {
+        guard phase == .resume else { return false }
         return result.error?.contains("session") == true || result.error?.contains("not found") == true
     }
 
-    func performsPostRunFollowUps(phase: String) -> Bool {
-        phase == "run"
+    func performsPostRunFollowUps(phase: RunPhase) -> Bool {
+        phase == .run
     }
 
     func policyAdapter(runtimeCapabilities _: AgentRuntimePolicyCapabilities) -> any ProviderPolicyAdapter {
@@ -1183,14 +1171,16 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
     func makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext) -> AgentRuntimeProcessLaunchPlan {
         let taskEnv = AgentRuntimeProcessRunner.scopedEnvironmentVariables(
             for: context.task,
-            contextText: context.contextText
+            capabilityScope: context.capabilityResolutionSnapshot.providerLaunch,
+            contextText: context.contextText,
+            executionPolicy: context.executionPolicy
         )
         let browserShimDirectory = AgentRuntimeProcessRunner.browserToolShimDirectory(
             for: context.task,
             taskEnv: taskEnv
         )
         let effectivePermissionPolicy = context.executionPolicy.permissionPolicy(default: context.permissionPolicy)
-        let capabilityScope = TaskCapabilityResolver(task: context.task).promptScope(contextText: context.contextText)
+        let capabilityScope = context.capabilityResolutionSnapshot.providerLaunch
         let allowed = context.executionPolicy.allowedTools(
             default: capabilityScope.resolver.resolvedProviderAllowedTools
         )
@@ -1243,7 +1233,8 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
             currentDirectory: context.workspacePath,
             runID: context.runID,
             taskEnvironment: taskEnv,
-            contextText: context.contextText
+            contextText: context.contextText,
+            capabilityScope: context.capabilityResolutionSnapshot.providerLaunch
         )
         if let hostControlServer = HostControlPlaneMCPProjection.resolvedServer(
             task: context.task,
@@ -1251,7 +1242,8 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
             currentDirectory: context.workspacePath,
             runID: context.runID,
             taskEnvironment: taskEnv.merging(hostControlEnvironment) { current, _ in current },
-            contextText: context.contextText
+            contextText: context.contextText,
+            capabilityScope: context.capabilityResolutionSnapshot.providerLaunch
         ) {
             mcpServers.append(hostControlServer)
         }
@@ -1359,7 +1351,7 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
         if usesArtifactBootstrapProfile {
             args += ["--effort", "low"]
         }
-        args += effectivePermissionPolicy.cliArguments
+        args += context.requiredProviderPolicyRender(for: id).claudeLaunchPermissionArguments()
         AgentRuntimeProcessRunner.ensureSubAgentPermissions(
             at: context.workspacePath,
             policy: effectivePermissionPolicy,
@@ -1403,7 +1395,7 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
             ],
             commandPlannedFields: [
                 "runtime": id.rawValue,
-                "phase": context.phase,
+                "phase": context.phase.rawValue,
                 "model": model,
                 "provider_model": AgentRuntimeProcessRunner.translatedModelForProvider(model),
                 "permission_policy": effectivePermissionPolicy.rawValue,
@@ -1458,19 +1450,20 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
     }
 
     func parseWorkerStreamEvents(line: String, parsesJSONLines _: Bool) -> AgentRuntimeStreamEventBatch {
-        AgentRuntimeStreamEventBatch(parsedEvents: StreamEventParser.parseAll(line: line))
+        let agentEvents = StreamEventParser.parseAll(line: line).flatMap(AgentEventRecorder.agentEvents(from:))
+        return AgentRuntimeStreamEventBatch(agentEvents: agentEvents)
     }
 
     func processWorkerStreamEvent(
         _ event: AgentRuntimeRecordedEvent,
         pipeline: AgentRuntimeEventPipelineBox
     ) -> [AgentRuntimeRecordedEvent] {
-        guard case .parsed(let parsed) = event else { return [] }
-        return pipeline.process(parsed).map(AgentRuntimeRecordedEvent.parsed)
+        guard case .agent(let agentEvent) = event else { return [] }
+        return pipeline.process(agentEvent).map(AgentRuntimeRecordedEvent.agent)
     }
 
     func flushWorkerStreamEvents(pipeline: AgentRuntimeEventPipelineBox) -> AgentRuntimeStreamEventBatch {
-        AgentRuntimeStreamEventBatch(parsedEvents: pipeline.flushParsedEvents())
+        AgentRuntimeStreamEventBatch(agentEvents: pipeline.flushAgentEvents())
     }
 
     @MainActor
@@ -1482,29 +1475,20 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
         modelContext: ModelContext,
         recordingState: AgentEventRecordingState
     ) {
-        guard case .parsed(let parsed) = event else { return }
-        switch mode {
-        case .initial:
-            AgentEventRecorder.recordClaudeRunEvent(
-                parsed,
-                to: task,
-                run: run,
-                modelContext: modelContext,
-                recordingState: recordingState
-            )
-        case .followUp:
-            AgentEventRecorder.recordClaudeFollowUpEvent(
-                parsed,
-                to: task,
-                run: run,
-                modelContext: modelContext,
-                recordingState: recordingState
-            )
-        }
+        guard case .agent(let agentEvent) = event else { return }
+        AgentEventRecorder.recordClaudeEvent(
+            agentEvent,
+            to: task,
+            run: run,
+            modelContext: modelContext,
+            recordingMode: mode,
+            recordingState: recordingState
+        )
     }
 
     func callbackEvent(from event: AgentRuntimeRecordedEvent) -> ParsedEvent? {
-        event.parsedEvent
+        guard let agentEvent = event.agentEvent else { return nil }
+        return AgentEventRecorder.parsedEvent(from: agentEvent)
     }
 
     func runUtilityPrompt(
@@ -1517,8 +1501,6 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
         let executable = configuredPath.isEmpty
             ? RuntimePathResolver.detectClaudePath()
             : configuredPath
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: executable)
         var args = [
             "-p",
             prompt,
@@ -1533,24 +1515,24 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
                 "Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch"
             ]
         }
-        process.arguments = args
-        process.currentDirectoryURL = URL(fileURLWithPath: workspacePath)
-        process.environment = claudeUtilityEnvironment()
-
-        let stdoutPipe = Pipe()
-        let stderrPipe = Pipe()
-        process.standardOutput = stdoutPipe
-        process.standardError = stderrPipe
-        // Non-interactive helper: hand the CLI an empty stdin so it never blocks
-        // waiting for input it will never receive (provider-agnostic safeguard).
-        process.standardInput = FileHandle.nullDevice
-        let result = await AsyncProcessRunner.run(
-            process,
-            stdout: stdoutPipe,
-            stderr: stderrPipe,
-            timeoutSeconds: configuration.timeoutSeconds
+        let plan = AgentRuntimeProcessLaunchPlan(
+            runtime: id,
+            executablePath: executable,
+            arguments: args,
+            currentDirectory: workspacePath,
+            environment: claudeUtilityEnvironment(),
+            browserShimDirectory: nil,
+            providerVersion: nil,
+            parsesJSONLines: false
         )
-        return AgentUtilityRunResult(exitCode: result.exitCode, output: result.stdout, error: result.stderr)
+        return await AgentRuntimeProcessRunner().runUtilityProcess(
+            AgentUtilityLaunchPlan(
+                process: plan,
+                providerHomeDirectory: "",
+                permissionPolicy: .restricted,
+                timeoutSeconds: configuration.timeoutSeconds
+            )
+        )
     }
 
     private func checkClaudeAuth(
@@ -1748,6 +1730,7 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
     let budgetProfile = AgentRuntimeBudgetProfile(runtime: .copilotCLI, launchOverheadTokens: 0)
     let recordsStreamTelemetry = true
     let recordsInferredFileChanges = true
+    let providerRuntimeMessages = ProviderRuntimeMessages.copilot
 
     func launchSettings(configuration: AgentRuntimeConfiguration) -> AgentRuntimeLaunchSettings {
         let configuredPath = configuration.executablePath(for: id)
@@ -1757,33 +1740,17 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
         )
     }
 
-    func missingExecutableAuditReason() -> String {
-        "copilot_cli_not_found"
-    }
-
-    func missingExecutableStopReason() -> String? {
-        "missing_copilot"
-    }
-
-    func missingExecutableMessage(executablePath _: String) -> String {
-        "GitHub Copilot CLI not found. Install with `brew install copilot-cli` or `npm install -g @github/copilot`, then authenticate with `copilot`."
-    }
-
-    func defaultStartEventPayload(task: AgentTask) -> String {
-        "Copilot started working on: \(task.goal)"
-    }
-
     func connectorPreflightContextText(
         task _: AgentTask,
         promptOverride: String?,
         startPayload: String,
         sessionMessage _: String?,
-        phase _: String
+        phase _: RunPhase
     ) -> String {
         promptOverride ?? startPayload
     }
 
-    func shouldPrepareIsolation(phase _: String) -> Bool {
+    func shouldPrepareIsolation(phase _: RunPhase) -> Bool {
         true
     }
 
@@ -1791,24 +1758,8 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
         AgentRuntimePolicyCapabilities(copilotCLI: CopilotCLIRuntime.capabilities(executablePath: executablePath))
     }
 
-    func shouldValidateSuccessfulRun(phase _: String) -> Bool {
+    func shouldValidateSuccessfulRun(phase _: RunPhase) -> Bool {
         true
-    }
-
-    func manualCompletionPayload(phase _: String) -> String {
-        "Copilot finished."
-    }
-
-    func failurePayloadPrefix(phase _: String, exitCode: Int) -> String {
-        "Copilot exited with code \(exitCode)."
-    }
-
-    func timeoutPayload(phase _: String, timeoutSeconds: TimeInterval) -> String {
-        "Task idle timeout - no output for \(Int(timeoutSeconds))s. Process killed."
-    }
-
-    func maxTurnsPayload(phase _: String, task: AgentTask) -> String {
-        "Max turns reached (\(task.maxTurns)). Process killed."
     }
 
     func sessionTurnMessage(
@@ -1816,9 +1767,9 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
         promptOverride: String?,
         startPayload: String?,
         sessionMessage _: String?,
-        phase _: String
+        phase _: RunPhase
     ) -> String {
-        promptOverride == nil ? task.goal : (startPayload ?? task.goal)
+        providerRuntimeMessages.sessionTurnMessage(task: task, promptOverride: promptOverride, startPayload: startPayload)
     }
 
     func policyAdapter(runtimeCapabilities: AgentRuntimePolicyCapabilities) -> any ProviderPolicyAdapter {
@@ -1837,22 +1788,26 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
     func makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext) -> AgentRuntimeProcessLaunchPlan {
         let taskEnv = AgentRuntimeProcessRunner.scopedEnvironmentVariables(
             for: context.task,
-            contextText: context.contextText
+            capabilityScope: context.capabilityResolutionSnapshot.providerLaunch,
+            contextText: context.contextText,
+            executionPolicy: context.executionPolicy
         )
         let browserShimDirectory = AgentRuntimeProcessRunner.browserToolShimDirectory(
             for: context.task,
             taskEnv: taskEnv
         )
         let effectivePermissionPolicy = context.executionPolicy.permissionPolicy(default: context.permissionPolicy)
-        let capabilityScope = TaskCapabilityResolver(task: context.task).promptScope(contextText: context.contextText)
+        let capabilityScope = context.capabilityResolutionSnapshot.providerLaunch
         let allowed = context.executionPolicy.allowedTools(
             default: capabilityScope.resolver.resolvedProviderAllowedTools
         )
         let executionEnvironment = DockerExecutionPlanner.resolveEnvironment(for: context.task)
         let usesDockerWorkspaceExecutor = DockerWorkspaceMCPProjection.isEnabled(for: executionEnvironment)
-        let providerLaunchPermissionPolicy = usesDockerWorkspaceExecutor && effectivePermissionPolicy == .autonomous
-            ? PermissionPolicy.restricted
-            : effectivePermissionPolicy
+        let providerLaunchPermissionPolicy = AgentRuntimeProviderLaunchPolicy.permissionPolicy(
+            runtime: id,
+            effectivePermissionPolicy: effectivePermissionPolicy,
+            executionEnvironment: executionEnvironment
+        )
         let baseProviderAllowed = AgentRuntimeProcessRunner.providerAllowedTools(
             for: id,
             baseAllowedTools: allowed,
@@ -1888,7 +1843,7 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
         let askFirstTools = routesControlPlaneThroughMCP
             ? DockerWorkspaceMCPProjection.removingNativeShellTools(baseAskFirstTools)
             : baseAskFirstTools
-        let artifactBootstrapTools = ProviderArtifactBootstrapPolicy.launchTools(
+        let artifactBootstrapTools = ProviderArtifactBootstrapPolicy.persistedLaunchTools(
             task: context.task,
             permissionPolicy: providerLaunchPermissionPolicy,
             providerAllowedTools: providerAllowed,
@@ -1918,6 +1873,7 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
         for (key, value) in mcpProjection.hostControlEnvironment {
             launchTaskEnv[key] = value
         }
+        let permissionArguments = context.requiredProviderPolicyRender(for: id).copilotLaunchPermissionArguments()
         let plan = CopilotCLIRuntime.buildCommand(
             executablePath: executable,
             prompt: context.prompt,
@@ -1940,7 +1896,7 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             askFirstTools: surfacedAskFirstTools,
             additionalMCPConfigPaths: mcpProjection.configURL.map { [$0.path] } ?? [],
             reasoningEffort: artifactBootstrapTools.isEmpty ? nil : "none",
-            allowAllPathsForSSHConnections: AgentRuntimeProcessRunner.hasWorkspaceSSHConnections(for: context.task)
+            permissionArguments: permissionArguments
         )
         let directoriesToCreate = CopilotCLIRuntime.directoriesToCreate(
             copilotHome: context.providerHomeDirectory,
@@ -1957,6 +1913,12 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
         let dockerContainerEnvCount = DockerExecutionPlanner
             .credentialProjectionEnvironment(environment: executionEnvironment)
             .count
+        let artifactBootstrapToolNames = Set(artifactBootstrapTools.map {
+            ProviderArtifactBootstrapPolicy.normalizedToolName($0)
+        })
+        let taskProviderAllowed = providerAllowed.filter { tool in
+            !artifactBootstrapToolNames.contains(ProviderArtifactBootstrapPolicy.normalizedToolName(tool))
+        }
         let commandPlannedFields = CopilotLaunchDiagnostics.commandPlannedFields(
             id: id,
             phase: context.phase,
@@ -1964,7 +1926,7 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             plan: plan,
             capabilities: capabilities,
             effectivePermissionPolicy: providerLaunchPermissionPolicy,
-            providerAllowed: providerAllowed,
+            providerAllowed: taskProviderAllowed,
             baseProviderAllowed: baseProviderAllowed,
             providerLaunchAllowed: providerLaunchAllowed,
             runtimeSupportTools: runtimeSupportTools,
@@ -2062,14 +2024,9 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
         toolMode: AgentUtilityToolMode
     ) async -> AgentUtilityRunResult {
         let configuredPath = configuration.executablePath(for: id)
-        let executable = configuredPath.isEmpty
-            ? CopilotCLIRuntime.detectPath()
-            : configuredPath
-        let copilotHome = configuration.homeDirectory(for: id).isEmpty
-            ? CopilotCLIRuntime.channelHome()
-            : configuration.homeDirectory(for: id)
-        // Share terminal auth (~/.copilot) like the main launch path so Copilot
-        // helper prompts stay authenticated after a plain `copilot` /login.
+        let executable = configuredPath.isEmpty ? CopilotCLIRuntime.detectPath() : configuredPath
+        let configuredHome = configuration.homeDirectory(for: id)
+        let copilotHome = configuredHome.isEmpty ? CopilotCLIRuntime.channelHome() : configuredHome
         let userHome = FileManager.default.homeDirectoryForCurrentUser.path
         let copilotStateHome = CopilotCLIRuntime.defaultHome(userHome: userHome)
         let capabilities = CopilotCLIRuntime.capabilities(executablePath: executable)
@@ -2088,139 +2045,68 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             copilotHome: copilotHome,
             copilotStateHome: copilotStateHome,
             userHome: userHome,
-            disableCustomInstructions: true
+            disableCustomInstructions: true,
+            permissionArguments: ProviderPolicyRender.copilotUtilityLaunchPermissionArguments(
+                allowedTools: allowedTools,
+                capabilities: capabilities
+            )
         )
 
-        try? FileManager.default.createDirectory(atPath: copilotHome, withIntermediateDirectories: true)
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: plan.executablePath)
-        process.arguments = plan.arguments
-        process.currentDirectoryURL = URL(fileURLWithPath: workspacePath)
-        process.environment = plan.environment
-
-        let stdoutPipe = Pipe()
-        let stderrPipe = Pipe()
-        process.standardOutput = stdoutPipe
-        process.standardError = stderrPipe
-        // Non-interactive helper: hand the CLI an empty stdin so it never blocks
-        // waiting for input it will never receive (provider-agnostic safeguard).
-        process.standardInput = FileHandle.nullDevice
-        if plan.parsesJSONLines {
-            return await runStreamingCopilotUtilityPrompt(
-                process,
-                stdout: stdoutPipe,
-                stderr: stderrPipe,
-                timeoutSeconds: configuration.timeoutSeconds
-            )
-        }
-
-        let result = await AsyncProcessRunner.run(
-            process,
-            stdout: stdoutPipe,
-            stderr: stderrPipe,
+        let processPlan = AgentRuntimeProcessLaunchPlan(
+            runtime: id,
+            executablePath: plan.executablePath,
+            arguments: plan.arguments,
+            currentDirectory: workspacePath,
+            environment: plan.environment,
+            browserShimDirectory: nil,
+            providerVersion: nil,
+            parsesJSONLines: plan.parsesJSONLines,
+            directoriesToCreate: CopilotCLIRuntime.directoriesToCreate(
+                copilotHome: copilotHome,
+                copilotStateHome: copilotStateHome,
+                userHome: userHome
+            ),
+            sandboxReadablePaths: CopilotCLIRuntime.authReadablePaths(userHome: userHome),
+            sandboxProtectedWriteDenyPaths: CopilotCLIRuntime.configWriteDenyPaths(userHome: userHome)
+        )
+        let utilityPlan = AgentUtilityLaunchPlan(
+            process: processPlan,
+            providerHomeDirectory: copilotHome,
+            permissionPolicy: .restricted,
             timeoutSeconds: configuration.timeoutSeconds
         )
-        let output = plan.parsesJSONLines
-            ? extractCopilotUtilityText(from: result.stdout)
-            : result.stdout
-        return AgentUtilityRunResult(exitCode: result.exitCode, output: output, error: result.stderr)
+        if plan.parsesJSONLines {
+            return await runStreamingCopilotUtilityPrompt(utilityPlan)
+        }
+
+        return await AgentRuntimeProcessRunner().runUtilityProcess(utilityPlan)
     }
 
     private func runStreamingCopilotUtilityPrompt(
-        _ process: Process,
-        stdout: Pipe,
-        stderr: Pipe,
-        timeoutSeconds: TimeInterval?
+        _ utilityPlan: AgentUtilityLaunchPlan
     ) async -> AgentUtilityRunResult {
         let state = CopilotUtilityStreamRunState()
-        let stdoutLines = AgentLockedBuffer()
-
-        return await withTaskCancellationHandler {
-            await withCheckedContinuation { continuation in
-                let finish: @Sendable (AgentUtilityRunResult, Bool) -> Void = { result, shouldTerminate in
-                    stdout.fileHandleForReading.readabilityHandler = nil
-                    stderr.fileHandleForReading.readabilityHandler = nil
-                    if shouldTerminate {
-                        AsyncProcessRunner.terminateProcessTree(process)
-                    }
-                    continuation.resume(returning: result)
-                }
-
-                let handleLine: @Sendable (String) -> Void = { line in
-                    if let result = state.appendStdoutLineAndCompleteIfReady(line) {
-                        finish(result, true)
-                    }
-                }
-
-                stdout.fileHandleForReading.readabilityHandler = { handle in
-                    let data = handle.availableData
-                    guard !data.isEmpty,
-                          let chunk = String(data: data, encoding: .utf8) else { return }
-                    stdoutLines.appendAndProcessLines(chunk, handleLine)
-                }
-
-                stderr.fileHandleForReading.readabilityHandler = { handle in
-                    let data = handle.availableData
-                    guard !data.isEmpty,
-                          let chunk = String(data: data, encoding: .utf8) else { return }
-                    state.appendStderr(chunk)
-                }
-
-                process.terminationHandler = { proc in
-                    stdout.fileHandleForReading.readabilityHandler = nil
-                    stderr.fileHandleForReading.readabilityHandler = nil
-                    if let chunk = String(
-                        data: stdout.fileHandleForReading.readDataToEndOfFile(),
-                        encoding: .utf8
-                    ), !chunk.isEmpty {
-                        stdoutLines.appendAndProcessLines(chunk, handleLine)
-                    }
-                    let remaining = stdoutLines.drainRemaining()
-                    if !remaining.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        handleLine(remaining)
-                    }
-                    if let chunk = String(
-                        data: stderr.fileHandleForReading.readDataToEndOfFile(),
-                        encoding: .utf8
-                    ), !chunk.isEmpty {
-                        state.appendStderr(chunk)
-                    }
-                    if let result = state.completeWithProcessExit(exitCode: Int(proc.terminationStatus)) {
-                        finish(result, false)
-                    }
-                }
-
-                do {
-                    try process.run()
-                    scheduleCopilotUtilityTimeout(
-                        process: process,
-                        timeoutSeconds: timeoutSeconds,
-                        state: state,
-                        finish: finish
-                    )
-                } catch {
-                    if let result = state.completeWithLaunchError(error.localizedDescription) {
-                        finish(result, false)
-                    }
-                }
+        return await AgentRuntimeProcessRunner().runUtilityProcess(
+            utilityPlan,
+            stdoutLineHandler: { line in
+                state.appendStdoutLineAndCompleteIfReady(line)
+            },
+            stderrChunkHandler: { chunk in
+                state.appendStderr(chunk)
+            },
+            completion: { exitCode, _, _ in
+                state.completeWithProcessExit(exitCode: exitCode)
+                    ?? AgentUtilityRunResult(exitCode: exitCode, output: "", error: "")
+            },
+            launchError: { message in
+                state.completeWithLaunchError(message)
+                    ?? AgentUtilityRunResult(exitCode: -1, output: "", error: message)
+            },
+            timeoutResult: { timeoutSeconds in
+                state.completeWithTimeout(timeoutSeconds: timeoutSeconds)
+                    ?? AgentUtilityRunResult(exitCode: -1, output: "", error: "Process timed out.")
             }
-        } onCancel: {
-            AsyncProcessRunner.terminateProcessTree(process)
-        }
-    }
-
-    private func scheduleCopilotUtilityTimeout(
-        process: Process,
-        timeoutSeconds: TimeInterval?,
-        state: CopilotUtilityStreamRunState,
-        finish: @escaping @Sendable (AgentUtilityRunResult, Bool) -> Void
-    ) {
-        guard let timeoutSeconds, timeoutSeconds > 0 else { return }
-        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + timeoutSeconds) {
-            if let result = state.completeWithTimeout(timeoutSeconds: timeoutSeconds) {
-                finish(result, true)
-            }
-        }
+        )
     }
 
     @MainActor
@@ -2269,52 +2155,18 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
         snapshot: AgentRuntimeStreamTelemetrySnapshot,
         task: AgentTask,
         run: TaskRun,
-        phase: String,
+        phase: RunPhase,
         exitCode: Int
     ) {
         AgentRuntimeStreamDiagnostics.logCopilotStreamTelemetry(
             snapshot: snapshot,
             task: task,
             run: run,
-            phase: phase,
+            phase: phase.rawValue,
             exitCode: exitCode
         )
     }
 
-    private func extractCopilotUtilityText(from output: String) -> String {
-        var textPieces: [String] = []
-        var failurePieces: [String] = []
-        var completionSummary: String?
-        var terminalSummary: String?
-        for line in output.split(whereSeparator: \.isNewline).map(String.init) {
-            for event in CopilotStreamEventParser.parseAgentEvents(line: line) {
-                switch event {
-                case .text(let text):
-                    textPieces.append(text)
-                case .completed(let summary):
-                    if let summary = CopilotUtilityOutputRendering.nonEmptyText(summary),
-                       CopilotUtilityOutputRendering.isFinalAssistantMessageLine(line) {
-                        completionSummary = summary
-                    } else if let summary = CopilotUtilityOutputRendering.nonEmptyText(summary) {
-                        terminalSummary = summary
-                    }
-                case .failed(let message):
-                    if let message = CopilotUtilityOutputRendering.nonEmptyText(message) {
-                        failurePieces.append(message)
-                    }
-                default:
-                    continue
-                }
-            }
-        }
-        if let completionSummary {
-            return completionSummary
-        }
-        if let joined = CopilotUtilityOutputRendering.nonEmptyText((textPieces + failurePieces).joined()) {
-            return joined
-        }
-        return terminalSummary ?? output
-    }
 }
 
 private final class CopilotUtilityStreamRunState: @unchecked Sendable {
@@ -2440,6 +2292,7 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
     let recordsInferredFileChanges = true
     let recordsEstimatedUsageWhenProviderUsageMissing = true
     let modelAvailabilityAuthority: RuntimeModelAvailabilityAuthority = .suggestions
+    let providerRuntimeMessages = ProviderRuntimeMessages.antigravity
 
     func launchSettings(configuration: AgentRuntimeConfiguration) -> AgentRuntimeLaunchSettings {
         let configuredPath = configuration.executablePath(for: id)
@@ -2458,58 +2311,26 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
         )
     }
 
-    func missingExecutableAuditReason() -> String {
-        "antigravity_cli_not_found"
-    }
-
-    func missingExecutableStopReason() -> String? {
-        "missing_antigravity"
-    }
-
-    func missingExecutableMessage(executablePath _: String) -> String {
-        "Google Antigravity CLI not found. Install it from the official setup docs, then run `agy` once to authenticate."
-    }
-
-    func defaultStartEventPayload(task: AgentTask) -> String {
-        "Antigravity started working on: \(task.goal)"
-    }
-
     func connectorPreflightContextText(
         task _: AgentTask,
         promptOverride: String?,
         startPayload: String,
         sessionMessage _: String?,
-        phase _: String
+        phase _: RunPhase
     ) -> String {
         promptOverride ?? startPayload
     }
 
-    func shouldPrepareIsolation(phase _: String) -> Bool {
+    func shouldPrepareIsolation(phase _: RunPhase) -> Bool {
         true
     }
 
-    func shouldValidateSuccessfulRun(phase _: String) -> Bool {
+    func shouldValidateSuccessfulRun(phase _: RunPhase) -> Bool {
         true
     }
 
-    func requiresVisibleResultForSuccessfulRun(phase _: String) -> Bool {
+    func requiresVisibleResultForSuccessfulRun(phase _: RunPhase) -> Bool {
         true
-    }
-
-    func manualCompletionPayload(phase _: String) -> String {
-        "Antigravity finished."
-    }
-
-    func failurePayloadPrefix(phase _: String, exitCode: Int) -> String {
-        "Antigravity exited with code \(exitCode)."
-    }
-
-    func timeoutPayload(phase _: String, timeoutSeconds: TimeInterval) -> String {
-        "Task idle timeout - no output for \(Int(timeoutSeconds))s. Process killed."
-    }
-
-    func maxTurnsPayload(phase _: String, task: AgentTask) -> String {
-        "Max turns reached (\(task.maxTurns)). Process killed."
     }
 
     func sessionTurnMessage(
@@ -2517,9 +2338,9 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
         promptOverride: String?,
         startPayload: String?,
         sessionMessage _: String?,
-        phase _: String
+        phase _: RunPhase
     ) -> String {
-        promptOverride == nil ? task.goal : (startPayload ?? task.goal)
+        providerRuntimeMessages.sessionTurnMessage(task: task, promptOverride: promptOverride, startPayload: startPayload)
     }
 
     func policyAdapter(runtimeCapabilities _: AgentRuntimePolicyCapabilities) -> any ProviderPolicyAdapter {
@@ -2591,7 +2412,9 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
     func makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext) -> AgentRuntimeProcessLaunchPlan {
         let taskEnv = AgentRuntimeProcessRunner.scopedEnvironmentVariables(
             for: context.task,
-            contextText: context.contextText
+            capabilityScope: context.capabilityResolutionSnapshot.providerLaunch,
+            contextText: context.contextText,
+            executionPolicy: context.executionPolicy
         )
         let browserShimDirectory = AgentRuntimeProcessRunner.browserToolShimDirectory(
             for: context.task,
@@ -2617,7 +2440,8 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
         let hostControlTools = HostControlPlaneMCPProjection.enabledToolNames(
             task: context.task,
             environment: executionEnvironment,
-            contextText: context.contextText
+            contextText: context.contextText,
+            capabilityScope: context.capabilityResolutionSnapshot.providerLaunch
         )
         let plan = AntigravityCLIRuntime.buildCommand(
             executablePath: executable,
@@ -2629,13 +2453,18 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
             taskEnvironment: taskEnv,
             providerHomeDirectory: context.providerHomeDirectory,
             pathPrefix: pathPrefix,
-            includeAstraToolsPath: AgentRuntimeProcessRunner.hasActiveCLITools(context.task, contextText: context.contextText)
+            includeAstraToolsPath: AgentRuntimeProcessRunner.hasActiveCLITools(
+                context.task,
+                contextText: context.contextText,
+                capabilityScope: context.capabilityResolutionSnapshot.providerLaunch
+            )
                 || taskEnv["ASTRA_BROWSER_URL"] != nil,
-            diagnosticLogPath: diagnosticLogPath
+            diagnosticLogPath: diagnosticLogPath,
+            permissionArguments: context.requiredProviderPolicyRender(for: id).antigravityLaunchPermissionArguments()
         )
         var commandPlannedFields = [
             "runtime": id.rawValue,
-            "phase": context.phase,
+            "phase": context.phase.rawValue,
             "model": model,
             "provider_model": providerModel,
             "model_applied": String(modelApplied),
@@ -2740,8 +2569,9 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
         let executable = configuredPath.isEmpty
             ? AntigravityCLIRuntime.detectPath()
             : configuredPath
+        let providerHomeDirectory = configuration.homeDirectory(for: id)
         let modelSettingsURL = AntigravityCLIRuntime.settingsURL(
-            providerHomeDirectory: configuration.homeDirectory(for: id)
+            providerHomeDirectory: providerHomeDirectory
         )
         let sharedStateKey = AgentRuntimeSharedStateKey(
             runtime: id,
@@ -2770,30 +2600,32 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
             permissionPolicy: .restricted,
             timeoutSeconds: configuration.timeoutSeconds,
             taskEnvironment: [:],
-            providerHomeDirectory: configuration.homeDirectory(for: id)
+            providerHomeDirectory: providerHomeDirectory,
+            permissionArguments: ProviderPolicyRender.antigravityLaunchPermissionArguments(policy: .restricted)
         )
 
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: plan.executablePath)
-        process.arguments = plan.arguments
-        process.currentDirectoryURL = URL(fileURLWithPath: workspacePath)
-        process.environment = plan.environment
-
-        let stdoutPipe = Pipe()
-        let stderrPipe = Pipe()
-        process.standardOutput = stdoutPipe
-        process.standardError = stderrPipe
-        // Non-interactive helper: hand the CLI an empty stdin so it never blocks
-        // waiting for input it will never receive (provider-agnostic safeguard).
-        process.standardInput = FileHandle.nullDevice
-        let result = await AsyncProcessRunner.run(
-            process,
-            stdout: stdoutPipe,
-            stderr: stderrPipe,
-            timeoutSeconds: configuration.timeoutSeconds
+        let trimmedHome = providerHomeDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
+        let processPlan = AgentRuntimeProcessLaunchPlan(
+            runtime: id,
+            executablePath: plan.executablePath,
+            arguments: plan.arguments,
+            currentDirectory: workspacePath,
+            environment: plan.environment,
+            browserShimDirectory: nil,
+            providerVersion: nil,
+            parsesJSONLines: plan.parsesJSONLines,
+            directoriesToCreate: trimmedHome.isEmpty ? [] : [trimmedHome]
+        )
+        let result = await AgentRuntimeProcessRunner().runUtilityProcess(
+            AgentUtilityLaunchPlan(
+                process: processPlan,
+                providerHomeDirectory: providerHomeDirectory,
+                permissionPolicy: .restricted,
+                timeoutSeconds: configuration.timeoutSeconds
+            )
         )
         await AgentRuntimeSharedStateGate.shared.release(sharedStateKey)
-        return AgentUtilityRunResult(exitCode: result.exitCode, output: result.stdout, error: result.stderr)
+        return result
     }
 
     private func antigravityLiveAccountCheck(

@@ -145,6 +145,24 @@ struct WorkspaceAppPreviewRunnerTests {
         #expect(ok.outputSummary.contains("preview"))
     }
 
+    @Test("preview delegates permission enforcement to the shared gate with preview surface context")
+    func previewUsesSharedPermissionGate() throws {
+        let insert = action("add", "appStorage.insert", table: "items")
+        let gate = RecordingPermissionGate(error: WorkspaceAppActionExecutionError.permissionDenied("shared gate denied"))
+        let runner = WorkspaceAppPreviewRunner(
+            manifest: manifest(mode: .draftOnly, tables: [itemsTable()], actions: [insert]),
+            sampleRowsPerTable: 0,
+            permissionGate: gate
+        )
+
+        #expect(throws: WorkspaceAppActionExecutionError.permissionDenied("shared gate denied")) {
+            _ = try runner.run(insert, manifest: runner.manifest, input: WorkspaceAppActionInput())
+        }
+        #expect(gate.calls == [
+            RecordingPermissionGate.Call(actionID: "add", mode: .draftOnly, surface: .preview)
+        ])
+    }
+
     @Test("appStorage.delete requires confirmedDestructive")
     func deleteNeedsConfirmation() throws {
         let del = action("del", "appStorage.delete", table: "items")
@@ -289,6 +307,33 @@ struct WorkspaceAppPreviewRunnerTests {
         let br = m.actions.first { $0.id == "br" }!
         #expect(throws: WorkspaceAppActionExecutionError.self) {
             _ = try runner.run(br, manifest: m, input: WorkspaceAppActionInput(record: ["status": .text("ok")]))
+        }
+    }
+}
+
+private final class RecordingPermissionGate: WorkspaceAppPermissionChecking {
+    struct Call: Equatable {
+        var actionID: String
+        var mode: WorkspaceAppPermissionMode
+        var surface: WorkspaceAppBridgeSurface
+    }
+
+    private(set) var calls: [Call] = []
+    var error: Error?
+
+    init(error: Error? = nil) {
+        self.error = error
+    }
+
+    func enforce(
+        action: WorkspaceAppActionSpec,
+        mode: WorkspaceAppPermissionMode,
+        input: WorkspaceAppActionInput,
+        surface: WorkspaceAppBridgeSurface
+    ) throws {
+        calls.append(Call(actionID: action.id, mode: mode, surface: surface))
+        if let error {
+            throw error
         }
     }
 }

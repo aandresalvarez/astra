@@ -34,7 +34,7 @@ struct MCPServersFactValueTests {
             adapterVersion: 1,
             policyLevel: .review,
             configOwnership: .generated,
-            permissionMode: PermissionPolicy.restricted.rawValue,
+            permissionMode: .restricted,
             allowedTools: [],
             runtimeSupportTools: [],
             askFirstTools: [],

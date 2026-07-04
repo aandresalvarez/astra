@@ -1,4 +1,5 @@
 import Foundation
+import ASTRACore
 
 public struct ToolError: Error, CustomStringConvertible {
     public let message: String
@@ -33,25 +34,6 @@ public enum AppleScriptSource {
     }
 }
 
-private final class LockedDataBuffer {
-    private let lock = NSLock()
-    private var data = Data()
-
-    func append(_ chunk: Data) {
-        guard !chunk.isEmpty else { return }
-        lock.lock()
-        data.append(chunk)
-        lock.unlock()
-    }
-
-    func string() -> String {
-        lock.lock()
-        let snapshot = data
-        lock.unlock()
-        return String(data: snapshot, encoding: .utf8) ?? ""
-    }
-}
-
 @discardableResult
 public func runProcess(
     _ executable: String,
@@ -60,74 +42,27 @@ public func runProcess(
     timeout: TimeInterval? = nil,
     timeoutMessage: String? = nil
 ) throws -> ProcessResult {
-    let process = Process()
-    if executable.hasPrefix("/") {
-        process.executableURL = URL(fileURLWithPath: executable)
-        process.arguments = arguments
-    } else {
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        process.arguments = [executable] + arguments
+    let requestTimeout = timeout ?? 120
+    let result = HardenedProcessExecutor().runSynchronously(HardenedProcessRequest(
+        executable: executable,
+        arguments: arguments,
+        standardInput: input.map { Data($0.utf8) },
+        timeout: requestTimeout,
+        // Mail helpers can fan out to child processes (osascript, network
+        // helpers); terminate the whole group on timeout so descendants can't
+        // outlive the parent. Matches the connector-read reader's behavior.
+        terminateProcessGroup: true
+    ))
+    if result.timedOut {
+        throw ToolError(timeoutMessage ?? "\(executable) timed out after \(Int(requestTimeout)) seconds.")
     }
-
-    let stdoutPipe = Pipe()
-    let stderrPipe = Pipe()
-    let stdinPipe = Pipe()
-    let stdoutBuffer = LockedDataBuffer()
-    let stderrBuffer = LockedDataBuffer()
-
-    process.standardOutput = stdoutPipe
-    process.standardError = stderrPipe
-    if input != nil {
-        process.standardInput = stdinPipe
+    if let launchError = result.launchError {
+        throw ToolError(launchError)
     }
-
-    stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
-        stdoutBuffer.append(handle.availableData)
-    }
-    stderrPipe.fileHandleForReading.readabilityHandler = { handle in
-        stderrBuffer.append(handle.availableData)
-    }
-
-    let semaphore = DispatchSemaphore(value: 0)
-    process.terminationHandler = { _ in
-        semaphore.signal()
-    }
-
-    do {
-        try process.run()
-    } catch {
-        stdoutPipe.fileHandleForReading.readabilityHandler = nil
-        stderrPipe.fileHandleForReading.readabilityHandler = nil
-        throw error
-    }
-
-    if let input {
-        if let data = input.data(using: .utf8) {
-            stdinPipe.fileHandleForWriting.write(data)
-        }
-        try? stdinPipe.fileHandleForWriting.close()
-    }
-
-    if let timeout {
-        let deadline = DispatchTime.now() + .milliseconds(Int(timeout * 1000))
-        if semaphore.wait(timeout: deadline) == .timedOut {
-            process.terminate()
-            _ = semaphore.wait(timeout: .now() + 2)
-            stdoutPipe.fileHandleForReading.readabilityHandler = nil
-            stderrPipe.fileHandleForReading.readabilityHandler = nil
-            throw ToolError(timeoutMessage ?? "\(executable) timed out after \(Int(timeout)) seconds.")
-        }
-    } else {
-        semaphore.wait()
-    }
-
-    stdoutPipe.fileHandleForReading.readabilityHandler = nil
-    stderrPipe.fileHandleForReading.readabilityHandler = nil
-
     return ProcessResult(
-        stdout: stdoutBuffer.string(),
-        stderr: stderrBuffer.string(),
-        exitCode: process.terminationStatus
+        stdout: result.stdout,
+        stderr: result.stderr,
+        exitCode: result.exitCode ?? -1
     )
 }
 

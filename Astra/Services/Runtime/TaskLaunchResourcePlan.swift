@@ -1,4 +1,5 @@
 import Foundation
+import ASTRACore
 
 enum TaskLaunchResourceAccess: String, Codable, Sendable {
     case read
@@ -127,7 +128,7 @@ struct TaskLaunchResourcePlan: Codable, Equatable, Sendable {
     var taskID: UUID
     var runID: UUID?
     var runtime: String
-    var phase: String
+    var phase: RunPhase
     var workspacePath: String
     var executionEnvironmentID: String
     var executionEnvironmentKind: String
@@ -150,7 +151,7 @@ struct TaskLaunchResourcePlan: Codable, Equatable, Sendable {
         taskID: UUID,
         runID: UUID?,
         runtime: String,
-        phase: String,
+        phase: RunPhase,
         workspacePath: String,
         executionEnvironmentID: String,
         executionEnvironmentKind: String,
@@ -336,7 +337,7 @@ struct TaskLaunchResourcePlan: Codable, Equatable, Sendable {
         taskID = try container.decode(UUID.self, forKey: .taskID)
         runID = try container.decodeIfPresent(UUID.self, forKey: .runID)
         runtime = try container.decode(String.self, forKey: .runtime)
-        phase = try container.decode(String.self, forKey: .phase)
+        phase = try container.decode(RunPhase.self, forKey: .phase)
         workspacePath = try container.decode(String.self, forKey: .workspacePath)
         executionEnvironmentID = try container.decode(String.self, forKey: .executionEnvironmentID)
         executionEnvironmentKind = try container.decode(String.self, forKey: .executionEnvironmentKind)

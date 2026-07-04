@@ -90,6 +90,25 @@ struct AgentUtilityRunResult: Equatable {
     }
 }
 
+struct AgentUtilityLaunchPlan: Equatable {
+    var process: AgentRuntimeProcessLaunchPlan
+    var providerHomeDirectory: String
+    var permissionPolicy: PermissionPolicy
+    var timeoutSeconds: TimeInterval
+
+    init(
+        process: AgentRuntimeProcessLaunchPlan,
+        providerHomeDirectory: String,
+        permissionPolicy: PermissionPolicy,
+        timeoutSeconds: TimeInterval
+    ) {
+        self.process = process
+        self.providerHomeDirectory = providerHomeDirectory
+        self.permissionPolicy = permissionPolicy
+        self.timeoutSeconds = timeoutSeconds
+    }
+}
+
 enum AgentUtilityRuntimeRunner {
     static func runPrompt(
         _ prompt: String,

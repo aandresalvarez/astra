@@ -62,34 +62,34 @@ struct WorkspaceAppApprovalQueueTests {
 
     @MainActor
     @Test("approving a pending gate resumes the pipeline to completion")
-    func approveResumes() throws {
+    func approveResumes() async throws {
         let env = try Self.makeEnv()
         defer { try? FileManager.default.removeItem(at: env.root) }
         let m = manifest(steps: ["approve"], gates: ["approve"])
         let created = try WorkspaceAppService().createApp(manifest: m, in: env.workspace, modelContext: env.context, status: .published)
         let executor = WorkspaceAppActionExecutor()
         let waiting = try executor.execute(actionID: "run", app: created.app, workspace: env.workspace, manifest: m, input: WorkspaceAppActionInput(), modelContext: env.context)
-        let resumed = try executor.resumeWithApproval(run: waiting.run, approved: true, app: created.app, workspace: env.workspace, manifest: m, modelContext: env.context)
+        let resumed = try await executor.resumeWithApproval(run: waiting.run, approved: true, app: created.app, workspace: env.workspace, manifest: m, modelContext: env.context)
         #expect(resumed.run.status == .completed)
         #expect(resumed.run.pendingApprovalActionID == nil)
     }
 
     @MainActor
     @Test("rejecting a pending gate fails the run")
-    func rejectFails() throws {
+    func rejectFails() async throws {
         let env = try Self.makeEnv()
         defer { try? FileManager.default.removeItem(at: env.root) }
         let m = manifest(steps: ["approve"], gates: ["approve"])
         let created = try WorkspaceAppService().createApp(manifest: m, in: env.workspace, modelContext: env.context, status: .published)
         let executor = WorkspaceAppActionExecutor()
         let waiting = try executor.execute(actionID: "run", app: created.app, workspace: env.workspace, manifest: m, input: WorkspaceAppActionInput(), modelContext: env.context)
-        let resumed = try executor.resumeWithApproval(run: waiting.run, approved: false, app: created.app, workspace: env.workspace, manifest: m, modelContext: env.context)
+        let resumed = try await executor.resumeWithApproval(run: waiting.run, approved: false, app: created.app, workspace: env.workspace, manifest: m, modelContext: env.context)
         #expect(resumed.run.status == .failed)
     }
 
     @MainActor
     @Test("a second human gate re-prompts rather than inheriting the first approval")
-    func laterGateRePrompts() throws {
+    func laterGateRePrompts() async throws {
         let env = try Self.makeEnv()
         defer { try? FileManager.default.removeItem(at: env.root) }
         let m = manifest(steps: ["g1", "g2"], gates: ["g1", "g2"])
@@ -98,11 +98,11 @@ struct WorkspaceAppApprovalQueueTests {
         let waiting = try executor.execute(actionID: "run", app: created.app, workspace: env.workspace, manifest: m, input: WorkspaceAppActionInput(), modelContext: env.context)
         #expect(waiting.run.pendingApprovalActionID == "g1")
         // Approving g1 should pause again at g2, not auto-approve it.
-        let afterFirst = try executor.resumeWithApproval(run: waiting.run, approved: true, app: created.app, workspace: env.workspace, manifest: m, modelContext: env.context)
+        let afterFirst = try await executor.resumeWithApproval(run: waiting.run, approved: true, app: created.app, workspace: env.workspace, manifest: m, modelContext: env.context)
         #expect(afterFirst.run.status == .waiting)
         #expect(afterFirst.run.pendingApprovalActionID == "g2")
         // Approving g2 completes it.
-        let afterSecond = try executor.resumeWithApproval(run: afterFirst.run, approved: true, app: created.app, workspace: env.workspace, manifest: m, modelContext: env.context)
+        let afterSecond = try await executor.resumeWithApproval(run: afterFirst.run, approved: true, app: created.app, workspace: env.workspace, manifest: m, modelContext: env.context)
         #expect(afterSecond.run.status == .completed)
     }
 }

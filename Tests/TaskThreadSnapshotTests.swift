@@ -99,12 +99,11 @@ struct TaskLivenessTests {
 
     @Test("A running task with no runs yet is not live — task.status alone doesn't guarantee a run has actually started")
     func runningTaskWithNoRunsIsNotLive() {
-        // Regression test: sendConversationMessage can optimistically set
-        // task.status = .running before taskQueue.continueSession has
-        // actually acquired a worker/resource lock (it can sit in
-        // waitForResourceLock first). Treating task.status == .running alone
-        // as live polled a large history every tick during that whole wait,
-        // even though no run — and so no new content — exists yet.
+        // Regression test: TaskQueue.continueSession owns the continuation
+        // admission transition to .running, then the worker creates the run.
+        // Treating task.status == .running alone as live can poll a large
+        // history during that narrow launch handoff, even though no run — and
+        // so no new content — exists yet.
         let task = makeTask(status: .running)
         #expect(!TaskLiveness.isLive(task: task))
     }

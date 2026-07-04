@@ -687,7 +687,12 @@ struct CopilotCLICommandPlanningTests {
             timeoutSeconds: 60,
             capabilities: capabilities,
             taskEnvironment: ["TOKEN": "secret"],
-            copilotHome: "/tmp/copilot-home"
+            copilotHome: "/tmp/copilot-home",
+            permissionArguments: Self.permissionArguments(
+                policy: .autonomous,
+                allowedTools: [],
+                capabilities: capabilities
+            )
         )
 
         #expect(plan.parsesJSONLines)
@@ -721,7 +726,12 @@ struct CopilotCLICommandPlanningTests {
             capabilities: supportedCapabilities,
             taskEnvironment: [:],
             copilotHome: "/tmp/copilot-home",
-            reasoningEffort: " NoNe "
+            reasoningEffort: " NoNe ",
+            permissionArguments: Self.permissionArguments(
+                policy: .restricted,
+                allowedTools: ["Read", "Write"],
+                capabilities: supportedCapabilities
+            )
         )
 
         let effortIndex = try #require(supportedPlan.arguments.firstIndex(of: "--effort"))
@@ -742,7 +752,12 @@ struct CopilotCLICommandPlanningTests {
             capabilities: alternateOnlyCapabilities,
             taskEnvironment: [:],
             copilotHome: "/tmp/copilot-home",
-            reasoningEffort: "none"
+            reasoningEffort: "none",
+            permissionArguments: Self.permissionArguments(
+                policy: .restricted,
+                allowedTools: ["Read", "Write"],
+                capabilities: alternateOnlyCapabilities
+            )
         )
 
         #expect(!alternateOnlyCapabilities.supportsReasoningEffort)
@@ -763,7 +778,12 @@ struct CopilotCLICommandPlanningTests {
             capabilities: unsupportedCapabilities,
             taskEnvironment: [:],
             copilotHome: "/tmp/copilot-home",
-            reasoningEffort: "none"
+            reasoningEffort: "none",
+            permissionArguments: Self.permissionArguments(
+                policy: .restricted,
+                allowedTools: ["Read", "Write"],
+                capabilities: unsupportedCapabilities
+            )
         )
 
         #expect(!unsupportedPlan.arguments.contains("--effort"))
@@ -784,7 +804,12 @@ struct CopilotCLICommandPlanningTests {
             capabilities: capabilities,
             taskEnvironment: ["HOME": "/tmp/task-home", "XDG_CACHE_HOME": "/tmp/task-cache"],
             copilotHome: "  /tmp/copilot-home  ",
-            providerEnvironment: ["HOME": "/tmp/provider-home", "XDG_CONFIG_HOME": "/tmp/provider-config"]
+            providerEnvironment: ["HOME": "/tmp/provider-home", "XDG_CONFIG_HOME": "/tmp/provider-config"],
+            permissionArguments: Self.permissionArguments(
+                policy: .autonomous,
+                allowedTools: [],
+                capabilities: capabilities
+            )
         )
 
         #expect(plan.environment["COPILOT_HOME"] == "/tmp/copilot-home")
@@ -812,7 +837,12 @@ struct CopilotCLICommandPlanningTests {
             copilotHome: "/tmp/astra-copilot-home",
             copilotStateHome: "/Users/test/.copilot",
             userHome: "/Users/test",
-            providerEnvironment: ["HOME": "/tmp/provider-home", "XDG_CONFIG_HOME": "/tmp/provider-config"]
+            providerEnvironment: ["HOME": "/tmp/provider-home", "XDG_CONFIG_HOME": "/tmp/provider-config"],
+            permissionArguments: Self.permissionArguments(
+                policy: .autonomous,
+                allowedTools: [],
+                capabilities: capabilities
+            )
         )
 
         #expect(plan.environment["COPILOT_HOME"] == "/Users/test/.copilot")
@@ -842,7 +872,12 @@ struct CopilotCLICommandPlanningTests {
             capabilities: capabilities,
             taskEnvironment: ["JIRA_EMAIL": "user@example.edu", "JIRA_API_TOKEN": "jira-token"],
             copilotHome: "/tmp/copilot-home",
-            providerEnvironment: ["OPENAI_API_KEY": "provider-secret"]
+            providerEnvironment: ["OPENAI_API_KEY": "provider-secret"],
+            permissionArguments: Self.permissionArguments(
+                policy: .restricted,
+                allowedTools: ["Bash"],
+                capabilities: capabilities
+            )
         )
 
         #expect(plan.environment["JIRA_EMAIL"] == "user@example.edu")
@@ -874,7 +909,13 @@ struct CopilotCLICommandPlanningTests {
             copilotHome: "/tmp/copilot-home",
             pathPrefix: ["/tmp/task-browser-bin"],
             includeAstraToolsPath: true,
-            localToolCommands: ["astra-browser"]
+            localToolCommands: ["astra-browser"],
+            permissionArguments: Self.permissionArguments(
+                policy: .autonomous,
+                allowedTools: [],
+                capabilities: capabilities,
+                localToolCommands: ["astra-browser"]
+            )
         )
 
         let pathParts = plan.environment["PATH", default: ""].split(separator: ":").map(String.init)
@@ -899,7 +940,12 @@ struct CopilotCLICommandPlanningTests {
             timeoutSeconds: 60,
             capabilities: capabilities,
             taskEnvironment: [:],
-            copilotHome: "/tmp/copilot-home"
+            copilotHome: "/tmp/copilot-home",
+            permissionArguments: Self.permissionArguments(
+                policy: .autonomous,
+                allowedTools: [],
+                capabilities: capabilities
+            )
         )
 
         #expect(!plan.parsesJSONLines)
@@ -923,7 +969,12 @@ struct CopilotCLICommandPlanningTests {
             timeoutSeconds: 60,
             capabilities: capabilities,
             taskEnvironment: [:],
-            copilotHome: "/tmp/copilot-home"
+            copilotHome: "/tmp/copilot-home",
+            permissionArguments: Self.permissionArguments(
+                policy: .autonomous,
+                allowedTools: [],
+                capabilities: capabilities
+            )
         )
 
         #expect(plan.arguments.contains("--allow-all"))
@@ -946,7 +997,12 @@ struct CopilotCLICommandPlanningTests {
             timeoutSeconds: 60,
             capabilities: capabilities,
             taskEnvironment: [:],
-            copilotHome: "/tmp/copilot-home"
+            copilotHome: "/tmp/copilot-home",
+            permissionArguments: Self.permissionArguments(
+                policy: .autonomous,
+                allowedTools: [],
+                capabilities: capabilities
+            )
         )
 
         #expect(plan.arguments.contains("--allow-all-tools"))
@@ -971,7 +1027,12 @@ struct CopilotCLICommandPlanningTests {
             capabilities: capabilities,
             taskEnvironment: [:],
             copilotHome: "/tmp/copilot-home",
-            allowAllPathsForSSHConnections: true
+            permissionArguments: Self.permissionArguments(
+                policy: .restricted,
+                allowedTools: ["Bash"],
+                capabilities: capabilities,
+                allowAllPathsForSSHConnections: true
+            )
         )
 
         #expect(plan.arguments.contains("--allow-all-paths"))
@@ -994,7 +1055,12 @@ struct CopilotCLICommandPlanningTests {
             capabilities: capabilities,
             taskEnvironment: [:],
             copilotHome: "/tmp/copilot-home",
-            disableCustomInstructions: true
+            disableCustomInstructions: true,
+            permissionArguments: Self.permissionArguments(
+                policy: .restricted,
+                allowedTools: ["Read"],
+                capabilities: capabilities
+            )
         )
 
         #expect(plan.arguments.contains("--no-custom-instructions"))
@@ -1016,7 +1082,12 @@ struct CopilotCLICommandPlanningTests {
             capabilities: capabilities,
             taskEnvironment: [:],
             copilotHome: "/tmp/copilot-home",
-            disableCustomInstructions: false
+            disableCustomInstructions: false,
+            permissionArguments: Self.permissionArguments(
+                policy: .restricted,
+                allowedTools: ["Read"],
+                capabilities: capabilities
+            )
         )
 
         #expect(!plan.arguments.contains("--no-custom-instructions"))
@@ -1038,7 +1109,12 @@ struct CopilotCLICommandPlanningTests {
             capabilities: capabilities,
             taskEnvironment: [:],
             copilotHome: "/tmp/copilot-home",
-            disableCustomInstructions: true
+            disableCustomInstructions: true,
+            permissionArguments: Self.permissionArguments(
+                policy: .restricted,
+                allowedTools: ["Read"],
+                capabilities: capabilities
+            )
         )
 
         #expect(!plan.arguments.contains("--no-custom-instructions"))
@@ -1082,7 +1158,12 @@ struct CopilotCLICommandPlanningTests {
             timeoutSeconds: 60,
             capabilities: capabilities,
             taskEnvironment: [:],
-            copilotHome: "/tmp/copilot-home"
+            copilotHome: "/tmp/copilot-home",
+            permissionArguments: Self.permissionArguments(
+                policy: .restricted,
+                allowedTools: ["Read", "Write"],
+                capabilities: capabilities
+            )
         )
 
         let allowedEntries = Set(Self.argumentValues(after: "--allow-tool", in: plan.arguments))
@@ -1111,7 +1192,13 @@ struct CopilotCLICommandPlanningTests {
             capabilities: capabilities,
             taskEnvironment: [:],
             copilotHome: "/tmp/copilot-home",
-            runtimeSupportTools: ["fetch_copilot_cli_documentation", "report_intent"]
+            runtimeSupportTools: ["fetch_copilot_cli_documentation", "report_intent"],
+            permissionArguments: Self.permissionArguments(
+                policy: .restricted,
+                allowedTools: ["read"],
+                capabilities: capabilities,
+                runtimeSupportTools: ["fetch_copilot_cli_documentation", "report_intent"]
+            )
         )
 
         let allowIndex = try #require(plan.arguments.firstIndex(of: "--allow-tool"))
@@ -1141,7 +1228,13 @@ struct CopilotCLICommandPlanningTests {
             capabilities: capabilities,
             taskEnvironment: [:],
             copilotHome: "/tmp/copilot-home",
-            runtimeSupportTools: ["fetch_copilot_cli_documentation", "report_intent"]
+            runtimeSupportTools: ["fetch_copilot_cli_documentation", "report_intent"],
+            permissionArguments: Self.permissionArguments(
+                policy: .restricted,
+                allowedTools: ["mcp__astra_workspace__workspace_shell"],
+                capabilities: capabilities,
+                runtimeSupportTools: ["fetch_copilot_cli_documentation", "report_intent"]
+            )
         )
 
         let allowedEntries = Set(Self.argumentValues(after: "--allow-tool", in: plan.arguments))
@@ -1172,7 +1265,13 @@ struct CopilotCLICommandPlanningTests {
             capabilities: capabilities,
             taskEnvironment: [:],
             copilotHome: "/tmp/copilot-home",
-            runtimeSupportTools: ["fetch_copilot_cli_documentation", "report_intent"]
+            runtimeSupportTools: ["fetch_copilot_cli_documentation", "report_intent"],
+            permissionArguments: Self.permissionArguments(
+                policy: .restricted,
+                allowedTools: ["read"],
+                capabilities: capabilities,
+                runtimeSupportTools: ["fetch_copilot_cli_documentation", "report_intent"]
+            )
         )
 
         let availableEntries = Set(Self.argumentValues(after: "--available-tools", in: plan.arguments))
@@ -1204,7 +1303,12 @@ struct CopilotCLICommandPlanningTests {
             capabilities: capabilities,
             taskEnvironment: [:],
             copilotHome: "/tmp/copilot-home",
-            askFirstTools: ["Write", "Edit", "MultiEdit", "Bash", "WebFetch"]
+            askFirstTools: ["Write", "Edit", "MultiEdit", "Bash", "WebFetch"],
+            permissionArguments: Self.permissionArguments(
+                policy: .restricted,
+                allowedTools: ["Read"],
+                capabilities: capabilities
+            )
         )
 
         let allowedEntries = Set(Self.argumentValues(after: "--allow-tool", in: plan.arguments))
@@ -1245,7 +1349,13 @@ struct CopilotCLICommandPlanningTests {
             capabilities: capabilities,
             taskEnvironment: [:],
             copilotHome: "/tmp/copilot-home",
-            runtimeSupportTools: ["report_intent"]
+            runtimeSupportTools: ["report_intent"],
+            permissionArguments: Self.permissionArguments(
+                policy: .restricted,
+                allowedTools: ["Read", "Agent"],
+                capabilities: capabilities,
+                runtimeSupportTools: ["report_intent"]
+            )
         )
 
         let allowedEntries = Set(Self.argumentValues(after: "--allow-tool", in: plan.arguments))
@@ -1330,6 +1440,24 @@ struct CopilotCLICommandPlanningTests {
         guard start < arguments.endIndex else { return [] }
         return Array(arguments[start...].prefix { !$0.hasPrefix("--") })
     }
+
+    private static func permissionArguments(
+        policy: PermissionPolicy,
+        allowedTools: [String],
+        capabilities: CopilotCLICapabilities,
+        localToolCommands: [String] = [],
+        runtimeSupportTools: [String] = [],
+        allowAllPathsForSSHConnections: Bool = false
+    ) -> [String] {
+        ProviderPolicyRender.copilotLaunchPermissionArguments(
+            policy: policy,
+            allowedTools: allowedTools,
+            capabilities: capabilities,
+            localToolCommands: localToolCommands,
+            runtimeSupportTools: runtimeSupportTools,
+            allowAllPathsForSSHConnections: allowAllPathsForSSHConnections
+        )
+    }
 }
 
 @Suite("Agent Runtime Persistence")
@@ -1405,6 +1533,7 @@ struct CopilotWorkerExecutionTests {
         worker.copilotHome = root.appendingPathComponent("copilot-home", isDirectory: true).path
         worker.timeoutSeconds = 30
 
+        DirectWorkerLaunchAdmission.admitInitialRun(task, modelContext: context)
         await worker.execute(task: task, modelContext: context) { _ in }
 
         #expect(task.status == .completed)
@@ -1465,6 +1594,7 @@ struct CopilotWorkerExecutionTests {
         worker.copilotHome = root.appendingPathComponent("copilot-home", isDirectory: true).path
         worker.timeoutSeconds = 30
 
+        DirectWorkerLaunchAdmission.admitInitialRun(task, modelContext: context)
         await worker.execute(task: task, modelContext: context) { _ in }
 
         #expect(task.status == .completed)
@@ -1532,6 +1662,7 @@ struct CopilotWorkerExecutionTests {
         worker.copilotHome = copilotHomeURL.path
         worker.timeoutSeconds = 30
 
+        DirectWorkerLaunchAdmission.admitInitialRun(task, modelContext: context)
         await worker.execute(task: task, modelContext: context) { _ in }
 
         #expect(task.status == .completed)
@@ -1595,6 +1726,7 @@ struct CopilotWorkerExecutionTests {
         worker.timeoutSeconds = 30
         worker.budgetEnforcementModeOverride = .warning
 
+        DirectWorkerLaunchAdmission.admitInitialRun(task, modelContext: context)
         await worker.execute(task: task, modelContext: context) { _ in }
 
         #expect(task.status == .completed)
@@ -1665,6 +1797,7 @@ struct CopilotWorkerExecutionTests {
         worker.timeoutSeconds = 30
         worker.budgetEnforcementModeOverride = .hardStop
 
+        DirectWorkerLaunchAdmission.admitInitialRun(task, modelContext: context)
         await worker.execute(task: task, modelContext: context) { _ in }
 
         #expect(task.status == .budgetExceeded)
@@ -1742,6 +1875,7 @@ struct CopilotWorkerExecutionTests {
         worker.copilotHome = root.appendingPathComponent("copilot-home", isDirectory: true).path
         worker.timeoutSeconds = 30
 
+        DirectWorkerLaunchAdmission.admitInitialRun(task, modelContext: context)
         await worker.execute(task: task, modelContext: context) { _ in }
 
         let run = try #require(task.runs.first)
@@ -1792,6 +1926,7 @@ struct CopilotWorkerExecutionTests {
         worker.copilotHome = root.appendingPathComponent("copilot-home", isDirectory: true).path
         worker.timeoutSeconds = 30
 
+        DirectWorkerLaunchAdmission.admitInitialRun(task, modelContext: context)
         await worker.execute(task: task, modelContext: context) { _ in }
 
         #expect(task.status == .failed)
@@ -1879,6 +2014,7 @@ struct CopilotWorkerExecutionTests {
                 )
             ]
         )
+        DirectWorkerLaunchAdmission.admitInitialRun(task, modelContext: context)
         await worker.executeApprovedPlan(task: task, plan: plan, modelContext: context) { _ in }
 
         #expect(task.status == .completed)
@@ -1937,6 +2073,7 @@ struct CopilotWorkerExecutionTests {
         worker.copilotHome = root.appendingPathComponent("copilot-home", isDirectory: true).path
         worker.timeoutSeconds = 30
 
+        DirectWorkerLaunchAdmission.admitInitialRun(task, modelContext: context)
         await worker.execute(task: task, modelContext: context) { _ in }
 
         #expect(task.status == .failed)
@@ -1993,6 +2130,7 @@ struct CopilotWorkerExecutionTests {
         worker.copilotHome = root.appendingPathComponent("copilot-home", isDirectory: true).path
         worker.timeoutSeconds = 30
 
+        DirectWorkerLaunchAdmission.admitInitialRun(task, modelContext: context)
         await worker.execute(task: task, modelContext: context) { _ in }
 
         #expect(task.status == .pendingUser)
@@ -2051,6 +2189,7 @@ struct CopilotWorkerExecutionTests {
         worker.copilotHome = root.appendingPathComponent("copilot-home", isDirectory: true).path
         worker.timeoutSeconds = 30
 
+        DirectWorkerLaunchAdmission.admitInitialRun(task, modelContext: context)
         await worker.execute(task: task, modelContext: context) { _ in }
 
         #expect(task.status == .completed)

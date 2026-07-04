@@ -327,6 +327,7 @@ extension AgentRuntimeWorker {
             switch decision {
             case .autoApprove:
                 pendingEvents.add {
+                    TaskRuntimePermissionOpenRequestStore.resolveOpenRequest(requestID: ask.requestID, task: task)
                     modelContext.insert(TaskEvent(
                         task: task,
                         eventType: TaskEventTypes.Tool.permissionRequestResolved,
@@ -341,11 +342,12 @@ extension AgentRuntimeWorker {
                         payload: "Auto-approved \(ask.toolName) (inside the active policy envelope).",
                         run: run
                     ))
-                    try? modelContext.save()
+                    WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
                 }
                 return .allow
             case .deny(let reason):
                 pendingEvents.add {
+                    TaskRuntimePermissionOpenRequestStore.resolveOpenRequest(requestID: ask.requestID, task: task)
                     modelContext.insert(TaskEvent(
                         task: task,
                         eventType: TaskEventTypes.Tool.permissionRequestResolved,
@@ -369,7 +371,7 @@ extension AgentRuntimeWorker {
                         payload: "Auto-denied \(ask.toolName) by ASTRA policy: \(reason)",
                         run: run
                     ))
-                    try? modelContext.save()
+                    WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
                 }
                 // The provider sees the actual policy reason, not "user declined".
                 return .deny(message: "Blocked by ASTRA policy: \(reason)")
@@ -388,6 +390,7 @@ extension AgentRuntimeWorker {
                 requestID: ask.requestID
             )
             pendingEvents.add {
+                TaskRuntimePermissionOpenRequestStore.recordOpenRequest(payload: payload, task: task)
                 let event = TaskEvent(
                     task: task,
                     eventType: TaskEventTypes.Tool.permissionApprovalRequested,
@@ -395,9 +398,8 @@ extension AgentRuntimeWorker {
                     run: run
                 )
                 modelContext.insert(event)
-                task.status = .pendingUser
-                task.updatedAt = Date()
-                try? modelContext.save()
+                TaskStateMachine.pauseForRuntimePermission(task, modelContext: modelContext)
+                WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
             }
             let approved = await InFlightPermissionCenter.shared.awaitDecision(
                 taskID: taskID,
@@ -412,9 +414,9 @@ extension AgentRuntimeWorker {
                 // pause always lifts; the run-status guard keeps this from
                 // resurrecting a task whose run already finished.
                 if task.status == .pendingUser, run.status == .running {
-                    task.status = .running
-                    task.updatedAt = Date()
+                    TaskStateMachine.resumeAfterRuntimePermission(task, modelContext: modelContext)
                 }
+                TaskRuntimePermissionOpenRequestStore.resolveOpenRequest(requestID: ask.requestID, task: task)
                 // Closes the open-request card: a denied live ask never emits
                 // task.approved, so without this the card would linger.
                 modelContext.insert(TaskEvent(
@@ -435,7 +437,7 @@ extension AgentRuntimeWorker {
                         : "Live permission for \(ask.toolName) was declined or the run ended; the provider continues without it.",
                     run: run
                 ))
-                try? modelContext.save()
+                WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
             }
             return approved
                 ? .allow

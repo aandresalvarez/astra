@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import MCPServerKit
 
 public struct HostControlToolConfiguration: Equatable, Sendable {
     public static let knownToolNames: Set<String> = ["github", "gcloud", "bq", "ssh", "jira"]
@@ -875,6 +876,15 @@ public final class HostControlMCPServer {
     private let processRunner: HostControlProcessRunning
     private let diagnosticsRecorder: HostControlToolDiagnosticsRecorder?
     private let processLimits: HostControlProcessLimits
+    private lazy var server = MCPServer(
+        name: "astra-host-control",
+        tools: { [weak self] in
+            self?.toolSchemas() ?? []
+        },
+        handleToolCall: { [weak self] call in
+            self?.handleToolCall(call) ?? .error(code: -32000, message: "Host-control MCP server is unavailable")
+        }
+    )
 
     public init(
         configuration: HostControlToolConfiguration,
@@ -889,50 +899,18 @@ public final class HostControlMCPServer {
     }
 
     public func handleLine(_ line: String) -> String? {
-        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return nil }
-        guard let data = trimmed.data(using: .utf8),
-              let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-              let method = object["method"] as? String else {
-            return encodeError(id: nil, code: -32700, message: "Invalid JSON-RPC request")
-        }
-
-        let id = object["id"]
-        if id == nil, method.hasPrefix("notifications/") {
-            return nil
-        }
-        switch method {
-        case "initialize":
-            return encodeResult(id: id, result: [
-                "protocolVersion": "2025-03-26",
-                "capabilities": ["tools": [:]],
-                "serverInfo": ["name": "astra-host-control", "version": "1.0.0"]
-            ])
-        case "tools/list":
-            return encodeResult(id: id, result: [
-                "tools": toolSchemas()
-            ])
-        case "tools/call":
-            return handleToolCall(id: id, object: object)
-        default:
-            return encodeError(id: id, code: -32601, message: "Unsupported method \(method)")
-        }
+        server.handleLine(line)
     }
 
-    private func handleToolCall(id: Any?, object: [String: Any]) -> String? {
-        guard let params = object["params"] as? [String: Any],
-              let toolName = params["name"] as? String else {
-            return encodeError(id: id, code: -32602, message: "Unsupported tool")
-        }
-        let normalizedToolName = normalizedToolName(toolName)
+    private func handleToolCall(_ call: MCPToolCall) -> MCPServerReply {
+        let normalizedToolName = normalizedToolName(call.name)
         guard toolIsAllowed(normalizedToolName) else {
-            return encodeError(id: id, code: -32602, message: "\(normalizedToolName) is not enabled for this task")
+            return .error(code: -32602, message: "\(normalizedToolName) is not enabled for this task")
         }
-        let arguments = params["arguments"] as? [String: Any] ?? [:]
+        let arguments = call.arguments
         switch normalizedToolName {
         case "github":
             return handleProcessTool(
-                id: id,
                 toolName: normalizedToolName,
                 executable: configuration.githubExecutable,
                 arguments: arguments,
@@ -941,7 +919,6 @@ public final class HostControlMCPServer {
             )
         case "gcloud":
             return handleProcessTool(
-                id: id,
                 toolName: normalizedToolName,
                 executable: configuration.gcloudExecutable,
                 arguments: arguments,
@@ -960,7 +937,6 @@ public final class HostControlMCPServer {
             )
         case "bq":
             return handleProcessTool(
-                id: id,
                 toolName: normalizedToolName,
                 executable: configuration.bigQueryExecutable,
                 arguments: arguments,
@@ -968,32 +944,31 @@ public final class HostControlMCPServer {
                 argumentPolicy: BigQueryHostControlPolicy.rejectionMessage
             )
         case "ssh":
-            return handleSSH(id: id, arguments: arguments)
+            return handleSSH(arguments: arguments)
         case "jira":
-            return handleJira(id: id, arguments: arguments)
+            return handleJira(arguments: arguments)
         default:
-            return encodeError(id: id, code: -32602, message: "Unsupported tool")
+            return .error(code: -32602, message: "Unsupported tool")
         }
     }
 
     private func handleProcessTool(
-        id: Any?,
         toolName: String,
         executable: String,
         arguments: [String: Any],
         allowedFirstArguments: Set<String>?,
         argumentPolicy: (([String]) -> String?)? = nil
-    ) -> String? {
+    ) -> MCPServerReply {
         guard let argv = stringArray(arguments["arguments"]) else {
-            return encodeError(id: id, code: -32602, message: "\(toolName) requires an arguments array")
+            return .error(code: -32602, message: "\(toolName) requires an arguments array")
         }
         guard validateArguments(argv) else {
-            return encodeError(id: id, code: -32602, message: "\(toolName) arguments must be non-empty strings without newlines")
+            return .error(code: -32602, message: "\(toolName) arguments must be non-empty strings without newlines")
         }
         if let allowedFirstArguments,
            let first = argv.first?.lowercased(),
            !allowedFirstArguments.contains(first) {
-            return encodeError(id: id, code: -32602, message: "\(toolName) does not allow subcommand '\(first)'")
+            return .error(code: -32602, message: "\(toolName) does not allow subcommand '\(first)'")
         }
         if let rejection = argumentPolicy?(argv) {
             let diagnosticArguments = redactedDiagnosticArguments(argv)
@@ -1009,7 +984,7 @@ public final class HostControlMCPServer {
                     timedOut: false
                 )
             )
-            return encodeError(id: id, code: -32602, message: rejection)
+            return .error(code: -32602, message: rejection)
         }
         let timeout = timeoutSeconds(from: arguments["timeout_seconds"])
         let result = processRunner.run(
@@ -1025,26 +1000,25 @@ public final class HostControlMCPServer {
             summary: "\(toolName) \(argv.joined(separator: " "))",
             result: redacted
         )
-        return encodeCommandResult(id: id, result: redacted)
+        return encodeCommandResult(result: redacted)
     }
 
-    private func handleSSH(id: Any?, arguments: [String: Any]) -> String? {
+    private func handleSSH(arguments: [String: Any]) -> MCPServerReply {
         guard let alias = clean(arguments["alias"] as? String) else {
-            return encodeError(id: id, code: -32602, message: "ssh requires alias")
+            return .error(code: -32602, message: "ssh requires alias")
         }
         guard validateArguments([alias]) else {
-            return encodeError(id: id, code: -32602, message: "ssh alias must be a single non-empty value without newlines")
+            return .error(code: -32602, message: "ssh alias must be a single non-empty value without newlines")
         }
         let allowed = Set(configuration.allowedSSHAliases)
         if !allowed.isEmpty, !allowed.contains(alias) {
-            return encodeError(
-                id: id,
+            return .error(
                 code: -32602,
                 message: "ssh alias '\(alias)' is not in ASTRA's configured workspace SSH aliases"
             )
         }
         if HostControlSSHCommandPolicy.containsUnsupportedCommandInput(arguments) {
-            return encodeError(id: id, code: -32602, message: HostControlSSHCommandPolicy.remoteCommandRejectionMessage)
+            return .error(code: -32602, message: HostControlSSHCommandPolicy.remoteCommandRejectionMessage)
         }
         let sshArguments = HostControlSSHCommandPolicy.connectionCheckArguments(for: alias)
         let timeout = timeoutSeconds(from: arguments["timeout_seconds"])
@@ -1061,19 +1035,19 @@ public final class HostControlMCPServer {
             summary: "ssh \(sshArguments.joined(separator: " "))",
             result: redacted
         )
-        return encodeCommandResult(id: id, result: redacted)
+        return encodeCommandResult(result: redacted)
     }
 
-    private func handleJira(id: Any?, arguments: [String: Any]) -> String? {
+    private func handleJira(arguments: [String: Any]) -> MCPServerReply {
         let operation = (clean(arguments["operation"] as? String) ?? "status").lowercased()
         guard let connector = jiraConnector(alias: clean(arguments["alias"] as? String)) else {
-            return encodeError(id: id, code: -32602, message: "No Jira connector is projected into ASTRA_CONNECTORS")
+            return .error(code: -32602, message: "No Jira connector is projected into ASTRA_CONNECTORS")
         }
         switch operation {
         case "status":
             let status = jiraStatus(connector: connector)
             diagnosticsRecorder?.record(toolName: "jira", summary: "jira status \(connector.alias)", result: nil)
-            return encodeResult(id: id, result: [
+            return .result([
                 "content": [[
                     "type": "text",
                     "text": formattedJiraStatus(status)
@@ -1081,22 +1055,21 @@ public final class HostControlMCPServer {
                 "isError": !status.ready
             ])
         case "get_issue", "search_jql":
-            return handleJiraReadRequest(id: id, operation: operation, connector: connector, arguments: arguments)
+            return handleJiraReadRequest(operation: operation, connector: connector, arguments: arguments)
         default:
-            return encodeError(id: id, code: -32602, message: "Unsupported Jira operation '\(operation)'")
+            return .error(code: -32602, message: "Unsupported Jira operation '\(operation)'")
         }
     }
 
     private func handleJiraReadRequest(
-        id: Any?,
         operation: String,
         connector: HostControlConnector,
         arguments: [String: Any]
-    ) -> String? {
+    ) -> MCPServerReply {
         let status = jiraStatus(connector: connector)
         guard status.ready else {
             diagnosticsRecorder?.record(toolName: "jira", summary: "jira \(operation) \(connector.alias) blocked: not configured", result: nil)
-            return encodeResult(id: id, result: [
+            return .result([
                 "content": [[
                     "type": "text",
                     "text": formattedJiraStatus(status)
@@ -1108,7 +1081,7 @@ public final class HostControlMCPServer {
         do {
             request = try JiraRequestPolicy.readRequest(operation: operation, arguments: arguments)
         } catch {
-            return encodeError(id: id, code: -32602, message: error.localizedDescription)
+            return .error(code: -32602, message: error.localizedDescription)
         }
         let timeout = timeoutSeconds(from: arguments["timeout_seconds"])
         let response = JiraHTTPClient(configuration: configuration).request(
@@ -1122,7 +1095,7 @@ public final class HostControlMCPServer {
             outputByteLimit: processLimits.outputByteLimit
         )
         diagnosticsRecorder?.record(toolName: "jira", summary: "jira \(operation) \(request.diagnosticPath)", result: response.diagnosticResult)
-        return encodeResult(id: id, result: [
+        return .result([
             "content": [[
                 "type": "text",
                 "text": formattedResponse.text
@@ -1270,8 +1243,8 @@ public final class HostControlMCPServer {
             optionName.contains("secret")
     }
 
-    private func encodeCommandResult(id: Any?, result: HostControlCommandResult) -> String? {
-        encodeResult(id: id, result: [
+    private func encodeCommandResult(result: HostControlCommandResult) -> MCPServerReply {
+        .result([
             "content": [[
                 "type": "text",
                 "text": formatted(result)
@@ -1449,34 +1422,6 @@ public final class HostControlMCPServer {
         return trimmed.isEmpty ? nil : trimmed
     }
 
-    private func encodeResult(id: Any?, result: [String: Any]) -> String? {
-        encode(["jsonrpc": "2.0", "id": normalizedID(id), "result": result])
-    }
-
-    private func encodeError(id: Any?, code: Int, message: String) -> String? {
-        encode([
-            "jsonrpc": "2.0",
-            "id": normalizedID(id),
-            "error": ["code": code, "message": message]
-        ])
-    }
-
-    private func normalizedID(_ id: Any?) -> Any {
-        switch id {
-        case let value as String: return value
-        case let value as NSNumber: return value
-        case .none: return NSNull()
-        default: return NSNull()
-        }
-    }
-
-    private func encode(_ object: [String: Any]) -> String? {
-        guard JSONSerialization.isValidJSONObject(object),
-              let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]) else {
-            return nil
-        }
-        return String(data: data, encoding: .utf8)
-    }
 }
 
 private enum HostControlSSHCommandPolicy {

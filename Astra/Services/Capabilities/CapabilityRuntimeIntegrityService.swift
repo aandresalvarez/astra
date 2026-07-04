@@ -39,6 +39,7 @@ enum CapabilityRuntimeIntegrityService {
         prerequisiteStatuses: [String: HealthStatus] = [:],
         policyContext: CapabilityCatalogPolicyContext? = nil,
         scope requestedScope: TaskCapabilityResolutionScope = .fullInventory,
+        capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot? = nil,
         secretStore: SecretStore = KeychainSecretStore()
     ) -> [CapabilityRuntimeIntegrityIssue] {
         guard let workspace = task.workspace else { return [] }
@@ -54,8 +55,11 @@ enum CapabilityRuntimeIntegrityService {
                 packPolicy: runtimePackPolicy
             ).map(\.id)
         )
-        let resolver = TaskCapabilityResolver(task: task)
-        let resolvedScope = resolver.resolvedScope(requestedScope)
+        let resolutionSnapshot = capabilityResolutionSnapshot ?? TaskCapabilityResolutionSnapshot.capture(
+            for: task,
+            providerLaunchContextText: requestedScope.contextText
+        )
+        let resolvedScope = resolutionSnapshot.scope(requestedScope)
         let resolvedSkills = resolvedScope.behaviorSkills
         let resolvedConnectors = resolvedScope.connectors
         let resolvedTools = resolvedScope.localTools
@@ -70,9 +74,9 @@ enum CapabilityRuntimeIntegrityService {
         // host problems (executable/auth/policy) below still surface only when
         // their package has a concrete runtime resource in the provider launch
         // scope.
-        let reachableSkills = resolver.allBehaviorSkills
-        let reachableConnectors = resolver.allConnectors
-        let reachableTools = resolver.allLocalTools
+        let reachableSkills = resolutionSnapshot.fullInventory.behaviorSkills
+        let reachableConnectors = resolutionSnapshot.fullInventory.connectors
+        let reachableTools = resolutionSnapshot.fullInventory.localTools
         let selectedSkillNames = liveSelectedPackageSkillNames(
             for: task,
             resolvedSkills: resolvedSkills,

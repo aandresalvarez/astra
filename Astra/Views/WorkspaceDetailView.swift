@@ -463,7 +463,9 @@ struct WorkspaceDetailView: View {
 
     private func autoExportConfig() {
         WorkspacePersistenceCoordinator.flushPendingExport(workspace: workspace, modelContext: modelContext)
-        withAnimation { exportMessage = "Saved to \(workspace.displayPath)/\(WorkspaceFileLayout.workspaceConfigFileName)" }
+        withAnimation {
+            exportMessage = "Saved to \(workspace.displayPath)/\(WorkspaceFileLayout.supportDirectoryName)/\(WorkspaceFileLayout.workspaceConfigFileName)"
+        }
         DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
             withAnimation { exportMessage = "" }
         }

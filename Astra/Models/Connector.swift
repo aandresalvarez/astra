@@ -74,25 +74,11 @@ final class Connector {
     }
 
     func credentials(store: SecretStore) -> [String: String] {
-        let entityIDs = KeychainSecretStore.connectorEntityIDs(for: self)
-        var result: [String: String] = [:]
-        for key in credentialKeys {
-            for entityID in entityIDs {
-                if let value = store.load(key: key, entityID: entityID) {
-                    result[key] = value
-                    break
-                }
-            }
-        }
-        return result
+        ConnectorSecretPersistence.credentials(for: self, store: store)
     }
 
     func missingCredentialKeys(store: SecretStore = KeychainSecretStore()) -> [String] {
-        let resolved = credentials(store: store)
-        return credentialKeys.filter { key in
-            let value = resolved[key]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            return value.isEmpty
-        }
+        ConnectorSecretPersistence.missingCredentialKeys(for: self, store: store)
     }
 
     var config: [String: String] {
@@ -108,70 +94,22 @@ final class Connector {
 
     /// Save a credential value to Keychain and keep the key in SwiftData.
     func saveCredential(key: String, value: String) {
-        let upperKey = key.uppercased()
-        let saved = KeychainService.save(key: upperKey, value: value, connector: self, label: "Astra: \(name)")
-
-        // Find existing entry case-insensitively to avoid duplicates
-        if let idx = credentialKeys.firstIndex(where: { $0.caseInsensitiveCompare(upperKey) == .orderedSame }) {
-            // Normalize key to uppercase and clear legacy value
-            credentialKeys[idx] = upperKey
-            if idx < credentialValues.count {
-                credentialValues[idx] = ""
-            }
-        } else {
-            credentialKeys.append(upperKey)
-            credentialValues.append("")
-        }
-        updatedAt = Date()
-        AppLogger.audit(.connectorSecretAdded, category: "Keychain", fields: [
-            "connector_id": id.uuidString,
-            "service_type": serviceType,
-            "result": saved ? "stored" : "failed"
-        ], level: saved ? .info : .warning)
+        ConnectorSecretPersistence.saveCredential(on: self, key: key, value: value)
     }
 
     /// Remove a credential from both Keychain and SwiftData.
     func removeCredential(at index: Int) {
-        guard index < credentialKeys.count else { return }
-        let key = credentialKeys[index]
-        let deleted = KeychainService.delete(key: key, connector: self)
-        credentialKeys.remove(at: index)
-        if index < credentialValues.count {
-            credentialValues.remove(at: index)
-        }
-        updatedAt = Date()
-        AppLogger.audit(.connectorSecretRemoved, category: "Keychain", fields: [
-            "connector_id": id.uuidString,
-            "service_type": serviceType,
-            "result": deleted ? "removed" : "failed"
-        ], level: deleted ? .info : .warning)
+        ConnectorSecretPersistence.removeCredential(on: self, at: index)
     }
 
     /// Migrate any legacy plaintext credentials to Keychain.
     func migrateToKeychain() {
-        for (idx, key) in credentialKeys.enumerated() {
-            guard idx < credentialValues.count else { continue }
-            let value = credentialValues[idx]
-            guard !value.isEmpty else { continue }
-            // Only migrate if not already in Keychain
-            if !KeychainService.exists(key: key, connector: self) {
-                KeychainService.save(key: key, value: value, connector: self, label: "Astra: \(name)")
-            }
-            credentialValues[idx] = "" // Clear plaintext
-        }
-        KeychainService.synchronizeConnectorCredentialNamespaces(connector: self)
+        ConnectorSecretPersistence.migrateToKeychain(self)
     }
 
     /// Delete all Keychain entries when connector is deleted.
     func cleanupKeychain() {
-        if isStanfordOutlookMail {
-            StanfordOutlookMailRegistry.remove(connectorID: id)
-        }
-        KeychainService.deleteAll(connector: self)
-        AppLogger.audit(.connectorDeleted, category: "Keychain", fields: [
-            "connector_id": id.uuidString,
-            "service_type": serviceType
-        ])
+        ConnectorSecretPersistence.cleanupKeychain(for: self)
     }
 
     // MARK: - Connectivity Test

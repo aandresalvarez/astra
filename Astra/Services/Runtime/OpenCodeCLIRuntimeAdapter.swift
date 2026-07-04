@@ -26,6 +26,7 @@ struct OpenCodeCLIRuntimeAdapter: AgentRuntimeAdapter {
     let budgetProfile = AgentRuntimeBudgetProfile(runtime: .openCodeCLI, launchOverheadTokens: 0)
     let recordsStreamTelemetry = true
     let recordsInferredFileChanges = true
+    let providerRuntimeMessages = ProviderRuntimeMessages.openCode
 
     func launchSettings(configuration: AgentRuntimeConfiguration) -> AgentRuntimeLaunchSettings {
         let configuredPath = configuration.executablePath(for: id)
@@ -35,58 +36,26 @@ struct OpenCodeCLIRuntimeAdapter: AgentRuntimeAdapter {
         )
     }
 
-    func missingExecutableAuditReason() -> String {
-        "opencode_cli_not_found"
-    }
-
-    func missingExecutableStopReason() -> String? {
-        "missing_opencode"
-    }
-
-    func missingExecutableMessage(executablePath _: String) -> String {
-        "OpenCode CLI not found. Install OpenCode, then authenticate with `opencode auth login`."
-    }
-
-    func defaultStartEventPayload(task: AgentTask) -> String {
-        "OpenCode started working on: \(task.goal)"
-    }
-
     func connectorPreflightContextText(
         task _: AgentTask,
         promptOverride: String?,
         startPayload: String,
         sessionMessage _: String?,
-        phase _: String
+        phase _: RunPhase
     ) -> String {
         promptOverride ?? startPayload
     }
 
-    func shouldPrepareIsolation(phase _: String) -> Bool {
+    func shouldPrepareIsolation(phase _: RunPhase) -> Bool {
         true
     }
 
-    func shouldValidateSuccessfulRun(phase _: String) -> Bool {
+    func shouldValidateSuccessfulRun(phase _: RunPhase) -> Bool {
         true
     }
 
-    func requiresVisibleResultForSuccessfulRun(phase _: String) -> Bool {
+    func requiresVisibleResultForSuccessfulRun(phase _: RunPhase) -> Bool {
         true
-    }
-
-    func manualCompletionPayload(phase _: String) -> String {
-        "OpenCode finished."
-    }
-
-    func failurePayloadPrefix(phase _: String, exitCode: Int) -> String {
-        "OpenCode exited with code \(exitCode)."
-    }
-
-    func timeoutPayload(phase _: String, timeoutSeconds: TimeInterval) -> String {
-        "Task idle timeout - no output for \(Int(timeoutSeconds))s. Process killed."
-    }
-
-    func maxTurnsPayload(phase _: String, task: AgentTask) -> String {
-        "Max turns reached (\(task.maxTurns)). Process killed."
     }
 
     func sessionTurnMessage(
@@ -94,9 +63,9 @@ struct OpenCodeCLIRuntimeAdapter: AgentRuntimeAdapter {
         promptOverride: String?,
         startPayload: String?,
         sessionMessage _: String?,
-        phase _: String
+        phase _: RunPhase
     ) -> String {
-        promptOverride == nil ? task.goal : (startPayload ?? task.goal)
+        providerRuntimeMessages.sessionTurnMessage(task: task, promptOverride: promptOverride, startPayload: startPayload)
     }
 
     func policyAdapter(runtimeCapabilities _: AgentRuntimePolicyCapabilities) -> any ProviderPolicyAdapter {
@@ -224,7 +193,8 @@ struct OpenCodeCLIRuntimeAdapter: AgentRuntimeAdapter {
     func makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext) -> AgentRuntimeProcessLaunchPlan {
         let taskEnv = AgentRuntimeProcessRunner.scopedEnvironmentVariables(
             for: context.task,
-            contextText: context.contextText
+            contextText: context.contextText,
+            executionPolicy: context.executionPolicy
         )
         let browserShimDirectory = AgentRuntimeProcessRunner.browserToolShimDirectory(
             for: context.task,
@@ -257,11 +227,12 @@ struct OpenCodeCLIRuntimeAdapter: AgentRuntimeAdapter {
                 context.task,
                 contextText: context.contextText
             )
-                || taskEnv["ASTRA_BROWSER_URL"] != nil
+                || taskEnv["ASTRA_BROWSER_URL"] != nil,
+            permissionArguments: context.requiredProviderPolicyRender(for: id).openCodeLaunchPermissionArguments()
         )
         var commandPlannedFields = [
             "runtime": id.rawValue,
-            "phase": context.phase,
+            "phase": context.phase.rawValue,
             "model": model,
             "provider_model": providerModel,
             "permission_policy": effectivePermissionPolicy.rawValue,
@@ -371,30 +342,30 @@ struct OpenCodeCLIRuntimeAdapter: AgentRuntimeAdapter {
             additionalPaths: [],
             permissionPolicy: permissionPolicy,
             timeoutSeconds: configuration.timeoutSeconds,
-            taskEnvironment: [:]
+            taskEnvironment: [:],
+            permissionArguments: ProviderPolicyRender.openCodeLaunchPermissionArguments(policy: permissionPolicy)
         )
 
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: plan.executablePath)
-        process.arguments = plan.arguments
-        process.currentDirectoryURL = URL(fileURLWithPath: workspacePath)
-        process.environment = plan.environment
-
-        let stdoutPipe = Pipe()
-        let stderrPipe = Pipe()
-        process.standardOutput = stdoutPipe
-        process.standardError = stderrPipe
-        process.standardInput = FileHandle.nullDevice
-        let result = await AsyncProcessRunner.run(
-            process,
-            stdout: stdoutPipe,
-            stderr: stderrPipe,
-            timeoutSeconds: configuration.timeoutSeconds
+        let processPlan = AgentRuntimeProcessLaunchPlan(
+            runtime: id,
+            executablePath: plan.executablePath,
+            arguments: plan.arguments,
+            currentDirectory: workspacePath,
+            environment: plan.environment,
+            browserShimDirectory: nil,
+            providerVersion: nil,
+            parsesJSONLines: plan.parsesJSONLines
         )
-        return AgentUtilityRunResult(
-            exitCode: result.exitCode,
-            output: OpenCodeCLIRuntime.extractUtilityText(from: result.stdout),
-            error: result.stderr
+        return await AgentRuntimeProcessRunner().runUtilityProcess(
+            AgentUtilityLaunchPlan(
+                process: processPlan,
+                providerHomeDirectory: configuration.homeDirectory(for: id),
+                permissionPolicy: permissionPolicy,
+                timeoutSeconds: configuration.timeoutSeconds
+            ),
+            outputTransform: { output in
+                OpenCodeCLIRuntime.extractUtilityText(from: output)
+            }
         )
     }
 }

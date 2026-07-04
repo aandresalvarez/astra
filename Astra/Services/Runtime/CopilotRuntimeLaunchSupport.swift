@@ -275,7 +275,7 @@ enum CopilotLaunchDiagnostics {
 
     static func commandPlannedFields(
         id: AgentRuntimeID,
-        phase: String,
+        phase: RunPhase,
         model: String,
         plan: CopilotCLICommandPlan,
         capabilities: CopilotCLICapabilities,
@@ -299,7 +299,7 @@ enum CopilotLaunchDiagnostics {
     ) -> [String: String] {
         var fields: [String: String] = [
             "runtime": id.rawValue,
-            "phase": phase,
+            "phase": phase.rawValue,
             "model": model,
             "parses_json_lines": String(plan.parsesJSONLines),
             "supports_output_format_json": String(capabilities.supportsOutputFormatJSON),

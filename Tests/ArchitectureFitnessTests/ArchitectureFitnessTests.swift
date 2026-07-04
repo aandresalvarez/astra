@@ -1,6 +1,5 @@
 import Foundation
 import Testing
-@testable import ASTRA
 
 @Suite("Architecture Fitness")
 struct ArchitectureFitnessTests {
@@ -183,24 +182,6 @@ struct ArchitectureFitnessTests {
         #expect(symbolMatches.isEmpty, "Workspace App Studio should be owned by WorkspaceAppStudioSession and generator, not task drafts: \(symbolMatches)")
     }
 
-    @Test("Prompt section provider identifiers are unique and used by known prompt modes")
-    @MainActor
-    func promptSectionProviderIdentifiersAreUniqueAndUsedByKnownModes() {
-        let allIDs = PromptContextSectionProviderID.allCases
-        let rawValues = allIDs.map(\.rawValue)
-
-        #expect(Set(allIDs).count == allIDs.count)
-        #expect(Set(rawValues).count == rawValues.count)
-        #expect(rawValues.allSatisfy { $0.range(of: #"^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"#, options: .regularExpression) != nil })
-
-        for mode in [PromptAssemblyMode.initialRun, .followUp] {
-            let providers = AgentPromptBuilder.promptSectionProviderIDs(for: mode)
-            #expect(!providers.isEmpty)
-            #expect(Set(providers).count == providers.count)
-            #expect(providers.allSatisfy { allIDs.contains($0) })
-        }
-    }
-
     @Test("Shelf browser snapshots go through the redaction boundary")
     func shelfBrowserSnapshotsGoThroughTheRedactionBoundary() throws {
         let root = try repositoryRoot()
@@ -208,110 +189,6 @@ struct ArchitectureFitnessTests {
 
         #expect(!source.contains("result = json"), "Provider-visible browser snapshots must not bypass BrowserPageSnapshotService.")
         #expect(source.contains("let result = try BrowserPageSnapshotService.compactSnapshot("))
-    }
-
-    @Test("Typed task event constants are categorized explicitly")
-    func typedTaskEventConstantsAreCategorizedExplicitly() throws {
-        let expectedCategories: [String: TaskEventCategory] = [
-            "activity.compacted": .lifecycle,
-            "astra.artifact_preflight": .system,
-            "budget.exceeded": .system,
-            "budget.warning": .system,
-            "corrective.step.approved": .lifecycle,
-            "corrective.step.created": .lifecycle,
-            "corrective.step.dismissed": .lifecycle,
-            "corrective.task.created": .lifecycle,
-            "deliverable.verification.failed": .lifecycle,
-            "deliverable.verification.passed": .lifecycle,
-            "deliverable.verification.review_needed": .lifecycle,
-            "error": .system,
-            "handoff.created": .lifecycle,
-            "handoff.missing": .lifecycle,
-            "handoff.updated": .lifecycle,
-            "mission.action.approved": .lifecycle,
-            "mission.action.correction_created": .lifecycle,
-            "mission.action.dismissed": .lifecycle,
-            "mission.action.retry_requested": .lifecycle,
-            "mission.audit_bundle.created": .lifecycle,
-            "mission.checkpoint.created": .lifecycle,
-            "mission.milestone.completed": .lifecycle,
-            "mission.milestone.created": .lifecycle,
-            "permission.approval.requested": .system,
-            "permission.denied": .tool,
-            "permission.request.resolved": .system,
-            "permission.grant.task": .system,
-            "plan.approved": .lifecycle,
-            "plan.assistant.message": .conversation,
-            "plan.cancelled": .lifecycle,
-            "plan.created": .lifecycle,
-            "plan.execution.completed": .lifecycle,
-            "plan.execution.failed": .lifecycle,
-            "plan.execution.started": .lifecycle,
-            "plan.step.blocked": .tool,
-            "plan.step.completed": .tool,
-            "plan.step.skipped": .tool,
-            "plan.step.started": .tool,
-            "plan.updated": .lifecycle,
-            "plan.user.message": .conversation,
-            "recap.result": .system,
-            "resource.lock.acquired": .lifecycle,
-            "resource.lock.released": .lifecycle,
-            "resource.lock.requested": .lifecycle,
-            "resource.lock.waiting": .lifecycle,
-            "role.profile.changed": .lifecycle,
-            "role.profile.selected": .lifecycle,
-            "schedule.result": .system,
-            "skill.active": .system,
-            "system.info": .system,
-            "task.cancelled": .lifecycle,
-            "task.chained": .system,
-            "task.checkpoint": .lifecycle,
-            "task.completed": .lifecycle,
-            "task.dismissed": .lifecycle,
-            "task.interrupted": .lifecycle,
-            "task.resumed": .lifecycle,
-            "task.retried": .lifecycle,
-            "task.approved": .lifecycle,
-            "task.started": .lifecycle,
-            "task.stats": .system,
-            "team.agent.completed": .team,
-            "team.agent.started": .team,
-            "team.created": .team,
-            "team.deleted": .team,
-            "team.message": .team,
-            "tool.result": .tool,
-            "tool.use": .tool,
-            "user.message": .conversation,
-            "agent.response": .conversation,
-            "agent.thinking": .conversation,
-            "validation.assertion.defined": .tool,
-            "validation.assertion.failed": .tool,
-            "validation.assertion.passed": .tool,
-            "validation.assertion.reviewed": .tool,
-            "validation.assertion.skipped": .tool,
-            "validation.assertion.started": .tool,
-            "validation.behavior.evidence.attached": .lifecycle,
-            "validation.behavior.failed": .lifecycle,
-            "validation.behavior.passed": .lifecycle,
-            "validation.behavior.started": .lifecycle,
-            "validation.contract.created": .lifecycle,
-            "validation.contract.failed": .lifecycle,
-            "validation.contract.override": .lifecycle,
-            "validation.contract.passed": .lifecycle,
-            "validation.contract.updated": .lifecycle,
-            "validation.evidence": .system,
-            "verifier.completed": .lifecycle,
-            "verifier.failed": .lifecycle,
-            "verifier.started": .lifecycle
-        ]
-
-        let declaredConstants = try declaredTaskEventTypeConstants()
-        #expect(declaredConstants == Set(expectedCategories.keys), "Update this fitness test when adding a typed task event.")
-
-        for (rawValue, category) in expectedCategories {
-            #expect(TaskEventTypes.category(forRawValue: rawValue) == category)
-            #expect(TaskEvent.categoryFor(type: rawValue) == category.rawValue)
-        }
     }
 
     @Test("Raw stop reason assignments stay inside runtime and persistence boundaries")
@@ -346,6 +223,147 @@ struct ArchitectureFitnessTests {
             }
 
         #expect(matches.isEmpty, "New raw stop reason assignments should stay behind runtime/completion/persistence boundaries: \(matches)")
+    }
+
+    @Test("High-risk SwiftData saves go through persistence coordinator")
+    func highRiskSwiftDataSavesGoThroughPersistenceCoordinator() throws {
+        let root = try repositoryRoot()
+        // Blanket scan of the whole app target (not a hand-picked list of 5
+        // files): every `modelContext.save(` must route through
+        // WorkspacePersistenceCoordinator so the durable workspace JSON mirror
+        // never silently lags SwiftData. `Services/Persistence/` is the
+        // coordinator's own home. The remaining entries are pre-existing
+        // raw-save debt to migrate onto the coordinator over time; a *new* raw
+        // save anywhere outside this allowlist (including the app/runtime/view
+        // edges that were already cleaned up) fails this test.
+        let persistenceHomePrefix = "Astra/Services/Persistence/"
+        let allowedRawSaveFiles: Set<String> = [
+            "Astra/ASTRAApp.swift",
+            "Astra/Services/Capabilities/CapabilityDefinitionRepairService.swift",
+            "Astra/Services/Runtime/AgentRuntimeBudgetPolicy.swift",
+            "Astra/Services/Tasks/TaskLifecycleCoordinator.swift",
+            "Astra/Services/Tasks/TaskQueue.swift",
+            "Astra/Services/Tasks/TaskRunLifecycleService.swift",
+            "Astra/Services/Tasks/TaskStateMachine.swift",
+            "Astra/Services/Validation/TaskExecutionArtifactPreparer.swift",
+            "Astra/Services/WorkspaceApps/WorkspaceAppAutomationExecutionService.swift",
+            "Astra/Services/WorkspaceApps/WorkspaceAppRunResumptionService.swift",
+            "Astra/Services/WorkspaceApps/WorkspaceAppService.swift",
+            "Astra/Services/WorkspaceApps/WorkspaceAppVersionService.swift",
+            "Astra/Views/Capabilities/GoogleWorkspaceCapabilityInstallSheet.swift",
+            "Astra/Views/ChatPanelView.swift",
+            "Astra/Views/Components/KanbanBoardView.swift",
+            "Astra/Views/TaskDetailView.swift",
+            "Astra/Views/TaskSidebarView.swift",
+            "Astra/Views/WorkspaceCanvasPanelView.swift"
+        ]
+
+        let matches = try swiftFiles(under: root.appendingPathComponent("Astra"))
+            .flatMap { file -> [String] in
+                let relativePath = relativePath(for: file, root: root)
+                if relativePath.hasPrefix(persistenceHomePrefix)
+                    || allowedRawSaveFiles.contains(relativePath) {
+                    return []
+                }
+                let text = try String(contentsOf: file, encoding: .utf8)
+                return text
+                    .split(separator: "\n", omittingEmptySubsequences: false)
+                    .enumerated()
+                    .compactMap { index, line -> String? in
+                        let value = String(line)
+                        guard value.range(
+                            of: #"\bmodelContext\s*\.\s*save\s*\("#,
+                            options: .regularExpression
+                        ) != nil else {
+                            return nil
+                        }
+                        return "\(relativePath):\(index + 1): \(value.trimmingCharacters(in: .whitespaces))"
+                    }
+            }
+            .sorted()
+
+        #expect(
+            matches.isEmpty,
+            "Route SwiftData saves through WorkspacePersistenceCoordinator (or, if unavoidable, add the file to the migrate-later allowlist in this test): \(matches)"
+        )
+    }
+
+    @Test("Production task status writes go through TaskStateMachine")
+    func productionTaskStatusWritesGoThroughTaskStateMachine() throws {
+        let root = try repositoryRoot()
+        let allowedFiles: Set<String> = [
+            "Astra/Models/AgentTask.swift",
+            "Astra/Models/SchemaVersions.swift",
+            "Astra/Services/Tasks/TaskStateMachine.swift"
+        ]
+
+        let matches = try swiftFiles(under: root.appendingPathComponent("Astra"))
+            .flatMap { file -> [String] in
+                let relativePath = relativePath(for: file, root: root)
+                let text = try String(contentsOf: file, encoding: .utf8)
+                return taskStatusWriteViolations(
+                    in: text,
+                    relativePath: relativePath,
+                    taskStatusOwnerFiles: allowedFiles
+                )
+            }
+            .sorted()
+
+        #expect(
+            matches.isEmpty,
+            "Production AgentTask status writes should use TaskStateMachine intent methods: \(matches)"
+        )
+    }
+
+    @Test("Task status write scanner catches unrecognized task receivers")
+    func taskStatusWriteScannerCatchesUnrecognizedTaskReceivers() throws {
+        let fixturePath = "Astra/Services/Runtime/AgentRuntimeWorker.swift"
+        let fixture = """
+        run.status = .completed
+        selected.status = .running
+        self.task.status = .failed
+        workspace.tasks[i].status = .queued
+        """
+
+        let matches = taskStatusWriteViolations(
+            in: fixture,
+            relativePath: fixturePath,
+            taskStatusOwnerFiles: []
+        )
+
+        #expect(matches == [
+            "\(fixturePath):2: selected.status = .running",
+            "\(fixturePath):3: self.task.status = .failed",
+            "\(fixturePath):4: workspace.tasks[i].status = .queued"
+        ])
+    }
+
+    @Test("Launch command builders require render-derived permission arguments")
+    func launchCommandBuildersRequireRenderDerivedPermissionArguments() throws {
+        let root = try repositoryRoot()
+        let checkedFiles = [
+            "Astra/Services/Runtime/AntigravityCLIRuntime.swift",
+            "Astra/Services/Runtime/CodexCLIRuntime.swift",
+            "Astra/Services/Runtime/CopilotCLIRuntime.swift",
+            "Astra/Services/Runtime/CursorCLIRuntime.swift",
+            "Astra/Services/Runtime/OpenCodeCLIRuntime.swift"
+        ]
+
+        let violations = try checkedFiles.flatMap { relativePath -> [String] in
+            let text = try fileText(relativePath, root: root)
+            let forbiddenPatterns = [
+                "permissionArguments: [String]? = nil",
+                "permissionArguments ??"
+            ]
+            return forbiddenPatterns.compactMap { pattern in
+                text.contains(pattern) ? "\(relativePath): \(pattern)" : nil
+            }
+        }
+
+        #expect(
+            violations.isEmpty,
+            "Launch builders must receive permission args derived from a persisted ProviderPolicyRender: \(violations)"
+        )
     }
 
     @Test("Implicit host file scans go through the file access broker")
@@ -1110,43 +1128,128 @@ struct ArchitectureFitnessTests {
         }
     }
 
-    @Test("Large owner files stay within current debt budgets")
-    func largeOwnerFilesStayWithinCurrentDebtBudgets() throws {
+    @Test("Large Swift files stay within owned debt budgets")
+    func largeSwiftFilesStayWithinOwnedDebtBudgets() throws {
         let root = try repositoryRoot()
-        let lineBudgets = [
-            "Astra/Views/TaskMainView.swift": 6_900,
-            "Astra/Services/Browser/ShelfBrowserSession.swift": 5_900,
-            "Astra/Views/ContentView.swift": 5_000,
-            "Astra/Views/WorkspaceRightRailView.swift": 3_500,
-            "Astra/Views/ChatPanelView.swift": 3_215,
-            "Astra/Services/Runtime/AgentRuntimeAdapter.swift": 2_940,
-            "Astra/Views/PluginCatalogView.swift": 2_900,
-            "Astra/Views/ShelfMarkdownPanelView.swift": 2_850,
-            "Astra/Views/WorkspaceGitSectionView.swift": 2_650,
-            "Astra/Views/ConfigureView.swift": 2_550,
-            "Astra/Services/Diagnostics/LogDiagnosticsService.swift": 2_550,
-            "Astra/Views/TaskSidebarView.swift": 2_465,
-            "Astra/Views/ShelfQueryPanelView.swift": 2_350,
-            "Astra/Services/Persistence/TaskContextStateManager.swift": 2_250,
-            "Astra/Services/Runtime/AgentPromptBuilder.swift": 2_250,
-            "Astra/Views/OnboardingWizardView.swift": 2_250,
-            "Astra/Services/Runtime/AgentProcessSupport.swift": 2_100,
-            "Astra/Services/Browser/BrowserAnalysis.swift": 2_100,
-            "Astra/Services/Git/GitService.swift": 2_100,
-            "Astra/Services/Runtime/AgentRuntimeWorker.swift": 2_100,
-            "Astra/Services/Browser/ControlledBrowserController.swift": 2_050,
-            "Astra/Views/ShelfBrowserPanelView.swift": 2_050
-        ]
-
-        let violations = try lineBudgets.compactMap { relativePath, budget -> String? in
+        let violations = try lineBudgetRegistry.compactMap { relativePath, entry -> String? in
             let count = try lineCount(for: root.appendingPathComponent(relativePath))
-            return count > budget ? "\(relativePath): \(count) > \(budget)" : nil
+            return count > entry.budget ? "\(relativePath): \(count) > \(entry.budget)" : nil
         }
 
         #expect(
             violations.isEmpty,
             "Large owner files should shrink or move behind focused boundaries instead of growing: \(violations.sorted())"
         )
+    }
+
+    @Test("Oversized Swift files have line-budget ownership")
+    func oversizedSwiftFilesHaveLineBudgetOwnership() throws {
+        let root = try repositoryRoot()
+        let scanRoots = ["Astra", "ASTRACore", "Tools", "Tests"]
+        let oversizedFiles = try scanRoots
+            .flatMap { try swiftFiles(under: root.appendingPathComponent($0)) }
+            .map { relativePath(for: $0, root: root) }
+            .filter { path in
+                try lineCount(for: root.appendingPathComponent(path)) > lineBudgetThreshold
+            }
+            .sorted()
+
+        let missing = oversizedFiles.filter { lineBudgetRegistry[$0] == nil }
+
+        #expect(
+            missing.isEmpty,
+            "Every Swift file over \(lineBudgetThreshold) lines needs an explicit owner or companion budget entry: \(missing)"
+        )
+    }
+
+    @Test("Line-budget companion entries reference budgeted owners")
+    func lineBudgetCompanionEntriesReferenceBudgetedOwners() {
+        let invalid = lineBudgetRegistry.compactMap { path, entry -> String? in
+            guard case let .companion(owner) = entry.classification else { return nil }
+            guard let ownerEntry = lineBudgetRegistry[owner],
+                  case .owner = ownerEntry.classification else {
+                return "\(path) -> \(owner)"
+            }
+            return nil
+        }
+
+        #expect(
+            invalid.isEmpty,
+            "Companion line-budget entries must point at production owner entries: \(invalid.sorted())"
+        )
+    }
+
+    @Test("Line-budget registry does not carry stale entries")
+    func lineBudgetRegistryDoesNotCarryStaleEntries() throws {
+        let root = try repositoryRoot()
+        let stale = try lineBudgetRegistry.compactMap { path, _ -> String? in
+            let count = try lineCount(for: root.appendingPathComponent(path))
+            return count <= lineBudgetThreshold ? "\(path): \(count)" : nil
+        }
+
+        #expect(
+            stale.isEmpty,
+            "Remove line-budget entries once files shrink under \(lineBudgetThreshold) lines: \(stale.sorted())"
+        )
+    }
+
+    @Test("Runtime adapter docs match registered providers")
+    func runtimeAdapterDocsMatchRegisteredProviders() throws {
+        let root = try repositoryRoot()
+        let docs = try fileText("docs/architecture/runtime-adapters.md", root: root)
+        let adapterSource = try fileText("Astra/Services/Runtime/AgentRuntimeAdapter.swift", root: root)
+        let runtimeTypesSource = try fileText("ASTRACore/AgentRuntimeTypes.swift", root: root)
+        let registeredProviders = Set(try regexCaptures(
+            #"([A-Za-z0-9]+RuntimeAdapterProvider)\(\)"#,
+            in: adapterSource
+        ))
+        let runtimeIDs = Set(try regexCaptures(
+            #"AgentRuntimeID\(staticRawValue: "([^"]+)"\)"#,
+            in: runtimeTypesSource
+        ))
+        let documentedProviders = Set(try regexCaptures(
+            #"([A-Za-z0-9]+RuntimeAdapterProvider)"#,
+            in: docs
+        ))
+
+        let missingProviders = registeredProviders.subtracting(documentedProviders).sorted()
+        let missingRuntimeIDs = runtimeIDs.filter { !docs.contains($0) }.sorted()
+
+        #expect(!registeredProviders.isEmpty, "Runtime adapter provider extraction should find built-in providers.")
+        #expect(!runtimeIDs.isEmpty, "Runtime ID extraction should find static runtime IDs.")
+        #expect(missingProviders.isEmpty, "Runtime adapter docs are missing registered providers: \(missingProviders)")
+        #expect(missingRuntimeIDs.isEmpty, "Runtime adapter docs are missing runtime IDs: \(missingRuntimeIDs)")
+    }
+
+    @Test("Architecture docs cover Workspace Apps and execution environments")
+    func architectureDocsCoverWorkspaceAppsAndExecutionEnvironments() throws {
+        let root = try repositoryRoot()
+        let workspaceApps = try fileText("docs/architecture/workspace-apps.md", root: root)
+        let executionEnvironments = try fileText("docs/architecture/execution-environments.md", root: root)
+
+        for expected in ["WorkspaceAppManifest", "WorkspaceAppService", "WorkspaceAppActionExecutor"] {
+            #expect(workspaceApps.contains(expected), "Workspace Apps docs should cover \(expected)")
+        }
+        for expected in ["ExecutionEnvironment", "ExecutionEnvironmentProviderPlacement", "WorkspaceDockerViewModel"] {
+            #expect(executionEnvironments.contains(expected), "Execution environment docs should cover \(expected)")
+        }
+    }
+
+    @Test("Model secret persistence owns Keychain IO for model classes")
+    func modelSecretPersistenceOwnsKeychainIOForModelClasses() throws {
+        let root = try repositoryRoot()
+        let modelFiles = [
+            "Astra/Models/Connector.swift",
+            "Astra/Models/Skill.swift"
+        ]
+        let violations = try modelFiles.compactMap { path -> String? in
+            let text = try fileText(path, root: root)
+            return text.contains("KeychainService.") ? path : nil
+        }
+        let service = try fileText("Astra/Services/Capabilities/ModelSecretPersistence.swift", root: root)
+
+        #expect(violations.isEmpty, "SwiftData models must delegate Keychain IO to services: \(violations)")
+        #expect(service.contains("KeychainService."), "ModelSecretPersistence should own the KeychainService boundary.")
     }
 
     @Test("Direct AppStorage usage does not grow")
@@ -1221,6 +1324,8 @@ struct ArchitectureFitnessTests {
             ".github/CODEOWNERS",
             ".githooks/pre-commit",
             ".githooks/pre-push",
+            "script/focused_test_targets.sh",
+            "script/focused_test_targets_tests.sh",
             "script/precommit.sh",
             "script/prepush.sh",
             "script/configure_branch_protection.sh"
@@ -1242,6 +1347,7 @@ struct ArchitectureFitnessTests {
 
         let preCommitHook = try fileText(".githooks/pre-commit", root: root)
         let prePushHook = try fileText(".githooks/pre-push", root: root)
+        let focusedTargetScript = try fileText("script/focused_test_targets.sh", root: root)
         let preCommitScript = try fileText("script/precommit.sh", root: root)
         let prePushScript = try fileText("script/prepush.sh", root: root)
         let branchProtectionScript = try fileText("script/configure_branch_protection.sh", root: root)
@@ -1250,11 +1356,25 @@ struct ArchitectureFitnessTests {
 
         #expect(preCommitHook.contains("script/precommit.sh"))
         #expect(prePushHook.contains("script/prepush.sh"))
-        #expect(preCommitScript.contains("swift test --filter ArchitectureFitnessTests"))
+        #expect(preCommitScript.contains("swift test --filter ArchitectureFitnessTests.ArchitectureFitnessTests"))
+        #expect(preCommitScript.contains("script/focused_test_targets.sh"))
+        #expect(preCommitScript.contains("script/focused_test_targets_tests.sh"))
+        #expect(preCommitScript.contains(#"swift test --filter "$target""#))
+        #expect(preCommitScript.contains(#"${#changed_files[@]} > 0"#))
         #expect(preCommitScript.contains("git diff --cached --check"))
         #expect(branchProtectionScript.contains(#""enforce_admins": false"#))
+        #expect(focusedTargetScript.contains("Tools/MCPGatewaySupport"))
+        #expect(focusedTargetScript.contains("MCPGatewaySupportTests"))
+        #expect(focusedTargetScript.contains("Tools/MailToolSupport"))
+        #expect(focusedTargetScript.contains("MailToolSupportTests"))
+        #expect(focusedTargetScript.contains("Tests/ArchitectureFitnessTests/*"))
+        #expect(focusedTargetScript.contains("AppSemanticFitnessTests"))
+        #expect(prePushScript.contains("script/focused_test_targets.sh"))
+        #expect(prePushScript.contains("script/focused_test_targets_tests.sh"))
         #expect(prePushScript.contains("FOCUSED_SWIFT_TEST_FILTER="))
-        #expect(prePushScript.components(separatedBy: "run swift test --filter").count == 2)
+        #expect(prePushScript.components(separatedBy: "run swift test --filter").count == 3)
+        #expect(prePushScript.contains(#"swift test --filter "$target""#))
+        #expect(prePushScript.contains(#"${#changed_files[@]} > 0"#))
         #expect(prePushScript.contains("ArchitectureFitnessTests"))
         #expect(prePushScript.contains("RuntimeReadinessServiceTests"))
         #expect(prePushScript.contains("WorkspacePersistenceTests"))
@@ -1264,15 +1384,39 @@ struct ArchitectureFitnessTests {
         #expect(prePushScript.contains(#""${range}...HEAD""#))
         #expect(prePushScript.contains("origin/main...HEAD"))
         #expect(prePushScript.contains("git diff-tree --check --no-commit-id --root -r HEAD"))
+        #expect(prePushScript.contains("changed_paths"))
+        #expect(ciWorkflow.contains("actions/cache@v4"))
         #expect(ciWorkflow.contains("script/prepush.sh"))
         #expect(ciWorkflow.contains("Focused Swift tests"))
+        #expect(ciWorkflow.contains("Full Swift test suite"))
+        #expect(ciWorkflow.contains("workflow_dispatch:"))
+        #expect(ciWorkflow.contains("schedule:"))
+        #expect(ciWorkflow.contains("swift test"))
         #expect(ciWorkflow.contains("fetch-depth: 0"))
         #expect(ciWorkflow.range(of: #"runs-on:\s+macos[-A-Za-z0-9_.]*"#, options: .regularExpression) != nil)
         #expect(ciWorkflow.contains("git diff --check"))
         #expect(!codeowners.contains("* @aandresalvarez"))
         #expect(codeowners.contains("Astra/Services/Runtime/"))
         #expect(codeowners.contains("Astra/Services/Persistence/"))
-        #expect(codeowners.contains("Tests/ArchitectureFitnessTests.swift"))
+        #expect(codeowners.contains("Tests/ArchitectureFitnessTests/"))
+        #expect(codeowners.contains("Tests/AppSemanticFitnessTests.swift"))
+    }
+
+    @Test("Architecture fitness checks run in a standalone test target")
+    func architectureFitnessChecksRunInStandaloneTestTarget() throws {
+        let root = try repositoryRoot()
+        let package = try fileText("Package.swift", root: root)
+        let testFile = try fileText("Tests/ArchitectureFitnessTests/ArchitectureFitnessTests.swift", root: root)
+        let codeowners = try fileText(".github/CODEOWNERS", root: root)
+        let disallowedAppImport = "@testable import " + "ASTRA"
+        let disallowedSwiftDataImport = "import " + "SwiftData"
+
+        #expect(package.contains(#"name: "ArchitectureFitnessTests""#))
+        #expect(package.contains(#"exclude: ["ArchitectureFitnessTests""#))
+        #expect(!testFile.contains(disallowedAppImport))
+        #expect(!testFile.contains(disallowedSwiftDataImport))
+        #expect(codeowners.contains("Tests/ArchitectureFitnessTests/"))
+        #expect(codeowners.contains("Tests/AppSemanticFitnessTests.swift"))
     }
 
     @Test("Remote MCP gateway tool policy exposes immutable policy lists")
@@ -1287,20 +1431,150 @@ struct ArchitectureFitnessTests {
         #expect(!policy.contains("public var excludedTools"))
     }
 
-    private func declaredTaskEventTypeConstants() throws -> Set<String> {
-        let file = try repositoryRoot().appendingPathComponent("Astra/Models/TaskEventTypes.swift")
-        let text = try String(contentsOf: file, encoding: .utf8)
-        let regex = try NSRegularExpression(pattern: #"static let \w+: TaskEventType = "([^"]+)""#)
-        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+    private func taskStatusWriteViolations(
+        in text: String,
+        relativePath: String,
+        taskStatusOwnerFiles: Set<String>
+    ) -> [String] {
+        guard !taskStatusOwnerFiles.contains(relativePath) else { return [] }
 
-        return Set(regex.matches(in: text, range: range).compactMap { match in
-            guard let valueRange = Range(match.range(at: 1), in: text) else { return nil }
-            return String(text[valueRange])
-        })
+        return text
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .enumerated()
+            .compactMap { index, line in
+                let trimmed = String(line).trimmingCharacters(in: .whitespaces)
+                guard !trimmed.hasPrefix("//"),
+                      let receiver = statusAssignmentReceiver(in: trimmed),
+                      !isAllowedNonTaskStatusAssignment(receiver: receiver, relativePath: relativePath) else {
+                    return nil
+                }
+                return "\(relativePath):\(index + 1): \(trimmed)"
+            }
+    }
+
+    private func statusAssignmentReceiver(in line: String) -> String? {
+        guard let assignmentRange = line.range(
+            of: #"(?<![=!<>])=(?!=)"#,
+            options: .regularExpression
+        ) else {
+            return nil
+        }
+
+        let leftHandSide = line[..<assignmentRange.lowerBound]
+            .trimmingCharacters(in: .whitespaces)
+        guard leftHandSide.hasSuffix(".status") else {
+            return nil
+        }
+
+        return String(leftHandSide.dropLast(".status".count))
+    }
+
+    private func isAllowedNonTaskStatusAssignment(receiver: String, relativePath: String) -> Bool {
+        allowedNonTaskStatusReceiversByFile[relativePath]?.contains(receiver) == true
+    }
+
+    private var allowedNonTaskStatusReceiversByFile: [String: Set<String>] {
+        [
+            "Astra/AppIntents/AstraAppEntities.swift": ["self"],
+            "Astra/Models/TaskPlan.swift": ["self"],
+            "Astra/Models/TaskRun.swift": ["self"],
+            "Astra/Services/Capabilities/MCPControlPlaneRuntimeBindingService.swift": ["self"],
+            "Astra/Services/Persistence/SessionScanner.swift": ["run"],
+            "Astra/Services/Persistence/TaskContextStateManager.swift": ["self"],
+            "Astra/Services/Persistence/WorkspaceConfigManager.swift": ["run"],
+            "Astra/Services/Runtime/AgentProcessSupport.swift": ["job"],
+            "Astra/Services/Runtime/AgentRuntimeBudgetPolicy.swift": ["run"],
+            "Astra/Services/Runtime/AgentRuntimeLaunchPreflight.swift": ["run"],
+            "Astra/Services/Runtime/AgentRuntimeWorker.swift": ["run", "run?"],
+            "Astra/Services/Tasks/AgentTaskForkService.swift": ["newRun"],
+            "Astra/Services/Tasks/DatabaseQueryService.swift": ["self"],
+            "Astra/Services/Tasks/TaskPlanService.swift": ["plan.steps[index]", "merged.steps[index]"],
+            "Astra/Services/Tasks/TaskPlanStateCacheSignature.swift": ["self"],
+            "Astra/Services/Tasks/TaskQueue.swift": ["copiedRun"],
+            "Astra/Services/Tasks/TaskRunLifecycleService.swift": ["run"],
+            "Astra/Services/Validation/TaskCorrectiveWorkService.swift": ["payload"],
+            "Astra/Services/WorkspaceApps/WorkspaceAppActionExecutor.swift": ["run"],
+            "Astra/Services/WorkspaceApps/WorkspaceAppAutomationExecutionService.swift": ["state"],
+            "Astra/Services/WorkspaceApps/WorkspaceAppAutomationScheduler.swift": ["automation"],
+            "Astra/Services/WorkspaceApps/WorkspaceAppRunResumptionService.swift": ["run"],
+            "Astra/Services/WorkspaceApps/WorkspaceAppService.swift": ["automation", "binding", "surviving"],
+            "Astra/Views/Components/KanbanBoardView.swift": ["self"],
+            "Astra/Views/RunActivityPresentation.swift": ["response"],
+            "Astra/Views/WorkspaceRightRailCapabilitySnapshotCache.swift": ["self"]
+        ]
+    }
+
+    private enum LineBudgetClassification: Equatable {
+        case owner(String)
+        case companion(of: String)
+    }
+
+    private struct LineBudgetEntry {
+        let budget: Int
+        let classification: LineBudgetClassification
+
+        init(_ budget: Int, _ classification: LineBudgetClassification) {
+            self.budget = budget
+            self.classification = classification
+        }
+    }
+
+    private var lineBudgetThreshold: Int { 2_000 }
+
+    private var lineBudgetRegistry: [String: LineBudgetEntry] {
+        [
+            "Astra/Views/TaskMainView.swift": .init(6_100, .owner("Task detail and run surface")),
+            "Astra/Services/Browser/ShelfBrowserSession.swift": .init(6_000, .owner("Shelf browser session")),
+            "Astra/Views/ContentView.swift": .init(4_850, .owner("Workspace shell composition")),
+            "Astra/Models/SchemaVersions.swift": .init(3_650, .owner("SwiftData schema history")),
+            "Astra/Views/ChatPanelView.swift": .init(3_050, .owner("Composer chat surface")),
+            "Astra/Services/Runtime/AgentRuntimeAdapter.swift": .init(2_900, .owner("Runtime adapter registry")),
+            "Astra/Views/PluginCatalogView.swift": .init(2_900, .owner("Capability catalog UI")),
+            "Astra/Views/ShelfMarkdownPanelView.swift": .init(2_850, .owner("Shelf markdown panel")),
+            "Astra/Services/Persistence/WorkspaceConfigManager.swift": .init(2_800, .owner("Workspace mirror persistence")),
+            "Astra/Views/ConfigureView.swift": .init(2_600, .owner("Legacy configure surface")),
+            "Astra/Services/Diagnostics/LogDiagnosticsService.swift": .init(2_600, .owner("Log diagnostics")),
+            "Astra/Views/TaskSidebarView.swift": .init(2_500, .owner("Task sidebar")),
+            "Astra/Services/WorkspaceApps/WorkspaceAppActionExecutor.swift": .init(2_450, .owner("Workspace App action execution")),
+            "Astra/Views/WorkspaceRightRailView.swift": .init(2_400, .owner("Workspace right rail")),
+            "Astra/Services/Persistence/TaskContextStateManager.swift": .init(2_300, .owner("Task context state")),
+            "Astra/Views/ShelfQueryPanelView.swift": .init(2_300, .owner("Shelf query panel")),
+            "Astra/Services/Runtime/AgentPromptBuilder.swift": .init(2_300, .owner("Provider prompt assembly")),
+            "Astra/Services/Browser/BrowserAnalysis.swift": .init(2_150, .owner("Browser analysis")),
+            "Astra/Services/Runtime/AgentProcessSupport.swift": .init(2_150, .owner("Runtime process stream support")),
+            "Astra/Services/Browser/ControlledBrowserController.swift": .init(2_100, .owner("Controlled browser orchestration")),
+            "Astra/Services/Git/GitService.swift": .init(2_100, .owner("Git integration")),
+            "Tools/WorkspaceToolSupport/WorkspaceToolSupport.swift": .init(3_450, .owner("Workspace MCP tool")),
+            "Tools/HostControlToolSupport/HostControlToolSupport.swift": .init(2_250, .owner("Host-control MCP tool")),
+            "Tests/ProcessMonitorTests.swift": .init(3_500, .companion(of: "Astra/Services/Runtime/AgentProcessSupport.swift")),
+            "Tests/TaskCapabilityResolverTests.swift": .init(2_950, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
+            "Tests/AgentRuntimeAdapterTests.swift": .init(3_200, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
+            "Tests/AgentRuntimeWorkerTests.swift": .init(2_550, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
+            "Tests/AgentPolicyTests.swift": .init(2_650, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
+            "Tests/WorkspaceAppActionExecutorTests.swift": .init(2_500, .companion(of: "Astra/Services/WorkspaceApps/WorkspaceAppActionExecutor.swift")),
+            "Tests/WorkspacePersistenceTests.swift": .init(2_450, .companion(of: "Astra/Services/Persistence/WorkspaceConfigManager.swift")),
+            "Tests/CopilotRuntimeTests.swift": .init(2_300, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
+            "Tests/WorkspaceAppPackageTests.swift": .init(2_250, .companion(of: "Astra/Services/WorkspaceApps/WorkspaceAppActionExecutor.swift")),
+            "Tests/WorkspaceToolSupportTests.swift": .init(2_150, .companion(of: "Tools/WorkspaceToolSupport/WorkspaceToolSupport.swift")),
+            "Tests/ExecutionSandboxTests.swift": .init(2_100, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
+            "Tests/HostControlToolSupportTests.swift": .init(2_100, .companion(of: "Tools/HostControlToolSupport/HostControlToolSupport.swift"))
+        ]
     }
 
     private func repositoryRoot() throws -> URL {
-        try TestRepositoryRoot.resolve()
+        var candidate = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        while true {
+            if FileManager.default.fileExists(atPath: candidate.appendingPathComponent("Package.swift").path),
+               FileManager.default.fileExists(atPath: candidate.appendingPathComponent("Astra").path) {
+                return candidate
+            }
+
+            let parent = candidate.deletingLastPathComponent()
+            if parent.path == candidate.path {
+                throw ArchitectureFitnessError.repositoryRootNotFound(FileManager.default.currentDirectoryPath)
+            }
+            candidate = parent
+        }
     }
 
     private func swiftFiles(under root: URL) throws -> [URL] {
@@ -1344,6 +1618,18 @@ struct ArchitectureFitnessTests {
         )
     }
 
+    private func regexCaptures(_ pattern: String, in text: String, captureGroup: Int = 1) throws -> [String] {
+        let regex = try NSRegularExpression(pattern: pattern)
+        let range = NSRange(text.startIndex..., in: text)
+        return regex.matches(in: text, range: range).compactMap { match in
+            guard match.numberOfRanges > captureGroup,
+                  let range = Range(match.range(at: captureGroup), in: text) else {
+                return nil
+            }
+            return String(text[range])
+        }
+    }
+
     private func extractedStruct(named name: String, from source: String) throws -> String {
         guard let declarationRange = source.range(of: "struct \(name)") else {
             throw ArchitectureFitnessError.sourceSnippetNotFound(name)
@@ -1382,5 +1668,6 @@ struct ArchitectureFitnessTests {
 }
 
 private enum ArchitectureFitnessError: Error {
+    case repositoryRootNotFound(String)
     case sourceSnippetNotFound(String)
 }

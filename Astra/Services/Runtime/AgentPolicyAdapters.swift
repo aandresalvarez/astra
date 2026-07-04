@@ -38,7 +38,7 @@ extension ProviderPolicyAdapter {
                 return name.trimmingCharacters(in: .whitespacesAndNewlines)
             case .shellCommand(let executable, let pattern):
                 return "shell(\(executable):\(pattern))"
-            case .filePath, .networkPattern:
+            case .filePath, .networkPattern, .credential:
                 return nil
             }
         }
@@ -72,7 +72,8 @@ struct ClaudePolicyAdapter: ProviderPolicyAdapter {
     }
 
     func render(policy: AgentPolicy, context: PolicyRenderContext) -> ProviderPolicyRender {
-        let permissionPolicy = PermissionPolicy.fromAgentPolicyLevel(policy.level)
+        let permissionMode = ProviderPolicyModeResolver.mode(for: policy, runtime: providerID)
+        let permissionPolicy = PermissionPolicy(providerMode: permissionMode)
         let baseAllowedTools = policy.providerAllowedTools(requestedTools: context.requestedAllowedTools)
         let allowedTools = PolicyLocalToolGrants.addClaudeShellGrants(
             to: baseAllowedTools,
@@ -118,7 +119,7 @@ struct ClaudePolicyAdapter: ProviderPolicyAdapter {
             adapterVersion: adapterVersion,
             policyLevel: policy.level,
             configOwnership: context.providerConfigOwnership,
-            permissionMode: permissionPolicy.rawValue,
+            permissionMode: permissionMode,
             allowedTools: allowedTools,
             runtimeSupportTools: runtimeSupportTools,
             askFirstTools: policy.askFirstTools,
@@ -144,7 +145,7 @@ struct ClaudePolicyAdapter: ProviderPolicyAdapter {
                 return canonicalClaudeToolName(name)
             case .shellCommand(let executable, let pattern):
                 return claudeShellGrant(executable: executable, pattern: pattern)
-            case .filePath, .networkPattern:
+            case .filePath, .networkPattern, .credential:
                 return nil
             }
         })
@@ -262,7 +263,8 @@ struct CopilotPolicyAdapter: ProviderPolicyAdapter {
     }
 
     func render(policy: AgentPolicy, context: PolicyRenderContext) -> ProviderPolicyRender {
-        let permissionPolicy = PermissionPolicy.fromAgentPolicyLevel(policy.level)
+        let permissionMode = ProviderPolicyModeResolver.mode(for: policy, runtime: providerID)
+        let permissionPolicy = PermissionPolicy(providerMode: permissionMode)
         let allowedTools = policy.providerAllowedTools(requestedTools: context.requestedAllowedTools)
         let localToolCommands = PolicyLocalToolGrants.shouldGrantLocalToolCommands(allowedTools: allowedTools)
             ? context.localToolCommands
@@ -288,24 +290,28 @@ struct CopilotPolicyAdapter: ProviderPolicyAdapter {
             ))
         }
 
+        let runtimeSupportToolNames = copilotRuntimeSupportToolNames(runtimeSupportTools)
         let args = CopilotCLIRuntime.copilotPermissionArguments(
             policy: permissionPolicy,
             allowedTools: allowedTools,
             localToolCommands: localToolCommands,
+            runtimeSupportTools: runtimeSupportToolNames,
             supportsAllowAll: capabilities.supportsAllowAll,
             supportsAllowAllTools: capabilities.supportsAllowAllTools,
             supportsAllowAllPaths: capabilities.supportsAllowAllPaths,
             supportsAllowAllURLs: capabilities.supportsAllowAllURLs,
             requiresAllowAllToolsForPrompt: capabilities.requiresAllowAllToolsForPrompt
         )
-        let providerAllowedTools = copilotAllowedTools(from: args, fallback: allowedTools)
+        let providerAllowedTools = copilotAllowedTools(from: args, fallback: allowedTools).filter {
+            !runtimeSupportToolNames.contains($0)
+        }
 
         return ProviderPolicyRender(
             providerID: providerID,
             adapterVersion: adapterVersion,
             policyLevel: policy.level,
             configOwnership: .generated,
-            permissionMode: permissionPolicy.rawValue,
+            permissionMode: permissionMode,
             allowedTools: providerAllowedTools,
             runtimeSupportTools: runtimeSupportTools,
             askFirstTools: policy.askFirstTools,
@@ -331,7 +337,7 @@ struct CopilotPolicyAdapter: ProviderPolicyAdapter {
                 return canonicalCopilotToolName(name)
             case .shellCommand(let executable, let pattern):
                 return "shell(\(executable):\(pattern))"
-            case .filePath, .networkPattern:
+            case .filePath, .networkPattern, .credential:
                 return nil
             }
         })
@@ -379,7 +385,8 @@ struct AntigravityPolicyAdapter: ProviderPolicyAdapter {
     }
 
     func render(policy: AgentPolicy, context: PolicyRenderContext) -> ProviderPolicyRender {
-        let permissionPolicy = PermissionPolicy.fromAgentPolicyLevel(policy.level)
+        let permissionMode = ProviderPolicyModeResolver.mode(for: policy, runtime: providerID)
+        let permissionPolicy = PermissionPolicy(providerMode: permissionMode)
         let args = AntigravityCLIRuntime.antigravityPermissionArguments(policy: permissionPolicy)
         var diagnostics = diagnostics(for: policy, context: context)
         diagnostics = diagnostics.map { diagnostic in
@@ -420,7 +427,7 @@ struct AntigravityPolicyAdapter: ProviderPolicyAdapter {
             adapterVersion: adapterVersion,
             policyLevel: policy.level,
             configOwnership: .generated,
-            permissionMode: permissionPolicy.rawValue,
+            permissionMode: permissionMode,
             allowedTools: permissionPolicy == .autonomous ? ["*"] : [],
             runtimeSupportTools: runtimeSupportTools,
             askFirstTools: policy.askFirstTools,
@@ -471,7 +478,8 @@ struct CodexPolicyAdapter: ProviderPolicyAdapter {
     }
 
     func render(policy: AgentPolicy, context: PolicyRenderContext) -> ProviderPolicyRender {
-        let permissionPolicy = PermissionPolicy.fromAgentPolicyLevel(policy.level)
+        let permissionMode = ProviderPolicyModeResolver.mode(for: policy, runtime: providerID)
+        let permissionPolicy = PermissionPolicy(providerMode: permissionMode)
         let args = CodexCLIRuntime.codexPermissionArguments(policy: permissionPolicy)
         var diagnostics = diagnostics(for: policy, context: context)
 
@@ -499,7 +507,7 @@ struct CodexPolicyAdapter: ProviderPolicyAdapter {
             adapterVersion: adapterVersion,
             policyLevel: policy.level,
             configOwnership: .generated,
-            permissionMode: permissionPolicy.rawValue,
+            permissionMode: permissionMode,
             allowedTools: permissionPolicy == .autonomous ? ["*"] : [],
             runtimeSupportTools: runtimeSupportTools,
             askFirstTools: policy.askFirstTools,
@@ -552,7 +560,8 @@ struct CursorPolicyAdapter: ProviderPolicyAdapter {
     }
 
     func render(policy: AgentPolicy, context: PolicyRenderContext) -> ProviderPolicyRender {
-        let permissionPolicy = PermissionPolicy.fromAgentPolicyLevel(policy.level)
+        let permissionMode = ProviderPolicyModeResolver.mode(for: policy, runtime: providerID)
+        let permissionPolicy = PermissionPolicy(providerMode: permissionMode)
         let args = CursorCLIRuntime.cursorPermissionArguments(policy: permissionPolicy)
         var diagnostics = diagnostics(for: policy, context: context)
 
@@ -580,7 +589,7 @@ struct CursorPolicyAdapter: ProviderPolicyAdapter {
             adapterVersion: adapterVersion,
             policyLevel: policy.level,
             configOwnership: .generated,
-            permissionMode: permissionPolicy.rawValue,
+            permissionMode: permissionMode,
             allowedTools: permissionPolicy == .autonomous ? ["*"] : [],
             runtimeSupportTools: runtimeSupportTools,
             askFirstTools: policy.askFirstTools,
@@ -631,7 +640,8 @@ struct OpenCodePolicyAdapter: ProviderPolicyAdapter {
     }
 
     func render(policy: AgentPolicy, context: PolicyRenderContext) -> ProviderPolicyRender {
-        let permissionPolicy = PermissionPolicy.fromAgentPolicyLevel(policy.level)
+        let permissionMode = ProviderPolicyModeResolver.mode(for: policy, runtime: providerID)
+        let permissionPolicy = PermissionPolicy(providerMode: permissionMode)
         let args = OpenCodeCLIRuntime.permissionArguments(policy: permissionPolicy)
         let allowedTools = policy.providerAllowedTools(requestedTools: context.requestedAllowedTools)
         var diagnostics = diagnostics(for: policy, context: context)
@@ -660,7 +670,7 @@ struct OpenCodePolicyAdapter: ProviderPolicyAdapter {
             adapterVersion: adapterVersion,
             policyLevel: policy.level,
             configOwnership: .generated,
-            permissionMode: permissionPolicy.rawValue,
+            permissionMode: permissionMode,
             allowedTools: permissionPolicy == .autonomous ? ["*"] : allowedTools,
             runtimeSupportTools: runtimeSupportTools,
             askFirstTools: policy.askFirstTools,
@@ -696,7 +706,7 @@ private enum BrokeredProviderGrantStrings {
                 return name.trimmingCharacters(in: .whitespacesAndNewlines)
             case .shellCommand(let executable, let pattern):
                 return "shell(\(executable):\(pattern))"
-            case .filePath, .networkPattern:
+            case .filePath, .networkPattern, .credential:
                 return nil
             }
         })
@@ -902,7 +912,7 @@ enum AgentPolicyManifestService {
         runtime: AgentRuntimeID,
         model: String,
         workspacePath: String,
-        phase: String,
+        phase: RunPhase,
         permissionPolicy: PermissionPolicy,
         executionPolicy: AgentRuntimeExecutionPolicy,
         defaultPolicyLevelRaw: String,
@@ -911,6 +921,7 @@ enum AgentPolicyManifestService {
         capabilityPackages: [PluginPackage]? = nil,
         approvalRecords: [CapabilityApprovalRecord]? = nil,
         contextText: String = "",
+        capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot? = nil,
         modelContext: ModelContext
     ) -> RunPermissionManifest {
         let defaultLevel = AgentPolicyDefaults.effectiveUserFacingLevel(
@@ -924,13 +935,21 @@ enum AgentPolicyManifestService {
             executionPolicy: executionPolicy
         )
         let basePolicy = resolution.policy
-        let taskCapabilityResolver = TaskCapabilityResolver(task: task)
-        let taskCapabilityScope = taskCapabilityResolver.promptScope(contextText: contextText)
         let taskScopedGrants = TaskRuntimePermissionGrants.approvedGrants(for: task)
         let executionGrants = executionPolicy.permissionGrantsOverride ?? []
+        let taskCapabilityResolver = TaskCapabilityResolver(
+            task: task,
+            additionalCredentialGrants: executionGrants
+        )
+        let capabilityResolutionSnapshot = capabilityResolutionSnapshot ?? TaskCapabilityResolutionSnapshot.capture(
+            for: task,
+            providerLaunchContextText: contextText,
+            additionalCredentialGrants: executionGrants
+        )
+        let taskCapabilityScope = capabilityResolutionSnapshot.providerLaunch
         let effectiveGrants = PermissionBroker.sanitizeApprovedGrants(taskScopedGrants + executionGrants)
-        let taskScopedProviderGrants = PermissionBroker.providerGrantStrings(for: taskScopedGrants, runtime: runtime)
-        let effectiveProviderGrants = PermissionBroker.providerGrantStrings(for: effectiveGrants, runtime: runtime)
+        let taskScopedProviderGrants = PermissionBroker.providerRuntimeGrantStrings(for: taskScopedGrants, runtime: runtime)
+        let effectiveProviderGrants = PermissionBroker.providerRuntimeGrantStrings(for: effectiveGrants, runtime: runtime)
         let policyApprovedTools = uniqueStrings((executionPolicy.allowedToolsOverride ?? []) + effectiveProviderGrants)
         let policy = policyApprovedTools.isEmpty
             ? basePolicy
@@ -950,7 +969,7 @@ enum AgentPolicyManifestService {
                 + dockerCredentialEnvironmentKeyNames(environment: executionEnvironment)
         )
         let manifestCredentialLabels = uniqueStrings(
-            credentialLabels(for: task, contextText: contextText)
+            credentialLabels(for: task, capabilityScope: taskCapabilityScope)
                 + dockerCredentialLabels(environment: executionEnvironment)
                 + gitCredentialLabels(task: task, contextText: contextText)
         )
@@ -964,7 +983,11 @@ enum AgentPolicyManifestService {
             workspacePath: workspacePath,
             additionalPaths: runtimePaths,
             requestedAllowedTools: requestedAllowedTools,
-            localToolCommands: localToolCommands(for: task, contextText: contextText),
+            localToolCommands: localToolCommands(
+                for: task,
+                capabilityScope: taskCapabilityScope,
+                contextText: contextText
+            ),
             environmentKeyNames: envKeys,
             credentialLabels: manifestCredentialLabels,
             providerFeatures: providerPolicyAdapter.supportedFeatures,
@@ -977,11 +1000,22 @@ enum AgentPolicyManifestService {
             task: task,
             runtime: runtime,
             executionEnvironment: executionEnvironment,
-            contextText: contextText
+            contextText: contextText,
+            capabilityScope: taskCapabilityScope
         )
+        render = applyingArtifactBootstrapManifestSupport(to: render, task: task)
         render.allowedShellPatterns = uniqueStrings(
             render.allowedShellPatterns
                 + runtimeSupportAllowedShellPatterns(environmentKeyNames: envKeys)
+        )
+        render = refreshingCopilotLaunchArgumentEvidence(
+            to: render,
+            providerCapabilities: providerCapabilities,
+            localToolCommands: context.localToolCommands,
+            task: task,
+            executionEnvironment: executionEnvironment,
+            contextText: contextText,
+            capabilityScope: taskCapabilityScope
         )
         render.diagnostics = providerPolicyAdapter.validate(render: render, context: context)
         if shouldProjectGitCredentials(task: task, contextText: contextText) {
@@ -1055,14 +1089,15 @@ enum AgentPolicyManifestService {
                 task: task,
                 runtime: runtime,
                 executionEnvironment: executionEnvironment,
-                contextText: contextText
+                contextText: contextText,
+                capabilityScope: taskCapabilityScope
             ),
             approvalsGranted: approvals,
             approvalGrants: effectiveGrants
         )
         insertManifestEvent(manifest, type: preflightEventType, task: task, run: run, modelContext: modelContext)
         AppLogger.audit(.runtimeCommandPlanned, category: "Worker", taskID: task.id, fields: [
-            "phase": phase,
+            "phase": phase.rawValue,
             "runtime": runtime.rawValue,
             "policy_level": resolution.level.rawValue,
             "policy_scope": manifest.policyScope.rawValue,
@@ -1097,14 +1132,16 @@ enum AgentPolicyManifestService {
         task: AgentTask,
         runtime: AgentRuntimeID,
         executionEnvironment: WorkspaceExecutionEnvironment,
-        contextText: String
+        contextText: String,
+        capabilityScope: TaskCapabilityPromptScope
     ) -> ProviderPolicyRender {
         let usesDockerWorkspaceExecutor = DockerWorkspaceMCPProjection.isEnabled(for: executionEnvironment)
             && DockerWorkspaceMCPProjection.supportsHostProviderWorkspaceExecutor(runtime: runtime)
         let hostControlTools = HostControlPlaneMCPProjection.enabledToolNames(
             task: task,
             environment: executionEnvironment,
-            contextText: contextText
+            contextText: contextText,
+            capabilityScope: capabilityScope
         )
         guard usesDockerWorkspaceExecutor || !hostControlTools.isEmpty else {
             return render
@@ -1114,6 +1151,20 @@ enum AgentPolicyManifestService {
         if usesDockerWorkspaceExecutor || !hostControlTools.isEmpty {
             updated.allowedTools = DockerWorkspaceMCPProjection.removingNativeShellTools(updated.allowedTools)
             updated.askFirstTools = DockerWorkspaceMCPProjection.removingNativeShellTools(updated.askFirstTools)
+        }
+        if usesDockerWorkspaceExecutor {
+            updated.allowedTools = uniqueStrings(
+                updated.allowedTools + DockerWorkspaceMCPProjection.toolNames.map {
+                    DockerWorkspaceMCPProjection.providerToolPermission(for: $0)
+                }
+            )
+        }
+        if !hostControlTools.isEmpty {
+            updated.allowedTools = uniqueStrings(
+                updated.allowedTools + hostControlTools.map {
+                    HostControlPlaneMCPProjection.providerToolPermission(for: $0)
+                }
+            )
         }
         updated.deniedTools = uniqueStrings(updated.deniedTools + ["Bash", "shell"])
         updated.diagnostics.append(PolicyDiagnostic(
@@ -1139,19 +1190,118 @@ enum AgentPolicyManifestService {
         return updated
     }
 
+    private static func applyingArtifactBootstrapManifestSupport(
+        to render: ProviderPolicyRender,
+        task: AgentTask
+    ) -> ProviderPolicyRender {
+        let permissionPolicy = PermissionPolicy(providerMode: render.permissionMode)
+        let launchTools = ProviderArtifactBootstrapPolicy.launchTools(
+            task: task,
+            permissionPolicy: permissionPolicy,
+            providerAllowedTools: render.allowedTools,
+            askFirstTools: render.askFirstTools
+        )
+        guard !launchTools.isEmpty else { return render }
+        var updated = render
+        updated.allowedTools = uniqueStrings(updated.allowedTools + launchTools)
+        return updated
+    }
+
+    @MainActor
+    private static func refreshingCopilotLaunchArgumentEvidence(
+        to render: ProviderPolicyRender,
+        providerCapabilities: AgentRuntimePolicyCapabilities,
+        localToolCommands: [String],
+        task: AgentTask,
+        executionEnvironment: WorkspaceExecutionEnvironment,
+        contextText: String,
+        capabilityScope: TaskCapabilityPromptScope
+    ) -> ProviderPolicyRender {
+        guard render.providerID == .copilotCLI else { return render }
+        let hostControlTools = HostControlPlaneMCPProjection.enabledToolNames(
+            task: task,
+            environment: executionEnvironment,
+            contextText: contextText,
+            capabilityScope: capabilityScope
+        )
+        let scopedLocalToolCommands = hostControlTools.isEmpty
+            ? localToolCommands
+            : HostControlPlaneRuntimeLaunchGuard.removingNativeLocalToolCommands(
+                localToolCommands,
+                requiredTools: hostControlTools
+            )
+        let shouldAllowAllPaths = shouldProjectGitCredentials(task: task, contextText: contextText)
+            || AgentRuntimeProcessRunner.hasWorkspaceSSHConnections(for: task)
+        var updated = render
+        let launchPermissionMode = AgentRuntimeProviderLaunchPolicy.mode(
+            runtime: render.providerID,
+            effectiveProviderMode: render.permissionMode,
+            executionEnvironment: executionEnvironment
+        )
+        updated.permissionMode = launchPermissionMode
+        let args = copilotLaunchPermissionArguments(
+            render: updated,
+            providerCapabilities: providerCapabilities,
+            localToolCommands: scopedLocalToolCommands,
+            allowAllPaths: shouldAllowAllPaths
+        )
+        let runtimeSupportToolNames = Set(updated.runtimeSupportTools.flatMap {
+            [$0.name, $0.providerNativePermission ?? ""]
+        }.map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }.filter { !$0.isEmpty })
+        updated.allowedTools = uniqueStrings(
+            copilotAllowedTools(from: args, fallback: updated.allowedTools).filter {
+                let normalized = $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                return normalized != "*" && !runtimeSupportToolNames.contains(normalized)
+            }
+        )
+        updated.cliArgumentsSummary = summarizeCopilotArguments(args)
+        updated.generatedConfigPreview = args.joined(separator: " ")
+        updated.usesBroadProviderPermissions = copilotUsesBroadProviderPermissions(args)
+        return updated
+    }
+
+    private static func copilotLaunchPermissionArguments(
+        render: ProviderPolicyRender,
+        providerCapabilities: AgentRuntimePolicyCapabilities,
+        localToolCommands: [String],
+        allowAllPaths: Bool
+    ) -> [String] {
+        let policy = PermissionPolicy(providerMode: render.permissionMode)
+        var args = CopilotCLIRuntime.copilotPermissionArguments(
+            policy: policy,
+            allowedTools: render.allowedTools,
+            localToolCommands: localToolCommands,
+            runtimeSupportTools: copilotRuntimeSupportToolNames(render.runtimeSupportTools),
+            supportsAllowAll: providerCapabilities.supportsAllowAll,
+            supportsAllowAllTools: providerCapabilities.supportsAllowAllTools,
+            supportsAllowAllPaths: providerCapabilities.supportsAllowAllPaths,
+            supportsAllowAllURLs: providerCapabilities.supportsAllowAllURLs,
+            requiresAllowAllToolsForPrompt: providerCapabilities.requiresAllowAllToolsForPrompt
+        )
+        if allowAllPaths,
+           policy != .autonomous,
+           providerCapabilities.supportsAllowAllPaths,
+           !args.contains("--allow-all-paths") {
+            args.append("--allow-all-paths")
+        }
+        return args
+    }
+
     private static func hostControlPlaneAugmentedMCPServers(
         base: [RunPermissionManifest.MCPServer],
         task: AgentTask,
         runtime: AgentRuntimeID,
         executionEnvironment: WorkspaceExecutionEnvironment,
-        contextText: String
+        contextText: String,
+        capabilityScope: TaskCapabilityPromptScope
     ) -> [RunPermissionManifest.MCPServer] {
         let usesDockerWorkspaceExecutor = DockerWorkspaceMCPProjection.isEnabled(for: executionEnvironment)
             && DockerWorkspaceMCPProjection.supportsHostProviderWorkspaceExecutor(runtime: runtime)
         let hostControlTools = HostControlPlaneMCPProjection.enabledToolNames(
             task: task,
             environment: executionEnvironment,
-            contextText: contextText
+            contextText: contextText,
+            capabilityScope: capabilityScope
         )
         var servers = base
         if usesDockerWorkspaceExecutor {
@@ -1235,13 +1385,25 @@ enum AgentPolicyManifestService {
 
     @MainActor
     private static func localToolCommands(for task: AgentTask, contextText: String) -> [String] {
-        let capabilityScope = TaskCapabilityResolver(task: task).promptScope(contextText: contextText)
+        let capabilityScope = TaskCapabilityResolutionSnapshot.capture(
+            for: task,
+            providerLaunchContextText: contextText
+        ).providerLaunch
+        return localToolCommands(for: task, capabilityScope: capabilityScope, contextText: contextText)
+    }
+
+    private static func localToolCommands(
+        for task: AgentTask,
+        capabilityScope: TaskCapabilityPromptScope,
+        contextText: String
+    ) -> [String] {
         var commands: [String] = capabilityScope.localTools.compactMap { tool in
             guard tool.toolType != "mcp" else { return nil }
             let command = tool.command.trimmingCharacters(in: .whitespacesAndNewlines)
             return command.isEmpty ? nil : command
         }
-        if TaskCapabilityResolver.shouldExposeBrowserBridge(for: task, contextText: contextText) {
+        if capabilityScope.exposesBrowserBridge ||
+            TaskCapabilityResolver.shouldExposeBrowserBridge(for: task, contextText: contextText) {
             commands.append("astra-browser")
         }
         return Array(Set(commands)).sorted()
@@ -1249,10 +1411,22 @@ enum AgentPolicyManifestService {
 
     @MainActor
     private static func credentialLabels(for task: AgentTask, contextText: String) -> [String] {
-        let capabilityScope = TaskCapabilityResolver(task: task).promptScope(contextText: contextText)
+        let capabilityScope = TaskCapabilityResolutionSnapshot.capture(
+            for: task,
+            providerLaunchContextText: contextText
+        ).providerLaunch
+        return credentialLabels(for: task, capabilityScope: capabilityScope)
+    }
+
+    private static func credentialLabels(for task: AgentTask, capabilityScope: TaskCapabilityPromptScope) -> [String] {
         let skillKeys = capabilityScope.behaviorSkills.flatMap(\.environmentKeys)
-        let connectorKeys = capabilityScope.connectors.flatMap(\.credentialKeys)
-        return Array(Set(skillKeys + connectorKeys)).sorted()
+        let connectorLabels = ConnectorRuntimeProjection(
+            connectors: capabilityScope.connectors,
+            credentialExposurePolicy: .approvedLabels(
+                Set(TaskRuntimePermissionGrants.approvedCredentialLabels(for: task))
+            )
+        ).configuredCredentialLabels()
+        return Array(Set(skillKeys + connectorLabels)).sorted()
     }
 
     private static func runtimeSupportAllowedShellPatterns(environmentKeyNames: [String]) -> [String] {
@@ -1296,7 +1470,7 @@ enum AgentPolicyManifestService {
             approvals.append("permission_grants:\(providerGrants.sorted().joined(separator: ","))")
         }
         if executionPolicy.permissionPolicyOverride != nil {
-            approvals.append("permission_mode:\(render.permissionMode)")
+            approvals.append("permission_mode:\(render.permissionMode.rawValue)")
         }
         return approvals
     }
@@ -1501,20 +1675,13 @@ private func diagnostics(for policy: AgentPolicy, context: PolicyRenderContext) 
 }
 
 private func summarizeCopilotArguments(_ args: [String]) -> [String] {
-    guard !args.isEmpty else { return [] }
-    var summary: [String] = []
-    var index = 0
-    while index < args.count {
-        let arg = args[index]
-        if arg == "--allow-tool" {
-            let values = args[(index + 1)..<args.count].filter { !$0.hasPrefix("--") }
-            summary.append("--allow-tool \(values.count) entries")
-            break
-        }
-        summary.append(arg)
-        index += 1
-    }
-    return summary
+    args
+}
+
+private func copilotRuntimeSupportToolNames(
+    _ descriptors: [ProviderRuntimeSupportToolDescriptor]
+) -> [String] {
+    Array(Set(descriptors.map(\.name).filter { !$0.isEmpty })).sorted()
 }
 
 private func copilotAllowedTools(from args: [String], fallback: [String]) -> [String] {

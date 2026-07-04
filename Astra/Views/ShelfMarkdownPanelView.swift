@@ -3,16 +3,21 @@ import SwiftUI
 
 enum ShelfFileNavigatorContentPresentation: Equatable {
     case noWorkspacePaths
+    case scanning
     case emptyScope
     case populatedList
 
     static func resolve(
         hasFileRoots: Bool,
         hasVisibleFileRoots: Bool,
-        isSearchingFiles: Bool
+        isSearchingFiles: Bool,
+        isScanningFiles: Bool
     ) -> ShelfFileNavigatorContentPresentation {
         if !hasFileRoots {
             return .noWorkspacePaths
+        }
+        if isScanningFiles && !hasVisibleFileRoots {
+            return .scanning
         }
         if !hasVisibleFileRoots && !isSearchingFiles {
             return .emptyScope
@@ -22,7 +27,7 @@ enum ShelfFileNavigatorContentPresentation: Equatable {
 
     var usesListSurface: Bool {
         switch self {
-        case .noWorkspacePaths, .emptyScope, .populatedList:
+        case .noWorkspacePaths, .scanning, .emptyScope, .populatedList:
             true
         }
     }
@@ -305,16 +310,28 @@ struct ShelfMarkdownPanelView: View {
 
     private var combinedEmptyState: some View {
         let isNoPaths = fileNavigatorContentPresentation == .noWorkspacePaths
-        return VStack(spacing: 8) {
-            Image(systemName: isNoPaths ? "folder.badge.questionmark" : "folder")
-                .font(Stanford.ui(28, weight: .regular))
-                .foregroundStyle(Stanford.textTertiary)
+        let isScanning = fileNavigatorContentPresentation == .scanning
+        let title = isScanning ? scanningScopeTitle : (isNoPaths ? "No workspace paths" : emptyScopeTitle)
+        let message = isScanning ? scanningScopeMessage : (
+            isNoPaths ? "Configure a workspace folder to browse files." : emptyScopeMessage
+        )
 
-            Text(isNoPaths ? "No workspace paths" : emptyScopeTitle)
+        return VStack(spacing: 8) {
+            if isScanning {
+                ProgressView()
+                    .controlSize(.regular)
+                    .padding(.bottom, 2)
+            } else {
+                Image(systemName: isNoPaths ? "folder.badge.questionmark" : "folder")
+                    .font(Stanford.ui(28, weight: .regular))
+                    .foregroundStyle(Stanford.textTertiary)
+            }
+
+            Text(title)
                 .font(Stanford.body(16).weight(.semibold))
                 .foregroundStyle(Stanford.textSecondary)
 
-            Text(isNoPaths ? "Configure a workspace folder to browse files." : emptyScopeMessage)
+            Text(message)
                 .font(Stanford.caption(12))
                 .foregroundStyle(Stanford.textTertiary)
                 .multilineTextAlignment(.center)
@@ -417,6 +434,8 @@ struct ShelfMarkdownPanelView: View {
                     message: "Configure a workspace folder to browse files.",
                     systemImage: "folder.badge.questionmark"
                 )
+            case .scanning:
+                fileNavigatorScanningState
             case .emptyScope:
                 fileNavigatorEmptyState(
                     title: emptyScopeTitle,
@@ -497,7 +516,8 @@ struct ShelfMarkdownPanelView: View {
         ShelfFileNavigatorContentPresentation.resolve(
             hasFileRoots: !fileRoots.isEmpty,
             hasVisibleFileRoots: !visibleFileRoots.isEmpty,
-            isSearchingFiles: isSearchingFiles
+            isSearchingFiles: isSearchingFiles,
+            isScanningFiles: isScanningFiles
         )
     }
 
@@ -531,6 +551,31 @@ struct ShelfMarkdownPanelView: View {
                     .foregroundStyle(.secondary)
 
                 Text(message)
+                    .font(Stanford.caption(11))
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .accessibilityElement(children: .combine)
+    }
+
+    private var fileNavigatorScanningState: some View {
+        HStack(alignment: .top, spacing: 8) {
+            ProgressView()
+                .controlSize(.small)
+                .frame(width: 16, height: 16)
+                .padding(.top, 1)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(scanningScopeTitle)
+                    .font(Stanford.caption(12).weight(.semibold))
+                    .foregroundStyle(.secondary)
+
+                Text(scanningScopeMessage)
                     .font(Stanford.caption(11))
                     .foregroundStyle(.tertiary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -965,6 +1010,28 @@ struct ShelfMarkdownPanelView: View {
             "Switch to All or use search if this workspace only has hidden or filtered paths."
         case .all:
             "No visible files were found in the configured paths."
+        }
+    }
+
+    private var scanningScopeTitle: String {
+        switch effectiveFileNavigatorScope {
+        case .task:
+            "Scanning task files"
+        case .workspace:
+            "Scanning workspace files"
+        case .all:
+            "Scanning files"
+        }
+    }
+
+    private var scanningScopeMessage: String {
+        switch effectiveFileNavigatorScope {
+        case .task:
+            "Looking for generated files and task inputs."
+        case .workspace:
+            "Looking for visible files in this workspace."
+        case .all:
+            "Looking through the configured file paths."
         }
     }
 

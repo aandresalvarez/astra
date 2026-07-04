@@ -18,7 +18,7 @@ struct WorkspaceAppRunResumptionService {
         consumedTokens: Int = 0,
         workspace: Workspace,
         modelContext: ModelContext
-    ) -> [WorkspaceAppActionExecutionResult] {
+    ) async -> [WorkspaceAppActionExecutionResult] {
         let waitingRuns = ((try? modelContext.fetch(FetchDescriptor<WorkspaceAppRun>())) ?? [])
             .filter { $0.status == .waiting && $0.linkedTaskID == taskID && $0.workspaceID == workspace.id }
 
@@ -28,7 +28,7 @@ struct WorkspaceAppRunResumptionService {
                   let manifest = manifest(for: app, workspace: workspace) else {
                 continue
             }
-            if let result = try? executor.resume(
+            if let result = try? await executor.resume(
                 run: run,
                 app: app,
                 workspace: workspace,
@@ -49,7 +49,7 @@ struct WorkspaceAppRunResumptionService {
     // completed while the app was closed).
     @MainActor
     @discardableResult
-    func resumeCompletedRuns(modelContext: ModelContext) -> [WorkspaceAppActionExecutionResult] {
+    func resumeCompletedRuns(modelContext: ModelContext) async -> [WorkspaceAppActionExecutionResult] {
         let waitingRuns = ((try? modelContext.fetch(FetchDescriptor<WorkspaceAppRun>())) ?? [])
             .filter { $0.status == .waiting }
 
@@ -85,7 +85,7 @@ struct WorkspaceAppRunResumptionService {
             }
             let outputRows = tasks.map { taskOutputRow(for: $0) }
             let consumed = tasks.reduce(0) { $0 + consumedTokens(for: $1) }
-            if let result = try? executor.resume(
+            if let result = try? await executor.resume(
                 run: run,
                 app: app,
                 workspace: workspace,

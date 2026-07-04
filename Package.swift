@@ -35,18 +35,26 @@ let package = Package(
         ),
         .target(
             name: "MailToolSupport",
+            dependencies: ["ASTRACore"],
             path: "Tools/MailToolSupport"
         ),
         .target(
+            name: "MCPServerKit",
+            path: "Tools/MCPServerKit"
+        ),
+        .target(
             name: "WorkspaceToolSupport",
+            dependencies: ["MCPServerKit"],
             path: "Tools/WorkspaceToolSupport"
         ),
         .target(
             name: "HostControlToolSupport",
+            dependencies: ["MCPServerKit"],
             path: "Tools/HostControlToolSupport"
         ),
         .target(
             name: "MCPGatewaySupport",
+            dependencies: ["MCPServerKit"],
             path: "Tools/MCPGatewaySupport"
         ),
         .executableTarget(
@@ -114,15 +122,25 @@ let package = Package(
             path: "Tests/MCPGatewaySupportTests"
         ),
         .testTarget(
+            name: "ArchitectureFitnessTests",
+            dependencies: [],
+            path: "Tests/ArchitectureFitnessTests"
+        ),
+        .testTarget(
             name: "ASTRATests",
-            dependencies: ["ASTRA", "ASTRACore", "ASTRAGitContracts", "HostControlToolSupport", "MCPGatewaySupport", "WorkspaceToolSupport"],
+            dependencies: ["ASTRA", "ASTRACore", "ASTRAGitContracts", "HostControlToolSupport", "MCPGatewaySupport", "MCPServerKit", "WorkspaceToolSupport"],
             path: "Tests",
-            exclude: ["MCPGatewaySupportTests", "MailToolSupportTests"]
+            exclude: ["ArchitectureFitnessTests", "MCPGatewaySupportTests", "MCPServerKitTests", "MailToolSupportTests"]
         ),
         .testTarget(
             name: "MailToolSupportTests",
             dependencies: ["MailToolSupport"],
             path: "Tests/MailToolSupportTests"
+        ),
+        .testTarget(
+            name: "MCPServerKitTests",
+            dependencies: ["MCPServerKit"],
+            path: "Tests/MCPServerKitTests"
         )
     ]
 )

@@ -216,6 +216,56 @@ enum WorkspaceRecoveryService {
     }
 
     @discardableResult
+    static func exportReadableWorkspacesBeforeStoreReset(
+        at url: URL,
+        schema: Schema = ASTRASchema.current,
+        migrationPlan: (any SchemaMigrationPlan.Type)? = ASTRAMigrationPlan.self
+    ) -> [WorkspaceConfigManager.WorkspaceConfigExportResult] {
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            return []
+        }
+
+        do {
+            let readOnlyConfig = ModelConfiguration(url: url, allowsSave: false)
+            let container = try ModelContainer(
+                for: schema,
+                migrationPlan: migrationPlan,
+                configurations: [readOnlyConfig]
+            )
+            let context = ModelContext(container)
+            let workspaces = try context.fetch(FetchDescriptor<Workspace>())
+            let results = workspaces.compactMap { workspace -> WorkspaceConfigManager.WorkspaceConfigExportResult? in
+                let target = WorkspaceConfigManager.autoExportTarget(for: workspace.primaryPath)
+                guard let targetURL = target.url else {
+                    AppLogger.audit(.workspaceExported, category: "Persistence", fields: [
+                        "result": "recovery_export_skipped",
+                        "reason": target.reason,
+                        "workspace_id": workspace.id.uuidString
+                    ], level: .warning)
+                    return nil
+                }
+                return WorkspaceConfigManager.exportToFileResult(
+                    workspace: workspace,
+                    modelContext: context,
+                    url: targetURL
+                )
+            }
+            AppLogger.audit(.workspaceExported, category: "Persistence", fields: [
+                "result": "pre_reset_recovery_export_completed",
+                "workspace_count": String(workspaces.count),
+                "exported_count": String(results.filter(\.didExport).count)
+            ])
+            return results
+        } catch {
+            AppLogger.audit(.workspaceRecoveryFailed, category: "Persistence", fields: [
+                "operation": "pre_reset_read_only_export",
+                "error_type": String(describing: type(of: error))
+            ], level: .error)
+            return []
+        }
+    }
+
+    @discardableResult
     static func copyStoreBackup(
         at url: URL,
         backupRoot: URL? = nil,
@@ -302,7 +352,9 @@ enum WorkspaceRecoveryService {
                             from: configURL,
                             accessIntent: .implicitScan(root: nil)
                         )
-                        config.primaryPath = configURL.deletingLastPathComponent().standardizedFileURL.path
+                        config.primaryPath = WorkspaceFileLayout.workspaceRoot(forConfigFile: configURL)
+                            .standardizedFileURL
+                            .path
                         return LoadedWorkspaceConfig(config: config)
                     } catch {
                         AppLogger.audit(.workspaceRecoveryFailed, category: "Persistence", fields: [
@@ -348,7 +400,9 @@ enum WorkspaceRecoveryService {
                     from: configURL,
                     accessIntent: .implicitScan(root: nil)
                 )
-                config.primaryPath = configURL.deletingLastPathComponent().standardizedFileURL.path
+                config.primaryPath = WorkspaceFileLayout.workspaceRoot(forConfigFile: configURL)
+                    .standardizedFileURL
+                    .path
                 let configID = config.id
                 let configPath = normalizePath(config.primaryPath)
                 if let configID, existingIDs.contains(configID) {
@@ -599,10 +653,13 @@ enum WorkspaceRecoveryService {
             return []
         }
 
-        let directConfig = root.appendingPathComponent(WorkspaceFileLayout.workspaceConfigFileName)
+        let directConfig = URL(fileURLWithPath: WorkspaceFileLayout.workspaceConfigFile(for: root.path))
+        let legacyConfig = URL(fileURLWithPath: WorkspaceFileLayout.legacyWorkspaceConfigFile(for: root.path))
         var results: [URL] = []
         if hostFileAccess.fileExists(at: directConfig, intent: intent) {
             results.append(directConfig)
+        } else if hostFileAccess.fileExists(at: legacyConfig, intent: intent) {
+            results.append(legacyConfig)
         }
 
         guard maxDepth > 0,

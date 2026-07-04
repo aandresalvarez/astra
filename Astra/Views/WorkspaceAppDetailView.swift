@@ -9,7 +9,7 @@ struct WorkspaceAppDetailView: View {
     let onOpenStudio: (WorkspaceAppManifest?) -> Void
     let onRefresh: () -> Void
     let onExportPackage: () throws -> URL
-    let onRunAction: (WorkspaceAppActionSpec, WorkspaceAppManifest, WorkspaceAppActionInput) throws -> WorkspaceAppActionExecutionResult
+    let onRunAction: (WorkspaceAppActionSpec, WorkspaceAppManifest, WorkspaceAppActionInput) async throws -> WorkspaceAppActionExecutionResult
     /// Called after this app is permanently deleted, so the parent clears the selection (the
     /// detail view must not linger on a now-deleted app).
     let onDeleted: () -> Void
@@ -459,7 +459,7 @@ struct WorkspaceAppDetailView: View {
         return { action, manifest, input in
             try await WorkspaceAppActionExecutor().executeAsync(
                 actionID: action.id, app: app, workspace: workspace, manifest: manifest,
-                dependencyBindings: bindings, input: input, modelContext: context
+                dependencyBindings: bindings, input: input, bridgeSurface: .published, modelContext: context
             )
         }
     }
@@ -474,11 +474,15 @@ struct WorkspaceAppDetailView: View {
 
     private func resolveApproval(_ run: WorkspaceAppRun, approved: Bool) {
         guard let workspace, let manifest = dataSnapshot.manifest else { return }
-        _ = try? WorkspaceAppActionExecutor().resumeWithApproval(
-            run: run, approved: approved, app: app, workspace: workspace,
-            manifest: manifest, dependencyBindings: dependencyBindings, modelContext: modelContext
-        )
-        loadDataSnapshot()
+        // resumeWithApproval is async (a post-gate step may be a live connector
+        // read); dispatch on the main actor and refresh the snapshot after.
+        Task { @MainActor in
+            _ = try? await WorkspaceAppActionExecutor().resumeWithApproval(
+                run: run, approved: approved, app: app, workspace: workspace,
+                manifest: manifest, dependencyBindings: dependencyBindings, modelContext: modelContext
+            )
+            loadDataSnapshot()
+        }
     }
 
     private func setAutomationEnabled(_ automationID: String, _ isEnabled: Bool) {

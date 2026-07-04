@@ -221,6 +221,7 @@ extension HeadlessChatScenarioTests {
         }
         #expect(task.status == .pendingUser)
         #expect(task.events.contains { $0.type == "permission.approval.requested" })
+        #expect(TaskRuntimePermissionOpenRequestStore.hasOpenRequest(for: task))
 
         InFlightPermissionCenter.shared.resolveAll(taskID: task.id, approved: true)
         _ = await runHandle.value
@@ -230,6 +231,7 @@ extension HeadlessChatScenarioTests {
         #expect(task.runs.first?.output == "Pushed after live approval")
         #expect(task.sessionId == "live-approval-sess")
         #expect(task.events.contains { $0.type == "system.info" && $0.payload.contains("Live permission approved") })
+        #expect(!TaskRuntimePermissionOpenRequestStore.hasOpenRequest(for: task))
 
         let args = try String(contentsOf: argsFile, encoding: .utf8)
         #expect(args.contains("--permission-prompt-tool"))

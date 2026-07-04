@@ -1,4 +1,5 @@
 import Foundation
+import MCPServerKit
 
 public struct RemoteMCPServerDescriptor: Equatable {
     public enum Transport: String, Equatable {
@@ -277,6 +278,15 @@ public final class LocalMCPGateway {
     private let authTokenProvider: MCPGatewayAuthTokenProvider
     private let toolPolicy: RemoteMCPGatewayToolPolicy
     private let toolPolicyEnforcer: any MCPGatewayToolPolicyEnforcing
+    private lazy var mcpServer = MCPServer(
+        name: "astra-mcp-gateway",
+        tools: { [weak self] in
+            try self?.listPolicyFilteredTools() ?? []
+        },
+        handleToolCall: { [weak self] call in
+            self?.handleToolCall(call) ?? .error(code: -32000, message: "MCP gateway is unavailable")
+        }
+    )
 
     public init(
         server: RemoteMCPServerDescriptor,
@@ -295,62 +305,28 @@ public final class LocalMCPGateway {
     }
 
     public func handleLine(_ line: String) -> String? {
-        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return nil }
-        guard let data = trimmed.data(using: .utf8),
-              let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-              let method = object["method"] as? String else {
-            return encodeError(id: nil, code: -32700, message: "Invalid JSON-RPC request")
-        }
-
-        let id = object["id"]
-        if id == nil, method.hasPrefix("notifications/") {
-            return nil
-        }
-
-        switch method {
-        case "initialize":
-            return encodeResult(id: id, result: [
-                "protocolVersion": "2025-03-26",
-                "capabilities": ["tools": [:]],
-                "serverInfo": ["name": "astra-mcp-gateway", "version": "1.0.0"]
-            ])
-        case "tools/list":
-            return handleToolsList(id: id)
-        case "tools/call":
-            return handleToolCall(id: id, object: object)
-        default:
-            return encodeError(id: id, code: -32601, message: "Unsupported method \(method)")
-        }
+        mcpServer.handleLine(line)
     }
 
-    private func handleToolsList(id: Any?) -> String? {
-        do {
-            let tools = try remoteClient.listTools(for: server, auth: authContext())
-            return encodeResult(id: id, result: ["tools": toolPolicy.filterTools(tools)])
-        } catch {
-            return encodeError(id: id, code: -32000, message: "Remote MCP tool discovery failed: \(error.localizedDescription)")
-        }
+    private func listPolicyFilteredTools() throws -> [[String: Any]] {
+        let tools = try remoteClient.listTools(for: server, auth: authContext())
+        return toolPolicy.filterTools(tools)
     }
 
-    private func handleToolCall(id: Any?, object: [String: Any]) -> String? {
-        guard let params = object["params"] as? [String: Any],
-              let rawToolName = params["name"] as? String else {
-            return encodeError(id: id, code: -32602, message: "Unsupported tool")
-        }
-        let requestedToolName = rawToolName.trimmingCharacters(in: .whitespacesAndNewlines)
+    private func handleToolCall(_ call: MCPToolCall) -> MCPServerReply {
+        let requestedToolName = call.name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !requestedToolName.isEmpty else {
-            return encodeError(id: id, code: -32602, message: "Unsupported tool")
+            return .error(code: -32602, message: "Unsupported tool")
         }
         guard let toolName = toolPolicy.canonicalToolName(for: requestedToolName) else {
-            return encodeError(id: id, code: -32602, message: "Tool is not allowed by ASTRA gateway policy")
+            return .error(code: -32602, message: "Tool is not allowed by ASTRA gateway policy")
         }
-        let arguments = params["arguments"] as? [String: Any] ?? [:]
+        let arguments = call.arguments
         switch toolPolicyEnforcer.decision(forTool: toolName, server: server) {
         case .allowed:
             break
         case .denied(let reason):
-            return encodeResult(id: id, result: [
+            return .result([
                 "content": [[
                     "type": "text",
                     "text": "Remote MCP tool call blocked by ASTRA policy: \(reason)"
@@ -365,7 +341,7 @@ public final class LocalMCPGateway {
                 for: server,
                 auth: authContext()
             )
-            return encodeResult(id: id, result: [
+            return .result([
                 "content": [[
                     "type": "text",
                     "text": result.text
@@ -373,7 +349,7 @@ public final class LocalMCPGateway {
                 "isError": result.isError
             ])
         } catch {
-            return encodeResult(id: id, result: [
+            return .result([
                 "content": [[
                     "type": "text",
                     "text": "Remote MCP tool call failed: \(error.localizedDescription)"
@@ -389,35 +365,6 @@ public final class LocalMCPGateway {
             return MCPGatewayAuthContext()
         }
         return MCPGatewayAuthContext(authorizationHeader: "Bearer \(token)")
-    }
-
-    private func encodeResult(id: Any?, result: [String: Any]) -> String? {
-        encode(["jsonrpc": "2.0", "id": normalizedID(id), "result": result])
-    }
-
-    private func encodeError(id: Any?, code: Int, message: String) -> String? {
-        encode([
-            "jsonrpc": "2.0",
-            "id": normalizedID(id),
-            "error": ["code": code, "message": message]
-        ])
-    }
-
-    private func normalizedID(_ id: Any?) -> Any {
-        switch id {
-        case let value as String: return value
-        case let value as NSNumber: return value
-        case .none: return NSNull()
-        default: return NSNull()
-        }
-    }
-
-    private func encode(_ object: [String: Any]) -> String? {
-        guard JSONSerialization.isValidJSONObject(object),
-              let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]) else {
-            return nil
-        }
-        return String(data: data, encoding: .utf8)
     }
 }
 

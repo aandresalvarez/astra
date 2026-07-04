@@ -142,7 +142,12 @@ final class TaskQueue {
             worker.validationModel = validationModel
             worker.skipPermissions = skipPermissions
             worker.defaultAgentPolicyLevelRaw = configuredPolicyLevel.rawValue
-            worker.permissionPolicy = skipPermissions ? .autonomous : .fromAgentPolicyLevel(configuredPolicyLevel)
+            worker.permissionPolicy = skipPermissions
+                ? .autonomous
+                : ProviderPolicyModeResolver.permissionPolicy(
+                    for: AgentPolicy.preset(configuredPolicyLevel),
+                    runtime: defaultRuntimeID
+                )
         }
     }
 
@@ -179,6 +184,10 @@ final class TaskQueue {
                 "reason": "pool_busy_after_resource_lock",
                 "pool_size": String(poolSize)
             ], level: .warning)
+            return
+        }
+
+        guard admitQueuedTaskToRuntime(task, modelContext: modelContext, mode: "task") else {
             return
         }
 
@@ -328,9 +337,13 @@ final class TaskQueue {
             sourceTask.updatedAt = Date()
         }
 
-        sourceTask.status = scheduledTask.status
+        TaskStateMachine.mirrorScheduleResultStatus(
+            sourceTask: sourceTask,
+            scheduledTask: scheduledTask,
+            modelContext: modelContext,
+            at: sourceTask.updatedAt
+        )
         sourceTask.isDone = false
-        sourceTask.markUnreadForCurrentStatus(at: sourceTask.updatedAt)
     }
 
     private static let dateFormatter: DateFormatter = {
@@ -350,7 +363,6 @@ final class TaskQueue {
     }
 
     /// Continue a session on the worker that originally ran the task
-    @discardableResult
     @MainActor
     func continueSession(
         task: AgentTask,
@@ -360,11 +372,14 @@ final class TaskQueue {
         resourceAccess: TaskResourceAccessMode = .write,
         onEvent: @escaping (ParsedEvent) -> Void = { _ in }
     ) async -> Bool {
+        let lifecycle = ContinuationLaunchLifecycle(task: task)
+
         // Try to find the original worker, or use any available one
         guard taskWorkerMap[task.id] != nil || hasAvailableWorker else {
             AppLogger.audit(.workerBlocked, category: "Queue", taskID: task.id, fields: [
                 "reason": "no_worker_for_continue"
             ], level: .warning)
+            recordContinuationAdmissionFailure(task, lifecycle: lifecycle, modelContext: modelContext)
             return false
         }
 
@@ -374,6 +389,7 @@ final class TaskQueue {
             runMode: "continue",
             modelContext: modelContext
         ) else {
+            recordContinuationAdmissionFailure(task, lifecycle: lifecycle, modelContext: modelContext)
             return false
         }
         defer {
@@ -384,13 +400,16 @@ final class TaskQueue {
             AppLogger.audit(.workerBlocked, category: "Queue", taskID: task.id, fields: [
                 "reason": "no_worker_for_continue_after_resource_lock"
             ], level: .warning)
+            recordContinuationAdmissionFailure(task, lifecycle: lifecycle, modelContext: modelContext)
             return false
         }
 
         guard prepareTaskFolder(task, modelContext: modelContext, mode: "continue") else {
+            recordContinuationAdmissionFailure(task, lifecycle: lifecycle, modelContext: modelContext)
             return false
         }
 
+        markContinuationLaunchAdmitted(task, modelContext: modelContext)
         taskWorkerMap[task.id] = worker
         await worker.continueSession(
             task: task,
@@ -401,6 +420,48 @@ final class TaskQueue {
         )
         taskWorkerMap.removeValue(forKey: task.id)
         return true
+    }
+
+    private struct ContinuationLaunchLifecycle {
+        let previousStatus: TaskStatus
+        let previousCompletedAt: Date?
+
+        init(task: AgentTask) {
+            previousStatus = task.status
+            previousCompletedAt = task.completedAt
+        }
+    }
+
+    @MainActor
+    private func markContinuationLaunchAdmitted(_ task: AgentTask, modelContext: ModelContext) {
+        TaskStateMachine.admitContinuationToRuntime(task, modelContext: modelContext)
+    }
+
+    @MainActor
+    private func recordContinuationAdmissionFailure(
+        _ task: AgentTask,
+        lifecycle: ContinuationLaunchLifecycle,
+        modelContext: ModelContext
+    ) {
+        guard task.status == .running || task.status == lifecycle.previousStatus else {
+            AppLogger.audit(.workerBlocked, category: "Queue", taskID: task.id, fields: [
+                "reason": "continuation_not_admitted",
+                "preserved_status": task.status.rawValue
+            ], level: .debug)
+            return
+        }
+
+        TaskStateMachine.restoreContinuationAdmissionFailure(
+            task,
+            snapshot: TaskStateMachine.Snapshot(status: lifecycle.previousStatus, completedAt: lifecycle.previousCompletedAt),
+            modelContext: modelContext
+        )
+        modelContext.insert(TaskEvent(
+            task: task,
+            eventType: TaskEventTypes.System.error,
+            payload: "Couldn't continue this task — it couldn't be started right now. Try again in a moment."
+        ))
+        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
     }
 
     /// Execute a user-approved plan on the next available worker.
@@ -443,6 +504,10 @@ final class TaskQueue {
             return
         }
 
+        guard admitQueuedTaskToRuntime(task, modelContext: modelContext, mode: "approved_plan") else {
+            return
+        }
+
         guard prepareTaskFolder(task, modelContext: modelContext, mode: "approved_plan") else {
             return
         }
@@ -469,6 +534,50 @@ final class TaskQueue {
     }
 
     @MainActor
+    private func admitQueuedTaskToRuntime(
+        _ task: AgentTask,
+        modelContext: ModelContext,
+        mode: String
+    ) -> Bool {
+        let result = TaskStateMachine.admitQueuedTaskToRuntime(task, modelContext: modelContext)
+        guard result.rejection == nil else {
+            recordQueueAdmissionRejection(task, result: result, modelContext: modelContext, mode: mode)
+            return false
+        }
+        return true
+    }
+
+    @MainActor
+    private func recordQueueAdmissionRejection(
+        _ task: AgentTask,
+        result: TaskStateMachine.TransitionResult,
+        modelContext: ModelContext,
+        mode: String
+    ) {
+        AppLogger.audit(.workerBlocked, category: "Queue", taskID: task.id, fields: [
+            "reason": "queue_admission_rejected",
+            "mode": mode,
+            "from": result.from.rawValue,
+            "to": result.to.rawValue
+        ], level: .warning)
+        modelContext.insert(TaskEvent(
+            task: task,
+            eventType: TaskEventTypes.System.error,
+            payload: "This task could not be admitted to runtime because it is no longer queued. Current status: \(result.from.rawValue)."
+        ))
+        WorkspacePersistenceCoordinator.saveAndAutoExport(
+            workspace: task.workspace,
+            modelContext: modelContext,
+            taskID: task.id,
+            auditFields: [
+                "operation": "queue_admission_rejected",
+                "mode": mode,
+                "status": result.from.rawValue
+            ]
+        )
+    }
+
+    @MainActor
     private func prepareTaskFolder(_ task: AgentTask, modelContext: ModelContext, mode: String) -> Bool {
         do {
             let folder = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
@@ -484,11 +593,8 @@ final class TaskQueue {
                 "mode": mode,
                 "error_type": String(describing: type(of: error))
             ], level: .error)
-            task.status = .failed
             let now = Date()
-            task.updatedAt = now
-            task.completedAt = now
-            task.markUnreadForCurrentStatus(at: now)
+            TaskStateMachine.failFromRuntime(task, modelContext: modelContext, at: now)
             modelContext.insert(TaskEvent(
                 task: task,
                 type: "error",

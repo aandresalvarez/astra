@@ -327,11 +327,11 @@ struct WorkspaceAppConnectorReadTests {
 
     @Test("denyAll handlers refuse every verb (fail-closed reuse defense)")
     @MainActor
-    func denyAllRefuses() {
+    func denyAllRefuses() async {
         let handlers = WorkspaceAppDataBridge.denyAll
         #expect(handlers.read == nil)
         #expect(handlers.runAction == nil)
-        if case .error = handlers.storage(.init(op: "query", table: "t", record: [:], limit: nil)) {
+        if case .error = await handlers.storage(.init(op: "query", table: "t", record: [:], limit: nil)) {
             // expected
         } else {
             Issue.record("denyAll storage must refuse")

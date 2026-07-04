@@ -354,6 +354,73 @@ struct QueueLockTests {
         #expect(task.events.contains { $0.type == TaskResourceLockEventTypes.released })
         #expect(task.events.allSatisfy { $0.category == "lifecycle" })
     }
+
+    @Test("executeTask rejects non-queued tasks before worker assignment")
+    func executeTaskRejectsNonQueuedTasksBeforeWorkerAssignment() async throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let container = try makeQueueLockContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Admission", primaryPath: root)
+        let task = AgentTask(title: "Already done", goal: "Do not launch", workspace: workspace)
+        task.status = .completed
+        let completedAt = Date(timeIntervalSince1970: 1_000)
+        task.completedAt = completedAt
+        context.insert(workspace)
+        context.insert(task)
+        try context.save()
+
+        let queue = TaskQueue(poolSize: 1)
+        await queue.executeTask(task, modelContext: context)
+
+        #expect(task.status == .completed)
+        #expect(task.completedAt == completedAt)
+        #expect(task.runs.isEmpty)
+        #expect(queue.worker(for: task) == nil)
+        #expect(queue.activeTasks.isEmpty)
+        #expect(task.events.contains {
+            $0.type == TaskEventTypes.System.error.rawValue
+                && $0.payload.contains("could not be admitted")
+        })
+    }
+
+    @Test("approved plan next-step finalization admits queued task before completion")
+    func approvedPlanNextStepFinalizationAdmitsQueuedTaskBeforeCompletion() async throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let container = try makeQueueLockContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Approved Plan", primaryPath: root)
+        let task = AgentTask(title: "Plan", goal: "Finalize plan", workspace: workspace)
+        task.status = .queued
+        context.insert(workspace)
+        context.insert(task)
+
+        let plan = TaskPlanPayload(
+            title: "Completed plan",
+            goal: "Finalize without launching another worker step",
+            steps: [
+                TaskPlanPayloadStep(id: "done", title: "Already done", status: .done)
+            ]
+        )
+        TaskPlanService.recordCreated(plan, task: task, modelContext: context)
+        TaskPlanService.recordApproved(plan, task: task, modelContext: context)
+        try context.save()
+
+        let queue = TaskQueue(poolSize: 1)
+        await queue.executeApprovedPlan(
+            task: task,
+            plan: plan,
+            mode: .nextStep,
+            modelContext: context
+        )
+
+        #expect(task.status == .completed)
+        #expect(task.runs.isEmpty)
+        #expect(queue.worker(for: task) == nil)
+        #expect(queue.activeTasks.isEmpty)
+        #expect(task.events.contains { $0.type == TaskPlanEventTypes.executionCompleted })
+    }
 }
 
 private func temporaryRoot() throws -> String {

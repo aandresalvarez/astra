@@ -738,7 +738,7 @@ enum WorkspaceAppManifestValidator {
         let renderer = widget.webRenderer?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if renderer.isEmpty {
             issues.append(blocker("\(path)/webRenderer", "WebView widget must declare an ASTRA-known renderer."))
-        } else if !WorkspaceAppWebViewBridge.allowedRenderers.contains(renderer) {
+        } else if !WorkspaceAppWebRendererPolicy.allowedRenderers.contains(renderer) {
             issues.append(blocker("\(path)/webRenderer", "WebView renderer '\(renderer)' is not allowed for Workspace Apps."))
         }
 

@@ -16,7 +16,8 @@ struct AntigravityCLIRuntimeTests {
             timeoutSeconds: 45,
             taskEnvironment: ["ASTRA_TEST_ENV": "1"],
             pathPrefix: ["/tmp/astra-shim", "/tmp/astra-shim"],
-            includeAstraToolsPath: true
+            includeAstraToolsPath: true,
+            permissionArguments: ProviderPolicyRender.antigravityLaunchPermissionArguments(policy: .restricted)
         )
 
         #expect(plan.executablePath == "/bin/agy")
@@ -43,7 +44,8 @@ struct AntigravityCLIRuntimeTests {
             permissionPolicy: .restricted,
             timeoutSeconds: 30,
             taskEnvironment: ["HOME": "/tmp/task-home"],
-            providerHomeDirectory: "/tmp/provider-home"
+            providerHomeDirectory: "/tmp/provider-home",
+            permissionArguments: ProviderPolicyRender.antigravityLaunchPermissionArguments(policy: .restricted)
         )
 
         #expect(plan.environment["HOME"] == "/tmp/provider-home")
@@ -64,7 +66,8 @@ struct AntigravityCLIRuntimeTests {
             additionalPaths: [],
             permissionPolicy: .autonomous,
             timeoutSeconds: 30,
-            taskEnvironment: [:]
+            taskEnvironment: [:],
+            permissionArguments: ProviderPolicyRender.antigravityLaunchPermissionArguments(policy: .autonomous)
         )
 
         #expect(plan.arguments.contains("--dangerously-skip-permissions"))
@@ -81,7 +84,8 @@ struct AntigravityCLIRuntimeTests {
             permissionPolicy: .restricted,
             timeoutSeconds: 30,
             taskEnvironment: [:],
-            diagnosticLogPath: "/workspace/.astra/tasks/TASK/diagnostics/antigravity-run.log"
+            diagnosticLogPath: "/workspace/.astra/tasks/TASK/diagnostics/antigravity-run.log",
+            permissionArguments: ProviderPolicyRender.antigravityLaunchPermissionArguments(policy: .restricted)
         )
 
         #expect(plan.arguments.contains("--log-file"))

@@ -2201,35 +2201,10 @@ struct TaskMainView: View {
     // MARK: - Chat Bubbles
 
     private func chatUserBubble(text: String, timestamp _: Date) -> some View {
-        HStack(alignment: .top, spacing: 10) {
-            Spacer(minLength: 120)
-            VStack(alignment: .trailing, spacing: 4) {
-                Text(MarkdownTextView.markdownAttributed(text))
-                    .font(Stanford.chatBody())
-                    .lineSpacing(Stanford.chatBodyLineSpacing)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 12)
-                    .background(Color.primary.opacity(0.028))
-                    .foregroundStyle(Stanford.readingText)
-                    .tint(Stanford.link)
-                    .clipShape(UnevenRoundedRectangle(
-                        topLeadingRadius: 16,
-                        bottomLeadingRadius: 16,
-                        bottomTrailingRadius: 4,
-                        topTrailingRadius: 16
-                    ))
-                    .overlay(
-                        UnevenRoundedRectangle(
-                            topLeadingRadius: 16,
-                            bottomLeadingRadius: 16,
-                            bottomTrailingRadius: 4,
-                            topTrailingRadius: 16
-                        )
-                        .stroke(Color.primary.opacity(0.07), lineWidth: 1)
-                    )
-                    .textSelection(.enabled)
-            }
-        }
+        ChatTranscriptUserBubble(
+            attributedText: MarkdownTextView.markdownAttributed(text),
+            style: .task
+        )
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Your message: \(text)")
     }
@@ -3617,7 +3592,7 @@ struct TaskMainView: View {
     private func forkTask(from run: TaskRunSnapshot) {
         guard let sourceRun = task.runs.first(where: { $0.id == run.id }) else { return }
         let forked = AgentTask.fork(from: task, upToRun: sourceRun, in: modelContext)
-        try? modelContext.save()
+        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
         onForkTask?(forked)
     }
 
@@ -4121,13 +4096,7 @@ struct TaskMainView: View {
     }
 
     private var runtimePermissionState: TaskRuntimePermissionState {
-        TaskRuntimePermissionState.build(events: sortedEvents.map {
-            TaskRuntimePermissionState.Event(
-                type: $0.type,
-                payload: $0.payload,
-                timestamp: $0.timestamp
-            )
-        })
+        TaskRuntimePermissionState.build(task: task)
     }
 
     private var hasOpenRuntimePermissionApprovalRequest: Bool {
@@ -4764,7 +4733,7 @@ struct TaskMainView: View {
             withAnimation(reduceMotion ? nil : .default) {
                 task.isDone.toggle()
                 task.updatedAt = Date()
-                try? modelContext.save()
+                WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
             }
         }
     }
@@ -4943,7 +4912,7 @@ struct TaskMainView: View {
                             source: "task_composer"
                         )
                         task.updatedAt = Date()
-                        try? modelContext.save()
+                        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
                     },
                     showSecurityGate: true,
                     sshConnections: sshConnections
@@ -5071,45 +5040,12 @@ struct TaskMainView: View {
     /// let the TextField handle it natively (short text).
     @discardableResult
     private func smartPaste() -> Bool {
-        let pb = NSPasteboard.general
-        let types = pb.types ?? []
-
-        // 1. File URLs — attach directly
-        if let urls = pb.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL], !urls.isEmpty {
-            for url in urls where !attachedFiles.contains(url.path) {
-                attachedFiles.append(url.path)
-            }
-            return true
-        }
-
-        // 2. Image data (screenshot, copied image) — save as temp PNG
-        if types.contains(.png) || types.contains(.tiff) {
-            if let image = pb.readObjects(forClasses: [NSImage.self]) as? [NSImage], let first = image.first {
-                if let tiff = first.tiffRepresentation,
-                   let bitmap = NSBitmapImageRep(data: tiff),
-                   let png = bitmap.representation(using: .png, properties: [:]) {
-                    let tempPath = NSTemporaryDirectory() + "astra_paste_\(UUID().uuidString.prefix(8)).png"
-                    try? png.write(to: URL(fileURLWithPath: tempPath))
-                    attachedFiles.append(tempPath)
-                    return true
-                }
-            }
-        }
-
-        // 3. Text — short text pastes inline, long text attaches as file
-        if let text = pb.string(forType: .string), !text.isEmpty {
-            let lineCount = text.components(separatedBy: .newlines).count
-            if lineCount > 10 || text.count > 500 {
-                let ext = text.hasPrefix("{") || text.hasPrefix("[") ? "json" : "txt"
-                let tempPath = NSTemporaryDirectory() + "astra_paste_\(UUID().uuidString.prefix(8)).\(ext)"
-                try? text.write(toFile: tempPath, atomically: true, encoding: .utf8)
-                attachedFiles.append(tempPath)
-                return true
-            }
-            return false
-        }
-
-        return false
+        let result = ComposerPasteIntake.intake(
+            pasteboard: .general,
+            existingAttachments: Set(attachedFiles)
+        )
+        attachedFiles.append(contentsOf: result.attachmentPaths)
+        return result.handled
     }
 
     private func installPasteMonitor() {
@@ -5122,7 +5058,8 @@ struct TaskMainView: View {
                 messageText.append("\n")
                 return nil
             }
-            if event.modifierFlags.contains(.command),
+            if isComposerFocused,
+               event.modifierFlags.contains(.command),
                event.charactersIgnoringModifiers == "v" {
                 if smartPaste() { return nil }
             }
@@ -5236,8 +5173,8 @@ struct TaskMainView: View {
                     // Force a save so the inverse relationship (task.events) fires
                     // observation immediately — otherwise the bubble can lag behind
                     // the spinner by several seconds.
-                    try? modelContext.save()
                     task.updatedAt = Date()
+                    WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
                     isGeneratingRecap = false
                 case .failure(let error):
                     isGeneratingRecap = false
@@ -5440,10 +5377,7 @@ struct TaskMainView: View {
         recordCurrentTaskPolicyIfNeeded(source: "approved_plan_run")
         TaskPlanService.recordApproved(plan, task: task, modelContext: modelContext)
         showPlanCanvasIfNeeded()
-        task.status = .queued
-        task.completedAt = nil
-        task.updatedAt = Date()
-        try? modelContext.save()
+        TaskStateMachine.enqueueApprovedPlanRun(task, modelContext: modelContext)
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
         threadViewModel.refreshSnapshot(for: task)
 
@@ -5522,7 +5456,6 @@ struct TaskMainView: View {
             payload: assistantMessage
         ))
         task.updatedAt = Date()
-        try? modelContext.save()
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
         threadViewModel.refreshSnapshot(for: task)
     }
@@ -5546,8 +5479,7 @@ struct TaskMainView: View {
         }
 
         if task.status == .queued {
-            task.status = .draft
-            task.updatedAt = Date()
+            TaskStateMachine.restoreDraftForEditing(task, modelContext: modelContext)
             let systemEvent = TaskEvent(task: task, eventType: TaskEventTypes.Task.started, payload: "Moved back to draft for editing.")
             modelContext.insert(systemEvent)
             let userEvent = TaskEvent(task: task, eventType: TaskEventTypes.Conversation.userMessage, payload: msg)
@@ -5571,13 +5503,10 @@ struct TaskMainView: View {
                     "next_action": "continue_session"
                 ], level: .warning)
             }
-            task.status = .running
-            task.updatedAt = Date()
-            task.completedAt = nil
             logTaskCapabilityContext(source: "task_continue_chat", traceID: traceID)
             recordCurrentTaskPolicyIfNeeded(source: "task_continue_chat")
             Task {
-                await taskQueue.continueSession(task: task, message: msg, modelContext: modelContext) { _ in }
+                _ = await taskQueue.continueSession(task: task, message: msg, modelContext: modelContext) { _ in }
             }
         } else {
             let event = TaskEvent(task: task, eventType: TaskEventTypes.Conversation.userMessage, payload: msg)
@@ -5592,7 +5521,7 @@ struct TaskMainView: View {
         let userEvent = TaskEvent(task: task, type: TaskPlanConversationEventTypes.userMessage, payload: msg)
         modelContext.insert(userEvent)
         task.updatedAt = Date()
-        try? modelContext.save()
+        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
         threadViewModel.refreshSnapshot(for: task)
 
         let history = planningConversationHistory(appendingUserMessage: msg)

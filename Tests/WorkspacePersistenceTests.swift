@@ -10,6 +10,26 @@ private func makeWorkspacePersistenceContainer() throws -> ModelContainer {
     return try ModelContainer(for: schema, migrationPlan: ASTRAMigrationPlan.self, configurations: [config])
 }
 
+private func runGit(_ arguments: [String], in directory: URL) throws -> Int32 {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+    process.arguments = arguments
+    process.currentDirectoryURL = directory
+    process.standardOutput = Pipe()
+    process.standardError = Pipe()
+    try process.run()
+    process.waitUntilExit()
+    return process.terminationStatus
+}
+
+private func gitPathIsIgnored(_ relativePath: String, in repository: URL) throws -> Bool {
+    let status = try runGit(["check-ignore", relativePath], in: repository)
+    if status == 0 { return true }
+    if status == 1 { return false }
+    Issue.record("git check-ignore failed for \(relativePath) with status \(status)")
+    return false
+}
+
 @MainActor
 private func makeRichWorkspace(in context: ModelContext, root: String) throws -> Workspace {
     let workspace = Workspace(name: "Persistence", primaryPath: root)
@@ -163,6 +183,32 @@ struct WorkspacePersistenceTests {
         sourceTask.isPinned = true
         sourceTask.isDone = true
         sourceTask.updatedAt = historicalTaskUpdatedAt
+        let sourceRun = try #require(sourceTask.runs.first)
+        let approvalGrant = PermissionGrant.shellCommand(executable: "gh", pattern: "search prs *")
+        let openApprovalPayload = PermissionBroker.approvalPayloadString(
+            providerID: .claudeCode,
+            request: .shell(command: "gh search prs author:@me --limit 10", toolName: "Bash"),
+            reason: "The shell command requires user approval by the effective ASTRA policy.",
+            grants: [approvalGrant],
+            requestID: "mirror-open-request"
+        )
+        TaskRuntimePermissionOpenRequestStore.recordOpenRequest(
+            payload: openApprovalPayload,
+            task: sourceTask,
+            at: historicalTaskUpdatedAt
+        )
+        let grantPayload = TaskRuntimePermissionGrants.Payload(
+            brokerVersion: PermissionBroker.brokerVersion,
+            providerID: .claudeCode,
+            grants: [approvalGrant],
+            approvedAt: historicalTaskUpdatedAt,
+            source: "mirror-test"
+        )
+        sourceTask.runtimePermissionGrantsJSON = String(
+            decoding: try JSONEncoder().encode([grantPayload]),
+            as: UTF8.self
+        )
+        sourceRun.providerLaunchSignatureJSON = #"{"runtime":"claudeCode","model":"claude-sonnet-4-6"}"#
         try context.save()
 
         let config = try #require(WorkspaceConfigManager.export(workspace: workspace, modelContext: context))
@@ -187,6 +233,9 @@ struct WorkspacePersistenceTests {
         #expect(config.tasks?.first?.isDone == true)
         #expect(config.tasks?.first?.unreadAt == sourceTask.unreadAt)
         #expect(config.tasks?.first?.updatedAt == historicalTaskUpdatedAt)
+        #expect(config.tasks?.first?.runtimePermissionOpenRequestsJSON == sourceTask.runtimePermissionOpenRequestsJSON)
+        #expect(config.tasks?.first?.runtimePermissionGrantsJSON == sourceTask.runtimePermissionGrantsJSON)
+        #expect(config.tasks?.first?.runs.first?.providerLaunchSignatureJSON == sourceRun.providerLaunchSignatureJSON)
         #expect(config.enabledCapabilityIDs == ["stanford.builder"])
         #expect(config.enabledPackIDs == ["astra.pack.devops"])
         #expect(config.shelfVisibilityOverrides == [
@@ -206,6 +255,8 @@ struct WorkspacePersistenceTests {
         let importedContext = importedContainer.mainContext
         let imported = WorkspaceConfigManager.importWorkspace(from: config, modelContext: importedContext)
         try importedContext.save()
+        let importedTask = try #require(imported.tasks.first)
+        let importedRun = try #require(importedTask.runs.first)
 
         #expect(imported.id == workspace.id)
         #expect(imported.isStarred == true)
@@ -233,6 +284,272 @@ struct WorkspacePersistenceTests {
         #expect(imported.tasks.first?.runs.first?.id == workspace.tasks.first?.runs.first?.id)
         #expect(imported.tasks.first?.events.first?.id == workspace.tasks.first?.events.first?.id)
         #expect(imported.tasks.first?.artifacts.first?.id == workspace.tasks.first?.artifacts.first?.id)
+        #expect(importedTask.runtimePermissionOpenRequestsJSON == sourceTask.runtimePermissionOpenRequestsJSON)
+        #expect(importedTask.runtimePermissionGrantsJSON == sourceTask.runtimePermissionGrantsJSON)
+        #expect(importedRun.providerLaunchSignatureJSON == sourceRun.providerLaunchSignatureJSON)
+        #expect(TaskRuntimePermissionOpenRequestStore.hasOpenRequest(for: importedTask))
+        #expect(TaskRuntimePermissionGrants.approvedGrants(for: importedTask) == [approvalGrant])
+    }
+
+    @Test("recovery export and import preserve WorkspaceApps and task execution metadata but exclude global OAuth profiles")
+    @MainActor
+    func recoveryRoundTripPreservesAppsOAuthAndExecutionMetadata() throws {
+        let root = "/tmp/astra_recovery_roundtrip_\(UUID().uuidString)"
+        let container = try makeWorkspacePersistenceContainer()
+        let context = container.mainContext
+        let workspace = try makeRichWorkspace(in: context, root: root)
+        let task = try #require(workspace.tasks.first)
+        let forkedFromID = UUID()
+        let schedule = TaskSchedule(name: "Morning Review", goal: "Summarize changes", workspace: workspace)
+        context.insert(schedule)
+
+        task.queuePosition = 42
+        task.forkedFromID = forkedFromID
+        task.forkedAtRunIndex = 3
+        task.originScheduleID = schedule.id
+        task.executionRootPath = "\(root)/worktrees/feature"
+
+        let app = WorkspaceApp(
+            workspaceID: workspace.id,
+            logicalID: "review-dashboard",
+            name: "Review Dashboard",
+            icon: "chart.bar",
+            appDescription: "Tracks review status",
+            lifecycleStatus: .published,
+            permissionMode: .approvalRequired,
+            dependencyStatus: .ready,
+            manifestRelativePath: ".astra/apps/review-dashboard/manifest.json",
+            appDirectoryRelativePath: ".astra/apps/review-dashboard",
+            manifestDigest: "digest-current",
+            publishedManifestDigest: "digest-published",
+            lastKnownGoodManifestDigest: "digest-good",
+            latestVersionNumber: 7,
+            sourcePackageID: "review.pack",
+            sourcePackageVersion: "2.0.0",
+            sourcePackageDigest: "pack-digest"
+        )
+        app.lastOpenedAt = Date(timeIntervalSince1970: 1_710_000_001)
+        app.lastRefreshedAt = Date(timeIntervalSince1970: 1_710_000_002)
+        app.lastRunAt = Date(timeIntervalSince1970: 1_710_000_003)
+        context.insert(app)
+
+        let appRun = WorkspaceAppRun(
+            workspaceID: workspace.id,
+            appID: app.id,
+            appLogicalID: app.logicalID,
+            actionID: "refresh",
+            trigger: .automation,
+            status: .waiting,
+            startedAt: Date(timeIntervalSince1970: 1_710_000_004),
+            inputSummary: "Refresh PR data",
+            outputSummary: "Awaiting task",
+            errorMessage: nil
+        )
+        appRun.completedAt = Date(timeIntervalSince1970: 1_710_000_005)
+        appRun.linkedTaskID = task.id
+        appRun.linkedArtifactPath = "artifacts/review.json"
+        appRun.pendingActionID = "approval"
+        appRun.pendingStepIndex = 5
+        appRun.consumedTokens = 1234
+        appRun.awaitedTaskIDs = [task.id]
+        appRun.pendingApprovalActionID = "human-gate"
+        context.insert(appRun)
+
+        let appEvent = WorkspaceAppRunEvent(
+            runID: appRun.id,
+            workspaceID: workspace.id,
+            appID: app.id,
+            actionID: appRun.actionID,
+            type: "workspace_app.run.waiting",
+            payload: #"{"reason":"approval"}"#,
+            timestamp: Date(timeIntervalSince1970: 1_710_000_006)
+        )
+        context.insert(appEvent)
+
+        let binding = WorkspaceAppDependencyBinding(
+            workspaceID: workspace.id,
+            appID: app.id,
+            appLogicalID: app.logicalID,
+            requirementID: "github.prs",
+            contract: "pullRequest.read",
+            operations: ["list", "get"],
+            optional: false,
+            status: .mapped,
+            implementationID: "github.cli",
+            provider: "github",
+            transport: .cli
+        )
+        context.insert(binding)
+
+        let automation = WorkspaceAppAutomationState(
+            workspaceID: workspace.id,
+            appID: app.id,
+            appLogicalID: app.logicalID,
+            automationID: "daily-refresh",
+            automationType: "schedule",
+            actionID: "refresh",
+            isEnabled: true,
+            status: .enabled,
+            lastRunAt: Date(timeIntervalSince1970: 1_710_000_007),
+            nextRunAt: Date(timeIntervalSince1970: 1_710_086_400)
+        )
+        context.insert(automation)
+
+        let profile = GoogleOAuthAccountProfile(
+            subject: "google-subject-1",
+            email: "Researcher@Example.COM",
+            displayName: "Researcher",
+            avatarURLString: "https://example.test/avatar.png",
+            hostedDomain: "Example.COM",
+            grantedScopes: ["https://www.googleapis.com/auth/drive.file"],
+            requestedScopes: [
+                "https://www.googleapis.com/auth/drive.file",
+                "https://www.googleapis.com/auth/spreadsheets"
+            ],
+            authState: .needsReauth,
+            authStateReason: "scope_upgrade",
+            createdAt: Date(timeIntervalSince1970: 1_710_000_008),
+            updatedAt: Date(timeIntervalSince1970: 1_710_000_009),
+            lastAuthenticatedAt: Date(timeIntervalSince1970: 1_710_000_010)
+        )
+        context.insert(profile)
+        try context.save()
+
+        let config = try #require(WorkspaceConfigManager.export(workspace: workspace, modelContext: context))
+        #expect(config.tasks?.first?.queuePosition == 42)
+        #expect(config.tasks?.first?.forkedFromID == forkedFromID.uuidString)
+        #expect(config.tasks?.first?.originScheduleID == schedule.id.uuidString)
+        #expect(config.tasks?.first?.executionRootPath == "\(root)/worktrees/feature")
+        #expect(config.workspaceApps?.first?.logicalID == "review-dashboard")
+        #expect(config.workspaceAppRuns?.first?.awaitedTaskIDsJSON?.contains(task.id.uuidString) == true)
+        #expect(config.workspaceAppRunEvents?.first?.type == "workspace_app.run.waiting")
+        #expect(config.workspaceAppDependencyBindings?.first?.transport == "cli")
+        #expect(config.workspaceAppAutomationStates?.first?.status == "enabled")
+        // Global Google account profiles are account-scoped PII with no workspace
+        // link; they must NOT be mirrored into a per-workspace (repo-committable)
+        // config, even when a profile is signed in.
+        #expect(config.googleOAuthAccountProfiles == nil)
+
+        let importedContainer = try makeWorkspacePersistenceContainer()
+        let importedContext = importedContainer.mainContext
+        let importedWorkspace = WorkspaceConfigManager.importWorkspace(from: config, modelContext: importedContext)
+        try importedContext.save()
+
+        let importedTask = try #require(importedWorkspace.tasks.first)
+        #expect(importedTask.queuePosition == 42)
+        #expect(importedTask.forkedFromID == forkedFromID)
+        #expect(importedTask.forkedAtRunIndex == 3)
+        #expect(importedTask.originScheduleID == schedule.id)
+        #expect(importedTask.executionRootPath == "\(root)/worktrees/feature")
+
+        #expect(try importedContext.fetch(FetchDescriptor<WorkspaceApp>()).first?.publishedManifestDigest == "digest-published")
+        #expect(try importedContext.fetch(FetchDescriptor<WorkspaceAppRun>()).first?.pendingApprovalActionID == "human-gate")
+        #expect(try importedContext.fetch(FetchDescriptor<WorkspaceAppRunEvent>()).first?.payload == #"{"reason":"approval"}"#)
+        #expect(try importedContext.fetch(FetchDescriptor<WorkspaceAppDependencyBinding>()).first?.transportRaw == "cli")
+        #expect(try importedContext.fetch(FetchDescriptor<WorkspaceAppAutomationState>()).first?.isEnabled == true)
+        // The mirror carried no OAuth profile (excluded above), so recovery does
+        // not resurrect global account PII from a per-workspace config. Profiles
+        // are re-established from Google auth (tokens live in the keychain).
+        #expect(try importedContext.fetch(FetchDescriptor<GoogleOAuthAccountProfile>()).isEmpty)
+    }
+
+    @Test("Duplicate workspace import does not delete the original workspace's app mirror rows")
+    @MainActor
+    func duplicateWorkspaceImportPreservesOriginalAppMirrorRows() throws {
+        let root = "/tmp/astra_duplicate_import_\(UUID().uuidString)"
+        let configDirectory = URL(fileURLWithPath: root).appendingPathComponent(".astra", isDirectory: true)
+        try FileManager.default.createDirectory(at: configDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: root) }
+
+        let container = try makeWorkspacePersistenceContainer()
+        let context = container.mainContext
+        let existing = Workspace(name: "Original", primaryPath: root)
+        context.insert(existing)
+
+        let app = WorkspaceApp(
+            workspaceID: existing.id,
+            logicalID: "review-dashboard",
+            name: "Review Dashboard",
+            icon: "chart.bar",
+            appDescription: "Tracks review status",
+            lifecycleStatus: .published,
+            permissionMode: .approvalRequired,
+            dependencyStatus: .ready,
+            manifestRelativePath: ".astra/apps/review-dashboard/manifest.json",
+            appDirectoryRelativePath: ".astra/apps/review-dashboard",
+            manifestDigest: "digest-current",
+            publishedManifestDigest: "digest-published",
+            lastKnownGoodManifestDigest: "digest-good",
+            latestVersionNumber: 7,
+            sourcePackageID: "review.pack",
+            sourcePackageVersion: "2.0.0",
+            sourcePackageDigest: "pack-digest"
+        )
+        context.insert(app)
+
+        let appRun = WorkspaceAppRun(
+            workspaceID: existing.id,
+            appID: app.id,
+            appLogicalID: app.logicalID,
+            actionID: "refresh",
+            trigger: .automation,
+            status: .completed,
+            startedAt: Date(timeIntervalSince1970: 1_710_000_000),
+            inputSummary: "Refresh PR data",
+            outputSummary: "Done",
+            errorMessage: nil
+        )
+        context.insert(appRun)
+        try context.save()
+
+        let config = try #require(WorkspaceConfigManager.export(workspace: existing, modelContext: context))
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        let configURL = configDirectory.appendingPathComponent(WorkspaceFileLayout.workspaceConfigFileName)
+        try encoder.encode(config).write(to: configURL)
+
+        let queue = TaskQueue(poolSize: 0)
+        let coordinator = TaskLifecycleCoordinator(modelContext: context, taskQueue: queue)
+        let duplicate = try #require(coordinator.importFromConfig(
+            at: configURL,
+            existingWorkspaces: [existing],
+            askDuplicateAction: { _, _ in .duplicate }
+        ))
+
+        // A duplicate is a new, independent workspace — it must not collide
+        // with (and thereby wipe) the original's id-scoped Workspace App rows.
+        #expect(duplicate.id != existing.id)
+        #expect(duplicate.name == "Original (Imported)")
+
+        let existingWorkspaceID = existing.id
+        let originalAppRows = try context.fetch(FetchDescriptor<WorkspaceApp>(
+            predicate: #Predicate { $0.workspaceID == existingWorkspaceID }
+        ))
+        #expect(originalAppRows.count == 1)
+        #expect(originalAppRows.first?.logicalID == "review-dashboard")
+
+        let duplicateWorkspaceID = duplicate.id
+        let duplicateAppRows = try context.fetch(FetchDescriptor<WorkspaceApp>(
+            predicate: #Predicate { $0.workspaceID == duplicateWorkspaceID }
+        ))
+        #expect(duplicateAppRows.count == 1)
+        let duplicateApp = try #require(duplicateAppRows.first)
+        // The duplicate's app must not share a primary key with the
+        // original's — WorkspaceAppService.deleteApp and friends operate by
+        // appID alone, so a shared id would let deleting one affect both.
+        #expect(duplicateApp.id != app.id)
+
+        let duplicateAppID = duplicateApp.id
+        let duplicateRunRows = try context.fetch(FetchDescriptor<WorkspaceAppRun>(
+            predicate: #Predicate { $0.workspaceID == duplicateWorkspaceID }
+        ))
+        #expect(duplicateRunRows.count == 1)
+        let duplicateRun = try #require(duplicateRunRows.first)
+        #expect(duplicateRun.id != appRun.id)
+        // The duplicated run's appID cross-reference must follow the
+        // remapping, not point back at the original's app.
+        #expect(duplicateRun.appID == duplicateAppID)
     }
 
     @Test("legacy task configs without done state import as not done")
@@ -992,6 +1309,110 @@ struct WorkspacePersistenceTests {
         #expect(workspaces.first?.schedules.first { $0.name == "Recovered Routine" }?.isEnabled == true)
     }
 
+    @Test("automatic recovery resolves canonical support config to workspace root")
+    @MainActor
+    func recoveryImportsCanonicalSupportConfigAtWorkspaceRoot() throws {
+        let root = URL(fileURLWithPath: "/tmp/astra_recovery_canonical_\(UUID().uuidString)")
+        let workspaceFolder = root.appendingPathComponent("project")
+        try FileManager.default.createDirectory(at: workspaceFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let sourceContainer = try makeWorkspacePersistenceContainer()
+        let sourceContext = sourceContainer.mainContext
+        let sourceWorkspace = try makeRichWorkspace(in: sourceContext, root: workspaceFolder.path)
+        let configURL = URL(fileURLWithPath: WorkspaceFileLayout.workspaceConfigFile(for: workspaceFolder.path))
+        try WorkspaceConfigManager.exportToFile(workspace: sourceWorkspace, modelContext: sourceContext, url: configURL)
+
+        let recoveryContainer = try makeWorkspacePersistenceContainer()
+        let recoveryContext = recoveryContainer.mainContext
+        let importedCount = WorkspaceRecoveryService.recoverMissingWorkspaces(
+            modelContext: recoveryContext,
+            extraRoots: [root.path],
+            includeDefaultRoots: false
+        )
+        let secondImportCount = WorkspaceRecoveryService.recoverMissingWorkspaces(
+            modelContext: recoveryContext,
+            extraRoots: [root.path],
+            includeDefaultRoots: false
+        )
+        let workspaces = (try? recoveryContext.fetch(FetchDescriptor<Workspace>())) ?? []
+
+        #expect(importedCount == 1)
+        #expect(secondImportCount == 0)
+        #expect(workspaces.count == 1)
+        #expect(workspaces.first?.primaryPath == workspaceFolder.path)
+        #expect(workspaces.first?.primaryPath != configURL.deletingLastPathComponent().path)
+    }
+
+    @Test("async launch recovery resolves canonical support config to workspace root")
+    @MainActor
+    func asyncLaunchRecoveryImportsCanonicalSupportConfigAtWorkspaceRoot() async throws {
+        let root = URL(fileURLWithPath: "/tmp/astra_async_recovery_canonical_\(UUID().uuidString)")
+        let workspaceFolder = root.appendingPathComponent("project")
+        try FileManager.default.createDirectory(at: workspaceFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let sourceContainer = try makeWorkspacePersistenceContainer()
+        let sourceContext = sourceContainer.mainContext
+        let sourceWorkspace = try makeRichWorkspace(in: sourceContext, root: workspaceFolder.path)
+        let configURL = URL(fileURLWithPath: WorkspaceFileLayout.workspaceConfigFile(for: workspaceFolder.path))
+        try WorkspaceConfigManager.exportToFile(workspace: sourceWorkspace, modelContext: sourceContext, url: configURL)
+
+        let recoveryContainer = try makeWorkspacePersistenceContainer()
+        let recoveryContext = recoveryContainer.mainContext
+        WorkspaceRecoveryService.recoverMissingWorkspacesAfterLaunch(
+            modelContext: recoveryContext,
+            extraRoots: [root.path],
+            includeDefaultRoots: false
+        )
+
+        var workspaces: [Workspace] = []
+        for _ in 0..<100 {
+            workspaces = (try? recoveryContext.fetch(FetchDescriptor<Workspace>())) ?? []
+            if !workspaces.isEmpty { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+
+        #expect(workspaces.count == 1)
+        #expect(workspaces.first?.primaryPath == workspaceFolder.path)
+        #expect(workspaces.first?.primaryPath != configURL.deletingLastPathComponent().path)
+    }
+
+    @Test("deleting workspace removes canonical and legacy generated mirrors")
+    @MainActor
+    func deletingWorkspaceRemovesCanonicalAndLegacyGeneratedMirrors() throws {
+        let root = URL(fileURLWithPath: "/tmp/astra_delete_legacy_mirror_\(UUID().uuidString)")
+        let workspaceFolder = root.appendingPathComponent("project")
+        try FileManager.default.createDirectory(at: workspaceFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let container = try makeWorkspacePersistenceContainer()
+        let context = container.mainContext
+        let workspace = try makeRichWorkspace(in: context, root: workspaceFolder.path)
+        let canonicalURL = URL(fileURLWithPath: WorkspaceFileLayout.workspaceConfigFile(for: workspaceFolder.path))
+        let legacyURL = URL(fileURLWithPath: WorkspaceFileLayout.legacyWorkspaceConfigFile(for: workspaceFolder.path))
+        try WorkspaceConfigManager.exportToFile(workspace: workspace, modelContext: context, url: canonicalURL)
+        try WorkspaceConfigManager.exportToFile(workspace: workspace, modelContext: context, url: legacyURL)
+
+        let coordinator = TaskLifecycleCoordinator(modelContext: context, taskQueue: TaskQueue())
+        _ = coordinator.deleteWorkspace(workspace, existingWorkspaces: [workspace])
+
+        #expect(!FileManager.default.fileExists(atPath: canonicalURL.path))
+        #expect(!FileManager.default.fileExists(atPath: legacyURL.path))
+
+        let recoveryContainer = try makeWorkspacePersistenceContainer()
+        let recoveryContext = recoveryContainer.mainContext
+        let importedCount = WorkspaceRecoveryService.recoverMissingWorkspaces(
+            modelContext: recoveryContext,
+            extraRoots: [root.path],
+            includeDefaultRoots: false
+        )
+        let recoveredWorkspaces = (try? recoveryContext.fetch(FetchDescriptor<Workspace>())) ?? []
+
+        #expect(importedCount == 0)
+        #expect(recoveredWorkspaces.isEmpty)
+    }
+
     @Test("automatic recovery skips privacy-sensitive user media folders")
     func recoverySkipsPrivacySensitiveUserMediaFolders() throws {
         let root = URL(fileURLWithPath: "/tmp/astra_recovery_privacy_\(UUID().uuidString)")
@@ -1038,7 +1459,389 @@ struct WorkspacePersistenceTests {
         let target = WorkspaceConfigManager.autoExportTarget(for: root.path)
 
         #expect(target.reason == "ready")
-        #expect(target.url?.path == root.appendingPathComponent(WorkspaceFileLayout.workspaceConfigFileName).path)
+        #expect(target.url?.path == root
+            .appendingPathComponent(WorkspaceFileLayout.supportDirectoryName, isDirectory: true)
+            .appendingPathComponent(WorkspaceFileLayout.workspaceConfigFileName)
+            .path)
+    }
+
+    @Test("workspace layout keeps generated mirror under ASTRA metadata")
+    func workspaceLayoutUsesSupportDirectoryForGeneratedMirror() {
+        let root = "/tmp/astra_layout_\(UUID().uuidString)"
+
+        #expect(
+            WorkspaceFileLayout.workspaceConfigFile(for: root)
+                == "\(root)/.astra/\(WorkspaceFileLayout.workspaceConfigFileName)"
+        )
+        #expect(WorkspaceFileLayout.legacyWorkspaceConfigFile(for: root) == "\(root)/\(WorkspaceFileLayout.workspaceConfigFileName)")
+    }
+
+    @Test("workspace import discovery accepts canonical support config before legacy root config")
+    func importDiscoveryPrefersSupportConfigAndKeepsLegacyRootCompatibility() throws {
+        let root = URL(fileURLWithPath: "/tmp/astra_import_discovery_\(UUID().uuidString)", isDirectory: true)
+        let support = root.appendingPathComponent(WorkspaceFileLayout.supportDirectoryName, isDirectory: true)
+        try FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let canonical = support.appendingPathComponent(WorkspaceFileLayout.workspaceConfigFileName)
+        let legacy = root.appendingPathComponent(WorkspaceFileLayout.workspaceConfigFileName)
+        try Data("{}".utf8).write(to: canonical)
+        try Data("{}".utf8).write(to: legacy)
+
+        let preferred = try #require(WorkspaceImportDiscovery.candidates(for: [root]).first)
+        #expect(preferred.folderURL.path == root.path)
+        #expect(preferred.configURL?.path == canonical.path)
+
+        try FileManager.default.removeItem(at: canonical)
+        let legacyCandidate = try #require(WorkspaceImportDiscovery.candidates(for: [root]).first)
+        #expect(legacyCandidate.folderURL.path == root.path)
+        #expect(legacyCandidate.configURL?.path == legacy.path)
+    }
+
+    @Test("workspace config file selection resolves support mirror to workspace root")
+    func supportMirrorSelectionResolvesWorkspaceRoot() throws {
+        let root = URL(fileURLWithPath: "/tmp/astra_config_selection_\(UUID().uuidString)", isDirectory: true)
+        let support = root.appendingPathComponent(WorkspaceFileLayout.supportDirectoryName, isDirectory: true)
+        try FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let canonical = support.appendingPathComponent(WorkspaceFileLayout.workspaceConfigFileName)
+        try Data("{}".utf8).write(to: canonical)
+
+        let candidate = try #require(WorkspaceImportDiscovery.candidates(for: [canonical]).first)
+        #expect(candidate.folderURL.path == root.path)
+        #expect(candidate.configURL?.path == canonical.path)
+    }
+
+    @Test("workspace generated state is excluded through local git info exclude")
+    func generatedWorkspaceStateIsExcludedFromGitCheckout() throws {
+        let root = URL(fileURLWithPath: "/tmp/astra_git_exclude_\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        #expect(try runGit(["init", "-q"], in: root) == 0)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let info = root.appendingPathComponent(".git/info", isDirectory: true)
+        let exclude = info.appendingPathComponent("exclude")
+        try "# user excludes\n".write(to: exclude, atomically: true, encoding: .utf8)
+
+        try WorkspaceGeneratedStateExcluder.ensureExcluded(workspacePath: root.path)
+        try WorkspaceGeneratedStateExcluder.ensureExcluded(workspacePath: root.path)
+
+        let contents = try String(contentsOf: exclude, encoding: .utf8)
+        #expect(contents.contains("# user excludes"))
+        #expect(contents.components(separatedBy: "/.astra/").count == 2)
+        #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent(".gitignore").path))
+
+        let rootGeneratedFile = root
+            .appendingPathComponent(".astra", isDirectory: true)
+            .appendingPathComponent("state.json")
+        let nestedGeneratedFile = root
+            .appendingPathComponent("nested", isDirectory: true)
+            .appendingPathComponent(".astra", isDirectory: true)
+            .appendingPathComponent("state.json")
+        try FileManager.default.createDirectory(at: rootGeneratedFile.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: nestedGeneratedFile.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("{}".utf8).write(to: rootGeneratedFile)
+        try Data("{}".utf8).write(to: nestedGeneratedFile)
+
+        #expect(try gitPathIsIgnored(".astra/state.json", in: root) == true)
+        #expect(try gitPathIsIgnored("nested/.astra/state.json", in: root) == false)
+    }
+
+    @Test("workspace generated state is excluded when workspace is nested in a git checkout")
+    func nestedWorkspaceGeneratedStateIsExcludedFromContainingGitCheckout() throws {
+        let root = URL(fileURLWithPath: "/tmp/astra_nested_git_exclude_\(UUID().uuidString)", isDirectory: true)
+        let workspace = root
+            .appendingPathComponent("packages", isDirectory: true)
+            .appendingPathComponent("project", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        #expect(try runGit(["init", "-q"], in: root) == 0)
+        try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let info = root.appendingPathComponent(".git/info", isDirectory: true)
+        let exclude = info.appendingPathComponent("exclude")
+        try "# user excludes\n".write(to: exclude, atomically: true, encoding: .utf8)
+
+        try WorkspaceGeneratedStateExcluder.ensureExcluded(workspacePath: workspace.path)
+        try WorkspaceGeneratedStateExcluder.ensureExcluded(workspacePath: workspace.path)
+
+        let contents = try String(contentsOf: exclude, encoding: .utf8)
+        #expect(contents.contains("# user excludes"))
+        #expect(contents.components(separatedBy: "/packages/project/.astra/").count == 2)
+        #expect(!contents.split(whereSeparator: \.isNewline).contains(".astra/"))
+        #expect(!FileManager.default.fileExists(atPath: workspace.appendingPathComponent(".gitignore").path))
+
+        let intendedFile = root
+            .appendingPathComponent("packages/project/.astra/state.json", isDirectory: false)
+        let siblingFile = root
+            .appendingPathComponent("packages/other/.astra/state.json", isDirectory: false)
+        let rootGeneratedFile = root
+            .appendingPathComponent(".astra/state.json", isDirectory: false)
+        try FileManager.default.createDirectory(at: intendedFile.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: siblingFile.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: rootGeneratedFile.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("{}".utf8).write(to: intendedFile)
+        try Data("{}".utf8).write(to: siblingFile)
+        try Data("{}".utf8).write(to: rootGeneratedFile)
+
+        #expect(try gitPathIsIgnored("packages/project/.astra/state.json", in: root) == true)
+        #expect(try gitPathIsIgnored("packages/other/.astra/state.json", in: root) == false)
+        #expect(try gitPathIsIgnored(".astra/state.json", in: root) == false)
+    }
+
+    @Test("nested workspace generated state escapes git ignore metacharacters")
+    func nestedWorkspaceGeneratedStateEscapesGitIgnorePatterns() throws {
+        let root = URL(fileURLWithPath: "/tmp/astra_nested_git_escape_\(UUID().uuidString)", isDirectory: true)
+        let info = root.appendingPathComponent(".git/info", isDirectory: true)
+        try FileManager.default.createDirectory(at: info, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let workspaces = [
+            ("#project", "/packages/\\#project/.astra/"),
+            ("!project", "/packages/\\!project/.astra/"),
+            ("project[1]", "/packages/project\\[1\\]/.astra/"),
+            ("project*?", "/packages/project\\*\\?/.astra/"),
+            (" spaced project ", "/packages/\\ spaced\\ project\\ /.astra/")
+        ]
+
+        for (name, _) in workspaces {
+            let workspace = root
+                .appendingPathComponent("packages", isDirectory: true)
+                .appendingPathComponent(name, isDirectory: true)
+            try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
+            try WorkspaceGeneratedStateExcluder.ensureExcluded(workspacePath: workspace.path)
+            try WorkspaceGeneratedStateExcluder.ensureExcluded(workspacePath: workspace.path)
+        }
+
+        let contents = try String(contentsOf: info.appendingPathComponent("exclude"), encoding: .utf8)
+        for (_, expectedPattern) in workspaces {
+            #expect(contents.components(separatedBy: expectedPattern).count == 2)
+        }
+    }
+
+    @Test("workspace mirror export bounds runs events and output")
+    @MainActor
+    func workspaceMirrorExportBoundsRunsEventsAndOutput() throws {
+        let container = try makeWorkspacePersistenceContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Bounded Mirror", primaryPath: "/tmp/astra_bounded_mirror_\(UUID().uuidString)")
+        context.insert(workspace)
+        let task = AgentTask(title: "Long history", goal: "Create lots of output", workspace: workspace)
+        context.insert(task)
+
+        for index in 0..<15 {
+            let run = TaskRun(task: task)
+            run.startedAt = Date(timeIntervalSince1970: TimeInterval(index))
+            run.output = String(repeating: "\(index)", count: 12_000)
+            context.insert(run)
+
+            let event = TaskEvent(
+                task: task,
+                type: "task.event.\(index)",
+                payload: String(repeating: "payload-\(index)", count: 2_000),
+                run: run
+            )
+            event.timestamp = Date(timeIntervalSince1970: TimeInterval(index))
+            context.insert(event)
+        }
+        try context.save()
+
+        let config = try #require(WorkspaceConfigManager.export(workspace: workspace, modelContext: context))
+        let mirroredTask = try #require(config.tasks?.first)
+        let firstRun = try #require(mirroredTask.runs.first)
+        let firstEvent = try #require(mirroredTask.events.first)
+
+        #expect(mirroredTask.runs.count == WorkspaceConfigManager.MirrorLimits.maxRunsPerTask)
+        #expect(mirroredTask.events.count == WorkspaceConfigManager.MirrorLimits.maxEventsPerTask)
+        #expect(firstRun.output.contains("[ASTRA mirror truncated"))
+        #expect(firstEvent.payload.contains("[ASTRA mirror truncated"))
+        #expect(firstRun.output.count <= WorkspaceConfigManager.MirrorLimits.maxRunOutputCharacters)
+        #expect(firstEvent.payload.count <= WorkspaceConfigManager.MirrorLimits.maxEventPayloadCharacters)
+        #expect(mirroredTask.runs.map(\.startedAt) == mirroredTask.runs.map(\.startedAt).sorted())
+        #expect(mirroredTask.events.map(\.timestamp) == mirroredTask.events.map(\.timestamp).sorted())
+    }
+
+    @Test("workspace mirror export breaks task run and event timestamp ties by UUID")
+    @MainActor
+    func workspaceMirrorExportBreaksTaskRunEventTimestampTiesByUUID() throws {
+        let container = try makeWorkspacePersistenceContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Tie Bounded Mirror", primaryPath: "/tmp/astra_tie_bounded_mirror_\(UUID().uuidString)")
+        context.insert(workspace)
+        let task = AgentTask(title: "Equal timestamps", goal: "Create tie keys", workspace: workspace)
+        context.insert(task)
+
+        let runIDs = (0..<11).map { UUID(uuidString: "00000000-0000-0000-0000-\(String(format: "%012d", $0))")! }
+        let eventIDs = (0..<11).map { UUID(uuidString: "10000000-0000-0000-0000-\(String(format: "%012d", $0))")! }
+        let sharedDate = Date(timeIntervalSince1970: 42)
+
+        for index in (0..<11).reversed() {
+            let run = TaskRun(task: task)
+            run.id = runIDs[index]
+            run.startedAt = sharedDate
+            context.insert(run)
+
+            let event = TaskEvent(
+                task: task,
+                type: "task.tie.\(index)",
+                payload: "{}",
+                run: run
+            )
+            event.id = eventIDs[index]
+            event.timestamp = sharedDate
+            context.insert(event)
+        }
+        try context.save()
+
+        let config = try #require(WorkspaceConfigManager.export(workspace: workspace, modelContext: context))
+        let mirroredTask = try #require(config.tasks?.first)
+        let expectedRunIDs = runIDs.suffix(WorkspaceConfigManager.MirrorLimits.maxRunsPerTask).map(\.uuidString)
+        let expectedEventIDs = eventIDs.suffix(WorkspaceConfigManager.MirrorLimits.maxEventsPerTask).map(\.uuidString)
+
+        #expect(mirroredTask.runs.map(\.id) == expectedRunIDs)
+        #expect(mirroredTask.events.map(\.id) == expectedEventIDs)
+    }
+
+    @Test("workspace mirror export bounds workspace app runs events and output")
+    @MainActor
+    func workspaceMirrorExportBoundsWorkspaceAppRunsEventsAndOutput() throws {
+        let container = try makeWorkspacePersistenceContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Bounded App Mirror", primaryPath: "/tmp/astra_bounded_app_mirror_\(UUID().uuidString)")
+        context.insert(workspace)
+        let app = WorkspaceApp(
+            workspaceID: workspace.id,
+            logicalID: "review-dashboard",
+            name: "Review Dashboard",
+            icon: "chart.bar",
+            appDescription: "Tracks review status",
+            lifecycleStatus: .published,
+            permissionMode: .approvalRequired,
+            dependencyStatus: .ready,
+            manifestRelativePath: ".astra/apps/review-dashboard/manifest.json",
+            appDirectoryRelativePath: ".astra/apps/review-dashboard",
+            manifestDigest: "digest-current"
+        )
+        context.insert(app)
+
+        for index in 0..<15 {
+            let run = WorkspaceAppRun(
+                workspaceID: workspace.id,
+                appID: app.id,
+                appLogicalID: app.logicalID,
+                actionID: "refresh-\(index)",
+                trigger: .automation,
+                status: .completed,
+                startedAt: Date(timeIntervalSince1970: TimeInterval(index)),
+                inputSummary: "Refresh PR data",
+                outputSummary: String(repeating: "summary-\(index)", count: 2_000),
+                errorMessage: nil
+            )
+            context.insert(run)
+
+            let event = WorkspaceAppRunEvent(
+                runID: run.id,
+                workspaceID: workspace.id,
+                appID: app.id,
+                actionID: run.actionID,
+                type: "workspace_app.run.event.\(index)",
+                payload: String(repeating: "payload-\(index)", count: 2_000),
+                timestamp: Date(timeIntervalSince1970: TimeInterval(index))
+            )
+            context.insert(event)
+        }
+        try context.save()
+
+        let config = try #require(WorkspaceConfigManager.export(workspace: workspace, modelContext: context))
+        let mirroredRuns = try #require(config.workspaceAppRuns)
+        let mirroredEvents = try #require(config.workspaceAppRunEvents)
+        let firstRun = try #require(mirroredRuns.first)
+        let firstEvent = try #require(mirroredEvents.first)
+
+        #expect(mirroredRuns.count == WorkspaceConfigManager.MirrorLimits.maxWorkspaceAppRuns)
+        #expect(mirroredEvents.count == WorkspaceConfigManager.MirrorLimits.maxWorkspaceAppRunEvents)
+        #expect(firstRun.outputSummary.contains("[ASTRA mirror truncated"))
+        #expect(firstEvent.payload.contains("[ASTRA mirror truncated"))
+        #expect(firstRun.outputSummary.count <= WorkspaceConfigManager.MirrorLimits.maxWorkspaceAppRunOutputCharacters)
+        #expect(firstEvent.payload.count <= WorkspaceConfigManager.MirrorLimits.maxWorkspaceAppRunEventPayloadCharacters)
+        #expect(mirroredRuns.map(\.startedAt) == mirroredRuns.map(\.startedAt).sorted())
+        #expect(mirroredEvents.map(\.timestamp) == mirroredEvents.map(\.timestamp).sorted())
+        #expect(mirroredRuns.first?.actionID == "refresh-5")
+        #expect(mirroredEvents.first?.type == "workspace_app.run.event.5")
+    }
+
+    @Test("workspace mirror export keeps workspace app run event references closed")
+    @MainActor
+    func workspaceMirrorExportKeepsWorkspaceAppRunEventReferencesClosed() throws {
+        let container = try makeWorkspacePersistenceContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Closed App Mirror", primaryPath: "/tmp/astra_closed_app_mirror_\(UUID().uuidString)")
+        context.insert(workspace)
+        let app = WorkspaceApp(
+            workspaceID: workspace.id,
+            logicalID: "review-dashboard",
+            name: "Review Dashboard",
+            icon: "chart.bar",
+            appDescription: "Tracks review status",
+            lifecycleStatus: .published,
+            permissionMode: .approvalRequired,
+            dependencyStatus: .ready,
+            manifestRelativePath: ".astra/apps/review-dashboard/manifest.json",
+            appDirectoryRelativePath: ".astra/apps/review-dashboard",
+            manifestDigest: "digest-current"
+        )
+        context.insert(app)
+
+        var runs: [WorkspaceAppRun] = []
+        for index in 0..<11 {
+            let run = WorkspaceAppRun(
+                workspaceID: workspace.id,
+                appID: app.id,
+                appLogicalID: app.logicalID,
+                actionID: "refresh-\(index)",
+                trigger: .automation,
+                status: .completed,
+                startedAt: Date(timeIntervalSince1970: TimeInterval(index)),
+                inputSummary: "Refresh PR data",
+                outputSummary: "Done",
+                errorMessage: nil
+            )
+            runs.append(run)
+            context.insert(run)
+
+            if index > 0 {
+                context.insert(WorkspaceAppRunEvent(
+                    runID: run.id,
+                    workspaceID: workspace.id,
+                    appID: app.id,
+                    actionID: run.actionID,
+                    type: "workspace_app.run.event.\(index)",
+                    payload: "{}",
+                    timestamp: Date(timeIntervalSince1970: TimeInterval(index))
+                ))
+            }
+        }
+
+        context.insert(WorkspaceAppRunEvent(
+            runID: runs[0].id,
+            workspaceID: workspace.id,
+            appID: app.id,
+            actionID: runs[0].actionID,
+            type: "workspace_app.run.event.omitted_parent",
+            payload: "{}",
+            timestamp: Date(timeIntervalSince1970: 100)
+        ))
+        try context.save()
+
+        let config = try #require(WorkspaceConfigManager.export(workspace: workspace, modelContext: context))
+        let mirroredRuns = try #require(config.workspaceAppRuns)
+        let mirroredEvents = try #require(config.workspaceAppRunEvents)
+        let exportedRunIDs = Set(mirroredRuns.compactMap(\.id))
+
+        #expect(mirroredRuns.map(\.actionID) == (1..<11).map { "refresh-\($0)" })
+        #expect(mirroredEvents.allSatisfy { exportedRunIDs.contains($0.runID) })
+        #expect(!mirroredEvents.contains { $0.type == "workspace_app.run.event.omitted_parent" })
     }
 
     @Test("workspace export result reports write diagnostics")
@@ -1510,6 +2313,44 @@ struct WorkspacePersistenceTests {
         #expect(SSHConnectionManager.hasStoredConnections(workspacePath: root.path) == true)
     }
 
+    @Test("SSH connection save writes canonical file atomically")
+    func sshConnectionSaveWritesCanonicalFileAtomically() throws {
+        let root = URL(fileURLWithPath: "/tmp/astra_ssh_atomic_\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let connection = SSHConnection(name: "atomic", host: "example.test", user: "agent")
+        SSHConnectionManager.save([connection], workspacePath: root.path)
+
+        let canonical = URL(fileURLWithPath: WorkspaceFileLayout.sshConnectionsFile(for: root.path))
+        let data = try Data(contentsOf: canonical)
+        let decoded = try JSONDecoder().decode([SSHConnection].self, from: data)
+
+        #expect(decoded.first?.id == connection.id)
+        #expect(SSHConnectionManager.load(workspacePath: root.path).first?.id == connection.id)
+    }
+
+    @Test("SSH connection save preserves existing file when replacement fails")
+    func sshConnectionSavePreservesExistingFileWhenReplacementFails() throws {
+        let root = URL(fileURLWithPath: "/tmp/astra_ssh_atomic_fail_\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let original = SSHConnection(name: "original", host: "old.example.test", user: "agent")
+        let replacement = SSHConnection(name: "replacement", host: "new.example.test", user: "agent")
+        SSHConnectionManager.save([original], workspacePath: root.path)
+
+        SSHConnectionManager.save(
+            [replacement],
+            workspacePath: root.path,
+            fileWriter: ThrowingSSHConnectionFileWriter()
+        )
+
+        let loaded = SSHConnectionManager.load(workspacePath: root.path)
+        #expect(loaded.first?.id == original.id)
+        #expect(loaded.first?.host == "old.example.test")
+    }
+
     @Test("SSH connection presence recognizes legacy files without migrating them")
     func sshConnectionPresenceRecognizesLegacyFilesWithoutMigratingThem() throws {
         let root = URL(fileURLWithPath: "/tmp/astra_ssh_presence_legacy_\(UUID().uuidString)")
@@ -1593,5 +2434,11 @@ struct WorkspacePersistenceTests {
         #expect(sourceTask.events.contains { $0.type == "user.message" && $0.payload.contains("Routine run: Reply Monitor") })
         #expect(sourceTask.events.contains { $0.type == "user.message" && $0.payload.contains("Watch reply activity") })
         #expect(sourceTask.events.contains { $0.type == "user.message" && $0.payload.contains("/tmp/reply-context") })
+    }
+}
+
+private struct ThrowingSSHConnectionFileWriter: SSHConnectionFileWriting {
+    func writeAtomically(_: Data, to _: URL) throws {
+        throw CocoaError(.fileWriteUnknown)
     }
 }

@@ -107,7 +107,7 @@ enum SessionScanner {
                 model: session.model ?? TaskExecutionDefaults.model,
                 runtime: .claudeCode
             )
-            task.status = .completed
+            TaskStateMachine.completeFromSessionRecovery(task, modelContext: modelContext, at: session.lastActivity)
             task.isDone = true
             task.tokensUsed = session.totalTokens
             task.sessionId = session.sessionId

@@ -224,13 +224,21 @@ public enum CopilotStreamEventParser {
             return .result(text: summary, costUSD: nil, totalInputTokens: 0, totalOutputTokens: 0, durationMs: nil, numTurns: nil, isError: false)
         case .failed(let message):
             return .result(text: message, costUSD: nil, totalInputTokens: 0, totalOutputTokens: 0, durationMs: nil, numTurns: nil, isError: true)
-        case .fileChange(let path, let kind, let summary):
+        case .fileChange(let path, let kind, let summary, let oldString, let newString):
             let toolName = kind.lowercased().contains("write") ? "Write" : "Edit"
             var input: [String: Any] = ["file_path": path]
             if let summary, !summary.isEmpty {
                 input["summary"] = summary
             }
+            if let oldString {
+                input["old_string"] = oldString
+            }
+            if let newString {
+                input["new_string"] = newString
+            }
             return .toolUse(name: toolName, id: "", input: input)
+        case .teamEvent:
+            return nil
         case .unknown:
             return nil
         }

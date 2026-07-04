@@ -117,6 +117,28 @@ struct CapabilityApprovalStore {
             }
     }
 
+    func revisionFingerprint() -> String {
+        let hostFileAccess = HostFileAccessBroker(fileManager: fileManager)
+        let accessIntent = HostFileAccessIntent.astraManagedStorage(root: directory)
+        guard let files = try? hostFileAccess.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: [.contentModificationDateKey],
+            intent: accessIntent
+        ) else {
+            return "\(directory.path)|0|0"
+        }
+
+        var jsonFileCount = 0
+        var latestModificationTime: TimeInterval = 0
+        for url in files where url.pathExtension == "json" {
+            jsonFileCount += 1
+            let modificationDate = (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
+                ?? .distantPast
+            latestModificationTime = max(latestModificationTime, modificationDate.timeIntervalSince1970)
+        }
+        return "\(directory.path)|\(jsonFileCount)|\(latestModificationTime)"
+    }
+
     func record(for package: PluginPackage) -> CapabilityApprovalRecord? {
         guard let digest = try? CapabilityApprovalDigest.digest(for: package) else { return nil }
         return records().last {
