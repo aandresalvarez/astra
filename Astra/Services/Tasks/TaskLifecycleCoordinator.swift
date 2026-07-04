@@ -583,6 +583,12 @@ final class TaskLifecycleCoordinator {
                     // made replaceWorkspaceAppMirrorRows(for: workspace.id...)
                     // delete and re-tag `existing`'s own Workspace App rows.
                     dupConfig.id = nil
+                    // Same reasoning, one level down: the exported
+                    // WorkspaceApp/Run/RunEvent/DependencyBinding/AutomationState
+                    // rows still carry their original appID/runID, which would
+                    // let e.g. WorkspaceAppService.deleteApp on the duplicate's
+                    // copy affect the original's rows too.
+                    dupConfig = WorkspaceConfigManager.remappingWorkspaceAppIdentities(in: dupConfig)
                     if (dupConfig.tasks ?? []).isEmpty && !existing.tasks.isEmpty {
                         if let freshExport = WorkspaceConfigManager.export(workspace: existing, modelContext: modelContext) {
                             dupConfig.tasks = freshExport.tasks

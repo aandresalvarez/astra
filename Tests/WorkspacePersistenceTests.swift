@@ -486,6 +486,20 @@ struct WorkspacePersistenceTests {
             sourcePackageDigest: "pack-digest"
         )
         context.insert(app)
+
+        let appRun = WorkspaceAppRun(
+            workspaceID: existing.id,
+            appID: app.id,
+            appLogicalID: app.logicalID,
+            actionID: "refresh",
+            trigger: .automation,
+            status: .completed,
+            startedAt: Date(timeIntervalSince1970: 1_710_000_000),
+            inputSummary: "Refresh PR data",
+            outputSummary: "Done",
+            errorMessage: nil
+        )
+        context.insert(appRun)
         try context.save()
 
         let config = try #require(WorkspaceConfigManager.export(workspace: existing, modelContext: context))
@@ -514,6 +528,28 @@ struct WorkspacePersistenceTests {
         ))
         #expect(originalAppRows.count == 1)
         #expect(originalAppRows.first?.logicalID == "review-dashboard")
+
+        let duplicateWorkspaceID = duplicate.id
+        let duplicateAppRows = try context.fetch(FetchDescriptor<WorkspaceApp>(
+            predicate: #Predicate { $0.workspaceID == duplicateWorkspaceID }
+        ))
+        #expect(duplicateAppRows.count == 1)
+        let duplicateApp = try #require(duplicateAppRows.first)
+        // The duplicate's app must not share a primary key with the
+        // original's — WorkspaceAppService.deleteApp and friends operate by
+        // appID alone, so a shared id would let deleting one affect both.
+        #expect(duplicateApp.id != app.id)
+
+        let duplicateAppID = duplicateApp.id
+        let duplicateRunRows = try context.fetch(FetchDescriptor<WorkspaceAppRun>(
+            predicate: #Predicate { $0.workspaceID == duplicateWorkspaceID }
+        ))
+        #expect(duplicateRunRows.count == 1)
+        let duplicateRun = try #require(duplicateRunRows.first)
+        #expect(duplicateRun.id != appRun.id)
+        // The duplicated run's appID cross-reference must follow the
+        // remapping, not point back at the original's app.
+        #expect(duplicateRun.appID == duplicateAppID)
     }
 
     @Test("legacy task configs without done state import as not done")

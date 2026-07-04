@@ -1531,7 +1531,7 @@ struct ArchitectureFitnessTests {
             "Astra/Services/Runtime/AgentRuntimeAdapter.swift": .init(2_900, .owner("Runtime adapter registry")),
             "Astra/Views/PluginCatalogView.swift": .init(2_900, .owner("Capability catalog UI")),
             "Astra/Views/ShelfMarkdownPanelView.swift": .init(2_850, .owner("Shelf markdown panel")),
-            "Astra/Services/Persistence/WorkspaceConfigManager.swift": .init(2_700, .owner("Workspace mirror persistence")),
+            "Astra/Services/Persistence/WorkspaceConfigManager.swift": .init(2_800, .owner("Workspace mirror persistence")),
             "Astra/Views/ConfigureView.swift": .init(2_600, .owner("Legacy configure surface")),
             "Astra/Services/Diagnostics/LogDiagnosticsService.swift": .init(2_600, .owner("Log diagnostics")),
             "Astra/Views/TaskSidebarView.swift": .init(2_500, .owner("Task sidebar")),

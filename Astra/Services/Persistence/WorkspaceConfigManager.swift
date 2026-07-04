@@ -2156,6 +2156,70 @@ enum WorkspaceConfigManager {
         }
     }
 
+    /// Generates fresh ids for every WorkspaceApp/Run/RunEvent/DependencyBinding/
+    /// AutomationState in `config` and rewrites every `appID`/`runID`
+    /// cross-reference to match. A duplicated workspace must not share these
+    /// primary keys with the workspace it was exported from — code such as
+    /// `WorkspaceAppService.deleteApp` operates by `appID` alone across runs,
+    /// bindings, automation, and events, so a shared id lets an operation on
+    /// one copy affect the other.
+    static func remappingWorkspaceAppIdentities(in config: WorkspaceConfig) -> WorkspaceConfig {
+        var config = config
+        var appIDRemap: [String: String] = [:]
+        var runIDRemap: [String: String] = [:]
+
+        config.workspaceApps = config.workspaceApps?.map { app in
+            var app = app
+            if let oldID = app.id {
+                let newID = UUID().uuidString
+                appIDRemap[oldID] = newID
+                app.id = newID
+            }
+            return app
+        }
+
+        config.workspaceAppRuns = config.workspaceAppRuns?.map { run in
+            var run = run
+            if let oldID = run.id {
+                let newID = UUID().uuidString
+                runIDRemap[oldID] = newID
+                run.id = newID
+            }
+            run.appID = appIDRemap[run.appID] ?? run.appID
+            return run
+        }
+
+        config.workspaceAppRunEvents = config.workspaceAppRunEvents?.map { event in
+            var event = event
+            if event.id != nil {
+                event.id = UUID().uuidString
+            }
+            event.runID = runIDRemap[event.runID] ?? event.runID
+            event.appID = appIDRemap[event.appID] ?? event.appID
+            return event
+        }
+
+        config.workspaceAppDependencyBindings = config.workspaceAppDependencyBindings?.map { binding in
+            var binding = binding
+            if binding.id != nil {
+                binding.id = UUID().uuidString
+            }
+            binding.appID = appIDRemap[binding.appID] ?? binding.appID
+            return binding
+        }
+
+        config.workspaceAppAutomationStates = config.workspaceAppAutomationStates?.map { state in
+            var state = state
+            if state.id != nil {
+                state.id = UUID().uuidString
+            }
+            state.appID = appIDRemap[state.appID] ?? state.appID
+            return state
+        }
+
+        return config
+    }
+
     private static func importWorkspaceApps(_ configs: [WorkspaceAppConfig], workspaceID: UUID, modelContext: ModelContext) {
         for config in configs {
             let app = WorkspaceApp(
