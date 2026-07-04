@@ -33,7 +33,7 @@ struct WorkspaceAppVersionServiceTests {
             app.manifestDigest = WorkspaceAppService.digest(for: data)
             return try service.recordPublish(
                 app: app, manifestData: data, validated: validated,
-                workspacePath: workspace.primaryPath, modelContext: context,
+                in: workspace, modelContext: context,
                 now: Date(timeIntervalSince1970: seconds)
             )
         }

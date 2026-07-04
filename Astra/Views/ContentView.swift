@@ -787,7 +787,7 @@ struct ContentView: View {
         workspaceAppStudioSession.cancelGeneration()
         do {
             let publishedData = try WorkspaceAppService.encodeManifest(result.manifest)
-            try WorkspaceAppVersionService().recordPublish(app: result.app, manifestData: publishedData, validated: true, workspacePath: target.primaryPath, modelContext: modelContext)
+            try WorkspaceAppVersionService().recordPublish(app: result.app, manifestData: publishedData, validated: true, in: target, modelContext: modelContext)
         } catch { AppLogger.error("Workspace app published but version snapshot failed: \(error)", category: "WorkspaceApps") }
         if seedSampleData, isNewApp { WorkspaceAppSampleSeeder.seed(manifest: result.manifest, workspacePath: target.primaryPath, appID: result.app.logicalID) }
         setSelectedWorkspaceApp(result.app)

@@ -75,7 +75,14 @@ struct WorkspaceAppRunResumptionService {
                 run.status = .failed
                 run.completedAt = Date()
                 run.errorMessage = barrierFailureMessage(barrier: barrier, tasks: tasks)
-                try? modelContext.save()
+                // Immediate best-effort durable save (matches the prior `try? save()`):
+                // the failed status must stick, or the next sweep would re-evaluate this
+                // run's barrier forever. The coordinator also refreshes the workspace
+                // mirror, which carries run state.
+                WorkspacePersistenceCoordinator.saveAndAutoExport(
+                    workspace: workspace(id: run.workspaceID, modelContext: modelContext),
+                    modelContext: modelContext
+                )
                 continue
             }
             guard let workspace = workspace(id: run.workspaceID, modelContext: modelContext),
