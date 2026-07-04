@@ -5058,7 +5058,8 @@ struct TaskMainView: View {
                 messageText.append("\n")
                 return nil
             }
-            if event.modifierFlags.contains(.command),
+            if isComposerFocused,
+               event.modifierFlags.contains(.command),
                event.charactersIgnoringModifiers == "v" {
                 if smartPaste() { return nil }
             }
