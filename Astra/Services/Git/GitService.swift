@@ -560,6 +560,41 @@ private final class GitProcessState: @unchecked Sendable {
     }
 }
 
+/// Environment variables git uses to scope an invocation to one specific
+/// repository (the set `git rev-parse --local-env-vars` reports). Git exports
+/// these to every hook and child process, so a `git`/shell subprocess spawned
+/// from inside a hook (or from a process descended from one, e.g. `swift test`
+/// launched by `script/prepush.sh`) silently inherits them. Any caller that
+/// targets a directory via an explicit path (`-C repoPath`, `currentDirectoryURL`)
+/// rather than relying on git's own discovery must strip these first, or an
+/// inherited `GIT_DIR` overrides that path and redirects the child at whatever
+/// repository the ambient environment points to instead — e.g. `git init --bare`
+/// in a disposable test fixture silently reinitializing the real shared repo as
+/// bare (`core.bare = true`), corrupting `.git/config` for every worktree.
+enum GitLocalEnvironment {
+    static let variableNames: Set<String> = [
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_CONFIG",
+        "GIT_CONFIG_PARAMETERS",
+        "GIT_CONFIG_COUNT",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_IMPLICIT_WORK_TREE",
+        "GIT_GRAFT_FILE",
+        "GIT_INDEX_FILE",
+        "GIT_NO_REPLACE_OBJECTS",
+        "GIT_REPLACE_REF_BASE",
+        "GIT_PREFIX",
+        "GIT_SHALLOW_FILE",
+        "GIT_COMMON_DIR"
+    ]
+
+    static func scrubbing(_ environment: [String: String]) -> [String: String] {
+        environment.filter { !variableNames.contains($0.key) }
+    }
+}
+
 class GitService: GitRepositoryOperating {
     static let shared = GitService()
 
@@ -684,8 +719,13 @@ class GitService: GitRepositoryOperating {
     ///
     /// Disables terminal prompts, pagers, and optional index locks so git can
     /// never block waiting for a controlling terminal that a GUI process lacks.
+    /// Also strips `GitLocalEnvironment` repo-scoping variables inherited from
+    /// the ambient process environment: if ASTRA (or its dev tooling) is ever
+    /// launched from a context that has `GIT_DIR`/`GIT_WORK_TREE` etc. set
+    /// (e.g. from inside a git hook), every git subprocess must still resolve
+    /// against the `-C repoPath` we pass explicitly, not that leaked scope.
     private static func gitEnvironment() -> [String: String] {
-        var environment = ProcessInfo.processInfo.environment
+        var environment = GitLocalEnvironment.scrubbing(ProcessInfo.processInfo.environment)
         environment["GIT_TERMINAL_PROMPT"] = "0"
         environment["GIT_PAGER"] = "cat"
         environment["GIT_OPTIONAL_LOCKS"] = "0"
