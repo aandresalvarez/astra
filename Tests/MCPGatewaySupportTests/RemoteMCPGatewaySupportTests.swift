@@ -327,6 +327,26 @@ struct RemoteMCPGatewaySupportTests {
 
         #expect(token == "process-token")
     }
+
+    @Test("Gateway surfaces remote tool discovery failures as JSON-RPC errors instead of an empty tool list")
+    func gatewayPropagatesToolDiscoveryFailure() throws {
+        let descriptor = RemoteMCPServerDescriptor(
+            id: "google_drive",
+            displayName: "Google Drive",
+            transport: .http,
+            endpoint: URL(string: "https://mcp.example.test/google")!,
+            connectorBindings: ["google-workspace"]
+        )
+        let remote = FailingRemoteMCPClient()
+        let gateway = LocalMCPGateway(server: descriptor, remoteClient: remote)
+
+        let response = try parseJSON(try #require(gateway.handleLine(#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#)))
+        #expect(response["result"] == nil)
+        let error = try #require(response["error"] as? [String: Any])
+        #expect(error["code"] as? Int == -32000)
+        let message = try #require(error["message"] as? String)
+        #expect(message.contains("remote MCP server unreachable"))
+    }
 }
 
 private func googleDriveDescriptor() -> RemoteMCPServerDescriptor {
@@ -382,6 +402,28 @@ private final class RecordingRemoteMCPClient: RemoteMCPClient {
             authHeaders.append(header)
         }
         return RemoteMCPToolResult(text: "remote result for \(arguments["query"] as? String ?? "")", isError: false)
+    }
+}
+
+private struct RemoteMCPClientUnreachableError: Error, LocalizedError {
+    var errorDescription: String? { "remote MCP server unreachable" }
+}
+
+private final class FailingRemoteMCPClient: RemoteMCPClient {
+    func listTools(
+        for server: RemoteMCPServerDescriptor,
+        auth: MCPGatewayAuthContext
+    ) throws -> [[String: Any]] {
+        throw RemoteMCPClientUnreachableError()
+    }
+
+    func callTool(
+        _ name: String,
+        arguments: [String: Any],
+        for server: RemoteMCPServerDescriptor,
+        auth: MCPGatewayAuthContext
+    ) throws -> RemoteMCPToolResult {
+        throw RemoteMCPClientUnreachableError()
     }
 }
 

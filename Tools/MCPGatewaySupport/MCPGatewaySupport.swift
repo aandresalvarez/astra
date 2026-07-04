@@ -281,7 +281,7 @@ public final class LocalMCPGateway {
     private lazy var mcpServer = MCPServer(
         name: "astra-mcp-gateway",
         tools: { [weak self] in
-            self?.listPolicyFilteredTools() ?? []
+            try self?.listPolicyFilteredTools() ?? []
         },
         handleToolCall: { [weak self] call in
             self?.handleToolCall(call) ?? .error(code: -32000, message: "MCP gateway is unavailable")
@@ -308,10 +308,8 @@ public final class LocalMCPGateway {
         mcpServer.handleLine(line)
     }
 
-    private func listPolicyFilteredTools() -> [[String: Any]] {
-        guard let tools = try? remoteClient.listTools(for: server, auth: authContext()) else {
-            return []
-        }
+    private func listPolicyFilteredTools() throws -> [[String: Any]] {
+        let tools = try remoteClient.listTools(for: server, auth: authContext())
         return toolPolicy.filterTools(tools)
     }
 

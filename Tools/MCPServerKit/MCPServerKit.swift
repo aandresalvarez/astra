@@ -26,7 +26,7 @@ public final class MCPServer {
     private let name: String
     private let version: String
     private let protocolVersion: String
-    private let tools: () -> [[String: Any]]
+    private let tools: () throws -> [[String: Any]]
     private let diagnostics: (MCPServerDiagnostic) -> Void
     private let handleToolCall: (MCPToolCall) -> MCPServerReply
 
@@ -34,7 +34,7 @@ public final class MCPServer {
         name: String,
         version: String = "1.0.0",
         protocolVersion: String = "2025-03-26",
-        tools: @escaping () -> [[String: Any]],
+        tools: @escaping () throws -> [[String: Any]],
         diagnostics: @escaping (MCPServerDiagnostic) -> Void = { _ in },
         handleToolCall: @escaping (MCPToolCall) -> MCPServerReply
     ) {
@@ -70,7 +70,11 @@ public final class MCPServer {
                 "serverInfo": ["name": name, "version": version]
             ])
         case "tools/list":
-            return encodeResult(id: id, result: ["tools": tools()])
+            do {
+                return encodeResult(id: id, result: ["tools": try tools()])
+            } catch {
+                return encodeError(id: id, code: -32000, message: "Tool discovery failed: \(error.localizedDescription)")
+            }
         case "tools/call":
             return handleToolRequest(id: id, object: object)
         default:
