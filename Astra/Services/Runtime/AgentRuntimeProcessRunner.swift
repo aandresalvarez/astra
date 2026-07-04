@@ -621,37 +621,37 @@ final class AgentRuntimeProcessRunner {
                 }
             }
 
+            // A pipe read chunk boundary is an arbitrary byte count, not a
+            // UTF-8 character boundary — a multi-byte scalar can span two
+            // reads. A strict decode of one chunk in isolation would then
+            // fail and drop that whole chunk's output. Decode lossily
+            // instead: a split character becomes a single U+FFFD in the rare
+            // case it straddles a chunk boundary, but every other byte
+            // survives instead of the entire chunk being discarded.
             process.stdoutFileHandle.readabilityHandler = { handle in
                 let data = handle.availableData
-                guard !data.isEmpty,
-                      let chunk = String(data: data, encoding: .utf8) else { return }
-
+                guard !data.isEmpty else { return }
+                let chunk = String(decoding: data, as: UTF8.self)
                 lineBuffer.appendAndProcessLines(chunk, handleLine)
             }
 
             process.stderrFileHandle.readabilityHandler = { handle in
                 let data = handle.availableData
                 guard !data.isEmpty else { return }
-                if let string = String(data: data, encoding: .utf8) {
-                    errorOutput.append(string)
-                }
+                errorOutput.append(String(decoding: data, as: UTF8.self))
             }
 
             process.terminationHandler = { proc in
                 InFlightPermissionCenter.shared.failAll(taskID: taskID)
                 proc.stdoutFileHandle.readabilityHandler = nil
                 proc.stderrFileHandle.readabilityHandler = nil
-                if let chunk = String(
-                    data: proc.stdoutFileHandle.readDataToEndOfFile(),
-                    encoding: .utf8
-                ), !chunk.isEmpty {
-                    lineBuffer.appendAndProcessLines(chunk, handleLine)
+                let finalStdoutChunk = String(decoding: proc.stdoutFileHandle.readDataToEndOfFile(), as: UTF8.self)
+                if !finalStdoutChunk.isEmpty {
+                    lineBuffer.appendAndProcessLines(finalStdoutChunk, handleLine)
                 }
-                if let string = String(
-                    data: proc.stderrFileHandle.readDataToEndOfFile(),
-                    encoding: .utf8
-                ), !string.isEmpty {
-                    errorOutput.append(string)
+                let finalStderrChunk = String(decoding: proc.stderrFileHandle.readDataToEndOfFile(), as: UTF8.self)
+                if !finalStderrChunk.isEmpty {
+                    errorOutput.append(finalStderrChunk)
                 }
                 handleLine(lineBuffer.drainRemaining())
                 for filtered in eventPipeline.flushParsedEvents() {
@@ -766,10 +766,17 @@ final class AgentRuntimeProcessRunner {
                     continuation.resume(returning: result)
                 }
 
+                // A pipe read chunk boundary is an arbitrary byte count, not a
+                // UTF-8 character boundary — a multi-byte scalar can span two
+                // reads. A strict decode of one chunk in isolation would then
+                // fail and drop that whole chunk's output. Decode lossily
+                // instead: a split character becomes a single U+FFFD in the
+                // rare case it straddles a chunk boundary, but every other
+                // byte survives instead of the entire chunk being discarded.
                 process.stdoutFileHandle.readabilityHandler = { handle in
                     let data = handle.availableData
-                    guard !data.isEmpty,
-                          let chunk = String(data: data, encoding: .utf8) else { return }
+                    guard !data.isEmpty else { return }
+                    let chunk = String(decoding: data, as: UTF8.self)
                     if let result = handleStdout(chunk) {
                         finish(result, true)
                     }
@@ -777,8 +784,8 @@ final class AgentRuntimeProcessRunner {
 
                 process.stderrFileHandle.readabilityHandler = { handle in
                     let data = handle.availableData
-                    guard !data.isEmpty,
-                          let chunk = String(data: data, encoding: .utf8) else { return }
+                    guard !data.isEmpty else { return }
+                    let chunk = String(decoding: data, as: UTF8.self)
                     stderrBuffer.append(chunk)
                     stderrChunkHandler?(chunk)
                 }
@@ -786,10 +793,8 @@ final class AgentRuntimeProcessRunner {
                 process.terminationHandler = { proc in
                     proc.stdoutFileHandle.readabilityHandler = nil
                     proc.stderrFileHandle.readabilityHandler = nil
-                    if let chunk = String(
-                        data: proc.stdoutFileHandle.readDataToEndOfFile(),
-                        encoding: .utf8
-                    ), !chunk.isEmpty, let result = handleStdout(chunk) {
+                    let finalStdoutChunk = String(decoding: proc.stdoutFileHandle.readDataToEndOfFile(), as: UTF8.self)
+                    if !finalStdoutChunk.isEmpty, let result = handleStdout(finalStdoutChunk) {
                         finish(result, false)
                         return
                     }
@@ -797,12 +802,10 @@ final class AgentRuntimeProcessRunner {
                         finish(result, false)
                         return
                     }
-                    if let chunk = String(
-                        data: proc.stderrFileHandle.readDataToEndOfFile(),
-                        encoding: .utf8
-                    ), !chunk.isEmpty {
-                        stderrBuffer.append(chunk)
-                        stderrChunkHandler?(chunk)
+                    let finalStderrChunk = String(decoding: proc.stderrFileHandle.readDataToEndOfFile(), as: UTF8.self)
+                    if !finalStderrChunk.isEmpty {
+                        stderrBuffer.append(finalStderrChunk)
+                        stderrChunkHandler?(finalStderrChunk)
                     }
                     let result = completion(
                         Int(proc.terminationStatus),
