@@ -388,6 +388,7 @@ struct GitStatusParsingTests {
         process.executableURL = URL(fileURLWithPath: "/bin/sh")
         process.arguments = ["-c", command]
         process.currentDirectoryURL = URL(fileURLWithPath: directory)
+        process.environment = GitLocalEnvironment.scrubbing(ProcessInfo.processInfo.environment)
         process.standardOutput = Pipe()
         process.standardError = Pipe()
         do {
