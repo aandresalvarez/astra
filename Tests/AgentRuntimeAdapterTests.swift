@@ -2092,6 +2092,21 @@ struct AgentRuntimeAdapterTests {
         #expect(AgentRuntimeAdapterRegistry.adapter(for: .copilotCLI).sharedLaunchStateKey(context: context) == nil)
     }
 
+    // Regression: a model edit made while queued on the shared-state gate must still land in the plan.
+    @MainActor
+    @Test("Antigravity launch plan reflects a model edit made after context construction")
+    func antigravityLaunchPlanReflectsModelEditAfterContextConstruction() {
+        let workspace = Workspace(name: "Gate Staleness", primaryPath: "/tmp/astra-antigravity-gate")
+        let task = AgentTask(title: "Antigravity", goal: "Say hi", workspace: workspace, model: "Gemini 3.5 Flash", runtime: .antigravityCLI)
+        let context = AgentRuntimeProcessLaunchContext(
+            prompt: "hello", task: task, workspacePath: workspace.primaryPath, executablePath: "/bin/agy",
+            providerHomeDirectory: "/tmp/astra-antigravity-home", permissionPolicy: .restricted,
+            executionPolicy: .default, permissionManifest: nil, timeoutSeconds: 30)
+        task.model = "Gemini 3.5 Pro" // edit while "queued" on the shared-state gate
+        let plan = AgentRuntimeAdapterRegistry.adapter(for: .antigravityCLI).makeProcessLaunchPlan(context: context)
+        #expect(plan.commandPlannedFields["model"] == "Gemini 3.5 Pro")
+    }
+
     @Test("Claude Docker workspace mode routes native shell through ASTRA MCP helper")
     @MainActor
     func claudeDockerWorkspaceModeRoutesNativeShellThroughAstraMCPHelper() throws {

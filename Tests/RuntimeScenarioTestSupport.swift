@@ -87,7 +87,10 @@ enum DirectWorkerLaunchAdmission {
     }
 }
 
-private extension ProviderSettingsSnapshot {
+extension ProviderSettingsSnapshot {
+    /// Deterministic, non-Vertex settings snapshot for tests that inject a
+    /// fake process runner/binary runner and must not depend on this
+    /// machine's ambient `UserDefaults` (e.g. a developer's Vertex config).
     static var headlessScenario: ProviderSettingsSnapshot {
         ProviderSettingsSnapshot(
             providerSettings: AgentRuntimeProviderSettings(),

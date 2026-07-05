@@ -30,6 +30,10 @@ let package = Package(
             path: "ASTRACore"
         ),
         .target(
+            name: "ASTRALogging",
+            path: "ASTRALogging"
+        ),
+        .target(
             name: "ASTRAGitContracts",
             path: "ASTRAGitContracts"
         ),
@@ -98,6 +102,7 @@ let package = Package(
                 "AstraObjCSupport",
                 "ASTRACore",
                 "ASTRAGitContracts",
+                "ASTRALogging",
                 .product(name: "Sparkle", package: "Sparkle"),
                 .product(name: "Markdown", package: "swift-markdown")
             ],
