@@ -1551,7 +1551,11 @@ struct ArchitectureFitnessTests {
             "Tools/HostControlToolSupport/HostControlToolSupport.swift": .init(2_250, .owner("Host-control MCP tool")),
             "Tests/ProcessMonitorTests.swift": .init(3_500, .companion(of: "Astra/Services/Runtime/AgentProcessSupport.swift")),
             "Tests/TaskCapabilityResolverTests.swift": .init(2_950, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
-            "Tests/AgentRuntimeAdapterTests.swift": .init(3_200, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
+            // Bumped 3_200 -> 3_201 for Track A2 (Runtime<->Models cycle break): one line
+            // registers the ExecutionPathSafety/AgentRuntimeRegistrySeam seams the suite's
+            // gcpADC() construction now needs (Swift has no module-load hook, so this is an
+            // explicit, one-line-per-file requirement — see RuntimeSeamRegistration.swift).
+            "Tests/AgentRuntimeAdapterTests.swift": .init(3_201, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
             "Tests/AgentRuntimeWorkerTests.swift": .init(2_550, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
             "Tests/AgentPolicyTests.swift": .init(2_650, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
             "Tests/WorkspaceAppActionExecutorTests.swift": .init(2_500, .companion(of: "Astra/Services/WorkspaceApps/WorkspaceAppActionExecutor.swift")),

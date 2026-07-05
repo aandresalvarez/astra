@@ -1,11 +1,19 @@
 import Foundation
 
-struct WorkspacePathDescriptor: Identifiable, Hashable {
-    enum Role: String, Hashable {
+// Moved from `Astra/Services/Persistence/WorkspacePathPresentation.swift` as
+// part of Track A2 (breaking the Models↔Runtime cycle): this is a pure
+// Foundation-only path-formatting utility with no dependency on anything
+// Runtime- or Persistence-specific, and the new `ASTRACore`
+// `ExecutionEnvironmentPathMapper`/`ExecutionEnvironmentMount` (also moved in
+// this change) call `standardizedPath`. No logic changed — only `public`
+// added so the app target's existing call sites keep compiling unchanged.
+
+public struct WorkspacePathDescriptor: Identifiable, Hashable {
+    public enum Role: String, Hashable {
         case primary
         case additional
 
-        var label: String {
+        public var label: String {
             switch self {
             case .primary: "Primary"
             case .additional: "Additional"
@@ -13,19 +21,37 @@ struct WorkspacePathDescriptor: Identifiable, Hashable {
         }
     }
 
-    let id: String
-    let role: Role
-    let index: Int
-    let path: String
-    let title: String
-    let subtitle: String
-    let abbreviatedPath: String
+    public let id: String
+    public let role: Role
+    public let index: Int
+    public let path: String
+    public let title: String
+    public let subtitle: String
+    public let abbreviatedPath: String
 
-    var roleLabel: String { role.label }
+    public var roleLabel: String { role.label }
+
+    public init(
+        id: String,
+        role: Role,
+        index: Int,
+        path: String,
+        title: String,
+        subtitle: String,
+        abbreviatedPath: String
+    ) {
+        self.id = id
+        self.role = role
+        self.index = index
+        self.path = path
+        self.title = title
+        self.subtitle = subtitle
+        self.abbreviatedPath = abbreviatedPath
+    }
 }
 
-enum WorkspacePathPresentation {
-    static func descriptors(primaryPath: String, additionalPaths: [String]) -> [WorkspacePathDescriptor] {
+public enum WorkspacePathPresentation {
+    public static func descriptors(primaryPath: String, additionalPaths: [String]) -> [WorkspacePathDescriptor] {
         let rawEntries = ([primaryPath] + additionalPaths).enumerated().compactMap { index, rawPath -> RawEntry? in
             let path = standardizedPath(rawPath)
             guard !path.isEmpty else { return nil }
@@ -54,7 +80,7 @@ enum WorkspacePathPresentation {
         }
     }
 
-    static func descriptor(
+    public static func descriptor(
         for path: String,
         primaryPath: String,
         additionalPaths: [String]
@@ -64,7 +90,7 @@ enum WorkspacePathPresentation {
             .first { $0.path == standardized }
     }
 
-    static func isGitRepository(at path: String, fileManager: FileManager = .default) -> Bool {
+    public static func isGitRepository(at path: String, fileManager: FileManager = .default) -> Bool {
         let standardized = standardizedPath(path)
         guard !standardized.isEmpty else { return false }
         var isDirectory = ObjCBool(false)
@@ -78,7 +104,7 @@ enum WorkspacePathPresentation {
         return fileManager.fileExists(atPath: gitPath)
     }
 
-    static func standardizedPath(_ rawPath: String) -> String {
+    public static func standardizedPath(_ rawPath: String) -> String {
         let expanded = NSString(string: rawPath)
             .expandingTildeInPath
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -86,7 +112,7 @@ enum WorkspacePathPresentation {
         return URL(fileURLWithPath: expanded).standardizedFileURL.path
     }
 
-    static func abbreviatePath(_ path: String) -> String {
+    public static func abbreviatePath(_ path: String) -> String {
         let standardized = standardizedPath(path)
         guard !standardized.isEmpty else { return "" }
         let home = NSHomeDirectory()

@@ -1,4 +1,5 @@
 import Foundation
+import ASTRACore
 
 enum ClaudeCodeRuntime {
     static func authReadablePaths(userHome: String = FileManager.default.homeDirectoryForCurrentUser.path) -> [String] {

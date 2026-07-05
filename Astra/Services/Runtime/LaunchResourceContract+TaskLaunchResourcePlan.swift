@@ -1,4 +1,5 @@
 import Foundation
+import ASTRACore
 
 extension LaunchResourceContract {
     static func resources(from plan: TaskLaunchResourcePlan) -> [Resource] {

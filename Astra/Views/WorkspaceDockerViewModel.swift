@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import ASTRACore
 
 struct DockerEnvironmentOption: Identifiable, Equatable, Sendable {
     var id: String
