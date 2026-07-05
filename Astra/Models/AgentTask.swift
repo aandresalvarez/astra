@@ -169,6 +169,7 @@ final class AgentTask {
         sessionId?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
     }
 
+    @MainActor
     static func fork(from source: AgentTask, upToRun targetRun: TaskRun, in context: ModelContext) -> AgentTask {
         AgentTaskForkService.fork(from: source, upToRun: targetRun, in: context)
     }

@@ -9,6 +9,7 @@ enum AgentTaskForkService {
         var manifestPath: String
     }
 
+    @MainActor
     static func fork(from source: AgentTask, upToRun targetRun: TaskRun, in context: ModelContext) -> AgentTask {
         let forked = AgentTask(
             title: "Fork of \(source.title)",

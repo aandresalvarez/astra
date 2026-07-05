@@ -824,6 +824,7 @@ enum WorkspaceConfigManager {
     }
 
     /// Create a new Workspace + Skills + Connectors + Tools + Templates from a config.
+    @MainActor
     static func importWorkspace(
         from config: WorkspaceConfig,
         modelContext: ModelContext,
@@ -837,6 +838,7 @@ enum WorkspaceConfigManager {
     }
 
     /// Create a new Workspace + Skills + Connectors + Tools + Templates from a config.
+    @MainActor
     static func importWorkspaceResult(
         from config: WorkspaceConfig,
         modelContext: ModelContext,
@@ -1993,6 +1995,7 @@ enum WorkspaceConfigManager {
         }
     }
 
+    @MainActor
     private static func importTask(
         _ config: TaskConfig,
         workspace: Workspace,

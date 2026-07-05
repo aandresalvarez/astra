@@ -85,6 +85,7 @@ enum SessionScanner {
     /// so re-running an import can never create duplicate cards. Trivial
     /// greeting/probe sessions are filtered out entirely.
     @discardableResult
+    @MainActor
     static func importSessions(
         _ sessions: [DiscoveredSession],
         into workspace: Workspace,

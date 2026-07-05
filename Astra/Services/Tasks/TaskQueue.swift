@@ -600,7 +600,12 @@ final class TaskQueue {
                 type: "error",
                 payload: "ASTRA could not create this task's output folder before launching the agent: \(error.localizedDescription)"
             ))
-            try? modelContext.save()
+            WorkspacePersistenceCoordinator.saveAndAutoExport(
+                workspace: task.workspace,
+                modelContext: modelContext,
+                taskID: task.id,
+                auditFields: ["operation": "task_folder_create_failed"]
+            )
             return false
         }
     }
@@ -849,7 +854,8 @@ final class TaskQueue {
             task: task,
             claim: claim,
             status: "acquired",
-            modelContext: modelContext
+            modelContext: modelContext,
+            autoExport: false
         )
         return claim
     }
@@ -891,7 +897,8 @@ final class TaskQueue {
             task: task,
             claim: claim,
             status: "requested",
-            modelContext: modelContext
+            modelContext: modelContext,
+            autoExport: false
         )
 
         var recordedWaiting = false
@@ -914,7 +921,8 @@ final class TaskQueue {
                     claim: claim,
                     status: "waiting",
                     reason: resourceLockBlockerSummary(for: claim),
-                    modelContext: modelContext
+                    modelContext: modelContext,
+                    autoExport: false
                 )
                 recordedWaiting = true
             }
@@ -980,7 +988,8 @@ final class TaskQueue {
         claim: TaskResourceLockClaim,
         status: String,
         reason: String? = nil,
-        modelContext: ModelContext?
+        modelContext: ModelContext?,
+        autoExport: Bool = true
     ) {
         let holder = activeResourceLocks.first {
             $0.resourceKey == claim.resourceKey && $0.taskID != claim.taskID
@@ -996,7 +1005,27 @@ final class TaskQueue {
         )
         if let modelContext {
             modelContext.insert(TaskEvent(task: task, type: type, payload: encodeResourceLockPayload(payload)))
-            try? modelContext.save()
+            // Requested/waiting/acquired all fire before executeTask admits
+            // the task to .running, while the detached auto-export write for
+            // this snapshot races the later, authoritative admission/terminal
+            // export with no ordering guarantee — a losing race would leave
+            // the workspace JSON mirror showing a stale queued task. Those
+            // call sites pass autoExport: false; only released (which fires
+            // at actual completion/cleanup) still exports.
+            if autoExport {
+                WorkspacePersistenceCoordinator.saveAndAutoExport(
+                    workspace: task.workspace,
+                    modelContext: modelContext,
+                    taskID: task.id,
+                    auditFields: ["operation": "resource_lock_event"]
+                )
+            } else {
+                WorkspacePersistenceCoordinator.saveWithoutAutoExport(
+                    modelContext: modelContext,
+                    taskID: task.id,
+                    auditFields: ["operation": "resource_lock_event"]
+                )
+            }
         }
         AppLogger.audit(auditEvent, category: "Queue", taskID: task.id, fields: [
             "resource_key": claim.resourceKey,

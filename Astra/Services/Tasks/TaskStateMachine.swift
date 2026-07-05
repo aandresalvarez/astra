@@ -1,6 +1,7 @@
 import Foundation
 import SwiftData
 
+@MainActor
 enum TaskStateMachine {
     enum Rejection: Equatable {
         case illegalTransition
@@ -689,7 +690,7 @@ enum TaskStateMachine {
         apply(completedAt, to: task)
         task.updatedAt = date
         apply(readState, to: task, at: date)
-        persistIfNeeded(modelContext: modelContext, savePolicy: savePolicy)
+        persistIfNeeded(task: task, modelContext: modelContext, savePolicy: savePolicy)
 
         AppLogger.audit(.taskStatusChanged, category: "TaskState", taskID: task.id, fields: [
             "intent": intent,
@@ -749,16 +750,24 @@ enum TaskStateMachine {
         }
     }
 
-    private static func persistIfNeeded(modelContext: ModelContext, savePolicy: SavePolicy) {
+    private static func persistIfNeeded(
+        task: AgentTask,
+        modelContext: ModelContext,
+        savePolicy: SavePolicy
+    ) {
         guard savePolicy == .save else { return }
-        do {
-            try modelContext.save()
-        } catch {
-            AppLogger.audit(.runtimePersistenceSummary, category: "Persistence", fields: [
-                "operation": "task_state_machine_save",
-                "result": "swiftdata_save_failed",
-                "error_type": String(describing: type(of: error))
-            ], level: .error)
-        }
+        // Status transitions must be durably persisted before workers observe
+        // them, so this always uses the coordinator's synchronous save path,
+        // never the debounced `scheduleAutoExport`. `TaskStateMachine` is
+        // `@MainActor`-isolated (see the type declaration above), and
+        // `WorkspacePersistenceCoordinator` is likewise `@MainActor`, so this
+        // call is statically verified to run on the main actor -- no runtime
+        // assumption required.
+        WorkspacePersistenceCoordinator.saveAndAutoExport(
+            workspace: task.workspace,
+            modelContext: modelContext,
+            taskID: task.id,
+            auditFields: ["operation": "task_state_machine_save"]
+        )
     }
 }

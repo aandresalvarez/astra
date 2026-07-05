@@ -170,14 +170,15 @@ enum TaskRunLifecycleService {
     ) {
         guard summary.hasChanges else { return }
         if summary.affectedWorkspaces.isEmpty || !autoExportWorkspaces {
-            do {
-                try modelContext.save()
-            } catch {
-                AppLogger.audit(.taskFailed, category: "Persistence", fields: [
-                    "operation": "persist_interrupted_runs",
-                    "error_type": String(describing: type(of: error))
-                ], level: .error)
-            }
+            // A nil workspace routes through the coordinator's synchronous save
+            // path without triggering a workspace JSON auto-export, preserving
+            // the `autoExportWorkspaces: false` contract for callers that batch
+            // exports themselves.
+            WorkspacePersistenceCoordinator.saveAndAutoExport(
+                workspace: nil,
+                modelContext: modelContext,
+                auditFields: ["operation": "persist_interrupted_runs"]
+            )
         } else {
             for workspace in summary.affectedWorkspaces {
                 WorkspacePersistenceCoordinator.saveAndAutoExport(

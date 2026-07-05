@@ -1977,6 +1977,7 @@ struct WorkspaceAppActionExecutor {
         return columns
     }
 
+    @MainActor
     func createTask(
         action: WorkspaceAppActionSpec,
         app: WorkspaceApp,
