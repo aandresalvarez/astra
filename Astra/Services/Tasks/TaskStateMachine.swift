@@ -1,6 +1,7 @@
 import Foundation
 import SwiftData
 
+@MainActor
 enum TaskStateMachine {
     enum Rejection: Equatable {
         case illegalTransition
@@ -757,18 +758,16 @@ enum TaskStateMachine {
         guard savePolicy == .save else { return }
         // Status transitions must be durably persisted before workers observe
         // them, so this always uses the coordinator's synchronous save path,
-        // never the debounced `scheduleAutoExport`. `AgentTask` and the main
-        // `ModelContext` are main-actor-bound throughout the app, so any caller
-        // that reaches a `.save` policy is already on the main actor;
-        // `assumeIsolated` makes that contract explicit instead of hopping
-        // actors (which would defer the save past the caller's next read).
-        MainActor.assumeIsolated {
-            WorkspacePersistenceCoordinator.saveAndAutoExport(
-                workspace: task.workspace,
-                modelContext: modelContext,
-                taskID: task.id,
-                auditFields: ["operation": "task_state_machine_save"]
-            )
-        }
+        // never the debounced `scheduleAutoExport`. `TaskStateMachine` is
+        // `@MainActor`-isolated (see the type declaration above), and
+        // `WorkspacePersistenceCoordinator` is likewise `@MainActor`, so this
+        // call is statically verified to run on the main actor -- no runtime
+        // assumption required.
+        WorkspacePersistenceCoordinator.saveAndAutoExport(
+            workspace: task.workspace,
+            modelContext: modelContext,
+            taskID: task.id,
+            auditFields: ["operation": "task_state_machine_save"]
+        )
     }
 }

@@ -299,6 +299,7 @@ enum WorkspaceRecoveryService {
     }
 
     @discardableResult
+    @MainActor
     static func recoverMissingWorkspaces(
         modelContext: ModelContext,
         extraRoots: [String] = [],
@@ -383,6 +384,7 @@ enum WorkspaceRecoveryService {
     }
 
     @discardableResult
+    @MainActor
     private static func recoverMissingWorkspaces(
         modelContext: ModelContext,
         configFiles configs: [URL]
@@ -432,6 +434,7 @@ enum WorkspaceRecoveryService {
     }
 
     @discardableResult
+    @MainActor
     private static func recoverMissingWorkspaces(
         modelContext: ModelContext,
         loadedConfigs configs: [LoadedWorkspaceConfig]
