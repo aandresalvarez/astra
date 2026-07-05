@@ -329,7 +329,6 @@ Astra/          SwiftUI app, views, services, models, resources, and assets
 ASTRACore/      Shared core utilities, protocols, parsing, validation, and plugin types
 AppExecutable/  Executable entry point for the Swift package
 Tests/          Unit and integration tests
-ASTRAUITests/   UI test target
 docs/           Product specs, design reviews, and icon iterations
 script/         Local build and launch helpers
 ```
