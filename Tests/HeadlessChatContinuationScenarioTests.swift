@@ -700,6 +700,10 @@ extension HeadlessChatScenarioTests {
             executablePath: cursorPath,
             permissionPolicy: .autonomous
         )
+        worker.defaultRuntimeID = .cursorCLI
+        worker.claudePath = harness.rootURL.appendingPathComponent("missing-claude").path
+        worker.copilotPath = harness.rootURL.appendingPathComponent("missing-copilot").path
+        worker.setExecutablePath(harness.rootURL.appendingPathComponent("missing-codex").path, for: .codexCLI)
 
         _ = await harness.continueTask(
             task: task,
@@ -758,6 +762,10 @@ extension HeadlessChatScenarioTests {
             executablePath: cursorPath,
             permissionPolicy: .autonomous
         )
+        worker.defaultRuntimeID = .cursorCLI
+        worker.claudePath = harness.rootURL.appendingPathComponent("missing-claude").path
+        worker.copilotPath = harness.rootURL.appendingPathComponent("missing-copilot").path
+        worker.setExecutablePath(harness.rootURL.appendingPathComponent("missing-codex").path, for: .codexCLI)
 
         _ = await harness.continueTask(
             task: task,
@@ -780,6 +788,81 @@ extension HeadlessChatScenarioTests {
             event.payload.contains("Provider policy blocked this run before launch")
         })
         #expect(run.output.isEmpty)
+    }
+
+    @Test("GitHub host-control retry reroutes from Cursor to configured compatible runtime")
+    func githubHostControlRetryReroutesFromCursorToConfiguredCompatibleRuntime() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let cursorPath = try harness.writeExecutable(
+            named: "cursor-agent",
+            script: """
+            printf '%s\\n' 'Cursor provider should not launch for GitHub host-control work'
+            exit 0
+            """
+        )
+        let codexPath = try harness.writeExecutable(
+            named: "codex",
+            script: """
+            #!/bin/sh
+            printf '%s\\n' '{"type":"thread.started","thread_id":"codex-github-thread"}'
+            printf '%s\\n' '{"type":"item.completed","item":{"type":"agent_message","text":"Codex GitHub answer"}}'
+            printf '%s\\n' '{"type":"turn.completed","usage":{"input_tokens":5,"output_tokens":7}}'
+            exit 0
+            """
+        )
+        let task = harness.makeTask(
+            runtime: .cursorCLI,
+            goal: "List my open PRs in the astra repo",
+            model: "composer-2.5-fast"
+        )
+        task.workspace?.enabledCapabilityIDs = [HostControlPlaneMCPProjection.githubPackageID]
+        let githubSkill = Skill(
+            name: "GitHub Agent",
+            allowedTools: ["Read", "Glob", "Grep"],
+            behaviorInstructions: "Use ASTRA's host-control GitHub MCP tool mcp__astra_host__github for GitHub operations."
+        )
+        githubSkill.skillDescription = "Inspect issues, PRs, and CI via ASTRA host-control GitHub"
+        githubSkill.originPackageID = HostControlPlaneMCPProjection.githubPackageID
+        githubSkill.workspace = task.workspace
+        task.skills = [githubSkill]
+        harness.context.insert(githubSkill)
+
+        let worker = harness.makeWorker(
+            runtime: .cursorCLI,
+            executablePath: cursorPath,
+            permissionPolicy: .autonomous
+        )
+        worker.defaultRuntimeID = .codexCLI
+        worker.setExecutablePath(codexPath, for: .codexCLI)
+        worker.setHomeDirectory(
+            harness.rootURL.appendingPathComponent("codex-home", isDirectory: true).path,
+            for: .codexCLI
+        )
+
+        _ = await harness.continueTask(
+            task: task,
+            message: "retry listing my open PRs in the astra repo",
+            worker: worker
+        )
+
+        let run = try #require(task.runs.sorted { $0.startedAt < $1.startedAt }.last)
+        #expect(run.status == .completed)
+        #expect(run.runtimeID == AgentRuntimeID.codexCLI.rawValue)
+        #expect(task.runtimeID == AgentRuntimeID.codexCLI.rawValue)
+        #expect(task.status == .completed)
+        #expect(run.output == "Codex GitHub answer")
+        #expect(task.events.contains { event in
+            event.run?.id == run.id &&
+            event.type == TaskEventTypes.System.info.rawValue &&
+            event.payload.contains("Runtime changed from Cursor CLI to Codex CLI")
+        })
+        #expect(!task.events.contains { event in
+            event.run?.id == run.id &&
+            event.type == TaskEventTypes.System.error.rawValue &&
+            event.payload.contains("Selected runtime is incompatible with required ASTRA capabilities")
+        })
     }
 
     // MARK: - Permission mode passed to CLI (Claude & Antigravity)

@@ -21,6 +21,16 @@ enum AgentRuntimeCapabilityCompatibilityPolicy {
         }
     }
 
+    struct LaunchRuntimeResolution: Equatable {
+        let requestedRuntime: AgentRuntimeID
+        let runtime: AgentRuntimeID
+        let requiredTools: [String]
+
+        var rerouted: Bool {
+            runtime != requestedRuntime
+        }
+    }
+
     static func launchBlock(
         runtime: AgentRuntimeID,
         capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot
@@ -45,6 +55,45 @@ enum AgentRuntimeCapabilityCompatibilityPolicy {
         return [.hostControlPlane(requiredTools: requiredTools)]
     }
 
+    static func resolveLaunchRuntime(
+        requestedRuntime: AgentRuntimeID,
+        defaultRuntime: AgentRuntimeID,
+        capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot,
+        candidateRuntimes: [AgentRuntimeID] = AgentRuntimeAdapterRegistry.runtimeIDs,
+        isRuntimeUsable: (AgentRuntimeID) -> Bool = { _ in true }
+    ) -> LaunchRuntimeResolution {
+        let requirements = requirements(capabilityResolutionSnapshot: capabilityResolutionSnapshot)
+        let requiredTools = requirements.flatMap { requirement -> [String] in
+            switch requirement {
+            case .hostControlPlane(let tools):
+                return tools
+            }
+        }
+        guard !requirements.isEmpty,
+              !isRuntimeCompatible(requestedRuntime, requirements: requirements) else {
+            return LaunchRuntimeResolution(
+                requestedRuntime: requestedRuntime,
+                runtime: requestedRuntime,
+                requiredTools: requiredTools
+            )
+        }
+
+        let fallback = orderedFallbackRuntimes(
+            requestedRuntime: requestedRuntime,
+            defaultRuntime: defaultRuntime,
+            candidateRuntimes: candidateRuntimes
+        )
+        .first { runtime in
+            isRuntimeUsable(runtime) && isRuntimeCompatible(runtime, requirements: requirements)
+        }
+
+        return LaunchRuntimeResolution(
+            requestedRuntime: requestedRuntime,
+            runtime: fallback ?? requestedRuntime,
+            requiredTools: requiredTools
+        )
+    }
+
     private static func launchBlock(
         runtime: AgentRuntimeID,
         requirement: Requirement
@@ -53,6 +102,27 @@ enum AgentRuntimeCapabilityCompatibilityPolicy {
         case .hostControlPlane(let requiredTools):
             return hostControlPlaneLaunchBlock(runtime: runtime, requiredTools: requiredTools)
         }
+    }
+
+    private static func isRuntimeCompatible(
+        _ runtime: AgentRuntimeID,
+        requirements: [Requirement]
+    ) -> Bool {
+        requirements.allSatisfy { launchBlock(runtime: runtime, requirement: $0) == nil }
+    }
+
+    private static func orderedFallbackRuntimes(
+        requestedRuntime: AgentRuntimeID,
+        defaultRuntime: AgentRuntimeID,
+        candidateRuntimes: [AgentRuntimeID]
+    ) -> [AgentRuntimeID] {
+        var seen: Set<AgentRuntimeID> = [requestedRuntime]
+        var ordered: [AgentRuntimeID] = []
+        for runtime in [defaultRuntime, .codexCLI, .claudeCode, .copilotCLI] + candidateRuntimes {
+            guard seen.insert(runtime).inserted else { continue }
+            ordered.append(runtime)
+        }
+        return ordered
     }
 
     private static func hostControlPlaneLaunchBlock(
