@@ -47,11 +47,14 @@ enum WorkspacePersistenceCoordinator {
         return didSave
     }
 
-    /// Non-throwing counterpart to `saveWithoutAutoExportOrThrow`: persists the
-    /// SwiftData context without exporting the workspace JSON mirror. For
-    /// bookkeeping saves whose state is guaranteed to be superseded by a
-    /// later, more authoritative save-and-export call (e.g. pre-admission
-    /// lock events), so the mirror is never snapshotted mid-transition.
+    /// Persists the SwiftData context without exporting the workspace JSON
+    /// mirror, returning whether the save succeeded (mirrors `saveAndAutoExport`'s
+    /// non-throwing style, not `saveWithoutAutoExportOrThrow` — this has no
+    /// `workspace` parameter since it never exports, and records `auto_export`
+    /// as "skipped" rather than "deferred"). For bookkeeping saves whose state
+    /// is guaranteed to be superseded by a later, more authoritative
+    /// save-and-export call (e.g. pre-admission lock events), so the mirror
+    /// is never snapshotted mid-transition.
     @discardableResult
     static func saveWithoutAutoExport(
         modelContext: ModelContext,
