@@ -1484,6 +1484,7 @@ struct ArchitectureFitnessTests {
             "Astra/Services/Persistence/WorkspaceConfigManager.swift": ["run"],
             "Astra/Services/Runtime/AgentProcessSupport.swift": ["job"],
             "Astra/Services/Runtime/AgentRuntimeBudgetPolicy.swift": ["run"],
+            "Astra/Services/Runtime/AgentRuntimeCapabilityBlockRecorder.swift": ["run"],
             "Astra/Services/Runtime/AgentRuntimeLaunchPreflight.swift": ["run"],
             "Astra/Services/Runtime/AgentRuntimeWorker.swift": ["run", "run?"],
             "Astra/Services/Tasks/AgentTaskForkService.swift": ["newRun"],

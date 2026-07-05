@@ -69,6 +69,80 @@ struct TaskCapabilityResolverTests {
         #expect(!snapshot.providerLaunch.localTools.contains { $0.command == "gh" })
     }
 
+    @Test("Required host-control tool extraction is generic across scoped capabilities")
+    func requiredHostControlToolExtractionIsGenericAcrossScopedCapabilities() throws {
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+
+        let workspace = Workspace(name: "Jira Host Control", primaryPath: "/tmp/jira-host-control")
+        workspace.enabledCapabilityIDs = ["custom-jira-host-control"]
+        context.insert(workspace)
+
+        let jiraSkill = Skill(
+            name: "Jira Host Control",
+            allowedTools: ["Read"],
+            behaviorInstructions: "Always use ASTRA's host-control Jira MCP tool mcp__astra_host__jira for Jira operations. Do not use Bash, curl, or raw REST API calls to bypass this broker."
+        )
+        jiraSkill.skillDescription = "Read Jira through ASTRA host-control Jira"
+        jiraSkill.originPackageID = "custom-jira-host-control"
+        jiraSkill.workspace = workspace
+        context.insert(jiraSkill)
+
+        let task = AgentTask(
+            title: "Read Jira",
+            goal: "Read Jira issue STAR-123",
+            workspace: workspace
+        )
+        task.skills = [jiraSkill]
+        context.insert(task)
+        try context.save()
+
+        let scope = TaskCapabilityResolver(task: task).promptScope(contextText: "Read Jira issue STAR-123")
+
+        #expect(scope.behaviorSkills.map(\.name).contains("Jira Host Control"))
+        #expect(HostControlPlaneMCPProjection.requiredToolNames(capabilityScope: scope) == ["jira"])
+    }
+
+    @Test("Docker-only host-control guidance is not required outside Docker")
+    func dockerOnlyHostControlGuidanceIsNotRequiredOutsideDocker() throws {
+        let container = try makeTaskCapabilityResolverContainer()
+        let context = container.mainContext
+
+        let workspace = Workspace(name: "Jira REST", primaryPath: "/tmp/jira-rest")
+        workspace.enabledCapabilityIDs = ["jira-workflow"]
+        context.insert(workspace)
+
+        let jiraSkill = Skill(
+            name: "Jira Agent",
+            allowedTools: ["Read", "Bash"],
+            behaviorInstructions: """
+            DOCKER HOST-CONTROL RUNS
+            In Docker workspace runs, use `mcp__astra_host__jira` or Copilot's `astra_host-jira`; do not use workspace shell or native host Bash for Jira.
+
+            NON-DOCKER REST RUNS
+            When no Jira host-control bridge is available, use curl via Bash with the selected connector's env vars.
+            """
+        )
+        jiraSkill.skillDescription = "Search and read Jira tickets"
+        jiraSkill.originPackageID = "jira-workflow"
+        jiraSkill.workspace = workspace
+        context.insert(jiraSkill)
+
+        let task = AgentTask(
+            title: "Read Jira",
+            goal: "Read Jira issue STAR-123",
+            workspace: workspace
+        )
+        task.skills = [jiraSkill]
+        context.insert(task)
+        try context.save()
+
+        let scope = TaskCapabilityResolver(task: task).promptScope(contextText: "Read Jira issue STAR-123")
+
+        #expect(scope.behaviorSkills.map(\.name).contains("Jira Agent"))
+        #expect(HostControlPlaneMCPProjection.requiredToolNames(capabilityScope: scope).isEmpty)
+    }
+
     @Test("Enabled connector contributes its companion skill instructions")
     func enabledConnectorIncludesCompanionSkillInstructions() throws {
         let container = try makeTaskCapabilityResolverContainer()
