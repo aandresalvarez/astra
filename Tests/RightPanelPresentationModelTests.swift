@@ -239,4 +239,50 @@ struct RightPanelPresentationModelTests {
         )
         #expect(restoredForA == .plan)
     }
+
+    @Test("presentCanvas threads conversationID through so the item is remembered per-conversation")
+    func presentCanvasRemembersItemForConversation() {
+        let model = makeModel()
+        let conversationID = UUID().uuidString
+
+        model.presentCanvas(.markdown, conversationID: conversationID)
+        // Clear the active item without touching the rail (restoration
+        // requires the rail hidden), mirroring rememberedItemSurvivesTransientClear.
+        model.hideRailWithoutClearingCanvasItem()
+        model.setActiveCanvasItem(nil, remember: false, conversationID: conversationID)
+
+        let restored = model.restoreRememberedItemIfAvailable(
+            conversationID: conversationID,
+            canPresent: { _ in true }
+        )
+
+        #expect(restored == .markdown)
+    }
+
+    @Test("Remembered canvas item persists to UserDefaults, not just the in-memory model instance")
+    func rememberedItemPersistsAcrossModelInstances() {
+        let suiteName = UUID().uuidString
+        let conversationID = UUID().uuidString
+        let model = makeModel(defaultsSuite: suiteName)
+
+        model.setActiveCanvasItem(.browser, remember: true, conversationID: conversationID)
+        model.setActiveCanvasItem(nil, remember: false, conversationID: conversationID)
+        // Persist isRailShown = false so the reborn model's restore gate
+        // (which requires the rail hidden) is satisfiable; otherwise the
+        // reborn model defaults isRailShown to true (nothing stored yet)
+        // and the gate fails regardless of whether the remembered item
+        // itself round-tripped correctly.
+        model.dismissRail()
+
+        // A fresh instance loads rememberedItemsRawValue from UserDefaults in
+        // init, so this only finds the item if the prior mutation actually
+        // reached UserDefaults rather than staying local to `model`.
+        let reborn = makeModel(defaultsSuite: suiteName)
+        let restored = reborn.restoreRememberedItemIfAvailable(
+            conversationID: conversationID,
+            canPresent: { _ in true }
+        )
+
+        #expect(restored == .browser)
+    }
 }

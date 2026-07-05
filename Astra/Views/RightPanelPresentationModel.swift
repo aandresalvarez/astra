@@ -63,8 +63,10 @@ final class RightPanelPresentationModel: ObservableObject {
     /// Show the workspace context rail, clearing any active canvas item.
     /// `rememberShelfState` controls whether the cleared canvas item is kept
     /// as the per-conversation remembered item (so it can be restored later).
-    func presentRail(rememberShelfState: Bool = true) {
-        setActiveCanvasItem(nil, remember: rememberShelfState)
+    /// `conversationID` must be threaded through for that remembering to
+    /// actually happen — `setActiveCanvasItem` is a no-op without one.
+    func presentRail(rememberShelfState: Bool = true, conversationID: String? = nil) {
+        setActiveCanvasItem(nil, remember: rememberShelfState, conversationID: conversationID)
         isRailShown = true
         persistRailShown()
     }
@@ -77,9 +79,9 @@ final class RightPanelPresentationModel: ObservableObject {
 
     /// Binding-style setter mirroring the former `setRightRailPresented`: show
     /// routes through `presentRail`, hide just clears the rail flag.
-    func setRailPresented(_ isPresented: Bool) {
+    func setRailPresented(_ isPresented: Bool, conversationID: String? = nil) {
         if isPresented {
-            presentRail()
+            presentRail(conversationID: conversationID)
         } else {
             dismissRail()
         }
@@ -88,11 +90,13 @@ final class RightPanelPresentationModel: ObservableObject {
     // MARK: - Canvas item intent
 
     /// Present a shelf item, dismissing the rail (mirrors the former
-    /// `presentCanvas`).
-    func presentCanvas(_ item: WorkspaceCanvasItem) {
+    /// `presentCanvas`). `conversationID` must be threaded through so the
+    /// item is remembered per-conversation, exactly as the pre-model call
+    /// site did via `selectedWorkspaceCanvasConversationID`.
+    func presentCanvas(_ item: WorkspaceCanvasItem, conversationID: String? = nil) {
         isRailShown = false
         persistRailShown()
-        setActiveCanvasItem(item, remember: true)
+        setActiveCanvasItem(item, remember: true, conversationID: conversationID)
     }
 
     /// The single place `activeCanvasItem` (and its per-conversation memory)
@@ -108,9 +112,10 @@ final class RightPanelPresentationModel: ObservableObject {
             remember: remember
         )
         guard updated != rememberedItemsRawValue else { return }
+        let previousRawValue = rememberedItemsRawValue
         rememberedItemsRawValue = updated
         WorkspaceCanvasItemPreferenceStore.saveIfChanged(
-            currentRawValue: rememberedItemsRawValue,
+            currentRawValue: previousRawValue,
             updatedRawValue: updated,
             defaults: defaults
         )

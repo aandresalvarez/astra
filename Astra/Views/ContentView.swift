@@ -1226,20 +1226,23 @@ struct ContentView: View {
 
     private func setRightRailPresented(_ isPresented: Bool) {
         animatePanelChange {
-            rightPanel.setRailPresented(isPresented)
+            rightPanel.setRailPresented(isPresented, conversationID: selectedWorkspaceCanvasConversationID)
         }
     }
 
     private func presentRightRail(rememberShelfState: Bool = true) {
         animatePanelChange {
-            rightPanel.presentRail(rememberShelfState: rememberShelfState)
+            rightPanel.presentRail(
+                rememberShelfState: rememberShelfState,
+                conversationID: selectedWorkspaceCanvasConversationID
+            )
         }
     }
 
     private func presentCanvas(_ item: WorkspaceCanvasItem) {
         guard canPresentWorkspaceCanvasItem(item) else { return }
         animatePanelChange {
-            rightPanel.presentCanvas(item)
+            rightPanel.presentCanvas(item, conversationID: selectedWorkspaceCanvasConversationID)
         }
     }
 
