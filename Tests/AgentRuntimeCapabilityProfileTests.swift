@@ -70,6 +70,26 @@ struct AgentRuntimeCapabilityProfileTests {
         }
     }
 
+    @Test("Provider global MCP management commands do not imply task scoped delivery")
+    func providerGlobalMCPManagementDoesNotImplyTaskScopedDelivery() {
+        let providerMCPManagementCommands: [(runtime: AgentRuntimeID, commands: [String])] = [
+            (.cursorCLI, ["mcp list", "mcp add", "mcp remove"]),
+            (.openCodeCLI, ["mcp list", "mcp add", "mcp remove"]),
+            (.antigravityCLI, ["mcp list", "mcp add", "mcp remove"])
+        ]
+
+        for provider in providerMCPManagementCommands {
+            let profile = AgentRuntimeCapabilityProfile.defaultProfile(for: provider.runtime)
+            #expect(!provider.commands.isEmpty)
+            #expect(profile.taskScopedMCPDelivery == .unsupported)
+            #expect(!profile.supportsTaskScopedMCPDelivery)
+            #expect(!profile.canDeliverHostControlPlaneMCP)
+            #expect(!profile.canDeliverDockerWorkspaceShellMCP)
+            #expect(!profile.canDeliverBrowserBridgeMCPTool)
+            #expect(profile.observedEvidence == ["adapter:no-task-scoped-mcp-projection"])
+        }
+    }
+
     @Test("Browser bridge transport does not prove browser MCP was rendered")
     func browserBridgeTransportDoesNotProveBrowserMCPWasRendered() {
         let cursor = AgentRuntimeCapabilityProfile.defaultProfile(for: .cursorCLI)
