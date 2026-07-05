@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 // MARK: - Runtime↔Models cycle break (Track A2)
 //
@@ -23,13 +24,32 @@ import Foundation
 // (see the call sites next to `@testable import ASTRA` in
 // `ExecutionEnvironmentTests.swift`, `AgentPolicyTests.swift`,
 // `AgentRuntimeAdapterTests.swift`, `RealProviderSmokeTests.swift`,
-// `TaskLaunchResourcePlanTests.swift`, `ProcessMonitorTests.swift`).
+// `TaskLaunchResourcePlanTests.swift`, `SchemaVersionTests.swift`,
+// `ProcessMonitorTests.swift`).
 // Accessing either seam before registration is a programmer error, not a
 // silently-degraded security check: both trap with `preconditionFailure`
 // rather than failing open or returning a guessed answer.
+//
+// Swift Testing runs suite initializers concurrently on different GCD worker
+// threads by default (no implicit `.serialized`), and several of the suites
+// above register these seams from a stored-property initializer rather than
+// a single serialized entry point. A plain `static var` here would make
+// `registerAll()` a data race — confirmed empirically with
+// `swift test --sanitize=thread` before this locking was added. Both seams
+// therefore store their backing value behind an `OSAllocatedUnfairLock`
+// rather than a bare Optional static, so concurrent `registerAll()` calls
+// (and any concurrent reads racing a first registration) are synchronized.
 public enum ExecutionPathSafety {
-    /// Set once by `RuntimeSeamRegistration.registerAll()`.
-    public static var checker: (any ExecutionPathSafetyChecking.Type)?
+    private static let storage = OSAllocatedUnfairLock<(any ExecutionPathSafetyChecking.Type)?>(initialState: nil)
+
+    /// Set once by `RuntimeSeamRegistration.registerAll()`. Safe to call
+    /// concurrently from multiple threads (e.g. parallel Swift Testing suite
+    /// initializers) — later writes with the same value are idempotent, and
+    /// this module has exactly one real implementation (`ExecutionSandbox`),
+    /// so there is no meaningful "which writer won" ambiguity.
+    public static func register(_ checker: any ExecutionPathSafetyChecking.Type) {
+        storage.withLock { $0 = checker }
+    }
 
     /// Fail-fast accessor. Traps if `registerAll()` has not run yet — this
     /// path is only reached when constructing a `WorkspaceExecutionEnvironment`
@@ -37,9 +57,9 @@ public enum ExecutionPathSafety {
     /// decode/encode (`Codable` is synthesized; the sanitizer only runs from
     /// the memberwise `init`/`setCredentialProjections`).
     public static var required: any ExecutionPathSafetyChecking.Type {
-        guard let checker else {
+        guard let checker = storage.withLock({ $0 }) else {
             preconditionFailure(
-                "ExecutionPathSafety.checker read before RuntimeSeamRegistration.registerAll() ran. " +
+                "ExecutionPathSafety checker read before RuntimeSeamRegistration.registerAll() ran. " +
                 "Call it in ASTRAApp.init() (already done) or at the top of the test that hit this path."
             )
         }
@@ -58,14 +78,19 @@ public protocol ExecutionPathSafetyChecking {
 }
 
 public enum AgentRuntimeRegistrySeam {
-    /// Set once by `RuntimeSeamRegistration.registerAll()`.
-    public static var lookup: (any AgentRuntimeRegistryLookup.Type)?
+    private static let storage = OSAllocatedUnfairLock<(any AgentRuntimeRegistryLookup.Type)?>(initialState: nil)
+
+    /// Set once by `RuntimeSeamRegistration.registerAll()`. Safe to call
+    /// concurrently — see `ExecutionPathSafety.register(_:)`.
+    public static func register(_ lookup: any AgentRuntimeRegistryLookup.Type) {
+        storage.withLock { $0 = lookup }
+    }
 
     /// Fail-fast accessor. Traps if `registerAll()` has not run yet.
     public static var required: any AgentRuntimeRegistryLookup.Type {
-        guard let lookup else {
+        guard let lookup = storage.withLock({ $0 }) else {
             preconditionFailure(
-                "AgentRuntimeRegistrySeam.lookup read before RuntimeSeamRegistration.registerAll() ran. " +
+                "AgentRuntimeRegistrySeam lookup read before RuntimeSeamRegistration.registerAll() ran. " +
                 "Call it in ASTRAApp.init() (already done) or at the top of the test that hit this path."
             )
         }

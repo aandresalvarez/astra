@@ -210,6 +210,23 @@ were made in this PR, since there is nothing safe to extract yet.
    needs to import Models. This is the load-bearing unblock for `ASTRAModels`
    and is inherently invasive (~4,300 lines across `ExecutionEnvironment.swift`
    + `AgentRuntimeAdapter.swift`) — its own dedicated PR with its own test plan.
+
+   **Status (Track A2, commit `34893acf` and its follow-up fixes):** A2 broke
+   a *different, narrower* set of edges — the 7 `Astra/Models/*.swift` ->
+   `Astra/Services/Runtime/*.swift` references (`AgentTask.swift`,
+   `TaskRun.swift`, `Connector.swift`, `TaskRoleProfile.swift` depending on
+   `ExecutionEnvironmentStore`/`WorkspaceExecutionEnvironment`/
+   `ConnectorSecurityPolicy`/`AgentRuntimeAdapterRegistry`) — by moving pure
+   value types to `ASTRACore` and adding two protocol seams
+   (`ASTRACore/RuntimeSeams.swift`). It did **not** touch this item's
+   load-bearing direction: `Astra/Services/Runtime/AgentRuntimeAdapter.swift`
+   still declares `func defaultStartEventPayload(task: AgentTask) -> String`
+   and `let run: TaskRun` (24 `AgentTask` + 8 `TaskRun` references as of A2),
+   and `ExecutionEnvironment.swift` still has
+   `static func resolveEnvironment(for task: AgentTask) -> WorkspaceExecutionEnvironment`
+   (11 `AgentTask` references). `Runtime` still concretely depends on
+   `Models`, so this item (2) remains fully open and is still its own
+   dedicated, ~4,300-line PR — A2 should not be read as having closed it.
 3. **Only after (1) and (2)**, revisit whether `Astra/Models/` can depend on
    `ASTRACore` + the new Diagnostics leaf + the new Runtime-facing seam, and
    whether `Capabilities`/`Tasks`/`Settings`/`WorkspaceApps` references from

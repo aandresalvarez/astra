@@ -16,11 +16,14 @@ import ASTRACore
 ///    registration, so a future test that hits either path without calling
 ///    this fails loudly instead of silently misbehaving.
 ///
-/// Idempotent — safe to call more than once (e.g. once per test file).
+/// Idempotent and thread-safe — safe to call more than once (e.g. once per
+/// test file) and safe to call concurrently from multiple threads (Swift
+/// Testing runs suite initializers in parallel by default; both seams are
+/// backed by an `OSAllocatedUnfairLock`, not a bare static var).
 enum RuntimeSeamRegistration {
     static func registerAll() {
-        ExecutionPathSafety.checker = ExecutionSandbox.self
-        AgentRuntimeRegistrySeam.lookup = AgentRuntimeAdapterRegistry.self
+        ExecutionPathSafety.register(ExecutionSandbox.self)
+        AgentRuntimeRegistrySeam.register(AgentRuntimeAdapterRegistry.self)
     }
 }
 
