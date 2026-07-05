@@ -169,7 +169,10 @@ final class AgentRuntimeProcessRunner {
             return .blocked(block)
         }
         if environment.workspaceCommandsRunInsideContainer,
-           (!DockerWorkspaceMCPProjection.supportsHostProviderWorkspaceExecutor(runtime: plan.runtime)
+           (!DockerWorkspaceMCPProjection.supportsHostProviderWorkspaceExecutor(
+                runtime: plan.runtime,
+                executablePath: plan.executablePath
+            )
             || plan.commandPlannedFields["docker_workspace_executor_supported"] == "false") {
             let detail = plan.commandPlannedFields["docker_workspace_executor_unsupported_detail"]?
                 .trimmingCharacters(in: .whitespacesAndNewlines)

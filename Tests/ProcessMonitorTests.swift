@@ -1463,7 +1463,13 @@ struct RuntimePolicyGuardTests {
         ]
 
         for (runtime, toolName) in cases {
-            let descriptor = try #require(DockerWorkspaceMCPProjection.runtimeSupportToolDescriptor(for: runtime))
+            let descriptor = try #require(
+                runtime == .copilotCLI
+                    ? DockerWorkspaceMCPProjection.runtimeSupportToolDescriptors(
+                        runtimeProfile: .copilotProfile(supportsAdditionalMCPConfig: true)
+                    ).first
+                    : DockerWorkspaceMCPProjection.runtimeSupportToolDescriptor(for: runtime)
+            )
             let manifest = runtimePolicyManifest(
                 allowedTools: ["read"],
                 providerID: runtime,
@@ -1540,10 +1546,15 @@ struct RuntimePolicyGuardTests {
         ]
 
         for (runtime, toolName) in cases {
+            let runtimeSupportTools = runtime == .copilotCLI
+                ? DockerWorkspaceMCPProjection.runtimeSupportToolDescriptors(
+                    runtimeProfile: .copilotProfile(supportsAdditionalMCPConfig: true)
+                )
+                : DockerWorkspaceMCPProjection.runtimeSupportToolDescriptors(for: runtime)
             let manifest = runtimePolicyManifest(
                 allowedTools: ["read"],
                 providerID: runtime,
-                runtimeSupportTools: DockerWorkspaceMCPProjection.runtimeSupportToolDescriptors(for: runtime)
+                runtimeSupportTools: runtimeSupportTools
             )
             let monitor = AgentRuntimeWorker.ProcessMonitor(
                 tokenBudget: Int.max,

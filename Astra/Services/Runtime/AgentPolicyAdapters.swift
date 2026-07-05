@@ -918,6 +918,7 @@ enum AgentPolicyManifestService {
         defaultPolicyLevelRaw: String,
         providerVersion: String? = nil,
         providerCapabilities: AgentRuntimePolicyCapabilities = .conservative,
+        runtimeCapabilityProfile: AgentRuntimeCapabilityProfile? = nil,
         capabilityPackages: [PluginPackage]? = nil,
         approvalRecords: [CapabilityApprovalRecord]? = nil,
         contextText: String = "",
@@ -983,6 +984,8 @@ enum AgentPolicyManifestService {
             .map { LaunchResourcePolicyExposure(contract: LaunchResourceContract(plan: $0)) }
             ?? .absent
         let runtimeAdapter = AgentRuntimeAdapterRegistry.adapter(for: runtime)
+        let runtimeCapabilityProfile = runtimeCapabilityProfile
+            ?? AgentRuntimeCapabilityProfileService.profile(for: runtime, executablePath: "")
         let providerPolicyAdapter = runtimeAdapter.policyAdapter(runtimeCapabilities: providerCapabilities)
         let configOwnership = runtimeAdapter.providerConfigOwnership(workspacePath: workspacePath)
         let runtimePaths = runtimeAdditionalPaths(for: task)
@@ -1012,6 +1015,7 @@ enum AgentPolicyManifestService {
             to: render,
             task: task,
             runtime: runtime,
+            runtimeCapabilityProfile: runtimeCapabilityProfile,
             executionEnvironment: executionEnvironment,
             contextText: contextText,
             capabilityScope: taskCapabilityScope
@@ -1106,6 +1110,7 @@ enum AgentPolicyManifestService {
                 } ?? taskCapabilityResolver.enabledMCPServerManifests,
                 task: task,
                 runtime: runtime,
+                runtimeCapabilityProfile: runtimeCapabilityProfile,
                 executionEnvironment: executionEnvironment,
                 contextText: contextText,
                 capabilityScope: taskCapabilityScope
@@ -1149,12 +1154,13 @@ enum AgentPolicyManifestService {
         to render: ProviderPolicyRender,
         task: AgentTask,
         runtime: AgentRuntimeID,
+        runtimeCapabilityProfile: AgentRuntimeCapabilityProfile,
         executionEnvironment: WorkspaceExecutionEnvironment,
         contextText: String,
         capabilityScope: TaskCapabilityPromptScope
     ) -> ProviderPolicyRender {
         let usesDockerWorkspaceExecutor = DockerWorkspaceMCPProjection.isEnabled(for: executionEnvironment)
-            && DockerWorkspaceMCPProjection.supportsHostProviderWorkspaceExecutor(runtime: runtime)
+            && runtimeCapabilityProfile.canDeliverDockerWorkspaceShellMCP
         let hostControlTools = HostControlPlaneMCPProjection.enabledToolNames(
             task: task,
             environment: executionEnvironment,
@@ -1183,7 +1189,7 @@ enum AgentPolicyManifestService {
                     HostControlPlaneMCPProjection.providerToolPermission(for: $0)
                 }
             )
-            if !HostControlPlaneMCPProjection.supportsHostControlPlane(runtime: runtime) {
+            if !runtimeCapabilityProfile.canDeliverHostControlPlaneMCP {
                 updated.diagnostics.append(PolicyDiagnostic(
                     id: "\(runtime.rawValue).host-control-plane-unsupported",
                     severity: .blocked,
@@ -1210,12 +1216,17 @@ enum AgentPolicyManifestService {
         ))
 
         if usesDockerWorkspaceExecutor {
-            for descriptor in DockerWorkspaceMCPProjection.runtimeSupportToolDescriptors(for: runtime)
+            for descriptor in DockerWorkspaceMCPProjection.runtimeSupportToolDescriptors(
+                runtimeProfile: runtimeCapabilityProfile
+            )
                 where !updated.runtimeSupportTools.contains(where: { $0.name == descriptor.name }) {
                 updated.runtimeSupportTools.append(descriptor)
             }
         }
-        for descriptor in HostControlPlaneMCPProjection.runtimeSupportToolDescriptors(for: runtime, tools: hostControlTools)
+        for descriptor in HostControlPlaneMCPProjection.runtimeSupportToolDescriptors(
+            runtimeProfile: runtimeCapabilityProfile,
+            tools: hostControlTools
+        )
             where !updated.runtimeSupportTools.contains(where: { $0.name == descriptor.name }) {
             updated.runtimeSupportTools.append(descriptor)
         }
@@ -1329,12 +1340,13 @@ enum AgentPolicyManifestService {
         base: [RunPermissionManifest.MCPServer],
         task: AgentTask,
         runtime: AgentRuntimeID,
+        runtimeCapabilityProfile: AgentRuntimeCapabilityProfile,
         executionEnvironment: WorkspaceExecutionEnvironment,
         contextText: String,
         capabilityScope: TaskCapabilityPromptScope
     ) -> [RunPermissionManifest.MCPServer] {
         let usesDockerWorkspaceExecutor = DockerWorkspaceMCPProjection.isEnabled(for: executionEnvironment)
-            && DockerWorkspaceMCPProjection.supportsHostProviderWorkspaceExecutor(runtime: runtime)
+            && runtimeCapabilityProfile.canDeliverDockerWorkspaceShellMCP
         let hostControlTools = HostControlPlaneMCPProjection.enabledToolNames(
             task: task,
             environment: executionEnvironment,
@@ -1345,7 +1357,7 @@ enum AgentPolicyManifestService {
         if usesDockerWorkspaceExecutor {
             servers.append(DockerWorkspaceMCPProjection.manifestServer())
         }
-        if !hostControlTools.isEmpty {
+        if !hostControlTools.isEmpty, runtimeCapabilityProfile.canDeliverHostControlPlaneMCP {
             servers.append(HostControlPlaneMCPProjection.manifestServer(allowedTools: hostControlTools))
         }
         return uniqueMCPServers(servers)

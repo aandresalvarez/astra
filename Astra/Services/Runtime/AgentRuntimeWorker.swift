@@ -548,14 +548,15 @@ final class AgentRuntimeWorker {
             providerLaunchContextText: providerLaunchContextText,
             additionalCredentialGrants: executionPolicy.permissionGrantsOverride ?? []
         )
-        if let block = AgentRuntimeCapabilityCompatibilityPolicy.launchBlock(runtime: selectedRuntime, task: task, capabilityResolutionSnapshot: capabilityResolutionSnapshot) {
+        if let block = appliedRuntime.launchBlock {
             AgentRuntimeCapabilityBlockRecorder.apply(
                 block,
                 runtime: selectedRuntime,
                 task: task,
                 run: run,
                 modelContext: modelContext,
-                phase: auditPhase
+                phase: auditPhase,
+                selectedRuntimeEvidence: appliedRuntime.selectedRuntimeEvidence
             )
             isRunning = false
             return
@@ -597,7 +598,8 @@ final class AgentRuntimeWorker {
             phase: auditPhase,
             contextText: providerLaunchContextText,
             executionPolicy: executionPolicy,
-            capabilityResolutionSnapshot: capabilityResolutionSnapshot
+            capabilityResolutionSnapshot: capabilityResolutionSnapshot,
+            runtimeConfiguration: runtimeConfiguration
         ) else {
             isRunning = false
             return
@@ -734,6 +736,7 @@ final class AgentRuntimeWorker {
         )
         let policyRenderer = AgentRuntimeAdapterRegistry.policyRenderer(for: selectedRuntime)
         let providerCapabilities = policyRenderer.policyCapabilities(executablePath: launchSettings.executablePath)
+        let runtimeCapabilityProfile = AgentRuntimeCapabilityProfileService.profile(for: selectedRuntime, executablePath: launchSettings.executablePath)
         let runPermissionPolicy = effectivePermissionPolicy(
             for: task,
             selectedRuntime: selectedRuntime,
@@ -750,6 +753,7 @@ final class AgentRuntimeWorker {
             executionPolicy: executionPolicy,
             defaultPolicyLevelRaw: defaultAgentPolicyLevelRaw,
             providerCapabilities: providerCapabilities,
+            runtimeCapabilityProfile: runtimeCapabilityProfile,
             contextText: providerLaunchContextText,
             capabilityResolutionSnapshot: capabilityResolutionSnapshot,
             launchResourcePlan: launchResourcePlan,

@@ -41,6 +41,27 @@ struct ArchitectureFitnessTests {
         ])
     }
 
+    @Test("Launch compatibility does not depend on descriptor MCP boolean")
+    func launchCompatibilityDoesNotDependOnDescriptorMCPBoolean() throws {
+        let root = try repositoryRoot()
+        let guardedFiles = [
+            "Astra/Services/Runtime/HostControlPlaneMCPProjection.swift",
+            "Astra/Services/Runtime/ExecutionEnvironment.swift",
+            "Astra/Services/Runtime/AgentRuntimeLaunchPreflight.swift",
+            "Astra/Services/Runtime/AgentRuntimeLaunchRuntimeResolver.swift",
+            "Astra/Services/Runtime/AgentRuntimeCapabilityCompatibilityPolicy.swift"
+        ]
+
+        for relativePath in guardedFiles {
+            let source = try String(
+                contentsOf: root.appendingPathComponent(relativePath),
+                encoding: .utf8
+            )
+            #expect(!source.contains("descriptor(for: runtime).supportsMCPServers"))
+            #expect(!source.contains("descriptor(for: selectedRuntime).supportsMCPServers"))
+        }
+    }
+
     @Test("Pack services stay in the Packs service folder")
     func packServicesStayInPacksServiceFolder() throws {
         let root = try repositoryRoot()

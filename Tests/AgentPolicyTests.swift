@@ -1588,6 +1588,9 @@ struct RunPermissionManifestTests {
                 permissionPolicy: .restricted,
                 executionPolicy: .default,
                 defaultPolicyLevelRaw: AgentPolicyLevel.review.rawValue,
+                runtimeCapabilityProfile: runtime == .copilotCLI
+                    ? .copilotProfile(supportsAdditionalMCPConfig: true)
+                    : .defaultProfile(for: runtime),
                 capabilityPackages: [package],
                 modelContext: context
             )

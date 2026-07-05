@@ -115,6 +115,7 @@ enum AgentRuntimeLaunchPreflight {
         contextText: String,
         executionPolicy: AgentRuntimeExecutionPolicy = .default,
         capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot? = nil,
+        runtimeConfiguration: AgentRuntimeConfiguration? = nil,
         secretStore: SecretStore = KeychainSecretStore()
     ) async -> AgentRuntimeLaunchPreflightResult {
         let resolutionSnapshot = capabilityResolutionSnapshot ?? TaskCapabilityResolutionSnapshot.capture(
@@ -128,7 +129,8 @@ enum AgentRuntimeLaunchPreflight {
             modelContext: modelContext,
             phase: phase,
             contextText: contextText,
-            capabilityResolutionSnapshot: resolutionSnapshot
+            capabilityResolutionSnapshot: resolutionSnapshot,
+            runtimeProfile: runtimeProfileProvider(runtimeConfiguration)
         )
         guard capabilityResult.didPass else {
             return capabilityResult
@@ -306,6 +308,7 @@ enum AgentRuntimeLaunchPreflight {
         contextText: String,
         executionPolicy: AgentRuntimeExecutionPolicy = .default,
         capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot? = nil,
+        runtimeConfiguration: AgentRuntimeConfiguration? = nil,
         secretStore: SecretStore = KeychainSecretStore()
     ) async -> Bool {
         await preflightConnectorsBeforeLaunchResult(
@@ -316,6 +319,7 @@ enum AgentRuntimeLaunchPreflight {
             contextText: contextText,
             executionPolicy: executionPolicy,
             capabilityResolutionSnapshot: capabilityResolutionSnapshot,
+            runtimeConfiguration: runtimeConfiguration,
             secretStore: secretStore
         ).didPass
     }
@@ -765,7 +769,10 @@ enum AgentRuntimeLaunchPreflight {
         prerequisiteStatuses: [String: HealthStatus] = [:],
         capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot? = nil,
         mcpDetectExecutable: (String) -> String = { RuntimePathResolver.detectExecutablePath(named: $0) },
-        mcpIsExecutableFile: (String) -> Bool = { FileManager.default.isExecutableFile(atPath: $0) }
+        mcpIsExecutableFile: (String) -> Bool = { FileManager.default.isExecutableFile(atPath: $0) },
+        runtimeProfile: (AgentRuntimeID) -> AgentRuntimeCapabilityProfile = {
+            AgentRuntimeCapabilityProfileService.profile(for: $0, executablePath: "")
+        }
     ) -> AgentRuntimeLaunchPreflightResult {
         let resolutionSnapshot = capabilityResolutionSnapshot ?? TaskCapabilityResolutionSnapshot.capture(
             for: task,
@@ -801,7 +808,7 @@ enum AgentRuntimeLaunchPreflight {
         // fail opaquely mid-run, so it blocks the launch here instead.
         let runtime = AgentRuntimeID(rawValue: task.runtimeID ?? "") ?? TaskExecutionDefaults.runtime
         let mcpIssues: [MCPRuntimeProjection.PreflightIssue]
-        if AgentRuntimeAdapterRegistry.descriptor(for: runtime).supportsMCPServers {
+        if runtimeProfile(runtime).supportsTaskScopedMCPDelivery {
             let taskEnv = AgentRuntimeProcessRunner.scopedEnvironmentVariables(
                 for: task,
                 capabilityScope: resolutionSnapshot.providerLaunch,
@@ -908,7 +915,10 @@ enum AgentRuntimeLaunchPreflight {
         phase: RunPhase,
         contextText: String = "",
         preflightCache: PreflightCache = PreflightCache(),
-        capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot? = nil
+        capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot? = nil,
+        runtimeProfile: (AgentRuntimeID) -> AgentRuntimeCapabilityProfile = {
+            AgentRuntimeCapabilityProfileService.profile(for: $0, executablePath: "")
+        }
     ) async -> AgentRuntimeLaunchPreflightResult {
         let resolutionSnapshot = capabilityResolutionSnapshot ?? TaskCapabilityResolutionSnapshot.capture(
             for: task,
@@ -927,7 +937,8 @@ enum AgentRuntimeLaunchPreflight {
             phase: phase,
             contextText: contextText,
             prerequisiteStatuses: prerequisiteStatuses,
-            capabilityResolutionSnapshot: resolutionSnapshot
+            capabilityResolutionSnapshot: resolutionSnapshot,
+            runtimeProfile: runtimeProfile
         )
     }
 
@@ -981,7 +992,10 @@ enum AgentRuntimeLaunchPreflight {
         modelContext: ModelContext,
         phase: RunPhase,
         contextText: String = "",
-        capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot? = nil
+        capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot? = nil,
+        runtimeProfile: (AgentRuntimeID) -> AgentRuntimeCapabilityProfile = {
+            AgentRuntimeCapabilityProfileService.profile(for: $0, executablePath: "")
+        }
     ) -> Bool {
         preflightCapabilitiesBeforeLaunchResult(
             task: task,
@@ -989,8 +1003,27 @@ enum AgentRuntimeLaunchPreflight {
             modelContext: modelContext,
             phase: phase,
             contextText: contextText,
-            capabilityResolutionSnapshot: capabilityResolutionSnapshot
+            capabilityResolutionSnapshot: capabilityResolutionSnapshot,
+            runtimeProfile: runtimeProfile
         ).didPass
+    }
+
+    private static func runtimeProfileProvider(
+        _ configuration: AgentRuntimeConfiguration?
+    ) -> (AgentRuntimeID) -> AgentRuntimeCapabilityProfile {
+        guard let configuration else {
+            return { runtime in
+                AgentRuntimeCapabilityProfileService.profile(for: runtime, executablePath: "")
+            }
+        }
+        return { runtime in
+            let settings = AgentRuntimeAdapterRegistry.adapter(for: runtime)
+                .launchSettings(configuration: configuration)
+            return AgentRuntimeCapabilityProfileService.profile(
+                for: runtime,
+                executablePath: settings.executablePath
+            )
+        }
     }
 
     private static func runtimeReadinessFailureMessage(_ check: RuntimeReadinessCheck) -> String {
