@@ -773,13 +773,13 @@ struct ContentView: View {
             }
             let isDraftFirstPublish = existing.lifecycleStatus == .draft && existing.latestVersionNumber == 0
             target = appWorkspace
-            result = try service.updateApp(existing, manifest: draft.manifest, in: appWorkspace, modelContext: modelContext, status: .published)
+            result = try service.updateApp(existing, manifest: draft.manifest, in: appWorkspace, modelContext: modelContext, status: .published, persistence: .saveOnly)
             isNewApp = isDraftFirstPublish
         } else {
             // New app: create in the selected workspace, deduping the logical id within it.
             target = workspace
             let manifest = WorkspaceAppStudioBuilder.manifestForPublishing(draft.manifest, existingLogicalIDs: Set(allApps.filter { $0.workspaceID == workspace.id }.map(\.logicalID)))
-            result = try service.createApp(manifest: manifest, in: workspace, modelContext: modelContext, status: .published)
+            result = try service.createApp(manifest: manifest, in: workspace, modelContext: modelContext, status: .published, persistence: .saveOnly)
             isNewApp = true
         }
         // Flush the build journal + snapshot the version (best-effort) into the app's OWN workspace.
@@ -788,7 +788,10 @@ struct ContentView: View {
         do {
             let publishedData = try WorkspaceAppService.encodeManifest(result.manifest)
             try WorkspaceAppVersionService().recordPublish(app: result.app, manifestData: publishedData, validated: true, in: target, modelContext: modelContext)
-        } catch { AppLogger.error("Workspace app published but version snapshot failed: \(error)", category: "WorkspaceApps") }
+        } catch {
+            WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: target, modelContext: modelContext)
+            AppLogger.error("Workspace app published but version snapshot failed: \(error)", category: "WorkspaceApps")
+        }
         if seedSampleData, isNewApp { WorkspaceAppSampleSeeder.seed(manifest: result.manifest, workspacePath: target.primaryPath, appID: result.app.logicalID) }
         setSelectedWorkspaceApp(result.app)
     }
