@@ -2389,13 +2389,14 @@ struct AgentRuntimeAdapterTests {
     @Test("Docker workspace executor support follows MCP runtime capability")
     func dockerWorkspaceExecutorSupportFollowsMCPRuntimeCapability() {
         for descriptor in AgentRuntimeAdapterRegistry.descriptors {
+            let profile = AgentRuntimeCapabilityProfile.defaultProfile(for: descriptor.id)
             #expect(
                 DockerWorkspaceMCPProjection.supportsHostProviderWorkspaceExecutor(runtime: descriptor.id)
-                    == descriptor.supportsMCPServers
+                    == profile.canDeliverDockerWorkspaceShellMCP
             )
             #expect(
                 HostControlPlaneMCPProjection.supportsHostControlPlane(runtime: descriptor.id)
-                    == descriptor.supportsMCPServers
+                    == profile.canDeliverHostControlPlaneMCP
             )
         }
     }

@@ -54,8 +54,10 @@ enum HostControlPlaneMCPProjection {
         }
     }
 
-    static func supportsHostControlPlane(runtime: AgentRuntimeID) -> Bool {
-        AgentRuntimeAdapterRegistry.descriptor(for: runtime).supportsMCPServers
+    static func supportsHostControlPlane(runtime: AgentRuntimeID, executablePath: String = "") -> Bool {
+        AgentRuntimeCapabilityProfileService
+            .profile(for: runtime, executablePath: executablePath)
+            .canDeliverHostControlPlaneMCP
     }
 
     static func runtimeSupportToolDescriptors(for runtime: AgentRuntimeID) -> [ProviderRuntimeSupportToolDescriptor] {
@@ -67,6 +69,20 @@ enum HostControlPlaneMCPProjection {
         tools requestedTools: [String]
     ) -> [ProviderRuntimeSupportToolDescriptor] {
         guard supportsHostControlPlane(runtime: runtime) else { return [] }
+        return runtimeSupportToolDescriptors(tools: requestedTools)
+    }
+
+    static func runtimeSupportToolDescriptors(
+        runtimeProfile: AgentRuntimeCapabilityProfile,
+        tools requestedTools: [String]
+    ) -> [ProviderRuntimeSupportToolDescriptor] {
+        guard runtimeProfile.canDeliverHostControlPlaneMCP else { return [] }
+        return runtimeSupportToolDescriptors(tools: requestedTools)
+    }
+
+    private static func runtimeSupportToolDescriptors(
+        tools requestedTools: [String]
+    ) -> [ProviderRuntimeSupportToolDescriptor] {
         let requested = requestedTools.filter { toolNames.contains($0) }
         return requested.map { tool in
             ProviderRuntimeSupportToolDescriptor(

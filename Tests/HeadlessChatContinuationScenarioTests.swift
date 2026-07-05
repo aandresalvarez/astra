@@ -713,13 +713,13 @@ extension HeadlessChatScenarioTests {
 
         let run = try #require(task.runs.sorted { $0.startedAt < $1.startedAt }.last)
         #expect(run.status == .failed)
-        #expect(run.typedStopReason == TaskRunStopReason.custom(HostControlPlaneRuntimeLaunchGuard.missingHostControlMCPReason))
+        #expect(run.typedStopReason == TaskRunStopReason.custom(TaskRuntimeCompatibilityService.runtimeCapabilityIncompatibleReason))
         #expect(task.status == .pendingUser)
         #expect(task.events.contains { event in
             event.run?.id == run.id &&
             event.type == TaskEventTypes.System.error.rawValue &&
             event.payload.contains("Selected runtime is incompatible with required ASTRA capabilities") &&
-            event.payload.contains("Cursor CLI cannot attach ASTRA's host-control MCP route for GitHub metadata/API work")
+            event.payload.contains("host-control MCP server for github")
         })
         #expect(!task.events.contains { event in
             event.run?.id == run.id &&
@@ -775,7 +775,7 @@ extension HeadlessChatScenarioTests {
 
         let run = try #require(task.runs.sorted { $0.startedAt < $1.startedAt }.last)
         #expect(run.status == .failed)
-        #expect(run.typedStopReason == TaskRunStopReason.custom(HostControlPlaneRuntimeLaunchGuard.missingHostControlMCPReason))
+        #expect(run.typedStopReason == TaskRunStopReason.custom(TaskRuntimeCompatibilityService.runtimeCapabilityIncompatibleReason))
         #expect(task.status == .pendingUser)
         #expect(task.events.contains { event in
             event.run?.id == run.id &&
@@ -845,19 +845,166 @@ extension HeadlessChatScenarioTests {
 
         let run = try #require(task.runs.sorted { $0.startedAt < $1.startedAt }.last)
         #expect(run.status == .failed)
-        #expect(run.typedStopReason == TaskRunStopReason.custom(HostControlPlaneRuntimeLaunchGuard.missingHostControlMCPReason))
+        #expect(run.typedStopReason == TaskRunStopReason.custom(TaskRuntimeCompatibilityService.runtimeCapabilityIncompatibleReason))
         #expect(task.status == .pendingUser)
         #expect(task.events.contains { event in
             event.run?.id == run.id &&
             event.type == TaskEventTypes.System.error.rawValue &&
             event.payload.contains("Selected runtime is incompatible with required ASTRA capabilities") &&
-            event.payload.contains("Cursor CLI cannot attach ASTRA's host-control MCP route for GitHub metadata/API work")
+            event.payload.contains("Docker workspace shell MCP")
         })
         #expect(!task.events.contains { event in
             event.run?.id == run.id &&
             event.payload.contains("Provider policy blocked this run before launch")
         })
         #expect(run.output.isEmpty)
+    }
+
+    @Test("Generic Cursor follow-up remains on Cursor")
+    func genericCursorFollowUpRemainsOnCursor() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let cursorPath = try harness.writeExecutable(
+            named: "cursor-agent",
+            script: """
+            printf '%s\\n' 'Cursor handled generic work'
+            exit 0
+            """
+        )
+        let task = harness.makeTask(
+            runtime: .cursorCLI,
+            goal: "Summarize the local notes",
+            model: "composer-2.5-fast"
+        )
+        let worker = harness.makeWorker(
+            runtime: .cursorCLI,
+            executablePath: cursorPath,
+            permissionPolicy: .autonomous
+        )
+        worker.defaultRuntimeID = .codexCLI
+
+        _ = await harness.continueTask(task: task, message: "retry generic work", worker: worker)
+
+        let run = try #require(task.runs.sorted { $0.startedAt < $1.startedAt }.last)
+        #expect(run.status == .completed)
+        #expect(run.runtimeID == AgentRuntimeID.cursorCLI.rawValue)
+        #expect(task.runtimeID == AgentRuntimeID.cursorCLI.rawValue)
+        #expect(run.output.trimmingCharacters(in: .whitespacesAndNewlines) == "Cursor handled generic work")
+        #expect(!task.events.contains { $0.payload.contains("Runtime changed from Cursor CLI") })
+    }
+
+    @Test("GitHub host-control retry skips old Copilot default and reroutes to Codex")
+    func githubHostControlRetrySkipsOldCopilotDefaultAndReroutesToCodex() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let cursorPath = try harness.writeExecutable(
+            named: "cursor-agent",
+            script: """
+            printf '%s\\n' 'Cursor provider should not launch for GitHub host-control work'
+            exit 0
+            """
+        )
+        let copilotPath = try harness.writeExecutable(
+            named: "copilot",
+            script: Self.copilotScript(body: """
+            printf '%s\\n' 'old copilot should not launch'
+            exit 0
+            """)
+        )
+        let codexPath = try harness.writeExecutable(
+            named: "codex",
+            script: """
+            #!/bin/sh
+            printf '%s\\n' '{"type":"thread.started","thread_id":"codex-thread"}'
+            printf '%s\\n' '{"type":"item.completed","item":{"type":"agent_message","text":"Codex handled GitHub"}}'
+            printf '%s\\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'
+            exit 0
+            """
+        )
+
+        let task = harness.makeTask(runtime: .cursorCLI, goal: "List my open PRs", model: "composer-2.5-fast")
+        task.workspace?.enabledCapabilityIDs = [HostControlPlaneMCPProjection.githubPackageID]
+        let skill = Skill(
+            name: "GitHub Agent",
+            allowedTools: ["Read"],
+            behaviorInstructions: "Use ASTRA's host-control GitHub MCP tool mcp__astra_host__github."
+        )
+        skill.originPackageID = HostControlPlaneMCPProjection.githubPackageID
+        skill.workspace = task.workspace
+        task.skills = [skill]
+        harness.context.insert(skill)
+
+        let worker = harness.makeWorker(runtime: .cursorCLI, executablePath: cursorPath, permissionPolicy: .autonomous)
+        worker.defaultRuntimeID = .copilotCLI
+        worker.setExecutablePath(copilotPath, for: .copilotCLI)
+        worker.setExecutablePath(codexPath, for: .codexCLI)
+
+        _ = await harness.continueTask(task: task, message: "retry", worker: worker)
+
+        let run = try #require(task.runs.sorted { $0.startedAt < $1.startedAt }.last)
+        #expect(run.status == .completed)
+        #expect(run.runtimeID == AgentRuntimeID.codexCLI.rawValue)
+        #expect(run.output == "Codex handled GitHub")
+        #expect(task.events.contains { $0.payload.contains("Runtime changed from Cursor CLI to Codex CLI") })
+        #expect(!run.output.contains("old copilot should not launch"))
+    }
+
+    @Test("GitHub host-control retry accepts new Copilot default")
+    func githubHostControlRetryAcceptsNewCopilotDefaultWhenAdditionalMCPConfigIsSupported() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let cursorPath = try harness.writeExecutable(
+            named: "cursor-agent",
+            script: """
+            printf '%s\\n' 'Cursor provider should not launch for GitHub host-control work'
+            exit 0
+            """
+        )
+        let copilotPath = try harness.writeExecutable(
+            named: "copilot",
+            script: """
+            #!/bin/sh
+            if [ "$1" = "help" ]; then
+              printf '%s\\n' '--output-format=FORMAT --stream=MODE --no-ask-user --allow-all-tools --additional-mcp-config CONFIG'
+              exit 0
+            fi
+            if [ "$1" = "--version" ] || [ "$1" = "version" ]; then
+              echo "copilot fake 1.0"
+              exit 0
+            fi
+            printf '%s\\n' '{"type":"session.mcp_servers_loaded","session":{"id":"new-copilot-session","model":"gpt-5"}}'
+            printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Copilot handled GitHub"}}'
+            printf '%s\\n' '{"type":"usage","usage":{"input_tokens":1,"output_tokens":1},"duration_ms":1,"turns":1}'
+            exit 0
+            """
+        )
+
+        let task = harness.makeTask(runtime: .cursorCLI, goal: "List my open PRs", model: "composer-2.5-fast")
+        task.workspace?.enabledCapabilityIDs = [HostControlPlaneMCPProjection.githubPackageID]
+        let skill = Skill(
+            name: "GitHub Agent",
+            allowedTools: ["Read"],
+            behaviorInstructions: "Use ASTRA's host-control GitHub MCP tool mcp__astra_host__github."
+        )
+        skill.originPackageID = HostControlPlaneMCPProjection.githubPackageID
+        skill.workspace = task.workspace
+        task.skills = [skill]
+        harness.context.insert(skill)
+
+        let worker = harness.makeWorker(runtime: .cursorCLI, executablePath: cursorPath, permissionPolicy: .autonomous)
+        worker.defaultRuntimeID = .copilotCLI
+        worker.setExecutablePath(copilotPath, for: .copilotCLI)
+
+        _ = await harness.continueTask(task: task, message: "retry", worker: worker)
+
+        let run = try #require(task.runs.sorted { $0.startedAt < $1.startedAt }.last)
+        #expect(run.status == .completed)
+        #expect(run.runtimeID == AgentRuntimeID.copilotCLI.rawValue)
+        #expect(run.output == "Copilot handled GitHub")
+        #expect(task.events.contains { $0.payload.contains("Runtime changed from Cursor CLI to GitHub Copilot CLI") })
     }
 
     @Test("GitHub host-control retry reroutes from Cursor to configured compatible runtime")
