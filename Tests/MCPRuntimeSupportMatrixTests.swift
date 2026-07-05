@@ -37,6 +37,43 @@ struct MCPRuntimeSupportMatrixTests {
         #expect(cursor.configDeliveryOwnership == .unsupported)
     }
 
+    @Test("Task-scoped MCP delivery is limited to ASTRA-owned renderers")
+    func taskScopedMCPDeliveryIsLimitedToAstraOwnedRenderers() throws {
+        let descriptors = AgentRuntimeAdapterRegistry.descriptors
+        let descriptorByRuntime = Dictionary(uniqueKeysWithValues: descriptors.map { ($0.id, $0) })
+
+        let claude = try #require(descriptorByRuntime[.claudeCode])
+        let codex = try #require(descriptorByRuntime[.codexCLI])
+        let copilot = try #require(descriptorByRuntime[.copilotCLI])
+
+        #expect(MCPRuntimeSupportMatrix.profile(for: claude).configDeliveryOwnership == .astraEphemeralLaunchFile)
+        #expect(MCPRuntimeSupportMatrix.profile(for: codex).configDeliveryOwnership == .astraInlineLaunchArgument)
+        #expect(MCPRuntimeSupportMatrix.profile(for: copilot).configDeliveryOwnership == .unsupported)
+        #expect(
+            MCPRuntimeSupportMatrix.copilotProfile(
+                for: copilot,
+                supportsAdditionalMCPConfig: true
+            ).configDeliveryOwnership == .astraAdditionalLaunchFile
+        )
+        #expect(
+            MCPRuntimeSupportMatrix.copilotProfile(
+                for: copilot,
+                supportsAdditionalMCPConfig: false
+            ).configDeliveryOwnership == .unsupported
+        )
+
+        for runtime in [AgentRuntimeID.cursorCLI, .openCodeCLI, .antigravityCLI] {
+            let descriptor = try #require(descriptorByRuntime[runtime])
+            let profile = MCPRuntimeSupportMatrix.profile(for: descriptor)
+            #expect(!profile.supportsDelivery)
+            #expect(profile.supportedTransports.isEmpty)
+            #expect(profile.nativeBindingDestinations.isEmpty)
+            #expect(profile.gatewayBindingDestinations.isEmpty)
+            #expect(profile.configDeliveryOwnership == .unsupported)
+            #expect(profile.validationEvidenceKinds.isEmpty)
+        }
+    }
+
     @Test("Planner delivers stdio env bindings to Claude and Codex but not Cursor")
     func plannerDeliversStdioEnvBindingsToSupportedRuntimes() throws {
         let server = PluginMCPServer(
