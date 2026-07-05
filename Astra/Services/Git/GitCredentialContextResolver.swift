@@ -47,6 +47,9 @@ enum GitOperationIntentDetector {
         if detectsNativeGitTransportOperation(in: haystack) {
             return true
         }
+        if detectsNativeGitHubCredentialOperation(in: haystack) {
+            return true
+        }
         if detectsExplicitGitHubCLIAPICommand(in: haystack) {
             return !prefersHostControlGitHub || detectsNativeGitHubShellPreference(in: haystack)
         }
@@ -62,6 +65,7 @@ enum GitOperationIntentDetector {
         guard hostControlGitHubAvailable else { return false }
         let haystack = networkGitIntentText(prompt: prompt, task: task, contextText: contextText)
         guard !detectsNativeGitTransportOperation(in: haystack),
+              !detectsNativeGitHubCredentialOperation(in: haystack),
               !detectsNativeGitHubShellPreference(in: haystack) else {
             return false
         }
@@ -129,6 +133,10 @@ enum GitOperationIntentDetector {
         return orderedSignals.contains { containsOrderedWords($0, in: haystack) }
     }
 
+    private static func detectsNativeGitHubCredentialOperation(in haystack: String) -> Bool {
+        containsTokenPhrase("gh auth", in: haystack)
+    }
+
     private static func detectsGitHubMetadataOrAPIIntent(in haystack: String) -> Bool {
         let directSignals = [
             "pull request",
@@ -183,8 +191,7 @@ enum GitOperationIntentDetector {
             "gh workflow",
             "gh api",
             "gh repo view",
-            "gh repo list",
-            "gh auth"
+            "gh repo list"
         ]
         return exactCommands.contains(where: { containsTokenPhrase($0, in: haystack) })
     }
