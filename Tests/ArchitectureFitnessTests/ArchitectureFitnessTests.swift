@@ -260,17 +260,12 @@ struct ArchitectureFitnessTests {
         let persistenceHomePrefix = "Astra/Services/Persistence/"
         let allowedRawSaveFiles: Set<String> = [
             "Astra/ASTRAApp.swift",
-            "Astra/Services/Capabilities/CapabilityDefinitionRepairService.swift",
             "Astra/Services/Runtime/AgentRuntimeBudgetPolicy.swift",
             "Astra/Services/Tasks/TaskLifecycleCoordinator.swift",
             "Astra/Services/Tasks/TaskQueue.swift",
             "Astra/Services/Tasks/TaskRunLifecycleService.swift",
             "Astra/Services/Tasks/TaskStateMachine.swift",
             "Astra/Services/Validation/TaskExecutionArtifactPreparer.swift",
-            "Astra/Services/WorkspaceApps/WorkspaceAppAutomationExecutionService.swift",
-            "Astra/Services/WorkspaceApps/WorkspaceAppRunResumptionService.swift",
-            "Astra/Services/WorkspaceApps/WorkspaceAppService.swift",
-            "Astra/Services/WorkspaceApps/WorkspaceAppVersionService.swift",
             "Astra/Views/Capabilities/GoogleWorkspaceCapabilityInstallSheet.swift",
             "Astra/Views/ChatPanelView.swift",
             "Astra/Views/Components/KanbanBoardView.swift",

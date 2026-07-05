@@ -81,8 +81,9 @@ struct WorkspaceAppAutomationExecutionService {
 
         app.updatedAt = now
         workspace.updatedAt = now
-        try modelContext.save()
-        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
+        // Immediate durable save: the scheduler state written here (markRunCompleted /
+        // blocked) gates whether the next sweep re-runs these automations.
+        try WorkspacePersistenceCoordinator.saveAndAutoExportOrThrow(workspace: workspace, modelContext: modelContext)
         return results
     }
 

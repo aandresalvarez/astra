@@ -97,26 +97,28 @@ struct WorkspaceAppVersionService {
     /// The publish path's single entry point: snapshot the just-published manifest and
     /// mirror the version numbers/digests onto the @Model. Call AFTER `createApp`'s save
     /// has committed, so a stranded snapshot can never reference an unsaved app.
+    /// Takes the `Workspace` (not just its path) so the coordinator save also refreshes
+    /// the workspace JSON mirror, which carries the version fields written here.
     @MainActor
     @discardableResult
     func recordPublish(
         app: WorkspaceApp,
         manifestData: Data,
         validated: Bool,
-        workspacePath: String,
+        in workspace: Workspace,
         modelContext: ModelContext,
         now: Date = Date()
     ) throws -> Int {
         let digest = WorkspaceAppService.digest(for: manifestData)
         let number = try snapshotPublishedVersion(
             manifestData: manifestData, digest: digest, validated: validated,
-            appID: app.logicalID, workspacePath: workspacePath, now: now
+            appID: app.logicalID, workspacePath: workspace.primaryPath, now: now
         )
         app.latestVersionNumber = number
         app.publishedManifestDigest = digest
         if validated { app.lastKnownGoodManifestDigest = digest }
         app.updatedAt = now
-        try modelContext.save()
+        try WorkspacePersistenceCoordinator.saveAndAutoExportOrThrow(workspace: workspace, modelContext: modelContext)
         return number
     }
 
@@ -180,7 +182,7 @@ struct WorkspaceAppVersionService {
         app.publishedManifestDigest = restoredDigest
         app.lifecycleStatus = .published
         app.updatedAt = now
-        try modelContext.save()
+        try WorkspacePersistenceCoordinator.saveAndAutoExportOrThrow(workspace: workspace, modelContext: modelContext)
         return target
     }
 
