@@ -630,9 +630,39 @@ struct RuntimeExecutableCheckResult {
     var isReady: Bool { executable != nil && check.state == .ready }
 }
 
+/// Launch-invariant fields read directly off `AgentRuntimeProcessLaunchContext.task`
+/// (as opposed to the many launch helpers that take the live `AgentTask` itself —
+/// see the field-by-field audit in the commit introducing this type). Captured
+/// once at context construction so adapters that only need these scalars don't
+/// hold a live SwiftData model reference.
+struct AgentTaskLaunchSnapshot: Sendable, Equatable {
+    let id: UUID
+    let model: String
+    let maxTurns: Int
+
+    init(task: AgentTask) {
+        self.id = task.id
+        self.model = task.model
+        self.maxTurns = task.maxTurns
+    }
+
+    init(id: UUID, model: String, maxTurns: Int) {
+        self.id = id
+        self.model = model
+        self.maxTurns = maxTurns
+    }
+}
+
 struct AgentRuntimeProcessLaunchContext {
     let prompt: String
+    /// Live SwiftData model, retained for launch helpers that resolve
+    /// workspace/environment/capability state (`TaskWorkspaceAccess`,
+    /// `DockerExecutionPlanner`, `MCPRuntimeProjection`, capability resolution,
+    /// etc.) which is itself unsnapshotted. Direct scalar reads at the adapter
+    /// call sites go through `taskSnapshot` instead — see the audit table in
+    /// the commit that introduced `AgentTaskLaunchSnapshot`.
     let task: AgentTask
+    let taskSnapshot: AgentTaskLaunchSnapshot
     let workspacePath: String
     let executablePath: String
     let providerHomeDirectory: String
@@ -668,6 +698,7 @@ struct AgentRuntimeProcessLaunchContext {
     ) {
         self.prompt = prompt
         self.task = task
+        self.taskSnapshot = AgentTaskLaunchSnapshot(task: task)
         self.workspacePath = workspacePath
         self.executablePath = executablePath
         self.providerHomeDirectory = providerHomeDirectory
@@ -1266,7 +1297,7 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
         // or a repository's own .mcp.json loads ungoverned on those runs.
         let mcpConfigURL = MCPRuntimeProjection.writeClaudeConfig(
             servers: mcpServers,
-            taskID: context.task.id,
+            taskID: context.taskSnapshot.id,
             availableEnvironment: explicitMCPEnvironment,
             allowEmpty: true
         )
@@ -1331,7 +1362,7 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
             isVertexEnabled: processEnvironment["CLAUDE_CODE_USE_VERTEX"] == "1"
         )
         let sandboxReadablePaths = baseSandboxReadablePaths + vertexADCReadablePaths
-        let model = AgentRuntimeProcessRunner.model(context.task.model, for: id)
+        let model = AgentRuntimeProcessRunner.model(context.taskSnapshot.model, for: id)
         var args = interactiveAsk == nil ? ["-p", context.prompt] : ["-p"]
         if let sessionID = context.nativeContinuationSessionID,
            !sessionID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -1357,8 +1388,8 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
             policy: effectivePermissionPolicy,
             allowedTools: nativeAllowedTools
         )
-        if context.task.maxTurns > 0 {
-            args += ["--max-turns", String(context.task.maxTurns)]
+        if context.taskSnapshot.maxTurns > 0 {
+            args += ["--max-turns", String(context.taskSnapshot.maxTurns)]
         }
         if !visibleTools.isEmpty {
             args += ["--tools", visibleTools.joined(separator: ",")]
@@ -1426,7 +1457,7 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
                 "uses_visible_tools_filter": String(!visibleTools.isEmpty),
                 "allowed_tools_override": String(context.executionPolicy.allowedToolsOverride != nil),
                 "task_env_count": String(taskEnv.count),
-                "max_turns": String(context.task.maxTurns),
+                "max_turns": String(context.taskSnapshot.maxTurns),
                 "supports_native_continuation": String(descriptor.supportsNativeContinuation),
                 "uses_native_continuation": String(context.nativeContinuationSessionID != nil),
                 "native_session_prefix": context.nativeContinuationSessionID.map { String($0.prefix(8)) } ?? "none",
@@ -1822,7 +1853,7 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
         let executable = context.executablePath.isEmpty ? CopilotCLIRuntime.detectPath() : context.executablePath
         let providerVersion = CopilotCLIRuntime.versionSummary(executablePath: executable)
         let capabilities = CopilotCLIRuntime.capabilities(executablePath: executable)
-        let model = AgentRuntimeProcessRunner.model(context.task.model, for: id)
+        let model = AgentRuntimeProcessRunner.model(context.taskSnapshot.model, for: id)
         let additionalPaths = AgentRuntimeProcessRunner.copilotAdditionalPaths(for: context.task)
         let userHome = FileManager.default.homeDirectoryForCurrentUser.path
         let copilotStateHome = CopilotCLIRuntime.defaultHome(userHome: userHome)
@@ -2427,7 +2458,7 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
         let modelSettingsURL = AntigravityCLIRuntime.settingsURL(
             providerHomeDirectory: context.providerHomeDirectory
         )
-        let model = AgentRuntimeProcessRunner.model(context.task.model, for: id)
+        let model = AgentRuntimeProcessRunner.model(context.taskSnapshot.model, for: id)
         let providerModel = AntigravityCLIRuntime.resolvedModelName(model, settingsURL: modelSettingsURL)
         let modelApplied = FileManager.default.isExecutableFile(atPath: executable)
             ? AntigravityCLIRuntime.applySelectedModel(providerModel, settingsURL: modelSettingsURL)

@@ -204,7 +204,7 @@ struct OpenCodeCLIRuntimeAdapter: AgentRuntimeAdapter {
         let pathPrefix = AgentRuntimeProcessRunner.pathPrefix(for: context.task, taskEnv: taskEnv)
         let executable = context.executablePath.isEmpty ? OpenCodeCLIRuntime.detectPath() : context.executablePath
         let providerVersion = OpenCodeCLIRuntime.versionSummary(executablePath: executable)
-        let model = AgentRuntimeProcessRunner.model(context.task.model, for: id)
+        let model = AgentRuntimeProcessRunner.model(context.taskSnapshot.model, for: id)
         let providerModel = OpenCodeCLIRuntime.resolvedModelName(model)
         let additionalPaths = AgentRuntimeProcessRunner.runtimeAdditionalPaths(for: context.task)
         let executionEnvironment = DockerExecutionPlanner.resolveEnvironment(for: context.task)

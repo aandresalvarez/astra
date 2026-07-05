@@ -198,7 +198,7 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
         let pathPrefix = AgentRuntimeProcessRunner.pathPrefix(for: context.task, taskEnv: taskEnv)
         let executable = context.executablePath.isEmpty ? CodexCLIRuntime.detectPath() : context.executablePath
         let providerVersion = CodexCLIRuntime.versionSummary(executablePath: executable)
-        let model = AgentRuntimeProcessRunner.model(context.task.model, for: id)
+        let model = AgentRuntimeProcessRunner.model(context.taskSnapshot.model, for: id)
         let providerModel = CodexCLIRuntime.resolvedModelName(model)
         let additionalPaths = AgentRuntimeProcessRunner.runtimeAdditionalPaths(for: context.task)
         let resumingNativeSession = !(context.nativeContinuationSessionID ?? "")
