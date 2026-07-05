@@ -34,7 +34,7 @@ struct TaskDetailView: View {
                             withAnimation(reduceMotion ? nil : .default) {
                                 task.isDone.toggle()
                                 task.updatedAt = Date()
-                                try? modelContext.save()
+                                WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
                             }
                         } label: {
                             Text(task.isDone ? "Reopen" : "Close")

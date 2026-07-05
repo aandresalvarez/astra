@@ -459,7 +459,14 @@ public struct ASTRAApp: App {
 
         if disallowedMigrated > 0 || globalMarked > 0 {
             do {
-                try modelContext.save()
+                // Skills are global (not workspace-scoped), so there is no
+                // workspace JSON mirror to refresh; the coordinator's throwing
+                // path keeps this save synchronous so the retry-next-launch
+                // guard below still runs before the build flag is set.
+                try WorkspacePersistenceCoordinator.saveAndAutoExportOrThrow(
+                    workspace: nil,
+                    modelContext: modelContext
+                )
             } catch {
                 AppLogger.audit(.skillToolPermissionChanged, category: "App", fields: [
                     "migration": "startup_skill_migrations",

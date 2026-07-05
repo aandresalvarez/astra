@@ -1149,7 +1149,6 @@ struct WorkspaceCanvasPanelView: View {
             selectedTask.goal = sanitized.goal
             selectedTask.updatedAt = Date()
         }
-        try? modelContext.save()
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: selectedTask.workspace, modelContext: modelContext)
         draftPlan = sanitized
         lastPlanSignature = planSignature
@@ -1163,7 +1162,6 @@ struct WorkspaceCanvasPanelView: View {
             modelContext: modelContext,
             reason: "Cancelled from shelf."
         )
-        try? modelContext.save()
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: selectedTask.workspace, modelContext: modelContext)
         isPresented = false
     }

@@ -1759,7 +1759,6 @@ struct ChatPanelView: View {
         pendingPlan = nil
         isApprovedPlanHistoryExpanded = false
         isPlanMode = false
-        try? modelContext.save()
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
         onTaskCreated?(task)
         showPlanCanvasIfNeeded(for: task)
