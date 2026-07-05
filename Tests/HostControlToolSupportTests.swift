@@ -1029,8 +1029,41 @@ struct HostControlToolSupportTests {
         defer { try? FileManager.default.removeItem(at: root) }
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
 
+        // The orphaned background subshell must hold the stdout pipe's write end open
+        // for the entire test with zero dependence on wall-clock timing. Two independent
+        // hazards had to be removed to make that true:
+        //
+        // 1. A `sleep N` orphan races real time: if the assertions (or a loaded CI box)
+        //    take longer than N seconds to reach the read, the orphan wakes up, writes
+        //    the "secret", and the pipe closes cleanly before truncation is observed.
+        //    Fixed by having the orphan block forever on a `read` from a FIFO this test
+        //    never writes to — there is no duration to race, only "still blocked or not".
+        //
+        // 2. HostControlScopedProcess reaps the foreground `gh` script and then signals
+        //    the *whole spawned process group* (SIGTERM, ~200ms grace, SIGKILL) to clean up
+        //    stragglers. An orphan backgrounded with a plain `&` inherits that same process
+        //    group, so this cleanup kills it — and whether HostControlProcessRunner's own
+        //    pipe drain observes the still-open pipe (EAGAIN, the "abandoned" condition this
+        //    test targets) or the just-closed pipe (a clean EOF, indistinguishable from a
+        //    normal exit) is a genuine race between the drain and the kernel finishing off
+        //    the killed orphan. Fixed by running the orphan with `set -m` (job control)
+        //    first: POSIX shells place a monitored background job in its *own* new process
+        //    group, distinct from the script's. HostControlScopedProcess's group-kill can
+        //    then never reach the orphan at all — it isn't a faster race, it's no longer a
+        //    race, since nothing in this test process ever signals that group.
+        //
+        // The orphan is reaped by the OS when this process exits (or the FIFO gate is
+        // nudged in the `defer` below); it is never left running as a lingering test-suite
+        // side effect beyond that.
+        let gate = root.appendingPathComponent("gate.fifo", isDirectory: false)
+        guard mkfifo(gate.path, 0o600) == 0 else {
+            Issue.record("Failed to create control FIFO for abandoned-pipe test: errno \(errno)")
+            return
+        }
+
         let gh = try customExecutable(named: "gh", root: root, body: """
-        ( sleep 2; printf 'et-token' ) &
+        set -m
+        ( read _line < "\(gate.path)"; printf 'et-token' ) &
         printf 'visible-prefix:super-secr'
         exit 0
         """)
@@ -1048,6 +1081,20 @@ struct HostControlToolSupportTests {
             ),
             processLimits: HostControlProcessLimits(maximumTimeoutSeconds: 5, outputByteLimit: 256)
         )
+
+        defer {
+            // Best-effort: nudge the orphaned `read` awake so it exits and no stray
+            // process outlives the test, since (by design, see above) it lives outside
+            // the process group HostControlScopedProcess cleans up. This must never
+            // block: opening a FIFO for writing blocks until a reader is present, and
+            // if the orphan already exited for any other reason there is no reader at
+            // all. O_NONBLOCK makes the open return ENXIO immediately in that case
+            // instead of hanging the test.
+            let fd = open(gate.path, O_WRONLY | O_NONBLOCK)
+            if fd >= 0 {
+                close(fd)
+            }
+        }
 
         let response = try call(server, id: 1, tool: "github", arguments: ["arguments": ["pr", "view", "123"]])
         let text = try resultText(response)
