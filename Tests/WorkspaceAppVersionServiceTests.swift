@@ -33,7 +33,7 @@ struct WorkspaceAppVersionServiceTests {
             app.manifestDigest = WorkspaceAppService.digest(for: data)
             return try service.recordPublish(
                 app: app, manifestData: data, validated: validated,
-                workspacePath: workspace.primaryPath, modelContext: context,
+                in: workspace, modelContext: context,
                 now: Date(timeIntervalSince1970: seconds)
             )
         }
@@ -69,6 +69,51 @@ struct WorkspaceAppVersionServiceTests {
     // MARK: - Snapshot on publish
 
     @MainActor
+    @Test("publish flow exports workspace mirror only after version fields are recorded")
+    func publishFlowExportsMirrorAfterVersionFields() async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("wsapp-publish-mirror-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let container = try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+        )
+        let context = container.mainContext
+        let workspace = Workspace(name: "Apps", primaryPath: root.path)
+        context.insert(workspace)
+        let configURL = URL(fileURLWithPath: WorkspaceFileLayout.workspaceConfigFile(for: workspace.primaryPath))
+
+        let manifest = WorkspaceAppStudioBuilder.baseManifest(intent: "Build me a grocery database app.")
+        let created = try WorkspaceAppService().createApp(
+            manifest: manifest,
+            in: workspace,
+            modelContext: context,
+            status: .published,
+            persistence: .saveOnly
+        )
+        #expect(!FileManager.default.fileExists(atPath: configURL.path))
+
+        let manifestData = try WorkspaceAppService.encodeManifest(created.manifest)
+        let digest = WorkspaceAppService.digest(for: manifestData)
+        try WorkspaceAppVersionService().recordPublish(
+            app: created.app,
+            manifestData: manifestData,
+            validated: true,
+            in: workspace,
+            modelContext: context
+        )
+
+        let config = try await Self.waitForExportedWorkspaceConfig(at: configURL)
+        let appConfig = try #require(config.workspaceApps?.first { $0.logicalID == created.app.logicalID })
+        #expect(appConfig.latestVersionNumber == 1)
+        #expect(appConfig.publishedManifestDigest == digest)
+        #expect(appConfig.lastKnownGoodManifestDigest == digest)
+    }
+
+    @MainActor
     @Test("publishing snapshots version 1 and mirrors it onto the model")
     func publishSnapshotsVersionOne() throws {
         let fixture = try Self.makeFixture()
@@ -96,6 +141,22 @@ struct WorkspaceAppVersionServiceTests {
         #expect(fixture.app.latestVersionNumber == 1)
         #expect(fixture.app.publishedManifestDigest == digest)
         #expect(fixture.app.lastKnownGoodManifestDigest == digest)
+    }
+
+    private static func waitForExportedWorkspaceConfig(
+        at url: URL,
+        attempts: Int = 100
+    ) async throws -> WorkspaceConfigManager.WorkspaceConfig {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        for _ in 0..<attempts {
+            if let data = try? Data(contentsOf: url),
+               let config = try? decoder.decode(WorkspaceConfigManager.WorkspaceConfig.self, from: data) {
+                return config
+            }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        throw WorkspaceAppServiceError.fileOperationFailed("Timed out waiting for workspace mirror export at \(url.path).")
     }
 
     @MainActor

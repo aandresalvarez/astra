@@ -50,7 +50,7 @@ struct WorkspaceAppEndToEndTests {
         let app = created.app
         #expect(app.lifecycleStatus == .published)
         try versions.recordPublish(app: app, manifestData: try WorkspaceAppService.encodeManifest(manifest),
-                                   validated: true, workspacePath: env.workspace.primaryPath, modelContext: env.context)
+                                   validated: true, in: env.workspace, modelContext: env.context)
         #expect(app.latestVersionNumber == 1)
 
         func run(_ id: String, _ input: WorkspaceAppActionInput) throws -> WorkspaceAppActionExecutionResult {
@@ -85,7 +85,7 @@ struct WorkspaceAppEndToEndTests {
         let editedData = try WorkspaceAppService.encodeManifest(edited)
         try editedData.write(to: created.manifestURL, options: [.atomic])
         app.manifestDigest = WorkspaceAppService.digest(for: editedData)
-        try versions.recordPublish(app: app, manifestData: editedData, validated: true, workspacePath: env.workspace.primaryPath, modelContext: env.context)
+        try versions.recordPublish(app: app, manifestData: editedData, validated: true, in: env.workspace, modelContext: env.context)
         #expect(versions.listVersions(appID: app.logicalID, workspacePath: env.workspace.primaryPath).count == 2)
 
         let restored = try versions.revertToPreviousPublished(app: app, in: env.workspace, modelContext: env.context)

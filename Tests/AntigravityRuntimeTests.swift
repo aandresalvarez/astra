@@ -257,7 +257,9 @@ struct AntigravityCLIRuntimeTests {
             localToolCommands: [],
             environmentKeyNames: ["JIRA_API_TOKEN"],
             credentialLabels: ["JIRA_API_TOKEN"],
-            providerFeatures: adapter.supportedFeatures
+            providerFeatures: adapter.supportedFeatures,
+            launchResourceContractAvailable: true,
+            providerEnvironmentSecretResourceLabels: ["JIRA_API_TOKEN"]
         )
 
         let render = adapter.render(policy: .preset(.autonomous), context: context)

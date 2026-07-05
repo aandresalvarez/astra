@@ -918,10 +918,12 @@ enum AgentPolicyManifestService {
         defaultPolicyLevelRaw: String,
         providerVersion: String? = nil,
         providerCapabilities: AgentRuntimePolicyCapabilities = .conservative,
+        runtimeCapabilityProfile: AgentRuntimeCapabilityProfile? = nil,
         capabilityPackages: [PluginPackage]? = nil,
         approvalRecords: [CapabilityApprovalRecord]? = nil,
         contextText: String = "",
         capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot? = nil,
+        launchResourcePlan: TaskLaunchResourcePlan? = nil,
         modelContext: ModelContext
     ) -> RunPermissionManifest {
         let defaultLevel = AgentPolicyDefaults.effectiveUserFacingLevel(
@@ -971,9 +973,19 @@ enum AgentPolicyManifestService {
         let manifestCredentialLabels = uniqueStrings(
             credentialLabels(for: task, capabilityScope: taskCapabilityScope)
                 + dockerCredentialLabels(environment: executionEnvironment)
-                + gitCredentialLabels(task: task, contextText: contextText)
+                + gitCredentialLabels(
+                    task: task,
+                    contextText: contextText,
+                    executionEnvironment: executionEnvironment,
+                    capabilityScope: taskCapabilityScope
+                )
         )
+        let launchResourceExposure = launchResourcePlan
+            .map { LaunchResourcePolicyExposure(contract: LaunchResourceContract(plan: $0)) }
+            ?? .absent
         let runtimeAdapter = AgentRuntimeAdapterRegistry.adapter(for: runtime)
+        let runtimeCapabilityProfile = runtimeCapabilityProfile
+            ?? AgentRuntimeCapabilityProfileService.profile(for: runtime, executablePath: "")
         let providerPolicyAdapter = runtimeAdapter.policyAdapter(runtimeCapabilities: providerCapabilities)
         let configOwnership = runtimeAdapter.providerConfigOwnership(workspacePath: workspacePath)
         let runtimePaths = runtimeAdditionalPaths(for: task)
@@ -991,6 +1003,10 @@ enum AgentPolicyManifestService {
             environmentKeyNames: envKeys,
             credentialLabels: manifestCredentialLabels,
             providerFeatures: providerPolicyAdapter.supportedFeatures,
+            launchResourceContractAvailable: launchResourceExposure.launchResourceContractAvailable,
+            providerEnvironmentSecretResourceLabels: launchResourceExposure.providerEnvironmentSecretResourceLabels,
+            providerFileCredentialResourceLabels: launchResourceExposure.providerFileCredentialResourceLabels,
+            providerUnenforcedFileCredentialResourceLabels: launchResourceExposure.providerUnenforcedFileCredentialResourceLabels,
             providerConfigOwnership: configOwnership,
             existingProviderConfigSummary: runtimeAdapter.existingProviderConfigSummary(workspacePath: workspacePath)
         )
@@ -999,6 +1015,7 @@ enum AgentPolicyManifestService {
             to: render,
             task: task,
             runtime: runtime,
+            runtimeCapabilityProfile: runtimeCapabilityProfile,
             executionEnvironment: executionEnvironment,
             contextText: contextText,
             capabilityScope: taskCapabilityScope
@@ -1018,7 +1035,12 @@ enum AgentPolicyManifestService {
             capabilityScope: taskCapabilityScope
         )
         render.diagnostics = providerPolicyAdapter.validate(render: render, context: context)
-        if shouldProjectGitCredentials(task: task, contextText: contextText) {
+        if shouldProjectGitCredentials(
+            task: task,
+            contextText: contextText,
+            executionEnvironment: executionEnvironment,
+            capabilityScope: taskCapabilityScope
+        ) {
             render.diagnostics.append(PolicyDiagnostic(
                 id: "git.credential-projection",
                 severity: .info,
@@ -1088,6 +1110,7 @@ enum AgentPolicyManifestService {
                 } ?? taskCapabilityResolver.enabledMCPServerManifests,
                 task: task,
                 runtime: runtime,
+                runtimeCapabilityProfile: runtimeCapabilityProfile,
                 executionEnvironment: executionEnvironment,
                 contextText: contextText,
                 capabilityScope: taskCapabilityScope
@@ -1131,12 +1154,13 @@ enum AgentPolicyManifestService {
         to render: ProviderPolicyRender,
         task: AgentTask,
         runtime: AgentRuntimeID,
+        runtimeCapabilityProfile: AgentRuntimeCapabilityProfile,
         executionEnvironment: WorkspaceExecutionEnvironment,
         contextText: String,
         capabilityScope: TaskCapabilityPromptScope
     ) -> ProviderPolicyRender {
         let usesDockerWorkspaceExecutor = DockerWorkspaceMCPProjection.isEnabled(for: executionEnvironment)
-            && DockerWorkspaceMCPProjection.supportsHostProviderWorkspaceExecutor(runtime: runtime)
+            && runtimeCapabilityProfile.canDeliverDockerWorkspaceShellMCP
         let hostControlTools = HostControlPlaneMCPProjection.enabledToolNames(
             task: task,
             environment: executionEnvironment,
@@ -1165,6 +1189,21 @@ enum AgentPolicyManifestService {
                     HostControlPlaneMCPProjection.providerToolPermission(for: $0)
                 }
             )
+            if !runtimeCapabilityProfile.canDeliverHostControlPlaneMCP {
+                updated.diagnostics.append(PolicyDiagnostic(
+                    id: "\(runtime.rawValue).host-control-plane-unsupported",
+                    severity: .blocked,
+                    title: "Host control-plane route is unavailable",
+                    message: HostControlPlaneRuntimeLaunchGuard.unsupportedRuntimeDetail(
+                        runtime: runtime,
+                        requiredTools: hostControlTools
+                    ),
+                    affectedCapability: "control_plane",
+                    remediation: HostControlPlaneRuntimeLaunchGuard.unsupportedRuntimeRemediation(
+                        requiredTools: hostControlTools
+                    )
+                ))
+            }
         }
         updated.deniedTools = uniqueStrings(updated.deniedTools + ["Bash", "shell"])
         updated.diagnostics.append(PolicyDiagnostic(
@@ -1177,12 +1216,17 @@ enum AgentPolicyManifestService {
         ))
 
         if usesDockerWorkspaceExecutor {
-            for descriptor in DockerWorkspaceMCPProjection.runtimeSupportToolDescriptors(for: runtime)
+            for descriptor in DockerWorkspaceMCPProjection.runtimeSupportToolDescriptors(
+                runtimeProfile: runtimeCapabilityProfile
+            )
                 where !updated.runtimeSupportTools.contains(where: { $0.name == descriptor.name }) {
                 updated.runtimeSupportTools.append(descriptor)
             }
         }
-        for descriptor in HostControlPlaneMCPProjection.runtimeSupportToolDescriptors(for: runtime, tools: hostControlTools)
+        for descriptor in HostControlPlaneMCPProjection.runtimeSupportToolDescriptors(
+            runtimeProfile: runtimeCapabilityProfile,
+            tools: hostControlTools
+        )
             where !updated.runtimeSupportTools.contains(where: { $0.name == descriptor.name }) {
             updated.runtimeSupportTools.append(descriptor)
         }
@@ -1230,7 +1274,12 @@ enum AgentPolicyManifestService {
                 localToolCommands,
                 requiredTools: hostControlTools
             )
-        let shouldAllowAllPaths = shouldProjectGitCredentials(task: task, contextText: contextText)
+        let shouldAllowAllPaths = shouldProjectGitCredentials(
+            task: task,
+            contextText: contextText,
+            executionEnvironment: executionEnvironment,
+            capabilityScope: capabilityScope
+        )
             || AgentRuntimeProcessRunner.hasWorkspaceSSHConnections(for: task)
         var updated = render
         let launchPermissionMode = AgentRuntimeProviderLaunchPolicy.mode(
@@ -1291,12 +1340,13 @@ enum AgentPolicyManifestService {
         base: [RunPermissionManifest.MCPServer],
         task: AgentTask,
         runtime: AgentRuntimeID,
+        runtimeCapabilityProfile: AgentRuntimeCapabilityProfile,
         executionEnvironment: WorkspaceExecutionEnvironment,
         contextText: String,
         capabilityScope: TaskCapabilityPromptScope
     ) -> [RunPermissionManifest.MCPServer] {
         let usesDockerWorkspaceExecutor = DockerWorkspaceMCPProjection.isEnabled(for: executionEnvironment)
-            && DockerWorkspaceMCPProjection.supportsHostProviderWorkspaceExecutor(runtime: runtime)
+            && runtimeCapabilityProfile.canDeliverDockerWorkspaceShellMCP
         let hostControlTools = HostControlPlaneMCPProjection.enabledToolNames(
             task: task,
             environment: executionEnvironment,
@@ -1307,7 +1357,7 @@ enum AgentPolicyManifestService {
         if usesDockerWorkspaceExecutor {
             servers.append(DockerWorkspaceMCPProjection.manifestServer())
         }
-        if !hostControlTools.isEmpty {
+        if !hostControlTools.isEmpty, runtimeCapabilityProfile.canDeliverHostControlPlaneMCP {
             servers.append(HostControlPlaneMCPProjection.manifestServer(allowedTools: hostControlTools))
         }
         return uniqueMCPServers(servers)
@@ -1336,19 +1386,39 @@ enum AgentPolicyManifestService {
         })
     }
 
-    @MainActor
-    private static func gitCredentialLabels(task: AgentTask, contextText: String) -> [String] {
-        shouldProjectGitCredentials(task: task, contextText: contextText)
+    private static func gitCredentialLabels(
+        task: AgentTask,
+        contextText: String,
+        executionEnvironment: WorkspaceExecutionEnvironment,
+        capabilityScope: TaskCapabilityPromptScope
+    ) -> [String] {
+        shouldProjectGitCredentials(
+            task: task,
+            contextText: contextText,
+            executionEnvironment: executionEnvironment,
+            capabilityScope: capabilityScope
+        )
             ? ["git:credential-context:read-only"]
             : []
     }
 
-    @MainActor
-    private static func shouldProjectGitCredentials(task: AgentTask, contextText: String) -> Bool {
-        GitOperationIntentDetector.detectsNetworkGitOperation(
+    private static func shouldProjectGitCredentials(
+        task: AgentTask,
+        contextText: String,
+        executionEnvironment: WorkspaceExecutionEnvironment,
+        capabilityScope: TaskCapabilityPromptScope
+    ) -> Bool {
+        let hostControlGitHubAvailable = HostControlPlaneMCPProjection.enabledToolNames(
+            task: task,
+            environment: executionEnvironment,
+            contextText: contextText,
+            capabilityScope: capabilityScope
+        ).contains("github")
+        return GitOperationIntentDetector.detectsNativeGitCredentialOperation(
             prompt: "",
             task: task,
-            contextText: contextText
+            contextText: contextText,
+            prefersHostControlGitHub: hostControlGitHubAvailable
         )
     }
 
@@ -1638,15 +1708,50 @@ private func diagnostics(for policy: AgentPolicy, context: PolicyRenderContext) 
             remediation: "Use connector-specific credentials and ASTRA brokered network tools for strict enforcement."
         ))
     }
-    let credentialLabels = Array(Set(policy.credentialLabels + context.credentialLabels)).sorted()
-    if !credentialLabels.isEmpty, !context.providerFeatures.supportsSecretEnvRedaction {
+    let environmentSecretLabels = context.providerEnvironmentSecretResourceLabels
+    if !environmentSecretLabels.isEmpty, !context.providerFeatures.supportsSecretEnvRedaction {
         diagnostics.append(PolicyDiagnostic(
             id: "\(context.runtimeID.rawValue).secret-redaction-unsupported",
             severity: .blocked,
             title: "Secret redaction is unsupported",
-            message: "This provider render cannot mark injected environment keys as secrets.",
+            message: "This provider render cannot mark provider-visible credential environment values as secrets.",
             affectedCapability: "credentials",
-            remediation: "Remove credential injection or use a provider/version with secret env support."
+            remediation: "Remove provider environment credential injection or use a provider/version with secret env support."
+        ))
+    }
+    if !context.providerUnenforcedFileCredentialResourceLabels.isEmpty {
+        diagnostics.append(PolicyDiagnostic(
+            id: "\(context.runtimeID.rawValue).credential-file-enforcement-unsupported",
+            severity: .blocked,
+            title: "Credential file enforcement is unsupported",
+            message: "This provider render would expose credential files without a safe launch-resource enforcement boundary.",
+            affectedCapability: "credentials",
+            remediation: "Use a runtime path with launch-resource file projection, route the credential through a host control-plane tool, or remove the file credential grant."
+        ))
+    }
+    if !context.launchResourceContractAvailable {
+        let credentialLabels = Array(Set(policy.credentialLabels + context.credentialLabels)).sorted()
+        if !credentialLabels.isEmpty {
+            diagnostics.append(PolicyDiagnostic(
+                id: "\(context.runtimeID.rawValue).credential-contract-unavailable",
+                severity: .blocked,
+                title: "Credential exposure contract is unavailable",
+                message: "This provider render includes credential labels but no launch-resource contract to classify environment versus file exposure.",
+                affectedCapability: "credentials",
+                remediation: "Resolve and attach the launch-resource contract before launching credentialed provider work."
+            ))
+        }
+    }
+    if !context.providerFileCredentialResourceLabels.isEmpty,
+       context.providerFeatures.supportsPathScoping == false,
+       context.providerUnenforcedFileCredentialResourceLabels.isEmpty {
+        diagnostics.append(PolicyDiagnostic(
+            id: "\(context.runtimeID.rawValue).credential-file-projected",
+            severity: .info,
+            title: "Credential files use launch-resource projection",
+            message: "ASTRA will expose selected credential files through its launch-resource boundary instead of provider environment secret injection.",
+            affectedCapability: "credentials",
+            remediation: "Review the launch resource manifest if credential file projection was unexpected."
         ))
     }
     let usesAskCheckpoints = policy.level == .review

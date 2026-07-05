@@ -179,7 +179,7 @@ enum HostControlPlaneRuntimeLaunchGuard {
             "host_control_plane_supported": String(supportsHostControlPlane),
             "host_control_plane_unsupported_detail": supportsHostControlPlane
                 ? ""
-                : "\(runtime.displayName) does not support provider MCP servers, so ASTRA cannot attach the \(serverDescription(requiredTools: requiredTools)).",
+                : unsupportedRuntimeDetail(runtime: runtime, requiredTools: requiredTools),
             "host_control_plane_launch_block_reason": supportsHostControlPlane
                 ? "none"
                 : missingHostControlMCPReason
@@ -194,6 +194,22 @@ enum HostControlPlaneRuntimeLaunchGuard {
         let requiredTools = normalizedUniqueTools(requiredTools)
         guard !requiredTools.isEmpty else { return "host-control MCP server" }
         return "host-control MCP server for \(requiredTools.joined(separator: ", "))"
+    }
+
+    static func unsupportedRuntimeDetail(runtime: AgentRuntimeID, requiredTools: [String]) -> String {
+        let requiredTools = normalizedUniqueTools(requiredTools)
+        if requiredTools.contains("github") {
+            return "\(runtime.displayName) cannot attach ASTRA's host-control MCP route for GitHub metadata/API work, so ASTRA will not fall back to provider-visible native Git or gh credentials. Switch to Codex CLI, Claude Code, or a Copilot CLI build with MCP config support."
+        }
+        return "\(runtime.displayName) does not support provider MCP servers, so ASTRA cannot attach the \(serverDescription(requiredTools: requiredTools))."
+    }
+
+    static func unsupportedRuntimeRemediation(requiredTools: [String]) -> String {
+        let requiredTools = normalizedUniqueTools(requiredTools)
+        if requiredTools.contains("github") {
+            return "Switch to Codex CLI, Claude Code, or a Copilot CLI build with MCP config support, or remove the GitHub host-control capability route for this run."
+        }
+        return "Switch to a runtime that supports ASTRA host-control MCP tools, such as Codex CLI, Claude Code, or a Copilot CLI build with MCP config support."
     }
 
     static func removingNativeLocalToolCommands(_ commands: [String], requiredTools: [String]) -> [String] {

@@ -56,6 +56,33 @@ An adapter owns:
   calls through `runUtilityPrompt`.
 - Post-run provider diagnostics and follow-up event recording.
 
+## Task-Scoped MCP Delivery
+
+ASTRA treats provider-level MCP management as different from task-scoped MCP
+delivery. A runtime may expose global commands for listing, adding, or removing
+MCP servers while still being unsafe for ASTRA-owned per-run delivery. Global
+provider state can include unrelated user servers, stale credentials, and
+configuration that ASTRA did not render for the current task.
+
+The supported task-scoped delivery modes today are:
+
+- Claude Code strict per-run config files rendered by ASTRA.
+- Codex inline launch config rendered by ASTRA.
+- GitHub Copilot CLI additional config files only when the installed CLI help
+  exposes `--additional-mcp-config`.
+
+Cursor CLI, OpenCode CLI, and Google Antigravity CLI must remain unsupported for
+ASTRA task-scoped MCP delivery until their adapters can prove all promotion
+criteria:
+
+- Per-run isolated config, not durable provider-global MCP state.
+- A task-specific server and tool allowlist.
+- No unrelated global MCP servers visible to the run.
+- No raw secrets in launch args, rendered config, planned-command fields, or
+  logs.
+- Adapter renderer tests showing `astra_host`, workspace shell, and browser
+  bridge config delivery for the selected runtime.
+
 ## Invariants
 
 - A runtime must be registered before use. Unknown runtime strings are resolved

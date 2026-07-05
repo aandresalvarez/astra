@@ -1224,8 +1224,10 @@ enum DockerWorkspaceMCPProjection {
         environment.workspaceCommandsRunInsideContainer
     }
 
-    static func supportsHostProviderWorkspaceExecutor(runtime: AgentRuntimeID) -> Bool {
-        AgentRuntimeAdapterRegistry.descriptor(for: runtime).supportsMCPServers
+    static func supportsHostProviderWorkspaceExecutor(runtime: AgentRuntimeID, executablePath: String = "") -> Bool {
+        AgentRuntimeCapabilityProfileService
+            .profile(for: runtime, executablePath: executablePath)
+            .canDeliverDockerWorkspaceShellMCP
     }
 
     static func runtimeSupportToolDescriptor(for runtime: AgentRuntimeID) -> ProviderRuntimeSupportToolDescriptor? {
@@ -1234,6 +1236,17 @@ enum DockerWorkspaceMCPProjection {
 
     static func runtimeSupportToolDescriptors(for runtime: AgentRuntimeID) -> [ProviderRuntimeSupportToolDescriptor] {
         guard supportsHostProviderWorkspaceExecutor(runtime: runtime) else { return [] }
+        return runtimeSupportToolDescriptors()
+    }
+
+    static func runtimeSupportToolDescriptors(
+        runtimeProfile: AgentRuntimeCapabilityProfile
+    ) -> [ProviderRuntimeSupportToolDescriptor] {
+        guard runtimeProfile.canDeliverDockerWorkspaceShellMCP else { return [] }
+        return runtimeSupportToolDescriptors()
+    }
+
+    private static func runtimeSupportToolDescriptors() -> [ProviderRuntimeSupportToolDescriptor] {
         return toolNames.map { tool in
             ProviderRuntimeSupportToolDescriptor(
                 name: providerToolPermission(for: tool),

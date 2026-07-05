@@ -41,6 +41,27 @@ struct ArchitectureFitnessTests {
         ])
     }
 
+    @Test("Launch compatibility does not depend on descriptor MCP boolean")
+    func launchCompatibilityDoesNotDependOnDescriptorMCPBoolean() throws {
+        let root = try repositoryRoot()
+        let guardedFiles = [
+            "Astra/Services/Runtime/HostControlPlaneMCPProjection.swift",
+            "Astra/Services/Runtime/ExecutionEnvironment.swift",
+            "Astra/Services/Runtime/AgentRuntimeLaunchPreflight.swift",
+            "Astra/Services/Runtime/AgentRuntimeLaunchRuntimeResolver.swift",
+            "Astra/Services/Runtime/AgentRuntimeCapabilityCompatibilityPolicy.swift"
+        ]
+
+        for relativePath in guardedFiles {
+            let source = try String(
+                contentsOf: root.appendingPathComponent(relativePath),
+                encoding: .utf8
+            )
+            #expect(!source.contains("descriptor(for: runtime).supportsMCPServers"))
+            #expect(!source.contains("descriptor(for: selectedRuntime).supportsMCPServers"))
+        }
+    }
+
     @Test("Pack services stay in the Packs service folder")
     func packServicesStayInPacksServiceFolder() throws {
         let root = try repositoryRoot()
@@ -239,17 +260,12 @@ struct ArchitectureFitnessTests {
         let persistenceHomePrefix = "Astra/Services/Persistence/"
         let allowedRawSaveFiles: Set<String> = [
             "Astra/ASTRAApp.swift",
-            "Astra/Services/Capabilities/CapabilityDefinitionRepairService.swift",
             "Astra/Services/Runtime/AgentRuntimeBudgetPolicy.swift",
             "Astra/Services/Tasks/TaskLifecycleCoordinator.swift",
             "Astra/Services/Tasks/TaskQueue.swift",
             "Astra/Services/Tasks/TaskRunLifecycleService.swift",
             "Astra/Services/Tasks/TaskStateMachine.swift",
             "Astra/Services/Validation/TaskExecutionArtifactPreparer.swift",
-            "Astra/Services/WorkspaceApps/WorkspaceAppAutomationExecutionService.swift",
-            "Astra/Services/WorkspaceApps/WorkspaceAppRunResumptionService.swift",
-            "Astra/Services/WorkspaceApps/WorkspaceAppService.swift",
-            "Astra/Services/WorkspaceApps/WorkspaceAppVersionService.swift",
             "Astra/Views/Capabilities/GoogleWorkspaceCapabilityInstallSheet.swift",
             "Astra/Views/ChatPanelView.swift",
             "Astra/Views/Components/KanbanBoardView.swift",
@@ -1484,6 +1500,7 @@ struct ArchitectureFitnessTests {
             "Astra/Services/Persistence/WorkspaceConfigManager.swift": ["run"],
             "Astra/Services/Runtime/AgentProcessSupport.swift": ["job"],
             "Astra/Services/Runtime/AgentRuntimeBudgetPolicy.swift": ["run"],
+            "Astra/Services/Runtime/AgentRuntimeCapabilityBlockRecorder.swift": ["run"],
             "Astra/Services/Runtime/AgentRuntimeLaunchPreflight.swift": ["run"],
             "Astra/Services/Runtime/AgentRuntimeWorker.swift": ["run", "run?"],
             "Astra/Services/Tasks/AgentTaskForkService.swift": ["newRun"],

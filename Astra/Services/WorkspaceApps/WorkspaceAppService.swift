@@ -50,6 +50,11 @@ struct WorkspaceAppCreationResult {
     var manifest: WorkspaceAppManifest
 }
 
+enum WorkspaceAppPersistenceMode {
+    case saveAndAutoExport
+    case saveOnly
+}
+
 struct WorkspaceAppService {
     var fileManager: FileManager = .default
     var storageService = WorkspaceAppStorageService()
@@ -64,7 +69,8 @@ struct WorkspaceAppService {
         status: WorkspaceAppLifecycleStatus = .draft,
         sourcePackageID: String? = nil,
         sourcePackageVersion: String? = nil,
-        sourcePackageDigest: String? = nil
+        sourcePackageDigest: String? = nil,
+        persistence: WorkspaceAppPersistenceMode = .saveAndAutoExport
     ) throws -> WorkspaceAppCreationResult {
         let report = WorkspaceAppManifestValidator.validate(manifest)
         guard report.isValid else {
@@ -160,7 +166,7 @@ struct WorkspaceAppService {
             modelContext.insert(automation)
         }
         workspace.updatedAt = now
-        try modelContext.save()
+        try persist(workspace: workspace, modelContext: modelContext, persistence: persistence)
 
         AppLogger.audit(.workspaceStoreMigrated, category: "WorkspaceApps", fields: [
             "resource": "workspace_app_manifest",
@@ -187,7 +193,8 @@ struct WorkspaceAppService {
         in workspace: Workspace,
         modelContext: ModelContext,
         status: WorkspaceAppLifecycleStatus = .published,
-        now: Date = Date()
+        now: Date = Date(),
+        persistence: WorkspaceAppPersistenceMode = .saveAndAutoExport
     ) throws -> WorkspaceAppCreationResult {
         guard !workspace.primaryPath.isEmpty else { throw WorkspaceAppServiceError.emptyWorkspacePath }
         guard app.workspaceID == workspace.id else {
@@ -316,7 +323,7 @@ struct WorkspaceAppService {
         }
 
         workspace.updatedAt = now
-        try modelContext.save()
+        try persist(workspace: workspace, modelContext: modelContext, persistence: persistence)
 
         AppLogger.audit(.workspaceStoreMigrated, category: "WorkspaceApps", fields: [
             "resource": "workspace_app_manifest",
@@ -336,6 +343,20 @@ struct WorkspaceAppService {
     func registry(for workspace: Workspace) -> WorkspaceAppContractRegistry {
         let derived = WorkspaceAppCapabilityContractDeriver.derived(for: workspace)
         return contractRegistry.including(capabilityFamilies: derived.families, implementations: derived.implementations)
+    }
+
+    @MainActor
+    private func persist(
+        workspace: Workspace,
+        modelContext: ModelContext,
+        persistence: WorkspaceAppPersistenceMode
+    ) throws {
+        switch persistence {
+        case .saveAndAutoExport:
+            try WorkspacePersistenceCoordinator.saveAndAutoExportOrThrow(workspace: workspace, modelContext: modelContext)
+        case .saveOnly:
+            try WorkspacePersistenceCoordinator.saveWithoutAutoExportOrThrow(workspace: workspace, modelContext: modelContext)
+        }
     }
 
     /// Preview-only: synthesize the SAME `.mapped` dependency bindings the publish path computes, for a
@@ -439,8 +460,7 @@ struct WorkspaceAppService {
         app.lastOpenedAt = now
         app.updatedAt = now
         workspace?.updatedAt = now
-        try modelContext.save()
-        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
+        try WorkspacePersistenceCoordinator.saveAndAutoExportOrThrow(workspace: workspace, modelContext: modelContext)
 
         AppLogger.audit(.workspaceStoreMigrated, category: "WorkspaceApps", fields: [
             "resource": "workspace_app",
@@ -460,8 +480,7 @@ struct WorkspaceAppService {
         app.lastRefreshedAt = now
         app.updatedAt = now
         workspace?.updatedAt = now
-        try modelContext.save()
-        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
+        try WorkspacePersistenceCoordinator.saveAndAutoExportOrThrow(workspace: workspace, modelContext: modelContext)
 
         AppLogger.audit(.workspaceStoreMigrated, category: "WorkspaceApps", fields: [
             "resource": "workspace_app",
@@ -557,8 +576,7 @@ struct WorkspaceAppService {
             bindings.forEach(modelContext.insert)
             automations.forEach(modelContext.insert)
             workspace.updatedAt = now
-            try modelContext.save()
-            WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
+            try WorkspacePersistenceCoordinator.saveAndAutoExportOrThrow(workspace: workspace, modelContext: modelContext)
 
             AppLogger.audit(.workspaceStoreMigrated, category: "WorkspaceApps", fields: [
                 "resource": "workspace_app",
@@ -623,8 +641,9 @@ struct WorkspaceAppService {
         }
         modelContext.delete(app)
         workspace?.updatedAt = now
-        try modelContext.save()
-        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
+        // Single save for the whole cascade (bindings + automations + events + runs +
+        // the app row) — the delete batch stays atomically persisted, as before.
+        try WorkspacePersistenceCoordinator.saveAndAutoExportOrThrow(workspace: workspace, modelContext: modelContext)
 
         AppLogger.audit(.workspaceStoreMigrated, category: "WorkspaceApps", fields: [
             "resource": "workspace_app",
@@ -688,8 +707,7 @@ struct WorkspaceAppService {
         app.dependencyStatus = dependencyStatus(for: bindings)
         app.updatedAt = now
         workspace?.updatedAt = now
-        try modelContext.save()
-        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
+        try WorkspacePersistenceCoordinator.saveAndAutoExportOrThrow(workspace: workspace, modelContext: modelContext)
 
         AppLogger.audit(.workspaceStoreMigrated, category: "WorkspaceApps", fields: [
             "resource": "workspace_app_dependency_binding",
@@ -741,8 +759,7 @@ struct WorkspaceAppService {
         automation.updatedAt = now
         app.updatedAt = now
         workspace?.updatedAt = now
-        try modelContext.save()
-        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
+        try WorkspacePersistenceCoordinator.saveAndAutoExportOrThrow(workspace: workspace, modelContext: modelContext)
 
         AppLogger.audit(.workspaceStoreMigrated, category: "WorkspaceApps", fields: [
             "resource": "workspace_app_automation_state",

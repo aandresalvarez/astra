@@ -442,8 +442,9 @@ final class AgentRuntimeWorker {
         recordingMode: AgentRuntimeRecordingMode = .initial,
         executionPolicy: AgentRuntimeExecutionPolicy = .default
     ) async {
-        let runtimeAdapter = AgentRuntimeAdapterRegistry.adapter(for: selectedRuntime)
-        let launchSettings = runtimeAdapter.launchSettings(configuration: runtimeConfiguration)
+        var selectedRuntime = selectedRuntime
+        var runtimeAdapter = AgentRuntimeAdapterRegistry.adapter(for: selectedRuntime)
+        var launchSettings = runtimeAdapter.launchSettings(configuration: runtimeConfiguration)
         AppLogger.audit(.taskStarted, category: "Worker", taskID: task.id, fields: [
             "status": task.status.rawValue,
             "model": task.model,
@@ -494,6 +495,33 @@ final class AgentRuntimeWorker {
             task.runtimeID = selectedRuntime.rawValue
         }
 
+        let runtimeResolution = AgentRuntimeLaunchRuntimeResolver.resolve(
+            task: task,
+            requestedRuntime: selectedRuntime,
+            runtimeConfiguration: runtimeConfiguration,
+            promptOverride: promptOverride,
+            startEventPayload: startEventPayload,
+            sessionMessage: sessionMessage,
+            phase: auditPhase,
+            executionPolicy: executionPolicy
+        )
+        let appliedRuntime = AgentRuntimeLaunchRuntimeResolver.apply(
+            runtimeResolution,
+            task: task,
+            phase: auditPhase,
+            alignModel: { runtime in
+                alignTaskModelWithSelectedRuntime(task, selectedRuntime: runtime, phase: auditPhase)
+            },
+            clearMismatchedSession: { runtime in
+                clearMismatchedProviderSessionIfNeeded(for: task, selectedRuntime: runtime, phase: auditPhase)
+            }
+        )
+        if appliedRuntime.reroutedFrom != nil {
+            selectedRuntime = appliedRuntime.runtime
+            runtimeAdapter = AgentRuntimeAdapterRegistry.adapter(for: selectedRuntime)
+            launchSettings = runtimeAdapter.launchSettings(configuration: runtimeConfiguration)
+        }
+
         let run = TaskRun(task: task)
         run.runtimeID = selectedRuntime.rawValue
         modelContext.insert(run)
@@ -501,6 +529,12 @@ final class AgentRuntimeWorker {
         let startPayload = startEventPayload ?? runtimeAdapter.defaultStartEventPayload(task: task)
         let startEvent = TaskEvent(task: task, type: startEventType, payload: startPayload, run: run)
         modelContext.insert(startEvent)
+        AgentRuntimeLaunchRuntimeResolver.insertRerouteEventIfNeeded(
+            appliedRuntime,
+            task: task,
+            run: run,
+            modelContext: modelContext
+        )
 
         let providerLaunchContextText = runtimeAdapter.connectorPreflightContextText(
             task: task,
@@ -514,6 +548,19 @@ final class AgentRuntimeWorker {
             providerLaunchContextText: providerLaunchContextText,
             additionalCredentialGrants: executionPolicy.permissionGrantsOverride ?? []
         )
+        if let block = appliedRuntime.launchBlock {
+            AgentRuntimeCapabilityBlockRecorder.apply(
+                block,
+                runtime: selectedRuntime,
+                task: task,
+                run: run,
+                modelContext: modelContext,
+                phase: auditPhase,
+                selectedRuntimeEvidence: appliedRuntime.selectedRuntimeEvidence
+            )
+            isRunning = false
+            return
+        }
 
         guard FileManager.default.isExecutableFile(atPath: launchSettings.executablePath) else {
             AppLogger.audit(.taskFailed, category: "Worker", taskID: task.id, fields: [
@@ -551,7 +598,8 @@ final class AgentRuntimeWorker {
             phase: auditPhase,
             contextText: providerLaunchContextText,
             executionPolicy: executionPolicy,
-            capabilityResolutionSnapshot: capabilityResolutionSnapshot
+            capabilityResolutionSnapshot: capabilityResolutionSnapshot,
+            runtimeConfiguration: runtimeConfiguration
         ) else {
             isRunning = false
             return
@@ -688,6 +736,7 @@ final class AgentRuntimeWorker {
         )
         let policyRenderer = AgentRuntimeAdapterRegistry.policyRenderer(for: selectedRuntime)
         let providerCapabilities = policyRenderer.policyCapabilities(executablePath: launchSettings.executablePath)
+        let runtimeCapabilityProfile = AgentRuntimeCapabilityProfileService.profile(for: selectedRuntime, executablePath: launchSettings.executablePath)
         let runPermissionPolicy = effectivePermissionPolicy(
             for: task,
             selectedRuntime: selectedRuntime,
@@ -704,8 +753,10 @@ final class AgentRuntimeWorker {
             executionPolicy: executionPolicy,
             defaultPolicyLevelRaw: defaultAgentPolicyLevelRaw,
             providerCapabilities: providerCapabilities,
+            runtimeCapabilityProfile: runtimeCapabilityProfile,
             contextText: providerLaunchContextText,
             capabilityResolutionSnapshot: capabilityResolutionSnapshot,
+            launchResourcePlan: launchResourcePlan,
             modelContext: modelContext
         )
         guard shouldStartProvider(with: manifest, task: task, run: run, modelContext: modelContext, phase: auditPhase) else {

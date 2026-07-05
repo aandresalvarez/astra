@@ -53,17 +53,24 @@ enum CapabilityDefinitionRepairService {
         }
 
         guard updated > 0 else { return }
-        do {
-            try modelContext.save()
+        // This startup repair mutates MULTIPLE workspaces, so there is no single export
+        // target; `workspace: nil` routes the save through the coordinator (durable +
+        // uniformly logged) without picking an arbitrary workspace to mirror — each
+        // workspace's JSON mirror refreshes on its next own save, exactly as before.
+        // On failure the coordinator logs the error type under the persistence events.
+        if WorkspacePersistenceCoordinator.saveAndAutoExport(
+            workspace: nil,
+            modelContext: modelContext,
+            auditFields: ["migration": "approved_capability_definitions"]
+        ) {
             AppLogger.audit(.skillToolPermissionChanged, category: "App", fields: [
                 "migration": "approved_capability_definitions",
                 "skill_count": String(updated)
             ])
-        } catch {
+        } else {
             AppLogger.audit(.skillToolPermissionChanged, category: "App", fields: [
                 "migration": "approved_capability_definitions",
-                "stage": "save_failed",
-                "error_type": String(describing: type(of: error))
+                "stage": "save_failed"
             ], level: .error)
         }
     }

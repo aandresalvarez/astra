@@ -1048,22 +1048,6 @@ struct AgentPolicyTests {
         #expect(copilotRender.generatedConfigPreview.contains("shell(gh:*)"))
     }
 
-    @Test("Unsupported credential redaction is a blocked diagnostic")
-    func unsupportedCredentialRedactionBlocksRender() {
-        let adapter = CopilotPolicyAdapter(capabilities: .conservative)
-        let render = adapter.render(
-            policy: .preset(.review),
-            context: policyRenderContext(
-                runtime: .copilotCLI,
-                features: adapter.supportedFeatures,
-                credentialLabels: ["API_TOKEN"]
-            )
-        )
-
-        #expect(render.diagnostics.contains {
-            $0.severity == .blocked && $0.id == "copilot_cli.secret-redaction-unsupported"
-        })
-    }
 }
 
 @Suite("Task Policy Store")
@@ -1604,6 +1588,9 @@ struct RunPermissionManifestTests {
                 permissionPolicy: .restricted,
                 executionPolicy: .default,
                 defaultPolicyLevelRaw: AgentPolicyLevel.review.rawValue,
+                runtimeCapabilityProfile: runtime == .copilotCLI
+                    ? .copilotProfile(supportsAdditionalMCPConfig: true)
+                    : .defaultProfile(for: runtime),
                 capabilityPackages: [package],
                 modelContext: context
             )

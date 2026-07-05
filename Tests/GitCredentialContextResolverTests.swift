@@ -342,4 +342,70 @@ struct GitCredentialContextResolverTests {
             task: AgentTask(title: "Review", goal: "No network")
         ))
     }
+
+    @Test("GitHub metadata intent prefers host control without hiding native transport")
+    func githubMetadataIntentPrefersHostControlWithoutHidingNativeTransport() {
+        let metadataTask = AgentTask(
+            title: "Review PR metadata",
+            goal: "Use GitHub to inspect pull request metadata and checks"
+        )
+
+        #expect(GitOperationIntentDetector.detectsGitHubMetadataOrAPIIntent(
+            prompt: "",
+            task: metadataTask,
+            contextText: "Use GitHub to list open pull requests and check statuses."
+        ))
+        #expect(GitOperationIntentDetector.routesGitHubMetadataThroughHostControl(
+            prompt: "",
+            task: metadataTask,
+            contextText: "Use GitHub to list open pull requests and check statuses.",
+            hostControlGitHubAvailable: true
+        ))
+        #expect(!GitOperationIntentDetector.detectsNativeGitCredentialOperation(
+            prompt: "",
+            task: metadataTask,
+            contextText: "Use GitHub to list open pull requests and check statuses.",
+            prefersHostControlGitHub: true
+        ))
+        #expect(GitOperationIntentDetector.detectsNativeGitCredentialOperation(
+            prompt: "gh pr view 190 --json title",
+            task: AgentTask(title: "Native gh", goal: "Use gh"),
+            prefersHostControlGitHub: false
+        ))
+        #expect(!GitOperationIntentDetector.detectsNativeGitCredentialOperation(
+            prompt: "gh pr view 190 --json title",
+            task: AgentTask(title: "Host GitHub", goal: "Use GitHub"),
+            prefersHostControlGitHub: true
+        ))
+        #expect(GitOperationIntentDetector.detectsNativeGitCredentialOperation(
+            prompt: "run native gh pr view 190 --json title",
+            task: AgentTask(title: "Native gh", goal: "Use native gh"),
+            prefersHostControlGitHub: true
+        ))
+        #expect(GitOperationIntentDetector.detectsNativeGitCredentialOperation(
+            prompt: "gh auth status",
+            task: AgentTask(title: "Check auth", goal: "Check GitHub CLI authentication state"),
+            prefersHostControlGitHub: true
+        ))
+        #expect(!GitOperationIntentDetector.routesGitHubMetadataThroughHostControl(
+            prompt: "gh auth status",
+            task: AgentTask(title: "Check auth", goal: "Check GitHub CLI authentication state"),
+            hostControlGitHubAvailable: true
+        ))
+        #expect(GitOperationIntentDetector.detectsNativeGitCredentialOperation(
+            prompt: "git pull origin main",
+            task: AgentTask(title: "Native Git", goal: "Sync branch"),
+            prefersHostControlGitHub: true
+        ))
+        #expect(!GitOperationIntentDetector.routesGitHubMetadataThroughHostControl(
+            prompt: "Fix UI issues and run local checks",
+            task: AgentTask(title: "Fix UI issues", goal: "Fix UI issues and run local checks"),
+            hostControlGitHubAvailable: true
+        ))
+        #expect(!GitOperationIntentDetector.detectsNativeGitCredentialOperation(
+            prompt: "go through PR comments in the local notes",
+            task: AgentTask(title: "Review notes", goal: "Go through PR comments"),
+            prefersHostControlGitHub: false
+        ))
+    }
 }
