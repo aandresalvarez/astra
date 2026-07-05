@@ -104,9 +104,7 @@ struct ContentView: View {
     @AppStorage(AppStorageKeys.markdownPinnedToTask) private var isMarkdownPinnedToTask = true
     @AppStorage("lastSelectedWorkspaceID") private var lastSelectedWorkspaceID = ""
     @AppStorage("lastSelectedWorkspacePath") private var lastSelectedWorkspacePath = ""
-    @AppStorage("isWorkspaceRightRailVisible") private var isWorkspaceRightRailVisible = true
     @AppStorage(WorkspaceRecoveryService.recoveryNoticeKey) private var recoveryNotice = ""
-    @State private var activeWorkspaceCanvasItem: WorkspaceCanvasItem?
     @State private var pendingAppPreviewPolicyRestore = false
     @State private var browserToolbarEngine = ShelfBrowserEngine.embedded
     // MARK: Sidebar Presentation
@@ -116,6 +114,14 @@ struct ContentView: View {
     /// guard now *propose* changes through this model instead of racing on
     /// `splitVisibility` directly.
     @StateObject private var presentation = SidebarPresentationModel()
+    // MARK: Right Panel Presentation
+    /// The single owner of right-panel presentation — the workspace context
+    /// rail's durable visibility intent plus the transient active shelf item.
+    /// Replaces the former `isWorkspaceRightRailVisible` persisted flag
+    /// (written directly from four independent call sites) and the
+    /// `activeWorkspaceCanvasItem` `@State`; every writer now routes through
+    /// this model instead of touching either property directly.
+    @StateObject private var rightPanel = RightPanelPresentationModel()
     private let sidebarTitlebarCommands = SidebarTitlebarCommandBridge.shared
     /// Hover state of the show-sidebar toggle, which drives the transient
     /// hover-preview of the overlay drawer (`SidebarPeekContainer`).
@@ -143,7 +149,6 @@ struct ContentView: View {
     @State private var browserSessionPolicyCache = BrowserSessionPolicyCache()
     @State private var cachedBrowserSessionPolicy = BrowserSessionPolicy.failClosed
     @State private var cachedBrowserSessionPolicySignature: BrowserSessionPolicySignature?
-    @State private var rememberedWorkspaceCanvasItemsRaw = WorkspaceCanvasItemPreferenceStore.load()
     /// First-run flag. Flips to true once the user finishes the
     /// onboarding wizard. Exposed via Settings → "Show Onboarding Again"
     /// so users can replay the guide on demand.
@@ -176,6 +181,20 @@ struct ContentView: View {
 
     private var isComposingTask: Bool {
         sceneSelection.isComposingTask
+    }
+
+    /// Read-only forward to `RightPanelPresentationModel`. Every write goes
+    /// through the model's methods (`presentCanvas`, `setActiveCanvasItem`,
+    /// etc.) — never assign this directly.
+    private var activeWorkspaceCanvasItem: WorkspaceCanvasItem? {
+        rightPanel.activeCanvasItem
+    }
+
+    /// Read-only forward to `RightPanelPresentationModel`. Every write goes
+    /// through the model's methods (`presentRail`, `dismissRail`,
+    /// `setRailPresented`) — never assign this directly.
+    private var isWorkspaceRightRailVisible: Bool {
+        rightPanel.isRailShown
     }
 
     private var isComposingWorkspaceApp: Bool {
@@ -408,7 +427,7 @@ struct ContentView: View {
     /// is currently presented. Fed into `SidebarPresentationModel` so it can decide
     /// whether the sidebar docks alongside it or presents as an overlay drawer.
     private var hasRightSidePanelPresented: Bool {
-        activeWorkspaceCanvasItem != nil || (effectiveWorkspace != nil && isWorkspaceRightRailVisible)
+        rightPanel.hasAnyPanelPresented(hasWorkspace: effectiveWorkspace != nil)
     }
 
     private var panelTransitionAnimation: Animation? {
@@ -653,7 +672,7 @@ struct ContentView: View {
         applySceneSelectionIntent {
             sceneSelection.composeApp(workspace: studioWorkspace)
         }
-        isWorkspaceRightRailVisible = false
+        rightPanel.hideRailWithoutClearingCanvasItem()
         if let workspace = studioWorkspace {
             workspaceAppStudioSession.reset(for: workspace, existingManifest: existingManifest, initialPrompt: initialPrompt)
         }
@@ -685,7 +704,7 @@ struct ContentView: View {
             guard canPresentWorkspaceCanvasItem(.appPreview) else { return }
             pendingAppPreviewPolicyRestore = false
             animatePanelChange {
-                isWorkspaceRightRailVisible = false
+                rightPanel.hideRailWithoutClearingCanvasItem()
                 setActiveWorkspaceCanvasItem(.appPreview, remember: false)
             }
         }
@@ -1188,7 +1207,7 @@ struct ContentView: View {
 
         animatePanelChange {
             setActiveWorkspaceCanvasItem(nil, remember: true)
-            isWorkspaceRightRailVisible = false
+            rightPanel.dismissRail()
             presentation.revealAfterClearingRightSidePanel()
         }
     }
@@ -1206,27 +1225,24 @@ struct ContentView: View {
     }
 
     private func setRightRailPresented(_ isPresented: Bool) {
-        if isPresented {
-            presentRightRail()
-        } else {
-            animatePanelChange {
-                isWorkspaceRightRailVisible = false
-            }
+        animatePanelChange {
+            rightPanel.setRailPresented(isPresented, conversationID: selectedWorkspaceCanvasConversationID)
         }
     }
 
     private func presentRightRail(rememberShelfState: Bool = true) {
         animatePanelChange {
-            setActiveWorkspaceCanvasItem(nil, remember: rememberShelfState)
-            isWorkspaceRightRailVisible = true
+            rightPanel.presentRail(
+                rememberShelfState: rememberShelfState,
+                conversationID: selectedWorkspaceCanvasConversationID
+            )
         }
     }
 
     private func presentCanvas(_ item: WorkspaceCanvasItem) {
         guard canPresentWorkspaceCanvasItem(item) else { return }
         animatePanelChange {
-            isWorkspaceRightRailVisible = false
-            setActiveWorkspaceCanvasItem(item, remember: true)
+            rightPanel.presentCanvas(item, conversationID: selectedWorkspaceCanvasConversationID)
         }
     }
 
@@ -1244,43 +1260,19 @@ struct ContentView: View {
         selectedTask?.id.uuidString
     }
 
-    private var rememberedWorkspaceCanvasItem: WorkspaceCanvasItem? {
-        WorkspaceCanvasItemPreference.item(
-            in: rememberedWorkspaceCanvasItemsRaw,
-            for: selectedWorkspaceCanvasConversationID
-        )
-    }
-
     private func setActiveWorkspaceCanvasItem(_ item: WorkspaceCanvasItem?, remember: Bool) {
-        activeWorkspaceCanvasItem = item
-        let currentStorage = rememberedWorkspaceCanvasItemsRaw
-        let updatedStorage = WorkspaceCanvasItemPreference.updatedStorageRawValue(
-            currentStorageRawValue: currentStorage,
-            conversationID: selectedWorkspaceCanvasConversationID,
-            item: item,
-            remember: remember
-        )
-        rememberedWorkspaceCanvasItemsRaw = updatedStorage
-        WorkspaceCanvasItemPreferenceStore.saveIfChanged(
-            currentRawValue: currentStorage,
-            updatedRawValue: updatedStorage
-        )
+        rightPanel.setActiveCanvasItem(item, remember: remember, conversationID: selectedWorkspaceCanvasConversationID)
     }
 
     private func restoreRememberedWorkspaceCanvasItemIfAvailable() {
-        let rememberedItem = rememberedWorkspaceCanvasItem
-        guard WorkspaceCanvasItemPreference.shouldRestoreRememberedItem(
-            activeItem: activeWorkspaceCanvasItem,
-            isRightRailVisible: isWorkspaceRightRailVisible,
-            rememberedItem: rememberedItem,
-            canPresentRememberedItem: rememberedItem.map(canPresentWorkspaceCanvasItem) ?? false
-        ), let item = rememberedItem else {
+        guard let item = rightPanel.restoreRememberedItemIfAvailable(
+            conversationID: selectedWorkspaceCanvasConversationID,
+            canPresent: canPresentWorkspaceCanvasItem
+        ) else {
             return
         }
 
-        isWorkspaceRightRailVisible = false
         prepareWorkspaceCanvasItemForPresentation(item, source: "remembered_shelf_restore")
-        setActiveWorkspaceCanvasItem(item, remember: false)
     }
 
     private func invalidateActiveWorkspaceCanvasItemIfUnavailable(remember: Bool) {
