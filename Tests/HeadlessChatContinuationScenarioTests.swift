@@ -666,6 +666,122 @@ extension HeadlessChatScenarioTests {
         #expect(task.status == .completed)
     }
 
+    @Test("Cursor GitHub Workflow follow-up stops at runtime capability gate before provider policy")
+    func cursorGitHubWorkflowFollowUpStopsAtRuntimeCapabilityGate() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let cursorPath = try harness.writeExecutable(
+            named: "cursor-agent",
+            script: """
+            printf '%s\\n' 'Cursor provider should not launch for GitHub host-control work'
+            exit 0
+            """
+        )
+        let task = harness.makeTask(
+            runtime: .cursorCLI,
+            goal: "list my open prs in the astra repo",
+            model: "composer-2.5-fast"
+        )
+        task.workspace?.enabledCapabilityIDs = [HostControlPlaneMCPProjection.githubPackageID]
+        let githubSkill = Skill(
+            name: "GitHub Agent",
+            allowedTools: ["Read", "Glob", "Grep"],
+            behaviorInstructions: "Use ASTRA's host-control GitHub MCP tool mcp__astra_host__github for GitHub operations."
+        )
+        githubSkill.skillDescription = "Inspect issues, PRs, and CI via ASTRA host-control GitHub"
+        githubSkill.originPackageID = HostControlPlaneMCPProjection.githubPackageID
+        githubSkill.workspace = task.workspace
+        task.skills = [githubSkill]
+        harness.context.insert(githubSkill)
+
+        let worker = harness.makeWorker(
+            runtime: .cursorCLI,
+            executablePath: cursorPath,
+            permissionPolicy: .autonomous
+        )
+
+        _ = await harness.continueTask(
+            task: task,
+            message: "retry listing my open PRs in the astra repo",
+            worker: worker
+        )
+
+        let run = try #require(task.runs.sorted { $0.startedAt < $1.startedAt }.last)
+        #expect(run.status == .failed)
+        #expect(run.typedStopReason == TaskRunStopReason.custom(HostControlPlaneRuntimeLaunchGuard.missingHostControlMCPReason))
+        #expect(task.status == .pendingUser)
+        #expect(task.events.contains { event in
+            event.run?.id == run.id &&
+            event.type == TaskEventTypes.System.error.rawValue &&
+            event.payload.contains("Selected runtime is incompatible with required ASTRA capabilities") &&
+            event.payload.contains("Cursor CLI cannot attach ASTRA's host-control MCP route for GitHub metadata/API work")
+        })
+        #expect(!task.events.contains { event in
+            event.run?.id == run.id &&
+            event.payload.contains("Provider policy blocked this run before launch")
+        })
+        #expect(run.output.isEmpty)
+    }
+
+    @Test("Cursor generic host-control capability stops at runtime capability gate")
+    func cursorGenericHostControlCapabilityStopsAtRuntimeCapabilityGate() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let cursorPath = try harness.writeExecutable(
+            named: "cursor-agent",
+            script: """
+            printf '%s\\n' 'Cursor provider should not launch for generic host-control work'
+            exit 0
+            """
+        )
+        let task = harness.makeTask(
+            runtime: .cursorCLI,
+            goal: "read Jira issue STAR-123",
+            model: "composer-2.5-fast"
+        )
+        task.workspace?.enabledCapabilityIDs = ["custom-jira-host-control"]
+        let jiraSkill = Skill(
+            name: "Jira Host Control",
+            allowedTools: ["Read", "Glob", "Grep"],
+            behaviorInstructions: "Always use ASTRA's host-control Jira MCP tool mcp__astra_host__jira for Jira operations. Do not use Bash, curl, or raw REST API calls to bypass this broker."
+        )
+        jiraSkill.skillDescription = "Read Jira through ASTRA host-control Jira"
+        jiraSkill.originPackageID = "custom-jira-host-control"
+        jiraSkill.workspace = task.workspace
+        task.skills = [jiraSkill]
+        harness.context.insert(jiraSkill)
+
+        let worker = harness.makeWorker(
+            runtime: .cursorCLI,
+            executablePath: cursorPath,
+            permissionPolicy: .autonomous
+        )
+
+        _ = await harness.continueTask(
+            task: task,
+            message: "retry reading Jira issue STAR-123",
+            worker: worker
+        )
+
+        let run = try #require(task.runs.sorted { $0.startedAt < $1.startedAt }.last)
+        #expect(run.status == .failed)
+        #expect(run.typedStopReason == TaskRunStopReason.custom(HostControlPlaneRuntimeLaunchGuard.missingHostControlMCPReason))
+        #expect(task.status == .pendingUser)
+        #expect(task.events.contains { event in
+            event.run?.id == run.id &&
+            event.type == TaskEventTypes.System.error.rawValue &&
+            event.payload.contains("Selected runtime is incompatible with required ASTRA capabilities") &&
+            event.payload.contains("host-control MCP server for jira")
+        })
+        #expect(!task.events.contains { event in
+            event.run?.id == run.id &&
+            event.payload.contains("Provider policy blocked this run before launch")
+        })
+        #expect(run.output.isEmpty)
+    }
+
     // MARK: - Permission mode passed to CLI (Claude & Antigravity)
 
     @Test("Claude restricted mode passes no skip flag but autonomous does")

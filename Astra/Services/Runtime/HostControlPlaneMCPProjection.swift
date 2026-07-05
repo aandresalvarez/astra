@@ -23,7 +23,18 @@ enum HostControlPlaneMCPProjection {
             for: task,
             providerLaunchContextText: contextText
         ).providerLaunch
-        return githubCapabilityIsInScope(scope) ? ["github"] : []
+        return requiredToolNames(capabilityScope: scope)
+    }
+
+    static func requiredToolNames(capabilityScope: TaskCapabilityPromptScope) -> [String] {
+        var required = Set<String>()
+        if githubCapabilityIsInScope(capabilityScope) {
+            required.insert("github")
+        }
+        for snapshot in capabilityScope.resolver.effectiveSnapshots {
+            required.formUnion(requiredToolNames(inBehaviorText: snapshot.behaviorInstructions))
+        }
+        return orderedToolNames(required)
     }
 
     static func requiresNativeShellDenial(
@@ -39,11 +50,7 @@ enum HostControlPlaneMCPProjection {
             return true
         }
         return package.skills.contains { skill in
-            let text = [
-                skill.behaviorInstructions
-            ].joined(separator: "\n").lowercased()
-            return text.contains("mcp__astra_host__github")
-                || text.contains("astra_host-github")
+            !requiredToolNames(inBehaviorText: skill.behaviorInstructions).isEmpty
         }
     }
 
@@ -251,6 +258,57 @@ enum HostControlPlaneMCPProjection {
         return ProviderRuntimeSupportToolDescriptor.defaultDeniedActionInputKeys.filter {
             !allowed.contains($0)
         }
+    }
+
+    private static func requiredToolNames(inBehaviorText text: String) -> [String] {
+        var required = Set<String>()
+        for chunk in hostControlRequirementChunks(text) {
+            guard chunkDeclaresRequiredHostControl(chunk) else { continue }
+            for tool in toolNames where chunkMentionsHostControlTool(chunk, tool: tool) {
+                required.insert(tool)
+            }
+        }
+        return orderedToolNames(required)
+    }
+
+    private static func hostControlRequirementChunks(_ text: String) -> [String] {
+        let normalized = text.replacingOccurrences(of: "\r\n", with: "\n")
+        return normalized
+            .components(separatedBy: "\n\n")
+            + normalized.components(separatedBy: .newlines)
+    }
+
+    private static func chunkDeclaresRequiredHostControl(_ chunk: String) -> Bool {
+        let lower = chunk.lowercased()
+        guard lower.contains("host-control") || lower.contains("host control") else { return false }
+        if lower.contains("docker"),
+           !lower.contains("non-docker"),
+           !lower.contains("always"),
+           !lower.contains("must") {
+            return false
+        }
+        return lower.contains("always use")
+            || lower.contains("must use")
+            || lower.contains("required")
+            || lower.contains("do not use bash")
+            || lower.contains("do not use shell")
+            || lower.contains("do not use direct")
+            || lower.contains("do not use native")
+            || lower.contains("bypass this broker")
+            || lower.contains("never use")
+            || (lower.contains("use astra") && lower.contains(" mcp tool"))
+    }
+
+    private static func chunkMentionsHostControlTool(_ chunk: String, tool: String) -> Bool {
+        let lower = chunk.lowercased()
+        return lower.contains(providerToolPermission(for: tool).lowercased())
+            || lower.contains(copilotObservedToolName(for: tool).lowercased())
+            || lower.contains("\(serverID).\(tool)".lowercased())
+            || lower.contains("\(serverID)/\(tool)".lowercased())
+    }
+
+    private static func orderedToolNames(_ required: Set<String>) -> [String] {
+        toolNames.filter { required.contains($0) }
     }
 
     private static func githubCapabilityIsInScope(_ scope: TaskCapabilityPromptScope) -> Bool {

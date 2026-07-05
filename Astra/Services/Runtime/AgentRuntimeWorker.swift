@@ -514,6 +514,14 @@ final class AgentRuntimeWorker {
             providerLaunchContextText: providerLaunchContextText,
             additionalCredentialGrants: executionPolicy.permissionGrantsOverride ?? []
         )
+        if let block = AgentRuntimeCapabilityCompatibilityPolicy.launchBlock(
+            runtime: selectedRuntime,
+            capabilityResolutionSnapshot: capabilityResolutionSnapshot
+        ) {
+            applyRuntimeCapabilityBlock(block, runtime: selectedRuntime, task: task, run: run, modelContext: modelContext, phase: auditPhase)
+            isRunning = false
+            return
+        }
 
         guard FileManager.default.isExecutableFile(atPath: launchSettings.executablePath) else {
             AppLogger.audit(.taskFailed, category: "Worker", taskID: task.id, fields: [
@@ -1550,6 +1558,40 @@ final class AgentRuntimeWorker {
 
         Approve to continue this task with one-time expanded runtime permissions.\(detail)
         """
+    }
+
+    @MainActor
+    private func applyRuntimeCapabilityBlock(
+        _ block: AgentRuntimeCapabilityCompatibilityPolicy.LaunchBlock,
+        runtime: AgentRuntimeID,
+        task: AgentTask,
+        run: TaskRun,
+        modelContext: ModelContext,
+        phase: RunPhase
+    ) {
+        run.status = .failed
+        run.completedAt = Date()
+        run.typedStopReason = block.stopReason
+        TaskStateMachine.pauseForRuntimeReview(task, modelContext: modelContext, at: run.completedAt ?? Date())
+        modelContext.insert(TaskEvent(
+            task: task,
+            type: TaskEventTypes.System.error.rawValue,
+            payload: block.eventPayload,
+            run: run
+        ))
+        AgentPolicyManifestService.recordPostRunSummary(task: task, run: run, modelContext: modelContext)
+        WorkspacePersistenceCoordinator.saveAndAutoExport(
+            workspace: task.workspace,
+            modelContext: modelContext,
+            taskID: task.id,
+            auditFields: AgentRuntimeRunPersistence.fields(task: task, run: run, phase: phase)
+        )
+        AppLogger.audit(.workerBlocked, category: "Worker", taskID: task.id, fields: [
+            "reason": block.stopReason.rawValue,
+            "phase": phase.rawValue,
+            "runtime": runtime.rawValue,
+            "required_host_control_tools": block.requiredTools.joined(separator: ",")
+        ], level: .warning)
     }
 
     @MainActor
