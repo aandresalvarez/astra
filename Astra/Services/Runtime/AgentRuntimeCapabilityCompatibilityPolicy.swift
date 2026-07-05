@@ -33,9 +33,13 @@ enum AgentRuntimeCapabilityCompatibilityPolicy {
 
     static func launchBlock(
         runtime: AgentRuntimeID,
+        task: AgentTask,
         capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot
     ) -> LaunchBlock? {
-        for requirement in requirements(capabilityResolutionSnapshot: capabilityResolutionSnapshot) {
+        for requirement in requirements(
+            task: task,
+            capabilityResolutionSnapshot: capabilityResolutionSnapshot
+        ) {
             if let block = launchBlock(runtime: runtime, requirement: requirement) {
                 return block
             }
@@ -44,9 +48,13 @@ enum AgentRuntimeCapabilityCompatibilityPolicy {
     }
 
     static func requirements(
+        task: AgentTask,
         capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot
     ) -> [Requirement] {
-        let requiredTools = HostControlPlaneMCPProjection.requiredToolNames(
+        let executionEnvironment = DockerExecutionPlanner.resolveEnvironment(for: task)
+        let requiredTools = HostControlPlaneMCPProjection.enabledToolNames(
+            task: task,
+            environment: executionEnvironment,
             capabilityScope: capabilityResolutionSnapshot.providerLaunch
         )
         guard !requiredTools.isEmpty else {
@@ -58,11 +66,15 @@ enum AgentRuntimeCapabilityCompatibilityPolicy {
     static func resolveLaunchRuntime(
         requestedRuntime: AgentRuntimeID,
         defaultRuntime: AgentRuntimeID,
+        task: AgentTask,
         capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot,
         candidateRuntimes: [AgentRuntimeID] = AgentRuntimeAdapterRegistry.runtimeIDs,
         isRuntimeUsable: (AgentRuntimeID) -> Bool = { _ in true }
     ) -> LaunchRuntimeResolution {
-        let requirements = requirements(capabilityResolutionSnapshot: capabilityResolutionSnapshot)
+        let requirements = requirements(
+            task: task,
+            capabilityResolutionSnapshot: capabilityResolutionSnapshot
+        )
         let requiredTools = requirements.flatMap { requirement -> [String] in
             switch requirement {
             case .hostControlPlane(let tools):

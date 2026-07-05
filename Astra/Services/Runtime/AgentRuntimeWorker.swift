@@ -548,10 +548,7 @@ final class AgentRuntimeWorker {
             providerLaunchContextText: providerLaunchContextText,
             additionalCredentialGrants: executionPolicy.permissionGrantsOverride ?? []
         )
-        if let block = AgentRuntimeCapabilityCompatibilityPolicy.launchBlock(
-            runtime: selectedRuntime,
-            capabilityResolutionSnapshot: capabilityResolutionSnapshot
-        ) {
+        if let block = AgentRuntimeCapabilityCompatibilityPolicy.launchBlock(runtime: selectedRuntime, task: task, capabilityResolutionSnapshot: capabilityResolutionSnapshot) {
             AgentRuntimeCapabilityBlockRecorder.apply(
                 block,
                 runtime: selectedRuntime,

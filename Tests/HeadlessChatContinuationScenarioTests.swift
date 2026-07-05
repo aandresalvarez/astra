@@ -790,6 +790,76 @@ extension HeadlessChatScenarioTests {
         #expect(run.output.isEmpty)
     }
 
+    @Test("Cursor Docker workspace follow-up stops at runtime capability gate")
+    func cursorDockerWorkspaceFollowUpStopsAtRuntimeCapabilityGate() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let cursorPath = try harness.writeExecutable(
+            named: "cursor-agent",
+            script: """
+            printf '%s\\n' 'Cursor provider should not launch for Docker workspace host-control work'
+            exit 0
+            """
+        )
+        let task = harness.makeTask(
+            runtime: .cursorCLI,
+            goal: "run a project check inside Docker",
+            model: "composer-2.5-fast"
+        )
+        let dockerEnvironment = WorkspaceExecutionEnvironment(
+            id: "docker:test",
+            kind: .dockerImage,
+            displayName: "Docker Test",
+            image: "astra/test:latest",
+            providerPlacement: .host,
+            containerWorkingDirectory: "/workspace",
+            mounts: [
+                ExecutionEnvironmentMount(
+                    hostPath: harness.workspaceURL.path,
+                    containerPath: "/workspace",
+                    access: .readWrite,
+                    role: .workspace
+                )
+            ]
+        )
+        task.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encode(dockerEnvironment)
+        task.workspace?.activeExecutionEnvironmentJSON = task.executionEnvironmentSnapshotJSON
+        try? harness.context.save()
+
+        let worker = harness.makeWorker(
+            runtime: .cursorCLI,
+            executablePath: cursorPath,
+            permissionPolicy: .autonomous
+        )
+        worker.defaultRuntimeID = .cursorCLI
+        worker.claudePath = harness.rootURL.appendingPathComponent("missing-claude").path
+        worker.copilotPath = harness.rootURL.appendingPathComponent("missing-copilot").path
+        worker.setExecutablePath(harness.rootURL.appendingPathComponent("missing-codex").path, for: .codexCLI)
+
+        _ = await harness.continueTask(
+            task: task,
+            message: "retry the Docker workspace check",
+            worker: worker
+        )
+
+        let run = try #require(task.runs.sorted { $0.startedAt < $1.startedAt }.last)
+        #expect(run.status == .failed)
+        #expect(run.typedStopReason == TaskRunStopReason.custom(HostControlPlaneRuntimeLaunchGuard.missingHostControlMCPReason))
+        #expect(task.status == .pendingUser)
+        #expect(task.events.contains { event in
+            event.run?.id == run.id &&
+            event.type == TaskEventTypes.System.error.rawValue &&
+            event.payload.contains("Selected runtime is incompatible with required ASTRA capabilities") &&
+            event.payload.contains("Cursor CLI cannot attach ASTRA's host-control MCP route for GitHub metadata/API work")
+        })
+        #expect(!task.events.contains { event in
+            event.run?.id == run.id &&
+            event.payload.contains("Provider policy blocked this run before launch")
+        })
+        #expect(run.output.isEmpty)
+    }
+
     @Test("GitHub host-control retry reroutes from Cursor to configured compatible runtime")
     func githubHostControlRetryReroutesFromCursorToConfiguredCompatibleRuntime() async throws {
         let harness = try HeadlessChatHarness()

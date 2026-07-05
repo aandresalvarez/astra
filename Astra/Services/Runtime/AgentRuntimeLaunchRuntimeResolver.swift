@@ -37,6 +37,7 @@ enum AgentRuntimeLaunchRuntimeResolver {
         return AgentRuntimeCapabilityCompatibilityPolicy.resolveLaunchRuntime(
             requestedRuntime: requestedRuntime,
             defaultRuntime: runtimeConfiguration.defaultRuntimeID,
+            task: task,
             capabilityResolutionSnapshot: snapshot,
             isRuntimeUsable: { runtime in
                 runtimeIsExecutable(runtime, configuration: runtimeConfiguration)
