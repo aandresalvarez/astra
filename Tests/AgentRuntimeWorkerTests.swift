@@ -2448,3 +2448,97 @@ struct CardinalKeyClientCertificateTests {
         #expect(!CardinalKeyClientCertificateProvider.isCardinalKeySubject("Developer ID Application"))
     }
 }
+
+// MARK: - AgentRuntimeProcessRunning fake-injection seam
+
+/// Records the parameters `AgentRuntimeWorker` hands to the injected process
+/// runner and returns a canned success — no real process ever spawns. Proves
+/// the `AgentRuntimeProcessRunning` seam is real: `AgentRuntimeWorker` depends
+/// on the protocol, not the concrete `AgentRuntimeProcessRunner`.
+private final class FakeAgentProcessRunner: AgentRuntimeProcessRunning {
+    private(set) var receivedTaskIDs: [UUID] = []
+    private(set) var receivedWorkspacePaths: [String] = []
+    private(set) var receivedPrompts: [String] = []
+    var cancelCallCount = 0
+
+    func cancel() {
+        cancelCallCount += 1
+    }
+
+    @MainActor
+    func runRuntimeProcess(
+        adapter: any AgentRuntimeProcessLaunchPlanning & AgentRuntimeProcessEventParsing,
+        prompt: String,
+        task: AgentTask,
+        workspacePath: String,
+        executablePath: String,
+        homeDirectory: String,
+        permissionPolicy: PermissionPolicy,
+        executionPolicy: AgentRuntimeExecutionPolicy,
+        permissionManifest: RunPermissionManifest?,
+        budgetEnforcementMode: BudgetEnforcementMode,
+        timeoutSeconds: TimeInterval,
+        phase: RunPhase,
+        contextText: String,
+        nativeContinuationSessionID: String?,
+        runID: UUID?,
+        launchResourcePlan: TaskLaunchResourcePlan?,
+        capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot?,
+        liveApprovalsEnabled: Bool,
+        noSemanticProgressTimeoutSeconds: TimeInterval?,
+        onInteractiveAsk: ((AgentInteractiveAskRequest) async -> InteractiveAskOutcome)?,
+        onLine: @escaping (String, Bool) -> Void
+    ) async -> AgentProcessResult {
+        receivedTaskIDs.append(task.id)
+        receivedWorkspacePaths.append(workspacePath)
+        receivedPrompts.append(prompt)
+        return AgentProcessResult(exitCode: 0)
+    }
+}
+
+@Suite("AgentRuntimeWorker fake process runner")
+@MainActor
+struct WorkerFakeProcessRunnerTests {
+
+    @Test("Worker launches through an injected fake AgentRuntimeProcessRunning instead of spawning a CLI")
+    func workerRunsAgainstFakeProcessRunner() async throws {
+        let testDir = "/tmp/fake_process_runner_\(UUID().uuidString.prefix(8))"
+        try FileManager.default.createDirectory(atPath: testDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: testDir) }
+
+        let container = try makeContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Fake Runner Workspace", primaryPath: testDir)
+        context.insert(workspace)
+        let task = AgentTask(
+            title: "Fake runner test",
+            goal: "Exercise the AgentRuntimeProcessRunning seam without a real CLI",
+            workspace: workspace
+        )
+        task.status = .queued
+        context.insert(task)
+        try context.save()
+
+        let fakeRunner = FakeAgentProcessRunner()
+        let worker = AgentRuntimeWorker(
+            processRunner: fakeRunner,
+            providerSettingsSnapshotProvider: { .headlessScenario }
+        )
+        worker.runtimeReadinessService = RuntimeReadinessService(runner: InstantSuccessBinaryRunner())
+        worker.skipPermissions = true
+        worker.permissionPolicy = .autonomous
+        worker.defaultAgentPolicyLevelRaw = AgentPolicyLevel.autonomous.rawValue
+        worker.claudePath = "/bin/sh"
+
+        DirectWorkerLaunchAdmission.admitInitialRun(task, modelContext: context)
+        await worker.execute(task: task, modelContext: context) { _ in }
+
+        #expect(fakeRunner.receivedTaskIDs == [task.id])
+        #expect(fakeRunner.receivedWorkspacePaths == [testDir])
+        #expect(fakeRunner.receivedPrompts.first?.isEmpty == false)
+        #expect(task.status == .completed)
+
+        worker.cancel()
+        #expect(fakeRunner.cancelCallCount == 1)
+    }
+}

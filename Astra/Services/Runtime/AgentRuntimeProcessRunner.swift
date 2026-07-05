@@ -158,7 +158,7 @@ final class AgentRuntimeProcessRunner {
             permissionPolicy: effectivePermissionPolicy,
             workspaceCommandsRunInsideManagedExecutor: environment.workspaceCommandsRunInsideContainer
         ) {
-            AppLogger.audit(.workerBlocked, category: "Worker", taskID: context.task.id, fields: [
+            AppLogger.audit(.workerBlocked, category: "Worker", taskID: context.taskSnapshot.id, fields: [
                 "runtime": plan.runtime.rawValue,
                 "reason": block.runtimeStopReason ?? "credential_native_access_unavailable",
                 "git_credential_readable_path_count": String(gitCredentialContext.readablePaths.count),
@@ -179,7 +179,7 @@ final class AgentRuntimeProcessRunner {
             let message = detail?.isEmpty == false
                 ? detail!
                 : "\(plan.runtime.displayName) cannot yet route workspace shell commands through ASTRA's Docker executor. Switch this task to Claude Code or choose Host execution, then retry."
-            AppLogger.audit(.workerBlocked, category: "Worker", taskID: context.task.id, fields: [
+            AppLogger.audit(.workerBlocked, category: "Worker", taskID: context.taskSnapshot.id, fields: [
                 "runtime": plan.runtime.rawValue,
                 "reason": "docker_workspace_executor_unsupported_runtime",
                 "execution_environment": environment.kind.rawValue,
@@ -203,7 +203,7 @@ final class AgentRuntimeProcessRunner {
             plan = resolvedPlan
         case .failure(let error):
             let message = error.localizedDescription
-            AppLogger.audit(.workerBlocked, category: "Worker", taskID: context.task.id, fields: [
+            AppLogger.audit(.workerBlocked, category: "Worker", taskID: context.taskSnapshot.id, fields: [
                 "runtime": plan.runtime.rawValue,
                 "reason": "execution_environment_unavailable",
                 "execution_environment": environment.kind.rawValue,
@@ -217,7 +217,7 @@ final class AgentRuntimeProcessRunner {
             ))
         }
         if let block = HostControlPlaneRuntimeLaunchGuard.launchBlock(for: plan) {
-            AppLogger.audit(.workerBlocked, category: "Worker", taskID: context.task.id, fields: [
+            AppLogger.audit(.workerBlocked, category: "Worker", taskID: context.taskSnapshot.id, fields: [
                 "runtime": plan.runtime.rawValue,
                 "reason": block.runtimeStopReason ?? HostControlPlaneRuntimeLaunchGuard.missingHostControlMCPReason,
                 "source": "runtime_launch_preflight"
@@ -225,7 +225,7 @@ final class AgentRuntimeProcessRunner {
             return .blocked(block)
         }
         if let block = BrowserBridgeRuntimeLaunchGuard.launchBlock(for: plan) {
-            AppLogger.audit(.workerBlocked, category: "Worker", taskID: context.task.id, fields: [
+            AppLogger.audit(.workerBlocked, category: "Worker", taskID: context.taskSnapshot.id, fields: [
                 "runtime": plan.runtime.rawValue,
                 "reason": block.runtimeStopReason ?? BrowserBridgeRuntimeLaunchGuard.missingBrowserControlToolReason,
                 "source": "runtime_launch_preflight",
@@ -239,7 +239,7 @@ final class AgentRuntimeProcessRunner {
         // resolves the sandbox tier.
         let settings = sandboxSettingsProvider(effectivePermissionPolicy)
         if plan.executionEnvironment.providerRunsInsideContainer {
-            AppLogger.audit(.sandboxSkipped, category: "Worker", taskID: context.task.id, fields: [
+            AppLogger.audit(.sandboxSkipped, category: "Worker", taskID: context.taskSnapshot.id, fields: [
                 "runtime": plan.runtime.rawValue,
                 "reason": "container_environment_uses_docker_policy",
                 "execution_environment": plan.executionEnvironment.kind.rawValue,
@@ -259,7 +259,7 @@ final class AgentRuntimeProcessRunner {
             additionalReadablePaths: runtimeAdditionalPaths + launchResourcePlan.hostReadablePaths,
             settings: settings
         )
-        let taskID = context.task.id
+        let taskID = context.taskSnapshot.id
         switch decision {
         case .applied(_, let writableRoots):
             AppLogger.audit(.sandboxApplied, category: "Worker", taskID: taskID, fields: [
