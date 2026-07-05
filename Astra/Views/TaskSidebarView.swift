@@ -449,7 +449,7 @@ struct TaskSidebarView: View {
                 if let task = renamingTask, !renameTaskText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     task.title = renameTaskText.trimmingCharacters(in: .whitespacesAndNewlines)
                     task.updatedAt = Date()
-                    try? modelContext.save()
+                    WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
                 }
                 renamingTask = nil
             }
@@ -1571,7 +1571,7 @@ struct TaskSidebarView: View {
                     withAnimation(disclosureAnimation) {
                         task.isDone.toggle()
                         task.updatedAt = Date()
-                        try? modelContext.save()
+                        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
                     }
                 }
             } label: {

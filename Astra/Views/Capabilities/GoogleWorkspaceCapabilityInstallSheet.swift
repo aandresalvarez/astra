@@ -347,7 +347,7 @@ struct GoogleWorkspaceCapabilityInstallSheet: View {
             account.authState = .revoked
             account.revokedAt = Date()
             account.updatedAt = Date()
-            try modelContext.save()
+            try WorkspacePersistenceCoordinator.saveAndAutoExportOrThrow(workspace: workspace, modelContext: modelContext)
         } catch {
             setupError = error.localizedDescription
         }

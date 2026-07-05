@@ -258,15 +258,7 @@ struct ArchitectureFitnessTests {
         // save anywhere outside this allowlist (including the app/runtime/view
         // edges that were already cleaned up) fails this test.
         let persistenceHomePrefix = "Astra/Services/Persistence/"
-        let allowedRawSaveFiles: Set<String> = [
-            "Astra/ASTRAApp.swift",
-            "Astra/Views/Capabilities/GoogleWorkspaceCapabilityInstallSheet.swift",
-            "Astra/Views/ChatPanelView.swift",
-            "Astra/Views/Components/KanbanBoardView.swift",
-            "Astra/Views/TaskDetailView.swift",
-            "Astra/Views/TaskSidebarView.swift",
-            "Astra/Views/WorkspaceCanvasPanelView.swift"
-        ]
+        let allowedRawSaveFiles: Set<String> = []
 
         let matches = try swiftFiles(under: root.appendingPathComponent("Astra"))
             .flatMap { file -> [String] in
