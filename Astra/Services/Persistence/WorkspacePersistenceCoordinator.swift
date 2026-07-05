@@ -34,6 +34,7 @@ enum WorkspacePersistenceCoordinator {
             ], level: .error)
         }
 
+        guard didSave else { return didSave }
         guard let workspace else { return didSave }
         guard !shouldSkipAutoExport() else {
             AppLogger.audit(.workspaceExported, category: "Persistence", fields: [
@@ -44,6 +45,36 @@ enum WorkspacePersistenceCoordinator {
         }
         WorkspaceConfigManager.autoExport(workspace: workspace, modelContext: modelContext)
         return didSave
+    }
+
+    /// Non-throwing counterpart to `saveWithoutAutoExportOrThrow`: persists the
+    /// SwiftData context without exporting the workspace JSON mirror. For
+    /// bookkeeping saves whose state is guaranteed to be superseded by a
+    /// later, more authoritative save-and-export call (e.g. pre-admission
+    /// lock events), so the mirror is never snapshotted mid-transition.
+    @discardableResult
+    static func saveWithoutAutoExport(
+        modelContext: ModelContext,
+        taskID: UUID? = nil,
+        auditFields: [String: String] = [:]
+    ) -> Bool {
+        do {
+            try modelContext.save()
+            if taskID != nil || !auditFields.isEmpty {
+                var fields = auditFields
+                fields["result"] = "swiftdata_save_succeeded"
+                fields["auto_export"] = "skipped"
+                AppLogger.audit(.runtimePersistenceSummary, category: "Persistence", taskID: taskID, fields: fields, level: .debug)
+            }
+            return true
+        } catch {
+            var fields = auditFields
+            fields["result"] = "swiftdata_save_failed"
+            fields["auto_export"] = "skipped"
+            fields["error_type"] = String(describing: type(of: error))
+            AppLogger.audit(.runtimePersistenceSummary, category: "Persistence", taskID: taskID, fields: fields, level: .error)
+            return false
+        }
     }
 
     static func saveAndAutoExportOrThrow(
