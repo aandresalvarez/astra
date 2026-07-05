@@ -2458,7 +2458,13 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
         let modelSettingsURL = AntigravityCLIRuntime.settingsURL(
             providerHomeDirectory: context.providerHomeDirectory
         )
-        let model = AgentRuntimeProcessRunner.model(context.taskSnapshot.model, for: id)
+        // Antigravity is the only adapter with a non-nil `sharedLaunchStateKey`, so this is the
+        // only `makeProcessLaunchPlan` that can run after an unbounded await on
+        // `AgentRuntimeSharedStateGate` (queued behind another task sharing the same provider
+        // home directory). Reading the live `context.task.model` here (rather than
+        // `context.taskSnapshot.model`, captured before that wait) ensures a model edit made
+        // while this launch was queued is still honored when writing the shared settings file.
+        let model = AgentRuntimeProcessRunner.model(context.task.model, for: id)
         let providerModel = AntigravityCLIRuntime.resolvedModelName(model, settingsURL: modelSettingsURL)
         let modelApplied = FileManager.default.isExecutableFile(atPath: executable)
             ? AntigravityCLIRuntime.applySelectedModel(providerModel, settingsURL: modelSettingsURL)
