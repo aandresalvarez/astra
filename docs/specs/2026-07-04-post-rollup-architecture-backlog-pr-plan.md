@@ -147,7 +147,18 @@ The 216k-line single `ASTRA` target is why builds/type-checks are slow and why f
 
 ## 5. Not PRs — housekeeping
 
-- **Prune worktrees/branches:** 26 stale `arch-review-pr*` / `followup-*` worktrees plus their merged branches. `git worktree list | grep -E 'arch-review-pr|followup-' `→ `git worktree remove` each → `git worktree prune` → delete merged remotes (`git push origin --delete …` after `gh pr list --state merged` cross-check). Keep `arch-review-rollup-local-validation` until B2 lands (it is the warm-cache validation environment).
+- **Prune worktrees/branches:** 26 stale `arch-review-pr*` / `followup-*` worktrees plus their merged branches. Keep `arch-review-rollup-local-validation` until B2 lands (it is the warm-cache validation environment).
+
+  ```sh
+  # From the main checkout. List the stale worktrees:
+  git worktree list | grep -E 'arch-review-pr|followup-'
+  # Remove each listed worktree, then prune bookkeeping:
+  git worktree remove <worktree-path>
+  git worktree prune
+  # Cross-check which branches are merged before deleting remotes:
+  gh pr list --state merged --limit 50
+  git push origin --delete <merged-branch-name>
+  ```
 - **Budget watch:** budgets raised during the rollup (`AgentRuntimeAdapterTests` 3,200; `WorkspaceConfigManager` 2,800; `GitService` 2,100; `AgentPolicyTests` 2,650; `WorkspacePersistenceTests` 2,450). Direction should reverse as Track A lands — treat any *further* bump in these files as a review flag, not a routine fix.
 
 ---
