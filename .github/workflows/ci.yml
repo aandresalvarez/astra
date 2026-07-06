@@ -41,17 +41,23 @@ jobs:
 
   full-swift-test-suite:
     name: Full Swift test suite
-    # Nightly + manual only, NOT per-PR (yet). Running the full suite on every
-    # pull_request deadlocked 100% of the time on CI: Swift Testing executes
-    # tests concurrently, and the suite's synchronous process-spawning tests
+    # Runs on every trigger the workflow supports (pull_request, push to
+    # main, schedule, workflow_dispatch). This job previously deadlocked
+    # 100% of the time on pull_request: Swift Testing executes tests
+    # concurrently, and the suite's synchronous process-spawning tests
     # exhaust the 3-4 core runner's cooperative thread pool - every test
-    # reports "started", zero ever complete, and the job burns a macOS runner
-    # until the 6-hour cap (evidence: run 28639570525 - 4,002 started / 0
-    # finished / orphaned bash+sleep children at cleanup; three more runs hung
-    # identically). Locally the wider core count masks the deadlock. The
-    # --no-parallel below serializes execution as a mitigation; re-enable
-    # per-PR gating only after a manual dispatch of this job proves green.
-    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    # reports "started", zero ever complete, and the job burns a macOS
+    # runner until the 6-hour cap (evidence: run 28639570525 - 4,002
+    # started / 0 finished / orphaned bash+sleep children at cleanup;
+    # three more runs hung identically). Locally the wider core count
+    # masks the deadlock. --no-parallel below serializes execution and
+    # fixed it - confirmed via repeated manual dispatch runs completing
+    # in ~3-4 minutes. Two further CI-only failures (real, unmocked host
+    # dependencies in scenario tests - gh auth status, then
+    # ~/.astra/tools/astra-host-control - both only present on a
+    # developer machine, not a clean runner) were found and fixed in
+    # #207 and #208. Gating restored on pull_request after a final green
+    # dispatch run (28767049711) on main with both fixes merged.
     runs-on: macos-26
     timeout-minutes: 150
     steps:
