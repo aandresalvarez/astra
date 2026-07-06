@@ -118,7 +118,11 @@ final class Skill {
 
             let newSecretKeys = Set(environmentKeys.filter(Self.isSecretEnvironmentKey))
             for key in oldSecretKeys where !newSecretKeys.contains(key) {
-                SkillSecretSeam.required.deleteSecret(key: key, skillID: id)
+                let deleted = SkillSecretSeam.required.deleteSecret(key: key, skillID: id)
+                ConnectorAuditLoggingSeam.required.audit(.skillSecretRemoved, category: "Keychain", fields: [
+                    "skill_id": id.uuidString,
+                    "result": deleted ? "removed" : "failed"
+                ], level: deleted ? .info : .warning)
             }
         }
     }

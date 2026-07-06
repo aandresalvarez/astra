@@ -503,6 +503,7 @@ struct PromptWithSkillsTests {
 
 @Suite("Environment Variables")
 struct EnvironmentVariableTests {
+    private let _registerRuntimeSeams: Void = RuntimeSeamRegistration.registerAll() // setEnvironmentValue/environmentVariables setter need SkillSecretSeam
 
     @Test("No skills returns empty env vars")
     func noSkillsEmptyEnv() {
@@ -566,6 +567,18 @@ struct EnvironmentVariableTests {
         #expect(skill.environmentKeys == ["TOKEN"])
         #expect(skill.exportableEnvironmentValues == [""])
         #expect(skill.environmentVariables["TOKEN"] == "abc123")
+    }
+
+    @Test("Bulk env var update deletes secrets dropped from the new value")
+    func bulkUpdateDeletesRemovedSecret() {
+        let skill = Skill(name: "Test")
+        skill.environmentVariables = ["TOKEN": "abc123"]
+        #expect(SkillSecretSeam.required.secretExists(key: "TOKEN", skillID: skill.id))
+
+        // Replacing the whole dict without TOKEN should delete its Keychain
+        // entry (previously silent - no audit event - see this fix's PR review).
+        skill.environmentVariables = ["OTHER": "value"]
+        #expect(!SkillSecretSeam.required.secretExists(key: "TOKEN", skillID: skill.id))
     }
 
     @Test("Empty env var skill doesn't affect resolution")
