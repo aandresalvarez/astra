@@ -116,7 +116,8 @@ enum AgentRuntimeLaunchPreflight {
         executionPolicy: AgentRuntimeExecutionPolicy = .default,
         capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot? = nil,
         runtimeConfiguration: AgentRuntimeConfiguration? = nil,
-        secretStore: SecretStore = KeychainSecretStore()
+        secretStore: SecretStore = KeychainSecretStore(),
+        preflightCache: PreflightCache = PreflightCache()
     ) async -> AgentRuntimeLaunchPreflightResult {
         let resolutionSnapshot = capabilityResolutionSnapshot ?? TaskCapabilityResolutionSnapshot.capture(
             for: task,
@@ -129,6 +130,7 @@ enum AgentRuntimeLaunchPreflight {
             modelContext: modelContext,
             phase: phase,
             contextText: contextText,
+            preflightCache: preflightCache,
             capabilityResolutionSnapshot: resolutionSnapshot,
             runtimeProfile: runtimeProfileProvider(runtimeConfiguration)
         )
@@ -309,7 +311,8 @@ enum AgentRuntimeLaunchPreflight {
         executionPolicy: AgentRuntimeExecutionPolicy = .default,
         capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot? = nil,
         runtimeConfiguration: AgentRuntimeConfiguration? = nil,
-        secretStore: SecretStore = KeychainSecretStore()
+        secretStore: SecretStore = KeychainSecretStore(),
+        preflightCache: PreflightCache = PreflightCache()
     ) async -> Bool {
         await preflightConnectorsBeforeLaunchResult(
             task: task,
@@ -320,7 +323,8 @@ enum AgentRuntimeLaunchPreflight {
             executionPolicy: executionPolicy,
             capabilityResolutionSnapshot: capabilityResolutionSnapshot,
             runtimeConfiguration: runtimeConfiguration,
-            secretStore: secretStore
+            secretStore: secretStore,
+            preflightCache: preflightCache
         ).didPass
     }
 

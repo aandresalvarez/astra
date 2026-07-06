@@ -48,6 +48,13 @@ extension AgentRuntimeWorker {
             providerSettingsSnapshotProvider: { .headlessScenario }
         )
         worker.runtimeReadinessService = RuntimeReadinessService(runner: InstantSuccessBinaryRunner())
+        // Capability prerequisites (e.g. `gh auth status` for the GitHub
+        // capability) go through a separate checker than the runtime
+        // readiness gate above. Without this, a scenario that enables a
+        // capability with a real CLI prerequisite would shell out to the
+        // host's actual `gh`/`gcloud`/etc. and depend on ambient machine
+        // auth state instead of the fake CLI scripts the harness controls.
+        worker.environmentHealthChecker = EnvironmentHealthChecker(runner: InstantSuccessBinaryRunner())
         return worker
     }
 }

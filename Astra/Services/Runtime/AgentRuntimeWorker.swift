@@ -599,7 +599,8 @@ final class AgentRuntimeWorker {
             contextText: providerLaunchContextText,
             executionPolicy: executionPolicy,
             capabilityResolutionSnapshot: capabilityResolutionSnapshot,
-            runtimeConfiguration: runtimeConfiguration
+            runtimeConfiguration: runtimeConfiguration,
+            preflightCache: PreflightCache(checker: environmentHealthChecker)
         ) else {
             isRunning = false
             return
@@ -1982,6 +1983,14 @@ final class AgentRuntimeWorker {
     var validationModel: String = "claude-haiku-4-5-20251001"
 
     var runtimeReadinessService = RuntimeReadinessService()
+    /// Backs the capability-prerequisite preflight (e.g. `gh auth status`
+    /// for the GitHub capability). A fresh `PreflightCache` is constructed
+    /// from this per launch (see the call site below) so a retry after the
+    /// user fixes a CLI/auth issue always re-probes instead of replaying a
+    /// stale cached failure. Scenario tests swap this for a checker wired
+    /// to `InstantSuccessBinaryRunner` so the check never shells out to
+    /// real host CLIs.
+    var environmentHealthChecker = EnvironmentHealthChecker()
     /// Maximum execution time in seconds (10 minutes default)
     var timeoutSeconds: TimeInterval = 600
 
