@@ -1,5 +1,6 @@
 import SwiftUI
 import SwiftData
+import ASTRAModels
 
 struct WorkspacePackSettingsSection: View {
     @Bindable var workspace: Workspace

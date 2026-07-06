@@ -2,6 +2,7 @@ import Foundation
 import SQLite3
 import SwiftData
 import Testing
+import ASTRAModels
 @testable import ASTRA
 
 @Suite("Workspace Store Repair")

@@ -1,4 +1,5 @@
 import Foundation
+import ASTRAModels
 
 struct WorkspaceAppNativeFormSubmission {
     var action: WorkspaceAppActionSpec

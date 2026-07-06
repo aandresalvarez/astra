@@ -1,4 +1,5 @@
 import Foundation
+import ASTRAModels
 
 enum AgentRuntimeAttachmentProjection {
     private static let attachmentHeaders: Set<String> = [

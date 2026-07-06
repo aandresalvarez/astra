@@ -1,4 +1,5 @@
 import Foundation
+import ASTRAModels
 
 enum BrowserAutomationEngineKind: String, CaseIterable, Sendable {
     case embeddedWebKit = "embedded-webkit"

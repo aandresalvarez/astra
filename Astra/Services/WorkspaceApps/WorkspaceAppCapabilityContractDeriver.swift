@@ -1,6 +1,7 @@
 import Foundation
 import CryptoKit
 import ASTRACore
+import ASTRAModels
 
 /// Bridges ENABLED capabilities into the Workspace App contract registry so "enable a capability → apps
 /// can read it" works with NO per-connector Swift. A capability exposes a read to apps by declaring a

@@ -1,5 +1,6 @@
 import Foundation
 import ASTRACore
+import ASTRAModels
 
 /// `SecretStore` backed by ASTRA's dedicated keychain file (see
 /// `AstraSecureKeychainStore`), keeping connector/skill secrets out of the

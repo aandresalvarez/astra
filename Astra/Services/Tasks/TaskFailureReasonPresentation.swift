@@ -1,4 +1,5 @@
 import Foundation
+import ASTRAModels
 
 enum TaskFailureReasonPresentation {
     static func reason(errorPayloads: [String], latestExitCode: Int?) -> String {

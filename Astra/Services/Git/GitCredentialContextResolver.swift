@@ -1,4 +1,5 @@
 import Foundation
+import ASTRAModels
 
 struct GitCredentialSandboxContext: Equatable, Sendable {
     var readablePaths: [String]

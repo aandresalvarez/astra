@@ -1,4 +1,5 @@
 import Foundation
+import ASTRAModels
 
 struct TaskCanvasRefreshSignature: Equatable, Hashable, Sendable, CustomStringConvertible {
     static let none = TaskCanvasRefreshSignature(rawValue: "none")

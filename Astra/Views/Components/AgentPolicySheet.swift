@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import ASTRACore
+import ASTRAModels
 
 struct AgentPolicySheet: View {
     let runtime: AgentRuntimeID

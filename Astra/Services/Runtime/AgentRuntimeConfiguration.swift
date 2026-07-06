@@ -1,5 +1,6 @@
 import Foundation
 import ASTRACore
+import ASTRAModels
 
 struct AgentRuntimeProviderSettings: Equatable, Sendable {
     private var executablePaths: [AgentRuntimeID: String]

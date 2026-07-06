@@ -1,4 +1,5 @@
 import Foundation
+import ASTRAModels
 
 enum WorkspaceShelfRuntimePolicy {
     static func resolvedShelfAvailabilityPolicy(for workspace: Workspace?) -> ShelfAvailabilityPolicy {

@@ -3,41 +3,41 @@ import SwiftData
 import ASTRACore
 
 @Model
-final class Connector {
-    var id: UUID
-    var name: String
-    var serviceType: String  // "jira", "slack", "github", "database", "rest_api", "custom"
-    var icon: String
-    var connectorDescription: String
+public final class Connector {
+    public var id: UUID
+    public var name: String
+    public var serviceType: String  // "jira", "slack", "github", "database", "rest_api", "custom"
+    public var icon: String
+    public var connectorDescription: String
 
     // Connection
-    var baseURL: String
-    var authMethod: String  // "basic", "bearer", "api_key", "none"
+    public var baseURL: String
+    public var authMethod: String  // "basic", "bearer", "api_key", "none"
 
     // Credentials (keys stored here, values in Keychain)
-    var credentialKeys: [String]
+    public var credentialKeys: [String]
     // Legacy: kept for migration. New credentials go to Keychain only.
-    var credentialValues: [String]
+    public var credentialValues: [String]
 
     // Configuration (non-secret — visible in UI, e.g. projects, repos)
-    var configKeys: [String]
-    var configValues: [String]
+    public var configKeys: [String]
+    public var configValues: [String]
 
-    var isGlobal: Bool = false
-    var testHTTPMethod: String = "GET"
-    var notes: String
-    var originPackageID: String?
-    var originPackageVersion: String?
-    var originComponentID: String?
-    var originComponentKind: String?
-    var originSourceKind: String?
-    var createdAt: Date
-    var updatedAt: Date
+    public var isGlobal: Bool = false
+    public var testHTTPMethod: String = "GET"
+    public var notes: String
+    public var originPackageID: String?
+    public var originPackageVersion: String?
+    public var originComponentID: String?
+    public var originComponentKind: String?
+    public var originSourceKind: String?
+    public var createdAt: Date
+    public var updatedAt: Date
 
-    var skill: Skill?
-    var workspace: Workspace?
+    public var skill: Skill?
+    public var workspace: Workspace?
 
-    init(
+    public init(
         name: String = "",
         serviceType: String = "custom",
         icon: String = "network",
@@ -80,15 +80,15 @@ final class Connector {
     }
 
     /// Load credentials from Keychain. Legacy plaintext values are migrated at app launch.
-    var credentials: [String: String] {
-        credentials(store: KeychainSecretStore())
+    public var credentials: [String: String] {
+        credentials(store: SecretStoreSeam.required)
     }
 
-    func credentials(store: SecretStore) -> [String: String] {
+    public func credentials(store: SecretStore) -> [String: String] {
         ConnectorSecretSeam.required.loadAllCredentials(keys: credentialKeys, facts: secretFacts, store: store)
     }
 
-    func missingCredentialKeys(store: SecretStore = KeychainSecretStore()) -> [String] {
+    public func missingCredentialKeys(store: SecretStore = SecretStoreSeam.required) -> [String] {
         let resolved = credentials(store: store)
         return credentialKeys.filter { key in
             let value = resolved[key]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -96,19 +96,19 @@ final class Connector {
         }
     }
 
-    var config: [String: String] {
+    public var config: [String: String] {
         Dictionary(zip(configKeys, configValues), uniquingKeysWith: { _, last in last })
     }
 
     /// All key-value pairs merged (for passing as env vars to the process)
-    var allEnvironmentVariables: [String: String] {
+    public var allEnvironmentVariables: [String: String] {
         var merged = credentials
         for (k, v) in config { merged[k] = v }
         return merged
     }
 
     /// Save a credential value to Keychain and keep the key in SwiftData.
-    func saveCredential(key: String, value: String) {
+    public func saveCredential(key: String, value: String) {
         let upperKey = key.uppercased()
         ConnectorSecretSeam.required.saveCredential(value, key: upperKey, facts: secretFacts)
         if let index = credentialKeys.firstIndex(where: { $0.caseInsensitiveCompare(upperKey) == .orderedSame }) {
@@ -124,7 +124,7 @@ final class Connector {
     }
 
     /// Remove a credential from both Keychain and SwiftData.
-    func removeCredential(at index: Int) {
+    public func removeCredential(at index: Int) {
         guard index < credentialKeys.count else { return }
         let key = credentialKeys[index]
         ConnectorSecretSeam.required.deleteCredential(key: key, facts: secretFacts)
@@ -136,7 +136,7 @@ final class Connector {
     }
 
     /// Migrate any legacy plaintext credentials to Keychain.
-    func migrateToKeychain() {
+    public func migrateToKeychain() {
         let facts = secretFacts
         for (index, key) in credentialKeys.enumerated() {
             guard index < credentialValues.count else { continue }
@@ -152,7 +152,7 @@ final class Connector {
     }
 
     /// Delete all Keychain entries when connector is deleted.
-    func cleanupKeychain() {
+    public func cleanupKeychain() {
         if isStanfordOutlookMail {
             OutlookMailConnectionSeam.required.removeFromRegistry(connectorID: id)
         }
@@ -175,18 +175,18 @@ final class Connector {
     // for the rest of the Outlook OAuth/Graph flow — these are fixed
     // connector-type identifiers, not values expected to change independently
     // on either side.
-    var isStanfordOutlookMail: Bool {
+    public var isStanfordOutlookMail: Bool {
         serviceType == "stanford_outlook_mail"
     }
 
-    func configValue(_ key: String) -> String {
+    public func configValue(_ key: String) -> String {
         guard let index = configKeys.firstIndex(of: key), index < configValues.count else {
             return ""
         }
         return configValues[index]
     }
 
-    func setConfigValue(_ key: String, value: String) {
+    public func setConfigValue(_ key: String, value: String) {
         let normalizedKey = key.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
         guard !normalizedKey.isEmpty else { return }
         if let index = configKeys.firstIndex(of: normalizedKey) {
@@ -200,7 +200,7 @@ final class Connector {
         updatedAt = Date()
     }
 
-    var outlookEmail: String {
+    public var outlookEmail: String {
         configValue("ASTRA_MAIL_EMAIL")
     }
 
@@ -208,8 +208,8 @@ final class Connector {
 
     /// Test the connection by hitting a known health endpoint.
     /// Returns (success, message) tuple.
-    func testConnection(
-        store: SecretStore = KeychainSecretStore(),
+    public func testConnection(
+        store: SecretStore = SecretStoreSeam.required,
         transport: any ConnectorHTTPTransport = URLSessionConnectorHTTPTransport(),
         source: String = "manual",
         workspaceID: UUID? = nil,
@@ -553,7 +553,7 @@ final class Connector {
     }
 
     /// Summary line for display
-    var displaySummary: String {
+    public var displaySummary: String {
         var parts: [String] = []
         if !baseURL.isEmpty {
             if let host = URL(string: baseURL)?.host {
@@ -572,7 +572,7 @@ final class Connector {
 
 extension CharacterSet {
     /// Characters safe for a URL-encoded form *value* (excludes &, =, +).
-    static let urlQueryValueAllowed: CharacterSet = {
+    public static let urlQueryValueAllowed: CharacterSet = {
         var cs = CharacterSet.urlQueryAllowed
         cs.remove(charactersIn: "&=+")
         return cs

@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import ASTRAModels
 
 enum SceneSelectionSurface: Equatable {
     case none

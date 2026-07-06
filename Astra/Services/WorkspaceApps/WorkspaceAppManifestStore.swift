@@ -1,4 +1,5 @@
 import Foundation
+import ASTRAModels
 
 struct WorkspaceAppManifestLocation: Equatable {
     var manifestURL: URL

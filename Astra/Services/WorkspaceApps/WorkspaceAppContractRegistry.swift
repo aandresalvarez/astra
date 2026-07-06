@@ -1,5 +1,6 @@
 import Foundation
 import ASTRACore
+import ASTRAModels
 
 enum WorkspaceAppContractEffect: String, Codable, Sendable, Equatable, CaseIterable {
     case read

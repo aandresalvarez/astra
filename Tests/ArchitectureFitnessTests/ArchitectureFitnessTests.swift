@@ -301,10 +301,10 @@ struct ArchitectureFitnessTests {
             // decision (guard + audit) still lives entirely in
             // `TaskStateMachine`'s `TaskForkStateInitializing` conformance;
             // only the mechanical `.status =`/`.updatedAt =` write of an
-            // already-decided value crossed here, since `AgentTaskForkService`
-            // is slated to move into `ASTRAModels` (A3) and the seam boundary
-            // it crosses can't carry a live `AgentTask`.
-            "Astra/Services/Tasks/AgentTaskForkService.swift"
+            // already-decided value crossed here. `AgentTaskForkService`
+            // moved into `ASTRAModels` in A3 (it needs a live `AgentTask`,
+            // which the seam boundary can't carry).
+            "Astra/Models/AgentTaskForkService.swift"
         ]
 
         let matches = try swiftFiles(under: root.appendingPathComponent("Astra"))
@@ -1486,8 +1486,13 @@ struct ArchitectureFitnessTests {
     private var allowedNonTaskStatusReceiversByFile: [String: Set<String>] {
         [
             "Astra/AppIntents/AstraAppEntities.swift": ["self"],
+            "Astra/Models/TaskCorrectiveWork.swift": ["self"],
+            "Astra/Models/TaskMissionHardening.swift": ["self"],
             "Astra/Models/TaskPlan.swift": ["self"],
+            "Astra/Models/TaskResourceLock.swift": ["self"],
             "Astra/Models/TaskRun.swift": ["self"],
+            "Astra/Models/TaskSchedule.swift": ["self"],
+            "Astra/Models/TaskValidationContract.swift": ["self"],
             "Astra/Services/Capabilities/MCPControlPlaneRuntimeBindingService.swift": ["self"],
             "Astra/Services/Persistence/SessionScanner.swift": ["run"],
             "Astra/Services/Persistence/TaskContextStateManager.swift": ["self"],
@@ -1497,7 +1502,7 @@ struct ArchitectureFitnessTests {
             "Astra/Services/Runtime/AgentRuntimeCapabilityBlockRecorder.swift": ["run"],
             "Astra/Services/Runtime/AgentRuntimeLaunchPreflight.swift": ["run"],
             "Astra/Services/Runtime/AgentRuntimeWorker.swift": ["run", "run?"],
-            "Astra/Services/Tasks/AgentTaskForkService.swift": ["newRun"],
+            "Astra/Models/AgentTaskForkService.swift": ["newRun"],
             "Astra/Services/Tasks/DatabaseQueryService.swift": ["self"],
             "Astra/Services/Tasks/TaskPlanService.swift": ["plan.steps[index]", "merged.steps[index]"],
             "Astra/Services/Tasks/TaskPlanStateCacheSignature.swift": ["self"],

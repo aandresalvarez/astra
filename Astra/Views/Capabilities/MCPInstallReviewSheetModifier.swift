@@ -1,4 +1,5 @@
 import SwiftUI
+import ASTRAModels
 
 struct MCPInstallReviewSheetModifier: ViewModifier {
     @Binding var request: MCPInstallChatRequest?

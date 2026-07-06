@@ -1,6 +1,7 @@
 import Foundation
 import SwiftData
 import Testing
+import ASTRAModels
 @testable import ASTRA
 
 /// Slice 4: the grocery/local-database reference app must be complete enough to judge

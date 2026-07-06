@@ -1,5 +1,6 @@
 import Foundation
 import ASTRACore
+import ASTRAModels
 
 enum LocalToolSecurityPolicy {
     static func isSafe(command: String, arguments: String = "") -> Bool {

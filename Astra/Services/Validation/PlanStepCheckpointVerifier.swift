@@ -1,5 +1,6 @@
 import Foundation
 import SwiftData
+import ASTRAModels
 
 /// Evidence collected at a plan-step run boundary.
 ///

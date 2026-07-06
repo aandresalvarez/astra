@@ -1,6 +1,7 @@
 import Foundation
 import SwiftData
 import ASTRACore
+import ASTRAModels
 
 /// Scans Claude Code's session history (~/.claude/projects/) to discover
 /// previous threads for a workspace path and import them as tasks.

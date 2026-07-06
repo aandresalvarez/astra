@@ -1,5 +1,6 @@
 import SwiftUI
 import ASTRACore
+import ASTRAModels
 
 /// App Studio as a conversation (the Lovable/Replit left pane). You describe the app, the
 /// model builds it, and you refine it by chatting — while the live app renders in the docked

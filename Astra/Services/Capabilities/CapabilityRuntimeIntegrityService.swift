@@ -1,6 +1,7 @@
 import Foundation
 import SwiftData
 import ASTRACore
+import ASTRAModels
 
 struct CapabilityRuntimeIntegrityIssue: Equatable, Identifiable {
     enum Source: String {

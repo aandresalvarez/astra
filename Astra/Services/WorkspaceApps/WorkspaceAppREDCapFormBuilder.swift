@@ -1,4 +1,5 @@
 import Foundation
+import ASTRAModels
 
 /// Slice 5b: turns REDCap field metadata into a Workspace App data-entry form manifest (spec §3.2).
 /// Native form screens, required + type validation, choice lists, and branching ONLY where the

@@ -1,4 +1,5 @@
 import Foundation
+import ASTRAModels
 
 /// A read-only GitHub pull-request request derived from a DECLARED `capability.read` source. The page
 /// (via `astra.read`) can influence ONLY `state` (validated to a fixed set) and `limit`; the operation

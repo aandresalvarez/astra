@@ -1,5 +1,6 @@
 import SwiftData
 import SwiftUI
+import ASTRAModels
 
 struct WorkspaceAppDetailView: View {
     let app: WorkspaceApp

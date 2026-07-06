@@ -1,5 +1,6 @@
 import Foundation
 import ASTRACore
+import ASTRAModels
 
 extension ConnectorSecretFacts {
     init(connector: Connector) {

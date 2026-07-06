@@ -2,6 +2,7 @@ import AppKit
 import SwiftUI
 import SwiftData
 import ASTRACore
+import ASTRAModels
 
 struct ScheduleEditorView: View {
     @Environment(\.modelContext) private var modelContext

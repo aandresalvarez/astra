@@ -1,5 +1,6 @@
 import AppIntents
 import Foundation
+import ASTRAModels
 
 struct AstraWorkspaceEntity: AppEntity {
     static var typeDisplayRepresentation: TypeDisplayRepresentation = "Workspace"

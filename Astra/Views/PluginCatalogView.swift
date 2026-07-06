@@ -3,6 +3,7 @@ import SwiftUI
 import SwiftData
 import UniformTypeIdentifiers
 import ASTRACore
+import ASTRAModels
 
 private struct CapabilityDetailSection: Identifiable {
     let id: String

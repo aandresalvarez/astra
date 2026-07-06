@@ -32,6 +32,7 @@ enum RuntimeSeamRegistration {
         TaskForkStateInitializingSeam.register(TaskStateMachine.self)
         TaskFolderResolvingSeam.register(TaskFolderResolvingAdapter.self)
         TaskForkManifestWritingSeam.register(TaskForkManifestWritingAdapter.self)
+        SecretStoreSeam.register { KeychainSecretStore() }
     }
 }
 

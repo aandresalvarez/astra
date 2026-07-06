@@ -2,11 +2,9 @@ import Foundation
 import os
 
 // Added as part of Track A2.6 (finishing A2's Models cycle-break) so
-// `Astra/Services/Tasks/AgentTaskForkService.swift` - which needs to move
-// directly into the future `ASTRAModels` target in A3 once these are wired,
-// per the plan - can call the three app-side services it currently depends
-// on (`TaskStateMachine`, `TaskForkManifestService`, `TaskWorkspaceAccess`)
-// without importing them.
+// `Astra/Models/AgentTaskForkService.swift` (moved into `ASTRAModels` in A3)
+// can call the three app-side services it depends on (`TaskStateMachine`,
+// `TaskForkManifestService`, `TaskWorkspaceAccess`) without importing them.
 
 // MARK: - Fork state initialization
 

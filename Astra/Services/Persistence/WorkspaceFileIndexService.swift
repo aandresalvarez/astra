@@ -1,5 +1,6 @@
 import Foundation
 import ASTRACore
+import ASTRAModels
 
 struct WorkspaceFileRoot: Identifiable, Hashable {
     enum Kind: String, Hashable {

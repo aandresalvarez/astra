@@ -1,5 +1,6 @@
 import ASTRACore
 import SwiftUI
+import ASTRAModels
 
 struct WorkspaceDockerSectionView: View {
     private static let viewUpdateDeferralNanoseconds: UInt64 = 1_000_000

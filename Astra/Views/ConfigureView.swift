@@ -1,6 +1,7 @@
 import SwiftUI
 import SwiftData
 import ASTRACore
+import ASTRAModels
 
 enum ConfigureTab: String, CaseIterable {
     case capabilities = "Capabilities"

@@ -2,6 +2,7 @@ import Testing
 import AppKit
 import SwiftUI
 import Darwin
+import ASTRAModels
 @testable import ASTRA
 import ASTRACore
 

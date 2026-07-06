@@ -1,5 +1,6 @@
 import SwiftUI
 import UniformTypeIdentifiers
+import ASTRAModels
 
 /// Slice 7: review-before-install UI for an exported `.astra-app` package. Picks a package,
 /// builds a `WorkspaceAppPackageImportReview` (validation + trust + dependency mapping + storage),

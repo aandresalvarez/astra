@@ -1,4 +1,5 @@
 import Foundation
+import ASTRAModels
 
 enum TaskOutputWorkspaceDiscovery {
     static let scanEntryLimit = 800

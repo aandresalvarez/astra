@@ -1,6 +1,7 @@
 import AppKit
 import SwiftData
 import SwiftUI
+import ASTRAModels
 
 private enum WorkspaceHomeLayout {
     static let boardMaxWidth: CGFloat = 1_520

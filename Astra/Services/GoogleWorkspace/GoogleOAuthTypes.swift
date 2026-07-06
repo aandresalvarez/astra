@@ -1,20 +1,8 @@
 import Foundation
+import ASTRACore
 
-enum GoogleOAuthScopeNormalizer {
-    static func normalized(_ scopes: [String]) -> [String] {
-        var seen = Set<String>()
-        return scopes
-            .flatMap { $0.split(separator: " ").map(String.init) }
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-            .filter { seen.insert($0).inserted }
-    }
-
-    static func missing(required: [String], granted: [String]) -> [String] {
-        let grantedSet = Set(normalized(granted))
-        return normalized(required).filter { !grantedSet.contains($0) }
-    }
-}
+// GoogleOAuthScopeNormalizer moved to ASTRACore/GoogleOAuthScopeNormalizer.swift
+// as part of Track A3 - Astra/Models/GoogleOAuthAccountProfile.swift needs it.
 
 struct GoogleOAuthTokenSet: Equatable, Sendable {
     let accessToken: String

@@ -1,5 +1,6 @@
 import Foundation
 import ASTRACore
+import ASTRAModels
 
 enum BrowserBridgeMCPProjection {
     static let serverID = "astra_browser"

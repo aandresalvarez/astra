@@ -1,5 +1,6 @@
 import Foundation
 import ASTRACore
+import ASTRAModels
 
 struct AstraPackProfileDiagnostic: Equatable, Sendable {
     enum Code: Equatable, Sendable {

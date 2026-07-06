@@ -1,6 +1,7 @@
 import Foundation
 import SwiftData
 import Testing
+import ASTRAModels
 @testable import ASTRA
 
 /// Human-in-the-loop: a pipeline that reaches an un-approved `gate.humanApproval` step suspends the

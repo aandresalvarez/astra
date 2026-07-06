@@ -1,5 +1,6 @@
 import Foundation
 import SwiftData
+import ASTRAModels
 
 /// One-time-per-launch housekeeping that keeps the task store aligned with the
 /// board invariant ("only meaningful supervisable work"). It does two things,

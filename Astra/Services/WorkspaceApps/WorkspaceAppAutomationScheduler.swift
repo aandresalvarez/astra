@@ -1,4 +1,5 @@
 import Foundation
+import ASTRAModels
 
 struct WorkspaceAppDueAutomation: Sendable, Equatable {
     var automationID: String

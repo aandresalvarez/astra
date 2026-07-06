@@ -1,4 +1,5 @@
 import Foundation
+import ASTRAModels
 
 enum WorkspaceAppSourceResolutionError: LocalizedError, Equatable {
     case missingSource(String)

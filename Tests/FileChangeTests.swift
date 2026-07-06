@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import ASTRAModels
 @testable import ASTRA
 
 @Suite("File Change Storage")

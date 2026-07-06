@@ -1,5 +1,6 @@
 import SwiftUI
 import SwiftData
+import ASTRAModels
 
 struct ShelfQueryPanelView: View {
     @ObservedObject var session: ShelfQuerySession

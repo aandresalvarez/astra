@@ -1,4 +1,5 @@
 import Foundation
+import ASTRAModels
 
 @MainActor
 enum AgentRuntimeFailurePayload {

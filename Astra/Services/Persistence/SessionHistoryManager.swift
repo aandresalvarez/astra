@@ -1,5 +1,6 @@
 import Foundation
 import ASTRACore
+import ASTRAModels
 
 /// Manages a persistent session history file for each task.
 /// After each turn (initial run or follow-up), appends a structured summary

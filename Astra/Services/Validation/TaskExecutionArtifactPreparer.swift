@@ -1,5 +1,6 @@
 import Foundation
 import SwiftData
+import ASTRAModels
 
 struct TaskExecutionArtifactExpectation: Sendable, Equatable, Hashable {
     var kind: TaskPlanArtifactKind

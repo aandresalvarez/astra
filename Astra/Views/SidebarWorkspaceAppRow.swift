@@ -1,4 +1,5 @@
 import SwiftUI
+import ASTRAModels
 
 /// Search-aware filtering for the sidebar's inline app rows. Mirrors how chat rows behave
 /// during search (see `SidebarTaskIndex.reviewTasks`): with no query — or when the workspace

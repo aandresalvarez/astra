@@ -1,4 +1,5 @@
 import Foundation
+import ASTRAModels
 
 enum SearchPanelOverlayResults {
     static func recentTasks(_ tasks: [AgentTask], workspaces: [Workspace]) -> [AgentTask] {

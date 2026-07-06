@@ -1,29 +1,29 @@
 import Foundation
 import SwiftData
 
-enum WorkspaceAppAutomationStateStatus: String, Codable, Sendable, Equatable, CaseIterable {
+public enum WorkspaceAppAutomationStateStatus: String, Codable, Sendable, Equatable, CaseIterable {
     case disabled
     case enabled
     case blocked
 }
 
 @Model
-final class WorkspaceAppAutomationState: Identifiable {
-    var id: UUID
-    var workspaceID: UUID
-    var appID: UUID
-    var appLogicalID: String
-    var automationID: String
-    var automationType: String
-    var actionID: String?
-    var isEnabled: Bool
-    var statusRaw: String
-    var lastRunAt: Date?
-    var nextRunAt: Date?
-    var createdAt: Date
-    var updatedAt: Date
+public final class WorkspaceAppAutomationState: Identifiable {
+    public var id: UUID
+    public var workspaceID: UUID
+    public var appID: UUID
+    public var appLogicalID: String
+    public var automationID: String
+    public var automationType: String
+    public var actionID: String?
+    public var isEnabled: Bool
+    public var statusRaw: String
+    public var lastRunAt: Date?
+    public var nextRunAt: Date?
+    public var createdAt: Date
+    public var updatedAt: Date
 
-    init(
+    public init(
         id: UUID = UUID(),
         workspaceID: UUID,
         appID: UUID,
@@ -53,7 +53,7 @@ final class WorkspaceAppAutomationState: Identifiable {
         self.updatedAt = updatedAt
     }
 
-    var status: WorkspaceAppAutomationStateStatus {
+    public var status: WorkspaceAppAutomationStateStatus {
         get { WorkspaceAppAutomationStateStatus(rawValue: statusRaw) ?? .disabled }
         set { statusRaw = newValue.rawValue }
     }

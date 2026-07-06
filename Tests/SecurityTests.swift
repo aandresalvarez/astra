@@ -1,6 +1,7 @@
 import Testing
 import Foundation
 import Security
+import ASTRAModels
 @testable import ASTRA
 import ASTRACore
 

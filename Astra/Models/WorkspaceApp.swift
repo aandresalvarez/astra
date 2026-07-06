@@ -1,21 +1,21 @@
 import Foundation
 import SwiftData
 
-enum WorkspaceAppLifecycleStatus: String, Codable, Sendable, Equatable, CaseIterable {
+public enum WorkspaceAppLifecycleStatus: String, Codable, Sendable, Equatable, CaseIterable {
     case draft
     case published
     case disabled
     case blocked
 }
 
-enum WorkspaceAppPermissionMode: String, Codable, Sendable, Equatable, CaseIterable {
+public enum WorkspaceAppPermissionMode: String, Codable, Sendable, Equatable, CaseIterable {
     case readOnly
     case draftOnly
     case approvalRequired
     case preApproved
 }
 
-enum WorkspaceAppDependencyStatus: String, Codable, Sendable, Equatable, CaseIterable {
+public enum WorkspaceAppDependencyStatus: String, Codable, Sendable, Equatable, CaseIterable {
     case unresolved
     case ready
     case missingRequired
@@ -23,36 +23,36 @@ enum WorkspaceAppDependencyStatus: String, Codable, Sendable, Equatable, CaseIte
 }
 
 @Model
-final class WorkspaceApp: Identifiable {
-    var id: UUID
-    var workspaceID: UUID
-    var logicalID: String
-    var name: String
-    var icon: String
-    var appDescription: String
-    var lifecycleStatusRaw: String
-    var permissionModeRaw: String
-    var dependencyStatusRaw: String
-    var manifestRelativePath: String
-    var appDirectoryRelativePath: String
-    var manifestDigest: String
+public final class WorkspaceApp: Identifiable {
+    public var id: UUID
+    public var workspaceID: UUID
+    public var logicalID: String
+    public var name: String
+    public var icon: String
+    public var appDescription: String
+    public var lifecycleStatusRaw: String
+    public var permissionModeRaw: String
+    public var dependencyStatusRaw: String
+    public var manifestRelativePath: String
+    public var appDirectoryRelativePath: String
+    public var manifestDigest: String
     // Slice 3 versioning. Defaulted so they are absorbed into ASTRASchemaV8's fresh
     // table (same pattern as WorkspaceAppRun.pendingStepIndex / awaitedTaskIDsJSON);
     // NO new @Model, NO new schema version. The on-disk versions/index.json is the
     // source of truth; these mirror it for cheap reads without a directory scan.
-    var publishedManifestDigest: String = ""      // digest of the last manifest that PUBLISHED; "" = never published
-    var lastKnownGoodManifestDigest: String = ""  // digest of the last manifest that published AND validated; "" = none
-    var latestVersionNumber: Int = 0              // highest snapshot number written to versions/; 0 = none
-    var sourcePackageID: String?
-    var sourcePackageVersion: String?
-    var sourcePackageDigest: String?
-    var lastOpenedAt: Date?
-    var lastRefreshedAt: Date?
-    var lastRunAt: Date?
-    var createdAt: Date
-    var updatedAt: Date
+    public var publishedManifestDigest: String = ""      // digest of the last manifest that PUBLISHED; "" = never published
+    public var lastKnownGoodManifestDigest: String = ""  // digest of the last manifest that published AND validated; "" = none
+    public var latestVersionNumber: Int = 0              // highest snapshot number written to versions/; 0 = none
+    public var sourcePackageID: String?
+    public var sourcePackageVersion: String?
+    public var sourcePackageDigest: String?
+    public var lastOpenedAt: Date?
+    public var lastRefreshedAt: Date?
+    public var lastRunAt: Date?
+    public var createdAt: Date
+    public var updatedAt: Date
 
-    init(
+    public init(
         id: UUID = UUID(),
         workspaceID: UUID,
         logicalID: String,
@@ -96,17 +96,17 @@ final class WorkspaceApp: Identifiable {
         self.updatedAt = updatedAt
     }
 
-    var lifecycleStatus: WorkspaceAppLifecycleStatus {
+    public var lifecycleStatus: WorkspaceAppLifecycleStatus {
         get { WorkspaceAppLifecycleStatus(rawValue: lifecycleStatusRaw) ?? .draft }
         set { lifecycleStatusRaw = newValue.rawValue }
     }
 
-    var permissionMode: WorkspaceAppPermissionMode {
+    public var permissionMode: WorkspaceAppPermissionMode {
         get { WorkspaceAppPermissionMode(rawValue: permissionModeRaw) ?? .readOnly }
         set { permissionModeRaw = newValue.rawValue }
     }
 
-    var dependencyStatus: WorkspaceAppDependencyStatus {
+    public var dependencyStatus: WorkspaceAppDependencyStatus {
         get { WorkspaceAppDependencyStatus(rawValue: dependencyStatusRaw) ?? .unresolved }
         set { dependencyStatusRaw = newValue.rawValue }
     }

@@ -1,5 +1,6 @@
 import Foundation
 import ASTRACore
+import ASTRAModels
 
 struct AntigravityCLICommandPlan: Equatable {
     var executablePath: String

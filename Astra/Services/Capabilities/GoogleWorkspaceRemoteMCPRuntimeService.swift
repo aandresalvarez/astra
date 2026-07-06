@@ -1,4 +1,6 @@
 import Foundation
+import ASTRACore
+import ASTRAModels
 
 protocol GoogleWorkspaceRemoteMCPTokenResolving: AnyObject {
     func accessToken(for profile: GoogleOAuthAccountProfile, requiredScopes: [String]) async -> GoogleWorkspaceRemoteMCPTokenResult

@@ -1,4 +1,5 @@
 import Foundation
+import ASTRAModels
 
 /// In-memory sandbox runner for App Studio's full Preview ("test before publish").
 ///

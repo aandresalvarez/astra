@@ -1,5 +1,7 @@
 import Foundation
 import SwiftData
+import ASTRACore
+import ASTRAModels
 
 final class GoogleOAuthAccountService {
     private let configuration: GoogleOAuthConfiguration

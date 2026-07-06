@@ -1,4 +1,5 @@
 import Foundation
+import ASTRAModels
 
 struct ContentWorkspaceSelectionPersistence: Equatable {
     let workspaceID: String

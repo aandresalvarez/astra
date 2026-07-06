@@ -1,4 +1,5 @@
 import Foundation
+import ASTRAModels
 
 enum SidebarTaskIndexInvalidation {
     static func signature(for tasks: [AgentTask], searchText: String = "") -> Int {

@@ -3,6 +3,7 @@ import Foundation
 import Security
 import SwiftData
 import AstraObjCSupport
+import ASTRAModels
 @testable import ASTRA
 import ASTRACore
 

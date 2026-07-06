@@ -1,4 +1,5 @@
 import Foundation
+import ASTRAModels
 
 /// Phase 4 of the Studio UX redesign: "refine it" chips. Each refinement is a pure, additive,
 /// idempotent transform manifest -> manifest, so a builder adjusts an app by tapping a chip instead

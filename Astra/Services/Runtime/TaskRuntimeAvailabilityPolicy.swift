@@ -1,5 +1,6 @@
 import Foundation
 import ASTRACore
+import ASTRAModels
 
 enum TaskRuntimeAvailabilityPolicy {
     /// Runtime readiness controls whether a task can run now; it must not migrate

@@ -1,6 +1,7 @@
 import Foundation
 import SwiftData
 import ASTRACore
+import ASTRAModels
 
 struct CapabilityPackageCreationResult {
     var package: PluginPackage

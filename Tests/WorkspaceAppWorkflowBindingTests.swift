@@ -1,6 +1,7 @@
 import Foundation
 import SwiftData
 import Testing
+import ASTRAModels
 @testable import ASTRA
 
 /// Slice 10 — workflow I/O binding: app data flows INTO a spawned agent task's goal (input binding)

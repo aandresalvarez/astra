@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import ASTRAModels
 @testable import ASTRA
 
 /// The Studio UX redesign logic that still feeds the live chat flow: archetype catalog metadata

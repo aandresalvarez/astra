@@ -2,27 +2,27 @@ import Foundation
 import SwiftData
 
 @Model
-final class LocalTool {
-    var id: UUID
-    var name: String
-    var toolDescription: String
-    var icon: String
-    var toolType: String  // "script", "cli", "mcp"
-    var command: String   // path or command to run
-    var arguments: String // default arguments
-    var isGlobal: Bool = false
-    var originPackageID: String?
-    var originPackageVersion: String?
-    var originComponentID: String?
-    var originComponentKind: String?
-    var originSourceKind: String?
-    var createdAt: Date
-    var updatedAt: Date
+public final class LocalTool {
+    public var id: UUID
+    public var name: String
+    public var toolDescription: String
+    public var icon: String
+    public var toolType: String  // "script", "cli", "mcp"
+    public var command: String   // path or command to run
+    public var arguments: String // default arguments
+    public var isGlobal: Bool = false
+    public var originPackageID: String?
+    public var originPackageVersion: String?
+    public var originComponentID: String?
+    public var originComponentKind: String?
+    public var originSourceKind: String?
+    public var createdAt: Date
+    public var updatedAt: Date
 
-    var skill: Skill?
-    var workspace: Workspace?
+    public var skill: Skill?
+    public var workspace: Workspace?
 
-    init(
+    public init(
         name: String = "",
         toolDescription: String = "",
         icon: String = "terminal",
@@ -47,12 +47,12 @@ final class LocalTool {
     }
 
     /// Full command string for display
-    var displayCommand: String {
+    public var displayCommand: String {
         arguments.isEmpty ? command : "\(command) \(arguments)"
     }
 
     /// Icon based on tool type
-    static func iconForType(_ type: String) -> String {
+    public static func iconForType(_ type: String) -> String {
         switch type {
         case "script": return "doc.text.fill"
         case "mcp": return "puzzlepiece.extension"

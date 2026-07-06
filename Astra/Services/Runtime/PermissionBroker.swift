@@ -1,5 +1,6 @@
 import Foundation
 import ASTRACore
+import ASTRAModels
 
 enum PermissionBroker {
     static let brokerVersion = 1

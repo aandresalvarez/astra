@@ -1,5 +1,6 @@
 import Foundation
 import ASTRACore
+import ASTRAModels
 
 struct PluginCatalogApprovalReviewState: Equatable {
     var decision: CapabilityCatalogDecision

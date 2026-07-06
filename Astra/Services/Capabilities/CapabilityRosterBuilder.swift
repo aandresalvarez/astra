@@ -1,5 +1,6 @@
 import Foundation
 import ASTRACore
+import ASTRAModels
 
 /// Builds a compact, always-present roster of the capabilities enabled for a
 /// workspace.

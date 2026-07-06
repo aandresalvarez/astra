@@ -1,5 +1,6 @@
 import Foundation
 import SwiftData
+import ASTRAModels
 
 @MainActor
 enum WorkspacePersistenceCoordinator {

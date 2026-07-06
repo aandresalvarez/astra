@@ -1,6 +1,7 @@
 import ASTRACore
 import Combine
 import Foundation
+import ASTRAModels
 
 /// The conversational engine behind App Studio. Instead of a form, the user builds an
 /// app by chatting: the first message generates a draft, later messages refine it, and a

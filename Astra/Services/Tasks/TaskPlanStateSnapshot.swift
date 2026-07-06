@@ -1,4 +1,5 @@
 import Foundation
+import ASTRAModels
 
 struct TaskPlanStateSnapshot: Equatable {
     static let empty = TaskPlanStateSnapshot(

@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import ASTRAModels
 
 struct ShelfQueryDocument: Identifiable, Equatable {
     let id: String

@@ -1,4 +1,5 @@
 import Foundation
+import ASTRAModels
 
 struct WorkspaceAppManifest: Codable, Sendable, Equatable {
     var schemaVersion: Int

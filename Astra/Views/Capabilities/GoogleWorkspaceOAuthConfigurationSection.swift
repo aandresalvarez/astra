@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import ASTRACore
 
 struct GoogleWorkspaceOAuthConfigurationSection: View {
     @Binding var useCustomOAuth: Bool

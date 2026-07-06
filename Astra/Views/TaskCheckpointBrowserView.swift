@@ -1,4 +1,5 @@
 import SwiftUI
+import ASTRAModels
 
 struct TaskCheckpointSummary: Identifiable, Hashable, Sendable {
     let id: UUID
