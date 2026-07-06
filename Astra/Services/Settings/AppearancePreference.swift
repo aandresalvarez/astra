@@ -183,34 +183,11 @@ enum LoggingPreferences {
     }
 }
 
-enum TaskExecutionDefaults {
-    static let runtime = AgentRuntimeID.claudeCode
-    static let model = AgentRuntimeAdapterRegistry.defaultModel(for: runtime)
-    static let tokenBudget = 100_000
-    static let budgetEnforcementMode = BudgetEnforcementMode.warning
-    static let budgetPresets = [10_000, 25_000, 50_000, 100_000, 200_000, 500_000, 1_000_000, 0]
-}
-
-enum BudgetEnforcementMode: String, CaseIterable, Identifiable, Sendable {
-    case hardStop = "hard_stop"
-    case warning = "warning"
-
-    var id: String { rawValue }
-
-    var label: String {
-        switch self {
-        case .hardStop: "Hard Stop"
-        case .warning: "Warning Only"
-        }
-    }
-
-    var helpText: String {
-        switch self {
-        case .hardStop: "Stop the provider process when ASTRA estimates or receives usage above the task budget."
-        case .warning: "Keep the task running and record a budget warning when usage goes over the task budget."
-        }
-    }
-
+// `TaskExecutionDefaults` and `BudgetEnforcementMode`'s core enum moved to
+// `ASTRACore/TaskExecutionDefaults.swift` as part of Track A2.2. The
+// UserDefaults-reading half of `BudgetEnforcementMode` stays here, since
+// `ASTRACore` has no business reading user preferences.
+extension BudgetEnforcementMode {
     static var configuredDefault: BudgetEnforcementMode {
         configuredDefault(in: .standard)
     }
