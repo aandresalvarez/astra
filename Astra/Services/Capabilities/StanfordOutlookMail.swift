@@ -576,11 +576,15 @@ enum OutlookMailConnectionAdapter: OutlookMailConnectionTesting {
     static func testConnection(facts: ConnectorOutlookFacts) async throws -> OutlookConnectionResult {
         let scratch = Connector(name: facts.name, serviceType: facts.serviceType)
         scratch.id = facts.id
-        for (key, value) in facts.config {
-            scratch.setConfigValue(key, value: value)
-        }
+        scratch.configKeys = facts.configKeys
+        scratch.configValues = facts.configValues
         let me = try await StanfordOutlookMailGraphService().testConnection(connector: scratch)
-        return OutlookConnectionResult(mail: me.mail, userPrincipalName: me.userPrincipalName, updatedConfig: scratch.config)
+        return OutlookConnectionResult(
+            mail: me.mail,
+            userPrincipalName: me.userPrincipalName,
+            updatedConfigKeys: scratch.configKeys,
+            updatedConfigValues: scratch.configValues
+        )
     }
 
     static func removeFromRegistry(connectorID: UUID) {

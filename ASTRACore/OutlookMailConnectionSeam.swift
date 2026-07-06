@@ -29,32 +29,43 @@ public struct ConnectorOutlookFacts: Sendable {
     public let id: UUID
     public let name: String
     public let serviceType: String
-    /// All of the connector's config key/value pairs (tenant domain,
-    /// client ID, scopes, previously-stored email, etc.) - enough to
-    /// reconstruct a working stand-in `Connector`.
-    public let config: [String: String]
+    /// `configKeys`/`configValues` as `Connector` itself stores them -
+    /// parallel arrays, not a collapsed dictionary. `Connector.configValue(_:)`
+    /// resolves duplicate keys via `firstIndex(of:)` (first match wins); a
+    /// `[String: String]` built from `zip(configKeys, configValues)` would
+    /// collapse duplicates last-wins instead, silently reading a different
+    /// tenant/client/scopes value than the live `self.outlookTenantDomain`/
+    /// `.outlookClientID`/etc. would for connectors with duplicate config
+    /// rows (verified real risk, not hypothetical - see this seam's
+    /// introducing PR review thread).
+    public let configKeys: [String]
+    public let configValues: [String]
 
-    public init(id: UUID, name: String, serviceType: String, config: [String: String]) {
+    public init(id: UUID, name: String, serviceType: String, configKeys: [String], configValues: [String]) {
         self.id = id
         self.name = name
         self.serviceType = serviceType
-        self.config = config
+        self.configKeys = configKeys
+        self.configValues = configValues
     }
 }
 
 public struct OutlookConnectionResult: Sendable {
     public let mail: String?
     public let userPrincipalName: String?
-    /// The full config key/value state after the connection flow (token
-    /// refresh, account ID/display name/email discovery, etc.) - apply via
-    /// `Connector.setConfigValue` for every entry, mirroring however many
-    /// keys the underlying flow actually wrote.
-    public let updatedConfig: [String: String]
+    /// The scratch connector's full `configKeys`/`configValues` state after
+    /// the connection flow (token refresh, account ID/display name/email
+    /// discovery, etc.) - assign both back to the real connector wholesale
+    /// (not a per-key `setConfigValue` loop), preserving duplicate-row
+    /// structure exactly rather than re-collapsing it.
+    public let updatedConfigKeys: [String]
+    public let updatedConfigValues: [String]
 
-    public init(mail: String?, userPrincipalName: String?, updatedConfig: [String: String]) {
+    public init(mail: String?, userPrincipalName: String?, updatedConfigKeys: [String], updatedConfigValues: [String]) {
         self.mail = mail
         self.userPrincipalName = userPrincipalName
-        self.updatedConfig = updatedConfig
+        self.updatedConfigKeys = updatedConfigKeys
+        self.updatedConfigValues = updatedConfigValues
     }
 }
 

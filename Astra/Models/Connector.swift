@@ -228,11 +228,14 @@ final class Connector {
 
         if isStanfordOutlookMail {
             do {
-                let facts = ConnectorOutlookFacts(id: id, name: name, serviceType: serviceType, config: config)
+                let facts = ConnectorOutlookFacts(id: id, name: name, serviceType: serviceType, configKeys: configKeys, configValues: configValues)
                 let result = try await OutlookMailConnectionSeam.required.testConnection(facts: facts)
-                for (key, value) in result.updatedConfig {
-                    setConfigValue(key, value: value)
-                }
+                // Assigned wholesale (not via a per-key setConfigValue loop)
+                // so duplicate-key rows carry over exactly as the flow left
+                // them, rather than being re-collapsed or reordered.
+                configKeys = result.updatedConfigKeys
+                configValues = result.updatedConfigValues
+                updatedAt = Date()
                 ConnectorAuditLoggingSeam.required.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
                     "credential_evidence": "microsoft_graph_oauth",
                     "credential_state": "authenticated",
