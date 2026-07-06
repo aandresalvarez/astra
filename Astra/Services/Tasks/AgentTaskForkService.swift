@@ -46,13 +46,15 @@ enum AgentTaskForkService {
             statusRawValue: forked.status.rawValue,
             at: Date()
         )
-        if stateInit.applied {
-            if let newStatus = TaskStatus(rawValue: stateInit.statusRawValue) {
-                forked.status = newStatus
-            }
-            if let updatedAt = stateInit.updatedAt {
-                forked.updatedAt = updatedAt
-            }
+        // Apply atomically: status and updatedAt must both be valid, or
+        // neither is applied, so a future adapter bug can't leave forked in
+        // a partially-transitioned state (new status, stale updatedAt or
+        // vice versa).
+        if stateInit.applied,
+           let newStatus = TaskStatus(rawValue: stateInit.statusRawValue),
+           let updatedAt = stateInit.updatedAt {
+            forked.status = newStatus
+            forked.updatedAt = updatedAt
         }
 
         let runsToFork = sortedRuns.prefix(through: cutoffIndex)
