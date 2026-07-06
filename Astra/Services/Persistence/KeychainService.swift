@@ -1,4 +1,18 @@
 import Foundation
+import ASTRACore
+
+extension ConnectorSecretFacts {
+    init(connector: Connector) {
+        self.init(
+            id: connector.id,
+            name: connector.name,
+            serviceType: connector.serviceType,
+            baseURL: connector.baseURL,
+            originPackageID: connector.originPackageID,
+            originComponentID: connector.originComponentID
+        )
+    }
+}
 
 /// Stores and retrieves Astra secrets in ASTRA's dedicated keychain file.
 ///
@@ -19,6 +33,21 @@ enum KeychainService {
 
     private static func connectorServices(for connector: Connector) -> [String] {
         KeychainSecretStore.connectorEntityIDs(for: connector)
+    }
+
+    /// Primitive twin of `connectorServices(for:)`, used by the facts-based
+    /// overloads below — the only surface `ASTRACore.ConnectorSecretSeam`'s
+    /// registered implementation (`ConnectorSecretPersistence` in
+    /// `ModelSecretPersistence.swift`) calls, since it no longer has a live
+    /// `Connector` (Track A2.5).
+    private static func connectorServices(facts: ConnectorSecretFacts) -> [String] {
+        KeychainSecretStore.connectorEntityIDs(
+            id: facts.id,
+            serviceType: facts.serviceType,
+            baseURL: facts.baseURL,
+            originPackageID: facts.originPackageID,
+            originComponentID: facts.originComponentID
+        )
     }
 
     private static func skillService(for skillID: UUID) -> String {
@@ -50,7 +79,14 @@ enum KeychainService {
     /// reuse user-entered secrets without another prompt.
     @discardableResult
     static func save(key: String, value: String, connector: Connector, label: String? = nil) -> Bool {
-        let services = connectorServices(for: connector)
+        save(key: key, value: value, facts: ConnectorSecretFacts(connector: connector), label: label)
+    }
+
+    /// Facts-based twin of `save(key:value:connector:label:)` — see
+    /// `connectorServices(facts:)`.
+    @discardableResult
+    static func save(key: String, value: String, facts: ConnectorSecretFacts, label: String? = nil) -> Bool {
+        let services = connectorServices(facts: facts)
         let saved = services.map { service in
             AstraSecureKeychainStore.save(
                 service: service,
@@ -97,7 +133,12 @@ enum KeychainService {
     /// contains it. UUID wins over stable so user edits to a specific connector
     /// can override shared stable defaults.
     static func load(key: String, connector: Connector) -> String? {
-        for service in connectorServices(for: connector) {
+        load(key: key, facts: ConnectorSecretFacts(connector: connector))
+    }
+
+    /// Facts-based twin of `load(key:connector:)` — see `connectorServices(facts:)`.
+    static func load(key: String, facts: ConnectorSecretFacts) -> String? {
+        for service in connectorServices(facts: facts) {
             if let value = AstraSecureKeychainStore.load(service: service, account: key) {
                 return value
             }
@@ -149,7 +190,13 @@ enum KeychainService {
     /// Delete a single credential from every namespace owned by a connector.
     @discardableResult
     static func delete(key: String, connector: Connector) -> Bool {
-        let services = connectorServices(for: connector)
+        delete(key: key, facts: ConnectorSecretFacts(connector: connector))
+    }
+
+    /// Facts-based twin of `delete(key:connector:)` — see `connectorServices(facts:)`.
+    @discardableResult
+    static func delete(key: String, facts: ConnectorSecretFacts) -> Bool {
+        let services = connectorServices(facts: facts)
         let deleted = services.map { service in
             AstraSecureKeychainStore.delete(service: service, account: key)
         }
@@ -187,7 +234,12 @@ enum KeychainService {
 
     /// Delete all credentials for a connector from every supported namespace.
     static func deleteAll(connector: Connector) {
-        let services = connectorServices(for: connector)
+        deleteAll(facts: ConnectorSecretFacts(connector: connector))
+    }
+
+    /// Facts-based twin of `deleteAll(connector:)` — see `connectorServices(facts:)`.
+    static func deleteAll(facts: ConnectorSecretFacts) {
+        let services = connectorServices(facts: facts)
         let deleted = services.map { AstraSecureKeychainStore.deleteAll(service: $0) }
         if !deleted.contains(true) {
             AppLogger.audit(.keychainDeleteFailed, category: "Keychain", fields: [
@@ -235,7 +287,12 @@ enum KeychainService {
 
     /// Check if a connector credential exists in any supported namespace.
     static func exists(key: String, connector: Connector) -> Bool {
-        connectorServices(for: connector).contains { service in
+        exists(key: key, facts: ConnectorSecretFacts(connector: connector))
+    }
+
+    /// Facts-based twin of `exists(key:connector:)` — see `connectorServices(facts:)`.
+    static func exists(key: String, facts: ConnectorSecretFacts) -> Bool {
+        connectorServices(facts: facts).contains { service in
             AstraSecureKeychainStore.exists(service: service, account: key)
         }
     }
@@ -272,13 +329,21 @@ enum KeychainService {
     /// into every namespace so future connector re-imports do not need the
     /// user to re-enter the same secret.
     static func synchronizeConnectorCredentialNamespaces(connector: Connector) {
-        let label = connector.name.isEmpty ? nil : "Astra: \(connector.name)"
-        for key in connector.credentialKeys {
-            guard let value = load(key: key, connector: connector),
+        synchronizeConnectorCredentialNamespaces(keys: connector.credentialKeys, facts: ConnectorSecretFacts(connector: connector))
+    }
+
+    /// Facts-based twin of `synchronizeConnectorCredentialNamespaces(connector:)`
+    /// — see `connectorServices(facts:)`. `keys` stands in for the connector's
+    /// `credentialKeys`, resolved by the caller before crossing the seam
+    /// boundary.
+    static func synchronizeConnectorCredentialNamespaces(keys: [String], facts: ConnectorSecretFacts) {
+        let label = facts.name.isEmpty ? nil : "Astra: \(facts.name)"
+        for key in keys {
+            guard let value = load(key: key, facts: facts),
                   !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 continue
             }
-            save(key: key, value: value, connector: connector, label: label)
+            save(key: key, value: value, facts: facts, label: label)
         }
     }
 

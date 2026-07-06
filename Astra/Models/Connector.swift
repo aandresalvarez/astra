@@ -68,17 +68,32 @@ final class Connector {
 
     // MARK: - Computed
 
+    private var secretFacts: ConnectorSecretFacts {
+        ConnectorSecretFacts(
+            id: id,
+            name: name,
+            serviceType: serviceType,
+            baseURL: baseURL,
+            originPackageID: originPackageID,
+            originComponentID: originComponentID
+        )
+    }
+
     /// Load credentials from Keychain. Legacy plaintext values are migrated at app launch.
     var credentials: [String: String] {
         credentials(store: KeychainSecretStore())
     }
 
     func credentials(store: SecretStore) -> [String: String] {
-        ConnectorSecretPersistence.credentials(for: self, store: store)
+        ConnectorSecretSeam.required.loadAllCredentials(keys: credentialKeys, facts: secretFacts, store: store)
     }
 
     func missingCredentialKeys(store: SecretStore = KeychainSecretStore()) -> [String] {
-        ConnectorSecretPersistence.missingCredentialKeys(for: self, store: store)
+        let resolved = credentials(store: store)
+        return credentialKeys.filter { key in
+            let value = resolved[key]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return value.isEmpty
+        }
     }
 
     var config: [String: String] {
@@ -94,22 +109,99 @@ final class Connector {
 
     /// Save a credential value to Keychain and keep the key in SwiftData.
     func saveCredential(key: String, value: String) {
-        ConnectorSecretPersistence.saveCredential(on: self, key: key, value: value)
+        let upperKey = key.uppercased()
+        ConnectorSecretSeam.required.saveCredential(value, key: upperKey, facts: secretFacts)
+        if let index = credentialKeys.firstIndex(where: { $0.caseInsensitiveCompare(upperKey) == .orderedSame }) {
+            credentialKeys[index] = upperKey
+            if index < credentialValues.count {
+                credentialValues[index] = ""
+            }
+        } else {
+            credentialKeys.append(upperKey)
+            credentialValues.append("")
+        }
+        updatedAt = Date()
     }
 
     /// Remove a credential from both Keychain and SwiftData.
     func removeCredential(at index: Int) {
-        ConnectorSecretPersistence.removeCredential(on: self, at: index)
+        guard index < credentialKeys.count else { return }
+        let key = credentialKeys[index]
+        ConnectorSecretSeam.required.deleteCredential(key: key, facts: secretFacts)
+        credentialKeys.remove(at: index)
+        if index < credentialValues.count {
+            credentialValues.remove(at: index)
+        }
+        updatedAt = Date()
     }
 
     /// Migrate any legacy plaintext credentials to Keychain.
     func migrateToKeychain() {
-        ConnectorSecretPersistence.migrateToKeychain(self)
+        let facts = secretFacts
+        for (index, key) in credentialKeys.enumerated() {
+            guard index < credentialValues.count else { continue }
+            let value = credentialValues[index]
+            guard !value.isEmpty else { continue }
+
+            if !ConnectorSecretSeam.required.credentialExists(key: key, facts: facts) {
+                ConnectorSecretSeam.required.saveCredential(value, key: key, facts: facts)
+            }
+            credentialValues[index] = ""
+        }
+        ConnectorSecretSeam.required.synchronizeCredentialNamespaces(keys: credentialKeys, facts: facts)
     }
 
     /// Delete all Keychain entries when connector is deleted.
     func cleanupKeychain() {
-        ConnectorSecretPersistence.cleanupKeychain(for: self)
+        if isStanfordOutlookMail {
+            OutlookMailConnectionSeam.required.removeFromRegistry(connectorID: id)
+        }
+        ConnectorSecretSeam.required.deleteAllCredentials(facts: secretFacts)
+        ConnectorAuditLoggingSeam.required.audit(.connectorDeleted, category: "Keychain", fields: [
+            "connector_id": id.uuidString,
+            "service_type": serviceType
+        ])
+    }
+
+    // MARK: - Stanford Outlook Mail (pure members)
+    //
+    // Moved from `Astra/Services/Capabilities/StanfordOutlookMail.swift` as
+    // part of Track A2.5 — `testConnection()` below needs `isStanfordOutlookMail`
+    // and `outlookEmail`, and both only touch this class's own stored
+    // properties, so they belong here rather than behind a seam. The
+    // "stanford_outlook_mail" service-type ID and "ASTRA_MAIL_EMAIL" config
+    // key are duplicated (not imported) from `StanfordOutlookMail.serviceType`/
+    // `.emailKey` in the app-target file, which remains the source of truth
+    // for the rest of the Outlook OAuth/Graph flow — these are fixed
+    // connector-type identifiers, not values expected to change independently
+    // on either side.
+    var isStanfordOutlookMail: Bool {
+        serviceType == "stanford_outlook_mail"
+    }
+
+    func configValue(_ key: String) -> String {
+        guard let index = configKeys.firstIndex(of: key), index < configValues.count else {
+            return ""
+        }
+        return configValues[index]
+    }
+
+    func setConfigValue(_ key: String, value: String) {
+        let normalizedKey = key.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        guard !normalizedKey.isEmpty else { return }
+        if let index = configKeys.firstIndex(of: normalizedKey) {
+            if index < configValues.count {
+                configValues[index] = value
+            }
+        } else {
+            configKeys.append(normalizedKey)
+            configValues.append(value)
+        }
+        updatedAt = Date()
+    }
+
+    var outlookEmail: String {
+        configValue("ASTRA_MAIL_EMAIL")
     }
 
     // MARK: - Connectivity Test
@@ -136,7 +228,11 @@ final class Connector {
 
         if isStanfordOutlookMail {
             do {
-                let me = try await StanfordOutlookMailGraphService().testConnection(connector: self)
+                let facts = ConnectorOutlookFacts(id: id, name: name, serviceType: serviceType, config: config)
+                let result = try await OutlookMailConnectionSeam.required.testConnection(facts: facts)
+                for (key, value) in result.updatedConfig {
+                    setConfigValue(key, value: value)
+                }
                 ConnectorAuditLoggingSeam.required.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
                     "credential_evidence": "microsoft_graph_oauth",
                     "credential_state": "authenticated",
@@ -144,7 +240,7 @@ final class Connector {
                     "connector_updated_at": Self.auditTimestamp(updatedAt),
                     "result": "success"
                 ], uniquingKeysWith: { _, new in new }))
-                let identity = me.mail ?? me.userPrincipalName ?? outlookEmail
+                let identity = result.mail ?? result.userPrincipalName ?? outlookEmail
                 return (true, identity.isEmpty ? "Connected to Microsoft Graph" : "Connected as \(identity)")
             } catch {
                 ConnectorAuditLoggingSeam.required.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([

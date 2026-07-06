@@ -38,8 +38,32 @@ struct KeychainSecretStore: SecretStore {
     }
 
     static func connectorEntityIDs(for connector: Connector) -> [String] {
-        var entityIDs = [connectorEntityID(for: connector.id)]
-        if let stableEntityID = stableConnectorEntityID(for: connector) {
+        connectorEntityIDs(
+            id: connector.id,
+            serviceType: connector.serviceType,
+            baseURL: connector.baseURL,
+            originPackageID: connector.originPackageID,
+            originComponentID: connector.originComponentID
+        )
+    }
+
+    /// Primitive twin of `connectorEntityIDs(for:)`, usable from
+    /// `ASTRACore.ConnectorSecretFacts` call sites that no longer have a live
+    /// `Connector` (Track A2.5's `Connector.swift` seam boundary).
+    static func connectorEntityIDs(
+        id: UUID,
+        serviceType: String,
+        baseURL: String,
+        originPackageID: String?,
+        originComponentID: String?
+    ) -> [String] {
+        var entityIDs = [connectorEntityID(for: id)]
+        if let stableEntityID = stableConnectorEntityID(
+            serviceType: serviceType,
+            baseURL: baseURL,
+            originPackageID: originPackageID,
+            originComponentID: originComponentID
+        ) {
             entityIDs.append(stableEntityID)
         }
         return unique(entityIDs)

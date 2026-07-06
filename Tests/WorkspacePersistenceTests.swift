@@ -151,6 +151,8 @@ private func makeRichWorkspace(in context: ModelContext, root: String) throws ->
 
 @Suite("Workspace Persistence v11")
 struct WorkspacePersistenceTests {
+    private let _registerRuntimeSeams: Void = RuntimeSeamRegistration.registerAll() // TaskLifecycleCoordinator's deletion path calls connector/skill.cleanupKeychain()
+
     @Test("shelf visibility overrides normalize persisted keys at the model boundary")
     @MainActor
     func shelfVisibilityOverridesNormalizePersistedKeys() {

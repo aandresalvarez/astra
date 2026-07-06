@@ -248,7 +248,21 @@ final class Skill {
     /// All environment variables: legacy env vars + connector env vars merged
     var resolvedAllEnvironmentVariables: [String: String] {
         var merged = environmentVariables
-        for (key, value) in ConnectorRuntimeProjection(connectors: connectors).environmentVariables() {
+        let facts = connectors.map { connector in
+            ConnectorEnvironmentFacts(
+                id: connector.id,
+                name: connector.name,
+                serviceType: connector.serviceType,
+                baseURL: connector.baseURL,
+                authMethod: connector.authMethod,
+                credentialKeys: connector.credentialKeys,
+                configKeys: connector.configKeys,
+                configValues: connector.configValues,
+                originPackageID: connector.originPackageID,
+                originComponentID: connector.originComponentID
+            )
+        }
+        for (key, value) in ConnectorEnvironmentProjectionSeam.required.environmentVariables(for: facts) {
             merged[key] = value
         }
         return merged
