@@ -117,7 +117,9 @@ enum AgentRuntimeLaunchPreflight {
         capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot? = nil,
         runtimeConfiguration: AgentRuntimeConfiguration? = nil,
         secretStore: SecretStore = KeychainSecretStore(),
-        preflightCache: PreflightCache = PreflightCache()
+        preflightCache: PreflightCache = PreflightCache(),
+        mcpDetectExecutable: (String) -> String = { RuntimePathResolver.detectExecutablePath(named: $0) },
+        mcpIsExecutableFile: (String) -> Bool = { FileManager.default.isExecutableFile(atPath: $0) }
     ) async -> AgentRuntimeLaunchPreflightResult {
         let resolutionSnapshot = capabilityResolutionSnapshot ?? TaskCapabilityResolutionSnapshot.capture(
             for: task,
@@ -132,6 +134,8 @@ enum AgentRuntimeLaunchPreflight {
             contextText: contextText,
             preflightCache: preflightCache,
             capabilityResolutionSnapshot: resolutionSnapshot,
+            mcpDetectExecutable: mcpDetectExecutable,
+            mcpIsExecutableFile: mcpIsExecutableFile,
             runtimeProfile: runtimeProfileProvider(runtimeConfiguration)
         )
         guard capabilityResult.didPass else {
@@ -312,7 +316,9 @@ enum AgentRuntimeLaunchPreflight {
         capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot? = nil,
         runtimeConfiguration: AgentRuntimeConfiguration? = nil,
         secretStore: SecretStore = KeychainSecretStore(),
-        preflightCache: PreflightCache = PreflightCache()
+        preflightCache: PreflightCache = PreflightCache(),
+        mcpDetectExecutable: (String) -> String = { RuntimePathResolver.detectExecutablePath(named: $0) },
+        mcpIsExecutableFile: (String) -> Bool = { FileManager.default.isExecutableFile(atPath: $0) }
     ) async -> Bool {
         await preflightConnectorsBeforeLaunchResult(
             task: task,
@@ -324,7 +330,9 @@ enum AgentRuntimeLaunchPreflight {
             capabilityResolutionSnapshot: capabilityResolutionSnapshot,
             runtimeConfiguration: runtimeConfiguration,
             secretStore: secretStore,
-            preflightCache: preflightCache
+            preflightCache: preflightCache,
+            mcpDetectExecutable: mcpDetectExecutable,
+            mcpIsExecutableFile: mcpIsExecutableFile
         ).didPass
     }
 
@@ -920,6 +928,8 @@ enum AgentRuntimeLaunchPreflight {
         contextText: String = "",
         preflightCache: PreflightCache = PreflightCache(),
         capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot? = nil,
+        mcpDetectExecutable: (String) -> String = { RuntimePathResolver.detectExecutablePath(named: $0) },
+        mcpIsExecutableFile: (String) -> Bool = { FileManager.default.isExecutableFile(atPath: $0) },
         runtimeProfile: (AgentRuntimeID) -> AgentRuntimeCapabilityProfile = {
             AgentRuntimeCapabilityProfileService.profile(for: $0, executablePath: "")
         }
@@ -942,6 +952,8 @@ enum AgentRuntimeLaunchPreflight {
             contextText: contextText,
             prerequisiteStatuses: prerequisiteStatuses,
             capabilityResolutionSnapshot: resolutionSnapshot,
+            mcpDetectExecutable: mcpDetectExecutable,
+            mcpIsExecutableFile: mcpIsExecutableFile,
             runtimeProfile: runtimeProfile
         )
     }

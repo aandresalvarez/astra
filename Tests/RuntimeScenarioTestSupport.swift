@@ -55,6 +55,13 @@ extension AgentRuntimeWorker {
         // host's actual `gh`/`gcloud`/etc. and depend on ambient machine
         // auth state instead of the fake CLI scripts the harness controls.
         worker.environmentHealthChecker = EnvironmentHealthChecker(runner: InstantSuccessBinaryRunner())
+        // MCP server executable resolution (e.g. ~/.astra/tools/astra-host-control
+        // for the GitHub host-control server) checks real paths on disk by
+        // default. That directory only exists on a machine where ASTRA.app
+        // has installed its bundled tools, so scenario tests must not depend
+        // on it — treat every server command as already resolvable.
+        worker.mcpServerExecutableIsResolvable = { _ in true }
+        worker.mcpServerExecutableDetector = { $0 }
         return worker
     }
 }
