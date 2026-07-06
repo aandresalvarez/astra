@@ -87,83 +87,29 @@ enum ConnectorSecretPersistence {
     }
 }
 
-enum SkillSecretPersistence {
-    static func deleteRemovedSecret(key: String, from skill: Skill) {
-        KeychainService.delete(key: key, skillID: skill.id)
+/// Registered as the `SkillSecretSeam` (`ASTRACore/SkillSecretSeam.swift`)
+/// backing implementation - see that file's header for why this is pure
+/// Keychain I/O plumbing with no `Skill`/logging references (both moved to
+/// `Skill.swift` as part of Track A2.4).
+enum SkillSecretPersistence: SkillSecretPersisting {
+    static func loadSecretValue(key: String, skillID: UUID, store: SecretStore) -> String? {
+        let entityID = KeychainSecretStore.skillEntityID(for: skillID)
+        return store.load(key: key, entityID: entityID)
     }
 
-    static func valueForEnvironmentKey(on skill: Skill, at index: Int, store: SecretStore) -> String {
-        guard index < skill.environmentKeys.count else { return "" }
-        let key = skill.environmentKeys[index]
-        let storedValue = skill.normalizedEnvironmentValue(at: index)
-        if Skill.isSecretEnvironmentKey(key) {
-            let entityID = KeychainSecretStore.skillEntityID(for: skill.id)
-            return store.load(key: key, entityID: entityID) ?? storedValue
-        }
-        return storedValue
+    static func saveSecretValue(_ value: String, key: String, skillID: UUID, skillName: String) -> Bool {
+        KeychainService.save(key: key, value: value, skillID: skillID, label: "Astra: \(skillName)")
     }
 
-    static func setEnvironmentValue(_ value: String, on skill: Skill, at index: Int) {
-        guard index < skill.environmentKeys.count else { return }
-        skill.ensureEnvironmentValueCapacity()
-
-        let key = skill.environmentKeys[index]
-        if Skill.isSecretEnvironmentKey(key) {
-            if !value.isEmpty {
-                let saved = KeychainService.save(key: key, value: value, skillID: skill.id, label: "Astra: \(skill.name)")
-                AppLogger.audit(.skillSecretAdded, category: "Keychain", fields: [
-                    "skill_id": skill.id.uuidString,
-                    "result": saved ? "stored" : "failed"
-                ], level: saved ? .info : .warning)
-                skill.environmentValues[index] = saved ? "" : value
-            } else {
-                skill.environmentValues[index] = ""
-            }
-        } else {
-            skill.environmentValues[index] = value
-        }
-        skill.updatedAt = Date()
+    static func deleteSecret(key: String, skillID: UUID) -> Bool {
+        KeychainService.delete(key: key, skillID: skillID)
     }
 
-    static func removeEnvironmentEntry(on skill: Skill, at index: Int) {
-        guard index < skill.environmentKeys.count else { return }
-        let key = skill.environmentKeys[index]
-        if Skill.isSecretEnvironmentKey(key) {
-            let deleted = KeychainService.delete(key: key, skillID: skill.id)
-            AppLogger.audit(.skillSecretRemoved, category: "Keychain", fields: [
-                "skill_id": skill.id.uuidString,
-                "result": deleted ? "removed" : "failed"
-            ], level: deleted ? .info : .warning)
-        }
-        skill.environmentKeys.remove(at: index)
-        if index < skill.environmentValues.count {
-            skill.environmentValues.remove(at: index)
-        }
-        skill.updatedAt = Date()
+    static func secretExists(key: String, skillID: UUID) -> Bool {
+        KeychainService.exists(key: key, skillID: skillID)
     }
 
-    static func migrateSecretsToKeychain(_ skill: Skill) {
-        skill.ensureEnvironmentValueCapacity()
-
-        for (index, key) in skill.environmentKeys.enumerated() where Skill.isSecretEnvironmentKey(key) {
-            let legacyValue = skill.environmentValues[index]
-            guard !legacyValue.isEmpty else { continue }
-
-            if KeychainService.exists(key: key, skillID: skill.id) {
-                skill.environmentValues[index] = ""
-                continue
-            }
-
-            if KeychainService.save(key: key, value: legacyValue, skillID: skill.id, label: "Astra: \(skill.name)") {
-                skill.environmentValues[index] = ""
-            }
-        }
-    }
-
-    static func cleanupKeychain(for skill: Skill) {
-        KeychainService.deleteAll(skillID: skill.id)
-        AppLogger.audit(.skillDeleted, category: "Keychain", fields: [
-            "skill_id": skill.id.uuidString
-        ])
+    static func deleteAllSecrets(skillID: UUID) {
+        KeychainService.deleteAll(skillID: skillID)
     }
 }

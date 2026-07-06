@@ -118,7 +118,7 @@ final class Skill {
 
             let newSecretKeys = Set(environmentKeys.filter(Self.isSecretEnvironmentKey))
             for key in oldSecretKeys where !newSecretKeys.contains(key) {
-                SkillSecretPersistence.deleteRemovedSecret(key: key, from: self)
+                SkillSecretSeam.required.deleteSecret(key: key, skillID: id)
             }
         }
     }
@@ -140,7 +140,11 @@ final class Skill {
     }
 
     func valueForEnvironmentKey(at index: Int, store: SecretStore) -> String {
-        SkillSecretPersistence.valueForEnvironmentKey(on: self, at: index, store: store)
+        guard index < environmentKeys.count else { return "" }
+        let key = environmentKeys[index]
+        let storedValue = normalizedEnvironmentValue(at: index)
+        guard Self.isSecretEnvironmentKey(key) else { return storedValue }
+        return SkillSecretSeam.required.loadSecretValue(key: key, skillID: id, store: store) ?? storedValue
     }
 
     func upsertEnvironmentEntry(key rawKey: String, value: String) {
@@ -158,19 +162,67 @@ final class Skill {
     }
 
     func setEnvironmentValue(_ value: String, at index: Int) {
-        SkillSecretPersistence.setEnvironmentValue(value, on: self, at: index)
+        guard index < environmentKeys.count else { return }
+        ensureEnvironmentValueCapacity()
+
+        let key = environmentKeys[index]
+        if Self.isSecretEnvironmentKey(key) {
+            if !value.isEmpty {
+                let saved = SkillSecretSeam.required.saveSecretValue(value, key: key, skillID: id, skillName: name)
+                ConnectorAuditLoggingSeam.required.audit(.skillSecretAdded, category: "Keychain", fields: [
+                    "skill_id": id.uuidString,
+                    "result": saved ? "stored" : "failed"
+                ], level: saved ? .info : .warning)
+                environmentValues[index] = saved ? "" : value
+            } else {
+                environmentValues[index] = ""
+            }
+        } else {
+            environmentValues[index] = value
+        }
+        updatedAt = Date()
     }
 
     func removeEnvironmentEntry(at index: Int) {
-        SkillSecretPersistence.removeEnvironmentEntry(on: self, at: index)
+        guard index < environmentKeys.count else { return }
+        let key = environmentKeys[index]
+        if Self.isSecretEnvironmentKey(key) {
+            let deleted = SkillSecretSeam.required.deleteSecret(key: key, skillID: id)
+            ConnectorAuditLoggingSeam.required.audit(.skillSecretRemoved, category: "Keychain", fields: [
+                "skill_id": id.uuidString,
+                "result": deleted ? "removed" : "failed"
+            ], level: deleted ? .info : .warning)
+        }
+        environmentKeys.remove(at: index)
+        if index < environmentValues.count {
+            environmentValues.remove(at: index)
+        }
+        updatedAt = Date()
     }
 
     func migrateSecretsToKeychain() {
-        SkillSecretPersistence.migrateSecretsToKeychain(self)
+        ensureEnvironmentValueCapacity()
+
+        for (index, key) in environmentKeys.enumerated() where Self.isSecretEnvironmentKey(key) {
+            let legacyValue = environmentValues[index]
+            guard !legacyValue.isEmpty else { continue }
+
+            if SkillSecretSeam.required.secretExists(key: key, skillID: id) {
+                environmentValues[index] = ""
+                continue
+            }
+
+            if SkillSecretSeam.required.saveSecretValue(legacyValue, key: key, skillID: id, skillName: name) {
+                environmentValues[index] = ""
+            }
+        }
     }
 
     func cleanupKeychain() {
-        SkillSecretPersistence.cleanupKeychain(for: self)
+        SkillSecretSeam.required.deleteAllSecrets(skillID: id)
+        ConnectorAuditLoggingSeam.required.audit(.skillDeleted, category: "Keychain", fields: [
+            "skill_id": id.uuidString
+        ])
     }
 
     func normalizedEnvironmentValue(at index: Int) -> String {
