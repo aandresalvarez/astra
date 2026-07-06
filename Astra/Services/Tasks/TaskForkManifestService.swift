@@ -1,4 +1,5 @@
 import Foundation
+import ASTRACore
 
 struct TaskForkManifest: Codable, Sendable, Equatable {
     struct FileReference: Codable, Sendable, Equatable, Hashable {
@@ -360,5 +361,51 @@ enum TaskForkManifestService {
             index += 1
         }
         return candidate
+    }
+}
+
+/// Registered as the `TaskForkManifestWritingSeam`
+/// (`ASTRACore/TaskForkLifecycleSeams.swift`) backing implementation - see
+/// that file's header for why this reconstructs scratch, never-persisted
+/// `AgentTask`/`TaskRun`/`Artifact`/`Workspace` instances from
+/// `TaskForkManifestRequest` and runs the real, unchanged
+/// `TaskForkManifestService.writeManifest(source:forked:targetRun:...)` on
+/// them, rather than re-deriving its file-I/O logic as primitives.
+enum TaskForkManifestWritingAdapter: TaskForkManifestWriting {
+    static func writeManifest(_ request: TaskForkManifestRequest) throws -> TaskForkManifestSummary {
+        let sourceWorkspace = Workspace(name: "fork-source-scratch", primaryPath: request.sourceWorkspacePath)
+        let source = AgentTask(title: "", goal: "", workspace: sourceWorkspace)
+        source.id = request.sourceTaskID
+        source.artifacts = request.sourceArtifacts.map { fact in
+            let artifact = Artifact(task: source, type: "file", path: fact.path)
+            artifact.createdAt = fact.createdAt
+            return artifact
+        }
+
+        let forkedWorkspace = Workspace(name: "fork-scratch", primaryPath: request.forkedWorkspacePath)
+        let forked = AgentTask(title: "", goal: "", workspace: forkedWorkspace)
+        forked.id = request.forkedTaskID
+
+        let targetRun = TaskRun(task: forked)
+        targetRun.id = request.checkpointRunID
+        targetRun.startedAt = request.checkpointRunStartedAt
+        targetRun.completedAt = request.checkpointRunCompletedAt
+
+        let manifest = try TaskForkManifestService.writeManifest(
+            source: source,
+            forked: forked,
+            targetRun: targetRun,
+            checkpointRunIndex: request.checkpointRunIndex,
+            copiedRunIDs: request.copiedRunIDs
+        )
+        return TaskForkManifestSummary(
+            sourceTaskID: manifest.sourceTaskID,
+            checkpointRunID: manifest.checkpointRunID,
+            checkpointRunIndex: manifest.checkpointRunIndex
+        )
+    }
+
+    static func manifestPath(taskFolder: String) -> String {
+        TaskForkManifestService.manifestPath(taskFolder: taskFolder)
     }
 }

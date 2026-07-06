@@ -13,6 +13,8 @@ private func makeContextContinuityContainer() throws -> ModelContainer {
 @Suite("Context continuity replay eval")
 @MainActor
 struct ContextContinuityReplayEvalTests {
+    private let _registerRuntimeSeams: Void = RuntimeSeamRegistration.registerAll() // AgentTask.fork() needs the Track A2.6 seams
+
     @Test("approved plan survives follow-up and provider switch")
     func approvedPlanSurvivesFollowUpAndProviderSwitch() throws {
         let root = try temporaryRoot()

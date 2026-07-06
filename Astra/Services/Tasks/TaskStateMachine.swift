@@ -1,5 +1,6 @@
 import Foundation
 import SwiftData
+import ASTRACore
 
 @MainActor
 enum TaskStateMachine {
@@ -769,5 +770,44 @@ enum TaskStateMachine {
             taskID: task.id,
             auditFields: ["operation": "task_state_machine_save"]
         )
+    }
+}
+
+/// Registered as the `TaskForkStateInitializingSeam`
+/// (`ASTRACore/TaskForkLifecycleSeams.swift`) backing implementation.
+///
+/// This mirrors `initializeForkAsCompleted(_:modelContext:...)`'s guard and
+/// audit shape rather than calling through to it, since that method needs a
+/// live `AgentTask`/`ModelContext` the seam boundary can't carry. This is
+/// the one piece of `TaskStateMachine`'s logic duplicated (not reused)
+/// across the seam boundary - acceptable because it has exactly one call
+/// site in the whole app (`AgentTaskForkService.fork()`) and its contract
+/// (draft/completed -> completed) is fixed.
+extension TaskStateMachine: TaskForkStateInitializing {
+    static func initializeForkAsCompleted(
+        taskID: UUID,
+        statusRawValue: String,
+        at date: Date
+    ) -> TaskForkStateInitializationResult {
+        let allowedFrom: Set<TaskStatus> = [.draft, .completed]
+        guard let currentStatus = TaskStatus(rawValue: statusRawValue),
+              allowedFrom.contains(currentStatus) else {
+            AppLogger.audit(.taskStatusChanged, category: "TaskState", taskID: taskID, fields: [
+                "intent": "fork_initialized_completed",
+                "from": statusRawValue,
+                "to": TaskStatus.completed.rawValue,
+                "result": "rejected_illegal_transition"
+            ], level: .warning)
+            return TaskForkStateInitializationResult(statusRawValue: statusRawValue, updatedAt: nil, applied: false)
+        }
+
+        AppLogger.audit(.taskStatusChanged, category: "TaskState", taskID: taskID, fields: [
+            "intent": "fork_initialized_completed",
+            "from": currentStatus.rawValue,
+            "to": TaskStatus.completed.rawValue,
+            "changed": String(currentStatus != .completed),
+            "result": "applied"
+        ], level: .debug)
+        return TaskForkStateInitializationResult(statusRawValue: TaskStatus.completed.rawValue, updatedAt: date, applied: true)
     }
 }

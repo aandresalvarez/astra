@@ -1,5 +1,6 @@
 import Foundation
 import SwiftData
+import ASTRACore
 
 enum AgentTaskForkService {
     private struct ForkManifestEventPayload: Encodable {
@@ -40,7 +41,19 @@ enum AgentTaskForkService {
         }
 
         forked.forkedAtRunIndex = cutoffIndex
-        TaskStateMachine.initializeForkAsCompleted(forked, modelContext: context)
+        let stateInit = TaskForkStateInitializingSeam.required.initializeForkAsCompleted(
+            taskID: forked.id,
+            statusRawValue: forked.status.rawValue,
+            at: Date()
+        )
+        if stateInit.applied {
+            if let newStatus = TaskStatus(rawValue: stateInit.statusRawValue) {
+                forked.status = newStatus
+            }
+            if let updatedAt = stateInit.updatedAt {
+                forked.updatedAt = updatedAt
+            }
+        }
 
         let runsToFork = sortedRuns.prefix(through: cutoffIndex)
         var forkedRunsBySourceID: [UUID: TaskRun] = [:]
@@ -102,15 +115,25 @@ enum AgentTaskForkService {
 
         context.insert(forked)
         do {
-            let manifest = try TaskForkManifestService.writeManifest(
-                source: source,
-                forked: forked,
-                targetRun: targetRun,
+            let forkedWorkspacePath = forked.workspace?.primaryPath ?? ""
+            let request = TaskForkManifestRequest(
+                sourceTaskID: source.id,
+                sourceWorkspacePath: source.workspace?.primaryPath ?? "",
+                sourceArtifacts: source.artifacts.map { TaskForkArtifactFacts(createdAt: $0.createdAt, path: $0.path) },
+                forkedTaskID: forked.id,
+                forkedWorkspacePath: forkedWorkspacePath,
+                checkpointRunID: targetRun.id,
+                checkpointRunStartedAt: targetRun.startedAt,
+                checkpointRunCompletedAt: targetRun.completedAt,
                 checkpointRunIndex: cutoffIndex,
                 copiedRunIDs: copiedRunIDs
             )
-            let manifestPath = TaskForkManifestService.manifestPath(
-                taskFolder: TaskWorkspaceAccess(task: forked).taskFolder
+            let manifest = try TaskForkManifestWritingSeam.required.writeManifest(request)
+            let manifestPath = TaskForkManifestWritingSeam.required.manifestPath(
+                taskFolder: TaskFolderResolvingSeam.required.taskFolder(
+                    workspacePath: forkedWorkspacePath,
+                    taskID: forked.id
+                )
             )
             let payload = ForkManifestEventPayload(
                 sourceTaskID: manifest.sourceTaskID.uuidString,
@@ -129,7 +152,7 @@ enum AgentTaskForkService {
                 run: forkedRunsBySourceID[targetRun.id]
             ))
         } catch {
-            AppLogger.audit(.taskFailed, category: "Persistence", taskID: forked.id, fields: [
+            ConnectorAuditLoggingSeam.required.audit(.taskFailed, category: "Persistence", taskID: forked.id, fields: [
                 "reason": "fork_manifest_write_failed",
                 "error_type": String(describing: type(of: error))
             ], level: .error)

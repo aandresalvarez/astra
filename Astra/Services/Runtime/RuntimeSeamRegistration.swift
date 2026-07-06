@@ -29,6 +29,9 @@ enum RuntimeSeamRegistration {
         ConnectorSecretSeam.register(ConnectorSecretPersistence.self)
         OutlookMailConnectionSeam.register(OutlookMailConnectionAdapter.self)
         ConnectorEnvironmentProjectionSeam.register(ConnectorEnvironmentProjectionAdapter.self)
+        TaskForkStateInitializingSeam.register(TaskStateMachine.self)
+        TaskFolderResolvingSeam.register(TaskFolderResolvingAdapter.self)
+        TaskForkManifestWritingSeam.register(TaskForkManifestWritingAdapter.self)
     }
 }
 
