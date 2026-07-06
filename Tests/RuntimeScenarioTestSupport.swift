@@ -54,7 +54,7 @@ extension AgentRuntimeWorker {
         // capability with a real CLI prerequisite would shell out to the
         // host's actual `gh`/`gcloud`/etc. and depend on ambient machine
         // auth state instead of the fake CLI scripts the harness controls.
-        worker.preflightCache = PreflightCache(checker: EnvironmentHealthChecker(runner: InstantSuccessBinaryRunner()))
+        worker.environmentHealthChecker = EnvironmentHealthChecker(runner: InstantSuccessBinaryRunner())
         return worker
     }
 }
