@@ -130,14 +130,14 @@ final class Connector {
             packageID: packageID,
             traceID: traceID
         )
-        AppLogger.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
+        ConnectorAuditLoggingSeam.required.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
             "result": "started"
         ], uniquingKeysWith: { _, new in new }))
 
         if isStanfordOutlookMail {
             do {
                 let me = try await StanfordOutlookMailGraphService().testConnection(connector: self)
-                AppLogger.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
+                ConnectorAuditLoggingSeam.required.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
                     "credential_evidence": "microsoft_graph_oauth",
                     "credential_state": "authenticated",
                     "auth_verified": "true",
@@ -147,7 +147,7 @@ final class Connector {
                 let identity = me.mail ?? me.userPrincipalName ?? outlookEmail
                 return (true, identity.isEmpty ? "Connected to Microsoft Graph" : "Connected as \(identity)")
             } catch {
-                AppLogger.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
+                ConnectorAuditLoggingSeam.required.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
                     "credential_evidence": "microsoft_graph_oauth",
                     "credential_state": "failed",
                     "auth_verified": "false",
@@ -160,7 +160,7 @@ final class Connector {
         }
 
         guard !baseURL.isEmpty, let base = URL(string: baseURL) else {
-            AppLogger.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
+            ConnectorAuditLoggingSeam.required.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
                 "credential_evidence": "connector_auth_v1",
                 "credential_state": "unknown",
                 "auth_verified": "false",
@@ -176,7 +176,7 @@ final class Connector {
             authMethod: authMethod,
             credentialKeys: credentialKeys
         ) {
-            AppLogger.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
+            ConnectorAuditLoggingSeam.required.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
                 "credential_evidence": "connector_auth_v1",
                 "credential_state": "unknown",
                 "auth_verified": "false",
@@ -190,7 +190,7 @@ final class Connector {
         let creds = credentials(store: store)
         let missingKeys = missingCredentialKeys(store: store)
         if authMethod != "none", !credentialKeys.isEmpty, !missingKeys.isEmpty {
-            AppLogger.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
+            ConnectorAuditLoggingSeam.required.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
                 "credential_evidence": "connector_auth_v1",
                 "credential_state": "missing",
                 "auth_verified": "false",
@@ -219,7 +219,7 @@ final class Connector {
                 config: config,
                 transport: transport
             ).test()
-            AppLogger.audit(
+            ConnectorAuditLoggingSeam.required.audit(
                 .connectorTested,
                 category: "Keychain",
                 fields: outcome.auditFields(adding: auditContext.merging([
@@ -272,7 +272,7 @@ final class Connector {
         do {
             let (data, response) = try await transport.data(for: request)
             guard let http = response as? HTTPURLResponse else {
-                AppLogger.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
+                ConnectorAuditLoggingSeam.required.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
                     "credential_evidence": "connector_auth_v1",
                     "credential_state": "unknown",
                     "auth_verified": "false",
@@ -285,7 +285,7 @@ final class Connector {
 
             if (200...299).contains(http.statusCode) {
                 if let apiError = redcapAPIError(in: data) {
-                    AppLogger.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
+                    ConnectorAuditLoggingSeam.required.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
                         "credential_evidence": "connector_auth_v1",
                         "credential_state": "rejected",
                         "auth_verified": "false",
@@ -297,7 +297,7 @@ final class Connector {
                     return (false, apiError)
                 }
 
-                AppLogger.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
+                ConnectorAuditLoggingSeam.required.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
                     "credential_evidence": "connector_auth_v1",
                     "credential_state": "authenticated",
                     "auth_verified": "true",
@@ -310,7 +310,7 @@ final class Connector {
                 return (true, "REDCap version endpoint responded successfully")
             }
 
-            AppLogger.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
+            ConnectorAuditLoggingSeam.required.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
                 "credential_evidence": "connector_auth_v1",
                 "credential_state": http.statusCode == 401 || http.statusCode == 403 ? "rejected" : "unknown",
                 "auth_verified": "false",
@@ -322,7 +322,7 @@ final class Connector {
             ], uniquingKeysWith: { _, new in new }), level: .warning)
             return (false, "REDCap returned HTTP \(http.statusCode)")
         } catch {
-            AppLogger.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
+            ConnectorAuditLoggingSeam.required.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
                 "credential_evidence": "connector_auth_v1",
                 "credential_state": "unknown",
                 "auth_verified": "false",
@@ -362,7 +362,7 @@ final class Connector {
             let (_, response) = try await transport.data(for: request)
             if let http = response as? HTTPURLResponse {
                 if (200...299).contains(http.statusCode) {
-                    AppLogger.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
+                    ConnectorAuditLoggingSeam.required.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
                         "credential_evidence": "connector_auth_v1",
                         "credential_state": "authenticated",
                         "auth_verified": "true",
@@ -373,7 +373,7 @@ final class Connector {
                     ], uniquingKeysWith: { _, new in new }))
                     return (true, "HTTP \(http.statusCode) — connected successfully")
                 } else if http.statusCode == 401 || http.statusCode == 403 {
-                    AppLogger.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
+                    ConnectorAuditLoggingSeam.required.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
                         "credential_evidence": "connector_auth_v1",
                         "credential_state": "rejected",
                         "auth_verified": "false",
@@ -384,7 +384,7 @@ final class Connector {
                     ], uniquingKeysWith: { _, new in new }), level: .warning)
                     return (false, "HTTP \(http.statusCode) — authentication failed")
                 } else {
-                    AppLogger.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
+                    ConnectorAuditLoggingSeam.required.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
                         "credential_evidence": "connector_auth_v1",
                         "credential_state": "unknown",
                         "auth_verified": "false",
@@ -396,7 +396,7 @@ final class Connector {
                     return (false, "HTTP \(http.statusCode)")
                 }
             }
-            AppLogger.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
+            ConnectorAuditLoggingSeam.required.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
                 "credential_evidence": "connector_auth_v1",
                 "credential_state": "unknown",
                 "auth_verified": "false",
@@ -406,7 +406,7 @@ final class Connector {
             ], uniquingKeysWith: { _, new in new }), level: .warning)
             return (false, "Unknown response")
         } catch {
-            AppLogger.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
+            ConnectorAuditLoggingSeam.required.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
                 "credential_evidence": "connector_auth_v1",
                 "credential_state": "unknown",
                 "auth_verified": "false",

@@ -24,9 +24,12 @@ enum RuntimeSeamRegistration {
     static func registerAll() {
         ExecutionPathSafety.register(ExecutionSandbox.self)
         AgentRuntimeRegistrySeam.register(AgentRuntimeAdapterRegistry.self)
+        ConnectorAuditLoggingSeam.register(AppLogger.self)
     }
 }
 
 extension ExecutionSandbox: ExecutionPathSafetyChecking {}
 
 extension AgentRuntimeAdapterRegistry: AgentRuntimeRegistryLookup {}
+
+extension AppLogger: ConnectorAuditLogging {}
