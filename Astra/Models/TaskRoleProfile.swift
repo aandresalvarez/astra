@@ -53,8 +53,17 @@ struct TaskRoleProfile: Codable, Equatable, Sendable {
     var tokenBudget: Int
     var policyLevelRaw: String
 
+    /// Goes through the `AgentRuntimeRegistrySeam` seam (ASTRACore) rather
+    /// than calling `AgentRuntimeAdapterRegistry` directly, since this file
+    /// would otherwise depend on the Runtime subsystem's adapter catalog —
+    /// see docs/architecture/swiftpm-target-extraction-models-persistence.md,
+    /// Finding 1. `.claudeCode` is the current value of
+    /// `TaskExecutionDefaults.runtime` (Settings), inlined here rather than
+    /// referenced, since the seam protocol takes an explicit fallback and
+    /// must not itself depend on Settings; if `TaskExecutionDefaults.runtime`
+    /// ever changes, update this literal to match.
     var runtime: AgentRuntimeID {
-        AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: runtimeID)
+        AgentRuntimeRegistrySeam.required.registeredRuntime(rawValue: runtimeID, fallback: .claudeCode)
     }
 
     var policyLevel: AgentPolicyLevel {

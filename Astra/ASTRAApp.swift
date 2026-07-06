@@ -235,6 +235,10 @@ public struct ASTRAApp: App {
     @State private var runtime = AppRuntimeController()
 
     public init() {
+        // Must run before any code constructs a WorkspaceExecutionEnvironment
+        // with credential projections or reads TaskRoleProfile.runtime — see
+        // RuntimeSeamRegistration.swift.
+        RuntimeSeamRegistration.registerAll()
         var defaults = LoggingPreferences.registeredDefaults
         defaults[AppLogger.sensitiveModeKey] = true
         UserDefaults.standard.register(defaults: defaults)

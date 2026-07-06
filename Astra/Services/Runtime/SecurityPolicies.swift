@@ -1,4 +1,5 @@
 import Foundation
+import ASTRACore
 
 enum LocalToolSecurityPolicy {
     static func isSafe(command: String, arguments: String = "") -> Bool {
@@ -81,53 +82,17 @@ enum LocalToolSecurityPolicy {
     ]
 }
 
-enum ConnectorSecurityPolicy {
-    static func credentialTransportViolation(
-        baseURL: String,
-        authMethod: String,
-        credentialKeys: [String]
-    ) -> String? {
-        guard requiresProtectedTransport(authMethod: authMethod, credentialKeys: credentialKeys) else {
-            return nil
-        }
-
-        let trimmed = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return nil }
-        guard let url = URL(string: trimmed),
-              let scheme = url.scheme?.lowercased() else {
-            return "Connector base URL must be HTTPS, or loopback HTTP, before credentials can be used."
-        }
-
-        if scheme == "https" {
-            return nil
-        }
-        if scheme == "http", isLoopbackHost(url.host) {
-            return nil
-        }
-        return "Connector base URL must be HTTPS, or loopback HTTP, before credentials can be used."
-    }
-
+// `credentialTransportViolation` moved to ASTRACore/ConnectorSecurityPolicy.swift
+// (pure, string-only — part of Track A2's Models<->Runtime cycle break, since
+// Astra/Models/Connector.swift calls it directly). `isRuntimeSafe(_:)` stays
+// here as an extension: it takes the `Connector` `@Model` type, which cannot
+// appear in ASTRACore.
+extension ConnectorSecurityPolicy {
     static func isRuntimeSafe(_ connector: Connector) -> Bool {
         credentialTransportViolation(
             baseURL: connector.baseURL,
             authMethod: connector.authMethod,
             credentialKeys: connector.credentialKeys
         ) == nil
-    }
-
-    private static func requiresProtectedTransport(authMethod: String, credentialKeys: [String]) -> Bool {
-        let normalizedAuth = authMethod.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        return normalizedAuth != "none" || !credentialKeys.isEmpty
-    }
-
-    private static func isLoopbackHost(_ host: String?) -> Bool {
-        guard let host = host?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
-              !host.isEmpty else {
-            return false
-        }
-        return host == "localhost"
-            || host.hasSuffix(".localhost")
-            || host == "127.0.0.1"
-            || host == "::1"
     }
 }

@@ -1,3 +1,4 @@
+import ASTRACore
 import SwiftUI
 
 struct WorkspaceDockerSectionView: View {
