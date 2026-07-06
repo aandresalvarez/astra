@@ -157,7 +157,7 @@ final class Connector {
             OutlookMailConnectionSeam.required.removeFromRegistry(connectorID: id)
         }
         ConnectorSecretSeam.required.deleteAllCredentials(facts: secretFacts)
-        ConnectorAuditLoggingSeam.required.audit(.connectorDeleted, category: "Keychain", fields: [
+        AuditLoggingSeam.required.audit(.connectorDeleted, category: "Keychain", fields: [
             "connector_id": id.uuidString,
             "service_type": serviceType
         ])
@@ -222,7 +222,7 @@ final class Connector {
             packageID: packageID,
             traceID: traceID
         )
-        ConnectorAuditLoggingSeam.required.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
+        AuditLoggingSeam.required.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
             "result": "started"
         ], uniquingKeysWith: { _, new in new }))
 
@@ -238,7 +238,7 @@ final class Connector {
                     setConfigValue(key, value: value)
                 }
                 updatedAt = Date()
-                ConnectorAuditLoggingSeam.required.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
+                AuditLoggingSeam.required.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
                     "credential_evidence": "microsoft_graph_oauth",
                     "credential_state": "authenticated",
                     "auth_verified": "true",
@@ -248,7 +248,7 @@ final class Connector {
                 let identity = result.mail ?? result.userPrincipalName ?? outlookEmail
                 return (true, identity.isEmpty ? "Connected to Microsoft Graph" : "Connected as \(identity)")
             } catch {
-                ConnectorAuditLoggingSeam.required.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
+                AuditLoggingSeam.required.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
                     "credential_evidence": "microsoft_graph_oauth",
                     "credential_state": "failed",
                     "auth_verified": "false",
@@ -261,7 +261,7 @@ final class Connector {
         }
 
         guard !baseURL.isEmpty, let base = URL(string: baseURL) else {
-            ConnectorAuditLoggingSeam.required.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
+            AuditLoggingSeam.required.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
                 "credential_evidence": "connector_auth_v1",
                 "credential_state": "unknown",
                 "auth_verified": "false",
@@ -277,7 +277,7 @@ final class Connector {
             authMethod: authMethod,
             credentialKeys: credentialKeys
         ) {
-            ConnectorAuditLoggingSeam.required.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
+            AuditLoggingSeam.required.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
                 "credential_evidence": "connector_auth_v1",
                 "credential_state": "unknown",
                 "auth_verified": "false",
@@ -291,7 +291,7 @@ final class Connector {
         let creds = credentials(store: store)
         let missingKeys = missingCredentialKeys(store: store)
         if authMethod != "none", !credentialKeys.isEmpty, !missingKeys.isEmpty {
-            ConnectorAuditLoggingSeam.required.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
+            AuditLoggingSeam.required.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
                 "credential_evidence": "connector_auth_v1",
                 "credential_state": "missing",
                 "auth_verified": "false",
@@ -320,7 +320,7 @@ final class Connector {
                 config: config,
                 transport: transport
             ).test()
-            ConnectorAuditLoggingSeam.required.audit(
+            AuditLoggingSeam.required.audit(
                 .connectorTested,
                 category: "Keychain",
                 fields: outcome.auditFields(adding: auditContext.merging([
@@ -373,7 +373,7 @@ final class Connector {
         do {
             let (data, response) = try await transport.data(for: request)
             guard let http = response as? HTTPURLResponse else {
-                ConnectorAuditLoggingSeam.required.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
+                AuditLoggingSeam.required.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
                     "credential_evidence": "connector_auth_v1",
                     "credential_state": "unknown",
                     "auth_verified": "false",
@@ -386,7 +386,7 @@ final class Connector {
 
             if (200...299).contains(http.statusCode) {
                 if let apiError = redcapAPIError(in: data) {
-                    ConnectorAuditLoggingSeam.required.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
+                    AuditLoggingSeam.required.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
                         "credential_evidence": "connector_auth_v1",
                         "credential_state": "rejected",
                         "auth_verified": "false",
@@ -398,7 +398,7 @@ final class Connector {
                     return (false, apiError)
                 }
 
-                ConnectorAuditLoggingSeam.required.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
+                AuditLoggingSeam.required.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
                     "credential_evidence": "connector_auth_v1",
                     "credential_state": "authenticated",
                     "auth_verified": "true",
@@ -411,7 +411,7 @@ final class Connector {
                 return (true, "REDCap version endpoint responded successfully")
             }
 
-            ConnectorAuditLoggingSeam.required.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
+            AuditLoggingSeam.required.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
                 "credential_evidence": "connector_auth_v1",
                 "credential_state": http.statusCode == 401 || http.statusCode == 403 ? "rejected" : "unknown",
                 "auth_verified": "false",
@@ -423,7 +423,7 @@ final class Connector {
             ], uniquingKeysWith: { _, new in new }), level: .warning)
             return (false, "REDCap returned HTTP \(http.statusCode)")
         } catch {
-            ConnectorAuditLoggingSeam.required.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
+            AuditLoggingSeam.required.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
                 "credential_evidence": "connector_auth_v1",
                 "credential_state": "unknown",
                 "auth_verified": "false",
@@ -463,7 +463,7 @@ final class Connector {
             let (_, response) = try await transport.data(for: request)
             if let http = response as? HTTPURLResponse {
                 if (200...299).contains(http.statusCode) {
-                    ConnectorAuditLoggingSeam.required.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
+                    AuditLoggingSeam.required.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
                         "credential_evidence": "connector_auth_v1",
                         "credential_state": "authenticated",
                         "auth_verified": "true",
@@ -474,7 +474,7 @@ final class Connector {
                     ], uniquingKeysWith: { _, new in new }))
                     return (true, "HTTP \(http.statusCode) — connected successfully")
                 } else if http.statusCode == 401 || http.statusCode == 403 {
-                    ConnectorAuditLoggingSeam.required.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
+                    AuditLoggingSeam.required.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
                         "credential_evidence": "connector_auth_v1",
                         "credential_state": "rejected",
                         "auth_verified": "false",
@@ -485,7 +485,7 @@ final class Connector {
                     ], uniquingKeysWith: { _, new in new }), level: .warning)
                     return (false, "HTTP \(http.statusCode) — authentication failed")
                 } else {
-                    ConnectorAuditLoggingSeam.required.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
+                    AuditLoggingSeam.required.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
                         "credential_evidence": "connector_auth_v1",
                         "credential_state": "unknown",
                         "auth_verified": "false",
@@ -497,7 +497,7 @@ final class Connector {
                     return (false, "HTTP \(http.statusCode)")
                 }
             }
-            ConnectorAuditLoggingSeam.required.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
+            AuditLoggingSeam.required.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
                 "credential_evidence": "connector_auth_v1",
                 "credential_state": "unknown",
                 "auth_verified": "false",
@@ -507,7 +507,7 @@ final class Connector {
             ], uniquingKeysWith: { _, new in new }), level: .warning)
             return (false, "Unknown response")
         } catch {
-            ConnectorAuditLoggingSeam.required.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
+            AuditLoggingSeam.required.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
                 "credential_evidence": "connector_auth_v1",
                 "credential_state": "unknown",
                 "auth_verified": "false",

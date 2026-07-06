@@ -12,7 +12,7 @@ import os
 // secret" decision (`Skill.isSecretEnvironmentKey`) and all `Skill`
 // property/index access stay in `Skill.swift` itself; this seam is pure
 // Keychain I/O plumbing. Audit logging for save/delete moved to
-// `Skill.swift` too, reusing the `ConnectorAuditLoggingSeam` seam added in
+// `Skill.swift` too, reusing the `AuditLoggingSeam` seam added in
 // Track A2.3 rather than adding a second logging pathway.
 //
 // Follows the exact registration pattern in `RuntimeSeams.swift`.

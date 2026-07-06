@@ -541,7 +541,7 @@ struct SessionHistoryRedactionTests {
 
 @Suite("Legacy Credential Removal")
 struct LegacyCredentialTests {
-    private let _registerRuntimeSeams: Void = RuntimeSeamRegistration.registerAll() // testConnection() needs ConnectorAuditLoggingSeam
+    private let _registerRuntimeSeams: Void = RuntimeSeamRegistration.registerAll() // testConnection() needs AuditLoggingSeam
 
     @Test("Credentials only come from SecretStore, not legacy values")
     func noLegacyFallback() {
