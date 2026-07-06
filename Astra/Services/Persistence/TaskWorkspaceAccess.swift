@@ -105,3 +105,33 @@ struct TaskWorkspaceAccess {
         )
     }
 }
+
+/// Registered as the `TaskFolderResolvingSeam`
+/// (`ASTRACore/TaskForkLifecycleSeams.swift`) backing implementation -
+/// mirrors `taskFolder`/`ensureTaskFolder()` above exactly, since both were
+/// already effectively primitive (`workspacePath`/`taskID` only).
+enum TaskFolderResolvingAdapter: TaskFolderResolving {
+    static func taskFolder(workspacePath: String, taskID: UUID) -> String {
+        WorkspaceFileLayout.readableTaskFolder(workspacePath: workspacePath, taskID: taskID)
+    }
+
+    static func ensureTaskFolder(workspacePath: String, taskID: UUID) throws -> String {
+        let path = WorkspaceFileLayout.migrateLegacyTaskFolderIfNeeded(
+            workspacePath: workspacePath,
+            taskID: taskID
+        )
+        guard !path.isEmpty else {
+            AppLogger.audit(.taskFailed, category: "General", taskID: taskID, fields: [
+                "reason": "task_folder_empty_path"
+            ], level: .error)
+            return ""
+        }
+        let fileSystem = RealFileSystem()
+        try fileSystem.createDirectory(at: URL(fileURLWithPath: path), withIntermediateDirectories: true)
+        try fileSystem.createDirectory(
+            at: URL(fileURLWithPath: path).appendingPathComponent("outputs", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        return path
+    }
+}

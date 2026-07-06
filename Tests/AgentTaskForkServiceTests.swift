@@ -2,6 +2,7 @@ import Foundation
 import SwiftData
 import Testing
 @testable import ASTRA
+import ASTRACore
 
 private func makeAgentTaskForkContainer() throws -> ModelContainer {
     let schema = ASTRASchema.current
@@ -12,6 +13,8 @@ private func makeAgentTaskForkContainer() throws -> ModelContainer {
 @Suite("Agent task fork checkpoints")
 @MainActor
 struct AgentTaskForkServiceTests {
+    private let _registerRuntimeSeams: Void = RuntimeSeamRegistration.registerAll() // fork() needs TaskForkStateInitializingSeam/TaskFolderResolvingSeam/TaskForkManifestWritingSeam
+
     @Test("fork preserves run-scoped events and records a checkpoint")
     func forkPreservesRunScopedEventsAndRecordsCheckpoint() throws {
         let root = try temporaryRoot()

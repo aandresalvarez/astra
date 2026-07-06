@@ -296,7 +296,15 @@ struct ArchitectureFitnessTests {
         let allowedFiles: Set<String> = [
             "Astra/Models/AgentTask.swift",
             "Astra/Models/SchemaVersions.swift",
-            "Astra/Services/Tasks/TaskStateMachine.swift"
+            "Astra/Services/Tasks/TaskStateMachine.swift",
+            // Track A2.6's `TaskForkStateInitializingSeam`: the transition
+            // decision (guard + audit) still lives entirely in
+            // `TaskStateMachine`'s `TaskForkStateInitializing` conformance;
+            // only the mechanical `.status =`/`.updatedAt =` write of an
+            // already-decided value crossed here, since `AgentTaskForkService`
+            // is slated to move into `ASTRAModels` (A3) and the seam boundary
+            // it crosses can't carry a live `AgentTask`.
+            "Astra/Services/Tasks/AgentTaskForkService.swift"
         ]
 
         let matches = try swiftFiles(under: root.appendingPathComponent("Astra"))
