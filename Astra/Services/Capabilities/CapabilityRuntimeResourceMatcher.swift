@@ -1,5 +1,6 @@
 import Foundation
 import ASTRACore
+import ASTRAModels
 
 enum CapabilityRuntimeResourceMatcher {
     private static var approvalRecordsLoaderForTesting: (() -> [CapabilityApprovalRecord])?

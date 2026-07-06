@@ -1,5 +1,6 @@
 import Foundation
 import ASTRACore
+import ASTRAModels
 
 enum TaskRuntimePermissionOpenRequestStore {
     struct Entry: Codable, Equatable {

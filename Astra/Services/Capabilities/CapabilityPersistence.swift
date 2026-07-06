@@ -1,5 +1,6 @@
 import Foundation
 import SwiftData
+import ASTRAModels
 
 /// The save seam used by capability lifecycle services (install, enable,
 /// disable, uninstall). Production goes through

@@ -1,6 +1,7 @@
 import Foundation
 import ASTRACore
 import Testing
+import ASTRAModels
 @testable import ASTRA
 
 @Suite("Google Workspace Setup State Factory")

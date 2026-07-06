@@ -1,4 +1,5 @@
 import Foundation
+import ASTRAModels
 
 enum WorkspaceAppPackageExportError: LocalizedError, Equatable {
     case missingWorkspacePath

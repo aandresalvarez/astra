@@ -2,6 +2,7 @@ import SwiftUI
 import SwiftData
 import AppKit
 import AppIntents
+import ASTRAModels
 
 private let aboutAstraWindowID = "about-astra"
 

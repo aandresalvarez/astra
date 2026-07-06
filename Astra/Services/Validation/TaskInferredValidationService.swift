@@ -1,5 +1,6 @@
 import Foundation
 import SwiftData
+import ASTRAModels
 
 struct TaskInferredValidationSuggestion: Equatable {
     var plan: TaskPlanPayload

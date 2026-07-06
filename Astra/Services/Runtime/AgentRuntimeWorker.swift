@@ -1,6 +1,7 @@
 import Foundation
 import SwiftData
 import ASTRACore
+import ASTRAModels
 
 @Observable
 final class AgentRuntimeWorker {

@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import ASTRAModels
 @testable import ASTRA
 
 @Suite("Tool Wizard – Full Functional Flow")

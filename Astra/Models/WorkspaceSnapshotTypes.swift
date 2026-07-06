@@ -2,7 +2,7 @@ import Foundation
 import ASTRACore
 
 extension ConnectorSnapshotConfig {
-    init(connector: Connector) {
+    public init(connector: Connector) {
         self.init(
             id: connector.id.uuidString,
             name: connector.name,
@@ -23,7 +23,7 @@ extension ConnectorSnapshotConfig {
 }
 
 extension LocalToolSnapshotConfig {
-    init(localTool: LocalTool) {
+    public init(localTool: LocalTool) {
         self.init(
             id: localTool.id.uuidString,
             name: localTool.name,
@@ -40,7 +40,7 @@ extension LocalToolSnapshotConfig {
 }
 
 extension SkillSnapshotConfig {
-    init(skill: Skill) {
+    public init(skill: Skill) {
         self.init(
             id: skill.id.uuidString,
             name: skill.name,
@@ -64,7 +64,7 @@ extension SkillSnapshotConfig {
 }
 
 extension ArtifactConfig {
-    init(artifact: Artifact) {
+    public init(artifact: Artifact) {
         self.init(
             id: artifact.id.uuidString,
             type: artifact.type,

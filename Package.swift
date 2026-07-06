@@ -98,16 +98,23 @@ let package = Package(
             path: "Tools/StanfordGraphMailTool"
         ),
         .target(
+            name: "ASTRAModels",
+            dependencies: ["ASTRACore"],
+            path: "Astra/Models"
+        ),
+        .target(
             name: "ASTRA",
             dependencies: [
                 "AstraObjCSupport",
                 "ASTRACore",
                 "ASTRAGitContracts",
                 "ASTRALogging",
+                "ASTRAModels",
                 .product(name: "Sparkle", package: "Sparkle"),
                 .product(name: "Markdown", package: "swift-markdown")
             ],
             path: "Astra",
+            exclude: ["Models"],
             resources: [
                 .copy("Resources/AppIcon.icns"),
                 .copy("Resources/AppIconDev.icns"),
@@ -134,7 +141,7 @@ let package = Package(
         ),
         .testTarget(
             name: "ASTRATests",
-            dependencies: ["ASTRA", "ASTRACore", "ASTRAGitContracts", "HostControlToolSupport", "MCPGatewaySupport", "MCPServerKit", "WorkspaceToolSupport"],
+            dependencies: ["ASTRA", "ASTRACore", "ASTRAGitContracts", "ASTRAModels", "HostControlToolSupport", "MCPGatewaySupport", "MCPServerKit", "WorkspaceToolSupport"],
             path: "Tests",
             exclude: ["ArchitectureFitnessTests", "MCPGatewaySupportTests", "MCPServerKitTests", "MailToolSupportTests"]
         ),

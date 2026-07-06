@@ -1,5 +1,6 @@
 import Foundation
 import ASTRACore
+import ASTRAModels
 
 struct WorkspaceAppTemplatePackDescriptor: Identifiable, Equatable, Sendable {
     var packID: String

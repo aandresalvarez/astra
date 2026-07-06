@@ -1,5 +1,6 @@
 import SwiftData
 import SwiftUI
+import ASTRAModels
 
 enum PlanShelfPresentation {
     static let showsTopSummaryChips = false

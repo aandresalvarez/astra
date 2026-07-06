@@ -1,4 +1,5 @@
 import Foundation
+import ASTRAModels
 
 enum TaskLaunchResourceManifestStore {
     static let latestManifestFileName = "run_resource_manifest.json"

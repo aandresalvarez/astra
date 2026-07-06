@@ -1,5 +1,6 @@
 import SwiftData
 import Testing
+import ASTRAModels
 @testable import ASTRA
 import ASTRACore
 

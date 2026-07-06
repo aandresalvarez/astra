@@ -1,5 +1,6 @@
 import Foundation
 import ASTRACore
+import ASTRAModels
 
 enum TaskLaunchResourceResolver {
     typealias GitCredentialContextProvider = (String, AgentTask, String, String) -> GitCredentialSandboxContext

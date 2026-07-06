@@ -1,6 +1,7 @@
 import Darwin
 import Foundation
 import SwiftData
+import ASTRAModels
 
 enum WorkspaceAppPackageExportMode: String, Codable, Sendable, Equatable, CaseIterable {
     case templateOnly

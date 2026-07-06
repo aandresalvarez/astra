@@ -1,5 +1,6 @@
 import Foundation
 import ASTRACore
+import ASTRAModels
 
 struct CapabilityCatalogPolicyContext: Equatable {
     var userRoleIDs: Set<String>

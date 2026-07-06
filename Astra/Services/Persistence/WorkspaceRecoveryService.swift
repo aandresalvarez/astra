@@ -1,6 +1,7 @@
 import Foundation
 import SQLite3
 import SwiftData
+import ASTRAModels
 
 enum WorkspaceRecoveryService {
     static let recoveryNoticeKey = "lastWorkspaceRecoveryNotice"

@@ -1,10 +1,10 @@
 import Foundation
 
-enum TaskResourceAccessMode: String, Codable, CaseIterable, Sendable, Equatable, Hashable {
+public enum TaskResourceAccessMode: String, Codable, CaseIterable, Sendable, Equatable, Hashable {
     case readOnly = "read_only"
     case write
 
-    var displayName: String {
+    public var displayName: String {
         switch self {
         case .readOnly: "read-only"
         case .write: "write"
@@ -12,23 +12,33 @@ enum TaskResourceAccessMode: String, Codable, CaseIterable, Sendable, Equatable,
     }
 }
 
-enum TaskResourceLockEventTypes {
-    static let requested = TaskEventTypes.ResourceLock.requested.rawValue
-    static let waiting = TaskEventTypes.ResourceLock.waiting.rawValue
-    static let acquired = TaskEventTypes.ResourceLock.acquired.rawValue
-    static let released = TaskEventTypes.ResourceLock.released.rawValue
+public enum TaskResourceLockEventTypes {
+    public static let requested = TaskEventTypes.ResourceLock.requested.rawValue
+    public static let waiting = TaskEventTypes.ResourceLock.waiting.rawValue
+    public static let acquired = TaskEventTypes.ResourceLock.acquired.rawValue
+    public static let released = TaskEventTypes.ResourceLock.released.rawValue
 }
 
-struct TaskResourceLockPayload: Codable, Sendable, Equatable {
-    var version: Int
-    var resourceKey: String
-    var accessMode: TaskResourceAccessMode
-    var runMode: String
-    var status: String
-    var holderTaskID: UUID?
-    var reason: String?
+public struct TaskResourceLockPayload: Codable, Sendable, Equatable {
+    public init(version: Int, resourceKey: String, accessMode: TaskResourceAccessMode, runMode: String, status: String, holderTaskID: UUID?, reason: String?) {
+        self.version = version
+        self.resourceKey = resourceKey
+        self.accessMode = accessMode
+        self.runMode = runMode
+        self.status = status
+        self.holderTaskID = holderTaskID
+        self.reason = reason
+    }
 
-    enum CodingKeys: String, CodingKey {
+    public var version: Int
+    public var resourceKey: String
+    public var accessMode: TaskResourceAccessMode
+    public var runMode: String
+    public var status: String
+    public var holderTaskID: UUID?
+    public var reason: String?
+
+    public enum CodingKeys: String, CodingKey {
         case version = "v"
         case resourceKey
         case accessMode
@@ -39,9 +49,16 @@ struct TaskResourceLockPayload: Codable, Sendable, Equatable {
     }
 }
 
-struct TaskResourceLockClaim: Sendable, Equatable, Hashable {
-    var taskID: UUID
-    var resourceKey: String
-    var accessMode: TaskResourceAccessMode
-    var runMode: String
+public struct TaskResourceLockClaim: Sendable, Equatable, Hashable {
+    public init(taskID: UUID, resourceKey: String, accessMode: TaskResourceAccessMode, runMode: String) {
+        self.taskID = taskID
+        self.resourceKey = resourceKey
+        self.accessMode = accessMode
+        self.runMode = runMode
+    }
+
+    public var taskID: UUID
+    public var resourceKey: String
+    public var accessMode: TaskResourceAccessMode
+    public var runMode: String
 }

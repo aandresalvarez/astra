@@ -1,5 +1,6 @@
 import Foundation
 import SwiftData
+import ASTRAModels
 
 extension WorkspaceConfigManager {
     static func replaceWorkspaceAppMirrorRows(for workspaceID: UUID, modelContext: ModelContext) {

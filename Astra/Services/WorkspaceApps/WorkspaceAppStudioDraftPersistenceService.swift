@@ -1,5 +1,6 @@
 import Foundation
 import SwiftData
+import ASTRAModels
 
 /// Autosaves App Studio creations as durable draft apps.
 ///

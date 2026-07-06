@@ -1,5 +1,6 @@
 import Foundation
 import ASTRACore
+import ASTRAModels
 
 struct CapabilityToolDetector {
     struct Candidate: Identifiable {

@@ -1,5 +1,6 @@
 import Foundation
 import SwiftData
+import ASTRAModels
 
 enum TaskDeliverableProfile: String, Codable, Sendable, Equatable {
     case notRequired = "not_required"

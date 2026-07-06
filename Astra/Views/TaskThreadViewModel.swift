@@ -1,4 +1,5 @@
 import Foundation
+import ASTRAModels
 
 @Observable @MainActor
 final class TaskThreadViewModel {

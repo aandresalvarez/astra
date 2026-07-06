@@ -1,4 +1,5 @@
 import Foundation
+import ASTRAModels
 
 /// Reconciles a persisted Tier 2 (utility-model) objective assessment against
 /// Tier 1's deterministic resolver on every `refresh()`, in three ways:

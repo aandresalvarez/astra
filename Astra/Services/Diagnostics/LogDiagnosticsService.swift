@@ -1,5 +1,6 @@
 import Foundation
 import ASTRACore
+import ASTRAModels
 
 struct LogDiagnosticsIssue: Equatable, Identifiable {
     let id: String

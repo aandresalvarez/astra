@@ -1,4 +1,5 @@
 import Foundation
+import ASTRAModels
 
 protocol WorkspaceAppPermissionChecking {
     func enforce(

@@ -1,6 +1,7 @@
 import Testing
 import AppKit
 import SwiftUI
+import ASTRAModels
 @testable import ASTRA
 import ASTRACore
 

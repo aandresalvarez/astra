@@ -2,6 +2,7 @@ import Foundation
 import SwiftData
 import SwiftUI
 import ASTRACore
+import ASTRAModels
 
 struct ComposerCapabilitySnapshot {
     static let empty = ComposerCapabilitySnapshot(availableSkills: [])

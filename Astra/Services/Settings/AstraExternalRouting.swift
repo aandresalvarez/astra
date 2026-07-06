@@ -1,4 +1,5 @@
 import Foundation
+import ASTRAModels
 
 struct AstraExternalRoute: Equatable, Identifiable, Sendable {
     enum Destination: Equatable, Sendable {

@@ -1,4 +1,5 @@
 import Foundation
+import ASTRAModels
 
 final class GoogleOAuthTokenService {
     private let client: any GoogleOAuthTokenClient

@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import ASTRAModels
 @testable import ASTRA
 
 /// The sandbox runner backs App Studio's "test before publish" Preview. These tests pin the two

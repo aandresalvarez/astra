@@ -1,5 +1,6 @@
 import Foundation
 import ASTRACore
+import ASTRAModels
 
 // Value types shared with Astra/Models/AgentTask.swift and
 // Astra/Models/TaskRun.swift (WorkspaceExecutionEnvironment,

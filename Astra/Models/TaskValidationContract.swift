@@ -1,10 +1,10 @@
 import Foundation
 
-enum TaskValidationAssertionScope: String, Codable, CaseIterable, Sendable, Equatable, Hashable {
+public enum TaskValidationAssertionScope: String, Codable, CaseIterable, Sendable, Equatable, Hashable {
     case plan
     case step
 
-    init(from decoder: Decoder) throws {
+    public init(from decoder: Decoder) throws {
         let container = try decoder.singleValueContainer()
         let raw = try container.decode(String.self)
         let normalized = raw
@@ -26,7 +26,7 @@ enum TaskValidationAssertionScope: String, Codable, CaseIterable, Sendable, Equa
     }
 }
 
-enum TaskValidationAssertionMethod: String, Codable, CaseIterable, Sendable, Equatable, Hashable {
+public enum TaskValidationAssertionMethod: String, Codable, CaseIterable, Sendable, Equatable, Hashable {
     case command
     case artifact
     case manual
@@ -35,7 +35,7 @@ enum TaskValidationAssertionMethod: String, Codable, CaseIterable, Sendable, Equ
     case verifier
     case browserBehavior = "browser_behavior"
 
-    var displayName: String {
+    public var displayName: String {
         switch self {
         case .command:
             return "Command"
@@ -54,7 +54,7 @@ enum TaskValidationAssertionMethod: String, Codable, CaseIterable, Sendable, Equ
         }
     }
 
-    init(from decoder: Decoder) throws {
+    public init(from decoder: Decoder) throws {
         let container = try decoder.singleValueContainer()
         let raw = try container.decode(String.self)
         let normalized = raw
@@ -86,20 +86,20 @@ enum TaskValidationAssertionMethod: String, Codable, CaseIterable, Sendable, Equ
     }
 }
 
-struct TaskValidationAssertion: Codable, Identifiable, Sendable, Equatable, Hashable {
-    var id: String
-    var scope: TaskValidationAssertionScope
-    var stepID: String?
-    var description: String
-    var method: TaskValidationAssertionMethod
-    var required: Bool
-    var command: String?
-    var path: String?
-    var expectedArtifactType: String?
-    var manualReviewLabel: String?
-    var evidenceQuery: String?
+public struct TaskValidationAssertion: Codable, Identifiable, Sendable, Equatable, Hashable {
+    public var id: String
+    public var scope: TaskValidationAssertionScope
+    public var stepID: String?
+    public var description: String
+    public var method: TaskValidationAssertionMethod
+    public var required: Bool
+    public var command: String?
+    public var path: String?
+    public var expectedArtifactType: String?
+    public var manualReviewLabel: String?
+    public var evidenceQuery: String?
 
-    init(
+    public init(
         id: String,
         scope: TaskValidationAssertionScope = .plan,
         stepID: String? = nil,
@@ -139,7 +139,7 @@ struct TaskValidationAssertion: Codable, Identifiable, Sendable, Equatable, Hash
         case evidenceQuery
     }
 
-    init(from decoder: Decoder) throws {
+    public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(String.self, forKey: .id)
         scope = try container.decodeIfPresent(TaskValidationAssertionScope.self, forKey: .scope) ?? .plan
@@ -155,17 +155,17 @@ struct TaskValidationAssertion: Codable, Identifiable, Sendable, Equatable, Hash
     }
 }
 
-struct TaskValidationContract: Codable, Sendable, Equatable, Hashable {
-    var version: Int
-    var assertions: [TaskValidationAssertion]
+public struct TaskValidationContract: Codable, Sendable, Equatable, Hashable {
+    public var version: Int
+    public var assertions: [TaskValidationAssertion]
 
-    init(version: Int = 1, assertions: [TaskValidationAssertion]) {
+    public init(version: Int = 1, assertions: [TaskValidationAssertion]) {
         self.version = version
         self.assertions = assertions
     }
 }
 
-enum TaskValidationAssertionOutcome: String, Codable, Sendable, Equatable, Hashable {
+public enum TaskValidationAssertionOutcome: String, Codable, Sendable, Equatable, Hashable {
     case defined
     case started
     case passed
@@ -174,16 +174,16 @@ enum TaskValidationAssertionOutcome: String, Codable, Sendable, Equatable, Hasha
     case reviewed
     case unknown
 
-    init(status: String) {
+    public init(status: String) {
         self = TaskValidationAssertionOutcome(rawValue: status) ?? .unknown
     }
 
-    var didPass: Bool {
+    public var didPass: Bool {
         self == .passed
     }
 }
 
-enum TaskValidationContractOutcome: String, Codable, Sendable, Equatable, Hashable {
+public enum TaskValidationContractOutcome: String, Codable, Sendable, Equatable, Hashable {
     case notRequired = "not_required"
     case defined
     case passed
@@ -191,11 +191,11 @@ enum TaskValidationContractOutcome: String, Codable, Sendable, Equatable, Hashab
     case overridden
     case unknown
 
-    init(status: String) {
+    public init(status: String) {
         self = TaskValidationContractOutcome(rawValue: status) ?? .unknown
     }
 
-    var canComplete: Bool {
+    public var canComplete: Bool {
         switch self {
         case .notRequired, .passed, .overridden:
             true
@@ -205,47 +205,60 @@ enum TaskValidationContractOutcome: String, Codable, Sendable, Equatable, Hashab
     }
 }
 
-enum TaskValidationEventTypes {
-    static let contractCreated = TaskEventTypes.Validation.contractCreated.rawValue
-    static let contractUpdated = TaskEventTypes.Validation.contractUpdated.rawValue
-    static let assertionDefined = TaskEventTypes.Validation.assertionDefined.rawValue
-    static let assertionStarted = TaskEventTypes.Validation.assertionStarted.rawValue
-    static let assertionPassed = TaskEventTypes.Validation.assertionPassed.rawValue
-    static let assertionFailed = TaskEventTypes.Validation.assertionFailed.rawValue
-    static let assertionSkipped = TaskEventTypes.Validation.assertionSkipped.rawValue
-    static let assertionReviewed = TaskEventTypes.Validation.assertionReviewed.rawValue
-    static let contractPassed = TaskEventTypes.Validation.contractPassed.rawValue
-    static let contractFailed = TaskEventTypes.Validation.contractFailed.rawValue
-    static let contractOverridden = TaskEventTypes.Validation.contractOverridden.rawValue
-    static let evidence = TaskEventTypes.Validation.evidence.rawValue
+public enum TaskValidationEventTypes {
+    public static let contractCreated = TaskEventTypes.Validation.contractCreated.rawValue
+    public static let contractUpdated = TaskEventTypes.Validation.contractUpdated.rawValue
+    public static let assertionDefined = TaskEventTypes.Validation.assertionDefined.rawValue
+    public static let assertionStarted = TaskEventTypes.Validation.assertionStarted.rawValue
+    public static let assertionPassed = TaskEventTypes.Validation.assertionPassed.rawValue
+    public static let assertionFailed = TaskEventTypes.Validation.assertionFailed.rawValue
+    public static let assertionSkipped = TaskEventTypes.Validation.assertionSkipped.rawValue
+    public static let assertionReviewed = TaskEventTypes.Validation.assertionReviewed.rawValue
+    public static let contractPassed = TaskEventTypes.Validation.contractPassed.rawValue
+    public static let contractFailed = TaskEventTypes.Validation.contractFailed.rawValue
+    public static let contractOverridden = TaskEventTypes.Validation.contractOverridden.rawValue
+    public static let evidence = TaskEventTypes.Validation.evidence.rawValue
 }
 
-enum TaskVerifierEventTypes {
-    static let started = TaskEventTypes.Verifier.started.rawValue
-    static let completed = TaskEventTypes.Verifier.completed.rawValue
-    static let failed = TaskEventTypes.Verifier.failed.rawValue
+public enum TaskVerifierEventTypes {
+    public static let started = TaskEventTypes.Verifier.started.rawValue
+    public static let completed = TaskEventTypes.Verifier.completed.rawValue
+    public static let failed = TaskEventTypes.Verifier.failed.rawValue
 }
 
-enum TaskValidationBehaviorEventTypes {
-    static let started = TaskEventTypes.Validation.behaviorStarted.rawValue
-    static let passed = TaskEventTypes.Validation.behaviorPassed.rawValue
-    static let failed = TaskEventTypes.Validation.behaviorFailed.rawValue
-    static let evidenceAttached = TaskEventTypes.Validation.behaviorEvidenceAttached.rawValue
+public enum TaskValidationBehaviorEventTypes {
+    public static let started = TaskEventTypes.Validation.behaviorStarted.rawValue
+    public static let passed = TaskEventTypes.Validation.behaviorPassed.rawValue
+    public static let failed = TaskEventTypes.Validation.behaviorFailed.rawValue
+    public static let evidenceAttached = TaskEventTypes.Validation.behaviorEvidenceAttached.rawValue
 }
 
-struct TaskValidationBehaviorEventPayload: Codable, Sendable, Equatable {
-    var version: Int
-    var planID: UUID
-    var assertionID: String
-    var path: String?
-    var url: String?
-    var actionCount: Int
-    var screenshotPath: String?
-    var evidencePath: String?
-    var summary: String
-    var reason: String?
+public struct TaskValidationBehaviorEventPayload: Codable, Sendable, Equatable {
+    public init(version: Int, planID: UUID, assertionID: String, path: String?, url: String?, actionCount: Int, screenshotPath: String?, evidencePath: String?, summary: String, reason: String?) {
+        self.version = version
+        self.planID = planID
+        self.assertionID = assertionID
+        self.path = path
+        self.url = url
+        self.actionCount = actionCount
+        self.screenshotPath = screenshotPath
+        self.evidencePath = evidencePath
+        self.summary = summary
+        self.reason = reason
+    }
 
-    enum CodingKeys: String, CodingKey {
+    public var version: Int
+    public var planID: UUID
+    public var assertionID: String
+    public var path: String?
+    public var url: String?
+    public var actionCount: Int
+    public var screenshotPath: String?
+    public var evidencePath: String?
+    public var summary: String
+    public var reason: String?
+
+    public enum CodingKeys: String, CodingKey {
         case version = "v"
         case planID
         case assertionID
@@ -259,17 +272,28 @@ struct TaskValidationBehaviorEventPayload: Codable, Sendable, Equatable {
     }
 }
 
-struct TaskVerifierEventPayload: Codable, Sendable, Equatable {
-    var version: Int
-    var planID: UUID
-    var assertionID: String
-    var runtime: String
-    var model: String
-    var result: String
-    var summary: String
-    var evidence: String?
+public struct TaskVerifierEventPayload: Codable, Sendable, Equatable {
+    public init(version: Int, planID: UUID, assertionID: String, runtime: String, model: String, result: String, summary: String, evidence: String?) {
+        self.version = version
+        self.planID = planID
+        self.assertionID = assertionID
+        self.runtime = runtime
+        self.model = model
+        self.result = result
+        self.summary = summary
+        self.evidence = evidence
+    }
 
-    enum CodingKeys: String, CodingKey {
+    public var version: Int
+    public var planID: UUID
+    public var assertionID: String
+    public var runtime: String
+    public var model: String
+    public var result: String
+    public var summary: String
+    public var evidence: String?
+
+    public enum CodingKeys: String, CodingKey {
         case version = "v"
         case planID
         case assertionID
@@ -281,23 +305,40 @@ struct TaskVerifierEventPayload: Codable, Sendable, Equatable {
     }
 }
 
-struct TaskValidationAssertionEventPayload: Codable, Sendable, Equatable {
-    var version: Int
-    var planID: UUID
-    var assertionID: String
-    var scope: TaskValidationAssertionScope
-    var stepID: String?
-    var method: TaskValidationAssertionMethod
-    var required: Bool
-    var status: String
-    var summary: String
-    var command: String?
-    var exitCode: Int?
-    var path: String?
-    var evidence: String?
-    var reason: String?
+public struct TaskValidationAssertionEventPayload: Codable, Sendable, Equatable {
+    public init(version: Int, planID: UUID, assertionID: String, scope: TaskValidationAssertionScope, stepID: String?, method: TaskValidationAssertionMethod, required: Bool, status: String, summary: String, command: String?, exitCode: Int?, path: String?, evidence: String?, reason: String?) {
+        self.version = version
+        self.planID = planID
+        self.assertionID = assertionID
+        self.scope = scope
+        self.stepID = stepID
+        self.method = method
+        self.required = required
+        self.status = status
+        self.summary = summary
+        self.command = command
+        self.exitCode = exitCode
+        self.path = path
+        self.evidence = evidence
+        self.reason = reason
+    }
 
-    enum CodingKeys: String, CodingKey {
+    public var version: Int
+    public var planID: UUID
+    public var assertionID: String
+    public var scope: TaskValidationAssertionScope
+    public var stepID: String?
+    public var method: TaskValidationAssertionMethod
+    public var required: Bool
+    public var status: String
+    public var summary: String
+    public var command: String?
+    public var exitCode: Int?
+    public var path: String?
+    public var evidence: String?
+    public var reason: String?
+
+    public enum CodingKeys: String, CodingKey {
         case version = "v"
         case planID
         case assertionID
@@ -314,21 +355,31 @@ struct TaskValidationAssertionEventPayload: Codable, Sendable, Equatable {
         case reason
     }
 
-    var outcome: TaskValidationAssertionOutcome {
+    public var outcome: TaskValidationAssertionOutcome {
         TaskValidationAssertionOutcome(status: status)
     }
 }
 
-struct TaskValidationContractEventPayload: Codable, Sendable, Equatable {
-    var version: Int
-    var planID: UUID
-    var status: String
-    var requiredPassed: Int
-    var requiredTotal: Int
-    var failedRequiredAssertionIDs: [String]
-    var summary: String
+public struct TaskValidationContractEventPayload: Codable, Sendable, Equatable {
+    public init(version: Int, planID: UUID, status: String, requiredPassed: Int, requiredTotal: Int, failedRequiredAssertionIDs: [String], summary: String) {
+        self.version = version
+        self.planID = planID
+        self.status = status
+        self.requiredPassed = requiredPassed
+        self.requiredTotal = requiredTotal
+        self.failedRequiredAssertionIDs = failedRequiredAssertionIDs
+        self.summary = summary
+    }
 
-    enum CodingKeys: String, CodingKey {
+    public var version: Int
+    public var planID: UUID
+    public var status: String
+    public var requiredPassed: Int
+    public var requiredTotal: Int
+    public var failedRequiredAssertionIDs: [String]
+    public var summary: String
+
+    public enum CodingKeys: String, CodingKey {
         case version = "v"
         case planID
         case status
@@ -338,7 +389,7 @@ struct TaskValidationContractEventPayload: Codable, Sendable, Equatable {
         case summary
     }
 
-    var outcome: TaskValidationContractOutcome {
+    public var outcome: TaskValidationContractOutcome {
         TaskValidationContractOutcome(status: status)
     }
 }

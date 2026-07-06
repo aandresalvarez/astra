@@ -1,6 +1,7 @@
 import Foundation
 import SwiftData
 import ASTRACore
+import ASTRAModels
 
 /// Stdin/stdout control-protocol support for providers that can ask ASTRA for
 /// live tool approval mid-run (Claude Code `--permission-prompt-tool stdio`

@@ -1,5 +1,6 @@
 import Foundation
 import SwiftData
+import ASTRAModels
 
 struct WorkspaceAppStudioDraftAutosaveTrigger: Equatable {
     static func shouldAutosave(previousRevision: Int, currentRevision: Int) -> Bool {

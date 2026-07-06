@@ -1,5 +1,6 @@
 import SwiftUI
 import ASTRACore
+import ASTRAModels
 
 struct CapabilitiesTabContent: View {
     var workspace: Workspace

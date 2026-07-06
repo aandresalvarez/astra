@@ -1,4 +1,5 @@
 import Foundation
+import ASTRAModels
 
 struct WorkspaceAppManifestValidationReport: Sendable, Equatable {
     struct Issue: Sendable, Equatable {

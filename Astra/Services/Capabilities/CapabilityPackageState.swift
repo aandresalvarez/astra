@@ -1,5 +1,6 @@
 import Foundation
 import ASTRACore
+import ASTRAModels
 
 enum CapabilityReadinessLevel: Equatable {
     case inactive

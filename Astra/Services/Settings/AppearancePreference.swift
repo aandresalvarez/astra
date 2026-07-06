@@ -1,5 +1,6 @@
 import SwiftUI
 import ASTRACore
+import ASTRAModels
 
 enum AppStorageKeys {
     static let hasCompletedOnboarding = "astra.hasCompletedOnboarding"

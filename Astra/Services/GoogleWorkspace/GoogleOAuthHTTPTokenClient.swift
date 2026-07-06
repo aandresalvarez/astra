@@ -1,4 +1,5 @@
 import Foundation
+import ASTRACore
 
 protocol GoogleOAuthTokenTransport: AnyObject {
     func postForm(url: URL, form: [String: String]) async throws -> (Data, HTTPURLResponse)

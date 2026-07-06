@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import ASTRAModels
 @testable import ASTRA
 
 /// Connector-read bridge: lets a sandboxed HTML app read LIVE connector data (the user's real GitHub

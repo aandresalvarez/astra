@@ -1,5 +1,6 @@
 import SwiftUI
 import UniformTypeIdentifiers
+import ASTRAModels
 
 /// Team library: browse a shared folder of `.astra-app` packages, see each one's install
 /// state at a glance, and route a chosen package into the import review (full

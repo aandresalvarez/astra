@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import ASTRAModels
 @testable import ASTRA
 
 /// The validator reconciles the DECLARED permission surface against what the app's capability

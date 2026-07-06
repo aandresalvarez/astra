@@ -1,4 +1,5 @@
 import Foundation
+import ASTRAModels
 
 enum TaskRelatedOutputFolders {
     private static let taskFolderRegex = try? NSRegularExpression(

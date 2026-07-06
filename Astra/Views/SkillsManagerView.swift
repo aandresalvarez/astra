@@ -1,5 +1,6 @@
 import SwiftUI
 import SwiftData
+import ASTRAModels
 
 struct SkillsManagerView: View {
     var workspace: Workspace

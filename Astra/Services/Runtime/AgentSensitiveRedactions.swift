@@ -1,4 +1,5 @@
 import Foundation
+import ASTRAModels
 
 enum AgentSensitiveRedactions {
     static func values(for task: AgentTask) -> [String] {

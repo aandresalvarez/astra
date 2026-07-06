@@ -1,5 +1,6 @@
 import Foundation
 import SwiftData
+import ASTRAModels
 
 enum AgentEventCompactor {
     static let threshold = 200

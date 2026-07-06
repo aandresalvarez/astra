@@ -1,6 +1,7 @@
 import Foundation
 import SwiftData
 import Testing
+import ASTRAModels
 @testable import ASTRA
 
 /// `/app` in chat is only a launch affordance for the real Workspace App Studio flow.

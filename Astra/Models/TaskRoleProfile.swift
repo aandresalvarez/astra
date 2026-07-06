@@ -1,16 +1,16 @@
 import Foundation
 import ASTRACore
 
-enum TaskRoleID: String, CaseIterable, Codable, Identifiable, Sendable {
+public enum TaskRoleID: String, CaseIterable, Codable, Identifiable, Sendable {
     case planner
     case worker
     case verifier
     case browserTester = "browser_tester"
     case summarizer
 
-    var id: String { rawValue }
+    public var id: String { rawValue }
 
-    var label: String {
+    public var label: String {
         switch self {
         case .planner: "Planner"
         case .worker: "Worker"
@@ -20,7 +20,7 @@ enum TaskRoleID: String, CaseIterable, Codable, Identifiable, Sendable {
         }
     }
 
-    var detail: String {
+    public var detail: String {
         switch self {
         case .planner:
             "Turns a goal into a plan and validation contract."
@@ -35,7 +35,7 @@ enum TaskRoleID: String, CaseIterable, Codable, Identifiable, Sendable {
         }
     }
 
-    var symbolName: String {
+    public var symbolName: String {
         switch self {
         case .planner: "list.bullet.clipboard"
         case .worker: "hammer"
@@ -46,12 +46,20 @@ enum TaskRoleID: String, CaseIterable, Codable, Identifiable, Sendable {
     }
 }
 
-struct TaskRoleProfile: Codable, Equatable, Sendable {
-    var role: TaskRoleID
-    var runtimeID: String
-    var model: String
-    var tokenBudget: Int
-    var policyLevelRaw: String
+public struct TaskRoleProfile: Codable, Equatable, Sendable {
+    public init(role: TaskRoleID, runtimeID: String, model: String, tokenBudget: Int, policyLevelRaw: String) {
+        self.role = role
+        self.runtimeID = runtimeID
+        self.model = model
+        self.tokenBudget = tokenBudget
+        self.policyLevelRaw = policyLevelRaw
+    }
+
+    public var role: TaskRoleID
+    public var runtimeID: String
+    public var model: String
+    public var tokenBudget: Int
+    public var policyLevelRaw: String
 
     /// Goes through the `AgentRuntimeRegistrySeam` seam (ASTRACore) rather
     /// than calling `AgentRuntimeAdapterRegistry` directly, since this file
@@ -62,31 +70,46 @@ struct TaskRoleProfile: Codable, Equatable, Sendable {
     /// referenced, since the seam protocol takes an explicit fallback and
     /// must not itself depend on Settings; if `TaskExecutionDefaults.runtime`
     /// ever changes, update this literal to match.
-    var runtime: AgentRuntimeID {
+    public var runtime: AgentRuntimeID {
         AgentRuntimeRegistrySeam.required.registeredRuntime(rawValue: runtimeID, fallback: .claudeCode)
     }
 
-    var policyLevel: AgentPolicyLevel {
+    public var policyLevel: AgentPolicyLevel {
         AgentPolicyLevel.normalized(policyLevelRaw).userFacingLevel
     }
 }
 
-struct TaskRoleProfileSelection: Equatable, Sendable {
-    var profile: TaskRoleProfile
-    var source: String
+public struct TaskRoleProfileSelection: Equatable, Sendable {
+    public init(profile: TaskRoleProfile, source: String) {
+        self.profile = profile
+        self.source = source
+    }
+
+    public var profile: TaskRoleProfile
+    public var source: String
 }
 
-enum TaskRoleProfileEventTypes {
-    static let selected = TaskEventTypes.RoleProfile.selected.rawValue
-    static let changed = TaskEventTypes.RoleProfile.changed.rawValue
+public enum TaskRoleProfileEventTypes {
+    public static let selected = TaskEventTypes.RoleProfile.selected.rawValue
+    public static let changed = TaskEventTypes.RoleProfile.changed.rawValue
 }
 
-struct TaskRoleProfileEventPayload: Codable, Equatable, Sendable {
-    var version: Int = 1
-    var role: TaskRoleID
-    var runtimeID: String
-    var model: String
-    var tokenBudget: Int
-    var policyLevelRaw: String
-    var source: String
+public struct TaskRoleProfileEventPayload: Codable, Equatable, Sendable {
+    public init(version: Int = 1, role: TaskRoleID, runtimeID: String, model: String, tokenBudget: Int, policyLevelRaw: String, source: String) {
+        self.version = version
+        self.role = role
+        self.runtimeID = runtimeID
+        self.model = model
+        self.tokenBudget = tokenBudget
+        self.policyLevelRaw = policyLevelRaw
+        self.source = source
+    }
+
+    public var version: Int = 1
+    public var role: TaskRoleID
+    public var runtimeID: String
+    public var model: String
+    public var tokenBudget: Int
+    public var policyLevelRaw: String
+    public var source: String
 }

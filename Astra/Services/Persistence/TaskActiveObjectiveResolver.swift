@@ -1,4 +1,5 @@
 import Foundation
+import ASTRAModels
 
 extension TaskContextStateManager {
     struct ActiveObjectiveResolution: Equatable, Sendable {

@@ -1,6 +1,7 @@
 import Foundation
 import AppKit
 import Network
+import ASTRACore
 
 struct GoogleOAuthAuthorizationSessionRequest: Equatable, Sendable {
     var configuration: GoogleOAuthConfiguration

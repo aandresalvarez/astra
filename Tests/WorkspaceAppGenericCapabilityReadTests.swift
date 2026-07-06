@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 import ASTRACore
+import ASTRAModels
 @testable import ASTRA
 
 /// "Enable a capability → apps can read it, with NO per-connector Swift." Proves the generic

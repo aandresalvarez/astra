@@ -1,4 +1,5 @@
 import Foundation
+import ASTRAModels
 
 enum ClaudeVisibleToolProjection {
     static func visibleProviderTools(

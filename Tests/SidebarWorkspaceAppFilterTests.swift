@@ -1,6 +1,7 @@
 import Foundation
 import SwiftData
 import Testing
+import ASTRAModels
 @testable import ASTRA
 
 /// The search-aware filtering behind the sidebar's inline app rows. Mirrors how chat rows

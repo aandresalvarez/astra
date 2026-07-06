@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import ASTRAModels
 
 struct WorkspaceAppCardPresentation: Identifiable, Equatable {
     var id: UUID

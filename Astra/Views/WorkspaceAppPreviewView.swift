@@ -1,4 +1,5 @@
 import SwiftUI
+import ASTRAModels
 
 /// Full interactive Preview of a DRAFT Workspace App, docked beside App Studio while the draft is
 /// being built. It renders the exact same `WorkspaceAppSurfaceView` a published app uses, but

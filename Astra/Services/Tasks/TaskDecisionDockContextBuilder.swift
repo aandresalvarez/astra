@@ -1,5 +1,6 @@
 import Foundation
 import ASTRACore
+import ASTRAModels
 
 struct TaskRuntimePermissionState {
     struct Event: Hashable, Sendable {

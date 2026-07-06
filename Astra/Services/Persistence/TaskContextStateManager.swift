@@ -1,4 +1,6 @@
 import Foundation
+import ASTRACore
+import ASTRAModels
 
 enum TaskThreadMode: String, Codable, Sendable, Equatable {
     case exploration
@@ -20,12 +22,11 @@ struct TaskContextState: Codable, Sendable, Equatable {
         var completedAt: String?
     }
 
-    struct SourcePointer: Codable, Sendable, Equatable, Hashable {
-        var kind: String
-        var id: String?
-        var path: String?
-        var summary: String
-    }
+    // Extracted to ASTRACore/TaskContextSourcePointer.swift as part of Track
+    // A3 - Astra/Models/TaskMissionHardening.swift needs it. Every existing
+    // `TaskContextState.SourcePointer`/bare `SourcePointer` reference in
+    // this file keeps working unchanged via this alias.
+    typealias SourcePointer = TaskContextSourcePointer
 
     struct ContextFact: Codable, Sendable, Equatable, Hashable {
         var text: String

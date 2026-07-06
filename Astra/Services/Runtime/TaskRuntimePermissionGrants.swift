@@ -1,6 +1,7 @@
 import Foundation
 import SwiftData
 import ASTRACore
+import ASTRAModels
 
 enum TaskRuntimePermissionGrants {
     static let eventType = TaskEventTypes.Tool.permissionGrantTask.rawValue

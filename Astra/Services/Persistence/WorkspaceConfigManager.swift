@@ -1,6 +1,7 @@
 import Foundation
 import SwiftData
 import ASTRACore
+import ASTRAModels
 
 /// Exports and imports workspace configurations as shareable JSON files.
 /// SwiftData remains the source of truth. The workspace JSON is a bounded recovery and sharing surface.

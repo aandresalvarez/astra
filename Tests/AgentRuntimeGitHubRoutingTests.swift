@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import ASTRAModels
 @testable import ASTRA
 
 @Suite("Agent runtime GitHub routing")

@@ -1,4 +1,5 @@
 import Foundation
+import ASTRAModels
 
 /// Tier 1 deterministic classifier: has the original goal already been delivered?
 ///

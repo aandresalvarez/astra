@@ -1,5 +1,6 @@
 import Foundation
 import ASTRACore
+import ASTRAModels
 
 @MainActor
 enum AgentRuntimeStreamDiagnostics {

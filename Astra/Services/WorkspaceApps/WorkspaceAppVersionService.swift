@@ -1,5 +1,6 @@
 import Foundation
 import SwiftData
+import ASTRAModels
 
 /// Slice 3: published-manifest version history for Workspace Apps.
 ///

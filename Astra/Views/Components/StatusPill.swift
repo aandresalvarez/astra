@@ -1,4 +1,5 @@
 import SwiftUI
+import ASTRAModels
 
 /// Small coloured pill used across the app to describe a task's outcome
 /// state compactly — "Run finished", "Needs input", "Run failed", etc. It

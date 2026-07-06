@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import SwiftData
+import ASTRAModels
 
 enum WorkspaceAppActionExecutionError: LocalizedError, Equatable {
     case missingAction(String)

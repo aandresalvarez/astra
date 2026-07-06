@@ -1,5 +1,6 @@
 import Foundation
 import SwiftData
+import ASTRAModels
 
 struct AstraWorkspaceIntentRecord: Equatable, Sendable {
     let id: UUID

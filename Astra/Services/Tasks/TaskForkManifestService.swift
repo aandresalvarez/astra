@@ -1,5 +1,6 @@
 import Foundation
 import ASTRACore
+import ASTRAModels
 
 struct TaskForkManifest: Codable, Sendable, Equatable {
     struct FileReference: Codable, Sendable, Equatable, Hashable {

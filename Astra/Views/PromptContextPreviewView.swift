@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import ASTRAModels
 
 struct PromptContextPreviewSummary: Equatable {
     var modeText: String

@@ -1,4 +1,5 @@
 import Foundation
+import ASTRAModels
 
 struct TaskMissionControlSnapshot {
     let taskFolder: String

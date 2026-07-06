@@ -1,5 +1,6 @@
 import Foundation
 import ASTRACore
+import ASTRAModels
 
 enum HostControlPlaneMCPProjection {
     static let serverID = "astra_host"

@@ -1,5 +1,6 @@
 import SwiftUI
 import SwiftData
+import ASTRAModels
 
 enum TimeFilter: String, CaseIterable {
     case allTime = "All Time"

@@ -1,4 +1,5 @@
 import Foundation
+import ASTRAModels
 
 protocol WorkspaceAppDatabaseQueryRunning {
     func run(_ request: QueryRequest) async throws -> QueryExecutionResult

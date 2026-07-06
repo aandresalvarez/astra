@@ -1,5 +1,6 @@
 import Foundation
 import ASTRACore
+import ASTRAModels
 
 enum TaskVerificationTone: String, Equatable {
     case verified

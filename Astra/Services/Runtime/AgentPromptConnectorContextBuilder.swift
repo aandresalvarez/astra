@@ -1,4 +1,5 @@
 import Foundation
+import ASTRAModels
 
 enum AgentPromptConnectorContextBuilder {
     static func section(

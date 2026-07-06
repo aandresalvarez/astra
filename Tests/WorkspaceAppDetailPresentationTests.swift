@@ -1,6 +1,7 @@
 import Foundation
 import SwiftData
 import Testing
+import ASTRAModels
 @testable import ASTRA
 
 // F7: the detail-area routing decision for Workspace App surfaces. These are the

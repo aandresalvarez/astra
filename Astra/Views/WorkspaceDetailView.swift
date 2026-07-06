@@ -1,5 +1,6 @@
 import SwiftUI
 import SwiftData
+import ASTRAModels
 
 struct WorkspaceDetailView: View {
     @Bindable var workspace: Workspace

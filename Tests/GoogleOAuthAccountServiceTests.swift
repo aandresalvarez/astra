@@ -2,6 +2,7 @@ import Foundation
 import ASTRACore
 import SwiftData
 import Testing
+import ASTRAModels
 @testable import ASTRA
 
 @Suite("Google OAuth Account Service")

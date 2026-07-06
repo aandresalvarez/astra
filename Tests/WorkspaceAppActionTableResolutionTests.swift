@@ -1,6 +1,7 @@
 import Foundation
 import SwiftData
 import Testing
+import ASTRAModels
 @testable import ASTRA
 
 /// Regression coverage for the action table-resolution bugs found in max-effort review:

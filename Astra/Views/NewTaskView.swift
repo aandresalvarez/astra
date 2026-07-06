@@ -1,6 +1,7 @@
 import SwiftUI
 import SwiftData
 import ASTRACore
+import ASTRAModels
 
 struct NewTaskView: View {
     @Environment(\.modelContext) private var modelContext

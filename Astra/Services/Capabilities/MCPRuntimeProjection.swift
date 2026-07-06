@@ -1,5 +1,6 @@
 import Foundation
 import ASTRACore
+import ASTRAModels
 
 /// Materializes capability-package MCP server declarations into runtime
 /// configuration. This is the delivery half of the MCP story: packages

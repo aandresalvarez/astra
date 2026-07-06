@@ -1,5 +1,6 @@
 import Foundation
 import ASTRACore
+import ASTRAModels
 
 enum ProviderArtifactBootstrapPolicy {
     static func launchTools(

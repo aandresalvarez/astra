@@ -2,16 +2,16 @@ import Foundation
 import SwiftData
 import ASTRACore
 
-enum AgentTaskForkService {
+public enum AgentTaskForkService {
     private struct ForkManifestEventPayload: Encodable {
-        var sourceTaskID: String
-        var checkpointRunID: String
-        var checkpointRunIndex: Int
-        var manifestPath: String
+        public var sourceTaskID: String
+        public var checkpointRunID: String
+        public var checkpointRunIndex: Int
+        public var manifestPath: String
     }
 
     @MainActor
-    static func fork(from source: AgentTask, upToRun targetRun: TaskRun, in context: ModelContext) -> AgentTask {
+    public static func fork(from source: AgentTask, upToRun targetRun: TaskRun, in context: ModelContext) -> AgentTask {
         let forked = AgentTask(
             title: "Fork of \(source.title)",
             goal: source.goal,

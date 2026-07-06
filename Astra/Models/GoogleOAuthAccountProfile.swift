@@ -1,35 +1,36 @@
 import Foundation
 import SwiftData
+import ASTRACore
 
-enum GoogleOAuthAccountAuthState: String, Codable, Equatable, CaseIterable {
+public enum GoogleOAuthAccountAuthState: String, Codable, Equatable, CaseIterable {
     case active
     case needsReauth
     case revoked
 }
 
 @Model
-final class GoogleOAuthAccountProfile {
-    var id: UUID
-    var subject: String
-    var email: String
-    var displayName: String
-    var avatarURLString: String?
-    var hostedDomain: String?
-    var grantedScopes: [String]
-    var requestedScopes: [String]
-    var authStateRaw: String
-    var authStateReason: String
-    var createdAt: Date
-    var updatedAt: Date
-    var lastAuthenticatedAt: Date?
-    var revokedAt: Date?
+public final class GoogleOAuthAccountProfile {
+    public var id: UUID
+    public var subject: String
+    public var email: String
+    public var displayName: String
+    public var avatarURLString: String?
+    public var hostedDomain: String?
+    public var grantedScopes: [String]
+    public var requestedScopes: [String]
+    public var authStateRaw: String
+    public var authStateReason: String
+    public var createdAt: Date
+    public var updatedAt: Date
+    public var lastAuthenticatedAt: Date?
+    public var revokedAt: Date?
 
-    var authState: GoogleOAuthAccountAuthState {
+    public var authState: GoogleOAuthAccountAuthState {
         get { GoogleOAuthAccountAuthState(rawValue: authStateRaw) ?? .active }
         set { authStateRaw = newValue.rawValue }
     }
 
-    init(
+    public init(
         id: UUID = UUID(),
         subject: String,
         email: String,
@@ -61,7 +62,7 @@ final class GoogleOAuthAccountProfile {
         self.revokedAt = revokedAt
     }
 
-    func tokenLeakInspectionStrings() -> [String] {
+    public func tokenLeakInspectionStrings() -> [String] {
         [
             id.uuidString,
             subject,

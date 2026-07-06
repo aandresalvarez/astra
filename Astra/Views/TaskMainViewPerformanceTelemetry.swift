@@ -1,4 +1,5 @@
 import Foundation
+import ASTRAModels
 
 enum TaskMainViewPerformanceTelemetry {
     static func chatOpenFields(task: AgentTask, source: String) -> [String: String] {

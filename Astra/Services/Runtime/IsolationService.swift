@@ -1,4 +1,5 @@
 import Foundation
+import ASTRAModels
 
 enum IsolationError: Error, LocalizedError {
     case gitNotFound

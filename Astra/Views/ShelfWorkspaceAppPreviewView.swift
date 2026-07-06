@@ -1,4 +1,5 @@
 import SwiftUI
+import ASTRAModels
 
 /// The live app preview docked in the right shelf while you build an app by chatting
 /// (the Lovable/Replit "right pane"). It reuses the existing full interactive preview —

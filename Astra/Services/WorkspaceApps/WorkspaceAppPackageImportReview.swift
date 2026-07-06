@@ -1,4 +1,5 @@
 import Foundation
+import ASTRAModels
 
 struct WorkspaceAppPackageDependencyMapping: Identifiable, Equatable {
     var id: String { requirement.id }

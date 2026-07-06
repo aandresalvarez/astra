@@ -1,5 +1,6 @@
 import Foundation
 import ASTRACore
+import ASTRAModels
 
 /// Decides where ask-mode checkpoints live for an approved plan, per runtime.
 ///
