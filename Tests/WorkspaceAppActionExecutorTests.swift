@@ -2,6 +2,7 @@ import Foundation
 import SwiftData
 import Testing
 @testable import ASTRA
+import ASTRACore
 
 @Suite("Workspace App Action Executor")
 struct WorkspaceAppActionExecutorTests {

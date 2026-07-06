@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import ASTRA
+import ASTRACore
 
 /// Locks down the REAL REDCap Import-Records client's API contract (request shape + response parsing
 /// + transport round-trip) with a mock transport — the verifiable part of the live-connector path
