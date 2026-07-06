@@ -1547,6 +1547,7 @@ struct ArchitectureFitnessTests {
             "Astra/Services/Runtime/AgentProcessSupport.swift": .init(2_150, .owner("Runtime process stream support")),
             "Astra/Services/Browser/ControlledBrowserController.swift": .init(2_100, .owner("Controlled browser orchestration")),
             "Astra/Services/Git/GitService.swift": .init(2_100, .owner("Git integration")),
+            "Astra/Services/Runtime/AgentRuntimeWorker.swift": .init(2_050, .owner("Runtime worker execution")),
             "Tools/WorkspaceToolSupport/WorkspaceToolSupport.swift": .init(3_450, .owner("Workspace MCP tool")),
             "Tools/HostControlToolSupport/HostControlToolSupport.swift": .init(2_250, .owner("Host-control MCP tool")),
             "Tests/ProcessMonitorTests.swift": .init(3_500, .companion(of: "Astra/Services/Runtime/AgentProcessSupport.swift")),
