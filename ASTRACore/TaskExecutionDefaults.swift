@@ -17,8 +17,8 @@ public enum TaskExecutionDefaults {
     /// process over suite-execution ordering (confirmed empirically: routing
     /// this through the trapping `.required` accessor crashed the first test
     /// in the suite to construct a default `AgentTask()`, before any of the
-    /// registering suites had run). `TaskExecutionDefaultsFallbackTests`
-    /// keeps the literal honest against the live registry value.
+    /// registering suites had run). The literal is kept in sync with the live
+    /// registry default by `AgentRuntimeAdapterTests.claudeCodeDefaultModelIsPinned()`.
     public static let model: String = {
         if let lookup = AgentRuntimeRegistrySeam.currentIfRegistered {
             return lookup.defaultModel(for: runtime)
