@@ -550,3 +550,37 @@ struct ConnectorRuntimeProjection {
         }
     }
 }
+
+/// Registered as the `ConnectorEnvironmentProjectionSeam`
+/// (`ASTRACore/ConnectorEnvironmentProjectionSeam.swift`) backing
+/// implementation.
+///
+/// Rather than re-deriving this file's alias/collision/credential-policy
+/// logic as primitives, this reconstructs scratch, never-persisted
+/// `Connector`s from `ConnectorEnvironmentFacts` (preserving `credentialKeys`/
+/// `configKeys`/`configValues` order exactly) and runs the existing
+/// `ConnectorRuntimeProjection.environmentVariables()` on them unchanged —
+/// same reasoning as `OutlookMailConnectionAdapter` in
+/// `StanfordOutlookMail.swift`: Keychain lookups resolve by a computed
+/// entity-ID string, not Swift object identity, so the scratch connectors
+/// read the same real credentials the live ones would.
+enum ConnectorEnvironmentProjectionAdapter: ConnectorEnvironmentProjecting {
+    static func environmentVariables(for connectors: [ConnectorEnvironmentFacts]) -> [String: String] {
+        let scratchConnectors = connectors.map { facts -> Connector in
+            let scratch = Connector(
+                name: facts.name,
+                serviceType: facts.serviceType,
+                baseURL: facts.baseURL,
+                authMethod: facts.authMethod
+            )
+            scratch.id = facts.id
+            scratch.credentialKeys = facts.credentialKeys
+            scratch.configKeys = facts.configKeys
+            scratch.configValues = facts.configValues
+            scratch.originPackageID = facts.originPackageID
+            scratch.originComponentID = facts.originComponentID
+            return scratch
+        }
+        return ConnectorRuntimeProjection(connectors: scratchConnectors).environmentVariables()
+    }
+}

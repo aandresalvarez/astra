@@ -26,6 +26,9 @@ enum RuntimeSeamRegistration {
         AgentRuntimeRegistrySeam.register(AgentRuntimeAdapterRegistry.self)
         ConnectorAuditLoggingSeam.register(AppLogger.self)
         SkillSecretSeam.register(SkillSecretPersistence.self)
+        ConnectorSecretSeam.register(ConnectorSecretPersistence.self)
+        OutlookMailConnectionSeam.register(OutlookMailConnectionAdapter.self)
+        ConnectorEnvironmentProjectionSeam.register(ConnectorEnvironmentProjectionAdapter.self)
     }
 }
 
