@@ -1,4 +1,5 @@
 import Foundation
+import ASTRACore
 
 enum TaskGeneratedFileShelfDestination: Equatable {
     case browser
@@ -51,8 +52,6 @@ enum TaskGeneratedFileShelfDestination: Equatable {
 }
 
 enum TaskGeneratedFiles {
-    private static let markdownExtensions: Set<String> = ["md", "markdown", "qmd"]
-
     static func files(in folder: String, fileManager: FileManager = .default) -> [String] {
         guard !folder.isEmpty else { return [] }
         let rootURL = URL(fileURLWithPath: folder)
@@ -175,15 +174,15 @@ enum TaskGeneratedFiles {
     }
 
     static func isHTMLFile(_ path: String) -> Bool {
-        ["html", "htm"].contains(URL(fileURLWithPath: path).pathExtension.lowercased())
+        TaskGeneratedFilePathPolicy.isHTMLFile(path)
     }
 
     static func isMarkdownFile(_ path: String) -> Bool {
-        markdownExtensions.contains(URL(fileURLWithPath: path).pathExtension.lowercased())
+        TaskGeneratedFilePathPolicy.isMarkdownFile(path)
     }
 
     static func isSQLFile(_ path: String) -> Bool {
-        URL(fileURLWithPath: path).pathExtension.lowercased() == "sql"
+        TaskGeneratedFilePathPolicy.isSQLFile(path)
     }
 
     static func isFilesShelfFile(_ path: String) -> Bool {

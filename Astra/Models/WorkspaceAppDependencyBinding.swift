@@ -1,5 +1,6 @@
 import Foundation
 import SwiftData
+import ASTRACore
 
 enum WorkspaceAppDependencyBindingStatus: String, Codable, Sendable, Equatable, CaseIterable {
     case mapped

@@ -1,4 +1,5 @@
 import Foundation
+import ASTRACore
 
 struct WorkspaceAppDependencyBindingSnapshot: Equatable {
     var requirementID: String

@@ -1,4 +1,5 @@
 import Foundation
+import ASTRACore
 
 /// How a connector READ is executed GENERICALLY, without per-provider Swift. A contract implementation
 /// contributed by an ENABLED capability (derived from its CLI tool) carries this spec; the generic read
