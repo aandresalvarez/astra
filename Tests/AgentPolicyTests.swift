@@ -1220,6 +1220,10 @@ struct TaskPolicyStoreTests {
 @Suite("Run Permission Manifest", .serialized)
 @MainActor
 struct RunPermissionManifestTests {
+    // Constructs ExecutionEnvironmentCredentialProjection.gcpADC below, which
+    // reads the ExecutionPathSafety seam — see RuntimeSeamRegistration.swift.
+    private let _registerRuntimeSeams: Void = RuntimeSeamRegistration.registerAll()
+
     @Test("Preflight manifest persists policy render without environment values")
     func preflightManifestPersistsWithoutEnvValues() throws {
         let container = try makeAgentPolicyContainer()

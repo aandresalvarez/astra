@@ -6,6 +6,13 @@ import ASTRACore
 
 @Suite("Schema Versioning")
 struct SchemaVersionTests {
+    // Only v7StoreCarriesNonHostExecutionEnvironmentPayloadThroughMigration below
+    // constructs a non-host WorkspaceExecutionEnvironment with a credential
+    // projection (gcpADC), which reads the ExecutionPathSafety seam — see
+    // RuntimeSeamRegistration.swift. registerAll() is idempotent and
+    // thread-safe (OSAllocatedUnfairLock-backed), so this is safe even though
+    // Swift Testing may run this initializer concurrently with other suites'.
+    private let _registerRuntimeSeams: Void = RuntimeSeamRegistration.registerAll()
 
     @Test("SchemaV1 declares all 10 model types")
     func v1ModelCount() {
@@ -632,5 +639,93 @@ struct SchemaVersionTests {
         let apps = try context.fetch(FetchDescriptor<WorkspaceApp>())
         #expect(apps.count == 1)
         #expect(apps.first?.name == "Migrated App")
+    }
+
+    @MainActor
+    @Test("SchemaV7 store with a real non-host execution-environment payload survives migration to current byte-identical")
+    func v7StoreCarriesNonHostExecutionEnvironmentPayloadThroughMigration() throws {
+        // This exercises what the nil-only assertions elsewhere in this file don't: an actual
+        // populated WorkspaceExecutionEnvironment (with credential projections) written as JSON
+        // before the schema-version boundary, reopened under the current schema, decoded back,
+        // and checked for exact equality/round-trip fidelity — not just "field is nil".
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-schema-v7-env-payload-migration-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let gcpADCHostPath = (root.path as NSString).appendingPathComponent(".config/gcloud")
+        try FileManager.default.createDirectory(
+            at: URL(fileURLWithPath: gcpADCHostPath),
+            withIntermediateDirectories: true
+        )
+
+        let nonHostEnvironment = WorkspaceExecutionEnvironment(
+            id: "image:legacy-v7-env",
+            kind: .dockerImage,
+            displayName: "Legacy V7 Environment",
+            image: "astra/legacy:v7",
+            credentialProjections: [
+                ExecutionEnvironmentCredentialProjection.gcpADC(hostPath: gcpADCHostPath)
+            ]
+        )
+        let encodedEnvironmentJSON = try #require(ExecutionEnvironmentStore.encode(nonHostEnvironment))
+
+        let storeURL = root.appendingPathComponent("store.store")
+        var oldContainer: ModelContainer? = try ModelContainer(
+            for: Schema(versionedSchema: ASTRASchemaV7.self),
+            configurations: [ModelConfiguration(url: storeURL)]
+        )
+        let oldContext = try #require(oldContainer?.mainContext)
+
+        let oldWorkspace = ASTRASchemaV7.Workspace()
+        oldWorkspace.name = "Legacy V7 With Environment"
+        oldWorkspace.primaryPath = "/tmp/legacy-v7-env"
+        oldWorkspace.activeExecutionEnvironmentJSON = encodedEnvironmentJSON
+        oldContext.insert(oldWorkspace)
+
+        let oldTask = ASTRASchemaV7.AgentTask()
+        oldTask.title = "Legacy V7 Task With Environment"
+        oldTask.goal = "Do work in a container"
+        oldTask.workspace = oldWorkspace
+        oldTask.executionEnvironmentSnapshotJSON = encodedEnvironmentJSON
+        oldContext.insert(oldTask)
+
+        let oldRun = ASTRASchemaV7.TaskRun()
+        oldRun.task = oldTask
+        oldRun.executionEnvironmentSnapshotJSON = encodedEnvironmentJSON
+        oldContext.insert(oldRun)
+
+        try oldContext.save()
+        oldContainer = nil
+
+        let migratedContainer = try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(url: storeURL)]
+        )
+        let context = migratedContainer.mainContext
+
+        let migratedWorkspace = try #require(try context.fetch(FetchDescriptor<Workspace>()).first)
+        let migratedTask = try #require(try context.fetch(FetchDescriptor<AgentTask>()).first)
+        let migratedRun = try #require(try context.fetch(FetchDescriptor<TaskRun>()).first)
+
+        // The raw JSON string is byte-identical post-migration (lightweight migration must not
+        // touch a field it doesn't declare a transform for).
+        #expect(migratedWorkspace.activeExecutionEnvironmentJSON == encodedEnvironmentJSON)
+        #expect(migratedTask.executionEnvironmentSnapshotJSON == encodedEnvironmentJSON)
+        #expect(migratedRun.executionEnvironmentSnapshotJSON == encodedEnvironmentJSON)
+
+        // And it decodes back to the exact same non-host environment, not `.host`.
+        let decodedWorkspaceEnvironment = ExecutionEnvironmentStore.decode(migratedWorkspace.activeExecutionEnvironmentJSON)
+        let decodedTaskEnvironment = ExecutionEnvironmentStore.decode(migratedTask.executionEnvironmentSnapshotJSON)
+        let decodedRunEnvironment = ExecutionEnvironmentStore.decode(migratedRun.executionEnvironmentSnapshotJSON)
+
+        #expect(!decodedWorkspaceEnvironment.isHost)
+        #expect(decodedWorkspaceEnvironment == nonHostEnvironment)
+        #expect(!decodedTaskEnvironment.isHost)
+        #expect(decodedTaskEnvironment == nonHostEnvironment)
+        #expect(!decodedRunEnvironment.isHost)
+        #expect(decodedRunEnvironment == nonHostEnvironment)
+        #expect(decodedTaskEnvironment.credentialProjections?.first?.kind == .gcpADC)
     }
 }

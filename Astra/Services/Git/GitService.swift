@@ -1,4 +1,5 @@
 import Foundation
+import ASTRACore
 import ASTRAGitContracts
 
 struct GitRepositoryInfo: Identifiable, Hashable {
