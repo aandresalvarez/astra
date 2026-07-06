@@ -25,6 +25,7 @@ enum RuntimeSeamRegistration {
         ExecutionPathSafety.register(ExecutionSandbox.self)
         AgentRuntimeRegistrySeam.register(AgentRuntimeAdapterRegistry.self)
         ConnectorAuditLoggingSeam.register(AppLogger.self)
+        SkillSecretSeam.register(SkillSecretPersistence.self)
     }
 }
 
