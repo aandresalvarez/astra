@@ -27,6 +27,7 @@ let package = Package(
         ),
         .target(
             name: "ASTRACore",
+            dependencies: ["ASTRALogging"],
             path: "ASTRACore"
         ),
         .target(

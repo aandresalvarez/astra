@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import ASTRA
+import ASTRACore
 
 @Suite("Jira Connector Auth")
 struct JiraConnectorAuthTests {
