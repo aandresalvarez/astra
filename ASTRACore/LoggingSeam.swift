@@ -10,16 +10,20 @@ import ASTRALogging
 // only extracted AppLogger's pure vocabulary types into the `ASTRALogging`
 // leaf target, not `AppLogger` itself).
 //
+// Since reused for non-connector audit events by `Skill.swift` (A2.4), the
+// Outlook flow in `Astra/Models/Connector.swift` (A2.5), and
+// `AgentTaskForkService.swift` (A2.6) - hence the general name.
+//
 // Follows the exact registration pattern in `RuntimeSeams.swift`: a public
 // protocol + an `OSAllocatedUnfairLock`-backed static registry with
 // `.register(_:)` and a fail-fast `.required` accessor, wired up from
 // `RuntimeSeamRegistration.registerAll()`.
-public enum ConnectorAuditLoggingSeam {
-    private static let storage = OSAllocatedUnfairLock<(any ConnectorAuditLogging.Type)?>(initialState: nil)
+public enum AuditLoggingSeam {
+    private static let storage = OSAllocatedUnfairLock<(any AuditLogging.Type)?>(initialState: nil)
 
     /// Set once by `RuntimeSeamRegistration.registerAll()`. Safe to call
     /// concurrently — see `AgentRuntimeRegistrySeam.register(_:)`.
-    public static func register(_ logger: any ConnectorAuditLogging.Type) {
+    public static func register(_ logger: any AuditLogging.Type) {
         storage.withLock { $0 = logger }
     }
 
@@ -31,10 +35,10 @@ public enum ConnectorAuditLoggingSeam {
     /// never as a passive default-parameter value construction path, so it
     /// does not have that seam's "touched by nearly every test" ordering
     /// hazard.
-    public static var required: any ConnectorAuditLogging.Type {
+    public static var required: any AuditLogging.Type {
         guard let logger = storage.withLock({ $0 }) else {
             preconditionFailure(
-                "ConnectorAuditLoggingSeam read before RuntimeSeamRegistration.registerAll() ran. " +
+                "AuditLoggingSeam read before RuntimeSeamRegistration.registerAll() ran. " +
                 "Call it in ASTRAApp.init() (already done) or at the top of the test that hit this path."
             )
         }
@@ -42,9 +46,9 @@ public enum ConnectorAuditLoggingSeam {
     }
 }
 
-/// Records a connector-test audit event, matching `AppLogger.audit`'s
-/// signature exactly so `AppLogger`'s existing conformance needs no changes.
-public protocol ConnectorAuditLogging {
+/// Records an audit event, matching `AppLogger.audit`'s signature exactly
+/// so `AppLogger`'s existing conformance needs no changes.
+public protocol AuditLogging {
     static func audit(
         _ event: AuditEvent,
         category: String,
@@ -55,7 +59,7 @@ public protocol ConnectorAuditLogging {
     )
 }
 
-extension ConnectorAuditLogging {
+extension AuditLogging {
     /// Convenience overload matching `AppLogger.audit`'s own defaults
     /// (`category: "Audit"`, `taskID: nil`, `fields: [:]`, `level: .info`,
     /// `fieldMaxLength: 120`) - protocol requirements can't declare default

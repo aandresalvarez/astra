@@ -119,7 +119,7 @@ public final class Skill {
             let newSecretKeys = Set(environmentKeys.filter(Self.isSecretEnvironmentKey))
             for key in oldSecretKeys where !newSecretKeys.contains(key) {
                 let deleted = SkillSecretSeam.required.deleteSecret(key: key, skillID: id)
-                ConnectorAuditLoggingSeam.required.audit(.skillSecretRemoved, category: "Keychain", fields: [
+                AuditLoggingSeam.required.audit(.skillSecretRemoved, category: "Keychain", fields: [
                     "skill_id": id.uuidString,
                     "result": deleted ? "removed" : "failed"
                 ], level: deleted ? .info : .warning)
@@ -173,7 +173,7 @@ public final class Skill {
         if Self.isSecretEnvironmentKey(key) {
             if !value.isEmpty {
                 let saved = SkillSecretSeam.required.saveSecretValue(value, key: key, skillID: id, skillName: name)
-                ConnectorAuditLoggingSeam.required.audit(.skillSecretAdded, category: "Keychain", fields: [
+                AuditLoggingSeam.required.audit(.skillSecretAdded, category: "Keychain", fields: [
                     "skill_id": id.uuidString,
                     "result": saved ? "stored" : "failed"
                 ], level: saved ? .info : .warning)
@@ -192,7 +192,7 @@ public final class Skill {
         let key = environmentKeys[index]
         if Self.isSecretEnvironmentKey(key) {
             let deleted = SkillSecretSeam.required.deleteSecret(key: key, skillID: id)
-            ConnectorAuditLoggingSeam.required.audit(.skillSecretRemoved, category: "Keychain", fields: [
+            AuditLoggingSeam.required.audit(.skillSecretRemoved, category: "Keychain", fields: [
                 "skill_id": id.uuidString,
                 "result": deleted ? "removed" : "failed"
             ], level: deleted ? .info : .warning)
@@ -224,7 +224,7 @@ public final class Skill {
 
     public func cleanupKeychain() {
         SkillSecretSeam.required.deleteAllSecrets(skillID: id)
-        ConnectorAuditLoggingSeam.required.audit(.skillDeleted, category: "Keychain", fields: [
+        AuditLoggingSeam.required.audit(.skillDeleted, category: "Keychain", fields: [
             "skill_id": id.uuidString
         ])
     }

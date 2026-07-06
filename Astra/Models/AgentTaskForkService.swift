@@ -154,7 +154,7 @@ public enum AgentTaskForkService {
                 run: forkedRunsBySourceID[targetRun.id]
             ))
         } catch {
-            ConnectorAuditLoggingSeam.required.audit(.taskFailed, category: "Persistence", taskID: forked.id, fields: [
+            AuditLoggingSeam.required.audit(.taskFailed, category: "Persistence", taskID: forked.id, fields: [
                 "reason": "fork_manifest_write_failed",
                 "error_type": String(describing: type(of: error))
             ], level: .error)
