@@ -30,15 +30,8 @@ struct AgentRuntimeAdapterTests {
         }
     }
 
-    @Test("TaskExecutionDefaults' pre-registration fallback model matches the live registry")
-    func taskExecutionDefaultsFallbackModelMatchesLiveRegistry() {
-        // TaskExecutionDefaults.model (ASTRACore/TaskExecutionDefaults.swift)
-        // falls back to a hardcoded literal when read before
-        // RuntimeSeamRegistration.registerAll() has run in this process, so
-        // it never traps a whole test suite over execution ordering (Track
-        // A2.2). This test keeps that literal honest: if Claude Code's
-        // default-model descriptor ever changes, this fails loudly instead
-        // of silently drifting.
+    @Test("Claude Code registry default model is pinned")
+    func claudeCodeDefaultModelIsPinned() {
         #expect(AgentRuntimeAdapterRegistry.defaultModel(for: .claudeCode) == "claude-sonnet-4-6")
     }
 
