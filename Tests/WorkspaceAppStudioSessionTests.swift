@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import ASTRA
+import ASTRACore
 
 /// The conversational App Studio engine: each turn generates the first app or refines the
 /// current one, the live preview tracks `draftRevision`, and publish gating mirrors the

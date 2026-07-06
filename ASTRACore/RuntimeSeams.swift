@@ -96,10 +96,31 @@ public enum AgentRuntimeRegistrySeam {
         }
         return lookup
     }
+
+    /// Best-effort accessor for low-stakes callers (e.g.
+    /// `TaskExecutionDefaults.model`) that must not crash a whole test
+    /// process just because they happened to run before any suite called
+    /// `registerAll()`. Returns `nil` instead of trapping; unlike
+    /// `registeredRuntime(rawValue:fallback:)` (a real runtime-selection
+    /// decision), a default suggested model has a safe, verifiable
+    /// hardcoded fallback.
+    public static var currentIfRegistered: (any AgentRuntimeRegistryLookup.Type)? {
+        storage.withLock { $0 }
+    }
 }
 
 /// Resolves a raw runtime-ID string against the live set of registered
 /// provider adapters, matching `AgentRuntimeAdapterRegistry.registeredRuntime`.
+///
+/// `defaultModel(for:)` was added in Track A2.2 (finishing A2's Models
+/// cycle-break) so `TaskExecutionDefaults.model` (moved to
+/// `ASTRACore/TaskExecutionDefaults.swift`) can resolve a runtime's default
+/// model without depending on the concrete `AgentRuntimeAdapterRegistry`.
+/// `AgentRuntimeAdapterRegistry` already declares a matching
+/// `static func defaultModel(for:) -> String`, so its existing
+/// `AgentRuntimeRegistryLookup` conformance picks this up with no changes
+/// there.
 public protocol AgentRuntimeRegistryLookup {
     static func registeredRuntime(rawValue: String?, fallback: AgentRuntimeID) -> AgentRuntimeID
+    static func defaultModel(for runtime: AgentRuntimeID) -> String
 }
