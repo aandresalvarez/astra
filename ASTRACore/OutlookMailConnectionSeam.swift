@@ -53,19 +53,20 @@ public struct ConnectorOutlookFacts: Sendable {
 public struct OutlookConnectionResult: Sendable {
     public let mail: String?
     public let userPrincipalName: String?
-    /// The scratch connector's full `configKeys`/`configValues` state after
-    /// the connection flow (token refresh, account ID/display name/email
-    /// discovery, etc.) - assign both back to the real connector wholesale
-    /// (not a per-key `setConfigValue` loop), preserving duplicate-row
-    /// structure exactly rather than re-collapsing it.
-    public let updatedConfigKeys: [String]
-    public let updatedConfigValues: [String]
+    /// Only the config keys the flow actually wrote (account ID, display
+    /// name, email, token-refresh housekeeping, scopes) - never the whole
+    /// config state. `Connector.swift` applies each via `setConfigValue`
+    /// after the `await` returns, so any other config edit made to the
+    /// live connector while the network call was in flight survives -
+    /// applying the *full* pre-`await` config snapshot wholesale would
+    /// silently roll a concurrent edit back (real risk found in this
+    /// seam's introducing PR review, not hypothetical).
+    public let changedConfigEntries: [String: String]
 
-    public init(mail: String?, userPrincipalName: String?, updatedConfigKeys: [String], updatedConfigValues: [String]) {
+    public init(mail: String?, userPrincipalName: String?, changedConfigEntries: [String: String]) {
         self.mail = mail
         self.userPrincipalName = userPrincipalName
-        self.updatedConfigKeys = updatedConfigKeys
-        self.updatedConfigValues = updatedConfigValues
+        self.changedConfigEntries = changedConfigEntries
     }
 }
 

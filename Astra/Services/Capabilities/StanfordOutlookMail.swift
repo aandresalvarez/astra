@@ -578,13 +578,24 @@ enum OutlookMailConnectionAdapter: OutlookMailConnectionTesting {
         scratch.id = facts.id
         scratch.configKeys = facts.configKeys
         scratch.configValues = facts.configValues
+
+        // Diff against configValue(_:) (first-match), not a collapsed dict,
+        // so a duplicate config row that the flow never touches doesn't
+        // register as "changed" just because its first/last occurrences
+        // differ (see this seam's other duplicate-row fix, same file).
+        let keysBefore = Set(scratch.configKeys)
+        let before = Dictionary(uniqueKeysWithValues: keysBefore.map { ($0, scratch.configValue($0)) })
+
         let me = try await StanfordOutlookMailGraphService().testConnection(connector: scratch)
-        return OutlookConnectionResult(
-            mail: me.mail,
-            userPrincipalName: me.userPrincipalName,
-            updatedConfigKeys: scratch.configKeys,
-            updatedConfigValues: scratch.configValues
-        )
+
+        var changed: [String: String] = [:]
+        for key in Set(scratch.configKeys) {
+            let after = scratch.configValue(key)
+            if before[key] != after {
+                changed[key] = after
+            }
+        }
+        return OutlookConnectionResult(mail: me.mail, userPrincipalName: me.userPrincipalName, changedConfigEntries: changed)
     }
 
     static func removeFromRegistry(connectorID: UUID) {
