@@ -202,12 +202,17 @@ public struct ExecutionEnvironmentCredentialProjection: Codable, Equatable, Hash
             return false
         }
         let checker = ExecutionPathSafety.required
-        if let canonical = checker.canonicalize(standardized) {
-            guard !checker.isForbiddenReadableRoot(canonical),
-                  !checker.isForbiddenWritableRoot(canonical),
-                  !checker.isOverlyBroadRoot(canonical) else {
-                return false
-            }
+        // `canonicalize` returns nil only for input it judges unsafe to even
+        // resolve (empty, an interior newline, or a relative path that can't
+        // anchor a sandbox rule) — never because the directory doesn't exist
+        // yet. Fail closed rather than silently skipping the root checks.
+        guard let canonical = checker.canonicalize(standardized) else {
+            return false
+        }
+        guard !checker.isForbiddenReadableRoot(canonical),
+              !checker.isForbiddenWritableRoot(canonical),
+              !checker.isOverlyBroadRoot(canonical) else {
+            return false
         }
         return true
     }

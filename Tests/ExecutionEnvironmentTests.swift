@@ -701,6 +701,28 @@ struct ExecutionEnvironmentTests {
         ])
     }
 
+    @Test("Credential projection sanitization fails closed when the host path cannot be canonicalized")
+    func credentialProjectionSanitizationFailsClosedForUncanonicalizablePath() throws {
+        let root = try makeTempDir("docker-credential-sanitize-uncanonicalizable")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        // An interior newline still ends in "/.config/gcloud" (so it clears the
+        // filename shape check) but ExecutionSandbox.canonicalize refuses to
+        // resolve it, returning nil. The sanitizer must reject this rather than
+        // skip the root-safety checks and approve it.
+        let poisonedPath = "\(root)/evil\npath/.config/gcloud"
+        let imported = WorkspaceExecutionEnvironment(
+            id: "image:test",
+            kind: .dockerImage,
+            displayName: "Test Image",
+            image: "astra/test:latest",
+            credentialProjections: [
+                ExecutionEnvironmentCredentialProjection.gcpADC(hostPath: poisonedPath)
+            ]
+        )
+
+        #expect(imported.effectiveCredentialProjections.isEmpty)
+    }
+
     @Test("Run file changes translate container paths into host paths")
     func runFileChangesTranslateContainerPaths() throws {
         let root = try makeTempDir("docker-file-change")
