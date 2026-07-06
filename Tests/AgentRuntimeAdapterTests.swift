@@ -30,6 +30,11 @@ struct AgentRuntimeAdapterTests {
         }
     }
 
+    @Test("Claude Code registry default model is pinned")
+    func claudeCodeDefaultModelIsPinned() {
+        #expect(AgentRuntimeAdapterRegistry.defaultModel(for: .claudeCode) == "claude-sonnet-4-6")
+    }
+
     @Test("Adapter catalogs can be composed without the global provider list")
     func adapterCatalogsCanBeComposedWithoutGlobalProviderList() throws {
         let catalog = AgentRuntimeAdapterCatalog(providers: [
