@@ -600,7 +600,9 @@ final class AgentRuntimeWorker {
             executionPolicy: executionPolicy,
             capabilityResolutionSnapshot: capabilityResolutionSnapshot,
             runtimeConfiguration: runtimeConfiguration,
-            preflightCache: PreflightCache(checker: environmentHealthChecker)
+            preflightCache: PreflightCache(checker: environmentHealthChecker),
+            mcpDetectExecutable: mcpServerExecutableDetector,
+            mcpIsExecutableFile: mcpServerExecutableIsResolvable
         ) else {
             isRunning = false
             return
@@ -1991,6 +1993,19 @@ final class AgentRuntimeWorker {
     /// to `InstantSuccessBinaryRunner` so the check never shells out to
     /// real host CLIs.
     var environmentHealthChecker = EnvironmentHealthChecker()
+    /// Whether an MCP stdio server's resolved command path is executable
+    /// (e.g. ~/.astra/tools/astra-host-control for the GitHub host-control
+    /// server). Scenario tests override this so the capability preflight
+    /// never depends on ASTRA's bundled tools being installed on the
+    /// machine running the test.
+    var mcpServerExecutableIsResolvable: (String) -> Bool = {
+        FileManager.default.isExecutableFile(atPath: $0)
+    }
+    /// Resolves a bare MCP server command name via PATH, mirroring
+    /// `RuntimePathResolver.detectExecutablePath` in production.
+    var mcpServerExecutableDetector: (String) -> String = {
+        RuntimePathResolver.detectExecutablePath(named: $0)
+    }
     /// Maximum execution time in seconds (10 minutes default)
     var timeoutSeconds: TimeInterval = 600
 
