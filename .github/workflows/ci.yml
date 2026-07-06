@@ -51,15 +51,21 @@ jobs:
     # started / 0 finished / orphaned bash+sleep children at cleanup;
     # three more runs hung identically). Locally the wider core count
     # masks the deadlock. --no-parallel below serializes execution and
-    # fixed it - confirmed via repeated manual dispatch runs completing
-    # in ~3-4 minutes. Two further CI-only failures (real, unmocked host
-    # dependencies in scenario tests - gh auth status, then
+    # fixed it - the suite itself runs in ~3-4 minutes once built, and the
+    # full job (checkout, cache restore, build, test) completes in
+    # ~13-14 minutes on a warm cache (PR #209's own run: 13m30s). Two
+    # further CI-only failures (real, unmocked host dependencies in
+    # scenario tests - gh auth status, then
     # ~/.astra/tools/astra-host-control - both only present on a
     # developer machine, not a clean runner) were found and fixed in
     # #207 and #208. Gating restored on pull_request after a final green
     # dispatch run (28767049711) on main with both fixes merged.
+    # timeout-minutes gives ~3x headroom over the observed warm-cache run
+    # (enough for a cold-cache build too) without leaving a hang-prone job
+    # able to burn a macOS runner (10x billing) for hours if the deadlock
+    # regresses.
     runs-on: macos-26
-    timeout-minutes: 150
+    timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@v4
