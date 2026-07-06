@@ -1568,7 +1568,7 @@ struct ArchitectureFitnessTests {
             // One line registers the ExecutionPathSafety/AgentRuntimeRegistrySeam seams the
             // suite's gcpADC() construction now needs (Swift has no module-load hook, so this
             // is an explicit, one-line-per-file requirement — see RuntimeSeamRegistration.swift).
-            "Tests/AgentRuntimeAdapterTests.swift": .init(3_201, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
+            "Tests/AgentRuntimeAdapterTests.swift": .init(3_250, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
             "Tests/AgentRuntimeWorkerTests.swift": .init(2_550, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
             "Tests/AgentPolicyTests.swift": .init(2_650, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
             "Tests/WorkspaceAppActionExecutorTests.swift": .init(2_500, .companion(of: "Astra/Services/WorkspaceApps/WorkspaceAppActionExecutor.swift")),

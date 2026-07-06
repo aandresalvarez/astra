@@ -1,17 +1,25 @@
 import Foundation
+import ASTRALogging
 
-protocol ConnectorHTTPTransport {
+// Moved here as part of Track A2.1 (finishing A2's Models cycle-break) so
+// `Astra/Models/Connector.swift` can depend on it without pulling in the
+// Capabilities subsystem. Pure Foundation-only HTTP-transport plumbing plus
+// the Jira connector-auth probe that consumes it; no app-target dependencies.
+
+public protocol ConnectorHTTPTransport {
     func data(for request: URLRequest) async throws -> (Data, URLResponse)
 }
 
-struct URLSessionConnectorHTTPTransport: ConnectorHTTPTransport {
-    func data(for request: URLRequest) async throws -> (Data, URLResponse) {
+public struct URLSessionConnectorHTTPTransport: ConnectorHTTPTransport {
+    public init() {}
+
+    public func data(for request: URLRequest) async throws -> (Data, URLResponse) {
         try await URLSession.shared.data(for: request)
     }
 }
 
-enum ConnectorRequestBuilder {
-    static func url(
+public enum ConnectorRequestBuilder {
+    public static func url(
         base: URL,
         path: String,
         queryItems: [URLQueryItem] = []
@@ -42,7 +50,7 @@ enum ConnectorRequestBuilder {
         return components.url ?? base
     }
 
-    static func applyAuthentication(
+    public static func applyAuthentication(
         authMethod: String,
         credentials: [String: String],
         to request: inout URLRequest
@@ -83,26 +91,42 @@ enum ConnectorRequestBuilder {
     }
 }
 
-struct ConnectorTestOutcome {
-    let success: Bool
-    let message: String
-    let level: LogLevel
-    let fields: [String: String]
+public struct ConnectorTestOutcome {
+    public let success: Bool
+    public let message: String
+    public let level: LogLevel
+    public let fields: [String: String]
 
-    func auditFields(adding extra: [String: String]) -> [String: String] {
+    public func auditFields(adding extra: [String: String]) -> [String: String] {
         fields.merging(extra) { current, _ in current }
     }
 }
 
-struct JiraConnectorAuthTester {
-    let connectorID: UUID
-    let baseURL: URL
-    let authMethod: String
-    let credentials: [String: String]
-    let config: [String: String]
-    let transport: any ConnectorHTTPTransport
+public struct JiraConnectorAuthTester {
+    public let connectorID: UUID
+    public let baseURL: URL
+    public let authMethod: String
+    public let credentials: [String: String]
+    public let config: [String: String]
+    public let transport: any ConnectorHTTPTransport
 
-    func test() async -> ConnectorTestOutcome {
+    public init(
+        connectorID: UUID,
+        baseURL: URL,
+        authMethod: String,
+        credentials: [String: String],
+        config: [String: String],
+        transport: any ConnectorHTTPTransport
+    ) {
+        self.connectorID = connectorID
+        self.baseURL = baseURL
+        self.authMethod = authMethod
+        self.credentials = credentials
+        self.config = config
+        self.transport = transport
+    }
+
+    public func test() async -> ConnectorTestOutcome {
         let global = await probe(
             endpointKind: "jira.mypermissions",
             path: "/rest/api/3/mypermissions",

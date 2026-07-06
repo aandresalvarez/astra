@@ -29,32 +29,44 @@ public struct ConnectorOutlookFacts: Sendable {
     public let id: UUID
     public let name: String
     public let serviceType: String
-    /// All of the connector's config key/value pairs (tenant domain,
-    /// client ID, scopes, previously-stored email, etc.) - enough to
-    /// reconstruct a working stand-in `Connector`.
-    public let config: [String: String]
+    /// `configKeys`/`configValues` as `Connector` itself stores them -
+    /// parallel arrays, not a collapsed dictionary. `Connector.configValue(_:)`
+    /// resolves duplicate keys via `firstIndex(of:)` (first match wins); a
+    /// `[String: String]` built from `zip(configKeys, configValues)` would
+    /// collapse duplicates last-wins instead, silently reading a different
+    /// tenant/client/scopes value than the live `self.outlookTenantDomain`/
+    /// `.outlookClientID`/etc. would for connectors with duplicate config
+    /// rows (verified real risk, not hypothetical - see this seam's
+    /// introducing PR review thread).
+    public let configKeys: [String]
+    public let configValues: [String]
 
-    public init(id: UUID, name: String, serviceType: String, config: [String: String]) {
+    public init(id: UUID, name: String, serviceType: String, configKeys: [String], configValues: [String]) {
         self.id = id
         self.name = name
         self.serviceType = serviceType
-        self.config = config
+        self.configKeys = configKeys
+        self.configValues = configValues
     }
 }
 
 public struct OutlookConnectionResult: Sendable {
     public let mail: String?
     public let userPrincipalName: String?
-    /// The full config key/value state after the connection flow (token
-    /// refresh, account ID/display name/email discovery, etc.) - apply via
-    /// `Connector.setConfigValue` for every entry, mirroring however many
-    /// keys the underlying flow actually wrote.
-    public let updatedConfig: [String: String]
+    /// Only the config keys the flow actually wrote (account ID, display
+    /// name, email, token-refresh housekeeping, scopes) - never the whole
+    /// config state. `Connector.swift` applies each via `setConfigValue`
+    /// after the `await` returns, so any other config edit made to the
+    /// live connector while the network call was in flight survives -
+    /// applying the *full* pre-`await` config snapshot wholesale would
+    /// silently roll a concurrent edit back (real risk found in this
+    /// seam's introducing PR review, not hypothetical).
+    public let changedConfigEntries: [String: String]
 
-    public init(mail: String?, userPrincipalName: String?, updatedConfig: [String: String]) {
+    public init(mail: String?, userPrincipalName: String?, changedConfigEntries: [String: String]) {
         self.mail = mail
         self.userPrincipalName = userPrincipalName
-        self.updatedConfig = updatedConfig
+        self.changedConfigEntries = changedConfigEntries
     }
 }
 

@@ -1,5 +1,6 @@
 import Foundation
 import SwiftData
+import ASTRACore
 
 @Model
 final class Artifact {
@@ -66,9 +67,9 @@ struct ArtifactKind: RawRepresentable, Codable, Sendable, Hashable, ExpressibleB
     static let yml: ArtifactKind = "yml"
 
     static func forPath(_ path: String) -> ArtifactKind {
-        if TaskGeneratedFiles.isHTMLFile(path) { return .html }
-        if TaskGeneratedFiles.isMarkdownFile(path) { return .markdown }
-        if TaskGeneratedFiles.isSQLFile(path) { return .sql }
+        if TaskGeneratedFilePathPolicy.isHTMLFile(path) { return .html }
+        if TaskGeneratedFilePathPolicy.isMarkdownFile(path) { return .markdown }
+        if TaskGeneratedFilePathPolicy.isSQLFile(path) { return .sql }
         let ext = URL(fileURLWithPath: path).pathExtension
         return ArtifactKind(rawValue: ext)
     }

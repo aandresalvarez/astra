@@ -4,6 +4,7 @@ import Security
 import SwiftData
 import AstraObjCSupport
 @testable import ASTRA
+import ASTRACore
 
 /// Helpers for exercising the real keychain in a CI-safe way. Every test that
 /// touches the keychain is gated behind `isAvailable`, which probes once whether
@@ -105,6 +106,7 @@ enum AstraSecureKeychainTestSupport {
 
 @Suite("ASTRA dedicated secret keychain", .serialized)
 struct AstraSecureKeychainTests {
+    private let _registerRuntimeSeams: Void = RuntimeSeamRegistration.registerAll() // StartupCredentialMigrationService.migrate -> connector.migrateToKeychain needs ConnectorSecretSeam
 
     // MARK: - Configuration (no keychain access — always runs)
 

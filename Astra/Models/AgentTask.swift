@@ -216,7 +216,7 @@ final class AgentTask {
     }
 
     var statusColor: String {
-        TaskPresentationState.statusColor(for: status)
+        TaskStatusPresentation.color(for: status.rawValue)
     }
 
 }

@@ -2,6 +2,7 @@ import Foundation
 import SwiftData
 import Testing
 @testable import ASTRA
+import ASTRACore
 
 @MainActor
 @Suite("Workspace App Studio Draft Persistence")

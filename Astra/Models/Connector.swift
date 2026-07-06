@@ -228,11 +228,16 @@ final class Connector {
 
         if isStanfordOutlookMail {
             do {
-                let facts = ConnectorOutlookFacts(id: id, name: name, serviceType: serviceType, config: config)
+                let facts = ConnectorOutlookFacts(id: id, name: name, serviceType: serviceType, configKeys: configKeys, configValues: configValues)
                 let result = try await OutlookMailConnectionSeam.required.testConnection(facts: facts)
-                for (key, value) in result.updatedConfig {
+                // Applied per changed key (not a wholesale configKeys/
+                // configValues replacement) so a live config edit made to
+                // self while the network call above was in flight isn't
+                // silently rolled back to the pre-await snapshot.
+                for (key, value) in result.changedConfigEntries {
                     setConfigValue(key, value: value)
                 }
+                updatedAt = Date()
                 ConnectorAuditLoggingSeam.required.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
                     "credential_evidence": "microsoft_graph_oauth",
                     "credential_state": "authenticated",
