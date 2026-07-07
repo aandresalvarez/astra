@@ -50,6 +50,7 @@ struct CapabilityPackageCreationService {
         credentialInputs: [String: String] = [:],
         configInputs: [String: String] = [:],
         baseURLOverrides: [String: String] = [:],
+        allowCredentialUserInteraction: Bool = false,
         policyContext: CapabilityCatalogPolicyContext? = nil,
         traceID: String? = nil
     ) throws -> CapabilityPackageCreationResult {
@@ -91,6 +92,7 @@ struct CapabilityPackageCreationService {
                 credentialInputs: credentialInputs,
                 configInputs: configInputs,
                 baseURLOverrides: baseURLOverrides,
+                allowCredentialUserInteraction: allowCredentialUserInteraction,
                 policyContext: enablePolicyContext,
                 traceID: traceID
             )

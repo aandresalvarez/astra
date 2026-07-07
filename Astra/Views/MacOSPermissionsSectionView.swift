@@ -122,7 +122,11 @@ final class MacOSPermissionsViewModel: ObservableObject {
         return "Needs attention - \(attention.joined(separator: ", "))"
     }
 
-    func checkAll(workspaceRoot: String, includeBrowserControl: Bool = true) async {
+    func checkAll(
+        workspaceRoot: String,
+        includeBrowserControl: Bool = true,
+        allowKeychainUserInteraction: Bool = false
+    ) async {
         hasRunCheck = true
         checks = checks.map { item in
             var copy = item
@@ -130,7 +134,10 @@ final class MacOSPermissionsViewModel: ObservableObject {
             return copy
         }
 
-        let keychainIssue = MacOSPermissionDiagnostics.checkKeychainAccess(appDisplayName: appDisplayName)
+        let keychainIssue = MacOSPermissionDiagnostics.checkKeychainAccess(
+            appDisplayName: appDisplayName,
+            allowUserInteraction: allowKeychainUserInteraction
+        )
         setState(keychainIssue.map(MacOSPermissionCheckState.needsAction) ?? .ready, for: .keychain)
 
         let workspaceIssue = MacOSPermissionDiagnostics.checkWorkspaceRootAccess(
@@ -288,7 +295,8 @@ struct MacOSPermissionsSectionView: View {
                     Task {
                         await model.checkAll(
                             workspaceRoot: workspaceRoot,
-                            includeBrowserControl: shouldProbeBrowserControl
+                            includeBrowserControl: shouldProbeBrowserControl,
+                            allowKeychainUserInteraction: true
                         )
                     }
                 } label: {
@@ -328,7 +336,17 @@ struct MacOSPermissionsSectionView: View {
 
                 if let issue = check.state.issue {
                     Button {
-                        model.openSettings(for: issue)
+                        if issue.kind == .keychain {
+                            Task {
+                                await model.checkAll(
+                                    workspaceRoot: workspaceRoot,
+                                    includeBrowserControl: shouldProbeBrowserControl,
+                                    allowKeychainUserInteraction: true
+                                )
+                            }
+                        } else {
+                            model.openSettings(for: issue)
+                        }
                     } label: {
                         Label(issue.actionTitle, systemImage: issue.systemImage)
                             .font(Stanford.caption(12).weight(.semibold))
@@ -461,7 +479,8 @@ struct MacOSPermissionsSectionView: View {
             ]
         case .keychain:
             return [
-                "Open Keychain Access and unlock the login keychain.",
+                "Retry the Keychain-backed action from ASTRA.",
+                "If macOS asks whether ASTRA can access its Keychain item, choose Allow or Always Allow.",
                 "Return to ASTRA and click Retry."
             ]
         case .workspaceStorage:

@@ -47,6 +47,7 @@ struct CapabilityCatalogActionService {
         credentialInputs: [String: String] = [:],
         configInputs: [String: String] = [:],
         baseURLOverrides: [String: String] = [:],
+        allowCredentialUserInteraction: Bool = false,
         policyContext: CapabilityCatalogPolicyContext,
         source: String,
         traceID: String
@@ -59,6 +60,7 @@ struct CapabilityCatalogActionService {
                 credentialInputs: credentialInputs,
                 configInputs: configInputs,
                 baseURLOverrides: baseURLOverrides,
+                allowCredentialUserInteraction: allowCredentialUserInteraction,
                 policyContext: policyContext,
                 traceID: traceID
             )
@@ -81,6 +83,7 @@ struct CapabilityCatalogActionService {
         workspace: Workspace,
         modelContext: ModelContext,
         policyContext: CapabilityCatalogPolicyContext,
+        allowCredentialUserInteraction: Bool = false,
         traceID: String
     ) throws -> CapabilityCatalogCreateActionResult {
         let source = enableHere ? "create_and_enable" : "create_install_only"
@@ -91,6 +94,7 @@ struct CapabilityCatalogActionService {
                 sourceURL: sourceURL,
                 workspace: workspace,
                 modelContext: modelContext,
+                allowCredentialUserInteraction: allowCredentialUserInteraction,
                 policyContext: policyContext,
                 traceID: traceID
             )

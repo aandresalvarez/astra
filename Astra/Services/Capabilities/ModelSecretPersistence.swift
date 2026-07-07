@@ -30,14 +30,34 @@ enum ConnectorSecretPersistence: ConnectorSecretPersisting {
     }
 
     @discardableResult
-    static func saveCredential(_ value: String, key: String, facts: ConnectorSecretFacts) -> Bool {
-        let saved = KeychainService.save(key: key, value: value, facts: facts, label: "Astra: \(facts.name)")
+    static func saveCredential(_ value: String, key: String, facts: ConnectorSecretFacts, allowUserInteraction: Bool) -> Bool {
+        let saved = KeychainService.save(
+            key: key,
+            value: value,
+            facts: facts,
+            label: "Astra: \(facts.name)",
+            allowUserInteraction: allowUserInteraction
+        )
         AppLogger.audit(.connectorSecretAdded, category: "Keychain", fields: [
             "connector_id": facts.id.uuidString,
             "service_type": facts.serviceType,
             "result": saved ? "stored" : "failed"
         ], level: saved ? .info : .warning)
         return saved
+    }
+
+    @discardableResult
+    static func saveCredential(_ value: String, key: String, facts: ConnectorSecretFacts, store: SecretStore) -> Bool {
+        let entityIDs = KeychainSecretStore.connectorEntityIDs(
+            id: facts.id,
+            serviceType: facts.serviceType,
+            baseURL: facts.baseURL,
+            originPackageID: facts.originPackageID,
+            originComponentID: facts.originComponentID
+        )
+        return entityIDs.map { entityID in
+            store.save(key: key, value: value, entityID: entityID, label: "Astra: \(facts.name)")
+        }.allSatisfy { $0 }
     }
 
     @discardableResult
@@ -78,8 +98,14 @@ enum SkillSecretPersistence: SkillSecretPersisting {
         return store.load(key: key, entityID: entityID)
     }
 
-    static func saveSecretValue(_ value: String, key: String, skillID: UUID, skillName: String) -> Bool {
-        KeychainService.save(key: key, value: value, skillID: skillID, label: "Astra: \(skillName)")
+    static func saveSecretValue(_ value: String, key: String, skillID: UUID, skillName: String, allowUserInteraction: Bool) -> Bool {
+        KeychainService.save(
+            key: key,
+            value: value,
+            skillID: skillID,
+            label: "Astra: \(skillName)",
+            allowUserInteraction: allowUserInteraction
+        )
     }
 
     static func deleteSecret(key: String, skillID: UUID) -> Bool {

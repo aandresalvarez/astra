@@ -128,7 +128,22 @@ struct AstraSecureKeychainTests {
         #expect(names.count == 3)
     }
 
-    @Test("Dedicated keychain reads disable UI and use file-keychain lookup")
+    @Test("Tests must opt into a temporary keychain before using the store")
+    func testsRequireExplicitTemporaryKeychainOverride() {
+        #expect(AstraSecureKeychainStore.shouldBlockUnscopedTestKeychainAccess)
+
+        AstraSecureKeychainStore.$keychainPathOverride.withValue(
+            AstraSecureKeychainTestSupport.tempKeychainPath()
+        ) {
+            AstraSecureKeychainStore.$bootstrapServiceOverride.withValue(
+                "astra-test-bootstrap-\(UUID().uuidString)"
+            ) {
+                #expect(!AstraSecureKeychainStore.shouldBlockUnscopedTestKeychainAccess)
+            }
+        }
+    }
+
+    @Test("Dedicated keychain background operations disable UI and use file-keychain lookup")
     func dedicatedReadsAreNonInteractiveFileKeychainLookups() throws {
         let source = try astraSecureKeychainSource()
         let readSecretBody = try methodBody(
@@ -141,9 +156,14 @@ struct AstraSecureKeychainTests {
             endingBefore: "+ (BOOL)deleteSecretForAccount:",
             in: source
         )
+        let writeSecretBody = try methodBody(
+            startingWith: "+ (BOOL)writeSecret:",
+            endingBefore: "+ (nullable NSString *)secretForAccount:",
+            in: source
+        )
         let saveBody = try methodBody(
             startingWith: "+ (BOOL)saveSecret:",
-            endingBefore: "+ (nullable NSString *)secretForAccount:",
+            endingBefore: "+ (BOOL)saveSecretAllowingUserInteraction:",
             in: source
         )
         let existsBody = try methodBody(
@@ -152,21 +172,47 @@ struct AstraSecureKeychainTests {
             in: source
         )
 
-        for body in [saveBody, secretBody, existsBody] {
+        for body in [secretBody, existsBody] {
             #expect(body.contains("disableKeychainUserInteractionSavingPrevious"))
             #expect(body.contains("restoreKeychainUserInteraction"))
             #expect(!body.contains("SecItemCopyMatching"))
         }
+        #expect(saveBody.contains("allowUserInteraction:false"))
+        #expect(saveBody.contains("recoverUnreadableKeychain:true"))
+        #expect(writeSecretBody.contains("disableKeychainUserInteractionSavingPrevious"))
+        #expect(writeSecretBody.contains("restoreKeychainUserInteraction"))
+        #expect(!writeSecretBody.contains("SecItemCopyMatching"))
         for body in [secretBody, existsBody] {
             #expect(body.contains("readSecretDataForAccount"))
         }
         #expect(!secretBody.contains("temporarilyAllowKeychainUserInteraction"))
-        #expect(saveBody.contains("SecItemDelete"))
-        #expect(saveBody.contains("addSecretValue"))
-        #expect(saveBody.contains("recoverUnreadableDedicatedKeychainAtPath"))
+        #expect(writeSecretBody.contains("SecItemDelete"))
+        #expect(writeSecretBody.contains("addSecretValue"))
+        #expect(writeSecretBody.contains("recoverUnreadableDedicatedKeychainAtPath"))
         #expect(readSecretBody.contains("SecKeychainFindGenericPassword"))
         #expect(!readSecretBody.contains("repairSecretAccessForItem"))
         #expect(!readSecretBody.contains("SecKeychainItemSetAccess"))
+    }
+
+    @Test("Explicit user saves allow Keychain permission prompts without destructive recovery")
+    func explicitUserSavesAllowPromptWithoutRecovery() throws {
+        let source = try astraSecureKeychainSource()
+        let userSaveBody = try methodBody(
+            startingWith: "+ (BOOL)saveSecretAllowingUserInteraction:",
+            endingBefore: "+ (BOOL)writeSecret:",
+            in: source
+        )
+        let writeSecretBody = try methodBody(
+            startingWith: "+ (BOOL)writeSecret:",
+            endingBefore: "+ (nullable NSString *)secretForAccount:",
+            in: source
+        )
+
+        #expect(userSaveBody.contains("allowUserInteraction:true"))
+        #expect(userSaveBody.contains("recoverUnreadableKeychain:false"))
+        #expect(writeSecretBody.contains("allowKeychainUserInteractionSavingPrevious"))
+        #expect(writeSecretBody.contains("if (!recoverUnreadableKeychain)"))
+        #expect(writeSecretBody.contains("return NO;"))
     }
 
     @Test("Saving a replacement can recover from an unreadable dedicated keychain")
@@ -178,7 +224,7 @@ struct AstraSecureKeychainTests {
             in: source
         )
         let saveBody = try methodBody(
-            startingWith: "+ (BOOL)saveSecret:",
+            startingWith: "+ (BOOL)writeSecret:",
             endingBefore: "+ (nullable NSString *)secretForAccount:",
             in: source
         )
@@ -199,7 +245,7 @@ struct AstraSecureKeychainTests {
             in: source
         )
         let saveBody = try methodBody(
-            startingWith: "+ (BOOL)saveSecret:",
+            startingWith: "+ (BOOL)writeSecret:",
             endingBefore: "+ (nullable NSString *)secretForAccount:",
             in: source
         )

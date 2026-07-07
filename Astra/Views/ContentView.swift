@@ -2226,21 +2226,21 @@ struct ContentView: View {
     }
 
     private func finalizeNewWorkspace() {
-        guard createWorkspace(from: newWorkspaceDraft, source: "workspace_creation") else { return }
+        guard createWorkspace(from: newWorkspaceDraft, source: "workspace_creation") != .notCreated else { return }
         showingNewWorkspace = false
         resetNewWorkspaceDraft()
     }
 
     @discardableResult
-    private func finalizeOnboardingWorkspace(_ draft: NewWorkspaceDraft) -> Bool {
+    private func finalizeOnboardingWorkspace(_ draft: NewWorkspaceDraft) -> WorkspaceCreationOutcome {
         createWorkspace(from: draft, source: "onboarding")
     }
 
     @discardableResult
-    private func createWorkspace(from draft: NewWorkspaceDraft, source: String) -> Bool {
-        guard let result = workspaceActionCoordinator.createWorkspace(from: draft, source: source) else { return false }
+    private func createWorkspace(from draft: NewWorkspaceDraft, source: String) -> WorkspaceCreationOutcome {
+        guard let result = workspaceActionCoordinator.createWorkspace(from: draft, source: source) else { return .notCreated }
         applyWorkspaceSelectionUpdate(workspaceSelectionCoordinator.create(workspace: result.workspace))
-        return true
+        return result.hasCapabilityEnableFailures ? .createdWithCapabilityIssues : .created
     }
 
     private func deleteWorkspace(_ ws: Workspace) {

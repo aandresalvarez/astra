@@ -107,20 +107,57 @@ public final class Connector {
         return merged
     }
 
-    /// Save a credential value to Keychain and keep the key in SwiftData.
-    public func saveCredential(key: String, value: String) {
+    /// Save a credential value to Keychain and keep the key in SwiftData only
+    /// after the secure write succeeds.
+    @discardableResult
+    public func saveCredential(key: String, value: String, allowUserInteraction: Bool = false) -> Bool {
         let upperKey = key.uppercased()
-        ConnectorSecretSeam.required.saveCredential(value, key: upperKey, facts: secretFacts)
-        if let index = credentialKeys.firstIndex(where: { $0.caseInsensitiveCompare(upperKey) == .orderedSame }) {
-            credentialKeys[index] = upperKey
-            if index < credentialValues.count {
-                credentialValues[index] = ""
+        let saved = ConnectorSecretSeam.required.saveCredential(
+            value,
+            key: upperKey,
+            facts: secretFacts,
+            allowUserInteraction: allowUserInteraction
+        )
+        recordCredentialSaveResult(key: upperKey, saved: saved)
+        return saved
+    }
+
+    /// Test seam for credential key normalization and persistence behavior.
+    /// Production uses `saveCredential(key:value:)` so KeychainService remains
+    /// the single app-facing persistence boundary. Routes through
+    /// `ConnectorSecretSeam` (not `KeychainSecretStore` directly) since
+    /// `ASTRAModels` cannot depend on `ASTRAPersistence`.
+    @discardableResult
+    func saveCredential(key: String, value: String, store: SecretStore) -> Bool {
+        let upperKey = key.uppercased()
+        let ok = ConnectorSecretSeam.required.saveCredential(value, key: upperKey, facts: secretFacts, store: store)
+        if !ok {
+            AuditLoggingSeam.required.audit(.keychainSaveFailed, category: "Keychain", fields: [
+                "scope": "connector"
+            ], level: .warning)
+        }
+        recordCredentialSaveResult(key: upperKey, saved: ok)
+        return ok
+    }
+
+    /// Records the key only after the Keychain write succeeds — audit logging lives in `ConnectorSecretPersistence`.
+    private func recordCredentialSaveResult(key upperKey: String, saved: Bool) {
+        // Find existing entry case-insensitively to avoid duplicates
+        if let idx = credentialKeys.firstIndex(where: { $0.caseInsensitiveCompare(upperKey) == .orderedSame }) {
+            if saved {
+                // Normalize key to uppercase and clear legacy value
+                credentialKeys[idx] = upperKey
+                if idx < credentialValues.count {
+                    credentialValues[idx] = ""
+                }
             }
-        } else {
+        } else if saved {
             credentialKeys.append(upperKey)
             credentialValues.append("")
         }
-        updatedAt = Date()
+        if saved {
+            updatedAt = Date()
+        }
     }
 
     /// Remove a credential from both Keychain and SwiftData.
@@ -143,10 +180,11 @@ public final class Connector {
             let value = credentialValues[index]
             guard !value.isEmpty else { continue }
 
-            if !ConnectorSecretSeam.required.credentialExists(key: key, facts: facts) {
-                ConnectorSecretSeam.required.saveCredential(value, key: key, facts: facts)
+            let migrated = ConnectorSecretSeam.required.credentialExists(key: key, facts: facts)
+                || ConnectorSecretSeam.required.saveCredential(value, key: key, facts: facts, allowUserInteraction: false)
+            if migrated {
+                credentialValues[index] = ""
             }
-            credentialValues[index] = ""
         }
         ConnectorSecretSeam.required.synchronizeCredentialNamespaces(keys: credentialKeys, facts: facts)
     }

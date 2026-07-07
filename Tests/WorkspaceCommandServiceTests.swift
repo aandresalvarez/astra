@@ -87,7 +87,7 @@ struct WorkspaceCommandServiceTests {
         let fixture = try Self.makeFixture()
         defer { try? FileManager.default.removeItem(at: fixture.root) }
 
-        let connector = WorkspaceCommandService.createConnector(
+        let (connector, failedCredentialKeys) = WorkspaceCommandService.createConnector(
             name: "Jira",
             serviceType: "jira",
             baseURL: "https://jira.example.test",
@@ -97,6 +97,8 @@ struct WorkspaceCommandServiceTests {
             modelContext: fixture.context,
             source: "slash-command-test"
         )
+
+        #expect(failedCredentialKeys.isEmpty)
 
         #expect(connector.workspace?.id == fixture.workspace.id)
         #expect(connector.serviceType == "jira")

@@ -75,8 +75,9 @@ enum WorkspaceCommandService {
         credentials: [String: String],
         workspace: Workspace,
         modelContext: ModelContext,
+        allowCredentialUserInteraction: Bool = false,
         source: String
-    ) -> Connector {
+    ) -> (connector: Connector, failedCredentialKeys: [String]) {
         let connector = Connector(
             name: name,
             serviceType: serviceType,
@@ -85,8 +86,16 @@ enum WorkspaceCommandService {
             authMethod: authMethod
         )
         connector.workspace = workspace
+        var failedCredentialKeys: [String] = []
         for (key, value) in credentials {
-            connector.saveCredential(key: key, value: value)
+            let saved = connector.saveCredential(
+                key: key,
+                value: value,
+                allowUserInteraction: allowCredentialUserInteraction
+            )
+            if !saved {
+                failedCredentialKeys.append(key)
+            }
         }
         modelContext.insert(connector)
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
@@ -94,9 +103,10 @@ enum WorkspaceCommandService {
             "source": source,
             "workspace_id": workspace.id.uuidString,
             "service_type": serviceType,
-            "credential_count": String(credentials.count)
+            "credential_count": String(credentials.count),
+            "failed_credential_count": String(failedCredentialKeys.count)
         ])
-        return connector
+        return (connector, failedCredentialKeys)
     }
 
     @discardableResult

@@ -1940,7 +1940,7 @@ struct ChatPanelView: View {
             let credentials = zip(credKeys, credVals).reduce(into: [String: String]()) { result, pair in
                 result[pair.0] = pair.1
             }
-            WorkspaceCommandService.createConnector(
+            let (_, failedCredentialKeys) = WorkspaceCommandService.createConnector(
                 name: name,
                 serviceType: serviceType,
                 baseURL: baseURL,
@@ -1948,11 +1948,16 @@ struct ChatPanelView: View {
                 credentials: credentials,
                 workspace: ws,
                 modelContext: modelContext,
+                allowCredentialUserInteraction: !credentials.isEmpty,
                 source: "wizard"
             )
 
             let credCount = credKeys.count
-            messages.append(ChatMessage(role: "assistant", content: "Connector **\(name)** (\(serviceType.replacingOccurrences(of: "_", with: " ").capitalized)) created.\nBase URL: `\(baseURL)`\nAuth: \(authMethod.replacingOccurrences(of: "_", with: " "))\nCredentials: \(credCount)\n\nYou can edit it in **Configure > Connectors** and attach it to skills."))
+            if failedCredentialKeys.isEmpty {
+                messages.append(ChatMessage(role: "assistant", content: "Connector **\(name)** (\(serviceType.replacingOccurrences(of: "_", with: " ").capitalized)) created.\nBase URL: `\(baseURL)`\nAuth: \(authMethod.replacingOccurrences(of: "_", with: " "))\nCredentials: \(credCount)\n\nYou can edit it in **Configure > Connectors** and attach it to skills."))
+            } else {
+                messages.append(ChatMessage(role: "assistant", content: "Connector **\(name)** created, but \(failedCredentialKeys.count) of \(credCount) credential(s) could not be saved to Keychain: \(failedCredentialKeys.joined(separator: ", ")).\n\nAdd them again in **Configure > Connectors**."))
+            }
 
         case .template:
             guard let templateIDStr = wizard.collected["selectedTemplateID"],
@@ -2359,7 +2364,7 @@ struct ChatPanelView: View {
             let authMethod = json["authMethod"] as? String ?? "none"
             let credentials = json["credentials"] as? [String: String] ?? [:]
 
-            WorkspaceCommandService.createConnector(
+            let (_, failedCredentialKeys) = WorkspaceCommandService.createConnector(
                 name: name,
                 serviceType: serviceType,
                 baseURL: baseURL,
@@ -2367,10 +2372,15 @@ struct ChatPanelView: View {
                 credentials: credentials,
                 workspace: ws,
                 modelContext: modelContext,
+                allowCredentialUserInteraction: !credentials.isEmpty,
                 source: "conversation"
             )
             activeSlashContext = nil
-            messages.append(ChatMessage(role: "assistant", content: "Connector **\(name)** (\(serviceType.replacingOccurrences(of: "_", with: " ").capitalized)) created.\nBase URL: `\(baseURL)`\nCredentials: \(credentials.count) keys stored in Keychain.\n\nYou can edit it in **Configure > Connectors**."))
+            if failedCredentialKeys.isEmpty {
+                messages.append(ChatMessage(role: "assistant", content: "Connector **\(name)** (\(serviceType.replacingOccurrences(of: "_", with: " ").capitalized)) created.\nBase URL: `\(baseURL)`\nCredentials: \(credentials.count) keys stored in Keychain.\n\nYou can edit it in **Configure > Connectors**."))
+            } else {
+                messages.append(ChatMessage(role: "assistant", content: "Connector **\(name)** created, but \(failedCredentialKeys.count) of \(credentials.count) credential(s) could not be saved to Keychain: \(failedCredentialKeys.joined(separator: ", ")).\n\nAdd them again in **Configure > Connectors**."))
+            }
 
         case "use_template":
             guard let templateIDStr = json["templateID"] as? String,

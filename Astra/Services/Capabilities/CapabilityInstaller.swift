@@ -8,6 +8,7 @@ struct CapabilityInstaller {
     enum InstallationError: Error, Equatable, LocalizedError {
         case blocked([String])
         case persistenceFailed(packageID: String)
+        case credentialSaveFailed(packageID: String, key: String)
 
         var errorDescription: String? {
             switch self {
@@ -15,6 +16,8 @@ struct CapabilityInstaller {
                 return messages.joined(separator: "\n")
             case .persistenceFailed(let id):
                 return "Enabling \(id) could not be saved. Try again."
+            case .credentialSaveFailed(let id, let key):
+                return "Enabling \(id) could not save the \(key) credential. Try again."
             }
         }
     }
@@ -46,6 +49,7 @@ struct CapabilityInstaller {
         credentialInputs: [String: String] = [:],
         configInputs: [String: String] = [:],
         baseURLOverrides: [String: String] = [:],
+        allowCredentialUserInteraction: Bool = false,
         policyContext: CapabilityCatalogPolicyContext? = nil,
         traceID: String? = nil
     ) throws -> InstallationResult {
@@ -84,6 +88,7 @@ struct CapabilityInstaller {
                 credentialInputs: credentialInputs,
                 configInputs: configInputs,
                 baseURLOverrides: baseURLOverrides,
+                allowCredentialUserInteraction: allowCredentialUserInteraction,
                 policyContext: effectivePolicyContext,
                 auditSource: "install",
                 traceID: traceID
@@ -117,6 +122,7 @@ struct CapabilityInstaller {
         credentialInputs: [String: String] = [:],
         configInputs: [String: String] = [:],
         baseURLOverrides: [String: String] = [:],
+        allowCredentialUserInteraction: Bool = false,
         policyContext: CapabilityCatalogPolicyContext? = nil,
         auditSource: String = "enable",
         traceID: String? = nil,
@@ -141,130 +147,146 @@ struct CapabilityInstaller {
         }
 
         let membershipSnapshot = WorkspaceCapabilityMembershipSnapshot(workspace)
-        var skillIDs: [UUID] = []
-        var connectorIDs: [UUID] = []
-        var localToolIDs: [UUID] = []
-        var templateIDs: [UUID] = []
-        var skillsByName: [String: Skill] = [:]
+        // Everything from here through persist() is one transaction: staging a
+        // skill/connector/tool can throw (credential save denied, activation
+        // swap failure, ...) partway through the loops below, after earlier
+        // iterations already inserted records and mutated the workspace's
+        // membership arrays. Without a shared catch, only a persist() failure
+        // rolled back — any other mid-loop throw left those partial inserts
+        // and membership mutations in place for a later unrelated save to
+        // persist as orphaned, credential-less resources.
+        do {
+            var skillIDs: [UUID] = []
+            var connectorIDs: [UUID] = []
+            var localToolIDs: [UUID] = []
+            var templateIDs: [UUID] = []
+            var skillsByName: [String: Skill] = [:]
 
-        let skillConfigInputs = package.connectors.isEmpty ? configInputs : [:]
-        let packageEnvironmentKeys = package.skills.flatMap(\.environmentKeys)
+            let skillConfigInputs = package.connectors.isEmpty ? configInputs : [:]
+            let packageEnvironmentKeys = package.skills.flatMap(\.environmentKeys)
 
-        for pluginSkill in package.skills {
-            let skill = try upsertGlobalSkill(
-                pluginSkill,
-                package: package,
-                modelContext: modelContext,
-                configInputs: skillConfigInputs
-            )
-            skillsByName[pluginSkill.name] = skill
-            appendUnique(skill.id.uuidString, to: &workspace.enabledGlobalSkillIDs)
-            appendUnique(skill.id, to: &skillIDs)
-        }
-
-        let primarySkill = package.skills.first.flatMap { skillsByName[$0.name] }
-
-        for pluginConnector in package.connectors {
-            let configKeys = connectorConfigKeys(
-                hints: pluginConnector.configHints,
-                extraConfigKeys: packageEnvironmentKeys,
-                configInputs: configInputs
-            )
-            let baseURL = baseURLOverrides[pluginConnector.name] ?? pluginConnector.baseURL
-            let connector: Connector
-            if connectorHasScopedInputs(
-                pluginConnector,
-                configKeys: configKeys,
-                credentialInputs: credentialInputs,
-                configInputs: configInputs,
-                baseURLOverridden: baseURLOverrides[pluginConnector.name] != nil
-            ) {
-                connector = upsertWorkspaceConnector(
-                    pluginConnector,
-                    package: package,
-                    workspace: workspace,
-                    modelContext: modelContext,
-                    credentialInputs: credentialInputs,
-                    configInputs: configInputs,
-                    extraConfigKeys: packageEnvironmentKeys,
-                    baseURL: baseURL
-                )
-                try removeMatchingGlobalConnectorActivation(
-                    pluginConnector,
-                    from: workspace,
-                    modelContext: modelContext
-                )
-            } else {
-                connector = try upsertGlobalConnector(
-                    pluginConnector,
+            for pluginSkill in package.skills {
+                let skill = try upsertGlobalSkill(
+                    pluginSkill,
                     package: package,
                     modelContext: modelContext,
+                    configInputs: skillConfigInputs
+                )
+                skillsByName[pluginSkill.name] = skill
+                appendUnique(skill.id.uuidString, to: &workspace.enabledGlobalSkillIDs)
+                appendUnique(skill.id, to: &skillIDs)
+            }
+
+            let primarySkill = package.skills.first.flatMap { skillsByName[$0.name] }
+
+            for pluginConnector in package.connectors {
+                let configKeys = connectorConfigKeys(
+                    hints: pluginConnector.configHints,
+                    extraConfigKeys: packageEnvironmentKeys,
+                    configInputs: configInputs
+                )
+                let baseURL = baseURLOverrides[pluginConnector.name] ?? pluginConnector.baseURL
+                let connector: Connector
+                if connectorHasScopedInputs(
+                    pluginConnector,
+                    configKeys: configKeys,
                     credentialInputs: credentialInputs,
                     configInputs: configInputs,
-                    extraConfigKeys: packageEnvironmentKeys,
-                    baseURL: baseURL
-                )
-                if let primarySkill, connector.skill == nil {
-                    connector.skill = primarySkill
+                    baseURLOverridden: baseURLOverrides[pluginConnector.name] != nil
+                ) {
+                    connector = try upsertWorkspaceConnector(
+                        pluginConnector,
+                        package: package,
+                        workspace: workspace,
+                        modelContext: modelContext,
+                        credentialInputs: credentialInputs,
+                        configInputs: configInputs,
+                        extraConfigKeys: packageEnvironmentKeys,
+                        baseURL: baseURL,
+                        allowCredentialUserInteraction: allowCredentialUserInteraction
+                    )
+                    try removeMatchingGlobalConnectorActivation(
+                        pluginConnector,
+                        from: workspace,
+                        modelContext: modelContext
+                    )
+                } else {
+                    connector = try upsertGlobalConnector(
+                        pluginConnector,
+                        package: package,
+                        modelContext: modelContext,
+                        credentialInputs: credentialInputs,
+                        configInputs: configInputs,
+                        extraConfigKeys: packageEnvironmentKeys,
+                        baseURL: baseURL,
+                        allowCredentialUserInteraction: allowCredentialUserInteraction
+                    )
+                    if let primarySkill, connector.skill == nil {
+                        connector.skill = primarySkill
+                    }
+                    appendUnique(connector.id.uuidString, to: &workspace.enabledGlobalConnectorIDs)
                 }
-                appendUnique(connector.id.uuidString, to: &workspace.enabledGlobalConnectorIDs)
+                appendUnique(connector.id, to: &connectorIDs)
             }
-            appendUnique(connector.id, to: &connectorIDs)
-        }
 
-        for pluginTool in package.localTools {
-            let tool = try upsertGlobalTool(pluginTool, package: package, modelContext: modelContext)
-            if let primarySkill, tool.skill == nil {
-                tool.skill = primarySkill
+            for pluginTool in package.localTools {
+                let tool = try upsertGlobalTool(pluginTool, package: package, modelContext: modelContext)
+                if let primarySkill, tool.skill == nil {
+                    tool.skill = primarySkill
+                }
+                if primarySkill == nil {
+                    appendUnique(tool.id.uuidString, to: &workspace.enabledGlobalToolIDs)
+                }
+                appendUnique(tool.id, to: &localToolIDs)
             }
-            if primarySkill == nil {
-                appendUnique(tool.id.uuidString, to: &workspace.enabledGlobalToolIDs)
+
+            for pluginTemplate in package.templates {
+                let template = upsertWorkspaceTemplate(pluginTemplate, package: package, workspace: workspace, modelContext: modelContext)
+                appendUnique(template.id, to: &templateIDs)
             }
-            appendUnique(tool.id, to: &localToolIDs)
-        }
 
-        for pluginTemplate in package.templates {
-            let template = upsertWorkspaceTemplate(pluginTemplate, package: package, workspace: workspace, modelContext: modelContext)
-            appendUnique(template.id, to: &templateIDs)
-        }
+            appendUnique(package.id, to: &workspace.enabledCapabilityIDs)
+            workspace.recordInstalledPlugin(id: package.id, version: package.version)
+            guard persist(workspace, modelContext) else {
+                throw InstallationError.persistenceFailed(packageID: package.id)
+            }
+            var enabledFields = [
+                "package_id": package.id,
+                "package_name": package.name,
+                "package_version": package.version,
+                "workspace_id": workspace.id.uuidString,
+                "skills_count": String(skillIDs.count),
+                "connectors_count": String(connectorIDs.count),
+                "tools_count": String(localToolIDs.count),
+                "templates_count": String(templateIDs.count),
+                "enabled_capability_ids": CapabilityAudit.compactNames(workspace.enabledCapabilityIDs)
+            ]
+            enabledFields.merge(CapabilityAudit.governanceFields(package.governance), uniquingKeysWith: { _, new in new })
+            if let traceID { enabledFields["trace_id"] = traceID }
+            AppLogger.audit(.capabilityEnabled, category: "Capabilities", fields: enabledFields)
 
-        appendUnique(package.id, to: &workspace.enabledCapabilityIDs)
-        workspace.recordInstalledPlugin(id: package.id, version: package.version)
-        guard persist(workspace, modelContext) else {
-            // Reporting success on a failed save would strand the library
-            // file and any keychain credentials against unsaved records.
-            // rollback() drops the inserted resources; restore the workspace
-            // membership arrays it does not revert.
+            return InstallationResult(
+                packageID: package.id,
+                skillIDs: skillIDs,
+                connectorIDs: connectorIDs,
+                localToolIDs: localToolIDs,
+                templateIDs: templateIDs
+            )
+        } catch {
+            // Reporting success (or even a clean failure) while leaving a
+            // partial stage in place would strand the library file and any
+            // saved keychain credentials against unsaved/orphaned records.
+            // rollback() drops the inserted resources; restore() undoes the
+            // membership-array mutations it does not revert.
             modelContext.rollback()
             membershipSnapshot.restore(to: workspace)
             var fields = capabilityFields(for: package, workspace: workspace, source: auditSource)
             if let traceID { fields["trace_id"] = traceID }
-            fields["result"] = "enable_save_failed_rolled_back"
+            fields["result"] = "enable_failed_rolled_back"
+            fields["error_type"] = String(describing: type(of: error))
             AppLogger.audit(.capabilityEnableFailed, category: "Capabilities", fields: fields, level: .error)
-            throw InstallationError.persistenceFailed(packageID: package.id)
+            throw error
         }
-        var enabledFields = [
-            "package_id": package.id,
-            "package_name": package.name,
-            "package_version": package.version,
-            "workspace_id": workspace.id.uuidString,
-            "skills_count": String(skillIDs.count),
-            "connectors_count": String(connectorIDs.count),
-            "tools_count": String(localToolIDs.count),
-            "templates_count": String(templateIDs.count),
-            "enabled_capability_ids": CapabilityAudit.compactNames(workspace.enabledCapabilityIDs)
-        ]
-        enabledFields.merge(CapabilityAudit.governanceFields(package.governance), uniquingKeysWith: { _, new in new })
-        if let traceID { enabledFields["trace_id"] = traceID }
-        AppLogger.audit(.capabilityEnabled, category: "Capabilities", fields: enabledFields)
-
-        return InstallationResult(
-            packageID: package.id,
-            skillIDs: skillIDs,
-            connectorIDs: connectorIDs,
-            localToolIDs: localToolIDs,
-            templateIDs: templateIDs
-        )
     }
 
     /// Compensation for a failed enable after the library file was written:
@@ -360,7 +382,8 @@ struct CapabilityInstaller {
         credentialInputs: [String: String],
         configInputs: [String: String],
         extraConfigKeys: [String],
-        baseURL: String
+        baseURL: String,
+        allowCredentialUserInteraction: Bool
     ) throws -> Connector {
         let connector = try existingGlobalConnector(
             name: pluginConnector.name,
@@ -406,7 +429,13 @@ struct CapabilityInstaller {
         }
         for hint in pluginConnector.credentialHints {
             if let value = credentialInputs[hint.key], !value.isEmpty {
-                connector.saveCredential(key: hint.key, value: value)
+                guard connector.saveCredential(
+                    key: hint.key,
+                    value: value,
+                    allowUserInteraction: allowCredentialUserInteraction
+                ) else {
+                    throw InstallationError.credentialSaveFailed(packageID: package.id, key: hint.key)
+                }
             }
         }
         return connector
@@ -420,8 +449,9 @@ struct CapabilityInstaller {
         credentialInputs: [String: String],
         configInputs: [String: String],
         extraConfigKeys: [String],
-        baseURL: String
-    ) -> Connector {
+        baseURL: String,
+        allowCredentialUserInteraction: Bool
+    ) throws -> Connector {
         let connector = existingWorkspaceConnector(
             name: pluginConnector.name,
             serviceType: pluginConnector.serviceType,
@@ -466,7 +496,13 @@ struct CapabilityInstaller {
         }
         for hint in pluginConnector.credentialHints {
             if let value = credentialInputs[hint.key], !value.isEmpty {
-                connector.saveCredential(key: hint.key, value: value)
+                guard connector.saveCredential(
+                    key: hint.key,
+                    value: value,
+                    allowUserInteraction: allowCredentialUserInteraction
+                ) else {
+                    throw InstallationError.credentialSaveFailed(packageID: package.id, key: hint.key)
+                }
             }
         }
         return connector

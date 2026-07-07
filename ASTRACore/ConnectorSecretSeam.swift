@@ -68,7 +68,13 @@ public protocol ConnectorSecretPersisting: Sendable {
     /// every namespace `facts` resolves to, first match per key wins.
     static func loadAllCredentials(keys: [String], facts: ConnectorSecretFacts, store: SecretStore) -> [String: String]
     @discardableResult
-    static func saveCredential(_ value: String, key: String, facts: ConnectorSecretFacts) -> Bool
+    static func saveCredential(_ value: String, key: String, facts: ConnectorSecretFacts, allowUserInteraction: Bool) -> Bool
+    /// Store-injectable twin of `saveCredential(_:key:facts:allowUserInteraction:)`,
+    /// used only by `Connector`'s test seam (`saveCredential(key:value:store:)`)
+    /// so tests can exercise the same per-namespace fan-out with a fake
+    /// `SecretStore` instead of the real Keychain.
+    @discardableResult
+    static func saveCredential(_ value: String, key: String, facts: ConnectorSecretFacts, store: SecretStore) -> Bool
     @discardableResult
     static func deleteCredential(key: String, facts: ConnectorSecretFacts) -> Bool
     static func credentialExists(key: String, facts: ConnectorSecretFacts) -> Bool

@@ -140,6 +140,27 @@ private struct PendingConnectorDeletion: Identifiable {
     let perform: () -> Void
 }
 
+struct ConnectorCredentialSaveFailurePresentation: Equatable {
+    let key: String
+    let message: String
+    let actionTitle: String
+    let actionSystemImage: String
+
+    static func keychainSaveFailed(key: String) -> ConnectorCredentialSaveFailurePresentation {
+        ConnectorCredentialSaveFailurePresentation(
+            key: key,
+            message: "Could not save \(key) to Keychain. Allow ASTRA to access its Keychain item, then retry.",
+            actionTitle: "Allow & Save",
+            actionSystemImage: MacOSPermissionKind.keychain.systemImage
+        )
+    }
+}
+
+private enum PendingConnectorCredentialSaveContext: Equatable {
+    case newCredential
+    case replacement(key: String)
+}
+
 struct ConnectorEditorView: View {
     @Bindable var connector: Connector
     var workspace: Workspace?
@@ -154,6 +175,8 @@ struct ConnectorEditorView: View {
     @State private var isAddingCredential = false
     @State private var editingCredentialKey: String?
     @State private var replacementCredentialValue = ""
+    @State private var credentialSaveError: ConnectorCredentialSaveFailurePresentation?
+    @State private var pendingCredentialSaveContext: PendingConnectorCredentialSaveContext?
     @State private var newListItem = ""
     @State private var testResult: (Bool, String)?
     @State private var isTesting = false
@@ -442,6 +465,18 @@ struct ConnectorEditorView: View {
                                 .font(Stanford.caption(12))
                                 .foregroundStyle(.secondary)
                         }
+                        if let credentialSaveError {
+                            ViewThatFits(in: .horizontal) {
+                                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                                    credentialSaveErrorLabel(credentialSaveError)
+                                    retryCredentialSaveButton(credentialSaveError)
+                                }
+                                VStack(alignment: .leading, spacing: 6) {
+                                    credentialSaveErrorLabel(credentialSaveError)
+                                    retryCredentialSaveButton(credentialSaveError)
+                                }
+                            }
+                        }
 
                         if !connector.credentialKeys.isEmpty {
                             VStack(spacing: 4) {
@@ -508,6 +543,8 @@ struct ConnectorEditorView: View {
                                             Button(inKeychain ? "Replace" : "Set Value") {
                                                 editingCredentialKey = key
                                                 replacementCredentialValue = ""
+                                                credentialSaveError = nil
+                                                pendingCredentialSaveContext = nil
                                             }
                                             .font(Stanford.caption(12))
                                             .buttonStyle(.bordered)
@@ -555,6 +592,8 @@ struct ConnectorEditorView: View {
                         } else {
                             Button {
                                 isAddingCredential = true
+                                credentialSaveError = nil
+                                pendingCredentialSaveContext = nil
                             } label: {
                                 Label("New secret", systemImage: "plus.circle")
                                     .font(Stanford.body(13))
@@ -885,10 +924,18 @@ struct ConnectorEditorView: View {
                 try Task.checkCancellation()
                 let savedToken = await MainActor.run {
                     guard oauthSignInGeneration == generation else { return false }
-                    auth.saveTokenResponse(token, connector: connector)
-                    return true
+                    return auth.saveTokenResponse(token, connector: connector, allowUserInteraction: true)
                 }
-                guard savedToken else { return }
+                guard savedToken else {
+                    await MainActor.run {
+                        guard oauthSignInGeneration == generation else { return }
+                        oauthStatus = "Microsoft sign-in completed, but ASTRA could not save the OAuth tokens to Keychain. Allow ASTRA to access its Keychain item, then sign in again."
+                        testResult = (false, oauthStatus)
+                        isOAuthSigningIn = false
+                        oauthSignInTask = nil
+                    }
+                    return
+                }
                 let me = try await StanfordOutlookMailGraphService().testConnection(connector: connector)
                 await MainActor.run {
                     guard oauthSignInGeneration == generation else { return }
@@ -990,8 +1037,16 @@ struct ConnectorEditorView: View {
     private func addCredential() {
         let key = newCredKey.trimmingCharacters(in: .whitespaces).uppercased()
         guard !key.isEmpty, !newCredValue.isEmpty else { return }
-        connector.saveCredential(key: key, value: newCredValue)
+        let saved = connector.saveCredential(key: key, value: newCredValue, allowUserInteraction: true)
+        guard saved else {
+            credentialSaveError = .keychainSaveFailed(key: key)
+            pendingCredentialSaveContext = .newCredential
+            return
+        }
+        credentialSaveError = nil
+        pendingCredentialSaveContext = nil
         testResult = nil
+        saveSharingChange()
         cancelCredentialEntry()
     }
 
@@ -999,19 +1054,65 @@ struct ConnectorEditorView: View {
         newCredKey = ""
         newCredValue = ""
         isAddingCredential = false
+        credentialSaveError = nil
+        pendingCredentialSaveContext = nil
     }
 
     private func saveCredentialReplacement(for key: String) {
         let normalizedKey = key.trimmingCharacters(in: .whitespaces).uppercased()
         guard !normalizedKey.isEmpty, !replacementCredentialValue.isEmpty else { return }
-        connector.saveCredential(key: normalizedKey, value: replacementCredentialValue)
+        let saved = connector.saveCredential(
+            key: normalizedKey,
+            value: replacementCredentialValue,
+            allowUserInteraction: true
+        )
+        guard saved else {
+            credentialSaveError = .keychainSaveFailed(key: normalizedKey)
+            pendingCredentialSaveContext = .replacement(key: normalizedKey)
+            return
+        }
+        credentialSaveError = nil
+        pendingCredentialSaveContext = nil
         testResult = nil
+        saveSharingChange()
         cancelCredentialReplacement()
     }
 
     private func cancelCredentialReplacement() {
         editingCredentialKey = nil
         replacementCredentialValue = ""
+        credentialSaveError = nil
+        pendingCredentialSaveContext = nil
+    }
+
+    private func credentialSaveErrorLabel(_ presentation: ConnectorCredentialSaveFailurePresentation) -> some View {
+        Label(presentation.message, systemImage: "exclamationmark.triangle.fill")
+            .font(Stanford.caption(12))
+            .foregroundStyle(Stanford.poppy)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private func retryCredentialSaveButton(_ presentation: ConnectorCredentialSaveFailurePresentation) -> some View {
+        Button {
+            retryPendingCredentialSave(for: presentation)
+        } label: {
+            Label(presentation.actionTitle, systemImage: presentation.actionSystemImage)
+                .font(Stanford.caption(12).weight(.semibold))
+                .lineLimit(1)
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+    }
+
+    private func retryPendingCredentialSave(for presentation: ConnectorCredentialSaveFailurePresentation) {
+        switch pendingCredentialSaveContext {
+        case .newCredential:
+            addCredential()
+        case .replacement(let key):
+            saveCredentialReplacement(for: key)
+        case nil:
+            credentialSaveError = .keychainSaveFailed(key: presentation.key)
+        }
     }
 
     private func addConfig() {
@@ -1087,6 +1188,8 @@ struct ConnectorEditorView: View {
             if connector.credentialKeys.isEmpty {
                 newCredKey = "REDCAP_TOKEN"
                 isAddingCredential = true
+                credentialSaveError = nil
+                pendingCredentialSaveContext = nil
             }
         case "jira":
             connector.icon = "list.bullet.rectangle"
@@ -1095,6 +1198,8 @@ struct ConnectorEditorView: View {
             if connector.credentialKeys.isEmpty {
                 newCredKey = "JIRA_API_TOKEN"
                 isAddingCredential = true
+                credentialSaveError = nil
+                pendingCredentialSaveContext = nil
             }
         case "github":
             connector.icon = "arrow.triangle.branch"
@@ -1103,6 +1208,8 @@ struct ConnectorEditorView: View {
             if connector.credentialKeys.isEmpty {
                 newCredKey = "GITHUB_TOKEN"
                 isAddingCredential = true
+                credentialSaveError = nil
+                pendingCredentialSaveContext = nil
             }
         case "slack":
             connector.icon = "bubble.left.and.bubble.right"
@@ -1111,6 +1218,8 @@ struct ConnectorEditorView: View {
             if connector.credentialKeys.isEmpty {
                 newCredKey = "SLACK_TOKEN"
                 isAddingCredential = true
+                credentialSaveError = nil
+                pendingCredentialSaveContext = nil
             }
         case "confluence":
             connector.icon = "doc.richtext"
@@ -1119,11 +1228,15 @@ struct ConnectorEditorView: View {
             if connector.credentialKeys.isEmpty {
                 newCredKey = "CONFLUENCE_TOKEN"
                 isAddingCredential = true
+                credentialSaveError = nil
+                pendingCredentialSaveContext = nil
             }
         case "stanford_outlook_mail":
             connector.applyStanfordOutlookDefaults()
             isAddingCredential = false
             newCredKey = ""
+            credentialSaveError = nil
+            pendingCredentialSaveContext = nil
         default:
             break
         }

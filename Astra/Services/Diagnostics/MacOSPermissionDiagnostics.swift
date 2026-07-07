@@ -58,6 +58,13 @@ struct MacOSPermissionIssue: Equatable, Identifiable {
 }
 
 enum MacOSPermissionDiagnostics {
+    static let keychainAccessBundleIdentifier = "com.apple.keychainaccess"
+    static let keychainAccessFallbackPaths = [
+        "/System/Library/CoreServices/Applications/Keychain Access.app",
+        "/System/Applications/Utilities/Keychain Access.app",
+        "/Applications/Utilities/Keychain Access.app"
+    ]
+
     static func controlledBrowserAgentControlIssue(
         appDisplayName: String,
         browserName: String?,
@@ -99,11 +106,11 @@ enum MacOSPermissionDiagnostics {
             kind: kind,
             title: "Allow \(appDisplayName) to use Keychain",
             message: "ASTRA could not save a test credential in macOS Keychain. \(detail)",
-            actionTitle: "Open Keychain Access",
-            systemImage: kind.systemImage,
+            actionTitle: "Retry Keychain Check",
+            systemImage: "arrow.clockwise",
             setupSteps: [
-                "Open Keychain Access.",
-                "Unlock the login keychain if it is locked.",
+                "Retry the Keychain-backed action from ASTRA.",
+                "If macOS asks whether ASTRA can access its Keychain item, choose Allow or Always Allow.",
                 "Return to ASTRA and click Retry."
             ]
         )
@@ -125,7 +132,7 @@ enum MacOSPermissionDiagnostics {
         )
     }
 
-    static func checkKeychainAccess(appDisplayName: String) -> MacOSPermissionIssue? {
+    static func checkKeychainAccess(appDisplayName: String, allowUserInteraction: Bool = false) -> MacOSPermissionIssue? {
         // Validate ASTRA's *dedicated* keychain — where connector/skill secrets
         // actually live — rather than login.keychain-db. A clean round-trip
         // proves the app can create, unlock, write, read, and delete in its own
@@ -138,7 +145,8 @@ enum MacOSPermissionDiagnostics {
             service: service,
             account: account,
             value: value,
-            label: "ASTRA permission check"
+            label: "ASTRA permission check",
+            allowUserInteraction: allowUserInteraction
         ) else {
             return keychainIssue(
                 appDisplayName: appDisplayName,
@@ -224,17 +232,54 @@ enum MacOSPermissionDiagnostics {
     }
 
     private static func openKeychainAccess() -> Bool {
-        let candidates = [
-            "/System/Applications/Utilities/Keychain Access.app",
-            "/Applications/Utilities/Keychain Access.app"
-        ]
-        for path in candidates {
-            if FileManager.default.fileExists(atPath: path),
-               NSWorkspace.shared.open(URL(fileURLWithPath: path)) {
+        var attemptedPaths: [String] = []
+
+        if let bundleURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: keychainAccessBundleIdentifier) {
+            attemptedPaths.append(bundleURL.path)
+            if NSWorkspace.shared.open(bundleURL) {
+                logKeychainAccessOpen(result: "opened", resolvedBy: "bundle_identifier", path: bundleURL.path)
                 return true
             }
         }
+
+        for path in keychainAccessFallbackPaths where !attemptedPaths.contains(path) {
+            attemptedPaths.append(path)
+            if FileManager.default.fileExists(atPath: path),
+               NSWorkspace.shared.open(URL(fileURLWithPath: path)) {
+                logKeychainAccessOpen(result: "opened", resolvedBy: "fallback_path", path: path)
+                return true
+            }
+        }
+
+        logKeychainAccessOpen(
+            result: "failed",
+            resolvedBy: "unresolved",
+            candidateCount: attemptedPaths.count,
+            level: .warning
+        )
         return false
+    }
+
+    private static func logKeychainAccessOpen(
+        result: String,
+        resolvedBy: String,
+        path: String? = nil,
+        candidateCount: Int? = nil,
+        level: LogLevel = .info
+    ) {
+        var fields = [
+            "action": "open_keychain_access",
+            "result": result,
+            "resolved_by": resolvedBy,
+            "bundle_identifier": keychainAccessBundleIdentifier
+        ]
+        if let path {
+            fields["path"] = path
+        }
+        if let candidateCount {
+            fields["candidate_count"] = String(candidateCount)
+        }
+        AppLogger.audit(.userAction, category: "Keychain", fields: fields, level: level)
     }
 
 }

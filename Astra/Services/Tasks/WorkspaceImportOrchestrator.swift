@@ -6,6 +6,10 @@ import ASTRAPersistence
 
 struct WorkspaceCreationResult {
     let workspace: Workspace
+    /// True when the workspace itself was created but at least one selected
+    /// capability's credential could not be saved (e.g. a denied Keychain
+    /// prompt) — the workspace is usable, just missing that secret.
+    let hasCapabilityEnableFailures: Bool
 }
 
 struct WorkspaceImportResult {
@@ -33,8 +37,8 @@ struct ContentWorkspaceActionCoordinator {
         let coordinator = TaskLifecycleCoordinator(modelContext: modelContext, taskQueue: taskQueue)
         let workspace = coordinator.createWorkspace(name: draft.trimmedName, rootPath: resolvedRoot)
         workspace.instructions = draft.trimmedInstructions
-        applyNewWorkspaceCapabilities(to: workspace, from: draft, source: source)
-        return WorkspaceCreationResult(workspace: workspace)
+        let hasCapabilityEnableFailures = applyNewWorkspaceCapabilities(to: workspace, from: draft, source: source)
+        return WorkspaceCreationResult(workspace: workspace, hasCapabilityEnableFailures: hasCapabilityEnableFailures)
     }
 
     func importWorkspaces(
@@ -50,9 +54,14 @@ struct ContentWorkspaceActionCoordinator {
             )
     }
 
-    private func applyNewWorkspaceCapabilities(to workspace: Workspace, from draft: NewWorkspaceDraft, source: String) {
+    /// Returns whether at least one selected capability failed to enable
+    /// (most commonly a denied/failed Keychain credential save) so the
+    /// caller can surface that to the user instead of reporting unqualified
+    /// success — see `WorkspaceCreationResult.hasCapabilityEnableFailures`.
+    @discardableResult
+    private func applyNewWorkspaceCapabilities(to workspace: Workspace, from draft: NewWorkspaceDraft, source: String) -> Bool {
         let selectedIDs = draft.selectedCapabilityIDs
-        guard !selectedIDs.isEmpty else { return }
+        guard !selectedIDs.isEmpty else { return false }
 
         var packagesByID: [String: PluginPackage] = [:]
         for package in PluginCatalog.builtInPackages {
@@ -62,13 +71,14 @@ struct ContentWorkspaceActionCoordinator {
             guard let packageID = option.packageID, selectedIDs.contains(packageID) else { return nil }
             return packagesByID[packageID]
         }
-        guard !packages.isEmpty else { return }
+        guard !packages.isEmpty else { return false }
 
         let installer = CapabilityInstaller()
         let policyContext = CapabilityCatalogPolicyContext.currentUser(
             workspace: workspace,
             approvalRecords: CapabilityApprovalStore().records()
         )
+        var hasFailure = false
         for package in packages {
             let inputs = draft.capabilityConfiguration.installationInputs(for: package.id)
             let traceID = AuditTrace.make("workspace-capability")
@@ -89,10 +99,12 @@ struct ContentWorkspaceActionCoordinator {
                     credentialInputs: inputs.credentialInputs,
                     configInputs: inputs.configInputs,
                     baseURLOverrides: inputs.baseURLOverrides,
+                    allowCredentialUserInteraction: inputs.credentialInputs.values.contains { !$0.isEmpty },
                     policyContext: policyContext,
                     traceID: traceID
                 )
             } catch {
+                hasFailure = true
                 AppLogger.audit(.capabilityEnableFailed, category: "Capabilities", fields: [
                     "source": source,
                     "trace_id": traceID,
@@ -104,6 +116,7 @@ struct ContentWorkspaceActionCoordinator {
                 ], level: .error)
             }
         }
+        return hasFailure
     }
 }
 

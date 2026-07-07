@@ -46,7 +46,7 @@ public protocol SkillSecretPersisting: Sendable {
     /// semantics; the caller falls back to the stored placeholder value.
     static func loadSecretValue(key: String, skillID: UUID, store: SecretStore) -> String?
     @discardableResult
-    static func saveSecretValue(_ value: String, key: String, skillID: UUID, skillName: String) -> Bool
+    static func saveSecretValue(_ value: String, key: String, skillID: UUID, skillName: String, allowUserInteraction: Bool) -> Bool
     @discardableResult
     static func deleteSecret(key: String, skillID: UUID) -> Bool
     static func secretExists(key: String, skillID: UUID) -> Bool

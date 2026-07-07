@@ -202,6 +202,7 @@ struct SkillEditorView: View {
     @State private var newConfigItem = ""
     @State private var showEnvValues = false
     @State private var isAddingSecret = false
+    @State private var secretSaveErrorMessage: String?
     @State private var pendingDestruction: PendingSkillDestruction?
     @FocusState private var isNameFocused: Bool
 
@@ -871,6 +872,11 @@ struct SkillEditorView: View {
                                 .buttonStyle(.plain)
                                 .foregroundStyle(Stanford.coolGrey)
                             }
+                            if let secretSaveErrorMessage {
+                                Text(secretSaveErrorMessage)
+                                    .font(Stanford.caption(11))
+                                    .foregroundStyle(.red)
+                            }
                         } else {
                             Button {
                                 isAddingSecret = true
@@ -950,7 +956,10 @@ struct SkillEditorView: View {
     private func addEnvVar() {
         let key = newEnvKey.trimmingCharacters(in: .whitespaces).uppercased()
         guard !key.isEmpty, !newEnvValue.isEmpty else { return }
-        skill.upsertEnvironmentEntry(key: key, value: newEnvValue)
+        guard skill.upsertEnvironmentEntry(key: key, value: newEnvValue, allowUserInteraction: true) else {
+            secretSaveErrorMessage = "Could not save \"\(key)\" to Keychain. Allow the permission prompt and try again."
+            return
+        }
         cancelSecretEntry()
     }
 
@@ -968,6 +977,7 @@ struct SkillEditorView: View {
         newEnvKey = ""
         newEnvValue = ""
         isAddingSecret = false
+        secretSaveErrorMessage = nil
     }
 
     private func toolToggle(_ tool: String) -> some View {
