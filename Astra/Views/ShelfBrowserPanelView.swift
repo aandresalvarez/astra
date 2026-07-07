@@ -18,6 +18,9 @@ enum ShelfBrowserAddressFormatter {
         case "http", "https":
             var host = components.host ?? trimmed
             if host.hasPrefix("www.") { host.removeFirst(4) }
+            if let port = components.port {
+                host += ":\(port)"
+            }
             let path = components.path
             return (path.isEmpty || path == "/") ? host : host + path
         default:
@@ -1576,6 +1579,7 @@ struct ShelfBrowserPanelView: View {
         .buttonStyle(BrowserBarButtonStyle())
         .disabled(disabled)
         .help(help)
+        .accessibilityLabel(help)
     }
 
     private func quickLink(_ title: String, url: String, systemImage: String, tint: Color) -> some View {

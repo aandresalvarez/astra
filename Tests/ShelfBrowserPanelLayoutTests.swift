@@ -16,6 +16,13 @@ struct ShelfBrowserPanelLayoutTests {
         #expect(ShelfBrowserAddressFormatter.displayText(for: "https://example.com/") == "example.com")
     }
 
+    @Test("address formatter keeps the port so distinct local endpoints don't collide")
+    func addressFormatterKeepsPort() {
+        #expect(ShelfBrowserAddressFormatter.displayText(for: "http://localhost:3000") == "localhost:3000")
+        #expect(ShelfBrowserAddressFormatter.displayText(for: "http://localhost:8080/health") == "localhost:8080/health")
+        #expect(ShelfBrowserAddressFormatter.displayText(for: "http://localhost:3000") != ShelfBrowserAddressFormatter.displayText(for: "http://localhost:8080"))
+    }
+
     @Test("address formatter shows a filename for local files")
     func addressFormatterShowsFilenameForLocalFiles() {
         let url = "file:///Users/alvaro/Documents/Astra%20Dev/Workspaces/test/.astra/tasks/D4E9A905/report.html"
