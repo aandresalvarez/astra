@@ -77,23 +77,31 @@ enum ChatScrollMetrics {
 /// genuinely stuck past the end of the content with nothing left to move it.
 ///
 /// A class (not a struct) so a view can hold one stably across re-renders via
-/// `@State`, matching `TaskThreadViewModel`'s pattern in the same view. Kept free of
-/// any view/proxy dependency — `onRecover` is the only side effect — so the debounce
-/// logic itself is unit-testable without hosting a live `ScrollViewProxy`.
+/// `@State`, matching `TaskThreadViewModel`'s pattern in the same view. The latest
+/// reading lives in a plain (non-`@State`) property on this class, not in the
+/// view: a bottom-sentinel reading can arrive on nearly every scroll/streaming
+/// tick, and reflecting each one into `@State` would invalidate the whole view on
+/// every tick even when nothing decision-relevant changed. Kept free of any
+/// view/proxy dependency otherwise — `onRecover` is the only side effect — so the
+/// debounce logic itself is unit-testable without hosting a live `ScrollViewProxy`.
 @MainActor
 final class ChatScrollRecoveryWatchdog {
     private let settleNanoseconds: UInt64
     private var armedToken = 0
+    private var latestBottomMinY: CGFloat = .infinity
 
     init(settleNanoseconds: UInt64 = 220_000_000) {
         self.settleNanoseconds = settleNanoseconds
     }
 
-    func sentinelDidUpdate(
-        bottomMinY: CGFloat,
-        currentBottomMinY: @escaping () -> CGFloat,
-        onRecover: @escaping () -> Void
-    ) {
+    /// Call on every bottom-sentinel reading. Arms a settle-delay timer the first
+    /// time a reading looks parked; any reading — parked or healthy — cancels a
+    /// still-pending timer, since `latestBottomMinY` and `armedToken` only ever
+    /// change together. `onRecover` is passed the reading that was actually
+    /// re-checked at fire time, not whatever this specific call captured, so a
+    /// caller that logs it always reflects the true geometry when recovery fired.
+    func sentinelDidUpdate(bottomMinY: CGFloat, onRecover: @escaping (CGFloat) -> Void) {
+        latestBottomMinY = bottomMinY
         armedToken += 1
         guard ChatScrollMetrics.isParkedPastContent(bottomMinY: bottomMinY) else { return }
         let token = armedToken
@@ -103,8 +111,8 @@ final class ChatScrollRecoveryWatchdog {
             // Re-check the live reading rather than trusting the value captured when
             // this timer armed: only a sentinel that's still parked once the delay
             // elapses should trigger a corrective scroll.
-            guard ChatScrollMetrics.isParkedPastContent(bottomMinY: currentBottomMinY()) else { return }
-            onRecover()
+            guard ChatScrollMetrics.isParkedPastContent(bottomMinY: latestBottomMinY) else { return }
+            onRecover(latestBottomMinY)
         }
     }
 }

@@ -334,7 +334,6 @@ struct TaskMainView: View {
     @State private var hasUnseenChatActivity = false
     @State private var shouldScrollAfterUserMessage = false
     @State private var pendingInitialChatScrollTaskID: UUID?
-    @State private var latestChatBottomMinY: CGFloat = .infinity
     @State private var scrollRecoveryWatchdog = ChatScrollRecoveryWatchdog()
     @State private var isExpandingWindow = false
     @State private var expansionAnchorItemID: String?
@@ -1634,17 +1633,13 @@ struct TaskMainView: View {
                 .onPreferenceChange(ChatBottomPositionPreferenceKey.self) { bottomMinY in
                     deferTaskViewMutation {
                         updateChatBottomState(bottomMinY: bottomMinY, viewportHeight: viewport.size.height)
-                        latestChatBottomMinY = bottomMinY
-                        scrollRecoveryWatchdog.sentinelDidUpdate(
-                            bottomMinY: bottomMinY,
-                            currentBottomMinY: { latestChatBottomMinY },
-                            // Read latestChatBottomMinY fresh here rather than closing over
-                            // this callback's bottomMinY: onRecover fires ~220ms later, after
-                            // the watchdog re-checks the *live* sentinel, so the value it
-                            // fired on (and what we log) should match that re-check, not
-                            // whatever this specific preference-change happened to capture.
-                            onRecover: { recoverFromParkedScroll(proxy: proxy, bottomMinY: latestChatBottomMinY) }
-                        )
+                    }
+                    // Not wrapped in deferTaskViewMutation: this only feeds the watchdog's
+                    // internal (non-@State) bookkeeping, so it carries none of the
+                    // AttributeGraph-cycle risk that motivates deferring the @State
+                    // mutation above.
+                    scrollRecoveryWatchdog.sentinelDidUpdate(bottomMinY: bottomMinY) { liveBottomMinY in
+                        recoverFromParkedScroll(proxy: proxy, bottomMinY: liveBottomMinY)
                     }
                 }
                 .onPreferenceChange(ChatTopPositionPreferenceKey.self) { topMinY in
@@ -2193,9 +2188,11 @@ struct TaskMainView: View {
             // be computed against the taller pre-collapse layout and land past the
             // new, shorter content once it settles — the parked-blank state
             // `scrollRecoveryWatchdog` exists to catch. Re-issuing after a layout
-            // beat (same pattern as the initial-open path below) targets that exact
-            // race proactively instead of relying solely on the watchdog to notice.
-            scrollChatToBottomAfterLayout(proxy, animated: false)
+            // beat targets that exact race, but unlike the initial-open path below
+            // (where the reader hasn't had a chance to scroll away yet), this fires
+            // mid-read: use the gesture-safe variant so a reader who scrolls up in
+            // that window isn't snapped back to the bottom by the delayed follow-up.
+            scrollChatToBottomAfterLayoutIfStillAtBottom(proxy, animated: false)
             return
         }
 
@@ -2210,6 +2207,19 @@ struct TaskMainView: View {
     private func scrollChatToBottomAfterLayout(_ proxy: ScrollViewProxy, animated: Bool) {
         scrollChatToBottom(proxy, animated: animated)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            scrollChatToBottom(proxy, animated: animated)
+        }
+    }
+
+    /// Same double-scroll as `scrollChatToBottomAfterLayout`, but re-checks
+    /// `isChatAtBottom` before the delayed follow-up fires, so a reader who
+    /// scrolls up in that 50ms window isn't yanked back down. The initial-open
+    /// call site doesn't need this — the reader hasn't had a chance to scroll yet
+    /// — but this one fires on every live tail-follow update mid-read.
+    private func scrollChatToBottomAfterLayoutIfStillAtBottom(_ proxy: ScrollViewProxy, animated: Bool) {
+        scrollChatToBottom(proxy, animated: animated)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            guard isChatAtBottom else { return }
             scrollChatToBottom(proxy, animated: animated)
         }
     }

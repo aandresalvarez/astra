@@ -95,19 +95,15 @@ struct ChatScrollRecoveryWatchdogTests {
     private static let settleNanoseconds: UInt64 = 25_000_000
     private static let waitPastSettle: Duration = .milliseconds(80)
 
-    @Test("Fires recovery when a parked reading persists past the settle delay")
+    @Test("Fires recovery when a parked reading persists past the settle delay, passing the value it fired on")
     func firesAfterSettleDelayWhenStillParked() async {
         let watchdog = ChatScrollRecoveryWatchdog(settleNanoseconds: Self.settleNanoseconds)
-        var recoverCount = 0
+        var recoveredValue: CGFloat?
 
-        watchdog.sentinelDidUpdate(
-            bottomMinY: -200,
-            currentBottomMinY: { -200 },
-            onRecover: { recoverCount += 1 }
-        )
+        watchdog.sentinelDidUpdate(bottomMinY: -200) { value in recoveredValue = value }
 
         try? await Task.sleep(for: Self.waitPastSettle)
-        #expect(recoverCount == 1)
+        #expect(recoveredValue == -200)
     }
 
     @Test("Never fires for a healthy (non-parked) reading")
@@ -115,11 +111,7 @@ struct ChatScrollRecoveryWatchdogTests {
         let watchdog = ChatScrollRecoveryWatchdog(settleNanoseconds: Self.settleNanoseconds)
         var recoverCount = 0
 
-        watchdog.sentinelDidUpdate(
-            bottomMinY: 600,
-            currentBottomMinY: { 600 },
-            onRecover: { recoverCount += 1 }
-        )
+        watchdog.sentinelDidUpdate(bottomMinY: 600) { _ in recoverCount += 1 }
 
         try? await Task.sleep(for: Self.waitPastSettle)
         #expect(recoverCount == 0)
@@ -132,64 +124,34 @@ struct ChatScrollRecoveryWatchdogTests {
         // up. The watchdog must not fight a scroll that already fixed itself.
         let watchdog = ChatScrollRecoveryWatchdog(settleNanoseconds: Self.settleNanoseconds)
         var recoverCount = 0
-        var latest: CGFloat = -200
 
-        watchdog.sentinelDidUpdate(
-            bottomMinY: -200,
-            currentBottomMinY: { latest },
-            onRecover: { recoverCount += 1 }
-        )
-        latest = 600
-        watchdog.sentinelDidUpdate(
-            bottomMinY: 600,
-            currentBottomMinY: { latest },
-            onRecover: { recoverCount += 1 }
-        )
+        watchdog.sentinelDidUpdate(bottomMinY: -200) { _ in recoverCount += 1 }
+        watchdog.sentinelDidUpdate(bottomMinY: 600) { _ in recoverCount += 1 }
 
         try? await Task.sleep(for: Self.waitPastSettle)
         #expect(recoverCount == 0)
     }
 
-    @Test("A still-parked live reading at fire time wins over the value captured when the timer armed")
-    func reCheckUsesLiveReadingNotArmedValue() async {
-        // The timer arms on an initial parked reading, but by fire time the *live*
-        // reading (via currentBottomMinY) has recovered — even though no further
-        // sentinelDidUpdate call arrived to cancel it via the token. The watchdog must
-        // still stand down, because it re-checks live state rather than trusting the
-        // value it was armed with.
-        let watchdog = ChatScrollRecoveryWatchdog(settleNanoseconds: Self.settleNanoseconds)
-        var recoverCount = 0
-        var latest: CGFloat = -200
-
-        watchdog.sentinelDidUpdate(
-            bottomMinY: -200,
-            currentBottomMinY: { latest },
-            onRecover: { recoverCount += 1 }
-        )
-        latest = 600
-
-        try? await Task.sleep(for: Self.waitPastSettle)
-        #expect(recoverCount == 0)
-    }
-
-    @Test("Only the most recently armed timer can fire; an earlier one is superseded")
+    @Test("Only the most recently armed timer can fire, passing the latest value, not the first")
     func onlyLatestArmedTimerFires() async {
+        // Re-arming before the first timer's delay elapses must supersede it, not
+        // stack a second independent recovery — and the value passed to onRecover
+        // must reflect the latest reading, not whatever the first call captured.
         let watchdog = ChatScrollRecoveryWatchdog(settleNanoseconds: Self.settleNanoseconds)
         var recoverCount = 0
+        var recoveredValue: CGFloat?
 
-        watchdog.sentinelDidUpdate(
-            bottomMinY: -200,
-            currentBottomMinY: { -200 },
-            onRecover: { recoverCount += 1 }
-        )
-        // Re-arm with a fresh parked reading before the first timer's delay elapses.
-        watchdog.sentinelDidUpdate(
-            bottomMinY: -300,
-            currentBottomMinY: { -300 },
-            onRecover: { recoverCount += 1 }
-        )
+        watchdog.sentinelDidUpdate(bottomMinY: -200) { value in
+            recoverCount += 1
+            recoveredValue = value
+        }
+        watchdog.sentinelDidUpdate(bottomMinY: -300) { value in
+            recoverCount += 1
+            recoveredValue = value
+        }
 
         try? await Task.sleep(for: Self.waitPastSettle)
         #expect(recoverCount == 1)
+        #expect(recoveredValue == -300)
     }
 }
