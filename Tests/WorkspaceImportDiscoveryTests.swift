@@ -175,6 +175,35 @@ struct WorkspaceImportOrchestratorTests {
         #expect(result?.workspace.instructions == "Keep current status concise.")
         #expect(result?.workspace.primaryPath == root.appendingPathComponent("research-hub").path)
         #expect(FileManager.default.fileExists(atPath: result?.workspace.primaryPath ?? ""))
+        #expect(result?.hasCapabilityEnableFailures == false)
+    }
+
+    @Test("workspace action coordinator flags a failed quick-start capability credential save")
+    @MainActor
+    func workspaceActionCoordinatorFlagsFailedCapabilityCredential() throws {
+        let root = try makeTemporaryDirectory(named: "ActionRootCredentialFail")
+        defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
+
+        let container = try makeWorkspaceImportContainer()
+        let context = container.mainContext
+        let coordinator = ContentWorkspaceActionCoordinator(
+            modelContext: context,
+            taskQueue: TaskQueue(),
+            workspacesRoot: root.path
+        )
+        var draft = NewWorkspaceDraft(name: "Research Hub")
+        draft.selectedCapabilityIDs = [OnboardingCapabilitySetup.redcapPackageID]
+        draft.capabilityConfiguration.redcapAPIToken = "secret-token"
+
+        // No temp-keychain override is installed, so the real dedicated-keychain
+        // path is blocked in this test process, deterministically simulating a
+        // denied/failed Keychain write for the REDCap credential.
+        let result = coordinator.createWorkspace(from: draft, source: "test")
+
+        // The workspace itself is still created and usable — only the
+        // credential save failed.
+        #expect(result?.workspace.name == "Research Hub")
+        #expect(result?.hasCapabilityEnableFailures == true)
     }
 
     @Test("importing discovered candidates saves them and selects the last import")

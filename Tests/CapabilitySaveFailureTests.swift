@@ -193,4 +193,42 @@ struct CapabilityEnableSaveFailureTests {
         }
         #expect(!workspace.enabledCapabilityIDs.contains(package.id))
     }
+
+    @Test("Failed credential save rolls back earlier-staged skills too, not just the connector")
+    func failedCredentialSaveRollsBackEarlierStagedResources() throws {
+        let root = try saveFailureTempDirectory(named: "astra-enable-credentialfail")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let library = CapabilityLibrary(directory: root)
+        let container = try saveFailureContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Credential Fail", primaryPath: root.path)
+        context.insert(workspace)
+
+        let package = connectorPackage(id: "credential-fail-pkg")
+        try library.install(package, sourceMetadata: .localLibrary())
+        let installer = CapabilityInstaller(library: library, appVersion: SemanticVersion(1, 0, 0))
+
+        // No temp-keychain override is installed, so the real dedicated-keychain
+        // path is blocked in this test process — deterministically simulating a
+        // denied/failed Keychain write for the connector's credential. Skills
+        // stage (and get appended to workspace membership) before connectors in
+        // enable()'s loop order, so this also proves the whole enable() call is
+        // one transaction: an error partway through the connector loop must
+        // undo everything staged earlier in the same call, not just the
+        // connector that actually failed.
+        #expect(throws: CapabilityInstaller.InstallationError.credentialSaveFailed(packageID: package.id, key: "SVC_TOKEN")) {
+            try installer.enable(
+                package,
+                in: workspace,
+                modelContext: context,
+                credentialInputs: ["SVC_TOKEN": "secret-value"]
+            )
+        }
+
+        #expect(!workspace.enabledCapabilityIDs.contains(package.id))
+        #expect(workspace.enabledGlobalSkillIDs.isEmpty)
+        #expect(workspace.enabledGlobalConnectorIDs.isEmpty)
+        #expect(try context.fetch(FetchDescriptor<Skill>()).isEmpty)
+        #expect(try context.fetch(FetchDescriptor<Connector>()).isEmpty)
+    }
 }

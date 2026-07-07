@@ -293,6 +293,15 @@ enum OnboardingCapabilitySetup {
 ///   2. Permissions — macOS access needed for browser control
 ///   3. Workspace — create the first workspace and quick-start capabilities
 ///   4. Ready — open the configured workspace
+enum WorkspaceCreationOutcome: Equatable {
+    case notCreated
+    case created
+    /// The workspace itself was created, but at least one quick-start
+    /// capability's credential could not be saved (e.g. a denied Keychain
+    /// prompt) — surfaced so the wizard doesn't silently report success.
+    case createdWithCapabilityIssues
+}
+
 struct OnboardingWizardView: View {
     /// Bound to the enclosing gate (see `AppStorageKeys.hasCompletedOnboarding`).
     /// Toggling true dismisses the wizard.
@@ -300,7 +309,7 @@ struct OnboardingWizardView: View {
 
     /// Called when the user finishes the workspace setup step.
     /// The wrapping ContentView persists the workspace and selects it.
-    var onCreateWorkspace: (NewWorkspaceDraft) -> Bool
+    var onCreateWorkspace: (NewWorkspaceDraft) -> WorkspaceCreationOutcome
     var allowsDismiss: Bool
     var onDismiss: () -> Void
     @Binding var capabilityConfiguration: OnboardingCapabilityConfiguration
@@ -320,7 +329,7 @@ struct OnboardingWizardView: View {
         allowsDismiss: Bool = false,
         onDismiss: @escaping () -> Void = {},
         capabilityConfiguration: Binding<OnboardingCapabilityConfiguration> = .constant(OnboardingCapabilityConfiguration()),
-        onCreateWorkspace: @escaping (NewWorkspaceDraft) -> Bool
+        onCreateWorkspace: @escaping (NewWorkspaceDraft) -> WorkspaceCreationOutcome
     ) {
         self._hasCompletedOnboarding = hasCompletedOnboarding
         self._currentStep = State(initialValue: initialStep)
@@ -371,6 +380,7 @@ struct OnboardingWizardView: View {
     @State private var workspaceValidationIssues: [String] = []
     @State private var workspaceValidationWarnings: [String] = []
     @State private var isShowingWorkspaceValidationWarning = false
+    @State private var isShowingCapabilityEnableFailure = false
     @State private var createdWorkspaceName: String?
     @StateObject private var macOSPermissions = MacOSPermissionsViewModel()
 
@@ -408,6 +418,11 @@ struct OnboardingWizardView: View {
             Button("Back", role: .cancel) {}
         } message: {
             Text(workspaceValidationWarnings.prefix(3).joined(separator: "\n"))
+        }
+        .alert("Some credentials couldn't be saved", isPresented: $isShowingCapabilityEnableFailure) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text("Your workspace was created, but one or more capability credentials could not be saved to Keychain. Add them later in Configure > Connectors.")
         }
     }
 
@@ -799,8 +814,12 @@ struct OnboardingWizardView: View {
 
     private func createFirstWorkspaceAndAdvance() {
         let workspaceName = workspaceDraft.trimmedName
-        guard onCreateWorkspace(workspaceDraft) else { return }
+        let outcome = onCreateWorkspace(workspaceDraft)
+        guard outcome != .notCreated else { return }
         createdWorkspaceName = workspaceName
+        if outcome == .createdWithCapabilityIssues {
+            isShowingCapabilityEnableFailure = true
+        }
         if let next = Step(rawValue: currentStep.rawValue + 1) {
             withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) { currentStep = next }
         }
