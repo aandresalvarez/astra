@@ -30,6 +30,7 @@ enum ShelfBrowserAddressFormatter {
 }
 
 private let shelfBrowserAddressMinimumWidth: CGFloat = 140
+private let shelfBrowserCondensedAddressMinimumWidth: CGFloat = 100
 
 struct ShelfBrowserPanelView: View {
     @ObservedObject var session: ShelfBrowserSession
@@ -161,6 +162,7 @@ struct ShelfBrowserPanelView: View {
     private var toolbar: some View {
         ViewThatFits(in: .horizontal) {
             toolbarRow
+            condensedToolbarRow
             stackedToolbarRow
         }
         .padding(.horizontal, 12)
@@ -172,7 +174,7 @@ struct ShelfBrowserPanelView: View {
     private var toolbarRow: some View {
         HStack(spacing: 6) {
             navigationButtonGroup
-            engineAgentChip
+            engineAgentChip(showsLabel: true)
             addressField
                 .frame(minWidth: shelfBrowserAddressMinimumWidth, maxWidth: .infinity)
                 .layoutPriority(1)
@@ -182,13 +184,29 @@ struct ShelfBrowserPanelView: View {
         .frame(maxWidth: .infinity)
     }
 
+    // Middle tier: still one row, but the chip collapses to its icon (+dot)
+    // and the go arrow drops (Return submits; it's a convenience, not the
+    // only path). Degrading element-by-element keeps the bar a single row
+    // down to roughly the shelf's minimum width instead of jumping to two
+    // rows the moment the full row stops fitting.
+    private var condensedToolbarRow: some View {
+        HStack(spacing: 6) {
+            navigationButtonGroup
+            engineAgentChip(showsLabel: false)
+            addressField
+                .frame(minWidth: shelfBrowserCondensedAddressMinimumWidth, maxWidth: .infinity)
+                .layoutPriority(1)
+            overflowMenu
+        }
+        .frame(maxWidth: .infinity)
+    }
+
     private var stackedToolbarRow: some View {
         VStack(spacing: 6) {
             HStack(spacing: 6) {
                 navigationButtonGroup
-                engineAgentChip
+                engineAgentChip(showsLabel: true)
                 Spacer(minLength: 0)
-                goButton
                 overflowMenu
             }
             addressField
@@ -200,7 +218,8 @@ struct ShelfBrowserPanelView: View {
     /// One control for engine choice and agent-bridge status, replacing what
     /// used to be a segmented switcher outside the field plus a separate
     /// badge and status dot inside it — three indicators for two facts.
-    private var engineAgentChip: some View {
+    /// `showsLabel: false` collapses it to icon+dot for narrow widths.
+    private func engineAgentChip(showsLabel: Bool) -> some View {
         Menu {
             Picker("Browser engine", selection: $session.engine) {
                 ForEach(ShelfBrowserEngine.allCases) { engine in
@@ -212,9 +231,11 @@ struct ShelfBrowserPanelView: View {
             HStack(spacing: 5) {
                 Image(systemName: engineIcon(for: session.engine))
                     .font(Stanford.ui(11, weight: .semibold))
-                Text(session.engine.label)
-                    .font(Stanford.caption(11).weight(.semibold))
-                    .lineLimit(1)
+                if showsLabel {
+                    Text(session.engine.label)
+                        .font(Stanford.caption(11).weight(.semibold))
+                        .lineLimit(1)
+                }
                 if session.isAgentBridgeEnabled {
                     BridgeStatusDot(isReady: session.bridgeEndpoint != nil)
                 }
