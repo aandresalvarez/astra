@@ -113,6 +113,13 @@ struct ShelfBrowserPanelView: View {
         .id(ObjectIdentifier(session))
         // No background — parent paints .bar material that extends behind toolbar.
         .onAppear {
+            // Re-fires on session swaps too, not just first appearance: the
+            // subtree carries .id(ObjectIdentifier(session)), so a new
+            // session recreates it and runs this again. The panel's own
+            // @State survives that swap, so the edit model must be reset
+            // here or a pending-edit flag from the previous session leaks
+            // into the new one and misclassifies its at-rest display text.
+            addressEditModel = ShelfBrowserAddressEditModel()
             addressText = ShelfBrowserAddressFormatter.displayText(for: session.currentURL)
             session.setPresented(true)
         }
