@@ -187,17 +187,30 @@ public struct MCPRuntimeBindingTemplate: Codable, Equatable, Sendable, Identifia
         return violations
     }
 
-    private static let rawSecretValueRegexes: [NSRegularExpression] = [
+    /// Source-of-truth pattern strings for `rawSecretValueRegexes`, kept
+    /// separate so `MCPControlPlaneContractTests` can assert that every
+    /// pattern compiles — a typo fails CI instead of user startup.
+    static let rawSecretValuePatterns = [
         #"(?i)\bbearer\s+[a-z0-9._~+/=-]{12,}"#,
         #"(?i)\b(api[_-]?key|apikey|access[_-]?token|refresh[_-]?token|secret|password)\b\s*[:=]\s*['"]?[^\s'";,]{8,}"#,
         #"(?i)\bya29\.[a-z0-9._-]{6,}"#,
         #"(?i)\b1//[a-z0-9._-]{6,}"#,
         #"(?i)\bAIza[0-9a-z_-]{8,}"#
-    ].map { pattern in
-        try! NSRegularExpression(pattern: pattern)
+    ]
+
+    private static let rawSecretValueRegexes: [NSRegularExpression] = rawSecretValuePatterns.compactMap { pattern in
+        try? NSRegularExpression(pattern: pattern)
     }
 
     public static func literalLooksLikeRawSecretValue(_ value: String) -> Bool {
+        // Fail closed: this check keeps raw secrets out of persisted binding
+        // templates, so a pattern that failed to compile must not silently
+        // narrow detection. If any pattern is missing, treat every literal as
+        // a raw secret (rejecting the binding) rather than let secrets
+        // through unchecked.
+        guard rawSecretValueRegexes.count == rawSecretValuePatterns.count else {
+            return true
+        }
         let range = NSRange(value.startIndex..<value.endIndex, in: value)
         return rawSecretValueRegexes.contains { regex in
             regex.firstMatch(in: value, range: range) != nil
