@@ -16,7 +16,7 @@ import os
 // protocol + an `OSAllocatedUnfairLock`-backed static registry with
 // `.register(_:)` and a fail-fast `.required` accessor, wired up from
 // `RuntimeSeamRegistration.registerAll()`.
-public protocol TaskGeneratedFileQuerying {
+public protocol TaskGeneratedFileQuerying: Sendable {
     static func files(in folder: String, fileManager: FileManager) -> [String]
     static func shelfDestination(for path: String) -> TaskGeneratedFileShelfDestination?
     static func shouldDisplayTaskFolderFile(relativePath: String) -> Bool

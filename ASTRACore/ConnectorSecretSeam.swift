@@ -63,7 +63,7 @@ public enum ConnectorSecretSeam {
     }
 }
 
-public protocol ConnectorSecretPersisting {
+public protocol ConnectorSecretPersisting: Sendable {
     /// Matches `ConnectorSecretPersistence.credentials(for:store:)`: tries
     /// every namespace `facts` resolves to, first match per key wins.
     static func loadAllCredentials(keys: [String], facts: ConnectorSecretFacts, store: SecretStore) -> [String: String]
