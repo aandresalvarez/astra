@@ -145,11 +145,23 @@ let package = Package(
             dependencies: [],
             path: "Tests/ArchitectureFitnessTests"
         ),
+        // Test-only C shim: the module-load hook Swift itself lacks. Its
+        // __attribute__((constructor)) runs when dyld loads the ASTRATests
+        // bundle — before either test framework schedules a suite, while the
+        // process is still single-threaded — and calls the @_cdecl entry
+        // point in Tests/RuntimeSeamTestBootstrap.swift, which runs
+        // RuntimeSeamRegistration.registerAll(). Never link this into a
+        // production target: the app registers explicitly in ASTRAApp.init(),
+        // and the seams' fail-fast traps must stay meaningful there.
+        .target(
+            name: "AstraTestSeamBootstrap",
+            path: "Tests/AstraTestSeamBootstrap"
+        ),
         .testTarget(
             name: "ASTRATests",
-            dependencies: ["ASTRA", "ASTRACore", "ASTRAGitContracts", "ASTRAModels", "ASTRAPersistence", "HostControlToolSupport", "MCPGatewaySupport", "MCPServerKit", "WorkspaceToolSupport"],
+            dependencies: ["ASTRA", "ASTRACore", "ASTRAGitContracts", "ASTRAModels", "ASTRAPersistence", "AstraTestSeamBootstrap", "HostControlToolSupport", "MCPGatewaySupport", "MCPServerKit", "WorkspaceToolSupport"],
             path: "Tests",
-            exclude: ["ArchitectureFitnessTests", "MCPGatewaySupportTests", "MCPServerKitTests", "MailToolSupportTests"]
+            exclude: ["ArchitectureFitnessTests", "AstraTestSeamBootstrap", "MCPGatewaySupportTests", "MCPServerKitTests", "MailToolSupportTests"]
         ),
         .testTarget(
             name: "MailToolSupportTests",
