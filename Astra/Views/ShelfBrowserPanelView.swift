@@ -41,6 +41,15 @@ struct ShelfBrowserPanelView: View {
     @State private var addressText = ""
     @FocusState private var isAddressFocused: Bool
     @State private var isAddressHovered = false
+    // Explicit edit tracking for the address field. `addressEditBaseline` is
+    // the text as it stood when focus began; `hasPendingAddressEdit` means a
+    // blurred field is holding user-typed text rather than the at-rest
+    // display form. String comparison against the display text CANNOT
+    // distinguish those two — a user can edit the raw URL into something
+    // that coincidentally equals the formatted display (e.g. stripping a
+    // query string), and Go must submit that edit, not reload the old URL.
+    @State private var addressEditBaseline: String?
+    @State private var hasPendingAddressEdit = false
     @State private var isControlledTechnicalDetailsExpanded = false
     // Tracks whether the user has seen the Embedded vs Controlled explanation
     // on the empty browser screen. Persists across sessions so the hint only
@@ -67,6 +76,7 @@ struct ShelfBrowserPanelView: View {
         .onChange(of: session.currentURL) { _, newValue in
             if !isAddressFocused {
                 addressText = ShelfBrowserAddressFormatter.displayText(for: newValue)
+                hasPendingAddressEdit = false
             }
             // First successful navigation retires the engine-modes hint —
             // by now the user is past the empty-state and has seen the
@@ -78,20 +88,28 @@ struct ShelfBrowserPanelView: View {
         // Address field shows the full, editable URL while focused and a
         // friendlier identity (host, or filename for local files) at rest.
         // Swap on focus change rather than on every keystroke so typing
-        // isn't fighting a live reformat. Both directions only swap when the
-        // text is UNTOUCHED (matches the current URL's raw or at-rest form);
-        // an in-progress edit is preserved across focus changes, Chrome-
-        // style. That's also load-bearing for the Go button: clicking it can
-        // blur the field before the button action runs, and if blur reverted
-        // the edit, Go would silently reload the old page instead of
-        // navigating to the typed destination.
+        // isn't fighting a live reformat. Edits are detected by comparing
+        // against the baseline captured at focus time — never against the
+        // display text — and an in-progress edit is preserved across focus
+        // changes, Chrome-style. That's load-bearing for the Go button:
+        // clicking it can blur the field before the button action runs, and
+        // if blur reverted or misclassified the edit, Go would silently
+        // reload the old page instead of navigating to the typed text.
         .onChange(of: isAddressFocused) { _, focused in
             if focused {
-                if addressText == ShelfBrowserAddressFormatter.displayText(for: session.currentURL) {
+                if !hasPendingAddressEdit,
+                   addressText == ShelfBrowserAddressFormatter.displayText(for: session.currentURL) {
                     addressText = session.currentURL
                 }
-            } else if addressText == session.currentURL {
-                addressText = ShelfBrowserAddressFormatter.displayText(for: session.currentURL)
+                addressEditBaseline = addressText
+            } else {
+                if addressText == addressEditBaseline {
+                    hasPendingAddressEdit = false
+                    addressText = ShelfBrowserAddressFormatter.displayText(for: session.currentURL)
+                } else {
+                    hasPendingAddressEdit = true
+                }
+                addressEditBaseline = nil
             }
         }
     }
@@ -1634,10 +1652,13 @@ struct ShelfBrowserPanelView: View {
         // At rest the field holds display-only text (e.g. "report.html" for a
         // file:// artifact, or a host with the scheme stripped), not the real
         // URL — submitting that would re-resolve it as a web host and
-        // navigate to https://report.html. When the field is showing the
-        // untouched at-rest text, Go means "go to the current page", so
-        // submit the raw URL instead.
+        // navigate to https://report.html. The pending-edit flag (not a text
+        // comparison) decides whether the blurred field holds an actual edit:
+        // an edit can coincidentally equal the display text and must still be
+        // submitted as typed. Only genuinely untouched at-rest text means
+        // "go to the current page".
         let isShowingRestDisplayText = !isAddressFocused
+            && !hasPendingAddressEdit
             && hasDisplayablePage
             && addressText == ShelfBrowserAddressFormatter.displayText(for: session.currentURL)
         session.load(isShowingRestDisplayText ? session.currentURL : addressText, source: "address_bar")
