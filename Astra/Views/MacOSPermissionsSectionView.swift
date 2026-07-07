@@ -122,7 +122,11 @@ final class MacOSPermissionsViewModel: ObservableObject {
         return "Needs attention - \(attention.joined(separator: ", "))"
     }
 
-    func checkAll(workspaceRoot: String, includeBrowserControl: Bool = true) async {
+    func checkAll(
+        workspaceRoot: String,
+        includeBrowserControl: Bool = true,
+        allowKeychainUserInteraction: Bool = false
+    ) async {
         hasRunCheck = true
         checks = checks.map { item in
             var copy = item
@@ -130,7 +134,10 @@ final class MacOSPermissionsViewModel: ObservableObject {
             return copy
         }
 
-        let keychainIssue = MacOSPermissionDiagnostics.checkKeychainAccess(appDisplayName: appDisplayName)
+        let keychainIssue = MacOSPermissionDiagnostics.checkKeychainAccess(
+            appDisplayName: appDisplayName,
+            allowUserInteraction: allowKeychainUserInteraction
+        )
         setState(keychainIssue.map(MacOSPermissionCheckState.needsAction) ?? .ready, for: .keychain)
 
         let workspaceIssue = MacOSPermissionDiagnostics.checkWorkspaceRootAccess(
@@ -288,7 +295,8 @@ struct MacOSPermissionsSectionView: View {
                     Task {
                         await model.checkAll(
                             workspaceRoot: workspaceRoot,
-                            includeBrowserControl: shouldProbeBrowserControl
+                            includeBrowserControl: shouldProbeBrowserControl,
+                            allowKeychainUserInteraction: true
                         )
                     }
                 } label: {
@@ -332,7 +340,8 @@ struct MacOSPermissionsSectionView: View {
                             Task {
                                 await model.checkAll(
                                     workspaceRoot: workspaceRoot,
-                                    includeBrowserControl: shouldProbeBrowserControl
+                                    includeBrowserControl: shouldProbeBrowserControl,
+                                    allowKeychainUserInteraction: true
                                 )
                             }
                         } else {

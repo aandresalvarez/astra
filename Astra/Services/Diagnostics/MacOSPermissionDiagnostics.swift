@@ -132,7 +132,7 @@ enum MacOSPermissionDiagnostics {
         )
     }
 
-    static func checkKeychainAccess(appDisplayName: String) -> MacOSPermissionIssue? {
+    static func checkKeychainAccess(appDisplayName: String, allowUserInteraction: Bool = false) -> MacOSPermissionIssue? {
         // Validate ASTRA's *dedicated* keychain — where connector/skill secrets
         // actually live — rather than login.keychain-db. A clean round-trip
         // proves the app can create, unlock, write, read, and delete in its own
@@ -145,7 +145,8 @@ enum MacOSPermissionDiagnostics {
             service: service,
             account: account,
             value: value,
-            label: "ASTRA permission check"
+            label: "ASTRA permission check",
+            allowUserInteraction: allowUserInteraction
         ) else {
             return keychainIssue(
                 appDisplayName: appDisplayName,
