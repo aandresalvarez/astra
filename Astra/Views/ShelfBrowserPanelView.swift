@@ -150,6 +150,17 @@ struct ShelfBrowserPanelView: View {
 
     private var overflowMenu: some View {
         Menu {
+            // Mouse/accessibility submit path that survives every layout
+            // tier — the condensed and stacked rows drop the inline go
+            // button for space, and Return must never be the only way to
+            // navigate a typed address. Opening the menu blurs the field,
+            // but the pending-edit model preserves the typed text, so go()
+            // still submits exactly what's visible.
+            Button(action: go) {
+                Label("Open address", systemImage: "arrow.right")
+            }
+            .disabled(addressText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || session.controlledBrowser.isLaunching)
+
             Button {
                 session.openExternal()
             } label: {
