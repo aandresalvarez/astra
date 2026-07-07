@@ -18,8 +18,6 @@ import ASTRACore
 /// - GitService worktree add/list/remove behave and surface typed errors.
 @Suite("Git Worktrees")
 struct GitWorktreeTests {
-    private let _registerRuntimeSeams: Void = RuntimeSeamRegistration.registerAll() // AgentTaskForkService.fork() needs the Track A2.6 seams
-
     // MARK: - Helpers
 
     private func runShell(_ command: String, in directory: String) -> Int {

@@ -66,8 +66,6 @@ struct DuplicateKeyTests {
 
 @Suite("Credential Key Case Normalization")
 struct CredentialKeyCaseTests {
-    private let _registerRuntimeSeams: Void = RuntimeSeamRegistration.registerAll() // connector.saveCredential needs ConnectorSecretSeam
-
     @Test("saveCredential uppercases key and deduplicates")
     func saveCredentialUppercaseDedup() {
         let connector = Connector(name: "Test")
@@ -161,8 +159,6 @@ struct AgentTaskDefaultTests {
 
 @Suite("Workspace Deletion Cleanup")
 struct WorkspaceDeletionTests {
-    private let _registerRuntimeSeams: Void = RuntimeSeamRegistration.registerAll() // connector.cleanupKeychain needs ConnectorSecretSeam/OutlookMailConnectionSeam
-
     @Test("Connector cleanupKeychain is idempotent")
     func connectorCleanupIdempotent() {
         let connector = Connector(name: "Test")

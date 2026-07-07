@@ -8,10 +8,6 @@ import ASTRACore
 
 @Suite("Execution Environments")
 struct ExecutionEnvironmentTests {
-    // Constructs ExecutionEnvironmentCredentialProjection.gcpADC below, which
-    // reads the ExecutionPathSafety seam — see RuntimeSeamRegistration.swift.
-    private let _registerRuntimeSeams: Void = RuntimeSeamRegistration.registerAll()
-
     @Test("Docker discovery is inert for Dockerfile, compose, and devcontainer markers")
     func dockerDiscoveryClassifiesMarkers() throws {
         let root = try makeTempDir("docker-discovery")

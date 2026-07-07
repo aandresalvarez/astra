@@ -7,8 +7,6 @@ import ASTRACore
 @Suite("Stanford Outlook Mail")
 @MainActor
 struct StanfordOutlookMailTests {
-    private let _registerRuntimeSeams: Void = RuntimeSeamRegistration.registerAll() // connector.allEnvironmentVariables needs ConnectorSecretSeam
-
     @Test("ConnectorOutlookFacts preserves first-match config semantics for duplicate keys")
     func factsPreserveFirstMatchConfigSemanticsForDuplicateKeys() {
         // Regression test: ConnectorOutlookFacts/OutlookMailConnectionAdapter

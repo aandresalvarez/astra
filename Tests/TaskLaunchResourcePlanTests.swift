@@ -14,10 +14,6 @@ private func makeTaskLaunchResourcePlanContainer() throws -> ModelContainer {
 
 @MainActor
 struct TaskLaunchResourcePlanTests {
-    // Constructs ExecutionEnvironmentCredentialProjection.gcpADC below, which
-    // reads the ExecutionPathSafety seam — see RuntimeSeamRegistration.swift.
-    private let _registerRuntimeSeams: Void = RuntimeSeamRegistration.registerAll()
-
     @Test("Resource resolver records user attachments and Git credential grants")
     func resolverRecordsAttachmentAndGitResources() throws {
         let fm = FileManager.default

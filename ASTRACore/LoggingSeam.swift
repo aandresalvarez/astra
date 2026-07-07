@@ -39,7 +39,7 @@ public enum AuditLoggingSeam {
         guard let logger = storage.withLock({ $0 }) else {
             preconditionFailure(
                 "AuditLoggingSeam read before RuntimeSeamRegistration.registerAll() ran. " +
-                "Call it in ASTRAApp.init() (already done) or at the top of the test that hit this path."
+                "Production registers it in ASTRAApp.init(); tests register it via the load-time bootstrap in Tests/AstraTestSeamBootstrap - a trap here in a test means that bootstrap wiring broke."
             )
         }
         return logger
@@ -48,7 +48,7 @@ public enum AuditLoggingSeam {
 
 /// Records an audit event, matching `AppLogger.audit`'s signature exactly
 /// so `AppLogger`'s existing conformance needs no changes.
-public protocol AuditLogging {
+public protocol AuditLogging: Sendable {
     static func audit(
         _ event: AuditEvent,
         category: String,

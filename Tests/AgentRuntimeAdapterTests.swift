@@ -14,7 +14,6 @@ private func makeAgentRuntimeAdapterContainer() throws -> ModelContainer {
 
 @Suite("Agent Runtime Adapters", .serialized)
 struct AgentRuntimeAdapterTests {
-    private let _registerRuntimeSeams: Void = RuntimeSeamRegistration.registerAll() // gcpADC() below needs ExecutionPathSafety
     @Test("Every runtime has one registered adapter")
     func everyRuntimeHasOneRegisteredAdapter() {
         let registeredIDs = AgentRuntimeAdapterRegistry.runtimeIDs
