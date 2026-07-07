@@ -210,7 +210,7 @@ final class TaskThreadViewModel {
             "agent_response_count": String(agentResponseCount),
             "user_message_count": String(userMessageCount),
             "latest_run_status": snapshot.latestRun?.status.rawValue ?? "none",
-            "latest_run_output_bytes": snapshot.latestRun.map { String($0.output.utf8.count) } ?? "0",
+            "latest_run_output_bytes": String(trigger.latestRunOutputCount),
             "blank_reason": blankReason
         ], level: level)
     }
