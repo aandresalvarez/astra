@@ -1638,7 +1638,12 @@ struct TaskMainView: View {
                         scrollRecoveryWatchdog.sentinelDidUpdate(
                             bottomMinY: bottomMinY,
                             currentBottomMinY: { latestChatBottomMinY },
-                            onRecover: { recoverFromParkedScroll(proxy: proxy, bottomMinY: bottomMinY) }
+                            // Read latestChatBottomMinY fresh here rather than closing over
+                            // this callback's bottomMinY: onRecover fires ~220ms later, after
+                            // the watchdog re-checks the *live* sentinel, so the value it
+                            // fired on (and what we log) should match that re-check, not
+                            // whatever this specific preference-change happened to capture.
+                            onRecover: { recoverFromParkedScroll(proxy: proxy, bottomMinY: latestChatBottomMinY) }
                         )
                     }
                 }
