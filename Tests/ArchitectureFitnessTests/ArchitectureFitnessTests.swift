@@ -32,7 +32,6 @@ struct ArchitectureFitnessTests {
             "Packs",
             "Persistence",
             "Runtime",
-            "Security",
             "Settings",
             "Shelves",
             "Tasks",
@@ -387,9 +386,7 @@ struct ArchitectureFitnessTests {
     func implicitHostFileScansGoThroughFileAccessBroker() throws {
         let root = try repositoryRoot()
         let allowedFiles: Set<String> = [
-            "Astra/Services/Runtime/ExecutionSandbox.swift",
-            "Astra/Services/Security/HostFileAccessBroker.swift",
-            "Astra/Services/Security/PrivacySensitivePathPolicy.swift"
+            "Astra/Services/Runtime/ExecutionSandbox.swift"
         ]
 
         let matches = try swiftFiles(under: root.appendingPathComponent("Astra"))
