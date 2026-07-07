@@ -29,12 +29,19 @@ enum KeychainService {
 
     /// Save or update a credential value for a connector.
     @discardableResult
-    static func save(key: String, value: String, connectorID: UUID, label: String? = nil) -> Bool {
+    static func save(
+        key: String,
+        value: String,
+        connectorID: UUID,
+        label: String? = nil,
+        allowUserInteraction: Bool = false
+    ) -> Bool {
         let saved = AstraSecureKeychainStore.save(
             service: connectorService(for: connectorID),
             account: key,
             value: value,
-            label: label ?? "Astra connector credential"
+            label: label ?? "Astra connector credential",
+            allowUserInteraction: allowUserInteraction
         )
         if !saved {
             AppLogger.audit(.keychainSaveFailed, category: "Keychain", fields: [
@@ -49,14 +56,21 @@ enum KeychainService {
     /// existing rows; the stable namespace lets equivalent recreated connectors
     /// reuse user-entered secrets without another prompt.
     @discardableResult
-    static func save(key: String, value: String, connector: Connector, label: String? = nil) -> Bool {
+    static func save(
+        key: String,
+        value: String,
+        connector: Connector,
+        label: String? = nil,
+        allowUserInteraction: Bool = false
+    ) -> Bool {
         let services = connectorServices(for: connector)
         let saved = services.map { service in
             AstraSecureKeychainStore.save(
                 service: service,
                 account: key,
                 value: value,
-                label: label ?? "Astra connector credential"
+                label: label ?? "Astra connector credential",
+                allowUserInteraction: allowUserInteraction
             )
         }
         let ok = saved.allSatisfy { $0 }
@@ -71,12 +85,19 @@ enum KeychainService {
 
     /// Save or update a credential value for a skill-owned secret.
     @discardableResult
-    static func save(key: String, value: String, skillID: UUID, label: String? = nil) -> Bool {
+    static func save(
+        key: String,
+        value: String,
+        skillID: UUID,
+        label: String? = nil,
+        allowUserInteraction: Bool = false
+    ) -> Bool {
         let saved = AstraSecureKeychainStore.save(
             service: skillService(for: skillID),
             account: key,
             value: value,
-            label: label ?? "Astra skill secret"
+            label: label ?? "Astra skill secret",
+            allowUserInteraction: allowUserInteraction
         )
         if !saved {
             AppLogger.audit(.keychainSaveFailed, category: "Keychain", fields: [

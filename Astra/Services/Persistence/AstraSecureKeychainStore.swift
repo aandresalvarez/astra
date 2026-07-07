@@ -36,11 +36,46 @@ enum AstraSecureKeychainStore {
         bootstrapServiceOverride ?? AppChannel.current.astraKeychainBootstrapService
     }
 
+    static var isUsingExplicitTestKeychain: Bool {
+        keychainPathOverride != nil && bootstrapServiceOverride != nil
+    }
+
+    static var shouldBlockUnscopedTestKeychainAccess: Bool {
+        isRunningTests && !isUsingExplicitTestKeychain
+    }
+
+    private static var isRunningTests: Bool {
+        // SwiftPM's test helper is ad-hoc signed separately from ASTRA.app. If
+        // it creates the real per-channel keychain/bootstrap item, ASTRA cannot
+        // reliably read that item later. Tests that exercise Keychain behavior
+        // must use the task-local temp keychain overrides above.
+        let processName = ProcessInfo.processInfo.processName
+        return processName == "swiftpm-testing-helper"
+            || ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+    }
+
     // MARK: - CRUD
 
     @discardableResult
-    static func save(service: String, account: String, value: String, label: String?) -> Bool {
-        AstraSecureKeychain.saveSecret(
+    static func save(
+        service: String,
+        account: String,
+        value: String,
+        label: String?,
+        allowUserInteraction: Bool = false
+    ) -> Bool {
+        guard !shouldBlockUnscopedTestKeychainAccess else { return false }
+        if allowUserInteraction {
+            return AstraSecureKeychain.saveSecretAllowingUserInteraction(
+                value,
+                forAccount: account,
+                service: service,
+                label: label,
+                keychainPath: keychainPath,
+                bootstrapService: bootstrapService
+            )
+        }
+        return AstraSecureKeychain.saveSecret(
             value,
             forAccount: account,
             service: service,
@@ -51,7 +86,8 @@ enum AstraSecureKeychainStore {
     }
 
     static func load(service: String, account: String) -> String? {
-        AstraSecureKeychain.secret(
+        guard !shouldBlockUnscopedTestKeychainAccess else { return nil }
+        return AstraSecureKeychain.secret(
             forAccount: account,
             service: service,
             keychainPath: keychainPath,
@@ -61,7 +97,8 @@ enum AstraSecureKeychainStore {
 
     @discardableResult
     static func delete(service: String, account: String) -> Bool {
-        AstraSecureKeychain.deleteSecret(
+        guard !shouldBlockUnscopedTestKeychainAccess else { return false }
+        return AstraSecureKeychain.deleteSecret(
             forAccount: account,
             service: service,
             keychainPath: keychainPath,
@@ -71,7 +108,8 @@ enum AstraSecureKeychainStore {
 
     @discardableResult
     static func deleteAll(service: String) -> Bool {
-        AstraSecureKeychain.deleteAllSecrets(
+        guard !shouldBlockUnscopedTestKeychainAccess else { return false }
+        return AstraSecureKeychain.deleteAllSecrets(
             forService: service,
             keychainPath: keychainPath,
             bootstrapService: bootstrapService
@@ -79,7 +117,8 @@ enum AstraSecureKeychainStore {
     }
 
     static func exists(service: String, account: String) -> Bool {
-        AstraSecureKeychain.hasSecret(
+        guard !shouldBlockUnscopedTestKeychainAccess else { return false }
+        return AstraSecureKeychain.hasSecret(
             forAccount: account,
             service: service,
             keychainPath: keychainPath,
@@ -95,7 +134,8 @@ enum AstraSecureKeychainStore {
     /// per-entity from the existing launch migration hooks.
     @discardableResult
     static func migrateServiceFromLoginKeychain(service: String) -> Int {
-        AstraSecureKeychain.migrateService(
+        guard !shouldBlockUnscopedTestKeychainAccess else { return -1 }
+        return AstraSecureKeychain.migrateService(
             fromLoginKeychain: service,
             keychainPath: keychainPath,
             bootstrapService: bootstrapService
@@ -106,6 +146,7 @@ enum AstraSecureKeychainStore {
     /// specific `account`). Used by tests that assert ASTRA secrets are not left
     /// behind in `login.keychain-db`.
     static func loginKeychainContains(service: String, account: String? = nil) -> Bool {
-        AstraSecureKeychain.loginKeychainContainsService(service, account: account)
+        guard !shouldBlockUnscopedTestKeychainAccess else { return false }
+        return AstraSecureKeychain.loginKeychainContainsService(service, account: account)
     }
 }

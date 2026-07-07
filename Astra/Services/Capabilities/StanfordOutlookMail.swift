@@ -340,31 +340,41 @@ struct StanfordOutlookMailAuthService {
         return token.accessToken
     }
 
-    func saveTokenResponse(_ token: MicrosoftTokenResponse, connector: Connector) {
-        KeychainService.save(
+    @discardableResult
+    func saveTokenResponse(
+        _ token: MicrosoftTokenResponse,
+        connector: Connector,
+        allowUserInteraction: Bool = false
+    ) -> Bool {
+        var savedAll = true
+        savedAll = KeychainService.save(
             key: StanfordOutlookMail.accessTokenKey,
             value: token.accessToken,
             connectorID: connector.id,
-            label: "Astra Mail: \(connector.name)"
-        )
+            label: "Astra Mail: \(connector.name)",
+            allowUserInteraction: allowUserInteraction
+        ) && savedAll
         if let refreshToken = token.refreshToken, !refreshToken.isEmpty {
-            KeychainService.save(
+            savedAll = KeychainService.save(
                 key: StanfordOutlookMail.refreshTokenKey,
                 value: refreshToken,
                 connectorID: connector.id,
-                label: "Astra Mail: \(connector.name)"
-            )
+                label: "Astra Mail: \(connector.name)",
+                allowUserInteraction: allowUserInteraction
+            ) && savedAll
         }
         let expiresAt = Date().addingTimeInterval(TimeInterval(max(token.expiresIn, 60)))
-        KeychainService.save(
+        savedAll = KeychainService.save(
             key: StanfordOutlookMail.expiresAtKey,
             value: String(expiresAt.timeIntervalSince1970),
             connectorID: connector.id,
-            label: "Astra Mail: \(connector.name)"
-        )
+            label: "Astra Mail: \(connector.name)",
+            allowUserInteraction: allowUserInteraction
+        ) && savedAll
         connector.setConfigValue(StanfordOutlookMail.tokenUpdatedAtKey, value: ISO8601DateFormatter().string(from: Date()))
         connector.setConfigValue(StanfordOutlookMail.scopesKey, value: token.scope ?? StanfordOutlookMail.scopeString)
         StanfordOutlookMailRegistry.upsert(connector: connector)
+        return savedAll
     }
 }
 

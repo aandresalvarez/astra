@@ -328,7 +328,16 @@ struct MacOSPermissionsSectionView: View {
 
                 if let issue = check.state.issue {
                     Button {
-                        model.openSettings(for: issue)
+                        if issue.kind == .keychain {
+                            Task {
+                                await model.checkAll(
+                                    workspaceRoot: workspaceRoot,
+                                    includeBrowserControl: shouldProbeBrowserControl
+                                )
+                            }
+                        } else {
+                            model.openSettings(for: issue)
+                        }
                     } label: {
                         Label(issue.actionTitle, systemImage: issue.systemImage)
                             .font(Stanford.caption(12).weight(.semibold))
@@ -461,7 +470,8 @@ struct MacOSPermissionsSectionView: View {
             ]
         case .keychain:
             return [
-                "Open Keychain Access and unlock the login keychain.",
+                "Retry the Keychain-backed action from ASTRA.",
+                "If macOS asks whether ASTRA can access its Keychain item, choose Allow or Always Allow.",
                 "Return to ASTRA and click Retry."
             ]
         case .workspaceStorage:

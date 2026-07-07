@@ -45,6 +45,7 @@ struct CapabilityInstaller {
         credentialInputs: [String: String] = [:],
         configInputs: [String: String] = [:],
         baseURLOverrides: [String: String] = [:],
+        allowCredentialUserInteraction: Bool = false,
         policyContext: CapabilityCatalogPolicyContext? = nil,
         traceID: String? = nil
     ) throws -> InstallationResult {
@@ -83,6 +84,7 @@ struct CapabilityInstaller {
                 credentialInputs: credentialInputs,
                 configInputs: configInputs,
                 baseURLOverrides: baseURLOverrides,
+                allowCredentialUserInteraction: allowCredentialUserInteraction,
                 policyContext: effectivePolicyContext,
                 auditSource: "install",
                 traceID: traceID
@@ -116,6 +118,7 @@ struct CapabilityInstaller {
         credentialInputs: [String: String] = [:],
         configInputs: [String: String] = [:],
         baseURLOverrides: [String: String] = [:],
+        allowCredentialUserInteraction: Bool = false,
         policyContext: CapabilityCatalogPolicyContext? = nil,
         auditSource: String = "enable",
         traceID: String? = nil,
@@ -186,7 +189,8 @@ struct CapabilityInstaller {
                     credentialInputs: credentialInputs,
                     configInputs: configInputs,
                     extraConfigKeys: packageEnvironmentKeys,
-                    baseURL: baseURL
+                    baseURL: baseURL,
+                    allowCredentialUserInteraction: allowCredentialUserInteraction
                 )
                 try removeMatchingGlobalConnectorActivation(
                     pluginConnector,
@@ -201,7 +205,8 @@ struct CapabilityInstaller {
                     credentialInputs: credentialInputs,
                     configInputs: configInputs,
                     extraConfigKeys: packageEnvironmentKeys,
-                    baseURL: baseURL
+                    baseURL: baseURL,
+                    allowCredentialUserInteraction: allowCredentialUserInteraction
                 )
                 if let primarySkill, connector.skill == nil {
                     connector.skill = primarySkill
@@ -359,7 +364,8 @@ struct CapabilityInstaller {
         credentialInputs: [String: String],
         configInputs: [String: String],
         extraConfigKeys: [String],
-        baseURL: String
+        baseURL: String,
+        allowCredentialUserInteraction: Bool
     ) throws -> Connector {
         let connector = try existingGlobalConnector(
             name: pluginConnector.name,
@@ -405,7 +411,11 @@ struct CapabilityInstaller {
         }
         for hint in pluginConnector.credentialHints {
             if let value = credentialInputs[hint.key], !value.isEmpty {
-                connector.saveCredential(key: hint.key, value: value)
+                connector.saveCredential(
+                    key: hint.key,
+                    value: value,
+                    allowUserInteraction: allowCredentialUserInteraction
+                )
             }
         }
         return connector
@@ -419,7 +429,8 @@ struct CapabilityInstaller {
         credentialInputs: [String: String],
         configInputs: [String: String],
         extraConfigKeys: [String],
-        baseURL: String
+        baseURL: String,
+        allowCredentialUserInteraction: Bool
     ) -> Connector {
         let connector = existingWorkspaceConnector(
             name: pluginConnector.name,
@@ -465,7 +476,11 @@ struct CapabilityInstaller {
         }
         for hint in pluginConnector.credentialHints {
             if let value = credentialInputs[hint.key], !value.isEmpty {
-                connector.saveCredential(key: hint.key, value: value)
+                connector.saveCredential(
+                    key: hint.key,
+                    value: value,
+                    allowUserInteraction: allowCredentialUserInteraction
+                )
             }
         }
         return connector

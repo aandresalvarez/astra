@@ -150,28 +150,38 @@ final class Skill {
         return storedValue
     }
 
-    func upsertEnvironmentEntry(key rawKey: String, value: String) {
+    func upsertEnvironmentEntry(
+        key rawKey: String,
+        value: String,
+        allowUserInteraction: Bool = false
+    ) {
         let key = rawKey.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
         guard !key.isEmpty else { return }
 
         if let index = environmentKeys.firstIndex(where: { $0.caseInsensitiveCompare(key) == .orderedSame }) {
             environmentKeys[index] = key
-            setEnvironmentValue(value, at: index)
+            setEnvironmentValue(value, at: index, allowUserInteraction: allowUserInteraction)
         } else {
             environmentKeys.append(key)
             environmentValues.append("")
-            setEnvironmentValue(value, at: environmentKeys.count - 1)
+            setEnvironmentValue(value, at: environmentKeys.count - 1, allowUserInteraction: allowUserInteraction)
         }
     }
 
-    func setEnvironmentValue(_ value: String, at index: Int) {
+    func setEnvironmentValue(_ value: String, at index: Int, allowUserInteraction: Bool = false) {
         guard index < environmentKeys.count else { return }
         ensureEnvironmentValueCapacity()
 
         let key = environmentKeys[index]
         if Self.isSecretEnvironmentKey(key) {
             if !value.isEmpty {
-                let saved = KeychainService.save(key: key, value: value, skillID: id, label: "Astra: \(name)")
+                let saved = KeychainService.save(
+                    key: key,
+                    value: value,
+                    skillID: id,
+                    label: "Astra: \(name)",
+                    allowUserInteraction: allowUserInteraction
+                )
                 AppLogger.audit(.skillSecretAdded, category: "Keychain", fields: [
                     "skill_id": id.uuidString,
                     "result": saved ? "stored" : "failed"

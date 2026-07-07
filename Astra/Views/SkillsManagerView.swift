@@ -948,7 +948,7 @@ struct SkillEditorView: View {
     private func addEnvVar() {
         let key = newEnvKey.trimmingCharacters(in: .whitespaces).uppercased()
         guard !key.isEmpty, !newEnvValue.isEmpty else { return }
-        skill.upsertEnvironmentEntry(key: key, value: newEnvValue)
+        skill.upsertEnvironmentEntry(key: key, value: newEnvValue, allowUserInteraction: true)
         cancelSecretEntry()
     }
 

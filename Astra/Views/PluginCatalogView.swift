@@ -893,6 +893,7 @@ struct PluginCatalogView: View {
                 credentialInputs: credentialInputs,
                 configInputs: configInputs,
                 baseURLOverrides: baseURLOverrides,
+                allowCredentialUserInteraction: credentialInputs.values.contains { !$0.isEmpty },
                 policyContext: catalogPolicyContext,
                 source: "configure",
                 traceID: traceID
@@ -2177,6 +2178,7 @@ struct PluginInstallSheet: View {
                 credentialInputs: credentialValues,
                 configInputs: installConfigValues,
                 baseURLOverrides: baseURLValues,
+                allowCredentialUserInteraction: credentialValues.values.contains { !$0.isEmpty },
                 policyContext: policyContext,
                 source: "setup_sheet",
                 traceID: traceID

@@ -2050,6 +2050,7 @@ struct ChatPanelView: View {
                 credentials: credentials,
                 workspace: ws,
                 modelContext: modelContext,
+                allowCredentialUserInteraction: !credentials.isEmpty,
                 source: "wizard"
             )
 
@@ -2498,6 +2499,7 @@ struct ChatPanelView: View {
                 credentials: credentials,
                 workspace: ws,
                 modelContext: modelContext,
+                allowCredentialUserInteraction: !credentials.isEmpty,
                 source: "conversation"
             )
             activeSlashContext = nil

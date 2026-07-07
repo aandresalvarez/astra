@@ -25,12 +25,20 @@ static NSString *const kAstraSecretAccessLabel = @"ASTRA secure credential";
 #pragma mark - User interaction guard
 
 + (void)disableKeychainUserInteractionSavingPrevious:(Boolean *)previous {
-    Boolean allowed = true;
-    if (SecKeychainGetUserInteractionAllowed(&allowed) != errSecSuccess) {
-        allowed = true;
+    [self setKeychainUserInteractionAllowed:false savingPrevious:previous];
+}
+
++ (void)allowKeychainUserInteractionSavingPrevious:(Boolean *)previous {
+    [self setKeychainUserInteractionAllowed:true savingPrevious:previous];
+}
+
++ (void)setKeychainUserInteractionAllowed:(Boolean)allowed savingPrevious:(Boolean *)previous {
+    Boolean previousAllowed = true;
+    if (SecKeychainGetUserInteractionAllowed(&previousAllowed) != errSecSuccess) {
+        previousAllowed = true;
     }
-    if (previous != NULL) { *previous = allowed; }
-    SecKeychainSetUserInteractionAllowed(false);
+    if (previous != NULL) { *previous = previousAllowed; }
+    SecKeychainSetUserInteractionAllowed(allowed);
 }
 
 + (void)restoreKeychainUserInteraction:(Boolean)previous {
@@ -452,11 +460,52 @@ static NSString *const kAstraSecretAccessLabel = @"ASTRA secure credential";
              label:(nullable NSString *)label
       keychainPath:(NSString *)keychainPath
   bootstrapService:(NSString *)bootstrapService {
+    return [self writeSecret:value
+                  forAccount:account
+                     service:service
+                       label:label
+                keychainPath:keychainPath
+            bootstrapService:bootstrapService
+        allowUserInteraction:false
+      recoverUnreadableKeychain:true];
+}
+
++ (BOOL)saveSecretAllowingUserInteraction:(NSString *)value
+                               forAccount:(NSString *)account
+                                  service:(NSString *)service
+                                    label:(nullable NSString *)label
+                             keychainPath:(NSString *)keychainPath
+                         bootstrapService:(NSString *)bootstrapService {
+    return [self writeSecret:value
+                  forAccount:account
+                     service:service
+                       label:label
+                keychainPath:keychainPath
+            bootstrapService:bootstrapService
+        allowUserInteraction:true
+      recoverUnreadableKeychain:false];
+}
+
++ (BOOL)writeSecret:(NSString *)value
+         forAccount:(NSString *)account
+            service:(NSString *)service
+              label:(nullable NSString *)label
+       keychainPath:(NSString *)keychainPath
+   bootstrapService:(NSString *)bootstrapService
+allowUserInteraction:(BOOL)allowUserInteraction
+recoverUnreadableKeychain:(BOOL)recoverUnreadableKeychain {
     Boolean previousInteraction = true;
-    [self disableKeychainUserInteractionSavingPrevious:&previousInteraction];
+    if (allowUserInteraction) {
+        [self allowKeychainUserInteractionSavingPrevious:&previousInteraction];
+    } else {
+        [self disableKeychainUserInteractionSavingPrevious:&previousInteraction];
+    }
     @try {
     SecKeychainRef keychain = [self dedicatedKeychainForPath:keychainPath bootstrapService:bootstrapService];
     if (keychain == NULL) {
+        if (!recoverUnreadableKeychain) {
+            return NO;
+        }
         if (![self recoverUnreadableDedicatedKeychainAtPath:keychainPath
                                            bootstrapService:bootstrapService]) {
             return NO;

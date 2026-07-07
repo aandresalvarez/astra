@@ -106,23 +106,60 @@ final class Connector {
         return merged
     }
 
-    /// Save a credential value to Keychain and keep the key in SwiftData.
-    func saveCredential(key: String, value: String) {
+    /// Save a credential value to Keychain and keep the key in SwiftData only
+    /// after the secure write succeeds.
+    @discardableResult
+    func saveCredential(key: String, value: String, allowUserInteraction: Bool = false) -> Bool {
         let upperKey = key.uppercased()
-        let saved = KeychainService.save(key: upperKey, value: value, connector: self, label: "Astra: \(name)")
+        let saved = KeychainService.save(
+            key: upperKey,
+            value: value,
+            connector: self,
+            label: "Astra: \(name)",
+            allowUserInteraction: allowUserInteraction
+        )
+        recordCredentialSaveResult(key: upperKey, saved: saved)
+        return saved
+    }
 
+    /// Test seam for credential key normalization and persistence behavior.
+    /// Production uses `saveCredential(key:value:)` so KeychainService remains
+    /// the single app-facing persistence boundary.
+    @discardableResult
+    func saveCredential(key: String, value: String, store: SecretStore) -> Bool {
+        let upperKey = key.uppercased()
+        let entityIDs = KeychainSecretStore.connectorEntityIDs(for: self)
+        let saved = entityIDs.map { entityID in
+            store.save(key: upperKey, value: value, entityID: entityID, label: "Astra: \(name)")
+        }
+        let ok = saved.allSatisfy { $0 }
+        if !ok {
+            AppLogger.audit(.keychainSaveFailed, category: "Keychain", fields: [
+                "scope": "connector",
+                "namespace_count": String(entityIDs.count)
+            ], level: .warning)
+        }
+        recordCredentialSaveResult(key: upperKey, saved: ok)
+        return ok
+    }
+
+    private func recordCredentialSaveResult(key upperKey: String, saved: Bool) {
         // Find existing entry case-insensitively to avoid duplicates
         if let idx = credentialKeys.firstIndex(where: { $0.caseInsensitiveCompare(upperKey) == .orderedSame }) {
-            // Normalize key to uppercase and clear legacy value
-            credentialKeys[idx] = upperKey
-            if idx < credentialValues.count {
-                credentialValues[idx] = ""
+            if saved {
+                // Normalize key to uppercase and clear legacy value
+                credentialKeys[idx] = upperKey
+                if idx < credentialValues.count {
+                    credentialValues[idx] = ""
+                }
             }
-        } else {
+        } else if saved {
             credentialKeys.append(upperKey)
             credentialValues.append("")
         }
-        updatedAt = Date()
+        if saved {
+            updatedAt = Date()
+        }
         AppLogger.audit(.connectorSecretAdded, category: "Keychain", fields: [
             "connector_id": id.uuidString,
             "service_type": serviceType,

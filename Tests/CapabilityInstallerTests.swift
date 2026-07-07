@@ -744,21 +744,47 @@ struct CapabilityInstallerTests {
             predicate: #Predicate { $0.isGlobal == true && $0.name == "Google Cloud" }
         )).first)
         let canAssertRealKeychain = AstraSecureKeychainTestSupport.isAvailable
-        if canAssertRealKeychain {
-            connector.saveCredential(key: "GCP_TOKEN", value: "secret")
-        }
+        let tempKeychainPath = AstraSecureKeychainTestSupport.tempKeychainPath()
+        let tempBootstrap = "astra-test-bootstrap-\(UUID().uuidString)"
         let connectorID = connector.id
         let skillID = skill.id
-        defer {
-            KeychainService.deleteAll(connector: connector)
-            KeychainService.deleteAll(skillID: skillID)
-        }
         if canAssertRealKeychain {
-            #expect(KeychainService.exists(key: "GCP_TOKEN", connector: connector))
+            AstraSecureKeychainTestSupport.installTestBootstrapPassword(service: tempBootstrap)
+        }
+        defer {
+            if canAssertRealKeychain {
+                AstraSecureKeychainTestSupport.cleanup(
+                    keychainPath: tempKeychainPath,
+                    bootstrapService: tempBootstrap,
+                    services: KeychainSecretStore.connectorEntityIDs(for: connector) + [
+                        KeychainSecretStore.skillEntityID(for: skillID)
+                    ]
+                )
+            }
+        }
+
+        func withTemporaryKeychain<T>(_ body: () throws -> T) rethrows -> T {
+            guard canAssertRealKeychain else {
+                return try body()
+            }
+            return try AstraSecureKeychainStore.$keychainPathOverride.withValue(tempKeychainPath) {
+                try AstraSecureKeychainStore.$bootstrapServiceOverride.withValue(tempBootstrap) {
+                    try body()
+                }
+            }
+        }
+
+        withTemporaryKeychain {
+            if canAssertRealKeychain {
+                #expect(connector.saveCredential(key: "GCP_TOKEN", value: "secret"))
+                #expect(KeychainService.exists(key: "GCP_TOKEN", connector: connector))
+            }
         }
         #expect(workspace.templates.map(\.name) == ["BQ Summary"])
 
-        let result = try CapabilityUninstaller(library: library).remove(package, modelContext: context)
+        let result = try withTemporaryKeychain {
+            try CapabilityUninstaller(library: library).remove(package, modelContext: context)
+        }
 
         #expect(result.packageID == package.id)
         #expect(result.disabledWorkspaceIDs == [workspace.id])
@@ -776,8 +802,10 @@ struct CapabilityInstallerTests {
         #expect(try context.fetch(FetchDescriptor<Skill>(predicate: #Predicate { $0.isGlobal == true })).isEmpty)
         #expect(try context.fetch(FetchDescriptor<Connector>(predicate: #Predicate { $0.isGlobal == true })).isEmpty)
         #expect(try context.fetch(FetchDescriptor<LocalTool>(predicate: #Predicate { $0.isGlobal == true })).isEmpty)
-        if canAssertRealKeychain {
-            #expect(!KeychainService.exists(key: "GCP_TOKEN", connector: connector))
+        withTemporaryKeychain {
+            if canAssertRealKeychain {
+                #expect(!KeychainService.exists(key: "GCP_TOKEN", connector: connector))
+            }
         }
     }
 

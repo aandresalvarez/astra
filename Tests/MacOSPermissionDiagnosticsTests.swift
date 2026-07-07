@@ -46,7 +46,7 @@ struct MacOSPermissionDiagnosticsTests {
         #expect(issue == nil)
     }
 
-    @Test("Keychain issue points to Keychain Access")
+    @Test("Keychain issue points to an ASTRA retry flow")
     func keychainIssueMapsToAction() {
         let issue = MacOSPermissionDiagnostics.keychainIssue(
             appDisplayName: "ASTRA Dev",
@@ -55,8 +55,17 @@ struct MacOSPermissionDiagnosticsTests {
 
         #expect(issue.kind == .keychain)
         #expect(issue.title == "Allow ASTRA Dev to use Keychain")
-        #expect(issue.actionTitle == "Open Keychain Access")
+        #expect(issue.actionTitle == "Retry Keychain Check")
+        #expect(issue.setupSteps.contains { $0.contains("macOS asks") })
         #expect(issue.message.contains("Keychain"))
+    }
+
+    @Test("Keychain Access opener resolves current macOS app location")
+    func keychainAccessOpenerIncludesCurrentMacOSLocation() {
+        #expect(MacOSPermissionDiagnostics.keychainAccessBundleIdentifier == "com.apple.keychainaccess")
+        #expect(MacOSPermissionDiagnostics.keychainAccessFallbackPaths.contains(
+            "/System/Library/CoreServices/Applications/Keychain Access.app"
+        ))
     }
 
     @Test("Workspace issue points to Files and Folders")

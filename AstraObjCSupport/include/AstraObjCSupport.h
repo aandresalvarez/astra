@@ -49,6 +49,18 @@ NS_ASSUME_NONNULL_BEGIN
       keychainPath:(NSString *)keychainPath
   bootstrapService:(NSString *)bootstrapService;
 
+/// Save or update `value` like `saveSecret`, but leaves Security.framework
+/// user interaction enabled for an explicit user action. This lets macOS ask
+/// the user to allow ASTRA to read the existing bootstrap item or unlock the
+/// dedicated keychain. It does not perform unreadable-keychain recovery when
+/// access is denied, so a canceled prompt cannot rotate the user's keychain.
++ (BOOL)saveSecretAllowingUserInteraction:(NSString *)value
+                               forAccount:(NSString *)account
+                                  service:(NSString *)service
+                                    label:(nullable NSString *)label
+                             keychainPath:(NSString *)keychainPath
+                         bootstrapService:(NSString *)bootstrapService;
+
 /// Load the value for (`service`, `account`) from the dedicated keychain, or
 /// `nil` if absent / the keychain is unavailable.
 + (nullable NSString *)secretForAccount:(NSString *)account

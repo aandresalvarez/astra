@@ -3,6 +3,14 @@ import Foundation
 @testable import ASTRA
 import ASTRACore
 
+private final class FailingSecretStore: SecretStore {
+    func load(key: String, entityID: String) -> String? { nil }
+    func save(key: String, value: String, entityID: String, label: String?) -> Bool { false }
+    func delete(key: String, entityID: String) -> Bool { false }
+    func deleteAll(entityID: String) {}
+    func exists(key: String, entityID: String) -> Bool { false }
+}
+
 // MARK: - Phase 1A: Dictionary duplicate-key crash prevention
 
 @Suite("Duplicate Key Safety")
@@ -68,14 +76,14 @@ struct CredentialKeyCaseTests {
     @Test("saveCredential uppercases key and deduplicates")
     func saveCredentialUppercaseDedup() {
         let connector = Connector(name: "Test")
-        defer { KeychainService.deleteAll(connector: connector) }
+        let store = MockSecretStore()
 
         // Add a credential with lowercase key
-        connector.saveCredential(key: "api_token", value: "v1")
+        #expect(connector.saveCredential(key: "api_token", value: "v1", store: store))
         #expect(connector.credentialKeys == ["API_TOKEN"])
 
         // Save again with same lowercase key — should NOT create duplicate
-        connector.saveCredential(key: "api_token", value: "v2")
+        #expect(connector.saveCredential(key: "api_token", value: "v2", store: store))
         #expect(connector.credentialKeys.count == 1)
         #expect(connector.credentialKeys == ["API_TOKEN"])
     }
@@ -83,13 +91,35 @@ struct CredentialKeyCaseTests {
     @Test("saveCredential with mixed case finds existing uppercase entry")
     func saveCredentialMixedCase() {
         let connector = Connector(name: "Test")
-        defer { KeychainService.deleteAll(connector: connector) }
-        connector.saveCredential(key: "MyToken", value: "v1")
+        let store = MockSecretStore()
+        #expect(connector.saveCredential(key: "MyToken", value: "v1", store: store))
         #expect(connector.credentialKeys == ["MYTOKEN"])
 
-        connector.saveCredential(key: "mytoken", value: "v2")
+        #expect(connector.saveCredential(key: "mytoken", value: "v2", store: store))
         #expect(connector.credentialKeys.count == 1)
         #expect(connector.credentialKeys == ["MYTOKEN"])
+    }
+
+    @Test("failed credential save does not create a phantom configured key")
+    func failedCredentialSaveDoesNotRecordNewKey() {
+        let connector = Connector(name: "Test")
+
+        #expect(!connector.saveCredential(key: "api_token", value: "v1", store: FailingSecretStore()))
+
+        #expect(connector.credentialKeys.isEmpty)
+        #expect(connector.credentialValues.isEmpty)
+    }
+
+    @Test("failed credential replacement leaves existing declaration unchanged")
+    func failedCredentialReplacementKeepsExistingKey() {
+        let connector = Connector(name: "Test")
+        connector.credentialKeys = ["API_TOKEN"]
+        connector.credentialValues = [""]
+
+        #expect(!connector.saveCredential(key: "api_token", value: "v2", store: FailingSecretStore()))
+
+        #expect(connector.credentialKeys == ["API_TOKEN"])
+        #expect(connector.credentialValues == [""])
     }
 }
 

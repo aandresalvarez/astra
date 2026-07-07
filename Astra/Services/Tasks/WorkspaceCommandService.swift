@@ -73,6 +73,7 @@ enum WorkspaceCommandService {
         credentials: [String: String],
         workspace: Workspace,
         modelContext: ModelContext,
+        allowCredentialUserInteraction: Bool = false,
         source: String
     ) -> Connector {
         let connector = Connector(
@@ -84,7 +85,11 @@ enum WorkspaceCommandService {
         )
         connector.workspace = workspace
         for (key, value) in credentials {
-            connector.saveCredential(key: key, value: value)
+            connector.saveCredential(
+                key: key,
+                value: value,
+                allowUserInteraction: allowCredentialUserInteraction
+            )
         }
         modelContext.insert(connector)
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
