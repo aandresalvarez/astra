@@ -41,7 +41,7 @@ public enum SkillSecretSeam {
     }
 }
 
-public protocol SkillSecretPersisting {
+public protocol SkillSecretPersisting: Sendable {
     /// Matches `SecretStore.load(key:entityID:)`'s optional-return
     /// semantics; the caller falls back to the stored placeholder value.
     static func loadSecretValue(key: String, skillID: UUID, store: SecretStore) -> String?

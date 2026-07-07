@@ -536,7 +536,7 @@ enum BuiltInAgentRuntimeAdapterProviders {
     }
 }
 
-enum AgentRuntimeAdapterRegistry {
+enum AgentRuntimeAdapterRegistry: Sendable {
     private static let liveCatalog = AgentRuntimeAdapterCatalog(providers: BuiltInAgentRuntimeAdapterProviders.all)
 
     static var runtimeIDs: [AgentRuntimeID] {

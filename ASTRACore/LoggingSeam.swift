@@ -48,7 +48,7 @@ public enum AuditLoggingSeam {
 
 /// Records an audit event, matching `AppLogger.audit`'s signature exactly
 /// so `AppLogger`'s existing conformance needs no changes.
-public protocol AuditLogging {
+public protocol AuditLogging: Sendable {
     static func audit(
         _ event: AuditEvent,
         category: String,

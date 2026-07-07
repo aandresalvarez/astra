@@ -21,7 +21,8 @@ enum RuntimeModelDisplayName {
     }
 
     static func familyVersionLabel(in value: String) -> String? {
-        guard let match = familyVersionRegex.firstMatch(
+        guard let familyVersionRegex,
+              let match = familyVersionRegex.firstMatch(
                 in: value,
                 range: NSRange(value.startIndex..<value.endIndex, in: value)
               ),
@@ -36,9 +37,20 @@ enum RuntimeModelDisplayName {
         return "\(family) \(value[majorRange]).\(value[minorRange])"
     }
 
-    private static let familyVersionRegex = try! NSRegularExpression(
-        pattern: #"(?i)(?:^|[^a-z])(opus|sonnet|haiku|fable|mythos)[\s._-]+([0-9]+)[\s._-]+([0-9]+)(?:[^0-9]|$)"#
-    )
+    /// Failable so a bad pattern degrades to the raw model ID (the
+    /// `displayName` fallback) instead of crashing at first use; the positive
+    /// matches are covered by `RuntimeModelDisplayNameTests`, so a pattern
+    /// typo fails CI.
+    private static let familyVersionRegex: NSRegularExpression? = {
+        do {
+            return try NSRegularExpression(
+                pattern: #"(?i)(?:^|[^a-z])(opus|sonnet|haiku|fable|mythos)[\s._-]+([0-9]+)[\s._-]+([0-9]+)(?:[^0-9]|$)"#
+            )
+        } catch {
+            AppLogger.error("Family-version pattern failed to compile; model names fall back to raw IDs: \(error)")
+            return nil
+        }
+    }()
 
     private static func displayFamily(_ family: String) -> String {
         let lower = family.lowercased()
