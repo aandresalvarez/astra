@@ -63,7 +63,7 @@ enum StoreScalePerformanceSnapshot {
         }
 
         var runsByTaskID: [UUID: Int] = [:]
-        var maxRunOutputChars = 0
+        var maxRunOutputBytes = 0
         var runOutputSizes: [Int] = []
         for run in runs {
             if let taskID = run.task?.id {
@@ -71,15 +71,15 @@ enum StoreScalePerformanceSnapshot {
             }
             let outputSize = run.output.utf8.count
             runOutputSizes.append(outputSize)
-            maxRunOutputChars = max(maxRunOutputChars, outputSize)
+            maxRunOutputBytes = max(maxRunOutputBytes, outputSize)
         }
 
         fields["max_events_per_task"] = PerformanceTelemetryFields.count(eventsByTaskID.values.max() ?? 0)
         fields["max_runs_per_task"] = PerformanceTelemetryFields.count(runsByTaskID.values.max() ?? 0)
         fields["p95_events_per_task"] = PerformanceTelemetryFields.count(percentile(Array(eventsByTaskID.values), percentile: 0.95))
         fields["p95_runs_per_task"] = PerformanceTelemetryFields.count(percentile(Array(runsByTaskID.values), percentile: 0.95))
-        fields["max_run_output_chars"] = PerformanceTelemetryFields.count(maxRunOutputChars)
-        fields["max_run_output_bucket"] = PerformanceTelemetryFields.byteBucket(maxRunOutputChars)
+        fields["max_run_output_bytes"] = PerformanceTelemetryFields.count(maxRunOutputBytes)
+        fields["max_run_output_bucket"] = PerformanceTelemetryFields.byteBucket(maxRunOutputBytes)
         fields["p50_run_output_bucket"] = PerformanceTelemetryFields.byteBucket(percentile(runOutputSizes, percentile: 0.50))
         fields["p95_run_output_bucket"] = PerformanceTelemetryFields.byteBucket(percentile(runOutputSizes, percentile: 0.95))
         return fields

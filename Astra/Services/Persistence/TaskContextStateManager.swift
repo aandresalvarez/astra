@@ -681,7 +681,7 @@ public enum TaskContextStateManager {
         let stateJSONPath = folder.isEmpty ? "" : (folder as NSString).appendingPathComponent(jsonFileName)
         let stateMDPath = folder.isEmpty ? "" : (folder as NSString).appendingPathComponent(markdownFileName)
         let outputFiles = outputTurnFiles(in: outputDirectory)
-        let latestOutputChars = outputFiles.last.map(fileSize) ?? 0
+        let latestOutputBytes = outputFiles.last.map(fileSize) ?? 0
 
         return [
             "phase": phase,
@@ -690,11 +690,11 @@ public enum TaskContextStateManager {
             "has_context_capsule": String(prompt.contains("Context Capsule v2:")),
             "has_thread_intent": String(prompt.contains("Thread Intent:")),
             "task_folder_present": String(!folder.isEmpty),
-            "state_json_chars": String(fileSize(stateJSONPath)),
-            "state_md_chars": String(fileSize(stateMDPath)),
-            "session_history_chars": String(fileSize(historyPath)),
+            "state_json_bytes": String(fileSize(stateJSONPath)),
+            "state_md_bytes": String(fileSize(stateMDPath)),
+            "session_history_bytes": String(fileSize(historyPath)),
             "output_file_count": String(outputFiles.count),
-            "output_latest_chars": String(latestOutputChars)
+            "output_latest_bytes": String(latestOutputBytes)
         ].merging(CapsuleSelectionPressure.fields(forTaskFolder: folder, prompt: prompt)) { _, new in new }
     }
 
