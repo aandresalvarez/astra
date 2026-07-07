@@ -1416,15 +1416,16 @@ struct RunPermissionManifestTests {
         #expect(!manifest.providerRender.enforcementTiers.contains(.osSandboxed))
     }
 
-    @Test("Disabled enforcement removes the OS sandbox tier even under an autonomous override")
-    func preflightManifestTierRespectsDisabledEnforcementUnderOverride() throws {
-        // The sandbox is OFF. Even with an execution-policy override that escalates
-        // the permission policy to autonomous, the manifest must NOT manufacture an
-        // "OS Sandboxed" tier — the user-level kill switch wins. This exercises the
-        // override path (`manifestExecutionPolicy.permissionPolicyOverride ??
-        // permissionPolicy`) while asserting a property that would actually break
-        // if off-enforcement weren't honored (the binary tier is unaffected by the
-        // best-effort/strict distinction, so off-vs-on is what's observable here).
+    @Test("Autonomous override floors a disabled sandbox to strict (OS sandbox tier present)")
+    func preflightManifestTierFloorsDisabledEnforcementUnderAutonomousOverride() throws {
+        // The stored sandbox setting is OFF, but an execution-policy override
+        // escalates the permission policy to autonomous. Autonomous always runs
+        // under a kernel floor (see `ExecutionSandboxSettings.current`), so the
+        // disabled setting is overridden to strict and the manifest DOES declare
+        // the "OS Sandboxed" tier. This exercises the override path
+        // (`manifestExecutionPolicy.permissionPolicyOverride ?? permissionPolicy`)
+        // and pins that the broadest-permission mode is never left unconfined by a
+        // user-set Off.
         let enforcementKey = AppStorageKeys.sandboxEnforcement
         let previousEnforcement = UserDefaults.standard.string(forKey: enforcementKey)
         UserDefaults.standard.set(ExecutionSandboxEnforcement.off.rawValue, forKey: enforcementKey)
@@ -1462,7 +1463,7 @@ struct RunPermissionManifestTests {
             defaultPolicyLevelRaw: AgentPolicyLevel.review.rawValue,
             modelContext: context
         )
-        #expect(!manifest.providerRender.enforcementTiers.contains(.osSandboxed))
+        #expect(manifest.providerRender.enforcementTiers.contains(.osSandboxed))
     }
 
     @Test("Preflight manifest persists Copilot runtime support tools separately")

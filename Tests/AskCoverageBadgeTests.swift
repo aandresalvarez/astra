@@ -65,9 +65,8 @@ struct AskCoverageBadgeTests {
         )
         #expect(!badge.hasLiveApprovals)
         #expect(badge.tier == .providerManaged)
-        // Autonomous escalates best-effort → strict (P0), so the strict floor
-        // holds here. A user-set .off would still opt out — escalation only lifts
-        // best-effort, it doesn't override a deliberately disabled sandbox.
+        // Autonomous escalates ANY non-strict enforcement (including a user-set
+        // .off) to strict, so the strict kernel floor always holds for Auto runs.
         #expect(badge.hasKernelFloor)
     }
 

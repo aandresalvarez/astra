@@ -1028,9 +1028,11 @@ struct ExecutionSandboxTests {
         #expect(custom.shouldWrap(runtime: .antigravityCLI))
         #expect(custom.shouldWrap(runtime: .openCodeCLI))
 
-        // Off disables wrapping for every runtime.
+        // Off disables wrapping for every runtime — for non-autonomous policies.
+        // (Autonomous escalates Off to a strict floor; see
+        // `autonomousEscalatesOffToStrict`.)
         defaults.set(ExecutionSandboxEnforcement.off.rawValue, forKey: AppStorageKeys.sandboxEnforcement)
-        let off = ExecutionSandboxSettings.current(permissionPolicy: .autonomous, defaults: defaults)
+        let off = ExecutionSandboxSettings.current(permissionPolicy: .restricted, defaults: defaults)
         #expect(off.enforcement == .off)
         #expect(off.readScope == .open)
         #expect(!off.shouldWrap(runtime: .claudeCode))
@@ -1824,6 +1826,30 @@ struct ExecutionSandboxTests {
         defaults.set(ExecutionSandboxEnforcement.strict.rawValue, forKey: AppStorageKeys.sandboxEnforcement)
         let resolved = ExecutionSandboxSettings.current(permissionPolicy: .autonomous, defaults: defaults)
         #expect(resolved.enforcement == .strict)
+    }
+
+    @Test("Autonomous escalates Off to a strict kernel floor (Auto is always sandboxed)")
+    func autonomousEscalatesOffToStrict() {
+        let (defaults, suite) = freshDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(ExecutionSandboxEnforcement.off.rawValue, forKey: AppStorageKeys.sandboxEnforcement)
+
+        // Non-autonomous honors the user's explicit Off (no wrapping).
+        let restricted = ExecutionSandboxSettings.current(permissionPolicy: .restricted, defaults: defaults)
+        #expect(restricted.enforcement == .off)
+        #expect(!restricted.shouldWrap(runtime: .claudeCode))
+
+        // Autonomous overrides Off and forces a strict, read-enforced, fully
+        // wrapped floor so the broadest-permission mode never runs unconfined —
+        // matching the "Auto (autonomous) runs always use strict" help text.
+        let auto = ExecutionSandboxSettings.current(permissionPolicy: .autonomous, defaults: defaults)
+        #expect(auto.enforcement == .strict)
+        #expect(auto.readScope == .enforce)
+        #expect(auto.shouldWrap(runtime: .claudeCode))
+        #expect(auto.shouldWrap(runtime: .codexCLI))
+        #expect(auto.shouldWrap(runtime: .cursorCLI))
+        #expect(auto.shouldWrap(runtime: .antigravityCLI))
+        #expect(auto.shouldWrap(runtime: .openCodeCLI))
     }
 
     @Test("shouldWrap matrix: only no-native-sandbox runtimes wrap, and never when off")

@@ -183,7 +183,14 @@ struct ExecutionSandboxSettings: Sendable, Equatable {
         var enforcement = ExecutionSandboxEnforcement.normalized(
             defaults.string(forKey: AppStorageKeys.sandboxEnforcement)
         )
-        if enforcement == .bestEffort, permissionPolicy == .autonomous {
+        // Autonomous is the broadest-permission mode (launched with
+        // `--dangerously-skip-permissions`), so it must always run under a
+        // kernel boundary — including when the stored setting is Off. Escalating
+        // to strict (fail-closed) matches the "Auto (autonomous) runs always use
+        // strict" contract shown in Settings and this function's own doc above.
+        // Without escalating from `.off`, an Off + autonomous run would execute
+        // with no OS sandbox at all — the most dangerous mode, unconfined.
+        if permissionPolicy == .autonomous, enforcement != .strict {
             enforcement = .strict
         }
 
