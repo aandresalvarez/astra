@@ -1623,7 +1623,16 @@ struct ShelfBrowserPanelView: View {
     }
 
     private func go() {
-        session.load(addressText, source: "address_bar")
+        // At rest the field holds display-only text (e.g. "report.html" for a
+        // file:// artifact, or a host with the scheme stripped), not the real
+        // URL — submitting that would re-resolve it as a web host and
+        // navigate to https://report.html. When the field is showing the
+        // untouched at-rest text, Go means "go to the current page", so
+        // submit the raw URL instead.
+        let isShowingRestDisplayText = !isAddressFocused
+            && hasDisplayablePage
+            && addressText == ShelfBrowserAddressFormatter.displayText(for: session.currentURL)
+        session.load(isShowingRestDisplayText ? session.currentURL : addressText, source: "address_bar")
         isAddressFocused = false
     }
 }
