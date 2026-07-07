@@ -49,7 +49,10 @@ struct AppAccessPresentationTests {
         #expect(!source.contains(".strokeBorder(controlStroke)"))
         #expect(!source.contains("controlStroke"))
         #expect(!source.contains("SidebarLeanPresentation"))
-        #expect(AppAccessMenuPresentation.footerIconSystemName == "ellipsis.circle")
+        // Gear (VS Code's Manage-menu pattern: the button opens a drawer
+        // that itself contains Settings) — ellipsis.circle promised only
+        // "more…" and was the vaguest glyph on the rail.
+        #expect(AppAccessMenuPresentation.footerIconSystemName == "gearshape")
         #expect(!source.contains("\"app.dashed\""))
     }
 
