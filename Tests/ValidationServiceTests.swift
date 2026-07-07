@@ -89,6 +89,38 @@ struct ValidationServiceTests {
         #expect(result.elapsedTime >= 0)
     }
 
+    @Test("shell validation runner now blocks an out-of-workspace write via the Seatbelt floor")
+    nonisolated func shellValidationRunnerBlocksOutOfWorkspaceWrite() async throws {
+        guard FileManager.default.isExecutableFile(atPath: ExecutionSandbox.sandboxExecPath) else { return }
+
+        // Deliberately NOT under NSTemporaryDirectory()/$TMPDIR: decideForCommand
+        // (like the agent sandbox it mirrors) always grants /tmp and $TMPDIR as
+        // scratch space regardless of workspace, so a fixture rooted there could
+        // never demonstrate a blocked write. /var/tmp is a distinct, normally
+        // world-writable system temp directory that is NOT in that unconditional
+        // grant list, so it correctly stands in for "some other real location."
+        let root = URL(fileURLWithPath: "/var/tmp")
+            .appendingPathComponent("astra-validation-escape-\(UUID().uuidString)", isDirectory: true)
+        let workspace = root.appendingPathComponent("workspace", isDirectory: true)
+        try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        // A sibling of the workspace, outside it — this is exactly the kind of
+        // write a compromised conftest.py/package.json script/Makefile could
+        // attempt. Before the Seatbelt floor this would silently succeed;
+        // decideForCommand's write jail must now block it.
+        let escapePath = root.appendingPathComponent("escaped.txt").path
+
+        let result = await ShellValidationCommandRunner().run(
+            command: "printf escape > '\(escapePath)'",
+            workingDirectory: workspace.path,
+            environment: ProcessInfo.processInfo.environment
+        )
+
+        #expect(result.exitCode != 0)
+        #expect(!FileManager.default.fileExists(atPath: escapePath))
+    }
+
     @Test("runTests uses injected command runner")
     func runTestsUsesInjectedCommandRunner() async throws {
         let root = "/tmp/astra-validation-runner-\(UUID().uuidString.prefix(8))"
