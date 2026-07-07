@@ -9,15 +9,6 @@ import ASTRACore
 
 @Suite("TaskThreadSnapshot")
 struct TaskThreadSnapshotTests {
-    // This struct's own tests are only a fraction of what runs under this name: it's
-    // extended with more @Test methods from TaskThreadConversationSnapshotTests.swift,
-    // QuerySessionPresentationTests.swift, TaskSnapshotWindowingTests.swift, and
-    // TaskFileShelfSnapshotTests.swift. Extensions can't add stored properties, so this
-    // primary declaration is the only place a guard can live — and it's required: some
-    // of those extension tests transitively read runtime seams (e.g. TaskForkSourcePointerSeam,
-    // TaskGeneratedFileQuerySeam) via AgentTask/TaskRun-adjacent production code, and
-    // `swift test --filter TaskThreadSnapshotTests` run alone crashes without this.
-    private let _registerRuntimeSeams: Void = RuntimeSeamRegistration.registerAll()
 
     @Test("visibleEventCount excludes high-frequency streaming-delta types and is correct regardless of array order")
     func visibleEventCountIsCorrectRegardlessOfOrder() {
