@@ -75,14 +75,22 @@ struct ShelfBrowserPanelView: View {
                 engineHintDismissed = true
             }
         }
-        // Safari-style address field: shows the full, editable URL while
-        // focused, and a friendlier identity (host, or filename for local
-        // files) at rest. Swap on focus change rather than on every
-        // keystroke so typing isn't fighting a live reformat.
+        // Address field shows the full, editable URL while focused and a
+        // friendlier identity (host, or filename for local files) at rest.
+        // Swap on focus change rather than on every keystroke so typing
+        // isn't fighting a live reformat. Both directions only swap when the
+        // text is UNTOUCHED (matches the current URL's raw or at-rest form);
+        // an in-progress edit is preserved across focus changes, Chrome-
+        // style. That's also load-bearing for the Go button: clicking it can
+        // blur the field before the button action runs, and if blur reverted
+        // the edit, Go would silently reload the old page instead of
+        // navigating to the typed destination.
         .onChange(of: isAddressFocused) { _, focused in
             if focused {
-                addressText = session.currentURL
-            } else {
+                if addressText == ShelfBrowserAddressFormatter.displayText(for: session.currentURL) {
+                    addressText = session.currentURL
+                }
+            } else if addressText == session.currentURL {
                 addressText = ShelfBrowserAddressFormatter.displayText(for: session.currentURL)
             }
         }
