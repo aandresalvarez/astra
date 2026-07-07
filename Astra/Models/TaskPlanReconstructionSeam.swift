@@ -24,7 +24,7 @@ import os
 // protocol + an `OSAllocatedUnfairLock`-backed static registry with
 // `.register(_:)` and a fail-fast `.required` accessor, wired up from
 // `RuntimeSeamRegistration.registerAll()`.
-public protocol TaskPlanReconstructing {
+public protocol TaskPlanReconstructing: Sendable {
     static func reconstruct(for task: AgentTask) -> TaskPlanState
     static func nextExecutableStep(in plan: TaskPlanPayload) -> TaskPlanPayloadStep?
 }

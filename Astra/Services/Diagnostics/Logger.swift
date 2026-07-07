@@ -20,7 +20,7 @@ import ASTRAModels
 // sandboxed file reads, neither of which belongs in a dependency-free leaf
 // target. See docs/architecture/swiftpm-target-extraction-models-persistence.md.
 
-enum AppLogger {
+enum AppLogger: Sendable {
     static let sensitiveModeKey = "sensitiveMode"
     private static let maxLogFileSize: UInt64 = 5_000_000
     private static let maxRotatedGenerations = 2

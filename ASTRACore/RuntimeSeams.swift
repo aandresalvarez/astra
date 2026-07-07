@@ -71,7 +71,7 @@ public enum ExecutionPathSafety {
 /// Whether a filesystem path is safe to trust as a mounted-credential source
 /// (e.g. GCP Application Default Credentials). Backed by
 /// `ExecutionSandbox`'s broad-root denylist and path canonicalization.
-public protocol ExecutionPathSafetyChecking {
+public protocol ExecutionPathSafetyChecking: Sendable {
     static func canonicalize(_ rawPath: String) -> String?
     static func isForbiddenReadableRoot(_ canonicalRoot: String) -> Bool
     static func isForbiddenWritableRoot(_ canonicalRoot: String) -> Bool
@@ -121,7 +121,7 @@ public enum AgentRuntimeRegistrySeam {
 /// `static func defaultModel(for:) -> String`, so its existing
 /// `AgentRuntimeRegistryLookup` conformance picks this up with no changes
 /// there.
-public protocol AgentRuntimeRegistryLookup {
+public protocol AgentRuntimeRegistryLookup: Sendable {
     static func registeredRuntime(rawValue: String?, fallback: AgentRuntimeID) -> AgentRuntimeID
     static func defaultModel(for runtime: AgentRuntimeID) -> String
 }

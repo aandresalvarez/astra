@@ -85,6 +85,6 @@ public enum ConnectorEnvironmentProjectionSeam {
     }
 }
 
-public protocol ConnectorEnvironmentProjecting {
+public protocol ConnectorEnvironmentProjecting: Sendable {
     static func environmentVariables(for connectors: [ConnectorEnvironmentFacts]) -> [String: String]
 }
