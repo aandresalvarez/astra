@@ -1054,7 +1054,7 @@ struct TaskThreadSnapshotTrigger: Equatable {
                 "status": status.rawValue,
                 "latest_run_status": latestRunStatus?.rawValue ?? "none",
                 "latest_run_output_bucket": PerformanceTelemetryFields.count(latestRunOutputBucket),
-                "latest_run_output_chars": PerformanceTelemetryFields.count(latestRunOutputCount),
+                "latest_run_output_bytes": PerformanceTelemetryFields.count(latestRunOutputCount),
                 "latest_run_output_byte_bucket": PerformanceTelemetryFields.byteBucket(latestRunOutputCount)
             ]
         )
