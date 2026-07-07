@@ -9,8 +9,6 @@ import ASTRACore
 @Suite("Connector Preflight")
 @MainActor
 struct ConnectorPreflightServiceTests {
-    private let _registerRuntimeSeams: Void = RuntimeSeamRegistration.registerAll() // firstBlockingIssue -> testConnection() needs AuditLoggingSeam
-
     @Test("Non-blocking connector types do not preflight before launch")
     func nonBlockingConnectorsDoNotPreflight() async throws {
         let connector = Connector(name: "GitHub", serviceType: "github", baseURL: "https://api.github.com", authMethod: "bearer")

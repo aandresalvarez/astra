@@ -20,25 +20,26 @@ import os
 // before choosing this design), so registration is **explicit, not
 // automatic**: `Astra/Services/Runtime/RuntimeSeamRegistration.swift` exposes
 // `RuntimeSeamRegistration.registerAll()`, called from `ASTRAApp.init()` for
-// the shipping app. Test targets that exercise the gated paths call it too
-// (see the call sites next to `@testable import ASTRA` in
-// `ExecutionEnvironmentTests.swift`, `AgentPolicyTests.swift`,
-// `AgentRuntimeAdapterTests.swift`, `RealProviderSmokeTests.swift`,
-// `TaskLaunchResourcePlanTests.swift`, `SchemaVersionTests.swift`,
-// `ProcessMonitorTests.swift`).
+// the shipping app. The ASTRATests bundle borrows C's load-time hook
+// instead: a `__attribute__((constructor))` in the test-only
+// `AstraTestSeamBootstrap` target calls `registerAll()` when dyld loads the
+// bundle, before either test framework schedules a suite (see
+// `Tests/RuntimeSeamTestBootstrap.swift`; individual suites must not
+// register — fitness-enforced).
 // Accessing either seam before registration is a programmer error, not a
 // silently-degraded security check: both trap with `preconditionFailure`
 // rather than failing open or returning a guessed answer.
 //
 // Swift Testing runs suite initializers concurrently on different GCD worker
-// threads by default (no implicit `.serialized`), and several of the suites
-// above register these seams from a stored-property initializer rather than
-// a single serialized entry point. A plain `static var` here would make
+// threads by default (no implicit `.serialized`). Before the load-time test
+// bootstrap existed, suites registered these seams from stored-property
+// initializers in parallel, and a plain `static var` here made
 // `registerAll()` a data race — confirmed empirically with
-// `swift test --sanitize=thread` before this locking was added. Both seams
-// therefore store their backing value behind an `OSAllocatedUnfairLock`
-// rather than a bare Optional static, so concurrent `registerAll()` calls
-// (and any concurrent reads racing a first registration) are synchronized.
+// `swift test --sanitize=thread` before this locking was added. Test
+// registration is single-threaded now (a dyld image initializer), but reads
+// still race each other and the production `registerAll()`, so both seams
+// keep their backing value behind an `OSAllocatedUnfairLock` rather than a
+// bare Optional static.
 public enum ExecutionPathSafety {
     private static let storage = OSAllocatedUnfairLock<(any ExecutionPathSafetyChecking.Type)?>(initialState: nil)
 
@@ -60,7 +61,7 @@ public enum ExecutionPathSafety {
         guard let checker = storage.withLock({ $0 }) else {
             preconditionFailure(
                 "ExecutionPathSafety checker read before RuntimeSeamRegistration.registerAll() ran. " +
-                "Call it in ASTRAApp.init() (already done) or at the top of the test that hit this path."
+                "Production registers it in ASTRAApp.init(); tests register it via the load-time bootstrap in Tests/AstraTestSeamBootstrap - a trap here in a test means that bootstrap wiring broke."
             )
         }
         return checker
@@ -91,7 +92,7 @@ public enum AgentRuntimeRegistrySeam {
         guard let lookup = storage.withLock({ $0 }) else {
             preconditionFailure(
                 "AgentRuntimeRegistrySeam lookup read before RuntimeSeamRegistration.registerAll() ran. " +
-                "Call it in ASTRAApp.init() (already done) or at the top of the test that hit this path."
+                "Production registers it in ASTRAApp.init(); tests register it via the load-time bootstrap in Tests/AstraTestSeamBootstrap - a trap here in a test means that bootstrap wiring broke."
             )
         }
         return lookup

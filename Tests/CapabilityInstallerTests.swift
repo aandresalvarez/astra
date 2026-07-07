@@ -76,8 +76,6 @@ private func makeAnalystCapabilityPackage() -> PluginPackage {
 @Suite("Capability Installer")
 @MainActor
 struct CapabilityInstallerTests {
-    private let _registerRuntimeSeams: Void = RuntimeSeamRegistration.registerAll() // connector.saveCredential/cleanupKeychain need ConnectorSecretSeam/OutlookMailConnectionSeam
-
     @Test("install writes app-local package and enables shared definitions")
     func installWritesLibraryAndEnablesSharedDefinitions() throws {
         let container = try makeCapabilityInstallerContainer()

@@ -52,7 +52,7 @@ public enum TaskForkStateInitializingSeam {
         guard let initializing = storage.withLock({ $0 }) else {
             preconditionFailure(
                 "TaskForkStateInitializingSeam read before RuntimeSeamRegistration.registerAll() ran. " +
-                "Call it in ASTRAApp.init() (already done) or at the top of the test that hit this path."
+                "Production registers it in ASTRAApp.init(); tests register it via the load-time bootstrap in Tests/AstraTestSeamBootstrap - a trap here in a test means that bootstrap wiring broke."
             )
         }
         return initializing
@@ -122,7 +122,7 @@ public enum TaskSessionStateApplyingSeam {
         guard let applying = storage.withLock({ $0 }) else {
             preconditionFailure(
                 "TaskSessionStateApplyingSeam read before RuntimeSeamRegistration.registerAll() ran. " +
-                "Call it in ASTRAApp.init() (already done) or at the top of the test that hit this path."
+                "Production registers it in ASTRAApp.init(); tests register it via the load-time bootstrap in Tests/AstraTestSeamBootstrap - a trap here in a test means that bootstrap wiring broke."
             )
         }
         return applying
@@ -155,7 +155,7 @@ public enum TaskFolderResolvingSeam {
         guard let resolving = storage.withLock({ $0 }) else {
             preconditionFailure(
                 "TaskFolderResolvingSeam read before RuntimeSeamRegistration.registerAll() ran. " +
-                "Call it in ASTRAApp.init() (already done) or at the top of the test that hit this path."
+                "Production registers it in ASTRAApp.init(); tests register it via the load-time bootstrap in Tests/AstraTestSeamBootstrap - a trap here in a test means that bootstrap wiring broke."
             )
         }
         return resolving
@@ -252,7 +252,7 @@ public enum TaskForkManifestWritingSeam {
         guard let writing = storage.withLock({ $0 }) else {
             preconditionFailure(
                 "TaskForkManifestWritingSeam read before RuntimeSeamRegistration.registerAll() ran. " +
-                "Call it in ASTRAApp.init() (already done) or at the top of the test that hit this path."
+                "Production registers it in ASTRAApp.init(); tests register it via the load-time bootstrap in Tests/AstraTestSeamBootstrap - a trap here in a test means that bootstrap wiring broke."
             )
         }
         return writing

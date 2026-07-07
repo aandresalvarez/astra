@@ -504,8 +504,6 @@ struct PromptWithSkillsTests {
 
 @Suite("Environment Variables")
 struct EnvironmentVariableTests {
-    private let _registerRuntimeSeams: Void = RuntimeSeamRegistration.registerAll() // setEnvironmentValue/environmentVariables setter need SkillSecretSeam; resolvedAllEnvironmentVariables needs ConnectorEnvironmentProjectionSeam
-
     @Test("Connector env vars projected through the seam match ConnectorRuntimeProjection directly")
     func resolvedAllEnvironmentVariablesMatchesDirectProjection() {
         let connector = Connector(name: "REDCap", serviceType: "redcap", baseURL: "https://redcap.example.invalid/api/")

@@ -1235,6 +1235,54 @@ struct ArchitectureFitnessTests {
         #expect(missingRuntimeIDs.isEmpty, "Runtime adapter docs are missing runtime IDs: \(missingRuntimeIDs)")
     }
 
+    @Test("Runtime seam registration stays wired through the load-time test bootstrap")
+    func runtimeSeamRegistrationStaysWiredThroughLoadTimeTestBootstrap() throws {
+        let root = try repositoryRoot()
+
+        // The bootstrap's three pieces reference each other only by C symbol
+        // name and Package.swift wiring — nothing fails at compile time if
+        // one drifts; seam-reading suites would just crash whenever Swift
+        // Testing happened to schedule one of them first. Pin the wiring.
+        let cSymbol = "astra_test_register_runtime_seams"
+
+        let constructor = try fileText("Tests/AstraTestSeamBootstrap/AstraTestSeamBootstrap.c", root: root)
+        #expect(constructor.contains("__attribute__((constructor))"))
+        #expect(constructor.contains("\(cSymbol)();"))
+
+        let shim = try fileText("Tests/RuntimeSeamTestBootstrap.swift", root: root)
+        #expect(shim.contains("@_cdecl(\"\(cSymbol)\")"))
+        #expect(shim.contains("RuntimeSeamRegistration.registerAll()"))
+        #expect(shim.contains("astra_test_seam_bootstrap_force_link()"))
+
+        let manifest = try fileText("Package.swift", root: root)
+        #expect(manifest.contains(#"name: "AstraTestSeamBootstrap""#))
+        #expect(manifest.contains(#"path: "Tests/AstraTestSeamBootstrap""#))
+        #expect(
+            manifest.components(separatedBy: "\"AstraTestSeamBootstrap\"").count - 1 >= 3,
+            "ASTRATests must declare the AstraTestSeamBootstrap target, depend on it, and exclude its directory from its own sources."
+        )
+
+        // Per-suite registration is what made the old guard pattern a
+        // scheduling roulette; exactly one file (the bootstrap shim) may
+        // reference the registration entry point.
+        let bootstrapShim = "Tests/RuntimeSeamTestBootstrap.swift"
+        var offenders: [String] = []
+        for file in try swiftFiles(under: root.appendingPathComponent("Tests")) {
+            let relative = relativePath(for: file, root: root)
+            if relative == bootstrapShim { continue }
+            // This suite mentions the symbol only inside string literals.
+            if relative.hasPrefix("Tests/ArchitectureFitnessTests/") { continue }
+            let contents = try String(contentsOf: file, encoding: .utf8)
+            if contents.contains("RuntimeSeamRegistration") {
+                offenders.append(relative)
+            }
+        }
+        #expect(
+            offenders.isEmpty,
+            "Runtime seams are registered once, by the load-time bootstrap in \(bootstrapShim); remove per-suite RuntimeSeamRegistration calls from: \(offenders.sorted())"
+        )
+    }
+
     @Test("Architecture docs cover Workspace Apps and execution environments")
     func architectureDocsCoverWorkspaceAppsAndExecutionEnvironments() throws {
         let root = try repositoryRoot()
@@ -1582,9 +1630,6 @@ struct ArchitectureFitnessTests {
             // and seamed the two Runtime-specific reads; the load-bearing Runtime -> Models
             // direction in Finding 2 of the extraction doc is untouched and remains its own
             // dedicated PR — see docs/architecture/swiftpm-target-extraction-models-persistence.md).
-            // One line registers the ExecutionPathSafety/AgentRuntimeRegistrySeam seams the
-            // suite's gcpADC() construction now needs (Swift has no module-load hook, so this
-            // is an explicit, one-line-per-file requirement — see RuntimeSeamRegistration.swift).
             "Tests/AgentRuntimeAdapterTests.swift": .init(3_250, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
             "Tests/AgentRuntimeWorkerTests.swift": .init(2_550, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
             "Tests/AgentPolicyTests.swift": .init(2_650, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
