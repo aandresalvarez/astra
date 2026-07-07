@@ -38,9 +38,9 @@ struct TaskPlanStateCacheSignature: Equatable {
         }
 
         var runAccumulator = FingerprintAccumulator()
-        var maxRunOutputChars = 0
+        var maxRunOutputBytes = 0
         for (index, run) in runs.enumerated() {
-            maxRunOutputChars = max(maxRunOutputChars, run.output.utf8.count)
+            maxRunOutputBytes = max(maxRunOutputBytes, run.output.utf8.count)
             runAccumulator.include(index)
             runAccumulator.include(run.id)
             runAccumulator.include(Self.code(for: run.status))
@@ -72,7 +72,7 @@ struct TaskPlanStateCacheSignature: Equatable {
                 "event_count": PerformanceTelemetryFields.count(events.count),
                 "run_count": PerformanceTelemetryFields.count(runs.count),
                 "plan_event_count": PerformanceTelemetryFields.count(planEventCount),
-                "max_run_output_bucket": PerformanceTelemetryFields.byteBucket(maxRunOutputChars)
+                "max_run_output_bucket": PerformanceTelemetryFields.byteBucket(maxRunOutputBytes)
             ]
         )
     }
