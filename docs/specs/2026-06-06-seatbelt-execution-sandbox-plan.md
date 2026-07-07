@@ -73,8 +73,11 @@ All phases implemented and tested.
   - `open` preserves the original compatibility behavior: broad filesystem reads
     with workspace-scoped writes.
   - `audit` (default for best-effort) emits Seatbelt `debug deny file-read*`
-    would-deny reports while still allowing the read, so dogfood runs reveal
-    missing allowlist roots before enforcement breaks providers.
+    would-deny reports while still allowing the read. These reports land only
+    in the macOS unified system log — ASTRA has no logging entitlement to read
+    another process's sandbox denials and does not capture or surface them, so
+    seeing a missing allowlist root before enforcement breaks providers requires
+    a developer to watch Console.app / `log stream` directly during dogfooding.
   - `enforce` (forced by strict/autonomous) denies `file-read*` and re-allows
     only explicit workspace/input/additional paths, ASTRA task/shim folders,
     provider state/cache, temp, `/dev`, and system/toolchain roots. User-data

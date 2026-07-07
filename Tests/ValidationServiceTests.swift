@@ -17,6 +17,7 @@ private actor StubValidationCommandRunner: ValidationCommandRunning {
         let command: String
         let workingDirectory: String
         let pathContainsShellSuffix: Bool
+        let additionalWritablePaths: [String]
     }
 
     private var results: [ValidationCommandResult]
@@ -26,11 +27,12 @@ private actor StubValidationCommandRunner: ValidationCommandRunning {
         self.results = results
     }
 
-    func run(command: String, workingDirectory: String, environment: [String: String]) async -> ValidationCommandResult {
+    func run(command: String, workingDirectory: String, environment: [String: String], additionalWritablePaths: [String]) async -> ValidationCommandResult {
         calls.append(Call(
             command: command,
             workingDirectory: workingDirectory,
-            pathContainsShellSuffix: environment["PATH"]?.contains(RuntimePathResolver.shellPathSuffix) == true
+            pathContainsShellSuffix: environment["PATH"]?.contains(RuntimePathResolver.shellPathSuffix) == true,
+            additionalWritablePaths: additionalWritablePaths
         ))
         return results.isEmpty
             ? ValidationCommandResult(exitCode: 0, stdout: "", stderr: "")
@@ -60,7 +62,8 @@ struct ValidationServiceTests {
         let result = await ShellValidationCommandRunner().run(
             command: "cat marker.txt",
             workingDirectory: directory.path,
-            environment: ProcessInfo.processInfo.environment
+            environment: ProcessInfo.processInfo.environment,
+            additionalWritablePaths: []
         )
 
         #expect(result.exitCode == 0)
@@ -78,7 +81,8 @@ struct ValidationServiceTests {
         let result = await ShellValidationCommandRunner().run(
             command: "echo should-not-run",
             workingDirectory: missingDirectory,
-            environment: ProcessInfo.processInfo.environment
+            environment: ProcessInfo.processInfo.environment,
+            additionalWritablePaths: []
         )
 
         #expect(result.exitCode == -1)
@@ -87,6 +91,200 @@ struct ValidationServiceTests {
         #expect(!result.timedOut)
         #expect(!result.cancelled)
         #expect(result.elapsedTime >= 0)
+    }
+
+    @Test("shell validation runner now blocks an out-of-workspace write via the Seatbelt floor")
+    nonisolated func shellValidationRunnerBlocksOutOfWorkspaceWrite() async throws {
+        guard FileManager.default.isExecutableFile(atPath: ExecutionSandbox.sandboxExecPath) else { return }
+
+        // Deliberately NOT under NSTemporaryDirectory()/$TMPDIR: decideForCommand
+        // (like the agent sandbox it mirrors) always grants /tmp and $TMPDIR as
+        // scratch space regardless of workspace, so a fixture rooted there could
+        // never demonstrate a blocked write. /var/tmp is a distinct, normally
+        // world-writable system temp directory that is NOT in that unconditional
+        // grant list, so it correctly stands in for "some other real location."
+        let root = URL(fileURLWithPath: "/var/tmp")
+            .appendingPathComponent("astra-validation-escape-\(UUID().uuidString)", isDirectory: true)
+        let workspace = root.appendingPathComponent("workspace", isDirectory: true)
+        try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        // A sibling of the workspace, outside it — this is exactly the kind of
+        // write a compromised conftest.py/package.json script/Makefile could
+        // attempt. Before the Seatbelt floor this would silently succeed;
+        // decideForCommand's write jail must now block it.
+        let escapePath = root.appendingPathComponent("escaped.txt").path
+
+        let result = await ShellValidationCommandRunner().run(
+            command: "printf escape > '\(escapePath)'",
+            workingDirectory: workspace.path,
+            environment: ProcessInfo.processInfo.environment,
+            additionalWritablePaths: []
+        )
+
+        #expect(result.exitCode != 0)
+        #expect(!FileManager.default.fileExists(atPath: escapePath))
+    }
+
+    @Test("shell validation runner grants a multi-path workspace's additional paths, not just the primary one")
+    nonisolated func shellValidationRunnerGrantsAdditionalWritablePaths() async throws {
+        guard FileManager.default.isExecutableFile(atPath: ExecutionSandbox.sandboxExecPath) else { return }
+
+        let root = URL(fileURLWithPath: "/var/tmp")
+            .appendingPathComponent("astra-validation-multipath-\(UUID().uuidString)", isDirectory: true)
+        let primary = root.appendingPathComponent("primary", isDirectory: true)
+        let additional = root.appendingPathComponent("additional", isDirectory: true)
+        try FileManager.default.createDirectory(at: primary, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: additional, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        // A workspace can span multiple paths (Workspace.additionalPaths); a
+        // validation command run from the primary path legitimately writing
+        // generated fixtures/output into one of those additional paths must
+        // not be denied by the write jail.
+        let outputPath = additional.appendingPathComponent("output.txt").path
+
+        let result = await ShellValidationCommandRunner().run(
+            command: "printf multipath > '\(outputPath)'",
+            workingDirectory: primary.path,
+            environment: ProcessInfo.processInfo.environment,
+            additionalWritablePaths: [additional.path]
+        )
+
+        #expect(result.exitCode == 0)
+        #expect(FileManager.default.fileExists(atPath: outputPath))
+    }
+
+    // MARK: - Per-tool cache grant dispatch
+
+    @Test("pytest/python get no package-manager cache grants")
+    func toolCacheGrantsExcludePythonFromPackageManagerCaches() {
+        for root in ["pytest", "python", "python3"] {
+            #expect(ShellValidationCommandRunner.toolCacheHomeRelativePaths(forRoot: root, makefileMentions: []).isEmpty)
+        }
+    }
+
+    @Test("npm/yarn/pnpm each get only their own cache paths, not a blanket list")
+    func toolCacheGrantsAreScopedToTheInvokedTool() {
+        #expect(ShellValidationCommandRunner.toolCacheHomeRelativePaths(forRoot: "npm", makefileMentions: []) == [".npm"])
+        #expect(ShellValidationCommandRunner.toolCacheHomeRelativePaths(forRoot: "yarn", makefileMentions: []) == ["Library/Caches/Yarn", ".yarn/berry"])
+        // pnpm is deliberately narrowed to the store, NOT the whole `Library/pnpm`
+        // tree (which also holds pnpm's own executable/tooling — see doc comment).
+        #expect(ShellValidationCommandRunner.toolCacheHomeRelativePaths(forRoot: "pnpm", makefileMentions: []) == ["Library/pnpm/store"])
+    }
+
+    @Test("make grants only the caches for package managers its Makefile actually mentions")
+    func makeToolCacheGrantsMatchMakefileMentions() {
+        #expect(ShellValidationCommandRunner.toolCacheHomeRelativePaths(forRoot: "make", makefileMentions: []).isEmpty)
+        #expect(ShellValidationCommandRunner.toolCacheHomeRelativePaths(forRoot: "make", makefileMentions: ["npm"]) == [".npm"])
+        #expect(ShellValidationCommandRunner.toolCacheHomeRelativePaths(forRoot: "make", makefileMentions: ["npm", "yarn"]).sorted() ==
+            [".npm", ".yarn/berry", "Library/Caches/Yarn"].sorted())
+    }
+
+    // MARK: - Makefile self-sandboxing exclusion (comment-stripping)
+
+    @Test("A Makefile that mentions swift only in a comment does not trigger the self-sandboxing exclusion")
+    func makefileCommentMentionDoesNotTriggerExclusion() throws {
+        let root = try makefileFixture(contents: """
+        # this project also builds a swift companion tool on other platforms
+        test:
+        \tpytest
+        """)
+        defer { try? FileManager.default.removeItem(atPath: root) }
+
+        let mentions = ShellValidationCommandRunner.makefileMentionedTools(workingDirectory: root)
+        #expect(!mentions.contains("swift"))
+        #expect(!ShellValidationCommandRunner.isSelfSandboxingCommand(root: "make", makefileMentions: mentions))
+    }
+
+    @Test("A Makefile that actually invokes swift in a recipe triggers the self-sandboxing exclusion")
+    func makefileRecipeMentionTriggersExclusion() throws {
+        let root = try makefileFixture(contents: """
+        test:
+        \tswift test
+        """)
+        defer { try? FileManager.default.removeItem(atPath: root) }
+
+        let mentions = ShellValidationCommandRunner.makefileMentionedTools(workingDirectory: root)
+        #expect(mentions.contains("swift"))
+        #expect(ShellValidationCommandRunner.isSelfSandboxingCommand(root: "make", makefileMentions: mentions))
+    }
+
+    @Test("A Makefile that invokes npm in a recipe is detected for the cache-grant dispatch")
+    func makefileRecipeMentionIsDetectedForCacheDispatch() throws {
+        let root = try makefileFixture(contents: """
+        test:
+        \tnpm test
+        """)
+        defer { try? FileManager.default.removeItem(atPath: root) }
+
+        let mentions = ShellValidationCommandRunner.makefileMentionedTools(workingDirectory: root)
+        #expect(mentions == ["npm"])
+    }
+
+    @Test("stripMakefileComments removes text after an unescaped # but keeps an escaped \\# literal")
+    func stripMakefileCommentsHonorsEscapedHash() {
+        let stripped = ShellValidationCommandRunner.stripMakefileComments("""
+        test: # runs swift here (comment, should be stripped)
+        \techo not-a-comment-\\#swift
+        """)
+        #expect(!stripped.contains("(comment"))
+        #expect(stripped.contains("not-a-comment-\\#swift"))
+    }
+
+    @Test("A Makefile that invokes go in a recipe grants the Go cache paths, not npm/yarn/pnpm")
+    func makefileGoMentionGrantsGoCachesOnly() throws {
+        let root = try makefileFixture(contents: """
+        test:
+        \tgo test ./...
+        """)
+        defer { try? FileManager.default.removeItem(atPath: root) }
+
+        let mentions = ShellValidationCommandRunner.makefileMentionedTools(workingDirectory: root)
+        #expect(mentions == ["go"])
+        #expect(ShellValidationCommandRunner.toolCacheHomeRelativePaths(forRoot: "make", makefileMentions: mentions).sorted() ==
+            ["Library/Caches/go-build", "go/pkg/mod"].sorted())
+    }
+
+    @Test("An oversized Makefile is not scanned — treated as mentioning nothing, never wrapped-with-extra-grants")
+    func oversizedMakefileIsNotScanned() throws {
+        // Deliberately mentions "swift" in a real (non-comment) recipe line —
+        // if the size bound didn't short-circuit the scan, this would match.
+        let hugeContents = String(repeating: "# padding\n", count: 200_000) + "test:\n\tswift test\n"
+        let root = try makefileFixture(contents: hugeContents)
+        defer { try? FileManager.default.removeItem(atPath: root) }
+
+        let mentions = ShellValidationCommandRunner.makefileMentionedTools(workingDirectory: root)
+        #expect(mentions.isEmpty)
+    }
+
+    @Test("A Makefile that is a symlink to an oversized file is not scanned (fileSize resolves symlinks first)")
+    func symlinkedOversizedMakefileIsNotScanned() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-makefile-symlink-fixture-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        // The symlink's OWN size (the length of the path it stores) is tiny —
+        // proving the size check must resolve the symlink to see the REAL
+        // (huge) target size, not just check the link itself.
+        let hugeTarget = root.appendingPathComponent("big.txt")
+        try String(repeating: "swift test\n", count: 500_000).write(to: hugeTarget, atomically: true, encoding: .utf8)
+        try FileManager.default.createSymbolicLink(
+            at: root.appendingPathComponent("Makefile"),
+            withDestinationURL: hugeTarget
+        )
+
+        let mentions = ShellValidationCommandRunner.makefileMentionedTools(workingDirectory: root.path)
+        #expect(mentions.isEmpty)
+    }
+
+    private func makefileFixture(contents: String) throws -> String {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-makefile-fixture-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try contents.write(to: root.appendingPathComponent("Makefile"), atomically: true, encoding: .utf8)
+        return root.path
     }
 
     @Test("runTests uses injected command runner")
@@ -110,7 +308,8 @@ struct ValidationServiceTests {
             StubValidationCommandRunner.Call(
                 command: "swift test --filter Focused",
                 workingDirectory: root,
-                pathContainsShellSuffix: true
+                pathContainsShellSuffix: true,
+                additionalWritablePaths: AgentRuntimeProcessRunner.runtimeAdditionalPaths(for: task)
             )
         ])
     }
@@ -452,7 +651,8 @@ struct ValidationServiceTests {
             StubValidationCommandRunner.Call(
                 command: "swift test --filter Focused",
                 workingDirectory: root,
-                pathContainsShellSuffix: true
+                pathContainsShellSuffix: true,
+                additionalWritablePaths: AgentRuntimeProcessRunner.runtimeAdditionalPaths(for: task)
             )
         ])
         let assertionEvent = try #require(task.events.first { $0.type == TaskValidationEventTypes.assertionFailed })

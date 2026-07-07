@@ -17,6 +17,20 @@ public enum ValidationCommandPolicy {
         isAllowed(command, workspacePath: workspacePath, allowsFileAssertions: true)
     }
 
+    /// The lowercased root command token (e.g. `"swift"` from `'swift' test` or
+    /// `SWIFT BUILD`), using the exact same quote-aware tokenizer and lowercasing
+    /// this policy's own allowlist check uses. `nil` if the command doesn't
+    /// parse. Callers that need to reason about a SPECIFIC allowed root (e.g. to
+    /// apply tool-specific handling downstream of the allowlist) should use this
+    /// rather than re-splitting the raw string, so they can't drift from what
+    /// the allowlist itself actually matched (a raw split would miss a quoted
+    /// or differently-cased root this policy already allows through).
+    public static func rootToken(of command: String) -> String? {
+        let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let parsedCommand = parseShellCommand(trimmed) else { return nil }
+        return parsedCommand.tokens.first?.lowercased()
+    }
+
     private static func isAllowed(
         _ command: String,
         workspacePath: String?,
@@ -156,6 +170,16 @@ public enum ValidationCommandPolicy {
                   ["test", "build"].contains(tokens[1]),
                   !containsDisplayOnlyFlag(tokens.dropFirst(2)),
                   !(tokens[1] == "test" && swiftTestHasListSubcommand(tokens.dropFirst(2))),
+                  // --disable-sandbox turns off SwiftPM's own internal Seatbelt
+                  // confinement (its documented flag for "the caller is already
+                  // sandboxed" scenarios). Since ASTRA's own validation floor
+                  // also excludes swift-rooted commands from wrapping (they
+                  // can't be nested under reliably — see
+                  // ValidationService.isSelfSandboxingCommand), allowing this
+                  // flag through would let a command run with NEITHER
+                  // SwiftPM's sandbox NOR ASTRA's, an explicit way to strip the
+                  // one confinement layer that command already had.
+                  !tokens.dropFirst(2).contains("--disable-sandbox"),
                   swiftPathOptionsAreScoped(tokens: tokens, workspacePath: workspacePath) else {
                 return false
             }

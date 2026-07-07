@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import ASTRACore
 import ASTRAPersistence
 import ASTRAModels
@@ -102,7 +103,7 @@ enum ExecutionSandboxReadScope: String, Codable, Sendable, CaseIterable, Identif
         case .open:
             "Sandboxed agents keep broad filesystem reads except privacy-sensitive media and app roots; writes remain workspace-scoped."
         case .audit:
-            "Sandboxed agents keep broad reads and log strict-scope misses, while hard-blocking privacy-sensitive media and app roots unless explicitly granted."
+            "Sandboxed agents keep broad reads and only report strict-scope misses to the macOS system log — ASTRA does not capture them — while hard-blocking privacy-sensitive media and app roots unless explicitly granted."
         case .enforce:
             "Sandboxed agents can read only explicit workspace/input paths, provider state, ASTRA task folders, temporary paths, and system/toolchain roots."
         }
@@ -183,15 +184,35 @@ struct ExecutionSandboxSettings: Sendable, Equatable {
         var enforcement = ExecutionSandboxEnforcement.normalized(
             defaults.string(forKey: AppStorageKeys.sandboxEnforcement)
         )
-        if enforcement == .bestEffort, permissionPolicy == .autonomous {
+        // The "Allow Network In Sandbox" toggle is disabled (frozen at its last
+        // value) in Settings whenever the STORED enforcement is Off — capture
+        // that before any escalation below mutates `enforcement`, so a stale
+        // `false` left over from an earlier, unrelated Offline session can't
+        // silently deny network to a run that ends up escalated (autonomous
+        // here, or the validation floor's own Off->bestEffort escalation in
+        // `decideForCommand`, which uses this function's resolved `allowNetwork`
+        // as-is). With the toggle frozen, the user would have no reachable
+        // control to fix a stale `false` in that state.
+        let storedEnforcementWasOff = enforcement == .off
+        // Autonomous is the broadest-permission mode (launched with
+        // `--dangerously-skip-permissions`), so it must always run under a
+        // kernel boundary — including when the stored setting is Off. Escalating
+        // to strict (fail-closed) matches the "Auto (autonomous) runs always use
+        // strict" contract shown in Settings and this function's own doc above.
+        // Without escalating from `.off`, an Off + autonomous run would execute
+        // with no OS sandbox at all — the most dangerous mode, unconfined.
+        if permissionPolicy == .autonomous, enforcement != .strict {
             enforcement = .strict
         }
 
-        // Network is allowed unless an explicit Bool `false` is stored. A
-        // non-Bool / corrupt value falls back to the default (network on) — a
-        // deliberate fail-open so a damaged preference can't silently sever the
-        // CLI's model API; the offline control is a user-set Bool toggle.
-        let allowNetwork = defaults.object(forKey: AppStorageKeys.sandboxAllowNetwork) as? Bool ?? defaultAllowNetwork
+        // Network is allowed unless an explicit Bool `false` is stored AND that
+        // toggle was actually reachable (stored enforcement wasn't Off). A
+        // non-Bool / corrupt value also falls back to the default (network on)
+        // — a deliberate fail-open so a damaged preference can't silently sever
+        // the CLI's model API; the offline control is a user-set Bool toggle.
+        let allowNetwork = storedEnforcementWasOff
+            ? defaultAllowNetwork
+            : (defaults.object(forKey: AppStorageKeys.sandboxAllowNetwork) as? Bool ?? defaultAllowNetwork)
         let layerNative = defaults.object(forKey: AppStorageKeys.sandboxLayerNativeProviders) as? Bool ?? defaultLayerNativeProviders
         var readScope = ExecutionSandboxReadScope.normalized(
             defaults.string(forKey: AppStorageKeys.sandboxReadScope)
@@ -254,6 +275,24 @@ enum ExecutionSandboxDecision: Equatable {
     case failClosed(reason: String)
 }
 
+/// Outcome of `ExecutionSandbox.decideForCommand`, the non-agent counterpart to
+/// `ExecutionSandboxDecision` — a single CLI invocation (executable + args + cwd)
+/// rather than a full `AgentRuntimeProcessLaunchPlan`.
+enum ExecutionSandboxCommandDecision: Equatable {
+    /// Sandbox applied. Run `executablePath`/`arguments` (now `sandbox-exec` plus
+    /// the wrapped profile) instead of the original command.
+    case applied(executablePath: String, arguments: [String], writableRoots: [String])
+    /// Sandbox intentionally not applied (unsupported platform). Run the
+    /// original command unchanged.
+    case skipped(reason: String)
+    /// Sandbox wanted but could not be applied under best-effort. Run the
+    /// original command unchanged and surface a warning.
+    case fallback(reason: String)
+    /// Sandbox wanted but could not be applied under strict enforcement. The
+    /// run must not proceed unconfined.
+    case failClosed(reason: String)
+}
+
 /// Wraps provider CLI launches in a macOS Seatbelt profile. Best Effort keeps
 /// the long-standing write boundary and can audit read-scope misses; Strict
 /// additionally denies filesystem reads outside ASTRA's readable allowlist.
@@ -274,7 +313,11 @@ enum ExecutionSandboxDecision: Equatable {
 ///   re-allows. In Strict, the profile also denies `file-read*` and re-allows
 ///   only explicit workspace/input paths, provider state, temporary paths, and
 ///   system/toolchain roots. In Audit, a `debug deny file-read*` rule reports
-///   would-deny reads without disabling the write boundary.
+///   would-deny reads without disabling the write boundary. Those reports land
+///   only in the macOS unified system log (Console.app / `log stream`) — ASTRA
+///   has no logging entitlement to read another process's sandbox denials and
+///   does not capture or surface them; a developer must watch the system log
+///   directly during dogfooding to see a strict-scope miss.
 /// - Privacy-sensitive home/media/app roots are hard-denied even in Open/Audit
 ///   read scope so provider probes cannot trigger macOS TCC prompts under
 ///   ASTRA's name. A path inside those roots is re-allowed only when it is also
@@ -514,6 +557,185 @@ enum ExecutionSandbox: Sendable {
             extraEnvironment: developerDirectoryEnvironment(plan: plan, fileManager: fileManager)
         )
         return .applied(plan: wrapped, writableRoots: roots)
+    }
+
+    // MARK: - Non-agent command wrapping
+
+    /// Non-agent entry point: wraps a single CLI invocation (the task-validation
+    /// harness — `pytest`/`npm test`/`swift test`/`xcodebuild`/`make test`, gated
+    /// by `ValidationCommandPolicy` before ever reaching here) in the same
+    /// write-scoped, privacy-root-denying Seatbelt profile `decide(...)` builds
+    /// for agent runtimes, without requiring an `AgentRuntimeID` or a full
+    /// `AgentRuntimeProcessLaunchPlan`.
+    ///
+    /// Unlike `decide(...)`, this always applies at least a best-effort floor:
+    /// `enforcement == .off` is escalated to `.bestEffort` before anything else
+    /// runs, so a user disabling the *agent* sandbox does not also leave an
+    /// arbitrary, possibly agent-authored test/build harness completely
+    /// unconfined (the same principle as the autonomous-always-strict floor).
+    /// Read scope is always write-only (`.open` — broad reads, scoped writes):
+    /// restricting reads for arbitrary project tooling is a much larger
+    /// breakage surface than restricting writes, and the privacy-root deny
+    /// (Photos/Music/Mail/Messages/`/Applications`/`/Volumes`/`/Network`) stays
+    /// active regardless, exactly as it does for agent runs in Open scope.
+    static func decideForCommand(
+        executablePath: String,
+        arguments: [String],
+        currentDirectory: String,
+        environment: [String: String],
+        additionalWritablePaths: [String] = [],
+        homeDirectory: String = NSHomeDirectory(),
+        homeWritableRelativePaths: [String],
+        settings: ExecutionSandboxSettings,
+        fileManager: FileManager = .default
+    ) -> ExecutionSandboxCommandDecision {
+        // Off is not a valid outcome for this floor — see doc comment above.
+        let enforcement = settings.enforcement == .off ? .bestEffort : settings.enforcement
+
+        let unavailable: (String) -> ExecutionSandboxCommandDecision = { reason in
+            enforcement == .strict ? .failClosed(reason: reason) : .fallback(reason: reason)
+        }
+
+        guard let workspace = canonicalize(currentDirectory), !workspace.isEmpty else {
+            return unavailable("no_execution_path")
+        }
+        guard !isOverlyBroadRoot(workspace) else {
+            return unavailable("unsafe_execution_path")
+        }
+        guard fileManager.isExecutableFile(atPath: sandboxExecPath) else {
+            return unavailable("sandbox_exec_missing")
+        }
+
+        let roots = commandWritableRoots(
+            canonicalWorkspace: workspace,
+            additionalWritablePaths: additionalWritablePaths,
+            homeDirectory: homeDirectory,
+            homeWritableRelativePaths: homeWritableRelativePaths,
+            environment: environment
+        )
+        guard !roots.isEmpty else {
+            return unavailable("no_writable_roots")
+        }
+
+        // Read scope is always .open (see doc comment) — no readable-root
+        // computation needed; only the always-on privacy-root deny applies.
+        let explicitReadRoots = commandExplicitReadRoots(
+            canonicalWorkspace: workspace,
+            additionalWritablePaths: additionalWritablePaths
+        )
+        // The active developer toolchain must stay readable wherever it lives.
+        // This matters even in .open scope: the privacy-root deny below denies
+        // `/Applications` unconditionally (not gated by read scope), so on a
+        // machine whose active DEVELOPER_DIR is full Xcode, a wrapped command
+        // that invokes an Apple tool shim (`git`, `clang`, ...) would otherwise
+        // hit the "install command line developer tools" dialog even though
+        // the tools are installed — the exact bug already fixed once for the
+        // agent path (see the design-note comment on `decide` above).
+        let developerRoots = developerDirectoryRoots(environment: environment, fileManager: fileManager)
+        let protectedReadRoots = protectedReadRoots()
+        let explicitProtectedReadAllowRoots = protectedReadAllowRoots(
+            explicitReadRoots: explicitReadRoots + developerRoots,
+            protectedReadRoots: protectedReadRoots
+        )
+        let profile = makeProfile(
+            writableRootCount: roots.count,
+            protectedReadRootCount: protectedReadRoots.count,
+            explicitProtectedReadAllowRootCount: explicitProtectedReadAllowRoots.count,
+            allowNetwork: settings.allowNetwork,
+            readScope: .open
+        )
+        let args = makeArguments(
+            profile: profile,
+            writableRoots: roots,
+            protectedReadRoots: protectedReadRoots,
+            explicitProtectedReadAllowRoots: explicitProtectedReadAllowRoots,
+            executablePath: executablePath,
+            arguments: arguments
+        )
+        return .applied(executablePath: sandboxExecPath, arguments: args, writableRoots: roots)
+    }
+
+    /// Writable roots for a non-agent command: the workspace, any additional
+    /// paths, `$TMPDIR`/`/tmp`, and the given home-relative tool-cache paths
+    /// resolved under `homeDirectory` — mirrors `writableRoots(plan:...)`'s
+    /// dedup/filter tail without requiring an `AgentRuntimeProcessLaunchPlan`.
+    private static func commandWritableRoots(
+        canonicalWorkspace: String,
+        additionalWritablePaths: [String],
+        homeDirectory: String,
+        homeWritableRelativePaths: [String],
+        environment: [String: String]
+    ) -> [String] {
+        var raw: [String] = [canonicalWorkspace]
+        raw.append(contentsOf: additionalWritablePaths)
+
+        let trimmedHome = homeDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedHome.isEmpty, let canonicalHome = canonicalize(trimmedHome), !isOverlyBroadRoot(canonicalHome) {
+            for relative in homeWritableRelativePaths {
+                raw.append((trimmedHome as NSString).appendingPathComponent(relative))
+            }
+        }
+
+        if let tmp = environment["TMPDIR"], !tmp.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            raw.append(tmp)
+        }
+        raw.append("/tmp")
+        // The Darwin per-user CACHE directory (e.g. `/var/folders/<xx>/<hash>/C/`)
+        // is a SIBLING of $TMPDIR (`.../T/`), not a subpath of it — granting
+        // TMPDIR alone does not cover it. clang/swiftc write module-cache and
+        // other build-tool scratch state to a `clang/` subdirectory there;
+        // without granting it, a wrapped `swift build`/`swift test` fails with
+        // "unable to open output file ... ModuleCache/...: Operation not
+        // permitted" even with $TMPDIR granted. Confirmed by direct
+        // reproduction, not inferred. Deliberately narrowed to the `clang`
+        // subdirectory rather than the whole cache root: that root is a SHARED
+        // namespace for every app's per-user cache on the machine (confirmed —
+        // it contains dozens of unrelated apps' cache dirs, e.g. password
+        // managers, browsers, editors), so granting all of it would let a
+        // wrapped validation command read/write other applications' cached
+        // state; only the compiler's own subdirectory is actually needed.
+        if let cacheDir = darwinUserCacheDirectory() {
+            raw.append((cacheDir as NSString).appendingPathComponent("clang"))
+        }
+
+        var seen: Set<String> = []
+        return raw
+            .compactMap { canonicalize($0) }
+            .flatMap(sandboxPathSpellings)
+            .filter { root in
+                guard !isForbiddenWritableRoot(root) else { return false }
+                return seen.insert(root).inserted
+            }
+    }
+
+    /// The Darwin per-user cache directory via `confstr(_CS_DARWIN_USER_CACHE_DIR)`
+    /// — the same mechanism `getconf DARWIN_USER_CACHE_DIR` uses. `nil` if the
+    /// call fails (defensive; every observed macOS process has one).
+    private static func darwinUserCacheDirectory() -> String? {
+        var length = confstr(_CS_DARWIN_USER_CACHE_DIR, nil, 0)
+        guard length > 0 else { return nil }
+        var buffer = [Int8](repeating: 0, count: length)
+        length = confstr(_CS_DARWIN_USER_CACHE_DIR, &buffer, buffer.count)
+        guard length > 0, length <= buffer.count else { return nil }
+        return String(cString: buffer)
+    }
+
+    /// Explicit read roots for the protected-root re-allow check — the
+    /// workspace plus any additional writable paths, so a workspace nested
+    /// under a protected root (e.g. kept under `~/Pictures/project`) isn't
+    /// itself blocked by the always-on privacy deny.
+    private static func commandExplicitReadRoots(
+        canonicalWorkspace: String,
+        additionalWritablePaths: [String]
+    ) -> [String] {
+        var seen: Set<String> = []
+        return ([canonicalWorkspace] + additionalWritablePaths)
+            .compactMap { canonicalize($0) }
+            .flatMap(sandboxPathSpellings)
+            .filter { root in
+                guard !isForbiddenReadableRoot(root) else { return false }
+                return seen.insert(root).inserted
+            }
     }
 
     // MARK: - Safety guards
