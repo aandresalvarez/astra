@@ -467,6 +467,10 @@ struct TaskSidebarView: View {
             rebuildSchedules()
             updateNewTaskNudge()
         }
+        // Tear the drag watchdog down with the view: if the sidebar leaves
+        // the hierarchy mid-drag (window close, split collapse) the
+        // repeating timer must not outlive it.
+        .onDisappear { endTaskDrag() }
         .onChange(of: sidebarTasksVersion) { rebuildTaskIndex() }
         .onChange(of: searchText) { rebuildTaskIndex() }
         .onChange(of: schedulesVersion) { rebuildSchedules() }

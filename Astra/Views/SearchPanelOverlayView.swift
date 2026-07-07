@@ -52,10 +52,6 @@ struct SearchPanelOverlay: View {
         }
     }
 
-    private var recentTasks: [AgentTask] {
-        SearchPanelOverlayResults.recentTasks(tasks, workspaces: workspaces)
-    }
-
     private var filteredTasks: [AgentTask] {
         SearchPanelOverlayResults.filteredTasks(searchText: searchText, tasks: tasks, workspaces: workspaces)
     }
