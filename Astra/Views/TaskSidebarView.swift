@@ -1,5 +1,6 @@
 import SwiftUI
 import SwiftData
+import AppKit
 import ASTRAModels
 import ASTRAPersistence
 import ASTRACore
@@ -103,11 +104,26 @@ enum SidebarLeanPresentation {
     static let workspaceMetadataAndActionsShareTrailingSlot = true
     static let selectedWorkspaceChildrenUseGuide = false
     static let sidebarTaskStatusesShowExceptionsOnly = true
+    // Status is a leading glyph, never a second text line: rows stay
+    // single-height so the list scans as navigation, and one status
+    // vocabulary replaces the old icon-vs-subtitle split. (Pinned and
+    // Unreads rows still show a workspace-name subtitle — that's
+    // context, not status.)
+    static let sidebarTaskStatusesNeverAddSecondLine = true
+    // Workspace rows expose expansion with a rest-state chevron; the
+    // folder icon's fill tracks selection only, so icon fill no longer
+    // does double duty as a collapsed/expanded signal.
+    static let workspaceRowsShowRestStateDisclosure = true
+    static let workspaceDisclosureChevronWidth: CGFloat = 11
+    // The pinned drop target is drag-time chrome: it appears while a task
+    // drag is in flight and otherwise cedes the space above the fold.
+    static let pinnedDropZoneAppearsOnlyDuringDrag = true
     static let pinnedPreviewLimit = 5
-    // Keep child task chrome close to the sidebar edge; the workspace card
-    // above establishes scope, while task rows need the reclaimed title width.
+    // Row surfaces still span the full rail width (childTaskListLeadingPadding
+    // stays 0 so hover/selection chrome lines up with the workspace card), but
+    // child content steps in 12pt so containment reads without a guide rail.
     static let childTaskListLeadingPadding: CGFloat = 0
-    static let childTaskContentLeadingPadding: CGFloat = 0
+    static let childTaskContentLeadingPadding: CGFloat = 12
     static let workspaceRowTrailingSlotWidth: CGFloat = 58
     static let newTaskVerticalPadding: CGFloat = 7
     static let newTaskRestFillOpacity = 0.045
@@ -122,10 +138,11 @@ enum SidebarThreadRowLayout {
 
     static func showsStatusIcon(
         for status: TaskStatus,
+        isUnread: Bool,
         isHovered: Bool,
         isSelected: Bool
     ) -> Bool {
-        isHovered || isSelected || isActionableStatus(status)
+        isHovered || isSelected || showsRestStateGlyph(for: status, isUnread: isUnread)
     }
 
     static func isActionableStatus(_ status: TaskStatus) -> Bool {
@@ -137,19 +154,27 @@ enum SidebarThreadRowLayout {
         }
     }
 
+    /// The states that earn a glyph at rest: work that is moving or needs
+    /// the user (actionable), plus finished-but-unseen results (unread) so
+    /// "what needs my eyes" is answerable from the sidebar alone.
+    static func showsRestStateGlyph(for status: TaskStatus, isUnread: Bool) -> Bool {
+        isActionableStatus(status) || isUnread
+    }
+
     static func restingTitleLeadingOffset(
         childListPadding: CGFloat,
         contentLeadingPadding: CGFloat,
-        status: TaskStatus
+        status: TaskStatus,
+        isUnread: Bool = false
     ) -> CGFloat {
         childListPadding
             + rowHorizontalPadding
             + contentLeadingPadding
-            + reservedStatusIconWidth(for: status)
+            + reservedStatusIconWidth(for: status, isUnread: isUnread)
     }
 
-    private static func reservedStatusIconWidth(for status: TaskStatus) -> CGFloat {
-        isActionableStatus(status)
+    private static func reservedStatusIconWidth(for status: TaskStatus, isUnread: Bool) -> CGFloat {
+        showsRestStateGlyph(for: status, isUnread: isUnread)
             ? statusIconWidth + statusIconTitleSpacing
             : 0
     }
@@ -303,6 +328,14 @@ struct TaskSidebarView: View {
     @State private var expandedWorkspaceIDs: Set<UUID> = []
     @State private var collapsedWorkspaceIDs: Set<UUID> = []
     @State private var isPinnedDropTargeted = false
+    // True from the moment a sidebar task drag begins until the mouse
+    // button is released. An `onDrop(isTargeted:)` on the column proved
+    // unreliable for revealing hidden chrome on macOS (it never flipped),
+    // so the signal comes straight from the drag source: the task row's
+    // `.onDrag` arms it, and a pressed-mouse-button watchdog clears it
+    // when the session ends — drop, cancel, or release outside the app.
+    @State private var isTaskDragInFlight = false
+    @State private var taskDragWatchdog: Timer?
     @State private var isPinnedHeaderHovered = false
     @State private var isSchedulesExpanded = true
     @State private var isWorkspacesAddHovered = false
@@ -395,14 +428,22 @@ struct TaskSidebarView: View {
 
                 if let onNewApp {
                     Button(action: onNewApp) {
-                        Label("New App", systemImage: "square.grid.2x2")
-                            .font(Stanford.ui(13, weight: .medium))
-                            .foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .contentShape(Rectangle())
+                        // Mirrors NewTaskButton's insets (12 outer + 12
+                        // content) and 7pt glyph gap so the two commands
+                        // read as one aligned column.
+                        HStack(spacing: 7) {
+                            Image(systemName: "square.grid.2x2")
+                                .font(Stanford.ui(13, weight: .medium))
+                            Text("New app")
+                                .font(Stanford.ui(13, weight: .medium))
+                        }
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 12)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    .padding(.horizontal, 16)
+                    .padding(.horizontal, 12)
                     .padding(.bottom, 12)
                     .help("Create a Workspace App in App Studio (⌘⇧A)")
                 }
@@ -426,6 +467,10 @@ struct TaskSidebarView: View {
             rebuildSchedules()
             updateNewTaskNudge()
         }
+        // Tear the drag watchdog down with the view: if the sidebar leaves
+        // the hierarchy mid-drag (window close, split collapse) the
+        // repeating timer must not outlive it.
+        .onDisappear { endTaskDrag() }
         .onChange(of: sidebarTasksVersion) { rebuildTaskIndex() }
         .onChange(of: searchText) { rebuildTaskIndex() }
         .onChange(of: schedulesVersion) { rebuildSchedules() }
@@ -476,6 +521,11 @@ struct TaskSidebarView: View {
 
     private func pinnedSection(using taskIndex: SidebarTaskIndex) -> some View {
         let hasPinnedTasks = !taskIndex.pinnedTasks.isEmpty
+        // With nothing pinned the section stays out of the rail entirely;
+        // the dashed target materializes the moment a task drag begins
+        // (source-signalled, so it cannot miss) and stays while the drag
+        // hovers it.
+        let showsEmptyDropTarget = !hasPinnedTasks && (isTaskDragInFlight || isPinnedDropTargeted)
         let visiblePinnedTasks = showsAllPinnedTasks
             ? taskIndex.pinnedTasks
             : Array(taskIndex.pinnedTasks.prefix(SidebarLeanPresentation.pinnedPreviewLimit))
@@ -485,10 +535,11 @@ struct TaskSidebarView: View {
                 pinnedHeader(count: taskIndex.pinnedTasks.count)
             }
 
-            if isPinnedExpanded || !hasPinnedTasks {
+            if (isPinnedExpanded && hasPinnedTasks) || showsEmptyDropTarget {
                 VStack(alignment: .leading, spacing: 2) {
-                    if !hasPinnedTasks {
+                    if showsEmptyDropTarget {
                         pinnedEmptyDropTarget
+                            .transition(.opacity)
                     } else {
                         ForEach(visiblePinnedTasks) { task in
                             pinnedTaskRow(for: task)
@@ -517,8 +568,10 @@ struct TaskSidebarView: View {
                 .padding(.top, hasPinnedTasks ? 0 : 8)
             }
         }
-        .padding(.bottom, 8)
+        .padding(.bottom, hasPinnedTasks || showsEmptyDropTarget ? 8 : 0)
+        .animation(disclosureAnimation, value: showsEmptyDropTarget)
         .onDrop(of: [.text], isTargeted: $isPinnedDropTargeted) { providers in
+            endTaskDrag()
             guard let provider = providers.first else { return false }
             provider.loadItem(forTypeIdentifier: "public.text", options: nil) { data, _ in
                 guard let data = data as? Data,
@@ -725,7 +778,9 @@ struct TaskSidebarView: View {
             SidebarCountBadge(count: count)
         }
         .padding(.horizontal, 10)
-        .padding(.top, 4)
+        // 12pt keeps the header breathing when Unreads opens the rail (the
+        // pinned section above it now renders nothing while empty).
+        .padding(.top, 12)
         .padding(.bottom, 4)
     }
 
@@ -752,40 +807,6 @@ struct TaskSidebarView: View {
         .onHover { hovering in hoveredTaskID = hovering ? task.id : nil }
         .contextMenu {
             taskContextMenu(for: task)
-        }
-    }
-
-    @ViewBuilder
-    private func statusIconView(for task: AgentTask) -> some View {
-        switch task.status {
-        case .running:
-            ProgressView()
-                .controlSize(.small)
-                .scaleEffect(0.55)
-        case .completed:
-            Image(systemName: "checkmark.circle")
-                .font(Stanford.ui(12))
-                .foregroundStyle(Stanford.completed)
-        case .pendingUser:
-            Image(systemName: "person.crop.circle")
-                .font(Stanford.ui(12))
-                .foregroundStyle(Stanford.pendingUser)
-        case .failed, .budgetExceeded:
-            Image(systemName: "exclamationmark.triangle")
-                .font(Stanford.ui(12))
-                .foregroundStyle(Stanford.failed)
-        case .cancelled:
-            Image(systemName: "minus.circle")
-                .font(Stanford.ui(12))
-                .foregroundStyle(.secondary)
-        case .queued:
-            Image(systemName: "clock")
-                .font(Stanford.ui(12))
-                .foregroundStyle(.secondary)
-        case .draft:
-            Image(systemName: "pencil")
-                .font(Stanford.ui(11))
-                .foregroundStyle(.secondary)
         }
     }
 
@@ -839,15 +860,15 @@ struct TaskSidebarView: View {
                                     HStack(spacing: 4) {
                                         Text(schedule.frequencySummary)
                                             .font(Stanford.caption(11))
-                                            .foregroundStyle(.secondary)
+                                            .foregroundStyle(Stanford.textSecondary)
                                             .lineLimit(1)
                                         if let ws = schedule.workspace {
                                             Text("·")
                                                 .font(Stanford.caption(11))
-                                                .foregroundStyle(.secondary)
+                                                .foregroundStyle(Stanford.textSecondary)
                                             Text(ws.name)
                                                 .font(Stanford.caption(11))
-                                                .foregroundStyle(.secondary)
+                                                .foregroundStyle(Stanford.textSecondary)
                                                 .lineLimit(1)
                                         }
                                     }
@@ -897,14 +918,18 @@ struct TaskSidebarView: View {
                 // Shares SectionAddIcon with the Workspaces header so the
                 // two controls render byte-identical — the Menu-vs-Button
                 // wrapper used to introduce a hairline layout shift.
-                Button {
-                    onNewSchedule?()
-                } label: {
-                    SectionAddIcon(isHovered: isSchedulesAddHovered)
+                // Hidden while the empty state's "Add routine" row is on
+                // screen: one visible add affordance per section at a time.
+                if !allSchedules.isEmpty {
+                    Button {
+                        onNewSchedule?()
+                    } label: {
+                        SectionAddIcon(isHovered: isSchedulesAddHovered)
+                    }
+                    .buttonStyle(.plain)
+                    .onHover { isSchedulesAddHovered = $0 }
+                    .help("New routine")
                 }
-                .buttonStyle(.plain)
-                .onHover { isSchedulesAddHovered = $0 }
-                .help("New Routine")
             }
             .padding(.horizontal, 10)
             // Extra top padding creates breathing room between the three
@@ -1178,11 +1203,25 @@ struct TaskSidebarView: View {
                     toggleWorkspaceOpenState(workspace, using: taskIndex)
                 }
             } label: {
-                Image(systemName: isExpanded ? "folder.fill" : "folder")
-                    .font(Stanford.ui(13, weight: .medium))
-                    .foregroundStyle(isSelected ? Stanford.lagunita : .secondary)
-                    .frame(width: 17, height: 22)
-                    .contentShape(Rectangle())
+                HStack(spacing: 7) {
+                    // Rest-state disclosure: expansion used to be signalled
+                    // only by folder-icon fill, which read as two *kinds* of
+                    // folder rather than two states. The chevron stays
+                    // visible (tertiary) so rows advertise that they expand,
+                    // and brightens with the rest of the row on hover.
+                    Image(systemName: "chevron.right")
+                        .font(Stanford.ui(9, weight: .semibold))
+                        .foregroundStyle(isHovered ? .secondary : .tertiary)
+                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                        .frame(width: SidebarLeanPresentation.workspaceDisclosureChevronWidth, height: 22)
+                        .animation(disclosureAnimation, value: isExpanded)
+
+                    Image(systemName: isSelected ? "folder.fill" : "folder")
+                        .font(Stanford.ui(13, weight: .medium))
+                        .foregroundStyle(isSelected ? Stanford.lagunita : .secondary)
+                        .frame(width: 17, height: 22)
+                }
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .accessibilityLabel(isExpanded ? "Collapse \(workspace.name)" : "Expand \(workspace.name)")
@@ -1427,7 +1466,8 @@ struct TaskSidebarView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .onHover { hovering in hoveredTaskID = hovering ? task.id : nil }
         .onDrag {
-            NSItemProvider(object: task.id.uuidString as NSString)
+            beginTaskDrag()
+            return NSItemProvider(object: task.id.uuidString as NSString)
         } preview: {
             // Drag chip — was a thin material rectangle. Now sits on
             // `cardBackground` with a hairline border + soft shadow so
@@ -1615,6 +1655,30 @@ struct TaskSidebarView: View {
             onDeleteTask?(task)
         } label: {
             Label("Delete", systemImage: "trash")
+        }
+    }
+
+    /// Arms the drag-in-flight flag and a watchdog that clears it once the
+    /// left mouse button is released. `.onDrag` has no end callback and the
+    /// drag session swallows mouse-up events, so polling the pressed-button
+    /// mask is the one signal that covers drop, cancel, and release outside
+    /// the window alike.
+    private func beginTaskDrag() {
+        taskDragWatchdog?.invalidate()
+        withAnimation(disclosureAnimation) {
+            isTaskDragInFlight = true
+        }
+        taskDragWatchdog = Timer.scheduledTimer(withTimeInterval: 0.12, repeats: true) { _ in
+            guard NSEvent.pressedMouseButtons & 0x1 == 0 else { return }
+            DispatchQueue.main.async { endTaskDrag() }
+        }
+    }
+
+    private func endTaskDrag() {
+        taskDragWatchdog?.invalidate()
+        taskDragWatchdog = nil
+        withAnimation(disclosureAnimation) {
+            isTaskDragInFlight = false
         }
     }
 
@@ -1807,10 +1871,11 @@ private struct WorkspaceRowActions: View {
     private var metadata: some View {
         HStack(spacing: 7) {
             if taskCount > 0 {
-                Text("\(taskCount)")
-                    .font(Stanford.caption(11).weight(.medium))
-                    .foregroundStyle(.secondary)
-                    .monospacedDigit()
+                // Pill badge — same chrome as the section-header counts —
+                // so counts and relative timestamps stop sharing one
+                // visual voice at the rail's right edge: badge = how
+                // many, plain text = how old.
+                SidebarCountBadge(count: taskCount)
                     .fixedSize()
                     .accessibilityLabel("\(taskCount) tasks")
             }
@@ -1925,7 +1990,10 @@ private struct SidebarCountBadge: View {
     var body: some View {
         Text("\(count)")
             .font(Stanford.caption(11).weight(.medium))
-            .foregroundStyle(.secondary)
+            // AA-floor grey (see Stanford.textSecondary): system .secondary
+            // dips under 4.5:1 at these sizes.
+            .foregroundStyle(Stanford.textSecondary)
+            .monospacedDigit()
             .padding(.horizontal, Stanford.sidebarBadgeHorizontalPadding)
             .frame(minWidth: Stanford.sidebarBadgeMinWidth, minHeight: Stanford.sidebarBadgeHeight)
             .background(Color.primary.opacity(0.05))
@@ -2017,6 +2085,7 @@ private struct SidebarThreadRow: View {
     private var showIcon: Bool {
         SidebarThreadRowLayout.showsStatusIcon(
             for: task.status,
+            isUnread: task.shouldShowUnread,
             isHovered: isHovered,
             isSelected: isSelected
         )
@@ -2026,17 +2095,26 @@ private struct SidebarThreadRow: View {
         SidebarThreadRowLayout.isActionableStatus(task.status)
     }
 
-    /// Inline chip surfaced only for exceptional or active states. Draft,
-    /// queued, and completed rows stay title + metadata so the sidebar reads
-    /// as navigation first, not a duplicated status board.
-    private var statusLabel: String? {
+    /// True when the row's glyph is the unread dot: a finished result the
+    /// user hasn't looked at yet. Actionable states keep their own glyphs —
+    /// they already say "needs me" more specifically than a dot could.
+    private var showsUnreadDot: Bool {
+        task.shouldShowUnread && !isActionableStatus
+    }
+
+    /// Names the leading glyph for tooltips and VoiceOver — the status text
+    /// no longer renders as a second line, so the glyph has to speak.
+    private var statusGlyphDescription: String {
+        if showsUnreadDot { return "Unread result" }
         switch task.status {
-        case .running:        "Running"
-        case .pendingUser:    "Needs input"
-        case .failed:         "Needs retry"
-        case .budgetExceeded: "Budget hit"
-        case .cancelled:      "Cancelled"
-        case .draft, .queued, .completed: nil
+        case .running:        return "Running"
+        case .pendingUser:    return "Needs input"
+        case .failed:         return "Needs retry"
+        case .budgetExceeded: return "Budget hit"
+        case .cancelled:      return "Cancelled"
+        case .completed:      return "Completed"
+        case .queued:         return "Queued"
+        case .draft:          return "Draft"
         }
     }
 
@@ -2054,6 +2132,8 @@ private struct SidebarThreadRow: View {
                     )
                     .opacity(isActionableStatus && !isSelected && !isHovered ? 0.6 : 1)
                     .padding(.leading, contentLeadingPadding)
+                    .help(statusGlyphDescription)
+                    .accessibilityLabel(statusGlyphDescription)
             }
 
             VStack(alignment: .leading, spacing: 2) {
@@ -2067,7 +2147,7 @@ private struct SidebarThreadRow: View {
                     if attemptCount > 1 {
                         Text("\(attemptCount) attempts")
                             .font(Stanford.caption(10).weight(.medium))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Stanford.textSecondary)
                             .padding(.horizontal, 5)
                             .padding(.vertical, 2)
                             .background(Color.primary.opacity(0.04))
@@ -2076,10 +2156,10 @@ private struct SidebarThreadRow: View {
                     }
                 }
 
-                if let secondaryText {
-                    Text(secondaryText)
+                if let subtitle {
+                    Text(subtitle)
                         .font(Stanford.caption(11))
-                        .foregroundStyle(secondaryTextColor)
+                        .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
             }
@@ -2108,7 +2188,7 @@ private struct SidebarThreadRow: View {
                     }
                     Text(relativeTime(task.updatedAt))
                         .font(Stanford.caption(11).weight(metadataWeight))
-                        .foregroundStyle(task.shouldShowUnread ? .primary : .secondary)
+                        .foregroundStyle(task.shouldShowUnread ? Color.primary : Stanford.textSecondary)
                         .lineLimit(1)
                         .fixedSize()
                         .frame(minWidth: 24, alignment: .trailing)
@@ -2153,26 +2233,21 @@ private struct SidebarThreadRow: View {
         return .clear
     }
 
-    private var secondaryText: String? {
-        subtitle ?? statusLabel
-    }
-
-    private var secondaryTextColor: Color {
-        guard subtitle == nil else { return .secondary }
-        switch task.status {
-        case .running:
-            return Stanford.lagunita.opacity(0.82)
-        case .pendingUser, .budgetExceeded:
-            return Stanford.poppy.opacity(0.84)
-        case .failed:
-            return Stanford.failed.opacity(0.84)
-        case .cancelled, .queued, .draft, .completed:
-            return .secondary
+    @ViewBuilder
+    private var statusIcon: some View {
+        if showsUnreadDot {
+            // Same dot the Unreads section header wears, so "red dot =
+            // unseen result" stays one vocabulary across the rail.
+            Image(systemName: "circle.fill")
+                .font(Stanford.ui(6, weight: .medium))
+                .foregroundStyle(Stanford.cardinalRed)
+        } else {
+            statusGlyph
         }
     }
 
     @ViewBuilder
-    private var statusIcon: some View {
+    private var statusGlyph: some View {
         switch task.status {
         case .running:
             ProgressView()
@@ -2223,245 +2298,5 @@ private struct SidebarThreadRow: View {
     private func formatCost(_ cost: Double) -> String {
         if cost < 0.01 { return "<$0.01" }
         return String(format: "$%.2f", cost)
-    }
-}
-
-// MARK: - Search Panel Overlay
-
-struct SearchPanelOverlayContainer: View {
-    @Query(sort: \AgentTask.queuePosition) private var tasks: [AgentTask]
-
-    let workspaces: [Workspace]
-    @Binding var selectedTask: AgentTask?
-    @Binding var selectedWorkspace: Workspace?
-    @Binding var isActive: Bool
-
-    var body: some View {
-        SearchPanelOverlay(
-            tasks: tasks,
-            workspaces: workspaces,
-            selectedTask: $selectedTask,
-            selectedWorkspace: $selectedWorkspace,
-            isActive: $isActive
-        )
-    }
-}
-
-struct SearchPanelOverlay: View {
-    let tasks: [AgentTask]
-    let workspaces: [Workspace]
-    @Binding var selectedTask: AgentTask?
-    @Binding var selectedWorkspace: Workspace?
-    @Binding var isActive: Bool
-    @Environment(\.modelContext) private var modelContext
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var searchText = ""
-    @FocusState private var isFocused: Bool
-    @State private var selectedIndex = 0
-
-    private var presentationAnimation: Animation? {
-        AstraMotion.disclosure(reduceMotion: reduceMotion)
-    }
-
-    private func dismiss() {
-        withAnimation(presentationAnimation) {
-            isActive = false
-            searchText = ""
-        }
-    }
-
-    private var recentTasks: [AgentTask] {
-        SearchPanelOverlayResults.recentTasks(tasks, workspaces: workspaces)
-    }
-
-    private var filteredTasks: [AgentTask] {
-        SearchPanelOverlayResults.filteredTasks(searchText: searchText, tasks: tasks, workspaces: workspaces)
-    }
-
-    private var filteredWorkspaces: [Workspace] {
-        SearchPanelOverlayResults.filteredWorkspaces(
-            searchText: searchText,
-            workspaces: workspaces,
-            taskCount: tasks.count
-        )
-    }
-
-    private func toggleStarred(for workspace: Workspace) {
-        workspace.isStarred.toggle()
-        workspace.updatedAt = Date()
-        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
-    }
-
-    private func togglePinned(for task: AgentTask) {
-        task.isPinned.toggle()
-        task.updatedAt = Date()
-        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
-    }
-
-    var body: some View {
-        ZStack {
-            Stanford.scrim.opacity(0.25)
-                .ignoresSafeArea()
-                .onTapGesture { dismiss() }
-
-            VStack(spacing: 0) {
-                // Search field
-                HStack(spacing: 10) {
-                    Image(systemName: "magnifyingglass")
-                        .font(Stanford.ui(15))
-                        .foregroundStyle(.secondary)
-
-                    TextField("Search tasks and workspaces", text: $searchText)
-                        .textFieldStyle(.plain)
-                        .font(Stanford.ui(16))
-                        .focused($isFocused)
-                        .onSubmit {
-                            if let task = filteredTasks.first {
-                                selectedTask = task
-                                dismiss()
-                            }
-                        }
-                }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 14)
-
-                Divider()
-
-                // Results
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 0) {
-                        if !filteredWorkspaces.isEmpty {
-                            Text("Workspaces")
-                                .font(Stanford.caption(11).weight(.medium))
-                                .foregroundStyle(.secondary)
-                                .padding(.horizontal, 16)
-                                .padding(.top, 10)
-                                .padding(.bottom, 4)
-
-                            ForEach(filteredWorkspaces) { ws in
-                                HStack(spacing: 6) {
-                                    Button {
-                                        selectedWorkspace = ws
-                                        selectedTask = nil
-                                        dismiss()
-                                    } label: {
-                                        HStack(spacing: 10) {
-                                            Image(systemName: "folder.fill")
-                                                .font(Stanford.ui(13))
-                                                .foregroundStyle(.secondary)
-                                                .frame(width: 18)
-                                            Text(ws.name)
-                                                .font(Stanford.ui(14))
-                                                .foregroundStyle(.primary)
-                                                .lineLimit(1)
-                                                .truncationMode(.middle)
-                                                .help(ws.name)
-                                            Spacer()
-                                        }
-                                        .contentShape(Rectangle())
-                                    }
-                                    .buttonStyle(.plain)
-
-                                    Button {
-                                        toggleStarred(for: ws)
-                                    } label: {
-                                        Image(systemName: ws.isStarred ? "star.fill" : "star")
-                                            .font(Stanford.ui(13, weight: .semibold))
-                                            .foregroundStyle(ws.isStarred ? Stanford.lagunita : .secondary)
-                                            .frame(width: 26, height: 24)
-                                            .contentShape(Rectangle())
-                                    }
-                                    .buttonStyle(.plain)
-                                    .help(ws.isStarred ? "Unstar workspace" : "Star workspace")
-                                    .accessibilityLabel(ws.isStarred ? "Unstar \(ws.name)" : "Star \(ws.name)")
-                                }
-                                .padding(.leading, 16)
-                                .padding(.trailing, 12)
-                                .padding(.vertical, 7)
-                            }
-                        }
-
-                        Text(searchText.isEmpty ? "Recent tasks" : "Tasks")
-                            .font(Stanford.caption(11).weight(.medium))
-                            .foregroundStyle(.secondary)
-                            .padding(.horizontal, 16)
-                            .padding(.top, filteredWorkspaces.isEmpty ? 10 : 14)
-                            .padding(.bottom, 4)
-
-                        ForEach(Array(filteredTasks.enumerated()), id: \.element.id) { idx, task in
-                            HStack(spacing: 6) {
-                                Button {
-                                    selectedTask = task
-                                    dismiss()
-                                } label: {
-                                    HStack(spacing: 10) {
-                                        Image(systemName: "bubble.left")
-                                            .font(Stanford.ui(13))
-                                            .foregroundStyle(.secondary)
-                                            .frame(width: 18)
-                                        SidebarTaskTitleText(
-                                            presentation: Formatters.sidebarTaskTitlePresentation(task.title),
-                                            font: Stanford.ui(14, weight: task.shouldShowUnread ? .semibold : .regular)
-                                        )
-                                        .layoutPriority(1)
-                                        Spacer()
-                                        if let ws = task.workspace {
-                                            Text(Formatters.shortenIdentifierTokens(ws.name, maxTokenLength: 24, keepEachSide: 8))
-                                                .font(Stanford.caption(11))
-                                                .foregroundStyle(.secondary)
-                                                .lineLimit(1)
-                                                .truncationMode(.tail)
-                                                .help(ws.name)
-                                        }
-                                    }
-                                    .contentShape(Rectangle())
-                                }
-                                .buttonStyle(.plain)
-
-                                Button {
-                                    togglePinned(for: task)
-                                } label: {
-                                    Image(systemName: task.isPinned ? "pin.fill" : "pin")
-                                        .font(Stanford.ui(13, weight: .semibold))
-                                        .foregroundStyle(task.isPinned ? Stanford.lagunita : .secondary)
-                                        .frame(width: 26, height: 24)
-                                        .contentShape(Rectangle())
-                                }
-                                .buttonStyle(.plain)
-                                .help(task.isPinned ? "Unpin task" : "Pin task")
-                                .accessibilityLabel(task.isPinned ? "Unpin \(task.title)" : "Pin \(task.title)")
-                            }
-                            .padding(.leading, 16)
-                            .padding(.trailing, 12)
-                            .padding(.vertical, 7)
-                            .background(idx == selectedIndex ? Color.primary.opacity(0.06) : .clear)
-                        }
-
-                        if filteredTasks.isEmpty && filteredWorkspaces.isEmpty {
-                            HStack {
-                                Spacer()
-                                Text("No results found")
-                                    .font(Stanford.ui(13))
-                                    .foregroundStyle(.secondary)
-                                Spacer()
-                            }
-                            .padding(.vertical, 20)
-                        }
-                    }
-                    .padding(.bottom, 8)
-                }
-                .frame(maxHeight: 350)
-            }
-            .frame(width: 520)
-            .background(.ultraThickMaterial)
-            .clipShape(RoundedRectangle(cornerRadius: 12))
-            .shadow(color: .black.opacity(0.2), radius: 20, y: 8)
-            .padding(.top, 60)
-            .frame(maxHeight: .infinity, alignment: .top)
-            .onExitCommand { dismiss() }
-            .onAppear { isFocused = true }
-            .onChange(of: searchText) { _, _ in selectedIndex = 0 }
-        }
-        .transition(.opacity)
     }
 }

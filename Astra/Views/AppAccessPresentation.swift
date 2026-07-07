@@ -8,7 +8,10 @@ enum AppWindowIDs {
 enum AppAccessMenuPresentation {
     static let footerMenuTitle = "ASTRA"
     static let footerMinimumHeight: CGFloat = 44
-    static let footerIconSystemName = "ellipsis.circle"
+    // Gear, not ellipsis: the drawer holds app utilities (Settings, Logs,
+    // Usage), and a gear names that; ellipsis-in-a-circle promised only
+    // "more…" and was the vaguest glyph on the rail.
+    static let footerIconSystemName = "gearshape"
     static let footerRestFillOpacity = 0.0
     static let footerHoverFillOpacity = 0.045
     static let footerOpenFillOpacity = 0.055
