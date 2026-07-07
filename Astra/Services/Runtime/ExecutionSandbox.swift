@@ -184,15 +184,28 @@ struct ExecutionSandboxSettings: Sendable, Equatable {
         var enforcement = ExecutionSandboxEnforcement.normalized(
             defaults.string(forKey: AppStorageKeys.sandboxEnforcement)
         )
+        // The "Allow Network In Sandbox" toggle is disabled (frozen at its last
+        // value) in Settings whenever the STORED enforcement is Off — capture
+        // that before any escalation below mutates `enforcement`, so a stale
+        // `false` left over from an earlier, unrelated Offline session can't
+        // silently deny network to a run that ends up escalated (the
+        // validation floor's own Off->bestEffort escalation in
+        // `decideForCommand`, which uses this function's resolved `allowNetwork`
+        // as-is). With the toggle frozen, the user would have no reachable
+        // control to fix a stale `false` in that state.
+        let storedEnforcementWasOff = enforcement == .off
         if enforcement == .bestEffort, permissionPolicy == .autonomous {
             enforcement = .strict
         }
 
-        // Network is allowed unless an explicit Bool `false` is stored. A
-        // non-Bool / corrupt value falls back to the default (network on) — a
-        // deliberate fail-open so a damaged preference can't silently sever the
-        // CLI's model API; the offline control is a user-set Bool toggle.
-        let allowNetwork = defaults.object(forKey: AppStorageKeys.sandboxAllowNetwork) as? Bool ?? defaultAllowNetwork
+        // Network is allowed unless an explicit Bool `false` is stored AND that
+        // toggle was actually reachable (stored enforcement wasn't Off). A
+        // non-Bool / corrupt value also falls back to the default (network on)
+        // — a deliberate fail-open so a damaged preference can't silently sever
+        // the CLI's model API; the offline control is a user-set Bool toggle.
+        let allowNetwork = storedEnforcementWasOff
+            ? defaultAllowNetwork
+            : (defaults.object(forKey: AppStorageKeys.sandboxAllowNetwork) as? Bool ?? defaultAllowNetwork)
         let layerNative = defaults.object(forKey: AppStorageKeys.sandboxLayerNativeProviders) as? Bool ?? defaultLayerNativeProviders
         var readScope = ExecutionSandboxReadScope.normalized(
             defaults.string(forKey: AppStorageKeys.sandboxReadScope)
@@ -599,9 +612,18 @@ enum ExecutionSandbox: Sendable {
             canonicalWorkspace: workspace,
             additionalWritablePaths: additionalWritablePaths
         )
+        // The active developer toolchain must stay readable wherever it lives.
+        // This matters even in .open scope: the privacy-root deny below denies
+        // `/Applications` unconditionally (not gated by read scope), so on a
+        // machine whose active DEVELOPER_DIR is full Xcode, a wrapped command
+        // that invokes an Apple tool shim (`git`, `clang`, ...) would otherwise
+        // hit the "install command line developer tools" dialog even though
+        // the tools are installed — the exact bug already fixed once for the
+        // agent path (see the design-note comment on `decide` above).
+        let developerRoots = developerDirectoryRoots(environment: environment, fileManager: fileManager)
         let protectedReadRoots = protectedReadRoots()
         let explicitProtectedReadAllowRoots = protectedReadAllowRoots(
-            explicitReadRoots: explicitReadRoots,
+            explicitReadRoots: explicitReadRoots + developerRoots,
             protectedReadRoots: protectedReadRoots
         )
         let profile = makeProfile(

@@ -17,6 +17,7 @@ private actor StubValidationCommandRunner: ValidationCommandRunning {
         let command: String
         let workingDirectory: String
         let pathContainsShellSuffix: Bool
+        let additionalWritablePaths: [String]
     }
 
     private var results: [ValidationCommandResult]
@@ -26,11 +27,12 @@ private actor StubValidationCommandRunner: ValidationCommandRunning {
         self.results = results
     }
 
-    func run(command: String, workingDirectory: String, environment: [String: String]) async -> ValidationCommandResult {
+    func run(command: String, workingDirectory: String, environment: [String: String], additionalWritablePaths: [String]) async -> ValidationCommandResult {
         calls.append(Call(
             command: command,
             workingDirectory: workingDirectory,
-            pathContainsShellSuffix: environment["PATH"]?.contains(RuntimePathResolver.shellPathSuffix) == true
+            pathContainsShellSuffix: environment["PATH"]?.contains(RuntimePathResolver.shellPathSuffix) == true,
+            additionalWritablePaths: additionalWritablePaths
         ))
         return results.isEmpty
             ? ValidationCommandResult(exitCode: 0, stdout: "", stderr: "")
@@ -60,7 +62,8 @@ struct ValidationServiceTests {
         let result = await ShellValidationCommandRunner().run(
             command: "cat marker.txt",
             workingDirectory: directory.path,
-            environment: ProcessInfo.processInfo.environment
+            environment: ProcessInfo.processInfo.environment,
+            additionalWritablePaths: []
         )
 
         #expect(result.exitCode == 0)
@@ -78,7 +81,8 @@ struct ValidationServiceTests {
         let result = await ShellValidationCommandRunner().run(
             command: "echo should-not-run",
             workingDirectory: missingDirectory,
-            environment: ProcessInfo.processInfo.environment
+            environment: ProcessInfo.processInfo.environment,
+            additionalWritablePaths: []
         )
 
         #expect(result.exitCode == -1)
@@ -114,11 +118,41 @@ struct ValidationServiceTests {
         let result = await ShellValidationCommandRunner().run(
             command: "printf escape > '\(escapePath)'",
             workingDirectory: workspace.path,
-            environment: ProcessInfo.processInfo.environment
+            environment: ProcessInfo.processInfo.environment,
+            additionalWritablePaths: []
         )
 
         #expect(result.exitCode != 0)
         #expect(!FileManager.default.fileExists(atPath: escapePath))
+    }
+
+    @Test("shell validation runner grants a multi-path workspace's additional paths, not just the primary one")
+    nonisolated func shellValidationRunnerGrantsAdditionalWritablePaths() async throws {
+        guard FileManager.default.isExecutableFile(atPath: ExecutionSandbox.sandboxExecPath) else { return }
+
+        let root = URL(fileURLWithPath: "/var/tmp")
+            .appendingPathComponent("astra-validation-multipath-\(UUID().uuidString)", isDirectory: true)
+        let primary = root.appendingPathComponent("primary", isDirectory: true)
+        let additional = root.appendingPathComponent("additional", isDirectory: true)
+        try FileManager.default.createDirectory(at: primary, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: additional, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        // A workspace can span multiple paths (Workspace.additionalPaths); a
+        // validation command run from the primary path legitimately writing
+        // generated fixtures/output into one of those additional paths must
+        // not be denied by the write jail.
+        let outputPath = additional.appendingPathComponent("output.txt").path
+
+        let result = await ShellValidationCommandRunner().run(
+            command: "printf multipath > '\(outputPath)'",
+            workingDirectory: primary.path,
+            environment: ProcessInfo.processInfo.environment,
+            additionalWritablePaths: [additional.path]
+        )
+
+        #expect(result.exitCode == 0)
+        #expect(FileManager.default.fileExists(atPath: outputPath))
     }
 
     @Test("runTests uses injected command runner")
@@ -142,7 +176,8 @@ struct ValidationServiceTests {
             StubValidationCommandRunner.Call(
                 command: "swift test --filter Focused",
                 workingDirectory: root,
-                pathContainsShellSuffix: true
+                pathContainsShellSuffix: true,
+                additionalWritablePaths: AgentRuntimeProcessRunner.runtimeAdditionalPaths(for: task)
             )
         ])
     }
@@ -484,7 +519,8 @@ struct ValidationServiceTests {
             StubValidationCommandRunner.Call(
                 command: "swift test --filter Focused",
                 workingDirectory: root,
-                pathContainsShellSuffix: true
+                pathContainsShellSuffix: true,
+                additionalWritablePaths: AgentRuntimeProcessRunner.runtimeAdditionalPaths(for: task)
             )
         ])
         let assertionEvent = try #require(task.events.first { $0.type == TaskValidationEventTypes.assertionFailed })

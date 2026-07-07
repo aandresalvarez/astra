@@ -21,7 +21,13 @@ struct ValidationCommandResult: Equatable, Sendable {
 }
 
 protocol ValidationCommandRunning: Sendable {
-    func run(command: String, workingDirectory: String, environment: [String: String]) async -> ValidationCommandResult
+    /// `additionalWritablePaths`: a multi-path workspace's `additionalPaths` +
+    /// input directories (the same set the agent path grants via
+    /// `AgentRuntimeProcessRunner.runtimeAdditionalPaths(for:)`) — so a
+    /// validation command that legitimately writes outside the workspace's
+    /// primary path (generated fixtures, build output in another workspace
+    /// root) isn't denied by the Seatbelt floor's write jail.
+    func run(command: String, workingDirectory: String, environment: [String: String], additionalWritablePaths: [String]) async -> ValidationCommandResult
 }
 
 struct ShellValidationCommandRunner: ValidationCommandRunning {
@@ -60,16 +66,53 @@ struct ShellValidationCommandRunner: ValidationCommandRunning {
     /// execute untrusted manifest code the way SwiftPM does, so it likely
     /// doesn't share this specific mechanism, but this repo has no Xcode
     /// project to verify against, so it is unconfirmed rather than assumed
-    /// safe. Both fall through to today's behavior: gated by
+    /// safe. `make` inherits the exclusion too when its Makefile appears to
+    /// delegate to either tool — child processes inherit the parent's
+    /// Seatbelt confinement, so a wrapped `make test` that shells out to
+    /// `swift test`/`xcodebuild` hits the exact same nested-sandbox conflict.
+    /// All three fall through to today's behavior: gated by
     /// `ValidationCommandPolicy` only, no OS-level confinement — this is a
     /// documented limitation, not a silent gap.
-    private static func isSelfSandboxingCommand(_ command: String) -> Bool {
-        guard let root = command.split(whereSeparator: \.isWhitespace).first else { return false }
-        return root == "swift" || root == "xcodebuild"
+    ///
+    /// Root-token extraction goes through `ValidationCommandPolicy.rootToken`
+    /// (the SAME quote-aware, case-normalizing tokenizer the allowlist check
+    /// itself uses) rather than a raw whitespace split, so a quoted or
+    /// differently-cased root the policy already allows (e.g. `'swift' test`,
+    /// `SWIFT BUILD`) can't slip past this exclusion and hit the nested-
+    /// sandbox failure the exclusion exists to prevent.
+    private static func isSelfSandboxingCommand(_ command: String, workingDirectory: String) -> Bool {
+        guard let root = ValidationCommandPolicy.rootToken(of: command) else { return false }
+        if root == "swift" || root == "xcodebuild" { return true }
+        if root == "make" { return makefileDelegatesToSelfSandboxingToolchain(workingDirectory: workingDirectory) }
+        return false
     }
 
-    func run(command: String, workingDirectory: String, environment: [String: String]) async -> ValidationCommandResult {
-        guard !Self.isSelfSandboxingCommand(command) else {
+    /// Best-effort heuristic: does a Makefile in `workingDirectory` mention
+    /// `swift`/`xcodebuild` at all? This is NOT a real Make parser — it does
+    /// not resolve variables, includes, or conditional logic, just a raw
+    /// word-boundary text scan. That's deliberate: a false positive here only
+    /// means an eligible `make test` skips ASTRA's wrap too, falling back to
+    /// today's already-shipped, policy-gated-only behavior — never a
+    /// regression below what existed before this floor. A false negative
+    /// (a Makefile that delegates in a way this scan misses, e.g. through an
+    /// `include`d file) would wrap a command that then hits the nested-
+    /// sandbox conflict; that's the known residual gap, not silently ignored.
+    private static func makefileDelegatesToSelfSandboxingToolchain(workingDirectory: String) -> Bool {
+        let workspaceRoot = URL(fileURLWithPath: workingDirectory, isDirectory: true)
+        let hostFileAccess = HostFileAccessBroker()
+        let intent = HostFileAccessIntent.implicitScan(root: workspaceRoot)
+        for name in ["Makefile", "makefile", "GNUmakefile"] {
+            let url = workspaceRoot.appendingPathComponent(name, isDirectory: false)
+            guard let contents = try? hostFileAccess.readString(at: url, intent: intent) else { continue }
+            guard let regex = try? NSRegularExpression(pattern: #"\b(swift|xcodebuild)\b"#) else { return false }
+            let range = NSRange(contents.startIndex..<contents.endIndex, in: contents)
+            if regex.firstMatch(in: contents, range: range) != nil { return true }
+        }
+        return false
+    }
+
+    func run(command: String, workingDirectory: String, environment: [String: String], additionalWritablePaths: [String]) async -> ValidationCommandResult {
+        guard !Self.isSelfSandboxingCommand(command, workingDirectory: workingDirectory) else {
             AppLogger.audit(.sandboxSkipped, category: "Validation", fields: [
                 "reason": "self_sandboxing_toolchain"
             ], level: .debug)
@@ -86,6 +129,7 @@ struct ShellValidationCommandRunner: ValidationCommandRunning {
             arguments: ["-c", command],
             currentDirectory: workingDirectory,
             environment: environment,
+            additionalWritablePaths: additionalWritablePaths,
             homeWritableRelativePaths: Self.toolCacheHomeRelativePaths,
             settings: settings
         )
@@ -233,7 +277,8 @@ enum ValidationService {
         let result = await commandRunner.run(
             command: command,
             workingDirectory: workingDirectory,
-            environment: validationCommandEnvironment()
+            environment: validationCommandEnvironment(),
+            additionalWritablePaths: AgentRuntimeProcessRunner.runtimeAdditionalPaths(for: task)
         )
         let output = [result.stdout, result.stderr].filter { !$0.isEmpty }.joined(separator: "\n")
 
@@ -618,7 +663,8 @@ enum ValidationService {
         let result = await commandRunner.run(
             command: command,
             workingDirectory: workingDirectory,
-            environment: validationCommandEnvironment()
+            environment: validationCommandEnvironment(),
+            additionalWritablePaths: AgentRuntimeProcessRunner.runtimeAdditionalPaths(for: task)
         )
         let output = [result.stdout, result.stderr]
             .filter { !$0.isEmpty }
