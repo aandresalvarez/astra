@@ -93,7 +93,7 @@ public enum OutlookMailConnectionSeam {
     }
 }
 
-public protocol OutlookMailConnectionTesting {
+public protocol OutlookMailConnectionTesting: Sendable {
     static func testConnection(facts: ConnectorOutlookFacts) async throws -> OutlookConnectionResult
     /// Matches `StanfordOutlookMailRegistry.remove(connectorID:)`, already
     /// primitive (`UUID`-only) in its real form.

@@ -31,7 +31,7 @@ public struct TaskForkStateInitializationResult: Sendable {
     }
 }
 
-public protocol TaskForkStateInitializing {
+public protocol TaskForkStateInitializing: Sendable {
     /// `statusRawValue` is `forked.status.rawValue` at the point of the call
     /// (always `.draft` in practice, since `forked` was just constructed).
     /// An unrecognized raw value is treated the same as an illegal
@@ -92,7 +92,7 @@ public struct TaskImportedStatusRestorationResult: Sendable {
     }
 }
 
-public protocol TaskSessionStateApplying {
+public protocol TaskSessionStateApplying: Sendable {
     /// Mirrors `TaskStateMachine.completeFromSessionRecovery`'s
     /// `completedAt: .set(task.completedAt ?? date)` rule: preserves an
     /// already-set completion date, else backfills `date`.
@@ -139,7 +139,7 @@ public enum TaskSessionStateApplyingSeam {
 // resolves to `task.workspace?.primaryPath ?? ""`, plus `task.id`) - no
 // scratch-object reconstruction needed here, unlike the manifest-writing seam
 // below.
-public protocol TaskFolderResolving {
+public protocol TaskFolderResolving: Sendable {
     static func taskFolder(workspacePath: String, taskID: UUID) -> String
     static func ensureTaskFolder(workspacePath: String, taskID: UUID) throws -> String
 }
@@ -234,7 +234,7 @@ public struct TaskForkManifestSummary: Sendable {
     }
 }
 
-public protocol TaskForkManifestWriting {
+public protocol TaskForkManifestWriting: Sendable {
     static func writeManifest(_ request: TaskForkManifestRequest) throws -> TaskForkManifestSummary
     /// Matches `TaskForkManifestService.manifestPath(taskFolder:)`, already
     /// primitive (`String`-only) in its real form.

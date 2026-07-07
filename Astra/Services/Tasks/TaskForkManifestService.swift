@@ -28,7 +28,7 @@ struct TaskForkManifest: Codable, Sendable, Equatable {
     var createdAt: Date
 }
 
-enum TaskForkManifestService {
+enum TaskForkManifestService: Sendable {
     static func manifestPath(taskFolder: String) -> String {
         guard !taskFolder.isEmpty else { return "" }
         return (taskFolder as NSString).appendingPathComponent(TaskForkManifest.fileName)
