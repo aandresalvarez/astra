@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-import ASTRACore
+@testable import ASTRACore
 
 @Suite("MCP control plane contracts")
 struct MCPControlPlaneContractTests {
@@ -423,5 +423,16 @@ struct MCPControlPlaneContractTests {
         #expect(drift.expectedFingerprint == nil)
         #expect(drift.observedFingerprint == nil)
         #expect(drift.evidenceIDs.isEmpty)
+    }
+
+    @Test("every raw-secret detection pattern compiles")
+    func rawSecretDetectionPatternsAllCompile() throws {
+        // The runtime compiles these with `try?` and fails closed (every
+        // literal treated as a raw secret) when any pattern is broken, so a
+        // pattern typo must be caught here rather than by bricking binding
+        // validation for users.
+        for pattern in MCPRuntimeBindingTemplate.rawSecretValuePatterns {
+            _ = try NSRegularExpression(pattern: pattern)
+        }
     }
 }
