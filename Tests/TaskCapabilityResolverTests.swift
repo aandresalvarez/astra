@@ -15,8 +15,6 @@ private func makeTaskCapabilityResolverContainer() throws -> ModelContainer {
 @Suite("TaskCapabilityResolver")
 @MainActor
 struct TaskCapabilityResolverTests {
-    private let _registerRuntimeSeams: Void = RuntimeSeamRegistration.registerAll() // ConnectorRuntimeProjection.environmentVariables() needs ConnectorSecretSeam; TaskCapabilityResolver reads skill.environmentVariables for every live skill, needs SkillSecretSeam
-
     @Test("Snapshotter captures live task skills into durable snapshots")
     func snapshotterCapturesLiveTaskSkills() throws {
         let skill = Skill(

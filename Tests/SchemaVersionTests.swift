@@ -7,14 +7,6 @@ import ASTRACore
 
 @Suite("Schema Versioning")
 struct SchemaVersionTests {
-    // Only v7StoreCarriesNonHostExecutionEnvironmentPayloadThroughMigration below
-    // constructs a non-host WorkspaceExecutionEnvironment with a credential
-    // projection (gcpADC), which reads the ExecutionPathSafety seam — see
-    // RuntimeSeamRegistration.swift. registerAll() is idempotent and
-    // thread-safe (OSAllocatedUnfairLock-backed), so this is safe even though
-    // Swift Testing may run this initializer concurrently with other suites'.
-    private let _registerRuntimeSeams: Void = RuntimeSeamRegistration.registerAll()
-
     @Test("SchemaV1 declares all 10 model types")
     func v1ModelCount() {
         #expect(ASTRASchemaV1.models.count == 10)

@@ -108,8 +108,6 @@ enum AstraSecureKeychainTestSupport {
 
 @Suite("ASTRA dedicated secret keychain", .serialized)
 struct AstraSecureKeychainTests {
-    private let _registerRuntimeSeams: Void = RuntimeSeamRegistration.registerAll() // StartupCredentialMigrationService.migrate -> connector.migrateToKeychain needs ConnectorSecretSeam
-
     // MARK: - Configuration (no keychain access — always runs)
 
     @Test("Dedicated keychain path is a separate file, never login.keychain-db")

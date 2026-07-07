@@ -7,8 +7,6 @@ import ASTRACore
 
 @Suite("Jira Connector Auth")
 struct JiraConnectorAuthTests {
-    private let _registerRuntimeSeams: Void = RuntimeSeamRegistration.registerAll() // testConnection() needs AuditLoggingSeam
-
     @Test("Jira test authenticates with permission probe first")
     func permissionProbeAuthenticatesBeforeMyself() async throws {
         let (connector, store) = makeConnector()
