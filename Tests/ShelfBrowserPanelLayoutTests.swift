@@ -36,6 +36,100 @@ struct ShelfBrowserPanelLayoutTests {
         #expect(ShelfBrowserAddressFormatter.displayText(for: "  ") == "")
     }
 
+    // Each test below replays a concrete review finding against the pure
+    // edit-lifecycle model, simulating the exact event order the view
+    // forwards (including Go clicks that blur the field before the button
+    // action runs).
+
+    @Test("Go at rest reloads the real URL, not the display text")
+    func goAtRestReloadsRealURL() {
+        let model = ShelfBrowserAddressEditModel()
+        let url = "file:///Users/a/.astra/tasks/X/report.html"
+        let text = ShelfBrowserAddressFormatter.displayText(for: url)
+        #expect(model.submissionTarget(text: text, currentURL: url, isFocused: false, hasDisplayablePage: true) == url)
+    }
+
+    @Test("edit submitted via Go survives the blur that precedes the button action")
+    func editSurvivesGoBlur() {
+        var model = ShelfBrowserAddressEditModel()
+        let url = "https://example.com/a"
+        var text = ShelfBrowserAddressFormatter.displayText(for: url)
+        model.focusGained(text: &text, currentURL: url)
+        #expect(text == url)
+        text = "github.com/anthropics"
+        model.focusLost(text: &text, currentURL: url)
+        #expect(text == "github.com/anthropics")
+        #expect(model.submissionTarget(text: text, currentURL: url, isFocused: false, hasDisplayablePage: true) == "github.com/anthropics")
+    }
+
+    @Test("edit that coincidentally equals the display text still submits as typed")
+    func coincidentalDisplayMatchStillSubmits() {
+        var model = ShelfBrowserAddressEditModel()
+        let url = "https://example.com/search?q=old"
+        var text = ShelfBrowserAddressFormatter.displayText(for: url)
+        model.focusGained(text: &text, currentURL: url)
+        text = "example.com/search"
+        model.focusLost(text: &text, currentURL: url)
+        #expect(text == "example.com/search")
+        #expect(model.submissionTarget(text: text, currentURL: url, isFocused: false, hasDisplayablePage: true) == "example.com/search")
+    }
+
+    @Test("pending edit survives an unchanged refocus-blur cycle")
+    func pendingEditSurvivesRefocus() {
+        var model = ShelfBrowserAddressEditModel()
+        let url = "https://example.com/a"
+        var text = ShelfBrowserAddressFormatter.displayText(for: url)
+        model.focusGained(text: &text, currentURL: url)
+        text = "github.com/anthropics"
+        model.focusLost(text: &text, currentURL: url)
+        model.focusGained(text: &text, currentURL: url)
+        #expect(text == "github.com/anthropics")
+        model.focusLost(text: &text, currentURL: url)
+        #expect(text == "github.com/anthropics")
+        #expect(model.submissionTarget(text: text, currentURL: url, isFocused: false, hasDisplayablePage: true) == "github.com/anthropics")
+    }
+
+    @Test("untouched focus-blur cycle returns to display text")
+    func untouchedFocusBlurReturnsToDisplayText() {
+        var model = ShelfBrowserAddressEditModel()
+        let url = "https://example.com/a"
+        var text = ShelfBrowserAddressFormatter.displayText(for: url)
+        model.focusGained(text: &text, currentURL: url)
+        model.focusLost(text: &text, currentURL: url)
+        #expect(text == ShelfBrowserAddressFormatter.displayText(for: url))
+        #expect(!model.hasPendingEdit)
+        #expect(model.submissionTarget(text: text, currentURL: url, isFocused: false, hasDisplayablePage: true) == url)
+    }
+
+    @Test("manually restoring the raw URL clears a pending edit")
+    func restoringRawURLClearsPendingEdit() {
+        var model = ShelfBrowserAddressEditModel()
+        let url = "https://example.com/a"
+        var text = ShelfBrowserAddressFormatter.displayText(for: url)
+        model.focusGained(text: &text, currentURL: url)
+        text = "github.com/anthropics"
+        model.focusLost(text: &text, currentURL: url)
+        model.focusGained(text: &text, currentURL: url)
+        text = url
+        model.focusLost(text: &text, currentURL: url)
+        #expect(!model.hasPendingEdit)
+        #expect(text == ShelfBrowserAddressFormatter.displayText(for: url))
+    }
+
+    @Test("navigation commit clears pending edit and shows the new page")
+    func navigationCommitClearsPendingEdit() {
+        var model = ShelfBrowserAddressEditModel()
+        let oldURL = "https://example.com/a"
+        var text = ShelfBrowserAddressFormatter.displayText(for: oldURL)
+        model.focusGained(text: &text, currentURL: oldURL)
+        text = "github.com/anthropics"
+        model.focusLost(text: &text, currentURL: oldURL)
+        let newURL = "https://github.com/anthropics"
+        model.navigationCommitted(text: &text, currentURL: newURL)
+        #expect(!model.hasPendingEdit)
+        #expect(text == "github.com/anthropics")
+    }
+
     @MainActor
     @Test("browser session reuse preserves explicit adapter enablement")
     func browserSessionReusePreservesExplicitAdapterEnablement() {
