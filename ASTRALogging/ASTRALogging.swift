@@ -255,6 +255,7 @@ public enum AuditEvent: String, CaseIterable, Sendable {
     case appUpdateBackupCreated = "app_update.backup_created"
     case appUpdateInstallRequested = "app_update.install_requested"
     case threadSnapshotBuilt = "thread.snapshot_built"
+    case chatScrollRecovered = "chat.scroll_recovered"
     case shelfBrowserNavigation = "shelf.browser.navigation"
     case shelfBrowserPreview = "shelf.browser.preview"
     case shelfBrowserContext = "shelf.browser.context"

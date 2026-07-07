@@ -30,6 +30,26 @@ enum ChatScrollMetrics {
         return bottomMinY <= viewportHeight + atBottomSlop
     }
 
+    /// A bottom sentinel a settled scroll view can never legitimately report: resting
+    /// at the bottom puts it at `minY ≈ viewportHeight`; resting anywhere higher (short
+    /// content, or still scrolled up) only ever pushes it *more* positive. A negative
+    /// reading means the sentinel — the transcript's actual last pixel — has already
+    /// scrolled above the viewport's top edge, i.e. the viewport is parked in empty
+    /// space past the end of the content. That happens when a one-shot `scrollTo` is
+    /// computed against a taller, pre-relayout height (e.g. a streaming bubble that
+    /// hasn't yet collapsed into its shorter, completed presentation) and the layout
+    /// then shrinks out from under it. `isAtBottom` deliberately can't tell this apart
+    /// from a normal rest (both satisfy `bottomMinY <= viewportHeight + slop`) — this is
+    /// a separate, stricter check callers use only to decide whether to force a
+    /// corrective re-scroll. The small negative deadband absorbs sub-pixel layout
+    /// rounding at a genuine rest so that doesn't misfire as parked.
+    static let overscrollParkThreshold: CGFloat = -4
+
+    static func isParkedPastContent(bottomMinY: CGFloat) -> Bool {
+        guard bottomMinY.isFinite else { return false }
+        return bottomMinY < overscrollParkThreshold
+    }
+
     /// A 1pt clear sentinel to place at the very end of a transcript's scroll content.
     /// Read its position via `.named(coordinateSpace)` to drive `isAtBottom`, and use
     /// its `.id` as a `scrollTo` target.
@@ -45,6 +65,47 @@ enum ChatScrollMetrics {
                     )
                 }
             )
+    }
+}
+
+/// Watchdog for the parked-scroll state `ChatScrollMetrics.isParkedPastContent`
+/// detects. Feed it every bottom-sentinel reading; it arms a settle-delay timer the
+/// first time a reading looks parked, and fires `onRecover` only if the sentinel is
+/// *still* parked once the delay elapses. A reading that recovers on its own (e.g.
+/// natural trackpad bounce springing back) cancels the pending timer, so this never
+/// fights a live, legitimate scroll gesture — it only catches a scroll that's
+/// genuinely stuck past the end of the content with nothing left to move it.
+///
+/// A class (not a struct) so a view can hold one stably across re-renders via
+/// `@State`, matching `TaskThreadViewModel`'s pattern in the same view. Kept free of
+/// any view/proxy dependency — `onRecover` is the only side effect — so the debounce
+/// logic itself is unit-testable without hosting a live `ScrollViewProxy`.
+@MainActor
+final class ChatScrollRecoveryWatchdog {
+    private let settleNanoseconds: UInt64
+    private var armedToken = 0
+
+    init(settleNanoseconds: UInt64 = 220_000_000) {
+        self.settleNanoseconds = settleNanoseconds
+    }
+
+    func sentinelDidUpdate(
+        bottomMinY: CGFloat,
+        currentBottomMinY: @escaping () -> CGFloat,
+        onRecover: @escaping () -> Void
+    ) {
+        armedToken += 1
+        guard ChatScrollMetrics.isParkedPastContent(bottomMinY: bottomMinY) else { return }
+        let token = armedToken
+        Task {
+            try? await Task.sleep(nanoseconds: settleNanoseconds)
+            guard token == armedToken, !Task.isCancelled else { return }
+            // Re-check the live reading rather than trusting the value captured when
+            // this timer armed: only a sentinel that's still parked once the delay
+            // elapses should trigger a corrective scroll.
+            guard ChatScrollMetrics.isParkedPastContent(bottomMinY: currentBottomMinY()) else { return }
+            onRecover()
+        }
     }
 }
 

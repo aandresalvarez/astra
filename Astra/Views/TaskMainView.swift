@@ -334,6 +334,8 @@ struct TaskMainView: View {
     @State private var hasUnseenChatActivity = false
     @State private var shouldScrollAfterUserMessage = false
     @State private var pendingInitialChatScrollTaskID: UUID?
+    @State private var latestChatBottomMinY: CGFloat = .infinity
+    @State private var scrollRecoveryWatchdog = ChatScrollRecoveryWatchdog()
     @State private var isExpandingWindow = false
     @State private var expansionAnchorItemID: String?
     @State private var runtimeHealthNow = Date()
@@ -1632,6 +1634,12 @@ struct TaskMainView: View {
                 .onPreferenceChange(ChatBottomPositionPreferenceKey.self) { bottomMinY in
                     deferTaskViewMutation {
                         updateChatBottomState(bottomMinY: bottomMinY, viewportHeight: viewport.size.height)
+                        latestChatBottomMinY = bottomMinY
+                        scrollRecoveryWatchdog.sentinelDidUpdate(
+                            bottomMinY: bottomMinY,
+                            currentBottomMinY: { latestChatBottomMinY },
+                            onRecover: { recoverFromParkedScroll(proxy: proxy, bottomMinY: bottomMinY) }
+                        )
                     }
                 }
                 .onPreferenceChange(ChatTopPositionPreferenceKey.self) { topMinY in
@@ -2132,6 +2140,18 @@ struct TaskMainView: View {
         if isChatAtBottom && !wasAtBottom { hasUnseenChatActivity = false }
     }
 
+    /// `ChatScrollRecoveryWatchdog` calls this once a parked bottom-sentinel reading
+    /// (see `ChatScrollMetrics.isParkedPastContent`) has persisted past its settle
+    /// delay. Logged as a warning so a real-world occurrence — the transcript having
+    /// been visibly blank until this fired — is visible in `astra.log` rather than
+    /// silently self-healing.
+    private func recoverFromParkedScroll(proxy: ScrollViewProxy, bottomMinY: CGFloat) {
+        AppLogger.audit(.chatScrollRecovered, category: "UI", taskID: task.id, fields: [
+            "bottom_min_y": String(format: "%.1f", bottomMinY)
+        ], level: .warning)
+        scrollChatToBottom(proxy, animated: false)
+    }
+
     private func handleThreadScrollChange(
         oldSignature: String,
         newSignature: String,
@@ -2162,7 +2182,15 @@ struct TaskMainView: View {
         }
 
         if isChatAtBottom {
-            scrollChatToBottom(proxy, animated: false)
+            // Double-scroll, not single: this branch also fires on the *last*
+            // signature change of a turn, exactly when a streaming bubble collapses
+            // into its shorter, completed presentation. A single scrollTo here can
+            // be computed against the taller pre-collapse layout and land past the
+            // new, shorter content once it settles — the parked-blank state
+            // `scrollRecoveryWatchdog` exists to catch. Re-issuing after a layout
+            // beat (same pattern as the initial-open path below) targets that exact
+            // race proactively instead of relying solely on the watchdog to notice.
+            scrollChatToBottomAfterLayout(proxy, animated: false)
             return
         }
 
