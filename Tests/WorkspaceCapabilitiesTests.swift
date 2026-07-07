@@ -2,6 +2,7 @@ import Foundation
 import SwiftData
 import Testing
 import ASTRAModels
+import ASTRAPersistence
 @testable import ASTRA
 import ASTRACore
 
@@ -13,6 +14,9 @@ private func makeCapabilitiesPersistenceContainer() throws -> ModelContainer {
 
 @Suite("Workspace Capabilities")
 struct WorkspaceCapabilitiesTests {
+    // reads the AuditLoggingSeam via WorkspaceConfigManager.importWorkspace — see RuntimeSeamRegistration.swift.
+    private let _registerRuntimeSeams: Void = RuntimeSeamRegistration.registerAll()
+
     @Test("active skills merge workspace and enabled shared skills")
     @MainActor
     func activeSkillsMergeWorkspaceAndEnabledShared() {

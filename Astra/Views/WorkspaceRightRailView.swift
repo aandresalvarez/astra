@@ -2,6 +2,7 @@ import ASTRACore
 import SwiftData
 import SwiftUI
 import ASTRAModels
+import ASTRAPersistence
 
 private let workspaceRightRailScrollCoordinateSpace = "workspaceRightRailScrollCoordinateSpace"
 

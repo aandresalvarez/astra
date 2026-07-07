@@ -2,6 +2,7 @@ import Foundation
 import SwiftData
 import Testing
 import ASTRAModels
+import ASTRAPersistence
 @testable import ASTRA
 
 private func makeTaskOutputDiscoveryContainer() throws -> ModelContainer {
@@ -13,6 +14,9 @@ private func makeTaskOutputDiscoveryContainer() throws -> ModelContainer {
 @Suite("Task output discovery")
 @MainActor
 struct TaskOutputDiscoveryTests {
+    // reads the TaskGeneratedFileQuerySeam — see RuntimeSeamRegistration.swift.
+    private let _registerRuntimeSeams: Void = RuntimeSeamRegistration.registerAll()
+
     @Test("run-scoped workspace scan finds unrecorded workspace-root artifacts")
     func runScopedWorkspaceScanFindsUnrecordedWorkspaceRootArtifacts() throws {
         let fixture = try makeFixture(goal: "Create ./test_results.txt")

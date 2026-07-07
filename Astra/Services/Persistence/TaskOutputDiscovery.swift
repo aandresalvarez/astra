@@ -1,25 +1,33 @@
 import Foundation
 import ASTRAModels
+import ASTRACore
 
-struct TaskOutputDiscoveredFile: Hashable {
-    var path: String
-    var relativePath: String
-    var type: String
-    var modifiedAt: Date?
+public struct TaskOutputDiscoveredFile: Hashable {
+    public init(path: String, relativePath: String, type: String, modifiedAt: Date? = nil) {
+        self.path = path
+        self.relativePath = relativePath
+        self.type = type
+        self.modifiedAt = modifiedAt
+    }
 
-    var kind: ArtifactKind {
+    public var path: String
+    public var relativePath: String
+    public var type: String
+    public var modifiedAt: Date?
+
+    public var kind: ArtifactKind {
         ArtifactKind(rawValue: type)
     }
 }
 
-enum TaskOutputDiscovery {
+public enum TaskOutputDiscovery {
     @MainActor
-    static func files(for task: AgentTask, fileManager: FileManager = .default) -> [TaskOutputDiscoveredFile] {
+    public static func files(for task: AgentTask, fileManager: FileManager = .default) -> [TaskOutputDiscoveredFile] {
         files(in: TaskWorkspaceAccess(task: task).taskFolder, fileManager: fileManager)
     }
 
     @MainActor
-    static func files(
+    public static func files(
         for task: AgentTask,
         run: TaskRun?,
         fileManager: FileManager = .default
@@ -57,24 +65,24 @@ enum TaskOutputDiscovery {
     }
 
     @MainActor
-    static func filesAsync(for task: AgentTask, fileManager: FileManager = .default) async -> [TaskOutputDiscoveredFile] {
+    public static func filesAsync(for task: AgentTask, fileManager: FileManager = .default) async -> [TaskOutputDiscoveredFile] {
         await filesAsync(in: TaskWorkspaceAccess(task: task).taskFolder, fileManager: fileManager)
     }
 
-    static func filesAsync(in taskFolder: String, fileManager: FileManager = .default) async -> [TaskOutputDiscoveredFile] {
+    public static func filesAsync(in taskFolder: String, fileManager: FileManager = .default) async -> [TaskOutputDiscoveredFile] {
         await Task.detached(priority: .utility) {
             files(in: taskFolder, fileManager: fileManager)
         }.value
     }
 
-    static func files(in taskFolder: String, fileManager: FileManager = .default) -> [TaskOutputDiscoveredFile] {
+    public static func files(in taskFolder: String, fileManager: FileManager = .default) -> [TaskOutputDiscoveredFile] {
         guard !taskFolder.isEmpty else { return [] }
         let folderURL = URL(fileURLWithPath: taskFolder)
         let folderPath = folderURL.standardizedFileURL.path
         let resolvedFolderPath = folderURL.resolvingSymlinksInPath().standardizedFileURL.path
         guard fileManager.fileExists(atPath: folderPath) else { return [] }
 
-        return TaskGeneratedFiles.files(in: folderPath, fileManager: fileManager)
+        return TaskGeneratedFileQuerySeam.required.files(in: folderPath, fileManager: fileManager)
             .compactMap { path in
                 discoveredFile(
                     path: path,
@@ -88,7 +96,7 @@ enum TaskOutputDiscovery {
             }
     }
 
-    static func filesChanged(during run: TaskRun, from files: [TaskOutputDiscoveredFile]) -> [TaskOutputDiscoveredFile] {
+    public static func filesChanged(during run: TaskRun, from files: [TaskOutputDiscoveredFile]) -> [TaskOutputDiscoveredFile] {
         let lowerBound = run.startedAt.addingTimeInterval(-2)
         let upperBound = (run.completedAt ?? Date()).addingTimeInterval(2)
         return files.filter { file in

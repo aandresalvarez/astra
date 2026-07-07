@@ -1,34 +1,35 @@
 import Foundation
+import ASTRACore
 
-enum TaskOutputArtifactVisibility: String, Hashable {
+public enum TaskOutputArtifactVisibility: String, Hashable {
     case deliverable
     case diagnostic
     case internalState
 }
 
-enum TaskOutputArtifactPathPolicy {
-    enum RelativePathContext {
+public enum TaskOutputArtifactPathPolicy {
+    public enum RelativePathContext {
         case taskFolder
         case workspace
     }
 
-    static func normalizedRelativePath(_ relativePath: String) -> String {
+    public static func normalizedRelativePath(_ relativePath: String) -> String {
         relativePath
             .replacingOccurrences(of: "\\", with: "/")
             .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
     }
 
-    static func isDisplayableUserArtifactRelativePath(_ relativePath: String) -> Bool {
+    public static func isDisplayableUserArtifactRelativePath(_ relativePath: String) -> Bool {
         displayableUserArtifactRelativePath(relativePath, context: .taskFolder) != nil
     }
 
-    static func relativeDepth(of relativePath: String) -> Int {
+    public static func relativeDepth(of relativePath: String) -> Int {
         let normalized = normalizedRelativePath(relativePath)
         guard !normalized.isEmpty else { return 0 }
         return normalized.split(separator: "/", omittingEmptySubsequences: true).count - 1
     }
 
-    static func displayableUserArtifactRelativePath(
+    public static func displayableUserArtifactRelativePath(
         _ relativePath: String,
         context: RelativePathContext = .taskFolder
     ) -> String? {
@@ -40,7 +41,7 @@ enum TaskOutputArtifactPathPolicy {
         return normalized
     }
 
-    static func visibility(
+    public static func visibility(
         for relativePath: String,
         context: RelativePathContext = .taskFolder
     ) -> TaskOutputArtifactVisibility {
@@ -56,7 +57,7 @@ enum TaskOutputArtifactPathPolicy {
         return .deliverable
     }
 
-    static func isInternalStateRelativePath(
+    public static func isInternalStateRelativePath(
         _ relativePath: String,
         context: RelativePathContext = .taskFolder
     ) -> Bool {
@@ -81,7 +82,8 @@ enum TaskOutputArtifactPathPolicy {
         if name == "current_state.json" || name == "current_state.md" {
             return true
         }
-        if name == TaskForkManifest.fileName {
+        // Matches `TaskForkManifest.fileName` (Astra/Services/Tasks/TaskForkManifestService.swift).
+        if name == "fork_manifest.json" {
             return true
         }
         if name.hasPrefix("turn_") && name.hasSuffix(".md") {
@@ -90,11 +92,11 @@ enum TaskOutputArtifactPathPolicy {
         return false
     }
 
-    static func isRuntimeDiagnosticRelativePath(_ relativePath: String) -> Bool {
+    public static func isRuntimeDiagnosticRelativePath(_ relativePath: String) -> Bool {
         isRuntimeDiagnosticRelativePath(relativePath, context: .taskFolder)
     }
 
-    static func isRuntimeDiagnosticRelativePath(
+    public static func isRuntimeDiagnosticRelativePath(
         _ relativePath: String,
         context: RelativePathContext
     ) -> Bool {
@@ -114,7 +116,7 @@ enum TaskOutputArtifactPathPolicy {
             normalized == "jobs" || normalized.hasPrefix("jobs/")
     }
 
-    static func displayableUserArtifactPath(
+    public static func displayableUserArtifactPath(
         _ path: String,
         taskFolder: String,
         fileManager: FileManager = .default
@@ -123,7 +125,7 @@ enum TaskOutputArtifactPathPolicy {
             .flatMap { displayableUserArtifactRelativePath($0, context: .taskFolder) }
     }
 
-    static func isDisplayableUserArtifactPath(
+    public static func isDisplayableUserArtifactPath(
         _ path: String,
         taskFolder: String,
         fileManager: FileManager = .default
@@ -131,7 +133,7 @@ enum TaskOutputArtifactPathPolicy {
         displayableUserArtifactPath(path, taskFolder: taskFolder, fileManager: fileManager) != nil
     }
 
-    static func relativePath(
+    public static func relativePath(
         _ path: String,
         under root: String,
         fileManager: FileManager = .default

@@ -1,12 +1,12 @@
 import Foundation
 import ASTRAModels
 
-enum TaskRelatedOutputFolders {
+public enum TaskRelatedOutputFolders {
     private static let taskFolderRegex = try? NSRegularExpression(
         pattern: #"(?:~|/)[^\r\n`"'<>\])}]+/tasks/[A-Za-z0-9][A-Za-z0-9_-]{5,}"#
     )
 
-    static func legacyOutputFolders(
+    public static func legacyOutputFolders(
         for task: AgentTask,
         workspace: Workspace?,
         fileManager: FileManager = .default

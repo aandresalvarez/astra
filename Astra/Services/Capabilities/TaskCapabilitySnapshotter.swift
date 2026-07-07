@@ -4,7 +4,7 @@ import ASTRAModels
 
 enum TaskCapabilitySnapshotter {
     static func capture(for task: AgentTask) {
-        task.skillSnapshots = task.skills.map(SkillSnapshotConfig.init(skill:))
+        TaskCapabilitySnapshotCapture.capture(for: task)
     }
 
     /// Re-captures snapshots at the start of a fresh run and returns the

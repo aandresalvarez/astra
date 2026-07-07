@@ -1,9 +1,9 @@
 import Foundation
 
-enum WorkspaceAppIDPolicy {
-    static let allowedCharacters = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
+public enum WorkspaceAppIDPolicy {
+    public static let allowedCharacters = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
 
-    static func isPortableIdentifier(_ value: String) -> Bool {
+    public static func isPortableIdentifier(_ value: String) -> Bool {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed == value
             && !trimmed.isEmpty
@@ -11,7 +11,7 @@ enum WorkspaceAppIDPolicy {
             && !isReservedPathComponent(trimmed)
     }
 
-    static func isReservedPathComponent(_ value: String) -> Bool {
+    public static func isReservedPathComponent(_ value: String) -> Bool {
         value == "."
             || value == ".."
             || value.caseInsensitiveCompare("exports") == .orderedSame

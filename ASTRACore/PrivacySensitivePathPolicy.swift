@@ -1,6 +1,6 @@
 import Foundation
 
-enum PrivacySensitivePathPolicy {
+public enum PrivacySensitivePathPolicy {
     private static let protectedHomeRelativeDirectories: [[String]] = [
         ["Pictures"],
         ["Music"],
@@ -26,7 +26,7 @@ enum PrivacySensitivePathPolicy {
         "medialibrary"
     ]
 
-    static func shouldSkipImplicitScan(
+    public static func shouldSkipImplicitScan(
         of url: URL,
         scanRoot: URL? = nil,
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
@@ -51,7 +51,7 @@ enum PrivacySensitivePathPolicy {
         }
     }
 
-    static func protectedDirectoryPaths(homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser) -> [String] {
+    public static func protectedDirectoryPaths(homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser) -> [String] {
         let home = normalizedPath(homeDirectory)
         let homePaths = protectedHomeRelativeDirectories.map { components in
             components.reduce(URL(fileURLWithPath: home, isDirectory: true)) { url, component in

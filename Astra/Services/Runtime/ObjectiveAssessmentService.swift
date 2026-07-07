@@ -1,6 +1,7 @@
 import Foundation
 import ASTRACore
 import ASTRAModels
+import ASTRAPersistence
 
 /// Tier 2 (utility-model) objective re-assessment. Given the original goal, the
 /// most recent substantive user messages, and the current verification status,

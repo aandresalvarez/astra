@@ -8,7 +8,7 @@ public enum TaskMissionActionEventTypes {
 }
 
 public struct TaskMissionActionPayload: Codable, Sendable, Equatable {
-    public init(version: Int, action: String, correctiveStepID: String?, correctiveTaskID: UUID?, reason: String?, createdAt: String) {
+    public init(version: Int, action: String, correctiveStepID: String? = nil, correctiveTaskID: UUID? = nil, reason: String? = nil, createdAt: String) {
         self.version = version
         self.action = action
         self.correctiveStepID = correctiveStepID

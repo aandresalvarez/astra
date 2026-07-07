@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import ASTRAPersistence
 @testable import ASTRA
 
 @Suite("Prompt Context IO Snapshot Loader")

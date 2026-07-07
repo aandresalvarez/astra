@@ -1,4 +1,7 @@
 import Foundation
+import ASTRAPersistence
+import ASTRACore
+import ASTRAModels
 
 struct AppBuildInfo: Equatable, Sendable {
     var displayName: String

@@ -1,5 +1,6 @@
 import Foundation
 import ASTRAModels
+import ASTRAPersistence
 
 struct TaskMissionControlSnapshot {
     let taskFolder: String

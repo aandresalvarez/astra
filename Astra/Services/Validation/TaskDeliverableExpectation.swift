@@ -1,5 +1,7 @@
 import Foundation
 import ASTRAModels
+import ASTRAPersistence
+import ASTRACore
 
 enum TaskDeliverableExpectation {
     static let artifactScanEntryLimit = 500

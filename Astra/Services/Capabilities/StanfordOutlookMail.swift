@@ -1,6 +1,7 @@
 import Foundation
 import ASTRACore
 import ASTRAModels
+import ASTRAPersistence
 
 enum StanfordOutlookMail {
     static let capabilityID = "stanford-outlook-mail"

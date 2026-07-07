@@ -1,6 +1,7 @@
 import Foundation
 import ASTRACore
 import ASTRAModels
+import ASTRAPersistence
 
 enum TaskConversationItem: Identifiable, Sendable {
     case userMessage(text: String, timestamp: Date)

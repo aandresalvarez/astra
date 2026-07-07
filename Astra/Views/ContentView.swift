@@ -3,6 +3,7 @@ import SwiftData
 import ASTRACore
 import AppKit
 import ASTRAModels
+import ASTRAPersistence
 
 // `WorkspaceCanvasItem`, `WorkspaceRightPanel`, and the shelf-boundary metrics live in
 // WorkspaceCanvasItem.swift (extracted to keep this file within its line budget).

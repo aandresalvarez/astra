@@ -1,5 +1,8 @@
 import Foundation
 import os
+import ASTRAPersistence
+import ASTRACore
+import ASTRAModels
 
 enum PerformanceTelemetry {
     static let uiFrameThresholdMilliseconds: Double = 8

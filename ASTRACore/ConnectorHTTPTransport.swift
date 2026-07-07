@@ -455,13 +455,13 @@ public struct JiraConnectorAuthTester {
 }
 
 private struct ProbeResult {
-    let endpointKind: String
-    let statusCode: Int?
-    let data: Data
-    let headers: [AnyHashable: Any]
-    let errorMessage: String?
+    public let endpointKind: String
+    public let statusCode: Int?
+    public let data: Data
+    public let headers: [AnyHashable: Any]
+    public let errorMessage: String?
 
-    var seraphLoginReason: String? {
+    public var seraphLoginReason: String? {
         headers.first { key, _ in
             String(describing: key).caseInsensitiveCompare("x-seraph-loginreason") == .orderedSame
         }.map { String(describing: $0.value) }
@@ -469,9 +469,9 @@ private struct ProbeResult {
 }
 
 private struct JiraPermissionsResponse: Decodable {
-    let permissions: [String: JiraPermission]
+    public let permissions: [String: JiraPermission]
 }
 
 private struct JiraPermission: Decodable {
-    let havePermission: Bool
+    public let havePermission: Bool
 }

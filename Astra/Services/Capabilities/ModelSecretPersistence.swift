@@ -1,5 +1,6 @@
 import Foundation
 import ASTRACore
+import ASTRAPersistence
 
 /// Registered as the `ConnectorSecretSeam` (`ASTRACore/ConnectorSecretSeam.swift`)
 /// backing implementation - see that file's header for why every method here

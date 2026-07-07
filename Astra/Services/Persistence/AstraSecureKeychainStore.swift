@@ -1,5 +1,6 @@
 import Foundation
 import AstraObjCSupport
+import ASTRACore
 
 /// Single internal chokepoint for storing ASTRA's *own* secrets (connector and
 /// skill credentials). Routes them into a dedicated keychain file — separate
@@ -16,7 +17,7 @@ import AstraObjCSupport
 /// All operations fail closed: if the dedicated keychain cannot be created /
 /// opened / unlocked, writes return `false` and reads return `nil` rather than
 /// silently falling back to `login.keychain-db`.
-enum AstraSecureKeychainStore {
+public enum AstraSecureKeychainStore {
 
     /// Test-only redirect of the dedicated keychain file path. Task-local so a
     /// test can point the store at a throwaway keychain without touching the real
@@ -39,7 +40,7 @@ enum AstraSecureKeychainStore {
     // MARK: - CRUD
 
     @discardableResult
-    static func save(service: String, account: String, value: String, label: String?) -> Bool {
+    public static func save(service: String, account: String, value: String, label: String?) -> Bool {
         AstraSecureKeychain.saveSecret(
             value,
             forAccount: account,
@@ -50,7 +51,7 @@ enum AstraSecureKeychainStore {
         )
     }
 
-    static func load(service: String, account: String) -> String? {
+    public static func load(service: String, account: String) -> String? {
         AstraSecureKeychain.secret(
             forAccount: account,
             service: service,
@@ -60,7 +61,7 @@ enum AstraSecureKeychainStore {
     }
 
     @discardableResult
-    static func delete(service: String, account: String) -> Bool {
+    public static func delete(service: String, account: String) -> Bool {
         AstraSecureKeychain.deleteSecret(
             forAccount: account,
             service: service,
@@ -70,7 +71,7 @@ enum AstraSecureKeychainStore {
     }
 
     @discardableResult
-    static func deleteAll(service: String) -> Bool {
+    public static func deleteAll(service: String) -> Bool {
         AstraSecureKeychain.deleteAllSecrets(
             forService: service,
             keychainPath: keychainPath,
@@ -78,7 +79,7 @@ enum AstraSecureKeychainStore {
         )
     }
 
-    static func exists(service: String, account: String) -> Bool {
+    public static func exists(service: String, account: String) -> Bool {
         AstraSecureKeychain.hasSecret(
             forAccount: account,
             service: service,
@@ -94,7 +95,7 @@ enum AstraSecureKeychainStore {
     /// (`0` when there was nothing to migrate, `-1` on a hard failure). Driven
     /// per-entity from the existing launch migration hooks.
     @discardableResult
-    static func migrateServiceFromLoginKeychain(service: String) -> Int {
+    public static func migrateServiceFromLoginKeychain(service: String) -> Int {
         AstraSecureKeychain.migrateService(
             fromLoginKeychain: service,
             keychainPath: keychainPath,
@@ -105,7 +106,7 @@ enum AstraSecureKeychainStore {
     /// Whether the login keychain still holds an item for `service` (optionally a
     /// specific `account`). Used by tests that assert ASTRA secrets are not left
     /// behind in `login.keychain-db`.
-    static func loginKeychainContains(service: String, account: String? = nil) -> Bool {
+    public static func loginKeychainContains(service: String, account: String? = nil) -> Bool {
         AstraSecureKeychain.loginKeychainContainsService(service, account: account)
     }
 }

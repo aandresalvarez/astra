@@ -2,6 +2,7 @@ import AppKit
 import SwiftUI
 import ASTRACore
 import ASTRAModels
+import ASTRAPersistence
 
 struct SettingsView: View {
     @ObservedObject var appUpdateController: AppUpdateController

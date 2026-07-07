@@ -1,6 +1,7 @@
 import SwiftUI
 import ASTRACore
 import ASTRAModels
+import ASTRAPersistence
 
 private enum TaskDetailFilePathMatcher {
     static let regex = try? NSRegularExpression(pattern: #"(?:/[\w.@\-]+){2,}(?:\.\w+)?"#)

@@ -1,4 +1,5 @@
 import Foundation
+import ASTRAPersistence
 
 /// Seeds a freshly published app's storage with the preview's sample rows so it opens
 /// populated instead of dead-empty (opt-in via the Studio's "Start with sample data").

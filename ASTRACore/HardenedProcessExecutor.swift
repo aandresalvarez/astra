@@ -81,14 +81,14 @@ private final class HardenedProcessResultBox: @unchecked Sendable {
     private let lock = NSLock()
     private var storedResult: RunResult?
 
-    var result: RunResult? {
+    public var result: RunResult? {
         lock.lock()
         let value = storedResult
         lock.unlock()
         return value
     }
 
-    func store(_ result: RunResult) {
+    public func store(_ result: RunResult) {
         lock.lock()
         storedResult = result
         lock.unlock()

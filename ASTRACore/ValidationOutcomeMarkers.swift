@@ -11,7 +11,7 @@ import Foundation
 ///
 /// Markers are punctuation-light and matched case-insensitively as substrings so payloads
 /// persisted before this type existed continue to classify unchanged.
-enum ValidationOutcomeMarker: String, CaseIterable {
+public enum ValidationOutcomeMarker: String, CaseIterable {
     case testsPassed = "Tests passed"
     case testsFailed = "Tests failed"
     case validationError = "Validation error"
@@ -19,7 +19,7 @@ enum ValidationOutcomeMarker: String, CaseIterable {
     case aiCheckFlagged = "AI check flagged"
     case aiCheckError = "AI check error"
 
-    func matches(_ payload: String) -> Bool {
+    public func matches(_ payload: String) -> Bool {
         payload.range(of: rawValue, options: .caseInsensitive) != nil
     }
 }

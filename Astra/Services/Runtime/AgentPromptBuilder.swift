@@ -1,6 +1,7 @@
 import Foundation
 import ASTRACore
 import ASTRAModels
+import ASTRAPersistence
 
 enum PromptContextSectionKind: String, Sendable, CaseIterable {
     case currentGoal

@@ -1,9 +1,10 @@
 import Foundation
 import ASTRAModels
+import ASTRACore
 
 @MainActor
-enum TaskArtifactPathNormalizer {
-    static func normalizedPath(_ path: String, task: AgentTask) -> String {
+public enum TaskArtifactPathNormalizer {
+    public static func normalizedPath(_ path: String, task: AgentTask) -> String {
         let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return "" }
         if trimmed.hasPrefix("/") {

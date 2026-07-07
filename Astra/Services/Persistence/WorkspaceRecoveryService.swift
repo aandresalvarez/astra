@@ -1,10 +1,11 @@
 import Foundation
 import SQLite3
 import SwiftData
+import ASTRACore
 import ASTRAModels
 
-enum WorkspaceRecoveryService {
-    static let recoveryNoticeKey = "lastWorkspaceRecoveryNotice"
+public enum WorkspaceRecoveryService {
+    public static let recoveryNoticeKey = "lastWorkspaceRecoveryNotice"
     private static let maxRecoveryScanDirectories = 2_500
     private static let skippedRecoveryDirectoryNames: Set<String> = [
         "node_modules",
@@ -15,19 +16,19 @@ enum WorkspaceRecoveryService {
     ]
 
     private struct LoadedWorkspaceConfig: @unchecked Sendable {
-        var config: WorkspaceConfigManager.WorkspaceConfig
+        public var config: WorkspaceConfigManager.WorkspaceConfig
     }
 
-    struct LegacyStoreRepairResult: Equatable {
-        var validationStrategyGoalCheckRows = 0
-        var validationStrategyDefaultedRows = 0
-        var isolationStrategyDefaultedRows = 0
-        var taskStatusDefaultedRows = 0
-        var runStatusDefaultedRows = 0
-        var scheduleTypeDefaultedRows = 0
-        var scheduleResultModeDefaultedRows = 0
+    public struct LegacyStoreRepairResult: Equatable {
+        public var validationStrategyGoalCheckRows = 0
+        public var validationStrategyDefaultedRows = 0
+        public var isolationStrategyDefaultedRows = 0
+        public var taskStatusDefaultedRows = 0
+        public var runStatusDefaultedRows = 0
+        public var scheduleTypeDefaultedRows = 0
+        public var scheduleResultModeDefaultedRows = 0
 
-        var totalRowsChanged: Int {
+        public var totalRowsChanged: Int {
             validationStrategyGoalCheckRows
                 + validationStrategyDefaultedRows
                 + isolationStrategyDefaultedRows
@@ -37,26 +38,26 @@ enum WorkspaceRecoveryService {
                 + scheduleResultModeDefaultedRows
         }
 
-        var didRepair: Bool {
+        public var didRepair: Bool {
             totalRowsChanged > 0
         }
     }
 
-    static var applicationSupportDirectory: URL {
+    public static var applicationSupportDirectory: URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent(AppChannel.current.appSupportDirectoryName, isDirectory: true)
     }
 
-    static var storeURL: URL {
+    public static var storeURL: URL {
         applicationSupportDirectory.appendingPathComponent("default.store")
     }
 
-    static var legacyStoreURL: URL {
+    public static var legacyStoreURL: URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("default.store")
     }
 
-    static func preparePersistentStoreURL() -> URL {
+    public static func preparePersistentStoreURL() -> URL {
         try? FileManager.default.createDirectory(
             at: applicationSupportDirectory,
             withIntermediateDirectories: true
@@ -66,7 +67,7 @@ enum WorkspaceRecoveryService {
     }
 
     @discardableResult
-    static func repairLegacyStoreValues(at url: URL) -> LegacyStoreRepairResult {
+    public static func repairLegacyStoreValues(at url: URL) -> LegacyStoreRepairResult {
         guard FileManager.default.fileExists(atPath: url.path) else {
             return LegacyStoreRepairResult()
         }
@@ -83,7 +84,7 @@ enum WorkspaceRecoveryService {
             if let database {
                 sqlite3_close(database)
             }
-            AppLogger.audit(.dataStoreRecovered, category: "App", fields: [
+            AuditLoggingSeam.required.audit(.dataStoreRecovered, category: "App", fields: [
                 "repair": "legacy_enum_raw_values",
                 "stage": "open_failed",
                 "sqlite_error": message
@@ -180,7 +181,7 @@ enum WorkspaceRecoveryService {
         }
 
         if result.didRepair {
-            AppLogger.audit(.dataStoreRecovered, category: "App", fields: [
+            AuditLoggingSeam.required.audit(.dataStoreRecovered, category: "App", fields: [
                 "repair": "legacy_enum_raw_values",
                 "rows": String(result.totalRowsChanged),
                 "validation_goal_check_rows": String(result.validationStrategyGoalCheckRows),
@@ -192,7 +193,7 @@ enum WorkspaceRecoveryService {
         return result
     }
 
-    static func backupStore(at url: URL) {
+    public static func backupStore(at url: URL) {
         let formatter = ISO8601DateFormatter()
         let suffix = formatter.string(from: Date())
             .replacingOccurrences(of: ":", with: "-")
@@ -204,20 +205,20 @@ enum WorkspaceRecoveryService {
             do {
                 try FileManager.default.moveItem(at: source, to: backup)
             } catch {
-                AppLogger.audit(.workspaceStoreBackedUp, category: "Persistence", fields: [
+                AuditLoggingSeam.required.audit(.workspaceStoreBackedUp, category: "Persistence", fields: [
                     "result": "failed",
                     "file_suffix": storeSuffix.isEmpty ? "store" : storeSuffix,
                     "error_type": String(describing: type(of: error))
                 ], level: .error)
             }
         }
-        AppLogger.audit(.workspaceStoreBackedUp, category: "Persistence", fields: [
+        AuditLoggingSeam.required.audit(.workspaceStoreBackedUp, category: "Persistence", fields: [
             "result": "completed"
         ])
     }
 
     @discardableResult
-    static func exportReadableWorkspacesBeforeStoreReset(
+    public static func exportReadableWorkspacesBeforeStoreReset(
         at url: URL,
         schema: Schema = ASTRASchema.current,
         migrationPlan: (any SchemaMigrationPlan.Type)? = ASTRAMigrationPlan.self
@@ -238,7 +239,7 @@ enum WorkspaceRecoveryService {
             let results = workspaces.compactMap { workspace -> WorkspaceConfigManager.WorkspaceConfigExportResult? in
                 let target = WorkspaceConfigManager.autoExportTarget(for: workspace.primaryPath)
                 guard let targetURL = target.url else {
-                    AppLogger.audit(.workspaceExported, category: "Persistence", fields: [
+                    AuditLoggingSeam.required.audit(.workspaceExported, category: "Persistence", fields: [
                         "result": "recovery_export_skipped",
                         "reason": target.reason,
                         "workspace_id": workspace.id.uuidString
@@ -251,14 +252,14 @@ enum WorkspaceRecoveryService {
                     url: targetURL
                 )
             }
-            AppLogger.audit(.workspaceExported, category: "Persistence", fields: [
+            AuditLoggingSeam.required.audit(.workspaceExported, category: "Persistence", fields: [
                 "result": "pre_reset_recovery_export_completed",
                 "workspace_count": String(workspaces.count),
                 "exported_count": String(results.filter(\.didExport).count)
             ])
             return results
         } catch {
-            AppLogger.audit(.workspaceRecoveryFailed, category: "Persistence", fields: [
+            AuditLoggingSeam.required.audit(.workspaceRecoveryFailed, category: "Persistence", fields: [
                 "operation": "pre_reset_read_only_export",
                 "error_type": String(describing: type(of: error))
             ], level: .error)
@@ -267,7 +268,7 @@ enum WorkspaceRecoveryService {
     }
 
     @discardableResult
-    static func copyStoreBackup(
+    public static func copyStoreBackup(
         at url: URL,
         backupRoot: URL? = nil,
         label: String = "pre-update"
@@ -292,7 +293,7 @@ enum WorkspaceRecoveryService {
             copied.append(destination)
         }
 
-        AppLogger.audit(.appUpdateBackupCreated, category: "Updater", fields: [
+        AuditLoggingSeam.required.audit(.appUpdateBackupCreated, category: "Updater", fields: [
             "file_count": String(copied.count),
             "label": label
         ])
@@ -301,7 +302,7 @@ enum WorkspaceRecoveryService {
 
     @discardableResult
     @MainActor
-    static func recoverMissingWorkspaces(
+    public static func recoverMissingWorkspaces(
         modelContext: ModelContext,
         extraRoots: [String] = [],
         includeDefaultRoots: Bool = true,
@@ -315,7 +316,7 @@ enum WorkspaceRecoveryService {
         return recoverMissingWorkspaces(modelContext: modelContext, configFiles: configs)
     }
 
-    static func recoverMissingWorkspacesAfterLaunch(
+    public static func recoverMissingWorkspacesAfterLaunch(
         modelContext: ModelContext,
         extraRoots: [String] = [],
         includeDefaultRoots: Bool = true,
@@ -359,7 +360,7 @@ enum WorkspaceRecoveryService {
                             .path
                         return LoadedWorkspaceConfig(config: config)
                     } catch {
-                        AppLogger.audit(.workspaceRecoveryFailed, category: "Persistence", fields: [
+                        AuditLoggingSeam.required.audit(.workspaceRecoveryFailed, category: "Persistence", fields: [
                             "config_file": configURL.lastPathComponent,
                             "error_type": String(describing: type(of: error))
                         ], level: .error)
@@ -423,7 +424,7 @@ enum WorkspaceRecoveryService {
                 existingPaths.insert(normalizePath(workspace.primaryPath))
                 imported += 1
             } catch {
-                AppLogger.audit(.workspaceRecoveryFailed, category: "Persistence", fields: [
+                AuditLoggingSeam.required.audit(.workspaceRecoveryFailed, category: "Persistence", fields: [
                     "config_file": configURL.lastPathComponent,
                     "error_type": String(describing: type(of: error))
                 ], level: .error)
@@ -477,19 +478,19 @@ enum WorkspaceRecoveryService {
         do {
             try modelContext.save()
         } catch {
-            AppLogger.audit(.workspaceRecoveryFailed, category: "Persistence", fields: [
+            AuditLoggingSeam.required.audit(.workspaceRecoveryFailed, category: "Persistence", fields: [
                 "operation": "save_recovered_workspaces",
                 "error_type": String(describing: type(of: error))
             ], level: .error)
         }
         let message = "Recovered \(imported) workspace\(imported == 1 ? "" : "s") from \(WorkspaceFileLayout.workspaceConfigFileName)."
         UserDefaults.standard.set(message, forKey: recoveryNoticeKey)
-        AppLogger.audit(.workspaceRecovered, category: "Persistence", fields: [
+        AuditLoggingSeam.required.audit(.workspaceRecovered, category: "Persistence", fields: [
             "imported_count": String(imported)
         ])
     }
 
-    static func discoverWorkspaceConfigFiles(
+    public static func discoverWorkspaceConfigFiles(
         extraRoots: [String] = [],
         includeDefaultRoots: Bool = true,
         privacyHomeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
@@ -542,14 +543,14 @@ enum WorkspaceRecoveryService {
             do {
                 try fileManager.moveItem(at: source, to: destination)
             } catch {
-                AppLogger.audit(.workspaceStoreMigrated, category: "Persistence", fields: [
+                AuditLoggingSeam.required.audit(.workspaceStoreMigrated, category: "Persistence", fields: [
                     "result": "failed",
                     "file_suffix": suffix.isEmpty ? "store" : suffix,
                     "error_type": String(describing: type(of: error))
                 ], level: .error)
             }
         }
-        AppLogger.audit(.workspaceStoreMigrated, category: "Persistence", fields: [
+        AuditLoggingSeam.required.audit(.workspaceStoreMigrated, category: "Persistence", fields: [
             "result": "completed"
         ])
     }
@@ -602,7 +603,7 @@ enum WorkspaceRecoveryService {
         guard result == SQLITE_OK else {
             let message = errorMessage.map { String(cString: $0) } ?? "unknown"
             sqlite3_free(errorMessage)
-            AppLogger.audit(.dataStoreRecovered, category: "App", fields: [
+            AuditLoggingSeam.required.audit(.dataStoreRecovered, category: "App", fields: [
                 "repair": "legacy_enum_raw_values",
                 "stage": "statement_failed",
                 "sqlite_error": message

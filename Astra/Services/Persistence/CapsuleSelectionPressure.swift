@@ -1,26 +1,37 @@
 import Foundation
+import ASTRACore
 
 /// Objective selection-pressure metrics for a Context Capsule: how many items each prompt
 /// section drops past its render cap. No relevance judgment — just whether the
 /// recency/cap-based selection actually evicts content, so Phase 2 (query-conditioned
 /// selection) can be gated on a measured rate instead of a guess.
-struct CapsuleSelectionPressure: Equatable {
-    struct Section: Equatable {
-        let name: String
-        let rawCount: Int
-        let cap: Int
-        var evicted: Int { max(0, rawCount - cap) }
+public struct CapsuleSelectionPressure: Equatable {
+    public init(sections: [Section]) {
+        self.sections = sections
     }
 
-    let sections: [Section]
-    var totalEvicted: Int { sections.reduce(0) { $0 + $1.evicted } }
-    var evictingSections: [Section] { sections.filter { $0.evicted > 0 } }
-    var anyEviction: Bool { totalEvicted > 0 }
+    public struct Section: Equatable {
+        public init(name: String, rawCount: Int, cap: Int) {
+            self.name = name
+            self.rawCount = rawCount
+            self.cap = cap
+        }
+
+        public let name: String
+        public let rawCount: Int
+        public let cap: Int
+        public var evicted: Int { max(0, rawCount - cap) }
+    }
+
+    public let sections: [Section]
+    public var totalEvicted: Int { sections.reduce(0) { $0 + $1.evicted } }
+    public var evictingSections: [Section] { sections.filter { $0.evicted > 0 } }
+    public var anyEviction: Bool { totalEvicted > 0 }
 
     /// Caps mirror the per-section limits in `TaskContextStateManager.promptContext`
     /// (and `maxPromptTurns` / `maxStandingInstructions`). If those render limits change,
     /// update these to match — the snapshot suite flags a render change but not this drift.
-    static func measure(_ state: TaskContextState) -> CapsuleSelectionPressure {
+    public static func measure(_ state: TaskContextState) -> CapsuleSelectionPressure {
         CapsuleSelectionPressure(sections: [
             Section(name: "constraints", rawCount: state.constraints.count, cap: 6),
             Section(name: "acceptanceCriteria", rawCount: state.acceptanceCriteria.count, cap: 6),
@@ -38,12 +49,12 @@ struct CapsuleSelectionPressure: Equatable {
 
     /// One-line prompt notice when cap-based selection dropped capsule items, so the
     /// agent knows compacted context exists instead of assuming it saw everything.
-    static func promptNotice(forTaskFolder folder: String) -> String? {
+    public static func promptNotice(forTaskFolder folder: String) -> String? {
         guard !folder.isEmpty, let state = TaskContextStateManager.load(taskFolder: folder) else { return nil }
         return promptNotice(for: state)
     }
 
-    static func promptNotice(for state: TaskContextState) -> String? {
+    public static func promptNotice(for state: TaskContextState) -> String? {
         let pressure = measure(state)
         guard pressure.anyEviction else { return nil }
         let sections = pressure.evictingSections
@@ -55,7 +66,7 @@ struct CapsuleSelectionPressure: Equatable {
 
     /// Render-time diagnostics merged into `promptDiagnosticsFields`. `prompt` is the
     /// assembled prompt; the capsule budget is "bound" when its block truncated.
-    static func fields(forTaskFolder folder: String, prompt: String) -> [String: String] {
+    public static func fields(forTaskFolder folder: String, prompt: String) -> [String: String] {
         guard !folder.isEmpty, let state = TaskContextStateManager.load(taskFolder: folder) else { return [:] }
         let pressure = measure(state)
         return [

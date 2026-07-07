@@ -1,5 +1,8 @@
 import AppKit
 import Foundation
+import ASTRAPersistence
+import ASTRACore
+import ASTRAModels
 
 /// A per-site workflow adapter: a bundle of bridge-route handlers whose
 /// orchestration (multi-step sequences of engine ops, session-lifecycle

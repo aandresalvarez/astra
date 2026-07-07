@@ -220,7 +220,7 @@ public enum TaskPlanExecutionMode: String, Sendable, Equatable {
 }
 
 public struct TaskPlanState: Sendable, Equatable {
-    public init(plan: TaskPlanPayload?, lifecycleStatus: TaskPlanLifecycleStatus, approvedAt: Date?, cancelledAt: Date?, cancellationReason: String?, executionStartedAt: Date?, executionCompletedAt: Date?, executionFailedAt: Date?, latestEventAt: Date?) {
+    public init(plan: TaskPlanPayload? = nil, lifecycleStatus: TaskPlanLifecycleStatus, approvedAt: Date? = nil, cancelledAt: Date? = nil, cancellationReason: String? = nil, executionStartedAt: Date? = nil, executionCompletedAt: Date? = nil, executionFailedAt: Date? = nil, latestEventAt: Date? = nil) {
         self.plan = plan
         self.lifecycleStatus = lifecycleStatus
         self.approvedAt = approvedAt
@@ -256,7 +256,7 @@ public struct TaskPlanState: Sendable, Equatable {
 }
 
 public struct TaskPlanProgressPayload: Codable, Sendable, Equatable {
-    public init(version: Int, type: String, planID: UUID?, stepID: String, status: TaskPlanPayloadStepStatus, title: String?, detail: String?, summary: String?, reason: String?) {
+    public init(version: Int, type: String, planID: UUID? = nil, stepID: String, status: TaskPlanPayloadStepStatus, title: String? = nil, detail: String? = nil, summary: String? = nil, reason: String? = nil) {
         self.version = version
         self.type = type
         self.planID = planID

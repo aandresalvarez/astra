@@ -1,4 +1,5 @@
 import Foundation
+import ASTRAPersistence
 
 /// On-disk store for the App Studio conversation journal (`studio/journal.json` in the app
 /// directory). Mirrors `WorkspaceAppVersionService`: `FileManager`-injected, pure JSON,

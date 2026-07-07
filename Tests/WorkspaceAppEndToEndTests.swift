@@ -2,6 +2,7 @@ import Foundation
 import SwiftData
 import Testing
 import ASTRAModels
+import ASTRAPersistence
 @testable import ASTRA
 
 /// End-to-end coverage of the App Studio module: every stage chained through the REAL services

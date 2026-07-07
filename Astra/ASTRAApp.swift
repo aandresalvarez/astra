@@ -3,6 +3,8 @@ import SwiftData
 import AppKit
 import AppIntents
 import ASTRAModels
+import ASTRAPersistence
+import ASTRACore
 
 private let aboutAstraWindowID = "about-astra"
 

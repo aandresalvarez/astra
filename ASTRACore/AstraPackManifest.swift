@@ -123,19 +123,19 @@ public struct AstraPackShelfDefault: Codable, Equatable, Sendable, Identifiable 
 }
 
 private struct AstraPackDynamicCodingKey: CodingKey {
-    var stringValue: String
-    var intValue: Int?
+    public var stringValue: String
+    public var intValue: Int?
 
-    init(_ stringValue: String) {
+    public init(_ stringValue: String) {
         self.stringValue = stringValue
         self.intValue = nil
     }
 
-    init?(stringValue: String) {
+    public init?(stringValue: String) {
         self.init(stringValue)
     }
 
-    init?(intValue: Int) {
+    public init?(intValue: Int) {
         self.stringValue = String(intValue)
         self.intValue = intValue
     }

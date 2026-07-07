@@ -2,6 +2,7 @@ import SwiftUI
 import SwiftData
 import ASTRACore
 import ASTRAModels
+import ASTRAPersistence
 
 /// Chat message for the conversation
 struct ChatMessage: Identifiable {

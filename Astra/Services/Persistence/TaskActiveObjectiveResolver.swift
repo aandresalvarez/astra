@@ -1,11 +1,19 @@
 import Foundation
 import ASTRAModels
+import ASTRACore
 
 extension TaskContextStateManager {
-    struct ActiveObjectiveResolution: Equatable, Sendable {
-        var objective: String
-        var sourcePointers: [TaskContextState.SourcePointer]
-        var supersedesOriginalGoal: Bool
+    public struct ActiveObjectiveResolution: Equatable, Sendable {
+        public init(objective: String, sourcePointers: [TaskContextState.SourcePointer], supersedesOriginalGoal: Bool, hasExplicitOverride: Bool = false) {
+            self.objective = objective
+            self.sourcePointers = sourcePointers
+            self.supersedesOriginalGoal = supersedesOriginalGoal
+            self.hasExplicitOverride = hasExplicitOverride
+        }
+
+        public var objective: String
+        public var sourcePointers: [TaskContextState.SourcePointer]
+        public var supersedesOriginalGoal: Bool
         /// True whenever an explicit objective-override message was found,
         /// regardless of whether its resolved text differs from `task.goal`.
         /// Distinct from `supersedesOriginalGoal`, which is specifically about
@@ -15,11 +23,11 @@ extension TaskContextStateManager {
         /// override's resolved text happens to equal `task.goal` (adversarial
         /// finding: a stale Tier 2 pivot must not survive this because
         /// `supersedesOriginalGoal` alone reads as "nothing changed").
-        var hasExplicitOverride: Bool = false
+        public var hasExplicitOverride: Bool = false
     }
 
-    static func activeObjectiveText(for task: AgentTask) -> String {
-        let planState = TaskPlanService.reconstruct(for: task)
+    public static func activeObjectiveText(for task: AgentTask) -> String {
+        let planState = TaskPlanReconstructionSeam.required.reconstruct(for: task)
         let startingRequest = activeFirstNonEmpty(firstConversationRequestValue(for: task), task.goal)
         return activeObjectiveResolution(
             for: task,
@@ -29,7 +37,7 @@ extension TaskContextStateManager {
         ).objective
     }
 
-    static func capabilitySearchText(for task: AgentTask, contextText: String) -> String {
+    public static func capabilitySearchText(for task: AgentTask, contextText: String) -> String {
         let activeObjective = activeObjectiveText(for: task)
         let taskGoal = task.goal.trimmingCharacters(in: .whitespacesAndNewlines)
         let taskTitle = task.title.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -47,7 +55,7 @@ extension TaskContextStateManager {
         ].joined(separator: " ")
     }
 
-    static func activeObjectiveResolution(
+    public static func activeObjectiveResolution(
         for task: AgentTask,
         planState: TaskPlanState,
         startingRequest: String,
@@ -82,7 +90,7 @@ extension TaskContextStateManager {
         )
     }
 
-    static func objectiveDivergenceNote(
+    public static func objectiveDivergenceNote(
         task: AgentTask,
         planState: TaskPlanState,
         activeObjective: ActiveObjectiveResolution
@@ -100,13 +108,13 @@ extension TaskContextStateManager {
             : nil
     }
 
-    static func firstConversationRequestValue(for task: AgentTask) -> String? {
+    public static func firstConversationRequestValue(for task: AgentTask) -> String? {
         firstConversationEventValue(for: task)?
             .payload
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    static func firstConversationEventValue(for task: AgentTask) -> TaskEvent? {
+    public static func firstConversationEventValue(for task: AgentTask) -> TaskEvent? {
         task.events
             .filter { $0.type == "user.message" || $0.type == TaskPlanConversationEventTypes.userMessage }
             .sorted { $0.timestamp < $1.timestamp }
@@ -123,11 +131,11 @@ extension TaskContextStateManager {
     /// invisible to `task.events`-based checks until the NEXT turn; callers
     /// that need to react to it within the same turn must check this
     /// alongside `hasExplicitOverride` (adversarial finding).
-    static func isExplicitObjectiveOverrideMessage(_ text: String) -> Bool {
+    public static func isExplicitObjectiveOverrideMessage(_ text: String) -> Bool {
         objectiveOverrideCandidate(from: text) != nil
     }
 
-    static func isGeneratedResumeInstruction(_ text: String) -> Bool {
+    public static func isGeneratedResumeInstruction(_ text: String) -> Bool {
         let lower = text.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
         return lower == "continue where you left off. complete the original goal."
             || lower == "continue where you left off. continue the current objective."
@@ -136,8 +144,8 @@ extension TaskContextStateManager {
 }
 
 private struct ObjectiveOverride: Equatable {
-    var objective: String
-    var source: TaskContextState.SourcePointer
+    public var objective: String
+    public var source: TaskContextState.SourcePointer
 }
 
 private func latestObjectiveOverride(for task: AgentTask) -> ObjectiveOverride? {

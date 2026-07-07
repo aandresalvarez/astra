@@ -5,6 +5,7 @@ import SwiftData
 import ASTRACore
 import ASTRAGitContracts
 import ASTRAModels
+import ASTRAPersistence
 
 @MainActor
 final class WorkspaceGitViewModel: ObservableObject {

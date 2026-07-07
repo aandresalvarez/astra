@@ -59,6 +59,76 @@ public enum TaskForkStateInitializingSeam {
     }
 }
 
+// MARK: - Session-recovery / import status transitions
+
+// Added as part of Track A4 (ASTRAPersistence extraction) so
+// `Astra/Services/Persistence/SessionScanner.swift`/`WorkspaceConfigManager.swift`
+// can apply `TaskStateMachine.completeFromSessionRecovery`/
+// `.restoreImportedStatus` without depending on `TaskStateMachine`. Both
+// source methods use `allowedFrom: Set(TaskStatus.allCases)` - the
+// transition can never be rejected - so unlike `TaskForkStateInitializing`
+// there's no `applied`/`rejection` outcome to report; the seam's only real
+// job is performing the audit-log side effect and returning the
+// business-rule-derived values (`completedAt`'s backfill, `updatedAt`) for
+// the caller to apply to the live `AgentTask` directly. Both source call
+// sites always pass the default `savePolicy: .none`, so persistence
+// (`TaskStateMachine.persistIfNeeded`) is a no-op in both cases - not
+// carried across the seam.
+public struct TaskSessionRecoveryCompletionResult: Sendable {
+    public let completedAt: Date
+    public let updatedAt: Date
+
+    public init(completedAt: Date, updatedAt: Date) {
+        self.completedAt = completedAt
+        self.updatedAt = updatedAt
+    }
+}
+
+public struct TaskImportedStatusRestorationResult: Sendable {
+    public let updatedAt: Date
+
+    public init(updatedAt: Date) {
+        self.updatedAt = updatedAt
+    }
+}
+
+public protocol TaskSessionStateApplying {
+    /// Mirrors `TaskStateMachine.completeFromSessionRecovery`'s
+    /// `completedAt: .set(task.completedAt ?? date)` rule: preserves an
+    /// already-set completion date, else backfills `date`.
+    static func completeFromSessionRecovery(
+        taskID: UUID,
+        currentStatusRawValue: String,
+        existingCompletedAt: Date?,
+        at date: Date
+    ) -> TaskSessionRecoveryCompletionResult
+
+    static func restoreImportedStatus(
+        taskID: UUID,
+        currentStatusRawValue: String,
+        targetStatusRawValue: String,
+        at date: Date
+    ) -> TaskImportedStatusRestorationResult
+}
+
+public enum TaskSessionStateApplyingSeam {
+    private static let storage = OSAllocatedUnfairLock<(any TaskSessionStateApplying.Type)?>(initialState: nil)
+
+    public static func register(_ applying: any TaskSessionStateApplying.Type) {
+        storage.withLock { $0 = applying }
+    }
+
+    public static var required: any TaskSessionStateApplying.Type {
+        guard let applying = storage.withLock({ $0 }) else {
+            preconditionFailure(
+                "TaskSessionStateApplyingSeam read before RuntimeSeamRegistration.registerAll() ran. " +
+                "Call it in ASTRAApp.init() (already done) or at the top of the test that hit this path."
+            )
+        }
+        return applying
+    }
+}
+
 // MARK: - Task folder resolution
 
 // Mirrors `Astra/Services/Persistence/TaskWorkspaceAccess.swift`'s

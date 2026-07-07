@@ -1,6 +1,7 @@
 import Foundation
 import ASTRACore
 import ASTRAModels
+import ASTRAPersistence
 
 struct ConnectorRuntimeProjection {
     struct CredentialExposurePolicy: Equatable {

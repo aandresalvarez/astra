@@ -1,6 +1,7 @@
 import Foundation
 import ASTRACore
 import ASTRAModels
+import ASTRAPersistence
 
 // Value types shared with Astra/Models/AgentTask.swift and
 // Astra/Models/TaskRun.swift (WorkspaceExecutionEnvironment,

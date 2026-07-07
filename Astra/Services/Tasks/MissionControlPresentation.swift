@@ -1,6 +1,8 @@
 import Foundation
 import SwiftData
 import ASTRAModels
+import ASTRAPersistence
+import ASTRACore
 
 enum MissionControlTone: String, Equatable {
     case verified

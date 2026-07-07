@@ -1,5 +1,7 @@
 import Foundation
 import ASTRAModels
+import ASTRAPersistence
+import ASTRACore
 
 struct TaskFileItem: Identifiable, Hashable {
     let path: String

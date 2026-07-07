@@ -1,10 +1,16 @@
 import Foundation
+import ASTRACore
 
-struct WorkspaceImportCandidate: Equatable {
-    var folderURL: URL
-    var configURL: URL?
+public struct WorkspaceImportCandidate: Equatable {
+    public init(folderURL: URL, configURL: URL? = nil) {
+        self.folderURL = folderURL
+        self.configURL = configURL
+    }
 
-    var displayName: String {
+    public var folderURL: URL
+    public var configURL: URL?
+
+    public var displayName: String {
         folderURL.lastPathComponent
             .replacingOccurrences(of: "-", with: " ")
             .replacingOccurrences(of: "_", with: " ")
@@ -12,10 +18,10 @@ struct WorkspaceImportCandidate: Equatable {
     }
 }
 
-enum WorkspaceImportDiscovery {
-    static let legacyAgentFlowConfigFileName = ".agentflow-workspace.json"
+public enum WorkspaceImportDiscovery {
+    public static let legacyAgentFlowConfigFileName = ".agentflow-workspace.json"
 
-    static func candidates(
+    public static func candidates(
         for urls: [URL],
         fileManager: FileManager = .default,
         hostFileAccess: HostFileAccessBroker? = nil
@@ -36,7 +42,7 @@ enum WorkspaceImportDiscovery {
         return results
     }
 
-    static func candidates(
+    public static func candidates(
         for url: URL,
         fileManager: FileManager = .default,
         hostFileAccess: HostFileAccessBroker? = nil

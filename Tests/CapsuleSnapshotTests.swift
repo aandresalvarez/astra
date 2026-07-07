@@ -1,5 +1,8 @@
 import Foundation
 import Testing
+import ASTRAPersistence
+import ASTRACore
+import ASTRAModels
 @testable import ASTRA
 
 /// Phase 0 of the Context Capsule robustness plan: a deterministic golden-snapshot and

@@ -2,6 +2,7 @@ import Foundation
 import SwiftData
 import ASTRACore
 import ASTRAModels
+import ASTRAPersistence
 
 struct CapabilityRuntimeIntegrityIssue: Equatable, Identifiable {
     enum Source: String {

@@ -1,27 +1,28 @@
 import Foundation
+import ASTRACore
 
-enum WorkspaceFileLayout {
-    static let supportDirectoryName = ".astra"
-    static let workspaceConfigFileName = ".astra-workspace.json"
-    static let sshConnectionsFileName = "ssh-connections.json"
+public enum WorkspaceFileLayout {
+    public static let supportDirectoryName = ".astra"
+    public static let workspaceConfigFileName = ".astra-workspace.json"
+    public static let sshConnectionsFileName = "ssh-connections.json"
 
-    static func supportDirectory(for workspacePath: String) -> String {
+    public static func supportDirectory(for workspacePath: String) -> String {
         guard !workspacePath.isEmpty else { return "" }
         return (workspacePath as NSString).appendingPathComponent(supportDirectoryName)
     }
 
-    static func workspaceConfigFile(for workspacePath: String) -> String {
+    public static func workspaceConfigFile(for workspacePath: String) -> String {
         let support = supportDirectory(for: workspacePath)
         guard !support.isEmpty else { return "" }
         return (support as NSString).appendingPathComponent(workspaceConfigFileName)
     }
 
-    static func legacyWorkspaceConfigFile(for workspacePath: String) -> String {
+    public static func legacyWorkspaceConfigFile(for workspacePath: String) -> String {
         guard !workspacePath.isEmpty else { return "" }
         return (workspacePath as NSString).appendingPathComponent(workspaceConfigFileName)
     }
 
-    static func workspaceRoot(forConfigFile url: URL) -> URL {
+    public static func workspaceRoot(forConfigFile url: URL) -> URL {
         let standardized = url.standardizedFileURL
         let parent = standardized.deletingLastPathComponent()
         if parent.lastPathComponent == supportDirectoryName,
@@ -31,35 +32,35 @@ enum WorkspaceFileLayout {
         return parent
     }
 
-    static func sshConnectionsFile(for workspacePath: String) -> String {
+    public static func sshConnectionsFile(for workspacePath: String) -> String {
         let support = supportDirectory(for: workspacePath)
         guard !support.isEmpty else { return "" }
         return (support as NSString).appendingPathComponent(sshConnectionsFileName)
     }
 
-    static func legacySSHConnectionsFile(for workspacePath: String) -> String {
+    public static func legacySSHConnectionsFile(for workspacePath: String) -> String {
         guard !workspacePath.isEmpty else { return "" }
         return (workspacePath as NSString).appendingPathComponent(sshConnectionsFileName)
     }
 
-    static func taskRoot(for workspacePath: String) -> String {
+    public static func taskRoot(for workspacePath: String) -> String {
         let support = supportDirectory(for: workspacePath)
         guard !support.isEmpty else { return "" }
         return (support as NSString).appendingPathComponent("tasks")
     }
 
-    static func appRoot(for workspacePath: String) -> String {
+    public static func appRoot(for workspacePath: String) -> String {
         let support = supportDirectory(for: workspacePath)
         guard !support.isEmpty else { return "" }
         return (support as NSString).appendingPathComponent("apps")
     }
 
-    static func legacyAppRoot(for workspacePath: String) -> String {
+    public static func legacyAppRoot(for workspacePath: String) -> String {
         guard !workspacePath.isEmpty else { return "" }
         return (workspacePath as NSString).appendingPathComponent("apps")
     }
 
-    static func appDirectoryURL(workspacePath: String, appID: String) -> URL? {
+    public static func appDirectoryURL(workspacePath: String, appID: String) -> URL? {
         let root = appRoot(for: workspacePath)
         guard !root.isEmpty else { return nil }
         guard WorkspaceAppIDPolicy.isPortableIdentifier(appID) else { return nil }
@@ -70,7 +71,7 @@ enum WorkspaceFileLayout {
         return appURL
     }
 
-    static func appManifestFileURL(workspacePath: String, appID: String) -> URL? {
+    public static func appManifestFileURL(workspacePath: String, appID: String) -> URL? {
         guard let directory = appDirectoryURL(workspacePath: workspacePath, appID: appID) else { return nil }
         let url = directory.appendingPathComponent("manifest.json")
         let workspaceURL = URL(fileURLWithPath: workspacePath, isDirectory: true).standardizedFileURL
@@ -78,19 +79,19 @@ enum WorkspaceFileLayout {
         return url
     }
 
-    static func appDirectory(workspacePath: String, appID: String) -> String {
+    public static func appDirectory(workspacePath: String, appID: String) -> String {
         appDirectoryURL(workspacePath: workspacePath, appID: appID)?.path ?? ""
     }
 
-    static func appManifestFile(workspacePath: String, appID: String) -> String {
+    public static func appManifestFile(workspacePath: String, appID: String) -> String {
         appManifestFileURL(workspacePath: workspacePath, appID: appID)?.path ?? ""
     }
 
-    static func appDatabaseFile(workspacePath: String, appID: String) -> String {
+    public static func appDatabaseFile(workspacePath: String, appID: String) -> String {
         appDatabaseFileURL(workspacePath: workspacePath, appID: appID)?.path ?? ""
     }
 
-    static func appDatabaseFileURL(workspacePath: String, appID: String) -> URL? {
+    public static func appDatabaseFileURL(workspacePath: String, appID: String) -> URL? {
         guard let directory = appDataDirectoryURL(workspacePath: workspacePath, appID: appID) else { return nil }
         let url = directory.appendingPathComponent("app.sqlite")
         let workspaceURL = URL(fileURLWithPath: workspacePath, isDirectory: true).standardizedFileURL
@@ -98,7 +99,7 @@ enum WorkspaceFileLayout {
         return url
     }
 
-    static func appDatabaseFileURL(appDirectoryURL: URL, workspacePath: String) -> URL? {
+    public static func appDatabaseFileURL(appDirectoryURL: URL, workspacePath: String) -> URL? {
         guard isContainedStoredAppDirectory(appDirectoryURL, workspacePath: workspacePath) else { return nil }
         let url = appDirectoryURL
             .appendingPathComponent("data", isDirectory: true)
@@ -108,11 +109,11 @@ enum WorkspaceFileLayout {
         return url
     }
 
-    static func appDataDirectory(workspacePath: String, appID: String) -> String {
+    public static func appDataDirectory(workspacePath: String, appID: String) -> String {
         appDataDirectoryURL(workspacePath: workspacePath, appID: appID)?.path ?? ""
     }
 
-    static func appDataDirectoryURL(workspacePath: String, appID: String) -> URL? {
+    public static func appDataDirectoryURL(workspacePath: String, appID: String) -> URL? {
         guard let directory = appDirectoryURL(workspacePath: workspacePath, appID: appID) else { return nil }
         let url = directory.appendingPathComponent("data", isDirectory: true)
         let workspaceURL = URL(fileURLWithPath: workspacePath, isDirectory: true).standardizedFileURL
@@ -120,11 +121,11 @@ enum WorkspaceFileLayout {
         return url
     }
 
-    static func appArtifactExportDirectory(workspacePath: String, appID: String) -> String {
+    public static func appArtifactExportDirectory(workspacePath: String, appID: String) -> String {
         appArtifactExportDirectoryURL(workspacePath: workspacePath, appID: appID)?.path ?? ""
     }
 
-    static func appArtifactExportDirectoryURL(workspacePath: String, appID: String) -> URL? {
+    public static func appArtifactExportDirectoryURL(workspacePath: String, appID: String) -> URL? {
         guard let directory = appDirectoryURL(workspacePath: workspacePath, appID: appID) else { return nil }
         let url = directory.appendingPathComponent("exports", isDirectory: true)
         let workspaceURL = URL(fileURLWithPath: workspacePath, isDirectory: true).standardizedFileURL
@@ -132,13 +133,13 @@ enum WorkspaceFileLayout {
         return url
     }
 
-    static func appPackageExportRoot(workspacePath: String) -> String {
+    public static func appPackageExportRoot(workspacePath: String) -> String {
         let root = appRoot(for: workspacePath)
         guard !root.isEmpty else { return "" }
         return (root as NSString).appendingPathComponent("exports")
     }
 
-    static func appPackageExportRootURL(workspacePath: String) -> URL? {
+    public static func appPackageExportRootURL(workspacePath: String) -> URL? {
         let root = appRoot(for: workspacePath)
         guard !root.isEmpty else { return nil }
         let rootURL = URL(fileURLWithPath: root, isDirectory: true).standardizedFileURL
@@ -148,12 +149,12 @@ enum WorkspaceFileLayout {
         return exportURL
     }
 
-    static func relativeAppDirectory(appID: String) -> String {
+    public static func relativeAppDirectory(appID: String) -> String {
         guard WorkspaceAppIDPolicy.isPortableIdentifier(appID) else { return "" }
         return "\(supportDirectoryName)/apps/\(appID)"
     }
 
-    static func relativeAppManifestFile(appID: String) -> String {
+    public static func relativeAppManifestFile(appID: String) -> String {
         let directory = relativeAppDirectory(appID: appID)
         guard !directory.isEmpty else { return "" }
         return "\(directory)/manifest.json"
@@ -162,11 +163,11 @@ enum WorkspaceFileLayout {
     // Slice 3 versioning: published-manifest snapshots live under the app directory,
     // so they are removed with the app (deleteApp's recursive remove) — purely local
     // history that travels with nothing.
-    static func appVersionsDirectory(workspacePath: String, appID: String) -> String {
+    public static func appVersionsDirectory(workspacePath: String, appID: String) -> String {
         appVersionsDirectoryURL(workspacePath: workspacePath, appID: appID)?.path ?? ""
     }
 
-    static func appVersionsDirectoryURL(workspacePath: String, appID: String) -> URL? {
+    public static func appVersionsDirectoryURL(workspacePath: String, appID: String) -> URL? {
         guard let directory = appDirectoryURL(workspacePath: workspacePath, appID: appID) else { return nil }
         let url = directory.appendingPathComponent("versions", isDirectory: true)
         let workspaceURL = URL(fileURLWithPath: workspacePath, isDirectory: true).standardizedFileURL
@@ -174,11 +175,11 @@ enum WorkspaceFileLayout {
         return url
     }
 
-    static func appVersionFile(workspacePath: String, appID: String, versionNumber: Int) -> String {
+    public static func appVersionFile(workspacePath: String, appID: String, versionNumber: Int) -> String {
         appVersionFileURL(workspacePath: workspacePath, appID: appID, versionNumber: versionNumber)?.path ?? ""
     }
 
-    static func appVersionFileURL(workspacePath: String, appID: String, versionNumber: Int) -> URL? {
+    public static func appVersionFileURL(workspacePath: String, appID: String, versionNumber: Int) -> URL? {
         guard let directory = appVersionsDirectoryURL(workspacePath: workspacePath, appID: appID) else { return nil }
         let url = directory.appendingPathComponent("v\(versionNumber).json")
         let workspaceURL = URL(fileURLWithPath: workspacePath, isDirectory: true).standardizedFileURL
@@ -186,11 +187,11 @@ enum WorkspaceFileLayout {
         return url
     }
 
-    static func appVersionsIndexFile(workspacePath: String, appID: String) -> String {
+    public static func appVersionsIndexFile(workspacePath: String, appID: String) -> String {
         appVersionsIndexFileURL(workspacePath: workspacePath, appID: appID)?.path ?? ""
     }
 
-    static func appVersionsIndexFileURL(workspacePath: String, appID: String) -> URL? {
+    public static func appVersionsIndexFileURL(workspacePath: String, appID: String) -> URL? {
         guard let directory = appVersionsDirectoryURL(workspacePath: workspacePath, appID: appID) else { return nil }
         let url = directory.appendingPathComponent("index.json")
         let workspaceURL = URL(fileURLWithPath: workspacePath, isDirectory: true).standardizedFileURL
@@ -198,13 +199,13 @@ enum WorkspaceFileLayout {
         return url
     }
 
-    static func relativeAppVersionsDirectory(appID: String) -> String {
+    public static func relativeAppVersionsDirectory(appID: String) -> String {
         let directory = relativeAppDirectory(appID: appID)
         guard !directory.isEmpty else { return "" }
         return "\(directory)/versions"
     }
 
-    static func isContainedAppDirectory(_ url: URL, workspacePath: String) -> Bool {
+    public static func isContainedAppDirectory(_ url: URL, workspacePath: String) -> Bool {
         let root = appRoot(for: workspacePath)
         guard !root.isEmpty else { return false }
         return isContainedAppDirectory(
@@ -214,19 +215,19 @@ enum WorkspaceFileLayout {
         )
     }
 
-    static func isContainedStoredAppDirectory(_ url: URL, workspacePath: String) -> Bool {
+    public static func isContainedStoredAppDirectory(_ url: URL, workspacePath: String) -> Bool {
         isContainedAppDirectory(url, workspacePath: workspacePath)
             || isContainedLegacyAppDirectory(url, workspacePath: workspacePath)
     }
 
-    static func isContainedAppManifestFile(_ url: URL, workspacePath: String) -> Bool {
+    public static func isContainedAppManifestFile(_ url: URL, workspacePath: String) -> Bool {
         let workspaceURL = URL(fileURLWithPath: workspacePath, isDirectory: true).standardizedFileURL
         return url.lastPathComponent == "manifest.json"
             && isContainedAppDirectory(url.deletingLastPathComponent(), workspacePath: workspacePath)
             && !existingPathContainsSymbolicLink(url, below: workspaceURL)
     }
 
-    static func isContainedStoredAppManifestFile(_ url: URL, workspacePath: String) -> Bool {
+    public static func isContainedStoredAppManifestFile(_ url: URL, workspacePath: String) -> Bool {
         let workspaceURL = URL(fileURLWithPath: workspacePath, isDirectory: true).standardizedFileURL
         return url.lastPathComponent == "manifest.json"
             && isContainedStoredAppDirectory(url.deletingLastPathComponent(), workspacePath: workspacePath)
@@ -288,11 +289,11 @@ enum WorkspaceFileLayout {
     // App Studio conversation journal: the build conversation + per-turn event log live under the
     // app directory (like `versions/`), so `deleteApp`'s recursive remove cleans them and they
     // travel with nothing.
-    static func appStudioDirectory(workspacePath: String, appID: String) -> String {
+    public static func appStudioDirectory(workspacePath: String, appID: String) -> String {
         appStudioDirectoryURL(workspacePath: workspacePath, appID: appID)?.path ?? ""
     }
 
-    static func appStudioDirectoryURL(workspacePath: String, appID: String) -> URL? {
+    public static func appStudioDirectoryURL(workspacePath: String, appID: String) -> URL? {
         guard let directory = appDirectoryURL(workspacePath: workspacePath, appID: appID) else { return nil }
         let url = directory.appendingPathComponent("studio", isDirectory: true)
         let workspaceURL = URL(fileURLWithPath: workspacePath, isDirectory: true).standardizedFileURL
@@ -300,11 +301,11 @@ enum WorkspaceFileLayout {
         return url
     }
 
-    static func appStudioJournalFile(workspacePath: String, appID: String) -> String {
+    public static func appStudioJournalFile(workspacePath: String, appID: String) -> String {
         appStudioJournalFileURL(workspacePath: workspacePath, appID: appID)?.path ?? ""
     }
 
-    static func appStudioJournalFileURL(workspacePath: String, appID: String) -> URL? {
+    public static func appStudioJournalFileURL(workspacePath: String, appID: String) -> URL? {
         guard let directory = appStudioDirectoryURL(workspacePath: workspacePath, appID: appID) else { return nil }
         let url = directory.appendingPathComponent("journal.json")
         let workspaceURL = URL(fileURLWithPath: workspacePath, isDirectory: true).standardizedFileURL
@@ -312,24 +313,24 @@ enum WorkspaceFileLayout {
         return url
     }
 
-    static func legacyTaskRoot(for workspacePath: String) -> String {
+    public static func legacyTaskRoot(for workspacePath: String) -> String {
         guard !workspacePath.isEmpty else { return "" }
         return (workspacePath as NSString).appendingPathComponent("tasks")
     }
 
-    static func taskFolder(workspacePath: String, taskID: UUID) -> String {
+    public static func taskFolder(workspacePath: String, taskID: UUID) -> String {
         let root = taskRoot(for: workspacePath)
         guard !root.isEmpty else { return "" }
         return (root as NSString).appendingPathComponent(String(taskID.uuidString.prefix(8)))
     }
 
-    static func legacyTaskFolder(workspacePath: String, taskID: UUID) -> String {
+    public static func legacyTaskFolder(workspacePath: String, taskID: UUID) -> String {
         let root = legacyTaskRoot(for: workspacePath)
         guard !root.isEmpty else { return "" }
         return (root as NSString).appendingPathComponent(String(taskID.uuidString.prefix(8)))
     }
 
-    static func readableTaskFolder(workspacePath: String, taskID: UUID) -> String {
+    public static func readableTaskFolder(workspacePath: String, taskID: UUID) -> String {
         let canonical = taskFolder(workspacePath: workspacePath, taskID: taskID)
         let legacy = legacyTaskFolder(workspacePath: workspacePath, taskID: taskID)
         if !FileManager.default.fileExists(atPath: canonical),
@@ -340,7 +341,7 @@ enum WorkspaceFileLayout {
     }
 
     @discardableResult
-    static func migrateLegacyTaskFolderIfNeeded(workspacePath: String, taskID: UUID) -> String {
+    public static func migrateLegacyTaskFolderIfNeeded(workspacePath: String, taskID: UUID) -> String {
         let canonical = taskFolder(workspacePath: workspacePath, taskID: taskID)
         let legacy = legacyTaskFolder(workspacePath: workspacePath, taskID: taskID)
         guard !canonical.isEmpty else { return "" }
@@ -355,12 +356,12 @@ enum WorkspaceFileLayout {
                 )
                 try fileManager.moveItem(atPath: legacy, toPath: canonical)
                 removeLegacyTaskRootIfEmpty(workspacePath: workspacePath)
-                AppLogger.audit(.workspaceStoreMigrated, category: "Persistence", taskID: taskID, fields: [
+                AuditLoggingSeam.required.audit(.workspaceStoreMigrated, category: "Persistence", taskID: taskID, fields: [
                     "resource": "task_folder",
                     "result": "completed"
                 ])
             } catch {
-                AppLogger.audit(.workspaceStoreMigrated, category: "Persistence", taskID: taskID, fields: [
+                AuditLoggingSeam.required.audit(.workspaceStoreMigrated, category: "Persistence", taskID: taskID, fields: [
                     "resource": "task_folder",
                     "result": "failed",
                     "error_type": String(describing: type(of: error))
@@ -370,7 +371,7 @@ enum WorkspaceFileLayout {
         return canonical
     }
 
-    static func ensureSupportDirectory(for workspacePath: String) {
+    public static func ensureSupportDirectory(for workspacePath: String) {
         let support = supportDirectory(for: workspacePath)
         guard !support.isEmpty else { return }
         try? FileManager.default.createDirectory(atPath: support, withIntermediateDirectories: true)

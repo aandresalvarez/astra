@@ -1,6 +1,8 @@
 import SwiftUI
 import SwiftData
 import ASTRAModels
+import ASTRAPersistence
+import ASTRACore
 
 struct TaskSidebarContainerView: View {
     @Query(sort: \AgentTask.queuePosition) private var tasks: [AgentTask]

@@ -2,6 +2,7 @@ import Foundation
 import SwiftData
 import Testing
 import ASTRAModels
+import ASTRAPersistence
 @testable import ASTRA
 import ASTRACore
 
@@ -14,6 +15,8 @@ private func makeTaskContextStateContainer() throws -> ModelContainer {
 @Suite("Task context state")
 @MainActor
 struct TaskContextStateTests {
+    private let _registerRuntimeSeams: Void = RuntimeSeamRegistration.registerAll() // TaskContextStateManager reads TaskPlanReconstructionSeam/TaskForkSourcePointerSeam
+
     @Test("loadResult reports missing current-state file")
     func loadResultReportsMissingCurrentStateFile() throws {
         let root = try temporaryRoot()

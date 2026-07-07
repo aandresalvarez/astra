@@ -2,6 +2,7 @@ import SwiftUI
 import SwiftData
 import ASTRACore
 import ASTRAModels
+import ASTRAPersistence
 
 struct GoogleWorkspaceCapabilityInstallSheet: View {
     let package: PluginPackage

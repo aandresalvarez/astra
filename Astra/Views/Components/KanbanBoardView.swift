@@ -2,6 +2,8 @@ import SwiftUI
 import SwiftData
 import UniformTypeIdentifiers
 import ASTRAModels
+import ASTRAPersistence
+import ASTRACore
 
 // MARK: - Kanban Category
 

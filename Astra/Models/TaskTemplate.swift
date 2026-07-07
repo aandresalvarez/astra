@@ -128,7 +128,7 @@ public struct TemplateVariable: Codable, Identifiable {
 }
 
 public struct TemplateHooks: Codable {
-    public init(preToolUse: [TemplateHookEntry]?, postToolUse: [TemplateHookEntry]?, stop: [TemplateHookEntry]?, notification: [TemplateHookEntry]?) {
+    public init(preToolUse: [TemplateHookEntry]? = nil, postToolUse: [TemplateHookEntry]? = nil, stop: [TemplateHookEntry]? = nil, notification: [TemplateHookEntry]? = nil) {
         self.preToolUse = preToolUse
         self.postToolUse = postToolUse
         self.stop = stop

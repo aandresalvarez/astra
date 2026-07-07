@@ -2,7 +2,7 @@ import Foundation
 import ASTRACore
 import ASTRAModels
 
-enum TaskThreadMode: String, Codable, Sendable, Equatable {
+public enum TaskThreadMode: String, Codable, Sendable, Equatable {
     case exploration
     case planning
     case execution
@@ -10,65 +10,97 @@ enum TaskThreadMode: String, Codable, Sendable, Equatable {
     case completed
 }
 
-struct TaskContextState: Codable, Sendable, Equatable {
-    struct Turn: Codable, Sendable, Equatable {
-        var turn: Int
-        var ask: String
-        var summary: String
-        var filesChanged: [String]
-        var blockers: [String]
-        var outputFile: String?
-        var runStatus: String
-        var completedAt: String?
+public struct TaskContextState: Codable, Sendable, Equatable {
+    public struct Turn: Codable, Sendable, Equatable {
+        public init(turn: Int, ask: String, summary: String, filesChanged: [String], blockers: [String], outputFile: String? = nil, runStatus: String, completedAt: String? = nil) {
+            self.turn = turn
+            self.ask = ask
+            self.summary = summary
+            self.filesChanged = filesChanged
+            self.blockers = blockers
+            self.outputFile = outputFile
+            self.runStatus = runStatus
+            self.completedAt = completedAt
+        }
+
+        public var turn: Int
+        public var ask: String
+        public var summary: String
+        public var filesChanged: [String]
+        public var blockers: [String]
+        public var outputFile: String?
+        public var runStatus: String
+        public var completedAt: String?
     }
 
     // Extracted to ASTRACore/TaskContextSourcePointer.swift as part of Track
     // A3 - Astra/Models/TaskMissionHardening.swift needs it. Every existing
     // `TaskContextState.SourcePointer`/bare `SourcePointer` reference in
     // this file keeps working unchanged via this alias.
-    typealias SourcePointer = TaskContextSourcePointer
+    public typealias SourcePointer = TaskContextSourcePointer
 
-    struct ContextFact: Codable, Sendable, Equatable, Hashable {
-        var text: String
-        var sourcePointers: [SourcePointer]
-        var confidence: String
-    }
-
-    struct Objective: Codable, Sendable, Equatable {
-        var startingRequest: String
-        var currentObjective: String
-        var approvedGoal: String?
-        var sourcePointers: [SourcePointer]
-    }
-
-    struct Verification: Codable, Sendable, Equatable {
-        struct DeliverableCheckSummary: Codable, Sendable, Equatable, Hashable {
-            var id: String
-            var title: String
-            var status: String
-            var summary: String
-            var path: String?
+    public struct ContextFact: Codable, Sendable, Equatable, Hashable {
+        public init(text: String, sourcePointers: [SourcePointer], confidence: String) {
+            self.text = text
+            self.sourcePointers = sourcePointers
+            self.confidence = confidence
         }
 
-        var status: String
-        var strategy: String
-        var command: String?
-        var summary: String
-        var evidence: [SourcePointer]
-        var updatedAt: String?
-        var completionVerified: Bool
-        var artifactStatus: String
-        var deliverableLevel: String?
-        var deliverableSummary: String?
-        var deliverableChecks: [DeliverableCheckSummary]
+        public var text: String
+        public var sourcePointers: [SourcePointer]
+        public var confidence: String
+    }
 
-        init(
+    public struct Objective: Codable, Sendable, Equatable {
+        public init(startingRequest: String, currentObjective: String, approvedGoal: String? = nil, sourcePointers: [SourcePointer]) {
+            self.startingRequest = startingRequest
+            self.currentObjective = currentObjective
+            self.approvedGoal = approvedGoal
+            self.sourcePointers = sourcePointers
+        }
+
+        public var startingRequest: String
+        public var currentObjective: String
+        public var approvedGoal: String?
+        public var sourcePointers: [SourcePointer]
+    }
+
+    public struct Verification: Codable, Sendable, Equatable {
+        public struct DeliverableCheckSummary: Codable, Sendable, Equatable, Hashable {
+            public init(id: String, title: String, status: String, summary: String, path: String? = nil) {
+                self.id = id
+                self.title = title
+                self.status = status
+                self.summary = summary
+                self.path = path
+            }
+
+            public var id: String
+            public var title: String
+            public var status: String
+            public var summary: String
+            public var path: String?
+        }
+
+        public var status: String
+        public var strategy: String
+        public var command: String?
+        public var summary: String
+        public var evidence: [SourcePointer]
+        public var updatedAt: String?
+        public var completionVerified: Bool
+        public var artifactStatus: String
+        public var deliverableLevel: String?
+        public var deliverableSummary: String?
+        public var deliverableChecks: [DeliverableCheckSummary]
+
+        public init(
             status: String,
             strategy: String,
-            command: String?,
+            command: String? = nil,
             summary: String,
             evidence: [SourcePointer],
-            updatedAt: String?,
+            updatedAt: String? = nil,
             completionVerified: Bool? = nil,
             artifactStatus: String = "unknown",
             deliverableLevel: String? = nil,
@@ -102,7 +134,7 @@ struct TaskContextState: Codable, Sendable, Equatable {
             case deliverableChecks
         }
 
-        init(from decoder: Decoder) throws {
+        public init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
             status = try container.decode(String.self, forKey: .status)
             strategy = try container.decode(String.self, forKey: .strategy)
@@ -122,101 +154,230 @@ struct TaskContextState: Codable, Sendable, Equatable {
         }
     }
 
-    struct ChangedFile: Codable, Sendable, Equatable, Hashable {
-        var path: String
-        var changeType: String
-        var sourcePointers: [SourcePointer]
+    public struct ChangedFile: Codable, Sendable, Equatable, Hashable {
+        public init(path: String, changeType: String, sourcePointers: [SourcePointer]) {
+            self.path = path
+            self.changeType = changeType
+            self.sourcePointers = sourcePointers
+        }
+
+        public var path: String
+        public var changeType: String
+        public var sourcePointers: [SourcePointer]
     }
 
-    struct ArtifactReference: Codable, Sendable, Equatable, Hashable {
-        var type: String
-        var path: String
-        var version: Int
-        var isStale: Bool
-        var sourcePointers: [SourcePointer]
+    public struct ArtifactReference: Codable, Sendable, Equatable, Hashable {
+        public init(type: String, path: String, version: Int, isStale: Bool, sourcePointers: [SourcePointer]) {
+            self.type = type
+            self.path = path
+            self.version = version
+            self.isStale = isStale
+            self.sourcePointers = sourcePointers
+        }
+
+        public var type: String
+        public var path: String
+        public var version: Int
+        public var isStale: Bool
+        public var sourcePointers: [SourcePointer]
     }
 
-    struct ValidationAssertionSummary: Codable, Sendable, Equatable, Hashable {
-        var id: String
-        var scope: String
-        var stepID: String?
-        var method: String
-        var required: Bool
-        var description: String
-        var status: String
-        var summary: String?
-        var sourcePointers: [SourcePointer]
+    public struct ValidationAssertionSummary: Codable, Sendable, Equatable, Hashable {
+        public init(id: String, scope: String, stepID: String? = nil, method: String, required: Bool, description: String, status: String, summary: String? = nil, sourcePointers: [SourcePointer]) {
+            self.id = id
+            self.scope = scope
+            self.stepID = stepID
+            self.method = method
+            self.required = required
+            self.description = description
+            self.status = status
+            self.summary = summary
+            self.sourcePointers = sourcePointers
+        }
+
+        public var id: String
+        public var scope: String
+        public var stepID: String?
+        public var method: String
+        public var required: Bool
+        public var description: String
+        public var status: String
+        public var summary: String?
+        public var sourcePointers: [SourcePointer]
     }
 
-    struct ValidationContractSummary: Codable, Sendable, Equatable, Hashable {
-        var status: String
-        var assertionCount: Int
-        var requiredPassed: Int
-        var requiredTotal: Int
-        var assertions: [ValidationAssertionSummary]
-        var sourcePointers: [SourcePointer]
+    public struct ValidationContractSummary: Codable, Sendable, Equatable, Hashable {
+        public init(status: String, assertionCount: Int, requiredPassed: Int, requiredTotal: Int, assertions: [ValidationAssertionSummary], sourcePointers: [SourcePointer]) {
+            self.status = status
+            self.assertionCount = assertionCount
+            self.requiredPassed = requiredPassed
+            self.requiredTotal = requiredTotal
+            self.assertions = assertions
+            self.sourcePointers = sourcePointers
+        }
+
+        public var status: String
+        public var assertionCount: Int
+        public var requiredPassed: Int
+        public var requiredTotal: Int
+        public var assertions: [ValidationAssertionSummary]
+        public var sourcePointers: [SourcePointer]
     }
 
-    struct HandoffSummary: Codable, Sendable, Equatable, Hashable {
-        var runID: String
-        var taskStatus: String
-        var runStatus: String
-        var completedWork: [String]
-        var unfinishedWork: [String]
-        var blockers: [String]
-        var suggestedNextAction: String?
-        var sourcePointers: [SourcePointer]
+    public struct HandoffSummary: Codable, Sendable, Equatable, Hashable {
+        public init(runID: String, taskStatus: String, runStatus: String, completedWork: [String], unfinishedWork: [String], blockers: [String], suggestedNextAction: String? = nil, sourcePointers: [SourcePointer]) {
+            self.runID = runID
+            self.taskStatus = taskStatus
+            self.runStatus = runStatus
+            self.completedWork = completedWork
+            self.unfinishedWork = unfinishedWork
+            self.blockers = blockers
+            self.suggestedNextAction = suggestedNextAction
+            self.sourcePointers = sourcePointers
+        }
+
+        public var runID: String
+        public var taskStatus: String
+        public var runStatus: String
+        public var completedWork: [String]
+        public var unfinishedWork: [String]
+        public var blockers: [String]
+        public var suggestedNextAction: String?
+        public var sourcePointers: [SourcePointer]
     }
 
-    struct CorrectiveWorkSummary: Codable, Sendable, Equatable, Hashable {
-        var correctiveStepID: String
-        var failedAssertionID: String
-        var status: String
-        var failureSummary: String
-        var suggestedRepair: String
-        var correctiveTaskID: String?
-        var dismissedReason: String?
-        var sourcePointers: [SourcePointer]
+    public struct CorrectiveWorkSummary: Codable, Sendable, Equatable, Hashable {
+        public init(correctiveStepID: String, failedAssertionID: String, status: String, failureSummary: String, suggestedRepair: String, correctiveTaskID: String? = nil, dismissedReason: String? = nil, sourcePointers: [SourcePointer]) {
+            self.correctiveStepID = correctiveStepID
+            self.failedAssertionID = failedAssertionID
+            self.status = status
+            self.failureSummary = failureSummary
+            self.suggestedRepair = suggestedRepair
+            self.correctiveTaskID = correctiveTaskID
+            self.dismissedReason = dismissedReason
+            self.sourcePointers = sourcePointers
+        }
+
+        public var correctiveStepID: String
+        public var failedAssertionID: String
+        public var status: String
+        public var failureSummary: String
+        public var suggestedRepair: String
+        public var correctiveTaskID: String?
+        public var dismissedReason: String?
+        public var sourcePointers: [SourcePointer]
     }
 
-    var schemaVersion: Int
-    var mode: TaskThreadMode
-    var startingRequest: String
-    var currentObjective: String
-    var objective: Objective
-    var constraints: [ContextFact]
-    var acceptanceCriteria: [ContextFact]
-    var testCommand: String?
-    var decisions: [String]
-    var decisionFacts: [ContextFact]
-    var rejectedOptions: [String]
-    var openQuestions: [String]
-    var candidateGoals: [String]
-    var approvedGoal: String?
-    var blockers: [String]
-    var blockerFacts: [ContextFact]
-    var filesChanged: [String]
-    var changedFiles: [ChangedFile]
-    var artifacts: [ArtifactReference]
-    var verification: Verification
-    var validationContract: ValidationContractSummary?
-    var latestHandoff: HandoffSummary?
-    var correctiveWork: [CorrectiveWorkSummary]?
-    var sourcePointers: [SourcePointer]
-    var nextLikelyAction: String?
+    public init(
+        schemaVersion: Int,
+        mode: TaskThreadMode,
+        startingRequest: String,
+        currentObjective: String,
+        objective: Objective,
+        constraints: [ContextFact],
+        acceptanceCriteria: [ContextFact],
+        testCommand: String? = nil,
+        decisions: [String],
+        decisionFacts: [ContextFact],
+        rejectedOptions: [String],
+        openQuestions: [String],
+        candidateGoals: [String],
+        approvedGoal: String? = nil,
+        blockers: [String],
+        blockerFacts: [ContextFact],
+        filesChanged: [String],
+        changedFiles: [ChangedFile],
+        artifacts: [ArtifactReference],
+        verification: Verification,
+        validationContract: ValidationContractSummary? = nil,
+        latestHandoff: HandoffSummary? = nil,
+        correctiveWork: [CorrectiveWorkSummary]? = nil,
+        sourcePointers: [SourcePointer],
+        nextLikelyAction: String? = nil,
+        objectiveDivergenceNote: String? = nil,
+        standingInstructions: [ContextFact]? = nil,
+        objectiveAssessment: ObjectiveAssessment? = nil,
+        turns: [Turn],
+        updatedAt: String
+    ) {
+        self.schemaVersion = schemaVersion
+        self.mode = mode
+        self.startingRequest = startingRequest
+        self.currentObjective = currentObjective
+        self.objective = objective
+        self.constraints = constraints
+        self.acceptanceCriteria = acceptanceCriteria
+        self.testCommand = testCommand
+        self.decisions = decisions
+        self.decisionFacts = decisionFacts
+        self.rejectedOptions = rejectedOptions
+        self.openQuestions = openQuestions
+        self.candidateGoals = candidateGoals
+        self.approvedGoal = approvedGoal
+        self.blockers = blockers
+        self.blockerFacts = blockerFacts
+        self.filesChanged = filesChanged
+        self.changedFiles = changedFiles
+        self.artifacts = artifacts
+        self.verification = verification
+        self.validationContract = validationContract
+        self.latestHandoff = latestHandoff
+        self.correctiveWork = correctiveWork
+        self.sourcePointers = sourcePointers
+        self.nextLikelyAction = nextLikelyAction
+        self.objectiveDivergenceNote = objectiveDivergenceNote
+        self.standingInstructions = standingInstructions
+        self.objectiveAssessment = objectiveAssessment
+        self.turns = turns
+        self.updatedAt = updatedAt
+    }
+
+    public var schemaVersion: Int
+    public var mode: TaskThreadMode
+    public var startingRequest: String
+    public var currentObjective: String
+    public var objective: Objective
+    public var constraints: [ContextFact]
+    public var acceptanceCriteria: [ContextFact]
+    public var testCommand: String?
+    public var decisions: [String]
+    public var decisionFacts: [ContextFact]
+    public var rejectedOptions: [String]
+    public var openQuestions: [String]
+    public var candidateGoals: [String]
+    public var approvedGoal: String?
+    public var blockers: [String]
+    public var blockerFacts: [ContextFact]
+    public var filesChanged: [String]
+    public var changedFiles: [ChangedFile]
+    public var artifacts: [ArtifactReference]
+    public var verification: Verification
+    public var validationContract: ValidationContractSummary?
+    public var latestHandoff: HandoffSummary?
+    public var correctiveWork: [CorrectiveWorkSummary]?
+    public var sourcePointers: [SourcePointer]
+    public var nextLikelyAction: String?
     /// Set when an unreconciled plan goal diverges from the task goal; surfaced in
     /// the capsule so the drift cannot silently re-anchor the objective.
-    var objectiveDivergenceNote: String?
+    public var objectiveDivergenceNote: String?
     /// Recent follow-up user messages, kept close to as-typed, so mid-conversation
     /// instructions survive past the transcript window (first message excluded).
-    var standingInstructions: [ContextFact]?
-    var objectiveAssessment: ObjectiveAssessment?
-    var turns: [Turn]
-    var updatedAt: String
+    public var standingInstructions: [ContextFact]?
+    public var objectiveAssessment: ObjectiveAssessment?
+    public var turns: [Turn]
+    public var updatedAt: String
 }
 
-struct TaskContextStateLoadResult: Equatable, Sendable {
-    enum Status: String, Sendable {
+public struct TaskContextStateLoadResult: Equatable, Sendable {
+    public init(status: Status, path: String, state: TaskContextState? = nil, errorDescription: String? = nil, decodeDiagnostic: StructuredJSONDecodeDiagnostic? = nil) {
+        self.status = status
+        self.path = path
+        self.state = state
+        self.errorDescription = errorDescription
+        self.decodeDiagnostic = decodeDiagnostic
+    }
+
+    public enum Status: String, Sendable {
         case loadedCurrent
         case migratedLegacy
         case missingFile
@@ -225,19 +386,26 @@ struct TaskContextStateLoadResult: Equatable, Sendable {
         case unsupportedSchema
     }
 
-    var status: Status
-    var path: String
-    var state: TaskContextState?
-    var errorDescription: String?
-    var decodeDiagnostic: StructuredJSONDecodeDiagnostic?
+    public var status: Status
+    public var path: String
+    public var state: TaskContextState?
+    public var errorDescription: String?
+    public var decodeDiagnostic: StructuredJSONDecodeDiagnostic?
 
-    var didLoad: Bool {
+    public var didLoad: Bool {
         state != nil
     }
 }
 
-struct TaskContextStateSaveResult: Equatable, Sendable {
-    enum Status: String, Sendable {
+public struct TaskContextStateSaveResult: Equatable, Sendable {
+    public init(status: Status, jsonPath: String, markdownPath: String, errorDescription: String? = nil) {
+        self.status = status
+        self.jsonPath = jsonPath
+        self.markdownPath = markdownPath
+        self.errorDescription = errorDescription
+    }
+
+    public enum Status: String, Sendable {
         case saved
         case createDirectoryFailed
         case encodeFailed
@@ -245,21 +413,21 @@ struct TaskContextStateSaveResult: Equatable, Sendable {
         case writeMarkdownFailed
     }
 
-    var status: Status
-    var jsonPath: String
-    var markdownPath: String
-    var errorDescription: String?
+    public var status: Status
+    public var jsonPath: String
+    public var markdownPath: String
+    public var errorDescription: String?
 
-    var didSave: Bool {
+    public var didSave: Bool {
         status == .saved
     }
 }
 
-enum TaskContextStateManager {
-    static let jsonFileName = "current_state.json"
-    static let markdownFileName = "current_state.md"
+public enum TaskContextStateManager {
+    public static let jsonFileName = "current_state.json"
+    public static let markdownFileName = "current_state.md"
 
-    static let schemaVersion = 2
+    public static let schemaVersion = 2
 
     private static let maxTurns = 12
     private static let maxListItems = 20
@@ -269,24 +437,24 @@ enum TaskContextStateManager {
     private static let promptBlockCharacterLimit = 6_000
 
     private struct LegacyTaskContextState: Decodable {
-        var schemaVersion: Int
-        var mode: TaskThreadMode
-        var startingRequest: String
-        var currentObjective: String
-        var decisions: [String]
-        var rejectedOptions: [String]
-        var openQuestions: [String]
-        var candidateGoals: [String]
-        var approvedGoal: String?
-        var blockers: [String]
-        var filesChanged: [String]
-        var nextLikelyAction: String?
-        var turns: [TaskContextState.Turn]
-        var updatedAt: String
+        public var schemaVersion: Int
+        public var mode: TaskThreadMode
+        public var startingRequest: String
+        public var currentObjective: String
+        public var decisions: [String]
+        public var rejectedOptions: [String]
+        public var openQuestions: [String]
+        public var candidateGoals: [String]
+        public var approvedGoal: String?
+        public var blockers: [String]
+        public var filesChanged: [String]
+        public var nextLikelyAction: String?
+        public var turns: [TaskContextState.Turn]
+        public var updatedAt: String
     }
 
     @MainActor
-    static func recordTurn(task: AgentTask, run: TaskRun, message: String) {
+    public static func recordTurn(task: AgentTask, run: TaskRun, message: String) {
         guard let folder = ensureTaskFolder(for: task) else { return }
         var state = TaskContextStateRecovery.recoverState(taskFolder: folder, taskID: task.id) ?? initialState(for: task)
         updateDerivedFields(&state, task: task, latestRun: run)
@@ -305,7 +473,7 @@ enum TaskContextStateManager {
     }
 
     @MainActor
-    static func refresh(task: AgentTask, followUpMessage: String = "") {
+    public static func refresh(task: AgentTask, followUpMessage: String = "") {
         guard let folder = ensureTaskFolder(for: task) else { return }
         let existing = TaskContextStateRecovery.recoverState(taskFolder: folder, taskID: task.id)
         var state = existing ?? initialState(for: task)
@@ -318,12 +486,12 @@ enum TaskContextStateManager {
     }
 
     @MainActor
-    static func refreshedPromptContext(for task: AgentTask, followUpMessage: String = "") -> String? {
+    public static func refreshedPromptContext(for task: AgentTask, followUpMessage: String = "") -> String? {
         refresh(task: task, followUpMessage: followUpMessage)
         return promptContext(for: task)
     }
 
-    static func loadResult(taskFolder: String) -> TaskContextStateLoadResult {
+    public static func loadResult(taskFolder: String) -> TaskContextStateLoadResult {
         let url = URL(fileURLWithPath: taskFolder).appendingPathComponent(jsonFileName)
         let accessRoot = URL(fileURLWithPath: taskFolder, isDirectory: true)
         let hostFileAccess = HostFileAccessBroker()
@@ -403,11 +571,11 @@ enum TaskContextStateManager {
         )
     }
 
-    static func load(taskFolder: String) -> TaskContextState? {
+    public static func load(taskFolder: String) -> TaskContextState? {
         loadResult(taskFolder: taskFolder).state
     }
 
-    static func promptContext(for task: AgentTask) -> String? {
+    public static func promptContext(for task: AgentTask) -> String? {
         let folder = TaskWorkspaceAccess(task: task).taskFolder
         guard !folder.isEmpty, let state = load(taskFolder: folder) else { return nil }
 
@@ -423,7 +591,7 @@ enum TaskContextStateManager {
         if let checkpoint = checkpointSummary(for: task) {
             lines.append("Checkpoint:")
             lines.append("- \(boundedInline(checkpoint, maxCharacters: 420))")
-            if let warning = TaskForkManifestService.sourceAvailabilityWarning(for: task) {
+            if let warning = TaskForkSourcePointerSeam.required.sourceAvailabilityWarning(for: task, fileManager: .default) {
                 lines.append("- \(boundedInline(warning, maxCharacters: 240))")
             }
         }
@@ -506,7 +674,7 @@ enum TaskContextStateManager {
         return String(body.prefix(max(0, bodyLimit - notice.count))) + notice + "\n" + tailBlock
     }
 
-    static func promptDiagnosticsFields(task: AgentTask, prompt: String, phase: String) -> [String: String] {
+    public static func promptDiagnosticsFields(task: AgentTask, prompt: String, phase: String) -> [String: String] {
         let folder = TaskWorkspaceAccess(task: task).taskFolder
         let historyPath = folder.isEmpty ? "" : (folder as NSString).appendingPathComponent("session_history.md")
         let outputDirectory = folder.isEmpty ? "" : (folder as NSString).appendingPathComponent("outputs")
@@ -530,7 +698,7 @@ enum TaskContextStateManager {
         ].merging(CapsuleSelectionPressure.fields(forTaskFolder: folder, prompt: prompt)) { _, new in new }
     }
 
-    static func renderMarkdown(_ state: TaskContextState) -> String {
+    public static func renderMarkdown(_ state: TaskContextState) -> String {
         var parts: [String] = []
         parts.append("# Current State")
         parts.append("")
@@ -642,7 +810,7 @@ enum TaskContextStateManager {
 
     @MainActor
     private static func updateDerivedFields(_ state: inout TaskContextState, task: AgentTask, latestRun: TaskRun?) {
-        let planState = TaskPlanService.reconstruct(for: task)
+        let planState = TaskPlanReconstructionSeam.required.reconstruct(for: task)
         let discoveredTaskOutputFiles = TaskOutputDiscovery.files(for: task)
         state.mode = inferredMode(task: task, planState: planState, latestRun: latestRun)
         state.startingRequest = firstNonEmpty(
@@ -724,7 +892,7 @@ enum TaskContextStateManager {
     }
 
     @discardableResult
-    static func saveState(_ state: TaskContextState, taskFolder: String, taskID: UUID? = nil) -> TaskContextStateSaveResult {
+    public static func saveState(_ state: TaskContextState, taskFolder: String, taskID: UUID? = nil) -> TaskContextStateSaveResult {
         let result = saveStateWithoutAudit(state, taskFolder: taskFolder)
         auditSaveResult(result, state: state, taskID: taskID)
         return result
@@ -800,7 +968,7 @@ enum TaskContextStateManager {
     private static func auditSaveResult(_ result: TaskContextStateSaveResult, state: TaskContextState, taskID: UUID?) {
         guard let taskID else { return }
         if result.didSave {
-            AppLogger.audit(.contextStateUpdated, category: "Worker", taskID: taskID, fields: [
+            AuditLoggingSeam.required.audit(.contextStateUpdated, category: "Worker", taskID: taskID, fields: [
                 "mode": state.mode.rawValue,
                 "turn_count": String(state.turns.count),
                 "decision_count": String(state.decisions.count),
@@ -809,7 +977,7 @@ enum TaskContextStateManager {
                 "result": result.status.rawValue
             ], level: .debug)
         } else {
-            AppLogger.audit(.contextStateUpdated, category: "Worker", taskID: taskID, fields: [
+            AuditLoggingSeam.required.audit(.contextStateUpdated, category: "Worker", taskID: taskID, fields: [
                 "result": result.status.rawValue,
                 "json_path": result.jsonPath,
                 "markdown_path": result.markdownPath,
@@ -1370,7 +1538,7 @@ enum TaskContextStateManager {
             .filter({ $0.type == TaskHandoffEventTypes.created || $0.type == TaskHandoffEventTypes.updated })
             .sorted(by: { $0.timestamp > $1.timestamp })
             .first,
-            let payload = TaskWorkerHandoffService.decode(event.payload) else {
+            let payload = TaskWorkerHandoffCodec.decode(event.payload) else {
             return nil
         }
 
@@ -1388,12 +1556,12 @@ enum TaskContextStateManager {
 
     @MainActor
     private static func correctiveWorkState(task: AgentTask) -> [TaskContextState.CorrectiveWorkSummary]? {
-        let records = TaskCorrectiveWorkService.latestCorrectiveSteps(for: task)
+        let records = TaskCorrectiveWorkQueries.latestCorrectiveSteps(for: task)
         guard !records.isEmpty else { return nil }
         return records.prefix(10).map { record in
             let payload = record.payload
             return TaskContextState.CorrectiveWorkSummary(
-                correctiveStepID: TaskCorrectiveWorkService.normalizedCorrectiveStepID(payload),
+                correctiveStepID: TaskCorrectiveWorkQueries.normalizedCorrectiveStepID(payload),
                 failedAssertionID: payload.failedAssertionID,
                 status: payload.status,
                 failureSummary: boundedInline(payload.failureSummary, maxCharacters: 360),
@@ -1438,7 +1606,7 @@ enum TaskContextStateManager {
         }
 
         if let event = latestDeliverableVerification,
-           let payload = TaskDeliverableVerificationService.decode(event.payload) {
+           let payload = TaskDeliverableVerificationCodec.decode(event.payload) {
             let evidence = dedupeSourcePointers(
                 [eventSource(event, summary: "Deliverable verification \(payload.status)")]
                     + payload.evidencePaths.prefix(6).map {
@@ -1534,7 +1702,7 @@ enum TaskContextStateManager {
         if let checkpointPointer = checkpointSourcePointer(for: task) {
             pointers.append(checkpointPointer)
         }
-        pointers += TaskForkManifestService.sourcePointers(for: task)
+        pointers += TaskForkSourcePointerSeam.required.sourcePointers(for: task)
         pointers += state.verification.evidence
         if let validationContract = state.validationContract {
             pointers += validationContract.sourcePointers
@@ -1679,12 +1847,12 @@ enum TaskContextStateManager {
 
     @MainActor
     private static func nextLikelyAction(task: AgentTask, planState: TaskPlanState) -> String? {
-        if let correction = TaskCorrectiveWorkService.openCorrectiveSteps(for: task).first {
+        if let correction = TaskCorrectiveWorkQueries.openCorrectiveSteps(for: task).first {
             let payload = correction.payload
             return "Review corrective work for failed assertion \(payload.failedAssertionID): \(boundedInline(payload.suggestedRepair, maxCharacters: 220))"
         }
         if let plan = planState.plan,
-           let nextStep = TaskPlanService.nextExecutableStep(in: plan) {
+           let nextStep = TaskPlanReconstructionSeam.required.nextExecutableStep(in: plan) {
             return "Continue with plan step: \(nextStep.title)"
         }
         switch task.status {

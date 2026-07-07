@@ -234,7 +234,7 @@ public enum TaskValidationBehaviorEventTypes {
 }
 
 public struct TaskValidationBehaviorEventPayload: Codable, Sendable, Equatable {
-    public init(version: Int, planID: UUID, assertionID: String, path: String?, url: String?, actionCount: Int, screenshotPath: String?, evidencePath: String?, summary: String, reason: String?) {
+    public init(version: Int, planID: UUID, assertionID: String, path: String? = nil, url: String? = nil, actionCount: Int, screenshotPath: String? = nil, evidencePath: String? = nil, summary: String, reason: String? = nil) {
         self.version = version
         self.planID = planID
         self.assertionID = assertionID
@@ -273,7 +273,7 @@ public struct TaskValidationBehaviorEventPayload: Codable, Sendable, Equatable {
 }
 
 public struct TaskVerifierEventPayload: Codable, Sendable, Equatable {
-    public init(version: Int, planID: UUID, assertionID: String, runtime: String, model: String, result: String, summary: String, evidence: String?) {
+    public init(version: Int, planID: UUID, assertionID: String, runtime: String, model: String, result: String, summary: String, evidence: String? = nil) {
         self.version = version
         self.planID = planID
         self.assertionID = assertionID
@@ -306,7 +306,7 @@ public struct TaskVerifierEventPayload: Codable, Sendable, Equatable {
 }
 
 public struct TaskValidationAssertionEventPayload: Codable, Sendable, Equatable {
-    public init(version: Int, planID: UUID, assertionID: String, scope: TaskValidationAssertionScope, stepID: String?, method: TaskValidationAssertionMethod, required: Bool, status: String, summary: String, command: String?, exitCode: Int?, path: String?, evidence: String?, reason: String?) {
+    public init(version: Int, planID: UUID, assertionID: String, scope: TaskValidationAssertionScope, stepID: String? = nil, method: TaskValidationAssertionMethod, required: Bool, status: String, summary: String, command: String? = nil, exitCode: Int? = nil, path: String? = nil, evidence: String? = nil, reason: String? = nil) {
         self.version = version
         self.planID = planID
         self.assertionID = assertionID

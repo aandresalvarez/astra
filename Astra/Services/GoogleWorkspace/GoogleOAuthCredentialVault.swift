@@ -1,6 +1,7 @@
 import Foundation
 import ASTRACore
 import ASTRAModels
+import ASTRAPersistence
 
 struct GoogleOAuthCredentialVault {
     static let accessTokenKey = "GOOGLE_OAUTH_ACCESS_TOKEN"

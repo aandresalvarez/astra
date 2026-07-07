@@ -1,6 +1,7 @@
 import Foundation
 import ASTRACore
 import ASTRAModels
+import ASTRAPersistence
 
 struct TaskForkManifest: Codable, Sendable, Equatable {
     struct FileReference: Codable, Sendable, Equatable, Hashable {
@@ -89,6 +90,15 @@ enum TaskForkManifestService {
         return load(taskFolder: folder, fileManager: fileManager)
     }
 
+    /// Primitive-ized for `TaskForkSourcePointerSeam`: the flattened checkpoint
+    /// file paths `WorkspaceFileIndexService` lists in the files shelf,
+    /// without exposing `TaskForkManifest`/`FileReference` across the seam.
+    static func checkpointFilePaths(for task: AgentTask, fileManager: FileManager) -> [String] {
+        guard let manifest = load(for: task, fileManager: fileManager) else { return [] }
+        return (manifest.sourceOutputFiles + manifest.sourceArtifacts)
+            .map { $0.localCopyPath ?? $0.sourcePath }
+    }
+
     static func load(taskFolder: String, fileManager: FileManager = .default) -> TaskForkManifest? {
         let path = manifestPath(taskFolder: taskFolder)
         let hostFileAccess = HostFileAccessBroker(fileManager: fileManager)
@@ -103,9 +113,9 @@ enum TaskForkManifestService {
         return try? JSONDecoder().decode(TaskForkManifest.self, from: data)
     }
 
-    static func sourcePointers(for task: AgentTask) -> [TaskContextState.SourcePointer] {
+    static func sourcePointers(for task: AgentTask) -> [TaskContextSourcePointer] {
         guard let manifest = load(for: task) else { return [] }
-        var pointers: [TaskContextState.SourcePointer] = []
+        var pointers: [TaskContextSourcePointer] = []
         let forkFolder = TaskWorkspaceAccess(task: task).taskFolder
         let path = manifestPath(taskFolder: forkFolder)
         if !path.isEmpty {
@@ -332,8 +342,8 @@ enum TaskForkManifestService {
         id: String?,
         path: String? = nil,
         summary: String
-    ) -> TaskContextState.SourcePointer {
-        TaskContextState.SourcePointer(kind: kind, id: id, path: path, summary: summary)
+    ) -> TaskContextSourcePointer {
+        TaskContextSourcePointer(kind: kind, id: id, path: path, summary: summary)
     }
 
     private static func dedupe(_ paths: [String]) -> [String] {

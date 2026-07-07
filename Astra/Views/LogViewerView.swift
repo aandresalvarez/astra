@@ -1,5 +1,8 @@
 import SwiftUI
 import AppKit
+import ASTRAPersistence
+import ASTRACore
+import ASTRAModels
 
 struct LogViewerView: View {
     private static let maxVisibleEntries = 2000

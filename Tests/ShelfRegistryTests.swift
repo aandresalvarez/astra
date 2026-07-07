@@ -1,5 +1,8 @@
 import CoreGraphics
 import Testing
+import ASTRAPersistence
+import ASTRACore
+import ASTRAModels
 @testable import ASTRA
 
 @Suite("Core shelf registry")

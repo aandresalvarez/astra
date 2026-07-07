@@ -1,13 +1,13 @@
 import Foundation
 
-enum MarkdownRenderPreparation {
-    static func prepareForDisplay(_ text: String) -> String {
+public enum MarkdownRenderPreparation {
+    public static func prepareForDisplay(_ text: String) -> String {
         let normalized = normalizedLineEndings(text)
         return repairBlockBoundaries(in: normalized)
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    static func joinChunks(_ chunks: [String], prepareForDisplay: Bool = true) -> String {
+    public static func joinChunks(_ chunks: [String], prepareForDisplay: Bool = true) -> String {
         var joined = ""
         var currentLastNonEmptyLine: String?
         var hasUnclosedFence = false

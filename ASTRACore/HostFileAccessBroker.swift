@@ -1,25 +1,25 @@
 import Foundation
 
-enum HostFileAccessIntent: Equatable {
+public enum HostFileAccessIntent: Equatable {
     case explicitUserSelection
     case astraManagedStorage(root: URL)
     case implicitScan(root: URL?)
 }
 
-enum HostFileAccessError: Error, Equatable {
+public enum HostFileAccessError: Error, Equatable {
     case accessDenied(path: String)
 }
 
-enum HostFileReadBound: Equatable {
+public enum HostFileReadBound: Equatable {
     case prefix
     case suffix
 }
 
-struct HostFileAccessBroker {
-    let fileManager: FileManager
-    let homeDirectory: URL
+public struct HostFileAccessBroker {
+    public let fileManager: FileManager
+    public let homeDirectory: URL
 
-    init(
+    public init(
         fileManager: FileManager = .default,
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
     ) {
@@ -27,7 +27,7 @@ struct HostFileAccessBroker {
         self.homeDirectory = homeDirectory
     }
 
-    func shouldSkip(_ url: URL, intent: HostFileAccessIntent) -> Bool {
+    public func shouldSkip(_ url: URL, intent: HostFileAccessIntent) -> Bool {
         switch intent {
         case .explicitUserSelection:
             return false
@@ -42,7 +42,7 @@ struct HostFileAccessBroker {
         }
     }
 
-    func fileExists(
+    public func fileExists(
         at url: URL,
         isDirectory: UnsafeMutablePointer<ObjCBool>? = nil,
         intent: HostFileAccessIntent
@@ -54,7 +54,7 @@ struct HostFileAccessBroker {
         return fileManager.fileExists(atPath: url.path, isDirectory: isDirectory)
     }
 
-    func readData(at url: URL, intent: HostFileAccessIntent) throws -> Data {
+    public func readData(at url: URL, intent: HostFileAccessIntent) throws -> Data {
         try requireAccess(to: url, intent: intent)
         guard let data = fileManager.contents(atPath: url.path) else {
             throw CocoaError(.fileReadNoSuchFile)
@@ -62,7 +62,7 @@ struct HostFileAccessBroker {
         return data
     }
 
-    func readData(
+    public func readData(
         at url: URL,
         maxBytes: Int,
         keeping bound: HostFileReadBound,
@@ -85,7 +85,7 @@ struct HostFileAccessBroker {
         }
     }
 
-    func fileSize(at url: URL, intent: HostFileAccessIntent) -> Int? {
+    public func fileSize(at url: URL, intent: HostFileAccessIntent) -> Int? {
         guard !shouldSkip(url, intent: intent) else { return nil }
         guard let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .fileSizeKey]),
               values.isDirectory != true else {
@@ -94,7 +94,7 @@ struct HostFileAccessBroker {
         return values.fileSize
     }
 
-    func readString(
+    public func readString(
         at url: URL,
         encoding: String.Encoding = .utf8,
         intent: HostFileAccessIntent
@@ -106,7 +106,7 @@ struct HostFileAccessBroker {
         return string
     }
 
-    func contentsOfDirectory(
+    public func contentsOfDirectory(
         at url: URL,
         includingPropertiesForKeys keys: [URLResourceKey]? = nil,
         options mask: FileManager.DirectoryEnumerationOptions = [],
@@ -124,7 +124,7 @@ struct HostFileAccessBroker {
         .filter { !shouldSkip($0, intent: intent) }
     }
 
-    func enumerator(
+    public func enumerator(
         at url: URL,
         includingPropertiesForKeys keys: [URLResourceKey]? = nil,
         options mask: FileManager.DirectoryEnumerationOptions = [],
@@ -179,7 +179,7 @@ private final class FilteringDirectoryEnumerator: FileManager.DirectoryEnumerato
     private let base: FileManager.DirectoryEnumerator
     private let shouldSkip: (URL) -> Bool
 
-    init(
+    public init(
         base: FileManager.DirectoryEnumerator,
         shouldSkip: @escaping (URL) -> Bool
     ) {

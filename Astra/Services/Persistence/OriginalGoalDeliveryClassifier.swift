@@ -1,5 +1,6 @@
 import Foundation
 import ASTRAModels
+import ASTRACore
 
 /// Tier 1 deterministic classifier: has the original goal already been delivered?
 ///
@@ -9,19 +10,19 @@ import ASTRAModels
 /// this file stays independent of `TaskContextStateManager`'s private helpers.
 ///
 /// Fail-safe direction: any uncertainty resolves to `.active`, never `.delivered`.
-enum OriginalGoalDeliveryStatus: Equatable, Sendable {
+public enum OriginalGoalDeliveryStatus: Equatable, Sendable {
     case active
     case delivered
 }
 
 extension TaskContextStateManager {
     @MainActor
-    static func originalGoalDelivery(for task: AgentTask) -> OriginalGoalDeliveryStatus {
+    public static func originalGoalDelivery(for task: AgentTask) -> OriginalGoalDeliveryStatus {
         if task.status == .completed {
             return .delivered
         }
 
-        let planState = TaskPlanService.reconstruct(for: task)
+        let planState = TaskPlanReconstructionSeam.required.reconstruct(for: task)
         if planState.lifecycleStatus == .completed {
             return .delivered
         }
@@ -76,7 +77,7 @@ private func originalGoalHasVerifiedCompletion(task: AgentTask) -> Bool {
     }
 
     if let event = latestDeliverableVerification,
-       let payload = TaskDeliverableVerificationService.decode(event.payload) {
+       let payload = TaskDeliverableVerificationCodec.decode(event.payload) {
         return payload.status == "passed"
     }
 

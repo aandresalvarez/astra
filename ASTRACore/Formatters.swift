@@ -1,20 +1,20 @@
 import Foundation
 
 /// Shared formatting utilities used across multiple views.
-enum Formatters {
-    struct SidebarTaskTitlePresentation: Equatable {
-        let prefix: String?
-        let primary: String
-        let fullTitle: String
+public enum Formatters {
+    public struct SidebarTaskTitlePresentation: Equatable {
+        public let prefix: String?
+        public let primary: String
+        public let fullTitle: String
 
-        var displayTitle: String {
+        public var displayTitle: String {
             guard let prefix, !prefix.isEmpty else { return primary }
             return "\(prefix) · \(primary)"
         }
     }
 
     /// Format a token count for display (e.g., 1500 -> "1.5k", 1500000 -> "1.5M").
-    static func formatTokens(_ count: Int) -> String {
+    public static func formatTokens(_ count: Int) -> String {
         if count >= 1_000_000 {
             return String(format: "%.1fM", Double(count) / 1_000_000)
         } else if count >= 1000 {
@@ -31,7 +31,7 @@ enum Formatters {
     ///
     /// Pair with `Formatters.fullDate(_:)` in a `.help()` so users can
     /// still hover for the absolute timestamp when they need it.
-    static func relativeShort(_ date: Date, now: Date = Date()) -> String {
+    public static func relativeShort(_ date: Date, now: Date = Date()) -> String {
         let interval = now.timeIntervalSince(date)
         if interval < 60 { return "now" }
         if interval < 3600 { return "\(Int(interval / 60))m" }
@@ -62,7 +62,7 @@ enum Formatters {
 
     /// Long-form timestamp suitable for a tooltip / accessibility hint
     /// when a UI surface only shows `relativeShort(_:)`.
-    static func fullDate(_ date: Date) -> String {
+    public static func fullDate(_ date: Date) -> String {
         return fullDateFormatter.string(from: date)
     }
 
@@ -77,7 +77,7 @@ enum Formatters {
     /// Middle-ellipsize identifier-like tokens (long, contain `. _ - /`) so
     /// compact rows preserve both the recognizable prefix and useful suffix.
     /// Normal prose is left alone.
-    static func shortenIdentifierTokens(
+    public static func shortenIdentifierTokens(
         _ text: String,
         maxTokenLength: Int = 28,
         keepEachSide: Int = 10
@@ -97,7 +97,7 @@ enum Formatters {
 
     /// Compact task-title presentation for navigation rows. Generic task verbs
     /// become a quiet prefix so the object phrase stays scannable.
-    static func sidebarTaskTitlePresentation(
+    public static func sidebarTaskTitlePresentation(
         _ text: String
     ) -> SidebarTaskTitlePresentation {
         let normalized = normalizedSidebarTaskTitle(text)
@@ -113,7 +113,7 @@ enum Formatters {
     /// Compact task titles for callers that need a single string. Prefer
     /// `sidebarTaskTitlePresentation(_:)` in SwiftUI rows so the action prefix
     /// can be visually de-emphasized.
-    static func sidebarTaskTitle(_ text: String, maxCharacters: Int = 32) -> String {
+    public static func sidebarTaskTitle(_ text: String, maxCharacters: Int = 32) -> String {
         let normalized = normalizedSidebarTaskTitle(text)
         let (prefix, primarySource) = sidebarTaskPrefixAndPrimary(normalized)
         let primaryBudget = if let prefix {
@@ -246,7 +246,7 @@ enum Formatters {
     }
 
     /// Return an SF Symbol name for a file path based on its extension.
-    static func fileIcon(for path: String) -> String {
+    public static func fileIcon(for path: String) -> String {
         let ext = URL(fileURLWithPath: path).pathExtension.lowercased()
         switch ext {
         case "swift": return "swift"

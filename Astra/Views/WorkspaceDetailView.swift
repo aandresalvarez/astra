@@ -1,6 +1,8 @@
 import SwiftUI
 import SwiftData
 import ASTRAModels
+import ASTRAPersistence
+import ASTRACore
 
 struct WorkspaceDetailView: View {
     @Bindable var workspace: Workspace

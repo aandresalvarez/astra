@@ -1,11 +1,11 @@
 import Foundation
 import ASTRACore
+import ASTRAPersistence
 
-enum TaskGeneratedFileShelfDestination: Equatable {
-    case browser
-    case files
-    case query
-
+// Bare cases moved to ASTRACore/TaskGeneratedFileShelfDestination.swift for
+// Track A4 (ASTRAPersistence), which needs the case set as a stored-property
+// type; this extension's Shelf-registry-dependent members stay app-side.
+extension TaskGeneratedFileShelfDestination {
     var title: String {
         generatedFileDestination.title
     }

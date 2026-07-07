@@ -2,20 +2,20 @@ import Foundation
 import ASTRACore
 import ASTRAModels
 
-struct TaskWorkspaceAccess {
-    let task: AgentTask
+public struct TaskWorkspaceAccess {
+    public let task: AgentTask
     private let fileSystem: FileSystem
 
-    init(task: AgentTask, fileSystem: FileSystem = RealFileSystem()) {
+    public init(task: AgentTask, fileSystem: FileSystem = RealFileSystem()) {
         self.task = task
         self.fileSystem = fileSystem
     }
 
-    var effectiveWorkspacePath: String {
+    public var effectiveWorkspacePath: String {
         task.workspace?.primaryPath ?? ""
     }
 
-    var codeWorkingDirectory: String {
+    public var codeWorkingDirectory: String {
         // A thread pinned to a repository/worktree always runs in that code root,
         // as long as it still exists. If the pin was removed, fall through to the
         // workspace default instead of failing on a missing directory.
@@ -37,7 +37,7 @@ struct TaskWorkspaceAccess {
         return effectiveWorkspacePath
     }
 
-    var runtimeAdditionalPaths: [String] {
+    public var runtimeAdditionalPaths: [String] {
         var paths = task.workspace?.additionalPaths ?? []
         paths.append(contentsOf: inputDirectoryPaths)
 
@@ -50,23 +50,23 @@ struct TaskWorkspaceAccess {
         }
     }
 
-    var taskFolder: String {
+    public var taskFolder: String {
         WorkspaceFileLayout.readableTaskFolder(workspacePath: effectiveWorkspacePath, taskID: task.id)
     }
 
-    var canonicalTaskFolder: String {
+    public var canonicalTaskFolder: String {
         WorkspaceFileLayout.taskFolder(workspacePath: effectiveWorkspacePath, taskID: task.id)
     }
 
     @discardableResult
-    func ensureTaskFolder(fileSystem overrideFileSystem: FileSystem? = nil) throws -> String {
+    public func ensureTaskFolder(fileSystem overrideFileSystem: FileSystem? = nil) throws -> String {
         let fileSystem = overrideFileSystem ?? self.fileSystem
         let path = WorkspaceFileLayout.migrateLegacyTaskFolderIfNeeded(
             workspacePath: effectiveWorkspacePath,
             taskID: task.id
         )
         guard !path.isEmpty else {
-            AppLogger.audit(.taskFailed, category: "General", taskID: task.id, fields: [
+            AuditLoggingSeam.required.audit(.taskFailed, category: "General", taskID: task.id, fields: [
                 "reason": "task_folder_empty_path"
             ], level: .error)
             return ""
@@ -111,18 +111,18 @@ struct TaskWorkspaceAccess {
 /// (`ASTRACore/TaskForkLifecycleSeams.swift`) backing implementation -
 /// mirrors `taskFolder`/`ensureTaskFolder()` above exactly, since both were
 /// already effectively primitive (`workspacePath`/`taskID` only).
-enum TaskFolderResolvingAdapter: TaskFolderResolving {
-    static func taskFolder(workspacePath: String, taskID: UUID) -> String {
+public enum TaskFolderResolvingAdapter: TaskFolderResolving {
+    public static func taskFolder(workspacePath: String, taskID: UUID) -> String {
         WorkspaceFileLayout.readableTaskFolder(workspacePath: workspacePath, taskID: taskID)
     }
 
-    static func ensureTaskFolder(workspacePath: String, taskID: UUID) throws -> String {
+    public static func ensureTaskFolder(workspacePath: String, taskID: UUID) throws -> String {
         let path = WorkspaceFileLayout.migrateLegacyTaskFolderIfNeeded(
             workspacePath: workspacePath,
             taskID: taskID
         )
         guard !path.isEmpty else {
-            AppLogger.audit(.taskFailed, category: "General", taskID: taskID, fields: [
+            AuditLoggingSeam.required.audit(.taskFailed, category: "General", taskID: taskID, fields: [
                 "reason": "task_folder_empty_path"
             ], level: .error)
             return ""

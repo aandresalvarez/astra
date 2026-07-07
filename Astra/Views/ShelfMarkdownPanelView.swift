@@ -1,6 +1,8 @@
 import AppKit
 import SwiftUI
 import ASTRAModels
+import ASTRAPersistence
+import ASTRACore
 
 enum ShelfFileNavigatorContentPresentation: Equatable {
     case noWorkspacePaths

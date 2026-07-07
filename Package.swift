@@ -103,6 +103,11 @@ let package = Package(
             path: "Astra/Models"
         ),
         .target(
+            name: "ASTRAPersistence",
+            dependencies: ["AstraObjCSupport", "ASTRACore", "ASTRAModels"],
+            path: "Astra/Services/Persistence"
+        ),
+        .target(
             name: "ASTRA",
             dependencies: [
                 "AstraObjCSupport",
@@ -110,11 +115,12 @@ let package = Package(
                 "ASTRAGitContracts",
                 "ASTRALogging",
                 "ASTRAModels",
+                "ASTRAPersistence",
                 .product(name: "Sparkle", package: "Sparkle"),
                 .product(name: "Markdown", package: "swift-markdown")
             ],
             path: "Astra",
-            exclude: ["Models"],
+            exclude: ["Models", "Services/Persistence"],
             resources: [
                 .copy("Resources/AppIcon.icns"),
                 .copy("Resources/AppIconDev.icns"),
@@ -141,7 +147,7 @@ let package = Package(
         ),
         .testTarget(
             name: "ASTRATests",
-            dependencies: ["ASTRA", "ASTRACore", "ASTRAGitContracts", "ASTRAModels", "HostControlToolSupport", "MCPGatewaySupport", "MCPServerKit", "WorkspaceToolSupport"],
+            dependencies: ["ASTRA", "ASTRACore", "ASTRAGitContracts", "ASTRAModels", "ASTRAPersistence", "HostControlToolSupport", "MCPGatewaySupport", "MCPServerKit", "WorkspaceToolSupport"],
             path: "Tests",
             exclude: ["ArchitectureFitnessTests", "MCPGatewaySupportTests", "MCPServerKitTests", "MailToolSupportTests"]
         ),

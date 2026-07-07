@@ -10,33 +10,33 @@ import ASTRAModels
 /// - UUIDs are exported for every durable entity so names are display text only.
 /// - Connector credential values are never exported. Only credential key names are written.
 /// - v1-v10 configs remain importable through optional fields and legacy name fallback.
-enum WorkspaceConfigManager {
+public enum WorkspaceConfigManager {
 
     // MARK: - Config Schema (v11)
 
-    static let currentVersion = 11
+    public static let currentVersion = 11
 
     private struct WorkspaceAppRunMirrorSnapshot {
-        var runs: [WorkspaceAppRun]
-        var events: [WorkspaceAppRunEvent]
+        public var runs: [WorkspaceAppRun]
+        public var events: [WorkspaceAppRunEvent]
     }
 
-    enum MirrorLimits {
-        static let maxRunsPerTask = 10
-        static let maxEventsPerTask = 10
-        static let maxWorkspaceAppRuns = 10
-        static let maxWorkspaceAppRunEvents = 10
-        static let maxRunOutputCharacters = 8_000
-        static let maxEventPayloadCharacters = 4_000
-        static let maxWorkspaceAppRunOutputCharacters = 8_000
-        static let maxWorkspaceAppRunEventPayloadCharacters = 4_000
+    public enum MirrorLimits {
+        public static let maxRunsPerTask = 10
+        public static let maxEventsPerTask = 10
+        public static let maxWorkspaceAppRuns = 10
+        public static let maxWorkspaceAppRunEvents = 10
+        public static let maxRunOutputCharacters = 8_000
+        public static let maxEventPayloadCharacters = 4_000
+        public static let maxWorkspaceAppRunOutputCharacters = 8_000
+        public static let maxWorkspaceAppRunEventPayloadCharacters = 4_000
     }
 
-    enum ScheduleImportTrustPolicy {
+    public enum ScheduleImportTrustPolicy {
         case quarantineEnabledSchedules
         case preserveEnabledState
 
-        func enabledState(for config: ScheduleConfig) -> Bool {
+        public func enabledState(for config: ScheduleConfig) -> Bool {
             switch self {
             case .quarantineEnabledSchedules:
                 false
@@ -45,7 +45,7 @@ enum WorkspaceConfigManager {
             }
         }
 
-        func quarantinedScheduleCount(in schedules: [ScheduleConfig]?) -> Int {
+        public func quarantinedScheduleCount(in schedules: [ScheduleConfig]?) -> Int {
             switch self {
             case .quarantineEnabledSchedules:
                 schedules?.filter(\.isEnabled).count ?? 0
@@ -55,28 +55,40 @@ enum WorkspaceConfigManager {
         }
     }
 
-    struct WorkspaceConfigExportResult {
-        enum Status: String {
+    public struct WorkspaceConfigExportResult {
+        public init(status: Status, workspaceID: String, path: String, errorType: String? = nil, errorDomain: String? = nil, errorCode: Int? = nil, errorDescription: String? = nil, parentExists: Bool, parentWritable: Bool) {
+            self.status = status
+            self.workspaceID = workspaceID
+            self.path = path
+            self.errorType = errorType
+            self.errorDomain = errorDomain
+            self.errorCode = errorCode
+            self.errorDescription = errorDescription
+            self.parentExists = parentExists
+            self.parentWritable = parentWritable
+        }
+
+        public enum Status: String {
             case exported
             case skippedNoConfig
             case writeFailed
         }
 
-        var status: Status
-        var workspaceID: String
-        var path: String
-        var errorType: String?
-        var errorDomain: String?
-        var errorCode: Int?
-        var errorDescription: String?
-        var parentExists: Bool
-        var parentWritable: Bool
+        public var status: Status
+        public var workspaceID: String
+        public var path: String
+        public var errorType: String?
+        public var errorDomain: String?
+        public var errorCode: Int?
+        public var errorDescription: String?
+        public var parentExists: Bool
+        public var parentWritable: Bool
 
-        var didExport: Bool {
+        public var didExport: Bool {
             status == .exported
         }
 
-        var auditFields: [String: String] {
+        public var auditFields: [String: String] {
             var fields: [String: String] = [
                 "workspace_id": workspaceID,
                 "config_file": URL(fileURLWithPath: path).lastPathComponent,
@@ -101,47 +113,70 @@ enum WorkspaceConfigManager {
         }
     }
 
-    struct WorkspaceConfigLoadResult {
-        enum Status: String {
+    public struct WorkspaceConfigLoadResult {
+        public init(status: Status, path: String, config: WorkspaceConfig? = nil, errorType: String? = nil, errorDomain: String? = nil, errorCode: Int? = nil, errorDescription: String? = nil) {
+            self.status = status
+            self.path = path
+            self.config = config
+            self.errorType = errorType
+            self.errorDomain = errorDomain
+            self.errorCode = errorCode
+            self.errorDescription = errorDescription
+        }
+
+        public enum Status: String {
             case loaded
             case unreadableFile
             case decodeFailed
         }
 
-        var status: Status
-        var path: String
-        var config: WorkspaceConfig?
-        var errorType: String?
-        var errorDomain: String?
-        var errorCode: Int?
-        var errorDescription: String?
+        public var status: Status
+        public var path: String
+        public var config: WorkspaceConfig?
+        public var errorType: String?
+        public var errorDomain: String?
+        public var errorCode: Int?
+        public var errorDescription: String?
 
-        var didLoad: Bool {
+        public var didLoad: Bool {
             config != nil
         }
     }
 
-    struct WorkspaceConfigImportResult {
-        enum Status: String {
+    public struct WorkspaceConfigImportResult {
+        public init(status: Status, workspace: Workspace, workspaceID: String, skillCount: Int, connectorCount: Int, localToolCount: Int, taskCount: Int, quarantinedScheduleCount: Int, skippedConnectorCount: Int, skippedLocalToolCount: Int) {
+            self.status = status
+            self.workspace = workspace
+            self.workspaceID = workspaceID
+            self.skillCount = skillCount
+            self.connectorCount = connectorCount
+            self.localToolCount = localToolCount
+            self.taskCount = taskCount
+            self.quarantinedScheduleCount = quarantinedScheduleCount
+            self.skippedConnectorCount = skippedConnectorCount
+            self.skippedLocalToolCount = skippedLocalToolCount
+        }
+
+        public enum Status: String {
             case imported
         }
 
-        var status: Status
-        var workspace: Workspace
-        var workspaceID: String
-        var skillCount: Int
-        var connectorCount: Int
-        var localToolCount: Int
-        var taskCount: Int
-        var quarantinedScheduleCount: Int
-        var skippedConnectorCount: Int
-        var skippedLocalToolCount: Int
+        public var status: Status
+        public var workspace: Workspace
+        public var workspaceID: String
+        public var skillCount: Int
+        public var connectorCount: Int
+        public var localToolCount: Int
+        public var taskCount: Int
+        public var quarantinedScheduleCount: Int
+        public var skippedConnectorCount: Int
+        public var skippedLocalToolCount: Int
 
-        var didImport: Bool {
+        public var didImport: Bool {
             status == .imported
         }
 
-        var auditFields: [String: String] {
+        public var auditFields: [String: String] {
             [
                 "result": status.rawValue,
                 "workspace_id": workspaceID,
@@ -156,376 +191,732 @@ enum WorkspaceConfigManager {
         }
     }
 
-    struct WorkspaceConfig: Codable, Sendable {
-        var version: Int = WorkspaceConfigManager.currentVersion
-        var id: String?
-        var name: String
-        var primaryPath: String
-        var additionalPaths: [String]
-        var icon: String
-        var instructions: String
-        var isStarred: Bool? = nil
+    public struct WorkspaceConfig: Codable, Sendable {
+        public init(version: Int = WorkspaceConfigManager.currentVersion, id: String? = nil, name: String, primaryPath: String, additionalPaths: [String], icon: String, instructions: String, isStarred: Bool? = nil, activeWorkingPath: String? = nil, activeExecutionEnvironmentJSON: String? = nil, lastUsedSkillNames: [String]? = nil, enabledGlobalSkillIDs: [String]? = nil, enabledGlobalConnectorIDs: [String]? = nil, enabledGlobalToolIDs: [String]? = nil, enabledCapabilityIDs: [String]? = nil, enabledPackIDs: [String]? = nil, shelfVisibilityOverrides: [String: Bool]? = nil, memories: [String]? = nil, createdAt: Date? = nil, updatedAt: Date? = nil, skills: [SkillConfig], connectors: [ConnectorConfig]? = nil, localTools: [LocalToolConfig]? = nil, templates: [TemplateConfig]? = nil, schedules: [ScheduleConfig]? = nil, sshConnections: [SSHConnection], tasks: [TaskConfig]? = nil, workspaceApps: [WorkspaceAppConfig]? = nil, workspaceAppRuns: [WorkspaceAppRunConfig]? = nil, workspaceAppRunEvents: [WorkspaceAppRunEventConfig]? = nil, workspaceAppDependencyBindings: [WorkspaceAppDependencyBindingConfig]? = nil, workspaceAppAutomationStates: [WorkspaceAppAutomationStateConfig]? = nil, googleOAuthAccountProfiles: [GoogleOAuthAccountProfileConfig]? = nil, installedPlugins: [InstalledPluginRef]? = nil, exportedAt: Date) {
+            self.version = version
+            self.id = id
+            self.name = name
+            self.primaryPath = primaryPath
+            self.additionalPaths = additionalPaths
+            self.icon = icon
+            self.instructions = instructions
+            self.isStarred = isStarred
+            self.activeWorkingPath = activeWorkingPath
+            self.activeExecutionEnvironmentJSON = activeExecutionEnvironmentJSON
+            self.lastUsedSkillNames = lastUsedSkillNames
+            self.enabledGlobalSkillIDs = enabledGlobalSkillIDs
+            self.enabledGlobalConnectorIDs = enabledGlobalConnectorIDs
+            self.enabledGlobalToolIDs = enabledGlobalToolIDs
+            self.enabledCapabilityIDs = enabledCapabilityIDs
+            self.enabledPackIDs = enabledPackIDs
+            self.shelfVisibilityOverrides = shelfVisibilityOverrides
+            self.memories = memories
+            self.createdAt = createdAt
+            self.updatedAt = updatedAt
+            self.skills = skills
+            self.connectors = connectors
+            self.localTools = localTools
+            self.templates = templates
+            self.schedules = schedules
+            self.sshConnections = sshConnections
+            self.tasks = tasks
+            self.workspaceApps = workspaceApps
+            self.workspaceAppRuns = workspaceAppRuns
+            self.workspaceAppRunEvents = workspaceAppRunEvents
+            self.workspaceAppDependencyBindings = workspaceAppDependencyBindings
+            self.workspaceAppAutomationStates = workspaceAppAutomationStates
+            self.googleOAuthAccountProfiles = googleOAuthAccountProfiles
+            self.installedPlugins = installedPlugins
+            self.exportedAt = exportedAt
+        }
+
+        public var version: Int = WorkspaceConfigManager.currentVersion
+        public var id: String?
+        public var name: String
+        public var primaryPath: String
+        public var additionalPaths: [String]
+        public var icon: String
+        public var instructions: String
+        public var isStarred: Bool? = nil
         /// Absolute path of the worktree new chats default to, or nil for the
         /// repository root. Travels with the workspace; it is re-validated on
         /// import and reset to root when the worktree is absent on this machine.
-        var activeWorkingPath: String? = nil
+        public var activeWorkingPath: String? = nil
         /// JSON-encoded workspace execution-environment default. Nil means host.
-        var activeExecutionEnvironmentJSON: String? = nil
-        var lastUsedSkillNames: [String]?
-        var enabledGlobalSkillIDs: [String]?
-        var enabledGlobalConnectorIDs: [String]?
-        var enabledGlobalToolIDs: [String]?
-        var enabledCapabilityIDs: [String]?
-        var enabledPackIDs: [String]? = nil
-        var shelfVisibilityOverrides: [String: Bool]? = nil
-        var memories: [String]?
-        var createdAt: Date?
-        var updatedAt: Date?
-        var skills: [SkillConfig]
-        var connectors: [ConnectorConfig]?
-        var localTools: [LocalToolConfig]?
-        var templates: [TemplateConfig]?
-        var schedules: [ScheduleConfig]?
-        var sshConnections: [SSHConnection]
-        var tasks: [TaskConfig]?
-        var workspaceApps: [WorkspaceAppConfig]? = nil
-        var workspaceAppRuns: [WorkspaceAppRunConfig]? = nil
-        var workspaceAppRunEvents: [WorkspaceAppRunEventConfig]? = nil
-        var workspaceAppDependencyBindings: [WorkspaceAppDependencyBindingConfig]? = nil
-        var workspaceAppAutomationStates: [WorkspaceAppAutomationStateConfig]? = nil
-        var googleOAuthAccountProfiles: [GoogleOAuthAccountProfileConfig]? = nil
-        var installedPlugins: [InstalledPluginRef]?
-        var exportedAt: Date
+        public var activeExecutionEnvironmentJSON: String? = nil
+        public var lastUsedSkillNames: [String]?
+        public var enabledGlobalSkillIDs: [String]?
+        public var enabledGlobalConnectorIDs: [String]?
+        public var enabledGlobalToolIDs: [String]?
+        public var enabledCapabilityIDs: [String]?
+        public var enabledPackIDs: [String]? = nil
+        public var shelfVisibilityOverrides: [String: Bool]? = nil
+        public var memories: [String]?
+        public var createdAt: Date?
+        public var updatedAt: Date?
+        public var skills: [SkillConfig]
+        public var connectors: [ConnectorConfig]?
+        public var localTools: [LocalToolConfig]?
+        public var templates: [TemplateConfig]?
+        public var schedules: [ScheduleConfig]?
+        public var sshConnections: [SSHConnection]
+        public var tasks: [TaskConfig]?
+        public var workspaceApps: [WorkspaceAppConfig]? = nil
+        public var workspaceAppRuns: [WorkspaceAppRunConfig]? = nil
+        public var workspaceAppRunEvents: [WorkspaceAppRunEventConfig]? = nil
+        public var workspaceAppDependencyBindings: [WorkspaceAppDependencyBindingConfig]? = nil
+        public var workspaceAppAutomationStates: [WorkspaceAppAutomationStateConfig]? = nil
+        public var googleOAuthAccountProfiles: [GoogleOAuthAccountProfileConfig]? = nil
+        public var installedPlugins: [InstalledPluginRef]?
+        public var exportedAt: Date
     }
 
-    struct InstalledPluginRef: Codable, Sendable {
-        var id: String
-        var version: String
-        var name: String?
+    public struct InstalledPluginRef: Codable, Sendable {
+        public init(id: String, version: String, name: String? = nil) {
+            self.id = id
+            self.version = version
+            self.name = name
+        }
+
+        public var id: String
+        public var version: String
+        public var name: String?
     }
 
-    struct SkillConfig: Codable, Sendable {
-        var id: String?
-        var name: String
-        var icon: String
-        var description: String
-        var allowedTools: [String]
-        var disallowedTools: [String]
-        var customTools: [String]
-        var behaviorInstructions: String
-        var environmentKeys: [String]
-        var environmentValues: [String]
-        var isGlobal: Bool?
-        var connectorIDs: [String]?
-        var localToolIDs: [String]?
-        var connectorNames: [String]?
-        var localToolNames: [String]?
-        var originPackageID: String? = nil
-        var originPackageVersion: String? = nil
-        var originComponentID: String? = nil
-        var originComponentKind: String? = nil
-        var originSourceKind: String? = nil
-        var createdAt: Date?
-        var updatedAt: Date?
+    public struct SkillConfig: Codable, Sendable {
+        public init(id: String? = nil, name: String, icon: String, description: String, allowedTools: [String], disallowedTools: [String], customTools: [String], behaviorInstructions: String, environmentKeys: [String], environmentValues: [String], isGlobal: Bool? = nil, connectorIDs: [String]? = nil, localToolIDs: [String]? = nil, connectorNames: [String]? = nil, localToolNames: [String]? = nil, originPackageID: String? = nil, originPackageVersion: String? = nil, originComponentID: String? = nil, originComponentKind: String? = nil, originSourceKind: String? = nil, createdAt: Date? = nil, updatedAt: Date? = nil) {
+            self.id = id
+            self.name = name
+            self.icon = icon
+            self.description = description
+            self.allowedTools = allowedTools
+            self.disallowedTools = disallowedTools
+            self.customTools = customTools
+            self.behaviorInstructions = behaviorInstructions
+            self.environmentKeys = environmentKeys
+            self.environmentValues = environmentValues
+            self.isGlobal = isGlobal
+            self.connectorIDs = connectorIDs
+            self.localToolIDs = localToolIDs
+            self.connectorNames = connectorNames
+            self.localToolNames = localToolNames
+            self.originPackageID = originPackageID
+            self.originPackageVersion = originPackageVersion
+            self.originComponentID = originComponentID
+            self.originComponentKind = originComponentKind
+            self.originSourceKind = originSourceKind
+            self.createdAt = createdAt
+            self.updatedAt = updatedAt
+        }
+
+        public var id: String?
+        public var name: String
+        public var icon: String
+        public var description: String
+        public var allowedTools: [String]
+        public var disallowedTools: [String]
+        public var customTools: [String]
+        public var behaviorInstructions: String
+        public var environmentKeys: [String]
+        public var environmentValues: [String]
+        public var isGlobal: Bool?
+        public var connectorIDs: [String]?
+        public var localToolIDs: [String]?
+        public var connectorNames: [String]?
+        public var localToolNames: [String]?
+        public var originPackageID: String? = nil
+        public var originPackageVersion: String? = nil
+        public var originComponentID: String? = nil
+        public var originComponentKind: String? = nil
+        public var originSourceKind: String? = nil
+        public var createdAt: Date?
+        public var updatedAt: Date?
     }
 
-    struct ConnectorConfig: Codable, Sendable {
-        var id: String?
-        var name: String
-        var serviceType: String
-        var icon: String
-        var description: String
-        var baseURL: String
-        var authMethod: String
-        var credentialKeys: [String]
-        var configKeys: [String]
-        var configValues: [String]
-        var isGlobal: Bool?
-        var notes: String
-        var originPackageID: String? = nil
-        var originPackageVersion: String? = nil
-        var originComponentID: String? = nil
-        var originComponentKind: String? = nil
-        var originSourceKind: String? = nil
-        var createdAt: Date?
-        var updatedAt: Date?
+    public struct ConnectorConfig: Codable, Sendable {
+        public init(id: String? = nil, name: String, serviceType: String, icon: String, description: String, baseURL: String, authMethod: String, credentialKeys: [String], configKeys: [String], configValues: [String], isGlobal: Bool? = nil, notes: String, originPackageID: String? = nil, originPackageVersion: String? = nil, originComponentID: String? = nil, originComponentKind: String? = nil, originSourceKind: String? = nil, createdAt: Date? = nil, updatedAt: Date? = nil) {
+            self.id = id
+            self.name = name
+            self.serviceType = serviceType
+            self.icon = icon
+            self.description = description
+            self.baseURL = baseURL
+            self.authMethod = authMethod
+            self.credentialKeys = credentialKeys
+            self.configKeys = configKeys
+            self.configValues = configValues
+            self.isGlobal = isGlobal
+            self.notes = notes
+            self.originPackageID = originPackageID
+            self.originPackageVersion = originPackageVersion
+            self.originComponentID = originComponentID
+            self.originComponentKind = originComponentKind
+            self.originSourceKind = originSourceKind
+            self.createdAt = createdAt
+            self.updatedAt = updatedAt
+        }
+
+        public var id: String?
+        public var name: String
+        public var serviceType: String
+        public var icon: String
+        public var description: String
+        public var baseURL: String
+        public var authMethod: String
+        public var credentialKeys: [String]
+        public var configKeys: [String]
+        public var configValues: [String]
+        public var isGlobal: Bool?
+        public var notes: String
+        public var originPackageID: String? = nil
+        public var originPackageVersion: String? = nil
+        public var originComponentID: String? = nil
+        public var originComponentKind: String? = nil
+        public var originSourceKind: String? = nil
+        public var createdAt: Date?
+        public var updatedAt: Date?
     }
 
-    struct LocalToolConfig: Codable, Sendable {
-        var id: String?
-        var name: String
-        var description: String
-        var icon: String
-        var toolType: String
-        var command: String
-        var arguments: String
-        var isGlobal: Bool?
-        var originPackageID: String? = nil
-        var originPackageVersion: String? = nil
-        var originComponentID: String? = nil
-        var originComponentKind: String? = nil
-        var originSourceKind: String? = nil
-        var createdAt: Date?
-        var updatedAt: Date?
+    public struct LocalToolConfig: Codable, Sendable {
+        public init(id: String? = nil, name: String, description: String, icon: String, toolType: String, command: String, arguments: String, isGlobal: Bool? = nil, originPackageID: String? = nil, originPackageVersion: String? = nil, originComponentID: String? = nil, originComponentKind: String? = nil, originSourceKind: String? = nil, createdAt: Date? = nil, updatedAt: Date? = nil) {
+            self.id = id
+            self.name = name
+            self.description = description
+            self.icon = icon
+            self.toolType = toolType
+            self.command = command
+            self.arguments = arguments
+            self.isGlobal = isGlobal
+            self.originPackageID = originPackageID
+            self.originPackageVersion = originPackageVersion
+            self.originComponentID = originComponentID
+            self.originComponentKind = originComponentKind
+            self.originSourceKind = originSourceKind
+            self.createdAt = createdAt
+            self.updatedAt = updatedAt
+        }
+
+        public var id: String?
+        public var name: String
+        public var description: String
+        public var icon: String
+        public var toolType: String
+        public var command: String
+        public var arguments: String
+        public var isGlobal: Bool?
+        public var originPackageID: String? = nil
+        public var originPackageVersion: String? = nil
+        public var originComponentID: String? = nil
+        public var originComponentKind: String? = nil
+        public var originSourceKind: String? = nil
+        public var createdAt: Date?
+        public var updatedAt: Date?
     }
 
-    struct TemplateConfig: Codable, Sendable {
-        var id: String?
-        var name: String
-        var icon: String
-        var description: String
-        var beforeGoal: String
-        var mainGoal: String
-        var afterGoal: String
-        var beforeBudget: Int
-        var mainBudget: Int
-        var afterBudget: Int
-        var beforeModel: String
-        var mainModel: String
-        var afterModel: String
-        var variablesJSON: String
-        var hooksJSON: String
-        var passContextToMain: Bool
-        var passContextToAfter: Bool
-        var defaultSkillIDs: [String]?
-        var originPackageID: String? = nil
-        var originPackageVersion: String? = nil
-        var originComponentID: String? = nil
-        var originComponentKind: String? = nil
-        var originSourceKind: String? = nil
-        var createdAt: Date?
-        var updatedAt: Date?
+    public struct TemplateConfig: Codable, Sendable {
+        public init(id: String? = nil, name: String, icon: String, description: String, beforeGoal: String, mainGoal: String, afterGoal: String, beforeBudget: Int, mainBudget: Int, afterBudget: Int, beforeModel: String, mainModel: String, afterModel: String, variablesJSON: String, hooksJSON: String, passContextToMain: Bool, passContextToAfter: Bool, defaultSkillIDs: [String]? = nil, originPackageID: String? = nil, originPackageVersion: String? = nil, originComponentID: String? = nil, originComponentKind: String? = nil, originSourceKind: String? = nil, createdAt: Date? = nil, updatedAt: Date? = nil) {
+            self.id = id
+            self.name = name
+            self.icon = icon
+            self.description = description
+            self.beforeGoal = beforeGoal
+            self.mainGoal = mainGoal
+            self.afterGoal = afterGoal
+            self.beforeBudget = beforeBudget
+            self.mainBudget = mainBudget
+            self.afterBudget = afterBudget
+            self.beforeModel = beforeModel
+            self.mainModel = mainModel
+            self.afterModel = afterModel
+            self.variablesJSON = variablesJSON
+            self.hooksJSON = hooksJSON
+            self.passContextToMain = passContextToMain
+            self.passContextToAfter = passContextToAfter
+            self.defaultSkillIDs = defaultSkillIDs
+            self.originPackageID = originPackageID
+            self.originPackageVersion = originPackageVersion
+            self.originComponentID = originComponentID
+            self.originComponentKind = originComponentKind
+            self.originSourceKind = originSourceKind
+            self.createdAt = createdAt
+            self.updatedAt = updatedAt
+        }
+
+        public var id: String?
+        public var name: String
+        public var icon: String
+        public var description: String
+        public var beforeGoal: String
+        public var mainGoal: String
+        public var afterGoal: String
+        public var beforeBudget: Int
+        public var mainBudget: Int
+        public var afterBudget: Int
+        public var beforeModel: String
+        public var mainModel: String
+        public var afterModel: String
+        public var variablesJSON: String
+        public var hooksJSON: String
+        public var passContextToMain: Bool
+        public var passContextToAfter: Bool
+        public var defaultSkillIDs: [String]?
+        public var originPackageID: String? = nil
+        public var originPackageVersion: String? = nil
+        public var originComponentID: String? = nil
+        public var originComponentKind: String? = nil
+        public var originSourceKind: String? = nil
+        public var createdAt: Date?
+        public var updatedAt: Date?
     }
 
-    struct ScheduleConfig: Codable, Sendable {
-        var id: String?
-        var name: String
-        var isEnabled: Bool
-        var goal: String
-        var routineDescription: String?
-        var routineInstructions: String?
-        var routinePaths: [String]?
-        var templateID: String?
-        var templateVariablesJSON: String
-        var model: String
-        var tokenBudget: Int
-        var scheduleType: String
-        var nextFireDate: Date
-        var intervalSeconds: Int
-        var dailyHour: Int
-        var dailyMinute: Int
-        var weeklyDayOfWeek: Int
-        var fireCount: Int
-        var skillIDs: [String]?
-        var conversationContext: String?
-        var resultMode: String?
-        var sourceTaskID: String?
-        var runResultsJSON: String?
-        var runtimeID: String?
-        var lastFiredAt: Date?
-        var createdAt: Date?
-        var updatedAt: Date?
+    public struct ScheduleConfig: Codable, Sendable {
+        public init(id: String? = nil, name: String, isEnabled: Bool, goal: String, routineDescription: String? = nil, routineInstructions: String? = nil, routinePaths: [String]? = nil, templateID: String? = nil, templateVariablesJSON: String, model: String, tokenBudget: Int, scheduleType: String, nextFireDate: Date, intervalSeconds: Int, dailyHour: Int, dailyMinute: Int, weeklyDayOfWeek: Int, fireCount: Int, skillIDs: [String]? = nil, conversationContext: String? = nil, resultMode: String? = nil, sourceTaskID: String? = nil, runResultsJSON: String? = nil, runtimeID: String? = nil, lastFiredAt: Date? = nil, createdAt: Date? = nil, updatedAt: Date? = nil) {
+            self.id = id
+            self.name = name
+            self.isEnabled = isEnabled
+            self.goal = goal
+            self.routineDescription = routineDescription
+            self.routineInstructions = routineInstructions
+            self.routinePaths = routinePaths
+            self.templateID = templateID
+            self.templateVariablesJSON = templateVariablesJSON
+            self.model = model
+            self.tokenBudget = tokenBudget
+            self.scheduleType = scheduleType
+            self.nextFireDate = nextFireDate
+            self.intervalSeconds = intervalSeconds
+            self.dailyHour = dailyHour
+            self.dailyMinute = dailyMinute
+            self.weeklyDayOfWeek = weeklyDayOfWeek
+            self.fireCount = fireCount
+            self.skillIDs = skillIDs
+            self.conversationContext = conversationContext
+            self.resultMode = resultMode
+            self.sourceTaskID = sourceTaskID
+            self.runResultsJSON = runResultsJSON
+            self.runtimeID = runtimeID
+            self.lastFiredAt = lastFiredAt
+            self.createdAt = createdAt
+            self.updatedAt = updatedAt
+        }
+
+        public var id: String?
+        public var name: String
+        public var isEnabled: Bool
+        public var goal: String
+        public var routineDescription: String?
+        public var routineInstructions: String?
+        public var routinePaths: [String]?
+        public var templateID: String?
+        public var templateVariablesJSON: String
+        public var model: String
+        public var tokenBudget: Int
+        public var scheduleType: String
+        public var nextFireDate: Date
+        public var intervalSeconds: Int
+        public var dailyHour: Int
+        public var dailyMinute: Int
+        public var weeklyDayOfWeek: Int
+        public var fireCount: Int
+        public var skillIDs: [String]?
+        public var conversationContext: String?
+        public var resultMode: String?
+        public var sourceTaskID: String?
+        public var runResultsJSON: String?
+        public var runtimeID: String?
+        public var lastFiredAt: Date?
+        public var createdAt: Date?
+        public var updatedAt: Date?
     }
 
-    struct TaskConfig: Codable, Sendable {
-        var id: String?
-        var title: String
-        var goal: String
-        var status: String
-        var isPinned: Bool?
-        var isDone: Bool?
-        var inputs: [String]
-        var constraints: [String]
-        var acceptanceCriteria: [String]
-        var tokenBudget: Int
-        var tokensUsed: Int
-        var model: String
-        var runtimeID: String?
-        var costUSD: Double
-        var sessionId: String?
-        var maxTurns: Int
-        var createdAt: Date
-        var updatedAt: Date
-        var completedAt: Date?
-        var unreadAt: Date?
-        var isolationStrategy: String?
-        var validationStrategy: String?
-        var testCommand: String?
-        var draftMessages: String?
-        var chainedGoal: String?
-        var chainedFromID: String?
-        var useAgentTeam: Bool?
-        var teamSize: Int?
-        var teamInstructions: String?
-        var templateID: String?
-        var templateHooksJSON: String?
-        var queuePosition: Int? = nil
-        var forkedFromID: String? = nil
-        var forkedAtRunIndex: Int? = nil
-        var originScheduleID: String? = nil
-        var executionRootPath: String? = nil
-        var runs: [RunConfig]
-        var events: [EventConfig]
-        var artifacts: [ArtifactConfig]?
-        var skillIDs: [String]?
-        var skillNames: [String]
-        var skillSnapshots: [SkillSnapshotConfig]?
-        var executionEnvironmentSnapshotJSON: String?
-        var runtimePermissionOpenRequestsJSON: String?
-        var runtimePermissionGrantsJSON: String?
+    public struct TaskConfig: Codable, Sendable {
+        public init(id: String? = nil, title: String, goal: String, status: String, isPinned: Bool? = nil, isDone: Bool? = nil, inputs: [String], constraints: [String], acceptanceCriteria: [String], tokenBudget: Int, tokensUsed: Int, model: String, runtimeID: String? = nil, costUSD: Double, sessionId: String? = nil, maxTurns: Int, createdAt: Date, updatedAt: Date, completedAt: Date? = nil, unreadAt: Date? = nil, isolationStrategy: String? = nil, validationStrategy: String? = nil, testCommand: String? = nil, draftMessages: String? = nil, chainedGoal: String? = nil, chainedFromID: String? = nil, useAgentTeam: Bool? = nil, teamSize: Int? = nil, teamInstructions: String? = nil, templateID: String? = nil, templateHooksJSON: String? = nil, queuePosition: Int? = nil, forkedFromID: String? = nil, forkedAtRunIndex: Int? = nil, originScheduleID: String? = nil, executionRootPath: String? = nil, runs: [RunConfig], events: [EventConfig], artifacts: [ArtifactConfig]? = nil, skillIDs: [String]? = nil, skillNames: [String], skillSnapshots: [SkillSnapshotConfig]? = nil, executionEnvironmentSnapshotJSON: String? = nil, runtimePermissionOpenRequestsJSON: String? = nil, runtimePermissionGrantsJSON: String? = nil) {
+            self.id = id
+            self.title = title
+            self.goal = goal
+            self.status = status
+            self.isPinned = isPinned
+            self.isDone = isDone
+            self.inputs = inputs
+            self.constraints = constraints
+            self.acceptanceCriteria = acceptanceCriteria
+            self.tokenBudget = tokenBudget
+            self.tokensUsed = tokensUsed
+            self.model = model
+            self.runtimeID = runtimeID
+            self.costUSD = costUSD
+            self.sessionId = sessionId
+            self.maxTurns = maxTurns
+            self.createdAt = createdAt
+            self.updatedAt = updatedAt
+            self.completedAt = completedAt
+            self.unreadAt = unreadAt
+            self.isolationStrategy = isolationStrategy
+            self.validationStrategy = validationStrategy
+            self.testCommand = testCommand
+            self.draftMessages = draftMessages
+            self.chainedGoal = chainedGoal
+            self.chainedFromID = chainedFromID
+            self.useAgentTeam = useAgentTeam
+            self.teamSize = teamSize
+            self.teamInstructions = teamInstructions
+            self.templateID = templateID
+            self.templateHooksJSON = templateHooksJSON
+            self.queuePosition = queuePosition
+            self.forkedFromID = forkedFromID
+            self.forkedAtRunIndex = forkedAtRunIndex
+            self.originScheduleID = originScheduleID
+            self.executionRootPath = executionRootPath
+            self.runs = runs
+            self.events = events
+            self.artifacts = artifacts
+            self.skillIDs = skillIDs
+            self.skillNames = skillNames
+            self.skillSnapshots = skillSnapshots
+            self.executionEnvironmentSnapshotJSON = executionEnvironmentSnapshotJSON
+            self.runtimePermissionOpenRequestsJSON = runtimePermissionOpenRequestsJSON
+            self.runtimePermissionGrantsJSON = runtimePermissionGrantsJSON
+        }
+
+        public var id: String?
+        public var title: String
+        public var goal: String
+        public var status: String
+        public var isPinned: Bool?
+        public var isDone: Bool?
+        public var inputs: [String]
+        public var constraints: [String]
+        public var acceptanceCriteria: [String]
+        public var tokenBudget: Int
+        public var tokensUsed: Int
+        public var model: String
+        public var runtimeID: String?
+        public var costUSD: Double
+        public var sessionId: String?
+        public var maxTurns: Int
+        public var createdAt: Date
+        public var updatedAt: Date
+        public var completedAt: Date?
+        public var unreadAt: Date?
+        public var isolationStrategy: String?
+        public var validationStrategy: String?
+        public var testCommand: String?
+        public var draftMessages: String?
+        public var chainedGoal: String?
+        public var chainedFromID: String?
+        public var useAgentTeam: Bool?
+        public var teamSize: Int?
+        public var teamInstructions: String?
+        public var templateID: String?
+        public var templateHooksJSON: String?
+        public var queuePosition: Int? = nil
+        public var forkedFromID: String? = nil
+        public var forkedAtRunIndex: Int? = nil
+        public var originScheduleID: String? = nil
+        public var executionRootPath: String? = nil
+        public var runs: [RunConfig]
+        public var events: [EventConfig]
+        public var artifacts: [ArtifactConfig]?
+        public var skillIDs: [String]?
+        public var skillNames: [String]
+        public var skillSnapshots: [SkillSnapshotConfig]?
+        public var executionEnvironmentSnapshotJSON: String?
+        public var runtimePermissionOpenRequestsJSON: String?
+        public var runtimePermissionGrantsJSON: String?
     }
 
-    struct WorkspaceAppConfig: Codable, Sendable {
-        var id: String?
-        var workspaceID: String
-        var logicalID: String
-        var name: String
-        var icon: String
-        var description: String
-        var lifecycleStatus: String
-        var permissionMode: String
-        var dependencyStatus: String
-        var manifestRelativePath: String
-        var appDirectoryRelativePath: String
-        var manifestDigest: String
-        var publishedManifestDigest: String?
-        var lastKnownGoodManifestDigest: String?
-        var latestVersionNumber: Int?
-        var sourcePackageID: String?
-        var sourcePackageVersion: String?
-        var sourcePackageDigest: String?
-        var lastOpenedAt: Date?
-        var lastRefreshedAt: Date?
-        var lastRunAt: Date?
-        var createdAt: Date?
-        var updatedAt: Date?
+    public struct WorkspaceAppConfig: Codable, Sendable {
+        public init(id: String? = nil, workspaceID: String, logicalID: String, name: String, icon: String, description: String, lifecycleStatus: String, permissionMode: String, dependencyStatus: String, manifestRelativePath: String, appDirectoryRelativePath: String, manifestDigest: String, publishedManifestDigest: String? = nil, lastKnownGoodManifestDigest: String? = nil, latestVersionNumber: Int? = nil, sourcePackageID: String? = nil, sourcePackageVersion: String? = nil, sourcePackageDigest: String? = nil, lastOpenedAt: Date? = nil, lastRefreshedAt: Date? = nil, lastRunAt: Date? = nil, createdAt: Date? = nil, updatedAt: Date? = nil) {
+            self.id = id
+            self.workspaceID = workspaceID
+            self.logicalID = logicalID
+            self.name = name
+            self.icon = icon
+            self.description = description
+            self.lifecycleStatus = lifecycleStatus
+            self.permissionMode = permissionMode
+            self.dependencyStatus = dependencyStatus
+            self.manifestRelativePath = manifestRelativePath
+            self.appDirectoryRelativePath = appDirectoryRelativePath
+            self.manifestDigest = manifestDigest
+            self.publishedManifestDigest = publishedManifestDigest
+            self.lastKnownGoodManifestDigest = lastKnownGoodManifestDigest
+            self.latestVersionNumber = latestVersionNumber
+            self.sourcePackageID = sourcePackageID
+            self.sourcePackageVersion = sourcePackageVersion
+            self.sourcePackageDigest = sourcePackageDigest
+            self.lastOpenedAt = lastOpenedAt
+            self.lastRefreshedAt = lastRefreshedAt
+            self.lastRunAt = lastRunAt
+            self.createdAt = createdAt
+            self.updatedAt = updatedAt
+        }
+
+        public var id: String?
+        public var workspaceID: String
+        public var logicalID: String
+        public var name: String
+        public var icon: String
+        public var description: String
+        public var lifecycleStatus: String
+        public var permissionMode: String
+        public var dependencyStatus: String
+        public var manifestRelativePath: String
+        public var appDirectoryRelativePath: String
+        public var manifestDigest: String
+        public var publishedManifestDigest: String?
+        public var lastKnownGoodManifestDigest: String?
+        public var latestVersionNumber: Int?
+        public var sourcePackageID: String?
+        public var sourcePackageVersion: String?
+        public var sourcePackageDigest: String?
+        public var lastOpenedAt: Date?
+        public var lastRefreshedAt: Date?
+        public var lastRunAt: Date?
+        public var createdAt: Date?
+        public var updatedAt: Date?
     }
 
-    struct WorkspaceAppRunConfig: Codable, Sendable {
-        var id: String?
-        var workspaceID: String
-        var appID: String
-        var appLogicalID: String
-        var actionID: String
-        var trigger: String
-        var status: String
-        var startedAt: Date
-        var completedAt: Date?
-        var inputSummary: String
-        var outputSummary: String
-        var errorMessage: String?
-        var linkedTaskID: String?
-        var linkedArtifactPath: String?
-        var pendingActionID: String?
-        var pendingStepIndex: Int?
-        var consumedTokens: Int?
-        var awaitedTaskIDsJSON: String?
-        var pendingApprovalActionID: String?
+    public struct WorkspaceAppRunConfig: Codable, Sendable {
+        public init(id: String? = nil, workspaceID: String, appID: String, appLogicalID: String, actionID: String, trigger: String, status: String, startedAt: Date, completedAt: Date? = nil, inputSummary: String, outputSummary: String, errorMessage: String? = nil, linkedTaskID: String? = nil, linkedArtifactPath: String? = nil, pendingActionID: String? = nil, pendingStepIndex: Int? = nil, consumedTokens: Int? = nil, awaitedTaskIDsJSON: String? = nil, pendingApprovalActionID: String? = nil) {
+            self.id = id
+            self.workspaceID = workspaceID
+            self.appID = appID
+            self.appLogicalID = appLogicalID
+            self.actionID = actionID
+            self.trigger = trigger
+            self.status = status
+            self.startedAt = startedAt
+            self.completedAt = completedAt
+            self.inputSummary = inputSummary
+            self.outputSummary = outputSummary
+            self.errorMessage = errorMessage
+            self.linkedTaskID = linkedTaskID
+            self.linkedArtifactPath = linkedArtifactPath
+            self.pendingActionID = pendingActionID
+            self.pendingStepIndex = pendingStepIndex
+            self.consumedTokens = consumedTokens
+            self.awaitedTaskIDsJSON = awaitedTaskIDsJSON
+            self.pendingApprovalActionID = pendingApprovalActionID
+        }
+
+        public var id: String?
+        public var workspaceID: String
+        public var appID: String
+        public var appLogicalID: String
+        public var actionID: String
+        public var trigger: String
+        public var status: String
+        public var startedAt: Date
+        public var completedAt: Date?
+        public var inputSummary: String
+        public var outputSummary: String
+        public var errorMessage: String?
+        public var linkedTaskID: String?
+        public var linkedArtifactPath: String?
+        public var pendingActionID: String?
+        public var pendingStepIndex: Int?
+        public var consumedTokens: Int?
+        public var awaitedTaskIDsJSON: String?
+        public var pendingApprovalActionID: String?
     }
 
-    struct WorkspaceAppRunEventConfig: Codable, Sendable {
-        var id: String?
-        var runID: String
-        var workspaceID: String
-        var appID: String
-        var actionID: String
-        var type: String
-        var payload: String
-        var timestamp: Date
+    public struct WorkspaceAppRunEventConfig: Codable, Sendable {
+        public init(id: String? = nil, runID: String, workspaceID: String, appID: String, actionID: String, type: String, payload: String, timestamp: Date) {
+            self.id = id
+            self.runID = runID
+            self.workspaceID = workspaceID
+            self.appID = appID
+            self.actionID = actionID
+            self.type = type
+            self.payload = payload
+            self.timestamp = timestamp
+        }
+
+        public var id: String?
+        public var runID: String
+        public var workspaceID: String
+        public var appID: String
+        public var actionID: String
+        public var type: String
+        public var payload: String
+        public var timestamp: Date
     }
 
-    struct WorkspaceAppDependencyBindingConfig: Codable, Sendable {
-        var id: String?
-        var workspaceID: String
-        var appID: String
-        var appLogicalID: String
-        var requirementID: String
-        var contract: String
-        var operationsSummary: String
-        var optional: Bool
-        var status: String
-        var implementationID: String?
-        var provider: String?
-        var transport: String?
-        var createdAt: Date?
-        var updatedAt: Date?
+    public struct WorkspaceAppDependencyBindingConfig: Codable, Sendable {
+        public init(id: String? = nil, workspaceID: String, appID: String, appLogicalID: String, requirementID: String, contract: String, operationsSummary: String, optional: Bool, status: String, implementationID: String? = nil, provider: String? = nil, transport: String? = nil, createdAt: Date? = nil, updatedAt: Date? = nil) {
+            self.id = id
+            self.workspaceID = workspaceID
+            self.appID = appID
+            self.appLogicalID = appLogicalID
+            self.requirementID = requirementID
+            self.contract = contract
+            self.operationsSummary = operationsSummary
+            self.optional = optional
+            self.status = status
+            self.implementationID = implementationID
+            self.provider = provider
+            self.transport = transport
+            self.createdAt = createdAt
+            self.updatedAt = updatedAt
+        }
+
+        public var id: String?
+        public var workspaceID: String
+        public var appID: String
+        public var appLogicalID: String
+        public var requirementID: String
+        public var contract: String
+        public var operationsSummary: String
+        public var optional: Bool
+        public var status: String
+        public var implementationID: String?
+        public var provider: String?
+        public var transport: String?
+        public var createdAt: Date?
+        public var updatedAt: Date?
     }
 
-    struct WorkspaceAppAutomationStateConfig: Codable, Sendable {
-        var id: String?
-        var workspaceID: String
-        var appID: String
-        var appLogicalID: String
-        var automationID: String
-        var automationType: String
-        var actionID: String?
-        var isEnabled: Bool
-        var status: String
-        var lastRunAt: Date?
-        var nextRunAt: Date?
-        var createdAt: Date?
-        var updatedAt: Date?
+    public struct WorkspaceAppAutomationStateConfig: Codable, Sendable {
+        public init(id: String? = nil, workspaceID: String, appID: String, appLogicalID: String, automationID: String, automationType: String, actionID: String? = nil, isEnabled: Bool, status: String, lastRunAt: Date? = nil, nextRunAt: Date? = nil, createdAt: Date? = nil, updatedAt: Date? = nil) {
+            self.id = id
+            self.workspaceID = workspaceID
+            self.appID = appID
+            self.appLogicalID = appLogicalID
+            self.automationID = automationID
+            self.automationType = automationType
+            self.actionID = actionID
+            self.isEnabled = isEnabled
+            self.status = status
+            self.lastRunAt = lastRunAt
+            self.nextRunAt = nextRunAt
+            self.createdAt = createdAt
+            self.updatedAt = updatedAt
+        }
+
+        public var id: String?
+        public var workspaceID: String
+        public var appID: String
+        public var appLogicalID: String
+        public var automationID: String
+        public var automationType: String
+        public var actionID: String?
+        public var isEnabled: Bool
+        public var status: String
+        public var lastRunAt: Date?
+        public var nextRunAt: Date?
+        public var createdAt: Date?
+        public var updatedAt: Date?
     }
 
-    struct GoogleOAuthAccountProfileConfig: Codable, Sendable {
-        var id: String?
-        var subject: String
-        var email: String
-        var displayName: String
-        var avatarURLString: String?
-        var hostedDomain: String?
-        var grantedScopes: [String]
-        var requestedScopes: [String]
-        var authState: String
-        var authStateReason: String
-        var createdAt: Date
-        var updatedAt: Date
-        var lastAuthenticatedAt: Date?
-        var revokedAt: Date?
+    public struct GoogleOAuthAccountProfileConfig: Codable, Sendable {
+        public init(id: String? = nil, subject: String, email: String, displayName: String, avatarURLString: String? = nil, hostedDomain: String? = nil, grantedScopes: [String], requestedScopes: [String], authState: String, authStateReason: String, createdAt: Date, updatedAt: Date, lastAuthenticatedAt: Date? = nil, revokedAt: Date? = nil) {
+            self.id = id
+            self.subject = subject
+            self.email = email
+            self.displayName = displayName
+            self.avatarURLString = avatarURLString
+            self.hostedDomain = hostedDomain
+            self.grantedScopes = grantedScopes
+            self.requestedScopes = requestedScopes
+            self.authState = authState
+            self.authStateReason = authStateReason
+            self.createdAt = createdAt
+            self.updatedAt = updatedAt
+            self.lastAuthenticatedAt = lastAuthenticatedAt
+            self.revokedAt = revokedAt
+        }
+
+        public var id: String?
+        public var subject: String
+        public var email: String
+        public var displayName: String
+        public var avatarURLString: String?
+        public var hostedDomain: String?
+        public var grantedScopes: [String]
+        public var requestedScopes: [String]
+        public var authState: String
+        public var authStateReason: String
+        public var createdAt: Date
+        public var updatedAt: Date
+        public var lastAuthenticatedAt: Date?
+        public var revokedAt: Date?
     }
 
-    struct RunConfig: Codable, Sendable {
-        var id: String?
-        var status: String
-        var startedAt: Date
-        var completedAt: Date?
-        var tokensUsed: Int
-        var inputTokens: Int?
-        var outputTokens: Int?
-        var runtimeID: String?
-        var providerSessionId: String?
-        var providerVersion: String?
-        var executionEnvironmentSnapshotJSON: String?
-        var providerLaunchSignatureJSON: String?
-        var exitCode: Int?
-        var output: String
-        var costUSD: Double
-        var stopReason: String
-        var fileChangesJSON: String
+    public struct RunConfig: Codable, Sendable {
+        public init(id: String? = nil, status: String, startedAt: Date, completedAt: Date? = nil, tokensUsed: Int, inputTokens: Int? = nil, outputTokens: Int? = nil, runtimeID: String? = nil, providerSessionId: String? = nil, providerVersion: String? = nil, executionEnvironmentSnapshotJSON: String? = nil, providerLaunchSignatureJSON: String? = nil, exitCode: Int? = nil, output: String, costUSD: Double, stopReason: String, fileChangesJSON: String) {
+            self.id = id
+            self.status = status
+            self.startedAt = startedAt
+            self.completedAt = completedAt
+            self.tokensUsed = tokensUsed
+            self.inputTokens = inputTokens
+            self.outputTokens = outputTokens
+            self.runtimeID = runtimeID
+            self.providerSessionId = providerSessionId
+            self.providerVersion = providerVersion
+            self.executionEnvironmentSnapshotJSON = executionEnvironmentSnapshotJSON
+            self.providerLaunchSignatureJSON = providerLaunchSignatureJSON
+            self.exitCode = exitCode
+            self.output = output
+            self.costUSD = costUSD
+            self.stopReason = stopReason
+            self.fileChangesJSON = fileChangesJSON
+        }
+
+        public var id: String?
+        public var status: String
+        public var startedAt: Date
+        public var completedAt: Date?
+        public var tokensUsed: Int
+        public var inputTokens: Int?
+        public var outputTokens: Int?
+        public var runtimeID: String?
+        public var providerSessionId: String?
+        public var providerVersion: String?
+        public var executionEnvironmentSnapshotJSON: String?
+        public var providerLaunchSignatureJSON: String?
+        public var exitCode: Int?
+        public var output: String
+        public var costUSD: Double
+        public var stopReason: String
+        public var fileChangesJSON: String
     }
 
-    struct EventConfig: Codable, Sendable {
-        var id: String?
-        var type: String
-        var payload: String
-        var timestamp: Date
-        var category: String
-        var agentName: String?
-        var agentId: String?
-        var teamName: String?
-        var runIndex: Int?
+    public struct EventConfig: Codable, Sendable {
+        public init(id: String? = nil, type: String, payload: String, timestamp: Date, category: String, agentName: String? = nil, agentId: String? = nil, teamName: String? = nil, runIndex: Int? = nil) {
+            self.id = id
+            self.type = type
+            self.payload = payload
+            self.timestamp = timestamp
+            self.category = category
+            self.agentName = agentName
+            self.agentId = agentId
+            self.teamName = teamName
+            self.runIndex = runIndex
+        }
+
+        public var id: String?
+        public var type: String
+        public var payload: String
+        public var timestamp: Date
+        public var category: String
+        public var agentName: String?
+        public var agentId: String?
+        public var teamName: String?
+        public var runIndex: Int?
     }
 
     // MARK: - Export
 
-    static func export(workspace: Workspace) -> WorkspaceConfig? {
+    public static func export(workspace: Workspace) -> WorkspaceConfig? {
         guard let modelContext = workspace.modelContext else {
             return export(workspace: workspace, globalSkills: [])
         }
         return export(workspace: workspace, modelContext: modelContext)
     }
 
-    static func export(workspace: Workspace, modelContext: ModelContext) -> WorkspaceConfig? {
+    public static func export(workspace: Workspace, modelContext: ModelContext) -> WorkspaceConfig? {
         let globalSkills = fetchGlobalSkills(modelContext: modelContext)
         let globalConnectors = fetchGlobalConnectors(modelContext: modelContext)
         let globalTools = fetchGlobalTools(modelContext: modelContext)
@@ -537,7 +928,7 @@ enum WorkspaceConfigManager {
         )
     }
 
-    static func export(
+    public static func export(
         workspace: Workspace,
         globalSkills: [Skill],
         globalConnectors: [Connector] = [],
@@ -620,20 +1011,20 @@ enum WorkspaceConfigManager {
         )
     }
 
-    static func exportToFile(workspace: Workspace, url: URL) throws {
+    public static func exportToFile(workspace: Workspace, url: URL) throws {
         guard let config = export(workspace: workspace) else { return }
         try prepareMirrorParentIfNeeded(workspace: workspace, url: url)
         try write(config, to: url)
     }
 
-    static func exportToFile(workspace: Workspace, modelContext: ModelContext, url: URL) throws {
+    public static func exportToFile(workspace: Workspace, modelContext: ModelContext, url: URL) throws {
         guard let config = export(workspace: workspace, modelContext: modelContext) else { return }
         try prepareMirrorParentIfNeeded(workspace: workspace, url: url)
         try write(config, to: url)
     }
 
     @discardableResult
-    static func exportToFileResult(workspace: Workspace, url: URL) -> WorkspaceConfigExportResult {
+    public static func exportToFileResult(workspace: Workspace, url: URL) -> WorkspaceConfigExportResult {
         guard let config = export(workspace: workspace) else {
             return exportResult(
                 status: .skippedNoConfig,
@@ -651,7 +1042,7 @@ enum WorkspaceConfigManager {
     }
 
     @discardableResult
-    static func exportToFileResult(workspace: Workspace, modelContext: ModelContext, url: URL) -> WorkspaceConfigExportResult {
+    public static func exportToFileResult(workspace: Workspace, modelContext: ModelContext, url: URL) -> WorkspaceConfigExportResult {
         guard let config = export(workspace: workspace, modelContext: modelContext) else {
             return exportResult(
                 status: .skippedNoConfig,
@@ -677,7 +1068,7 @@ enum WorkspaceConfigManager {
     /// `encode(.prettyPrinted)` + `data.write` stall from every `modelContext.save()`
     /// on a live run. The result-returning `exportToFileResult` path (used by tests,
     /// explicit user export, and flush-on-disappear) is intentionally left synchronous.
-    static func autoExport(workspace: Workspace) {
+    public static func autoExport(workspace: Workspace) {
         let target = autoExportTarget(for: workspace.primaryPath)
         guard let url = target.url else {
             logAutoExportSkipped(workspace: workspace, reason: target.reason)
@@ -690,7 +1081,7 @@ enum WorkspaceConfigManager {
         }
     }
 
-    static func autoExport(workspace: Workspace, modelContext: ModelContext) {
+    public static func autoExport(workspace: Workspace, modelContext: ModelContext) {
         let target = autoExportTarget(for: workspace.primaryPath)
         guard let url = target.url else {
             logAutoExportSkipped(workspace: workspace, reason: target.reason)
@@ -703,12 +1094,12 @@ enum WorkspaceConfigManager {
         }
     }
 
-    struct AutoExportTarget {
-        let url: URL?
-        let reason: String
+    public struct AutoExportTarget {
+        public let url: URL?
+        public let reason: String
     }
 
-    static func autoExportTarget(for workspacePath: String) -> AutoExportTarget {
+    public static func autoExportTarget(for workspacePath: String) -> AutoExportTarget {
         guard !workspacePath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return AutoExportTarget(url: nil, reason: "primary_path_empty")
         }
@@ -737,7 +1128,7 @@ enum WorkspaceConfigManager {
     }
 
     private static func logAutoExportSkipped(workspace: Workspace, reason: String) {
-        AppLogger.audit(.workspaceExported, category: "Persistence", fields: [
+        AuditLoggingSeam.required.audit(.workspaceExported, category: "Persistence", fields: [
             "result": "auto_export_skipped",
             "reason": reason,
             "workspace_id": workspace.id.uuidString
@@ -787,7 +1178,7 @@ enum WorkspaceConfigManager {
 
     // MARK: - Import
 
-    static func loadConfig(
+    public static func loadConfig(
         from url: URL,
         accessIntent: HostFileAccessIntent = .explicitUserSelection
     ) throws -> WorkspaceConfig {
@@ -795,7 +1186,7 @@ enum WorkspaceConfigManager {
         return try workspaceConfigDecoder().decode(WorkspaceConfig.self, from: data)
     }
 
-    static func loadConfigResult(
+    public static func loadConfigResult(
         from url: URL,
         accessIntent: HostFileAccessIntent = .explicitUserSelection
     ) -> WorkspaceConfigLoadResult {
@@ -826,7 +1217,7 @@ enum WorkspaceConfigManager {
 
     /// Create a new Workspace + Skills + Connectors + Tools + Templates from a config.
     @MainActor
-    static func importWorkspace(
+    public static func importWorkspace(
         from config: WorkspaceConfig,
         modelContext: ModelContext,
         scheduleTrustPolicy: ScheduleImportTrustPolicy = .quarantineEnabledSchedules
@@ -840,7 +1231,7 @@ enum WorkspaceConfigManager {
 
     /// Create a new Workspace + Skills + Connectors + Tools + Templates from a config.
     @MainActor
-    static func importWorkspaceResult(
+    public static func importWorkspaceResult(
         from config: WorkspaceConfig,
         modelContext: ModelContext,
         scheduleTrustPolicy: ScheduleImportTrustPolicy = .quarantineEnabledSchedules
@@ -1009,7 +1400,7 @@ enum WorkspaceConfigManager {
             skippedConnectorCount: skippedConnectorCount,
             skippedLocalToolCount: skippedLocalToolCount
         )
-        AppLogger.audit(.workspaceImported, category: "Persistence", fields: result.auditFields, level: .info)
+        AuditLoggingSeam.required.audit(.workspaceImported, category: "Persistence", fields: result.auditFields, level: .info)
         return result
     }
 
@@ -2020,11 +2411,15 @@ enum WorkspaceConfigManager {
         if let id = config.id.flatMap(UUID.init(uuidString:)) {
             task.id = id
         }
-        TaskStateMachine.restoreImportedStatus(
-            task,
-            to: TaskStatus(rawValue: config.status) ?? .completed,
-            modelContext: modelContext
+        let targetStatus = TaskStatus(rawValue: config.status) ?? .completed
+        let restorationResult = TaskSessionStateApplyingSeam.required.restoreImportedStatus(
+            taskID: task.id,
+            currentStatusRawValue: task.status.rawValue,
+            targetStatusRawValue: targetStatus.rawValue,
+            at: Date()
         )
+        task.status = targetStatus
+        task.updatedAt = restorationResult.updatedAt
         task.isPinned = config.isPinned ?? false
         task.isDone = config.isDone ?? false
         task.inputs = config.inputs
@@ -2090,7 +2485,7 @@ enum WorkspaceConfigManager {
             toolsByName: &toolsByName
         )
         if task.skillSnapshots.isEmpty {
-            TaskCapabilitySnapshotter.capture(for: task)
+            TaskCapabilitySnapshotCapture.capture(for: task)
         }
 
         var importedRuns: [TaskRun] = []
@@ -2167,7 +2562,7 @@ enum WorkspaceConfigManager {
     /// `WorkspaceAppService.deleteApp` operates by `appID` alone across runs,
     /// bindings, automation, and events, so a shared id lets an operation on
     /// one copy affect the other.
-    static func remappingWorkspaceAppIdentities(in config: WorkspaceConfig) -> WorkspaceConfig {
+    public static func remappingWorkspaceAppIdentities(in config: WorkspaceConfig) -> WorkspaceConfig {
         var config = config
         var appIDRemap: [String: String] = [:]
         var runIDRemap: [String: String] = [:]
@@ -2569,12 +2964,12 @@ enum WorkspaceConfigManager {
     }
 
     private static func canonicalPath(_ path: String) -> String? {
-        ExecutionSandbox.canonicalize(path)
+        ExecutionPathSafety.required.canonicalize(path)
     }
 
     private struct GitDirectoryLayout {
-        let gitDirectory: String
-        let commonDirectory: String
+        public let gitDirectory: String
+        public let commonDirectory: String
     }
 
     private static func isRegisteredWorktree(
@@ -2731,7 +3126,7 @@ actor WorkspaceAutoExportWriter {
             try data.write(to: url, options: .atomic)
         } catch {
             let nsError = error as NSError
-            AppLogger.audit(.workspaceExported, category: "Persistence", fields: [
+            AuditLoggingSeam.required.audit(.workspaceExported, category: "Persistence", fields: [
                 "result": "auto_export_failed",
                 "diagnostic_result": "writeFailed",
                 "workspace_id": workspaceID,

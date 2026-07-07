@@ -1,9 +1,10 @@
 import Foundation
 import SwiftData
 import ASTRAModels
+import ASTRACore
 
 extension WorkspaceConfigManager {
-    static func replaceWorkspaceAppMirrorRows(for workspaceID: UUID, modelContext: ModelContext) {
+    public static func replaceWorkspaceAppMirrorRows(for workspaceID: UUID, modelContext: ModelContext) {
         let automationDescriptor = FetchDescriptor<WorkspaceAppAutomationState>(
             predicate: #Predicate { $0.workspaceID == workspaceID }
         )

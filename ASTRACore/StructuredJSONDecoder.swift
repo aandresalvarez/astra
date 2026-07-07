@@ -1,23 +1,23 @@
 import Foundation
 
-struct StructuredJSONDecodeDiagnostic: Equatable, Sendable {
-    enum Status: String, Sendable {
+public struct StructuredJSONDecodeDiagnostic: Equatable, Sendable {
+    public enum Status: String, Sendable {
         case decoded
         case emptyInput
         case decodeFailed
     }
 
-    var status: Status
-    var typeName: String
-    var byteCount: Int
-    var codingPath: String?
-    var errorDescription: String?
+    public var status: Status
+    public var typeName: String
+    public var byteCount: Int
+    public var codingPath: String?
+    public var errorDescription: String?
 
-    var didDecode: Bool {
+    public var didDecode: Bool {
         status == .decoded
     }
 
-    static func decoded<T>(_ type: T.Type, byteCount: Int) -> StructuredJSONDecodeDiagnostic {
+    public static func decoded<T>(_ type: T.Type, byteCount: Int) -> StructuredJSONDecodeDiagnostic {
         StructuredJSONDecodeDiagnostic(
             status: .decoded,
             typeName: String(describing: type),
@@ -27,7 +27,7 @@ struct StructuredJSONDecodeDiagnostic: Equatable, Sendable {
         )
     }
 
-    static func empty<T>(_ type: T.Type) -> StructuredJSONDecodeDiagnostic {
+    public static func empty<T>(_ type: T.Type) -> StructuredJSONDecodeDiagnostic {
         StructuredJSONDecodeDiagnostic(
             status: .emptyInput,
             typeName: String(describing: type),
@@ -37,7 +37,7 @@ struct StructuredJSONDecodeDiagnostic: Equatable, Sendable {
         )
     }
 
-    static func failed<T>(_ type: T.Type, byteCount: Int, error: Error) -> StructuredJSONDecodeDiagnostic {
+    public static func failed<T>(_ type: T.Type, byteCount: Int, error: Error) -> StructuredJSONDecodeDiagnostic {
         let details = decodeErrorDetails(error)
         return StructuredJSONDecodeDiagnostic(
             status: .decodeFailed,
@@ -82,15 +82,15 @@ struct StructuredJSONDecodeDiagnostic: Equatable, Sendable {
     }
 }
 
-struct StructuredJSONDecodeResult<Value> {
-    var value: Value?
-    var diagnostic: StructuredJSONDecodeDiagnostic
+public struct StructuredJSONDecodeResult<Value> {
+    public var value: Value?
+    public var diagnostic: StructuredJSONDecodeDiagnostic
 
-    var didDecode: Bool {
+    public var didDecode: Bool {
         value != nil && diagnostic.didDecode
     }
 
-    func map<NewValue>(_ transform: (Value) -> NewValue?) -> StructuredJSONDecodeResult<NewValue> {
+    public func map<NewValue>(_ transform: (Value) -> NewValue?) -> StructuredJSONDecodeResult<NewValue> {
         StructuredJSONDecodeResult<NewValue>(
             value: value.flatMap(transform),
             diagnostic: diagnostic
@@ -98,8 +98,8 @@ struct StructuredJSONDecodeResult<Value> {
     }
 }
 
-enum StructuredJSONDecoder {
-    static func decode<T: Decodable>(
+public enum StructuredJSONDecoder {
+    public static func decode<T: Decodable>(
         _ type: T.Type,
         from json: String
     ) -> StructuredJSONDecodeResult<T> {
@@ -110,7 +110,7 @@ enum StructuredJSONDecoder {
         return decode(type, from: Data(trimmed.utf8))
     }
 
-    static func decode<T: Decodable>(
+    public static func decode<T: Decodable>(
         _ type: T.Type,
         from data: Data
     ) -> StructuredJSONDecodeResult<T> {

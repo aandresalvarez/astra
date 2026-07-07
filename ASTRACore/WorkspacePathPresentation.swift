@@ -134,9 +134,9 @@ public enum WorkspacePathPresentation {
     }
 
     private struct RawEntry: Hashable {
-        let role: WorkspacePathDescriptor.Role
-        let index: Int
-        let path: String
+        public let role: WorkspacePathDescriptor.Role
+        public let index: Int
+        public let path: String
     }
 
     private static func disambiguatedTitles(for entries: [RawEntry]) -> [String: String] {
