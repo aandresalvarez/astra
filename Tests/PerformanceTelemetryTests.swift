@@ -80,7 +80,7 @@ struct PerformanceTelemetryTests {
         #expect(fields["artifact_count"] == "1")
         #expect(fields["max_events_per_task"] == "2")
         #expect(fields["max_runs_per_task"] == "2")
-        #expect(fields["max_run_output_chars"] == "2048")
+        #expect(fields["max_run_output_bytes"] == "2048")
         #expect(fields["max_run_output_bucket"] == "1kb_10kb")
         #expect(fields["p95_events_per_task"] == "2")
         #expect(fields["p95_runs_per_task"] == "2")
