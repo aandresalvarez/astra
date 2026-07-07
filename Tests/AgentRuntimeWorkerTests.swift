@@ -1,6 +1,8 @@
 import Testing
 import Foundation
 import SwiftData
+import ASTRAModels
+import ASTRAPersistence
 @testable import ASTRA
 import ASTRACore
 
@@ -28,8 +30,14 @@ struct ProviderLaunchCapabilityScopeTests {
             .appendingPathComponent("Services")
             .appendingPathComponent("Runtime")
             .appendingPathComponent("AgentRuntimeCapabilityLaunchAudit.swift")
+        let signatureURL = repoRoot
+            .appendingPathComponent("Astra")
+            .appendingPathComponent("Services")
+            .appendingPathComponent("Runtime")
+            .appendingPathComponent("ProviderLaunchSignatureService.swift")
         let workerSource = try String(contentsOf: workerURL, encoding: .utf8)
         let auditSource = try String(contentsOf: auditURL, encoding: .utf8)
+        let signatureSource = try String(contentsOf: signatureURL, encoding: .utf8)
 
         #expect(sourceContains(workerSource, "AgentRuntimeCapabilityLaunchAudit.logResolution("))
         #expect(sourceContains(workerSource, "AgentRuntimeCapabilityLaunchAudit.logGitHubCLIPreflightIfNeeded("))
@@ -37,15 +45,84 @@ struct ProviderLaunchCapabilityScopeTests {
         #expect(sourceContains(
             workerSource,
             """
-            Self.providerLaunchSignature(
+            ProviderLaunchSignatureService.make(
                 for: task,
                 manifest: manifest,
-                contextText: providerLaunchContextText
+                contextText: providerLaunchContextText,
+                capabilityResolutionSnapshot: capabilityResolutionSnapshot
             )
             """
         ))
-        #expect(auditSource.contains("TaskCapabilityResolver(task: task).promptScope(contextText: contextText)"))
+        #expect(sourceContains(signatureSource, "capabilityResolutionSnapshot.scope(.providerLaunch(contextText: contextText))"))
+        #expect(auditSource.contains("TaskCapabilityResolutionSnapshot.capture"))
+        #expect(!auditSource.contains("TaskCapabilityResolver(task: task).promptScope(contextText: contextText)"))
         #expect(!auditSource.contains("promptScope()"))
+    }
+
+    @Test("Worker captures one capability resolution snapshot and passes it through launch")
+    func workerCapturesOneCapabilityResolutionSnapshotAndPassesItThroughLaunch() throws {
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let workerSource = try String(
+            contentsOf: repoRoot
+                .appendingPathComponent("Astra")
+                .appendingPathComponent("Services")
+                .appendingPathComponent("Runtime")
+                .appendingPathComponent("AgentRuntimeWorker.swift"),
+            encoding: .utf8
+        )
+        let adapterSource = try String(
+            contentsOf: repoRoot
+                .appendingPathComponent("Astra")
+                .appendingPathComponent("Services")
+                .appendingPathComponent("Runtime")
+                .appendingPathComponent("AgentRuntimeAdapter.swift"),
+            encoding: .utf8
+        )
+        let preflightSource = try String(
+            contentsOf: repoRoot
+                .appendingPathComponent("Astra")
+                .appendingPathComponent("Services")
+                .appendingPathComponent("Runtime")
+                .appendingPathComponent("AgentRuntimeLaunchPreflight.swift"),
+            encoding: .utf8
+        )
+        let policySource = try String(
+            contentsOf: repoRoot
+                .appendingPathComponent("Astra")
+                .appendingPathComponent("Services")
+                .appendingPathComponent("Runtime")
+                .appendingPathComponent("AgentPolicyAdapters.swift"),
+            encoding: .utf8
+        )
+
+        #expect(sourceContains(
+            workerSource,
+            """
+            let capabilityResolutionSnapshot = TaskCapabilityResolutionSnapshot.capture(
+                for: task,
+                providerLaunchContextText: providerLaunchContextText,
+                additionalCredentialGrants: executionPolicy.permissionGrantsOverride ?? []
+            )
+            """
+        ))
+        #expect(sourceContains(
+            workerSource,
+            "capabilityResolutionSnapshot: capabilityResolutionSnapshot"
+        ))
+        #expect(sourceContains(
+            adapterSource,
+            "let capabilityScope = context.capabilityResolutionSnapshot.providerLaunch"
+        ))
+        #expect(sourceContains(
+            preflightSource,
+            "capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot"
+        ))
+        #expect(sourceContains(
+            policySource,
+            "let taskCapabilityScope = capabilityResolutionSnapshot.providerLaunch"
+        ))
     }
 
     @Test("GitHub CLI preflight labels distinguish generic exits from auth failures")
@@ -75,7 +152,7 @@ struct ProviderLaunchCapabilityScopeTests {
             .appendingPathComponent("AgentRuntimeWorker.swift")
         let workerSource = try String(contentsOf: workerURL, encoding: .utf8)
         let preflight = "AgentRuntimeLaunchPreflight.preflightCredentialProjectionBeforeLaunch("
-        let promptBuild = "let prompt = promptOverride ?? buildPrompt(for: task)"
+        let promptBuild = "let prompt = promptOverride ?? buildPrompt(for: task, executionPolicy: executionPolicy)"
         let providerLaunch = "processRunner.runRuntimeProcess"
         let preflightRange = try #require(workerSource.range(of: preflight))
         let promptBuildRange = try #require(workerSource.range(of: promptBuild))
@@ -883,6 +960,57 @@ struct BuildPromptTests {
         #expect(prompt.contains("ProxyCommand/IAP"))
         #expect(prompt.contains("Identity file: ~/.ssh/google_compute_engine"))
         #expect(prompt.contains("prefer the alias over the raw hostname"))
+        #expect(prompt.contains("ASTRA host control can check SSH reachability for this alias"))
+        #expect(prompt.contains("Remote command execution requires a reviewed workspace capability"))
+        #expect(!prompt.contains("ssh deid-jsn-workbench '<command>'"))
+        #expect(!prompt.contains("cd /home/jupyter/users/alvaro1_stanford_edu/project && <command>"))
+    }
+
+    @Test("Prompt does not advertise SSH command execution for multiple remote workspaces")
+    func promptDoesNotAdvertiseSSHCommandExecutionForMultipleRemoteWorkspaces() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-prompt-ssh-multiple-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        SSHConnectionManager.save([
+            SSHConnection(
+                name: "dev",
+                host: "dev.example.test",
+                user: "agent",
+                remotePath: "/srv/app",
+                configAlias: "dev-box"
+            ),
+            SSHConnection(
+                name: "staging",
+                host: "staging.example.test",
+                user: "agent",
+                remotePath: "/srv/staging",
+                configAlias: "staging-box"
+            )
+        ], workspacePath: root.path)
+
+        let container = try makeContainer()
+        let ctx = container.mainContext
+        let ws = Workspace(name: "Remote", primaryPath: root.path)
+        ctx.insert(ws)
+        let task = AgentTask(
+            title: "Inspect servers",
+            goal: "Check the remote servers",
+            workspace: ws
+        )
+        ctx.insert(task)
+        try ctx.save()
+
+        let prompt = AgentPromptBuilder.buildPrompt(for: task)
+
+        #expect(prompt.contains("Available SSH Connections:"))
+        #expect(prompt.contains("ssh dev-box"))
+        #expect(prompt.contains("ssh staging-box"))
+        #expect(prompt.contains("ASTRA host control can check SSH reachability for these aliases"))
+        #expect(prompt.contains("Remote command execution requires a reviewed workspace capability"))
+        #expect(!prompt.contains("ssh <alias> '<command>'"))
+        #expect(!prompt.contains("via Bash with ssh"))
     }
 
     @Test("OpenCode prompt steers task state reads to inline context")
@@ -2055,6 +2183,12 @@ struct ShelfBrowserAddressTests {
         #expect(ShelfBrowserAddress.normalizedURL(from: "outlook.office.com")?.absoluteString == "https://outlook.office.com")
     }
 
+    @Test("normalizes host port addresses as web URLs")
+    func normalizesHostPortAddressesAsWebURLs() {
+        #expect(ShelfBrowserAddress.normalizedURL(from: "localhost:3000")?.absoluteString == "https://localhost:3000")
+        #expect(ShelfBrowserAddress.normalizedURL(from: "127.0.0.1:5173")?.absoluteString == "https://127.0.0.1:5173")
+    }
+
     @Test("normalizes absolute local file paths")
     func normalizesAbsoluteLocalFilePaths() {
         let path = "/tmp/astra preview/index.html"
@@ -2226,6 +2360,28 @@ struct ControlledBrowserTests {
         #expect(script.contains("locatorLabel"))
         #expect(script.contains("target_not_editable"))
         #expect(script.contains("insertReplacementText"))
+        #expect(script.contains("sensitiveResultTarget"))
+        #expect(script.contains("redactSensitiveResultTarget(result, el, currentValueFor(el))"))
+        #expect(script.contains("result.label = redactedInputValue"))
+        #expect(script.contains("const sensitiveResultTerms = \(BrowserSensitiveInputRedactionPolicy.javaScriptArrayLiteral(BrowserSensitiveInputRedactionPolicy.sensitiveFieldTerms, indentation: "          "));"))
+        #expect(script.contains("const paymentResultTerms = \(BrowserSensitiveInputRedactionPolicy.javaScriptArrayLiteral(BrowserSensitiveInputRedactionPolicy.paymentFieldTerms, indentation: "          "));"))
+        #expect(script.contains("const sensitiveAutocompleteTerms = \(BrowserSensitiveInputRedactionPolicy.javaScriptArrayLiteral(BrowserSensitiveInputRedactionPolicy.sensitiveAutocompleteTokens, indentation: "          "));"))
+        #expect(script.contains("\"cc-name\""))
+        #expect(script.contains("\"payment\""))
+        #expect(script.contains("[redacted-sensitive-input]"))
+    }
+
+    @Test("replace text script does not echo missing sensitive find text")
+    func replaceTextScriptDoesNotEchoMissingSensitiveFindText() {
+        let script = BrowserAutomationScripts.replaceTextScript(
+            find: "secret-value",
+            replacement: "replacement",
+            selector: nil,
+            all: false
+        )
+
+        #expect(script.contains("findLength: find.length"))
+        #expect(!script.contains("\n    find,\n"))
     }
 
     @Test("snapshot reports focus and bounds metadata")
@@ -2239,6 +2395,8 @@ struct ControlledBrowserTests {
         #expect(script.contains("shadowRoot"))
         #expect(script.contains("compareViewportOrder"))
         #expect(script.contains("inViewport"))
+        #expect(script.contains("valueForSnapshot"))
+        #expect(script.contains("[redacted-sensitive-input]"))
     }
 
     @Test("existing controlled profile process parser finds DevTools port")
@@ -2290,5 +2448,99 @@ struct CardinalKeyClientCertificateTests {
         #expect(CardinalKeyClientCertificateProvider.isCardinalKeySubject("SUNETID/Enrollment"))
         #expect(CardinalKeyClientCertificateProvider.isCardinalKeySubject("Stanford Cardinal Key"))
         #expect(!CardinalKeyClientCertificateProvider.isCardinalKeySubject("Developer ID Application"))
+    }
+}
+
+// MARK: - AgentRuntimeProcessRunning fake-injection seam
+
+/// Records the parameters `AgentRuntimeWorker` hands to the injected process
+/// runner and returns a canned success — no real process ever spawns. Proves
+/// the `AgentRuntimeProcessRunning` seam is real: `AgentRuntimeWorker` depends
+/// on the protocol, not the concrete `AgentRuntimeProcessRunner`.
+private final class FakeAgentProcessRunner: AgentRuntimeProcessRunning {
+    private(set) var receivedTaskIDs: [UUID] = []
+    private(set) var receivedWorkspacePaths: [String] = []
+    private(set) var receivedPrompts: [String] = []
+    var cancelCallCount = 0
+
+    func cancel() {
+        cancelCallCount += 1
+    }
+
+    @MainActor
+    func runRuntimeProcess(
+        adapter: any AgentRuntimeProcessLaunchPlanning & AgentRuntimeProcessEventParsing,
+        prompt: String,
+        task: AgentTask,
+        workspacePath: String,
+        executablePath: String,
+        homeDirectory: String,
+        permissionPolicy: PermissionPolicy,
+        executionPolicy: AgentRuntimeExecutionPolicy,
+        permissionManifest: RunPermissionManifest?,
+        budgetEnforcementMode: BudgetEnforcementMode,
+        timeoutSeconds: TimeInterval,
+        phase: RunPhase,
+        contextText: String,
+        nativeContinuationSessionID: String?,
+        runID: UUID?,
+        launchResourcePlan: TaskLaunchResourcePlan?,
+        capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot?,
+        liveApprovalsEnabled: Bool,
+        noSemanticProgressTimeoutSeconds: TimeInterval?,
+        onInteractiveAsk: ((AgentInteractiveAskRequest) async -> InteractiveAskOutcome)?,
+        onLine: @escaping (String, Bool) -> Void
+    ) async -> AgentProcessResult {
+        receivedTaskIDs.append(task.id)
+        receivedWorkspacePaths.append(workspacePath)
+        receivedPrompts.append(prompt)
+        return AgentProcessResult(exitCode: 0)
+    }
+}
+
+@Suite("AgentRuntimeWorker fake process runner")
+@MainActor
+struct WorkerFakeProcessRunnerTests {
+
+    @Test("Worker launches through an injected fake AgentRuntimeProcessRunning instead of spawning a CLI")
+    func workerRunsAgainstFakeProcessRunner() async throws {
+        let testDir = "/tmp/fake_process_runner_\(UUID().uuidString.prefix(8))"
+        try FileManager.default.createDirectory(atPath: testDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: testDir) }
+
+        let container = try makeContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Fake Runner Workspace", primaryPath: testDir)
+        context.insert(workspace)
+        let task = AgentTask(
+            title: "Fake runner test",
+            goal: "Exercise the AgentRuntimeProcessRunning seam without a real CLI",
+            workspace: workspace
+        )
+        task.status = .queued
+        context.insert(task)
+        try context.save()
+
+        let fakeRunner = FakeAgentProcessRunner()
+        let worker = AgentRuntimeWorker(
+            processRunner: fakeRunner,
+            providerSettingsSnapshotProvider: { .headlessScenario }
+        )
+        worker.runtimeReadinessService = RuntimeReadinessService(runner: InstantSuccessBinaryRunner())
+        worker.skipPermissions = true
+        worker.permissionPolicy = .autonomous
+        worker.defaultAgentPolicyLevelRaw = AgentPolicyLevel.autonomous.rawValue
+        worker.claudePath = "/bin/sh"
+
+        DirectWorkerLaunchAdmission.admitInitialRun(task, modelContext: context)
+        await worker.execute(task: task, modelContext: context) { _ in }
+
+        #expect(fakeRunner.receivedTaskIDs == [task.id])
+        #expect(fakeRunner.receivedWorkspacePaths == [testDir])
+        #expect(fakeRunner.receivedPrompts.first?.isEmpty == false)
+        #expect(task.status == .completed)
+
+        worker.cancel()
+        #expect(fakeRunner.cancelCallCount == 1)
     }
 }

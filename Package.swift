@@ -7,6 +7,7 @@ let package = Package(
     products: [
         .executable(name: "ASTRA", targets: ["ASTRAExecutable"]),
         .executable(name: "astra-browser", targets: ["AstraBrowserTool"]),
+        .executable(name: "astra-mcp-gateway", targets: ["AstraMCPGatewayTool"]),
         .executable(name: "astra-host-control", targets: ["AstraHostControlTool"]),
         .executable(name: "astra-workspace", targets: ["AstraWorkspaceTool"]),
         .executable(name: "stanford-mail", targets: ["StanfordMailTool"]),
@@ -26,7 +27,12 @@ let package = Package(
         ),
         .target(
             name: "ASTRACore",
+            dependencies: ["ASTRALogging"],
             path: "ASTRACore"
+        ),
+        .target(
+            name: "ASTRALogging",
+            path: "ASTRALogging"
         ),
         .target(
             name: "ASTRAGitContracts",
@@ -34,20 +40,37 @@ let package = Package(
         ),
         .target(
             name: "MailToolSupport",
+            dependencies: ["ASTRACore"],
             path: "Tools/MailToolSupport"
         ),
         .target(
+            name: "MCPServerKit",
+            path: "Tools/MCPServerKit"
+        ),
+        .target(
             name: "WorkspaceToolSupport",
+            dependencies: ["MCPServerKit"],
             path: "Tools/WorkspaceToolSupport"
         ),
         .target(
             name: "HostControlToolSupport",
+            dependencies: ["MCPServerKit"],
             path: "Tools/HostControlToolSupport"
+        ),
+        .target(
+            name: "MCPGatewaySupport",
+            dependencies: ["MCPServerKit"],
+            path: "Tools/MCPGatewaySupport"
         ),
         .executableTarget(
             name: "AstraBrowserTool",
             dependencies: ["ASTRACore"],
             path: "Tools/AstraBrowserTool"
+        ),
+        .executableTarget(
+            name: "AstraMCPGatewayTool",
+            dependencies: ["MCPGatewaySupport"],
+            path: "Tools/AstraMCPGatewayTool"
         ),
         .executableTarget(
             name: "AstraHostControlTool",
@@ -75,20 +98,35 @@ let package = Package(
             path: "Tools/StanfordGraphMailTool"
         ),
         .target(
+            name: "ASTRAModels",
+            dependencies: ["ASTRACore"],
+            path: "Astra/Models"
+        ),
+        .target(
+            name: "ASTRAPersistence",
+            dependencies: ["AstraObjCSupport", "ASTRACore", "ASTRAModels"],
+            path: "Astra/Services/Persistence"
+        ),
+        .target(
             name: "ASTRA",
             dependencies: [
                 "AstraObjCSupport",
                 "ASTRACore",
                 "ASTRAGitContracts",
+                "ASTRALogging",
+                "ASTRAModels",
+                "ASTRAPersistence",
                 .product(name: "Sparkle", package: "Sparkle"),
                 .product(name: "Markdown", package: "swift-markdown")
             ],
             path: "Astra",
+            exclude: ["Models", "Services/Persistence"],
             resources: [
                 .copy("Resources/AppIcon.icns"),
                 .copy("Resources/AppIconDev.icns"),
                 .copy("Resources/Capabilities"),
                 .copy("Resources/Fonts"),
+                .copy("Resources/Packs"),
                 .copy("Resources/Tools")
             ]
         ),
@@ -98,9 +136,42 @@ let package = Package(
             path: "AppExecutable"
         ),
         .testTarget(
+            name: "MCPGatewaySupportTests",
+            dependencies: ["MCPGatewaySupport"],
+            path: "Tests/MCPGatewaySupportTests"
+        ),
+        .testTarget(
+            name: "ArchitectureFitnessTests",
+            dependencies: [],
+            path: "Tests/ArchitectureFitnessTests"
+        ),
+        // Test-only C shim: the module-load hook Swift itself lacks. Its
+        // __attribute__((constructor)) runs when dyld loads the ASTRATests
+        // bundle — before either test framework schedules a suite, while the
+        // process is still single-threaded — and calls the @_cdecl entry
+        // point in Tests/RuntimeSeamTestBootstrap.swift, which runs
+        // RuntimeSeamRegistration.registerAll(). Never link this into a
+        // production target: the app registers explicitly in ASTRAApp.init(),
+        // and the seams' fail-fast traps must stay meaningful there.
+        .target(
+            name: "AstraTestSeamBootstrap",
+            path: "Tests/AstraTestSeamBootstrap"
+        ),
+        .testTarget(
             name: "ASTRATests",
-            dependencies: ["ASTRA", "ASTRACore", "ASTRAGitContracts", "HostControlToolSupport", "WorkspaceToolSupport"],
-            path: "Tests"
+            dependencies: ["ASTRA", "ASTRACore", "ASTRAGitContracts", "ASTRAModels", "ASTRAPersistence", "AstraTestSeamBootstrap", "HostControlToolSupport", "MCPGatewaySupport", "MCPServerKit", "WorkspaceToolSupport"],
+            path: "Tests",
+            exclude: ["ArchitectureFitnessTests", "AstraTestSeamBootstrap", "MCPGatewaySupportTests", "MCPServerKitTests", "MailToolSupportTests"]
+        ),
+        .testTarget(
+            name: "MailToolSupportTests",
+            dependencies: ["MailToolSupport"],
+            path: "Tests/MailToolSupportTests"
+        ),
+        .testTarget(
+            name: "MCPServerKitTests",
+            dependencies: ["MCPServerKit"],
+            path: "Tests/MCPServerKitTests"
         )
     ]
 )

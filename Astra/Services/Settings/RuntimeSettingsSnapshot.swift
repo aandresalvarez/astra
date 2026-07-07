@@ -1,6 +1,8 @@
 import Foundation
 import Combine
 import ASTRACore
+import ASTRAPersistence
+import ASTRAModels
 
 struct ProviderSettingsSnapshot: Equatable, Sendable {
     var providerSettings: AgentRuntimeProviderSettings

@@ -1,4 +1,7 @@
 import Foundation
+import ASTRAModels
+import ASTRAPersistence
+import ASTRACore
 
 struct AstraExternalRoute: Equatable, Identifiable, Sendable {
     enum Destination: Equatable, Sendable {
@@ -36,7 +39,10 @@ enum AstraExternalRouteCodec {
             components.queryItems = [
                 URLQueryItem(name: "workspace", value: workspaceID.uuidString),
                 URLQueryItem(name: "goal", value: goal),
-                URLQueryItem(name: "run", value: shouldRun ? "1" : "0")
+                URLQueryItem(
+                    name: "run",
+                    value: AstraExternalRouteRunAuthorization.urlQueryValue(forRequestedRun: shouldRun)
+                )
             ]
 
         case .continueLatestUnfinishedTask(let workspaceID):
@@ -56,9 +62,7 @@ enum AstraExternalRouteCodec {
         }
 
         let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
-        let query = Dictionary(uniqueKeysWithValues: (components?.queryItems ?? []).compactMap { item in
-            item.value.map { (item.name, $0) }
-        })
+        let query = queryValues(from: components?.queryItems ?? [])
 
         switch host {
         case "workspace":
@@ -76,7 +80,10 @@ enum AstraExternalRouteCodec {
                   !goal.isEmpty else {
                 return nil
             }
-            let shouldRun = query["run"] == "1" || query["run"]?.lowercased() == "true"
+            let requestedRun = query["run"] == "1" || query["run"]?.lowercased() == "true"
+            let shouldRun = AstraExternalRouteRunAuthorization.allowsImmediateRunFromExternalURL(
+                requestedRun: requestedRun
+            )
             return AstraExternalRoute(
                 destination: .createTask(workspaceID: workspaceID, goal: goal, shouldRun: shouldRun)
             )
@@ -104,6 +111,25 @@ enum AstraExternalRouteCodec {
     private static func uuidPathComponent(from url: URL) -> UUID? {
         let value = url.pathComponents.dropFirst().first
         return value.flatMap(UUID.init(uuidString:))
+    }
+
+    private static func queryValues(from items: [URLQueryItem]) -> [String: String] {
+        var values: [String: String] = [:]
+        for item in items {
+            guard let value = item.value, values[item.name] == nil else { continue }
+            values[item.name] = value
+        }
+        return values
+    }
+}
+
+private enum AstraExternalRouteRunAuthorization {
+    static func urlQueryValue(forRequestedRun requestedRun: Bool) -> String {
+        allowsImmediateRunFromExternalURL(requestedRun: requestedRun) ? "1" : "0"
+    }
+
+    static func allowsImmediateRunFromExternalURL(requestedRun _: Bool) -> Bool {
+        false
     }
 }
 

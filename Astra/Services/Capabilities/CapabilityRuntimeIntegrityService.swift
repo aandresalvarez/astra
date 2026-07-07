@@ -1,6 +1,8 @@
 import Foundation
 import SwiftData
 import ASTRACore
+import ASTRAModels
+import ASTRAPersistence
 
 struct CapabilityRuntimeIntegrityIssue: Equatable, Identifiable {
     enum Source: String {
@@ -39,14 +41,27 @@ enum CapabilityRuntimeIntegrityService {
         prerequisiteStatuses: [String: HealthStatus] = [:],
         policyContext: CapabilityCatalogPolicyContext? = nil,
         scope requestedScope: TaskCapabilityResolutionScope = .fullInventory,
+        capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot? = nil,
         secretStore: SecretStore = KeychainSecretStore()
     ) -> [CapabilityRuntimeIntegrityIssue] {
         guard let workspace = task.workspace else { return [] }
 
         let packages = suppliedPackages ?? CapabilityRuntimeResourceMatcher.packageDefinitions()
-        let enabledPackageIDs = Set(workspace.enabledCapabilityIDs)
-        let resolver = TaskCapabilityResolver(task: task)
-        let resolvedScope = resolver.resolvedScope(requestedScope)
+        let rawEnabledPackageIDs = Set(workspace.enabledCapabilityIDs)
+        let runtimePackPolicy = policyContext?.packPolicy ?? PackWorkspacePolicyProvider.resolvedPolicy(for: workspace)
+        let runtimeEnabledPackageIDs = Set(
+            CapabilityRuntimeResourceMatcher.enabledPackages(
+                for: workspace,
+                in: packages,
+                approvalRecords: policyContext?.approvalRecords,
+                packPolicy: runtimePackPolicy
+            ).map(\.id)
+        )
+        let resolutionSnapshot = capabilityResolutionSnapshot ?? TaskCapabilityResolutionSnapshot.capture(
+            for: task,
+            providerLaunchContextText: requestedScope.contextText
+        )
+        let resolvedScope = resolutionSnapshot.scope(requestedScope)
         let resolvedSkills = resolvedScope.behaviorSkills
         let resolvedConnectors = resolvedScope.connectors
         let resolvedTools = resolvedScope.localTools
@@ -61,9 +76,9 @@ enum CapabilityRuntimeIntegrityService {
         // host problems (executable/auth/policy) below still surface only when
         // their package has a concrete runtime resource in the provider launch
         // scope.
-        let reachableSkills = resolver.allBehaviorSkills
-        let reachableConnectors = resolver.allConnectors
-        let reachableTools = resolver.allLocalTools
+        let reachableSkills = resolutionSnapshot.fullInventory.behaviorSkills
+        let reachableConnectors = resolutionSnapshot.fullInventory.connectors
+        let reachableTools = resolutionSnapshot.fullInventory.localTools
         let selectedSkillNames = liveSelectedPackageSkillNames(
             for: task,
             resolvedSkills: resolvedSkills,
@@ -72,21 +87,28 @@ enum CapabilityRuntimeIntegrityService {
         let availableConnectors = availableConnectors(for: task)
 
         var checks: [(PluginPackage, CapabilityRuntimeIntegrityIssue.Source)] = []
-        for package in packages where enabledPackageIDs.contains(package.id) {
-            guard shouldCheckEnabledPackage(
-                package,
-                task: task,
-                scope: requestedScope,
-                resolvedSkills: resolvedSkills,
-                resolvedConnectors: resolvedConnectors,
-                resolvedTools: resolvedTools
-            ) else {
+        for package in packages where rawEnabledPackageIDs.contains(package.id) {
+            if runtimeEnabledPackageIDs.contains(package.id) {
+                guard shouldCheckEnabledPackage(
+                    package,
+                    task: task,
+                    scope: requestedScope,
+                    resolvedSkills: resolvedSkills,
+                    resolvedConnectors: resolvedConnectors,
+                    resolvedTools: resolvedTools
+                ) else {
+                    continue
+                }
+            } else if let policyContext {
+                let decision = CapabilityCatalogPolicy.decision(for: package, context: policyContext)
+                guard shouldReportPolicyDeniedEnabledPackage(decision) else { continue }
+            } else {
                 continue
             }
             checks.append((package, .enabledPackage))
         }
 
-        for package in packages where !enabledPackageIDs.contains(package.id) && hasRuntimeCompanionResources(package) {
+        for package in packages where !rawEnabledPackageIDs.contains(package.id) && hasRuntimeCompanionResources(package) {
             let packageSkillNames = Set(package.skills.map { CapabilityRuntimeResourceMatcher.normalizedName($0.name) })
             guard !packageSkillNames.isDisjoint(with: selectedSkillNames) else { continue }
             checks.append((package, .selectedPackageSkill))
@@ -106,6 +128,9 @@ enum CapabilityRuntimeIntegrityService {
                         name: package.name,
                         message: "catalog policy blocks runtime activation: \(decision.blockerMessages.joined(separator: "; "))"
                     ))
+                    if shouldReportPolicyDeniedEnabledPackage(decision) {
+                        continue
+                    }
                 }
             }
             issues += resourceIssues(
@@ -122,6 +147,18 @@ enum CapabilityRuntimeIntegrityService {
             )
         }
         return issues
+    }
+
+    private static func shouldReportPolicyDeniedEnabledPackage(_ decision: CapabilityCatalogDecision) -> Bool {
+        guard !decision.canRun else { return false }
+        return decision.blockers.contains { blocker in
+            switch blocker {
+            case .packPolicyRestricted:
+                return false
+            default:
+                return true
+            }
+        }
     }
 
     static func summaryFields(for issues: [CapabilityRuntimeIntegrityIssue]) -> [String: String] {
@@ -239,14 +276,13 @@ enum CapabilityRuntimeIntegrityService {
 
             if checkExecutables,
                pluginTool.toolType != "mcp",
-               !pluginTool.command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-               RuntimePathResolver.detectExecutablePath(named: pluginTool.command).isEmpty {
+               let missingCommand = missingExecutableCommand(for: pluginTool, matches: matches) {
                 issues.append(issue(
                     package: package,
                     source: source,
                     kind: .executable,
-                    name: pluginTool.command,
-                    message: "local tool command \(pluginTool.command) is not installed or not executable"
+                    name: missingCommand,
+                    message: "local tool command \(missingCommand) is not installed or not executable"
                 ))
             }
         }
@@ -313,6 +349,27 @@ enum CapabilityRuntimeIntegrityService {
         }
 
         return issues
+    }
+
+    private static func missingExecutableCommand(
+        for pluginTool: PluginLocalTool,
+        matches: [LocalTool]
+    ) -> String? {
+        let configuredCommands = matches
+            .filter { $0.toolType != "mcp" }
+            .map { $0.command.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        let packageCommand = pluginTool.command.trimmingCharacters(in: .whitespacesAndNewlines)
+        let commands = configuredCommands.isEmpty && !packageCommand.isEmpty
+            ? [packageCommand]
+            : configuredCommands
+        guard !commands.isEmpty else { return nil }
+
+        let missing = commands.filter {
+            RuntimePathResolver.detectExecutablePath(named: $0).isEmpty
+        }
+        guard missing.count == commands.count else { return nil }
+        return missing.joined(separator: ", ")
     }
 
     private struct ConnectorCredentialGap {
@@ -625,7 +682,11 @@ enum CapabilityRuntimeIntegrityService {
     }
 
     private static func hasRuntimeCompanionResources(_ package: PluginPackage) -> Bool {
-        !package.connectors.isEmpty || !package.localTools.isEmpty || !package.mcpServers.isEmpty || !package.browserAdapters.isEmpty
+        !package.connectors.isEmpty
+            || !package.localTools.isEmpty
+            || !package.mcpServers.isEmpty
+            || !package.browserAdapters.isEmpty
+            || HostControlPlaneMCPProjection.packageUsesHostControlRuntime(package)
     }
 
     private static let genericIntentTokens: Set<String> = [
@@ -633,28 +694,66 @@ enum CapabilityRuntimeIntegrityService {
         "and",
         "api",
         "app",
+        "after",
         "are",
+        "before",
         "can",
         "browser",
         "capability",
+        "check",
+        "cloud",
+        "code",
         "connector",
+        "content",
         "create",
+        "current",
         "data",
+        "delete",
+        "deliver",
+        "develop",
         "demo",
         "doc",
         "document",
+        "docker",
+        "download",
         "file",
+        "files",
         "for",
+        "forward",
+        "from",
+        "generate",
+        "get",
         "html",
+        "implement",
+        "inspect",
         "javascript",
+        "list",
+        "local",
+        "look",
+        "manage",
+        "make",
+        "must",
+        "only",
+        "open",
         "page",
         "plugin",
+        "produce",
         "prototype",
+        "project",
         "query",
+        "read",
+        "render",
+        "reply",
         "resource",
         "resources",
+        "scaffold",
+        "search",
         "service",
+        "shared",
+        "show",
         "site",
+        "summarize",
+        "summary",
         "task",
         "the",
         "this",
@@ -671,7 +770,8 @@ enum CapabilityRuntimeIntegrityService {
         "with",
         "work",
         "workflow",
-        "workspace"
+        "workspace",
+        "write"
     ]
 
     private static func issue(

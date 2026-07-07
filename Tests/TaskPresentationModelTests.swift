@@ -1,6 +1,8 @@
 import Testing
 import AppKit
 import SwiftUI
+import ASTRAModels
+import ASTRAPersistence
 @testable import ASTRA
 import ASTRACore
 
@@ -167,29 +169,6 @@ struct ShortenIdentifierTokensTests {
         let out = KanbanTaskCardView.shortenIdentifierTokens(input, keepEachSide: 8)
         #expect(out.hasPrefix("project-"))
         #expect(out.hasSuffix("archive"))
-    }
-}
-
-// MARK: - ChatBubbleView
-
-@Suite("ChatBubbleView")
-struct ChatBubbleViewTests {
-
-    @Test("isUser true for user.message")
-    func isUserTrue() {
-        let task = makeTask()
-        let event = TaskEvent(task: task, type: "user.message", payload: "hello")
-        let bubble = ChatBubbleView(event: event)
-        #expect(bubble.isUser == true)
-    }
-
-    @Test("isUser false for agent types",
-          arguments: ["agent.response", "agent.thinking", "tool.use", "task.completed", "error"])
-    func isUserFalse(eventType: String) {
-        let task = makeTask()
-        let event = TaskEvent(task: task, type: eventType, payload: "test")
-        let bubble = ChatBubbleView(event: event)
-        #expect(bubble.isUser == false)
     }
 }
 

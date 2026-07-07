@@ -1,4 +1,6 @@
 import Foundation
+import ASTRAModels
+import ASTRAPersistence
 
 enum ShelfFileProvenance: String, Hashable, Sendable {
     case taskGenerated

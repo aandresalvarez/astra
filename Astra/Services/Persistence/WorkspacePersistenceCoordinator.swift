@@ -1,12 +1,14 @@
 import Foundation
 import SwiftData
+import ASTRAModels
+import ASTRACore
 
 @MainActor
-enum WorkspacePersistenceCoordinator {
+public enum WorkspacePersistenceCoordinator {
     private static var pendingExports: [UUID: Task<Void, Never>] = [:]
 
     @discardableResult
-    static func saveAndAutoExport(
+    public static func saveAndAutoExport(
         workspace: Workspace?,
         modelContext: ModelContext,
         taskID: UUID? = nil,
@@ -20,23 +22,24 @@ enum WorkspacePersistenceCoordinator {
                 var fields = auditFields
                 fields["result"] = "swiftdata_save_succeeded"
                 fields["workspace_id"] = workspace?.id.uuidString ?? "none"
-                AppLogger.audit(.runtimePersistenceSummary, category: "Persistence", taskID: taskID, fields: fields, level: .debug)
+                AuditLoggingSeam.required.audit(.runtimePersistenceSummary, category: "Persistence", taskID: taskID, fields: fields, level: .debug)
             }
         } catch {
             var fields = auditFields
             fields["result"] = "swiftdata_save_failed"
             fields["workspace_id"] = workspace?.id.uuidString ?? "none"
             fields["error_type"] = String(describing: type(of: error))
-            AppLogger.audit(.runtimePersistenceSummary, category: "Persistence", taskID: taskID, fields: fields, level: .error)
-            AppLogger.audit(.workspaceExported, category: "Persistence", fields: [
+            AuditLoggingSeam.required.audit(.runtimePersistenceSummary, category: "Persistence", taskID: taskID, fields: fields, level: .error)
+            AuditLoggingSeam.required.audit(.workspaceExported, category: "Persistence", fields: [
                 "result": "swiftdata_save_failed",
                 "error_type": String(describing: type(of: error))
             ], level: .error)
         }
 
+        guard didSave else { return didSave }
         guard let workspace else { return didSave }
         guard !shouldSkipAutoExport() else {
-            AppLogger.audit(.workspaceExported, category: "Persistence", fields: [
+            AuditLoggingSeam.required.audit(.workspaceExported, category: "Persistence", fields: [
                 "result": "skipped",
                 "reason": "launch_flag"
             ], level: .debug)
@@ -46,7 +49,108 @@ enum WorkspacePersistenceCoordinator {
         return didSave
     }
 
-    static func scheduleAutoExport(
+    /// Persists the SwiftData context without exporting the workspace JSON
+    /// mirror, returning whether the save succeeded (mirrors `saveAndAutoExport`'s
+    /// non-throwing style, not `saveWithoutAutoExportOrThrow` — this has no
+    /// `workspace` parameter since it never exports, and records `auto_export`
+    /// as "skipped" rather than "deferred"). For bookkeeping saves whose state
+    /// is guaranteed to be superseded by a later, more authoritative
+    /// save-and-export call (e.g. pre-admission lock events), so the mirror
+    /// is never snapshotted mid-transition.
+    @discardableResult
+    public static func saveWithoutAutoExport(
+        modelContext: ModelContext,
+        taskID: UUID? = nil,
+        auditFields: [String: String] = [:]
+    ) -> Bool {
+        do {
+            try modelContext.save()
+            if taskID != nil || !auditFields.isEmpty {
+                var fields = auditFields
+                fields["result"] = "swiftdata_save_succeeded"
+                fields["auto_export"] = "skipped"
+                AuditLoggingSeam.required.audit(.runtimePersistenceSummary, category: "Persistence", taskID: taskID, fields: fields, level: .debug)
+            }
+            return true
+        } catch {
+            var fields = auditFields
+            fields["result"] = "swiftdata_save_failed"
+            fields["auto_export"] = "skipped"
+            fields["error_type"] = String(describing: type(of: error))
+            AuditLoggingSeam.required.audit(.runtimePersistenceSummary, category: "Persistence", taskID: taskID, fields: fields, level: .error)
+            return false
+        }
+    }
+
+    public static func saveAndAutoExportOrThrow(
+        workspace: Workspace?,
+        modelContext: ModelContext,
+        taskID: UUID? = nil,
+        auditFields: [String: String] = [:]
+    ) throws {
+        do {
+            try modelContext.save()
+            if taskID != nil || !auditFields.isEmpty {
+                var fields = auditFields
+                fields["result"] = "swiftdata_save_succeeded"
+                fields["workspace_id"] = workspace?.id.uuidString ?? "none"
+                AuditLoggingSeam.required.audit(.runtimePersistenceSummary, category: "Persistence", taskID: taskID, fields: fields, level: .debug)
+            }
+        } catch {
+            var fields = auditFields
+            fields["result"] = "swiftdata_save_failed"
+            fields["workspace_id"] = workspace?.id.uuidString ?? "none"
+            fields["error_type"] = String(describing: type(of: error))
+            AuditLoggingSeam.required.audit(.runtimePersistenceSummary, category: "Persistence", taskID: taskID, fields: fields, level: .error)
+            AuditLoggingSeam.required.audit(.workspaceExported, category: "Persistence", fields: [
+                "result": "swiftdata_save_failed",
+                "error_type": String(describing: type(of: error))
+            ], level: .error)
+            throw error
+        }
+
+        guard let workspace else { return }
+        guard !shouldSkipAutoExport() else {
+            AuditLoggingSeam.required.audit(.workspaceExported, category: "Persistence", fields: [
+                "result": "skipped",
+                "reason": "launch_flag"
+            ], level: .debug)
+            return
+        }
+        WorkspaceConfigManager.autoExport(workspace: workspace, modelContext: modelContext)
+    }
+
+    public static func saveWithoutAutoExportOrThrow(
+        workspace: Workspace?,
+        modelContext: ModelContext,
+        taskID: UUID? = nil,
+        auditFields: [String: String] = [:]
+    ) throws {
+        do {
+            try modelContext.save()
+            if taskID != nil || !auditFields.isEmpty {
+                var fields = auditFields
+                fields["result"] = "swiftdata_save_succeeded"
+                fields["workspace_id"] = workspace?.id.uuidString ?? "none"
+                fields["auto_export"] = "deferred"
+                AuditLoggingSeam.required.audit(.runtimePersistenceSummary, category: "Persistence", taskID: taskID, fields: fields, level: .debug)
+            }
+        } catch {
+            var fields = auditFields
+            fields["result"] = "swiftdata_save_failed"
+            fields["workspace_id"] = workspace?.id.uuidString ?? "none"
+            fields["auto_export"] = "deferred"
+            fields["error_type"] = String(describing: type(of: error))
+            AuditLoggingSeam.required.audit(.runtimePersistenceSummary, category: "Persistence", taskID: taskID, fields: fields, level: .error)
+            AuditLoggingSeam.required.audit(.workspaceExported, category: "Persistence", fields: [
+                "result": "swiftdata_save_failed",
+                "error_type": String(describing: type(of: error))
+            ], level: .error)
+            throw error
+        }
+    }
+
+    public static func scheduleAutoExport(
         workspace: Workspace?,
         modelContext: ModelContext,
         delayNanoseconds: UInt64 = 600_000_000
@@ -70,7 +174,7 @@ enum WorkspacePersistenceCoordinator {
         }
     }
 
-    static func flushPendingExport(workspace: Workspace?, modelContext: ModelContext) {
+    public static func flushPendingExport(workspace: Workspace?, modelContext: ModelContext) {
         if let id = workspace?.id {
             pendingExports[id]?.cancel()
             pendingExports[id] = nil
@@ -78,7 +182,7 @@ enum WorkspacePersistenceCoordinator {
         saveAndAutoExport(workspace: workspace, modelContext: modelContext)
     }
 
-    nonisolated static func shouldSkipAutoExport(
+    public nonisolated static func shouldSkipAutoExport(
         arguments: [String] = ProcessInfo.processInfo.arguments,
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> Bool {

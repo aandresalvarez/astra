@@ -12,10 +12,27 @@ recording, and utility prompts.
 - `AgentRuntimeAdapterCatalog` and `AgentRuntimeAdapterRegistry` register
   runtime IDs and descriptors.
 - Built-in providers are `ClaudeCodeRuntimeAdapterProvider`,
-  `CopilotCLIRuntimeAdapterProvider`, and `AntigravityCLIRuntimeAdapterProvider`.
+  `CopilotCLIRuntimeAdapterProvider`, `AntigravityCLIRuntimeAdapterProvider`,
+  `CodexCLIRuntimeAdapterProvider`, `CursorCLIRuntimeAdapterProvider`, and
+  `OpenCodeCLIRuntimeAdapterProvider`.
 - `AgentRuntimeWorker` selects the registered adapter for a task, builds the
   prompt, launches the process, records stream events, and applies completion
   policy.
+
+## Registered Providers
+
+| Runtime ID | Provider | Adapter | Executable | Native Continuation |
+| --- | --- | --- | --- | --- |
+| `claude_code` | `ClaudeCodeRuntimeAdapterProvider` | `ClaudeCodeRuntimeAdapter` | `claude` | yes |
+| `copilot_cli` | `CopilotCLIRuntimeAdapterProvider` | `CopilotCLIRuntimeAdapter` | `copilot` | no |
+| `antigravity_cli` | `AntigravityCLIRuntimeAdapterProvider` | `AntigravityCLIRuntimeAdapter` | `agy` | no |
+| `codex_cli` | `CodexCLIRuntimeAdapterProvider` | `CodexCLIRuntimeAdapter` | `codex` | yes |
+| `cursor_cli` | `CursorCLIRuntimeAdapterProvider` | `CursorCLIRuntimeAdapter` | `cursor-agent` | no |
+| `opencode_cli` | `OpenCodeCLIRuntimeAdapterProvider` | `OpenCodeCLIRuntimeAdapter` | `opencode` | no |
+
+Runtime IDs live in `AgentRuntimeID`. Install and auth prerequisites live in
+`CLIPrerequisite`. The registry is the only composition point for built-in
+adapter lookup.
 
 ## Adapter Responsibilities
 
@@ -39,6 +56,33 @@ An adapter owns:
   calls through `runUtilityPrompt`.
 - Post-run provider diagnostics and follow-up event recording.
 
+## Task-Scoped MCP Delivery
+
+ASTRA treats provider-level MCP management as different from task-scoped MCP
+delivery. A runtime may expose global commands for listing, adding, or removing
+MCP servers while still being unsafe for ASTRA-owned per-run delivery. Global
+provider state can include unrelated user servers, stale credentials, and
+configuration that ASTRA did not render for the current task.
+
+The supported task-scoped delivery modes today are:
+
+- Claude Code strict per-run config files rendered by ASTRA.
+- Codex inline launch config rendered by ASTRA.
+- GitHub Copilot CLI additional config files only when the installed CLI help
+  exposes `--additional-mcp-config`.
+
+Cursor CLI, OpenCode CLI, and Google Antigravity CLI must remain unsupported for
+ASTRA task-scoped MCP delivery until their adapters can prove all promotion
+criteria:
+
+- Per-run isolated config, not durable provider-global MCP state.
+- A task-specific server and tool allowlist.
+- No unrelated global MCP servers visible to the run.
+- No raw secrets in launch args, rendered config, planned-command fields, or
+  logs.
+- Adapter renderer tests showing `astra_host`, workspace shell, and browser
+  bridge config delivery for the selected runtime.
+
 ## Invariants
 
 - A runtime must be registered before use. Unknown runtime strings are resolved
@@ -55,6 +99,9 @@ An adapter owns:
   descriptor. Prompt assembly remains ASTRA-owned and state-backed.
 - Readiness and model availability are per-runtime concerns, but the runtime
   registry remains the single composition point for provider lookup.
+- Policy vocabulary is typed at the boundary. `RunPhase` and
+  `ProviderPermissionMode` are serialized as strings only at provider or audit
+  edges.
 
 ## Related Files
 
@@ -62,5 +109,14 @@ An adapter owns:
 - `Astra/Services/Runtime/AgentRuntimeWorker.swift`
 - `Astra/Services/Runtime/AgentRuntimeProcessRunner.swift`
 - `Astra/Services/Runtime/RuntimeReadinessService.swift`
+- `Astra/Services/Runtime/CodexCLIRuntimeAdapter.swift`
+- `Astra/Services/Runtime/CursorCLIRuntimeAdapter.swift`
+- `Astra/Services/Runtime/OpenCodeCLIRuntimeAdapter.swift`
+- `Astra/Services/Runtime/CodexCLIRuntime.swift`
+- `Astra/Services/Runtime/CursorCLIRuntime.swift`
+- `Astra/Services/Runtime/OpenCodeCLIRuntime.swift`
+- `Astra/Services/Runtime/ProviderPolicyModeResolver.swift`
 - `Astra/Services/Runtime/ClaudeModelAvailabilityService.swift`
 - `Astra/Services/Runtime/CopilotModelAvailabilityService.swift`
+- `ASTRACore/AgentRuntimeTypes.swift`
+- `ASTRACore/CLIPrerequisite.swift`

@@ -1,5 +1,7 @@
 import Foundation
 import ASTRACore
+import ASTRAPersistence
+import ASTRAModels
 
 enum AgentRuntimeFailureCategory: String, Sendable {
     case authenticationFailed = "authentication_failed"

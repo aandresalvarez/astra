@@ -1,6 +1,8 @@
 import Foundation
 import SwiftData
 import ASTRACore
+import ASTRAModels
+import ASTRAPersistence
 
 enum AgentFileChangeDetector {
     struct FileFingerprint: Equatable {

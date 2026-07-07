@@ -1,0 +1,46 @@
+{
+  "formatVersion": 1,
+  "id": "astra.pack.devops",
+  "name": "DevOps Pack",
+  "version": "1.0.0",
+  "coreAPIVersion": "1.0",
+  "description": "Opinionated defaults for pull request queues, CI review, and repository operations.",
+  "capabilityPackageIDs": [
+    "github-workflow"
+  ],
+  "shelfDefaults": [
+    {
+      "id": "plan",
+      "title": "Plan",
+      "kind": "nativeShelf",
+      "capabilityPackageIDs": []
+    },
+    {
+      "id": "files",
+      "title": "Files",
+      "kind": "nativeShelf",
+      "capabilityPackageIDs": []
+    }
+  ],
+  "appTemplates": [
+    {
+      "id": "pr-ci-review",
+      "name": "PR / CI Review",
+      "contributionKind": "workspaceApp",
+      "templateID": "workspace-app.pr-ci-review",
+      "capabilityPackageIDs": [
+        "github-workflow"
+      ]
+    }
+  ],
+  "policyRestrictions": [],
+  "vocabulary": {
+    "ciReview": "CI Review",
+    "prQueue": "PR Queue"
+  },
+  "branding": {
+    "accentColor": "#3B82F6",
+    "iconSystemName": "arrow.triangle.pull",
+    "displayName": "DevOps"
+  }
+}

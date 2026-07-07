@@ -248,13 +248,20 @@ struct AgentRuntimePolicyGuard: Sendable {
                 )
         } ?? false
 
-        let matchesAllowedTool = toolMatches(
+        let matchesTaskOutputMutation = matchesTaskOutputFileMutation(observed, toolName: toolName)
+        let mutationNeedsScopedApproval = isMutationTool(toolName)
+            && toolMatches(toolName, command: nil, candidates: manifest.providerRender.askFirstTools)
+            && !matchesTaskOutputMutation
+        let matchesProviderAllowedTool = toolMatches(
             toolName,
             command: observed.command,
             candidates: manifest.providerRender.allowedTools,
             shellMatchMode: .allActionableSegments
-        ) || matchesAllowedShellPattern
-            || matchesTaskOutputFileMutation(observed, toolName: toolName)
+        )
+        let matchesAllowedTool = (matchesProviderAllowedTool && !mutationNeedsScopedApproval)
+            || matchesAllowedShellPattern
+            || matchesTaskOutputMutation
+            || matchesApprovedFileMutationGrant(observed, toolName: toolName)
 
         if !matchesAllowedTool,
            requiresApproval(toolName: toolName, command: observed.command) {
@@ -528,13 +535,34 @@ struct AgentRuntimePolicyGuard: Sendable {
         return toolMatches(toolName, command: nil, candidates: manifest.providerRender.askFirstTools)
     }
 
+    private func matchesApprovedFileMutationGrant(_ observed: PolicyObservedEvent, toolName: String) -> Bool {
+        guard isMutationTool(toolName),
+              observed.command == nil else {
+            return false
+        }
+
+        let paths = mutationPaths(from: observed, toolName: toolName)
+        guard !paths.isEmpty else { return false }
+        let approvedPaths = manifest.approvalGrants.compactMap { grant -> String? in
+            guard case .filePath(let path, let access) = grant,
+                  Self.isWriteAccess(access) else {
+                return nil
+            }
+            return standardizedRunPath(path)
+        }
+        guard !approvedPaths.isEmpty else { return false }
+        return paths
+            .map(standardizedRunPath)
+            .allSatisfy { candidate in
+                approvedPaths.contains(candidate)
+            }
+    }
+
     private func validateTaskOutputMutationOwnership(
         _ observed: PolicyObservedEvent,
         toolName: String
     ) -> AgentRuntimePolicyViolation? {
-        let paths = isPatchMutationTool(toolName)
-            ? patchMutationPaths(from: observed)
-            : [observed.path].compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+        let paths = mutationPaths(from: observed, toolName: toolName)
         guard let internalPath = paths.first(where: { path in
             guard isPathInTaskOutput(path) else { return false }
             return !isWritableTaskOutputFilePath(path)
@@ -547,6 +575,15 @@ struct AgentRuntimePolicyGuard: Sendable {
             detail: internalPath,
             violationCategory: "runtime_state_path_mutation"
         )
+    }
+
+    private func mutationPaths(from observed: PolicyObservedEvent, toolName: String) -> [String] {
+        if isPatchMutationTool(toolName) {
+            return patchMutationPaths(from: observed)
+        }
+        return [observed.path]
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
     }
 
     private func validatePatchMutationPaths(
@@ -639,13 +676,7 @@ struct AgentRuntimePolicyGuard: Sendable {
     }
 
     private func isPathInScope(_ rawPath: String) -> Bool {
-        let rawPath = translatedPath(rawPath)
-        let candidate: String
-        if rawPath.hasPrefix("/") {
-            candidate = Self.standardizedAbsolutePath(rawPath)
-        } else {
-            candidate = Self.standardizedAbsolutePath((manifest.workspacePath as NSString).appendingPathComponent(rawPath))
-        }
+        let candidate = standardizedRunPath(rawPath)
 
         return allowedPathRoots.contains { root in
             candidate == root || candidate.hasPrefix(root + "/")
@@ -665,13 +696,7 @@ struct AgentRuntimePolicyGuard: Sendable {
     }
 
     private func taskOutputRelativePath(_ rawPath: String) -> String? {
-        let rawPath = translatedPath(rawPath)
-        let candidate: String
-        if rawPath.hasPrefix("/") {
-            candidate = Self.standardizedAbsolutePath(rawPath)
-        } else {
-            candidate = Self.standardizedAbsolutePath((manifest.workspacePath as NSString).appendingPathComponent(rawPath))
-        }
+        let candidate = standardizedRunPath(rawPath)
 
         for root in taskOutputPathRoots {
             if candidate == root {
@@ -683,6 +708,14 @@ struct AgentRuntimePolicyGuard: Sendable {
             }
         }
         return nil
+    }
+
+    private func standardizedRunPath(_ rawPath: String) -> String {
+        let rawPath = translatedPath(rawPath)
+        if rawPath.hasPrefix("/") {
+            return Self.standardizedAbsolutePath(rawPath)
+        }
+        return Self.standardizedAbsolutePath((manifest.workspacePath as NSString).appendingPathComponent(rawPath))
     }
 
     private func translatedPath(_ rawPath: String) -> String {
@@ -1001,6 +1034,11 @@ struct AgentRuntimePolicyGuard: Sendable {
         case "agent": return "Agent"
         default: return tool.trimmingCharacters(in: .whitespacesAndNewlines)
         }
+    }
+
+    private static func isWriteAccess(_ access: String) -> Bool {
+        let normalized = access.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return normalized == "write" || normalized == "rw" || normalized == "readwrite" || normalized == "read-write"
     }
 
     private static func shellCommandRoot(_ command: String?) -> String? {

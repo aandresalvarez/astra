@@ -1,19 +1,20 @@
 import Foundation
+import ASTRACore
 
 /// An SSH connection configuration stored in the workspace folder.
-struct SSHConnection: Codable, Identifiable, Hashable {
-    var id: UUID
-    var name: String           // friendly label, e.g. "dev-server"
-    var host: String           // hostname or IP
-    var user: String           // SSH username
-    var port: Int              // default 22
-    var remotePath: String     // remote working directory
-    var keyPath: String        // path to SSH private key (empty = default)
-    var configAlias: String    // SSH config Host alias (e.g. "dev-workbench"), used for connections with ProxyCommand
-    var lastTestedAt: Date?
-    var lastTestResult: Bool?
+public struct SSHConnection: Codable, Identifiable, Hashable {
+    public var id: UUID
+    public var name: String           // friendly label, e.g. "dev-server"
+    public var host: String           // hostname or IP
+    public var user: String           // SSH username
+    public var port: Int              // default 22
+    public var remotePath: String     // remote working directory
+    public var keyPath: String        // path to SSH private key (empty = default)
+    public var configAlias: String    // SSH config Host alias (e.g. "dev-workbench"), used for connections with ProxyCommand
+    public var lastTestedAt: Date?
+    public var lastTestResult: Bool?
 
-    init(
+    public init(
         name: String = "",
         host: String = "",
         user: String = "",
@@ -32,25 +33,26 @@ struct SSHConnection: Codable, Identifiable, Hashable {
         self.configAlias = configAlias
     }
 
-    var displayLabel: String {
+    public var displayLabel: String {
         if !name.isEmpty { return name }
         return "\(user)@\(host):\(remotePath)"
     }
 
-    var sshTarget: String {
+    public var sshTarget: String {
         "\(user)@\(host)"
     }
 }
 
 /// Manages SSH connections stored as a JSON file in the workspace folder.
-enum SSHConnectionManager {
+public enum SSHConnectionManager {
     private static let emptyConnectionsFileMaximumByteCount = 4
+    public static let defaultFileWriter: any SSHConnectionFileWriting = AtomicSSHConnectionFileWriter()
 
-    static func connectionsFilePath(for workspacePath: String) -> String {
+    public static func connectionsFilePath(for workspacePath: String) -> String {
         WorkspaceFileLayout.sshConnectionsFile(for: workspacePath)
     }
 
-    static func hasStoredConnections(workspacePath: String) -> Bool {
+    public static func hasStoredConnections(workspacePath: String) -> Bool {
         guard !workspacePath.isEmpty else { return false }
         let broker = HostFileAccessBroker()
         let workspaceRoot = URL(fileURLWithPath: workspacePath, isDirectory: true)
@@ -66,7 +68,7 @@ enum SSHConnectionManager {
         }
     }
 
-    static func load(workspacePath: String) -> [SSHConnection] {
+    public static func load(workspacePath: String) -> [SSHConnection] {
         migrateLegacyConnectionsIfNeeded(workspacePath: workspacePath)
         let path = connectionsFilePath(for: workspacePath)
         let hostFileAccess = HostFileAccessBroker()
@@ -87,13 +89,17 @@ enum SSHConnectionManager {
         }
     }
 
-    static func save(_ connections: [SSHConnection], workspacePath: String) {
+    public static func save(
+        _ connections: [SSHConnection],
+        workspacePath: String,
+        fileWriter: any SSHConnectionFileWriting = defaultFileWriter
+    ) {
         WorkspaceFileLayout.ensureSupportDirectory(for: workspacePath)
         let path = connectionsFilePath(for: workspacePath)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         guard let data = try? encoder.encode(connections) else { return }
-        try? data.write(to: URL(fileURLWithPath: path))
+        try? fileWriter.writeAtomically(data, to: URL(fileURLWithPath: path))
     }
 
     private static func migrateLegacyConnectionsIfNeeded(workspacePath: String) {
@@ -109,12 +115,12 @@ enum SSHConnectionManager {
         do {
             WorkspaceFileLayout.ensureSupportDirectory(for: workspacePath)
             try FileManager.default.moveItem(atPath: legacy, toPath: canonical)
-            AppLogger.audit(.workspaceStoreMigrated, category: "Persistence", fields: [
+            AuditLoggingSeam.required.audit(.workspaceStoreMigrated, category: "Persistence", fields: [
                 "resource": "ssh_connections",
                 "result": "completed"
             ])
         } catch {
-            AppLogger.audit(.workspaceStoreMigrated, category: "Persistence", fields: [
+            AuditLoggingSeam.required.audit(.workspaceStoreMigrated, category: "Persistence", fields: [
                 "resource": "ssh_connections",
                 "result": "failed",
                 "error_type": String(describing: type(of: error))
@@ -123,18 +129,18 @@ enum SSHConnectionManager {
     }
 
     /// Parsed host entry from an SSH config file.
-    struct SSHConfigHost: Identifiable {
-        let id = UUID()
-        let name: String
-        let hostname: String
-        let user: String
-        let port: Int
-        let identityFile: String
-        let hasProxyCommand: Bool
+    public struct SSHConfigHost: Identifiable {
+        public let id = UUID()
+        public let name: String
+        public let hostname: String
+        public let user: String
+        public let port: Int
+        public let identityFile: String
+        public let hasProxyCommand: Bool
     }
 
     /// Parse hosts from an SSH config file (e.g., ~/.ssh/config).
-    static func parseSSHConfig(at path: String) -> [SSHConfigHost] {
+    public static func parseSSHConfig(at path: String) -> [SSHConfigHost] {
         let expandedPath = (path as NSString).expandingTildeInPath
         guard let content = try? HostFileAccessBroker().readString(
             at: URL(fileURLWithPath: expandedPath),
@@ -145,7 +151,7 @@ enum SSHConnectionManager {
     }
 
     /// Parse hosts from an SSH config string.
-    static func parseSSHConfig(from content: String) -> [SSHConfigHost] {
+    public static func parseSSHConfig(from content: String) -> [SSHConfigHost] {
         var hosts: [SSHConfigHost] = []
         var currentName: String?
         var hostname = ""
@@ -207,7 +213,7 @@ enum SSHConnectionManager {
     }
 
     /// Convert a parsed SSH config host into an SSHConnection.
-    static func connectionFromConfig(_ host: SSHConfigHost, remotePath: String = "~") -> SSHConnection {
+    public static func connectionFromConfig(_ host: SSHConfigHost, remotePath: String = "~") -> SSHConnection {
         SSHConnection(
             name: host.name,
             host: host.hostname,
@@ -220,7 +226,7 @@ enum SSHConnectionManager {
     }
 
     /// Test an SSH connection by running `ssh -o ConnectTimeout=5 <target> echo ok`.
-    static func test(_ connection: SSHConnection) async -> (success: Bool, message: String) {
+    public static func test(_ connection: SSHConnection) async -> (success: Bool, message: String) {
         await withCheckedContinuation { continuation in
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
@@ -267,5 +273,15 @@ enum SSHConnectionManager {
                 continuation.resume(returning: (false, msg))
             }
         }
+    }
+}
+
+public protocol SSHConnectionFileWriting {
+    func writeAtomically(_ data: Data, to url: URL) throws
+}
+
+public struct AtomicSSHConnectionFileWriter: SSHConnectionFileWriting {
+    public func writeAtomically(_ data: Data, to url: URL) throws {
+        try data.write(to: url, options: [.atomic])
     }
 }

@@ -3,41 +3,41 @@ import SwiftData
 import ASTRACore
 
 @Model
-final class Connector {
-    var id: UUID
-    var name: String
-    var serviceType: String  // "jira", "slack", "github", "database", "rest_api", "custom"
-    var icon: String
-    var connectorDescription: String
+public final class Connector {
+    public var id: UUID
+    public var name: String
+    public var serviceType: String  // "jira", "slack", "github", "database", "rest_api", "custom"
+    public var icon: String
+    public var connectorDescription: String
 
     // Connection
-    var baseURL: String
-    var authMethod: String  // "basic", "bearer", "api_key", "none"
+    public var baseURL: String
+    public var authMethod: String  // "basic", "bearer", "api_key", "none"
 
     // Credentials (keys stored here, values in Keychain)
-    var credentialKeys: [String]
+    public var credentialKeys: [String]
     // Legacy: kept for migration. New credentials go to Keychain only.
-    var credentialValues: [String]
+    public var credentialValues: [String]
 
     // Configuration (non-secret — visible in UI, e.g. projects, repos)
-    var configKeys: [String]
-    var configValues: [String]
+    public var configKeys: [String]
+    public var configValues: [String]
 
-    var isGlobal: Bool = false
-    var testHTTPMethod: String = "GET"
-    var notes: String
-    var originPackageID: String?
-    var originPackageVersion: String?
-    var originComponentID: String?
-    var originComponentKind: String?
-    var originSourceKind: String?
-    var createdAt: Date
-    var updatedAt: Date
+    public var isGlobal: Bool = false
+    public var testHTTPMethod: String = "GET"
+    public var notes: String
+    public var originPackageID: String?
+    public var originPackageVersion: String?
+    public var originComponentID: String?
+    public var originComponentKind: String?
+    public var originSourceKind: String?
+    public var createdAt: Date
+    public var updatedAt: Date
 
-    var skill: Skill?
-    var workspace: Workspace?
+    public var skill: Skill?
+    public var workspace: Workspace?
 
-    init(
+    public init(
         name: String = "",
         serviceType: String = "custom",
         icon: String = "network",
@@ -68,26 +68,27 @@ final class Connector {
 
     // MARK: - Computed
 
+    private var secretFacts: ConnectorSecretFacts {
+        ConnectorSecretFacts(
+            id: id,
+            name: name,
+            serviceType: serviceType,
+            baseURL: baseURL,
+            originPackageID: originPackageID,
+            originComponentID: originComponentID
+        )
+    }
+
     /// Load credentials from Keychain. Legacy plaintext values are migrated at app launch.
-    var credentials: [String: String] {
-        credentials(store: KeychainSecretStore())
+    public var credentials: [String: String] {
+        credentials(store: SecretStoreSeam.required)
     }
 
-    func credentials(store: SecretStore) -> [String: String] {
-        let entityIDs = KeychainSecretStore.connectorEntityIDs(for: self)
-        var result: [String: String] = [:]
-        for key in credentialKeys {
-            for entityID in entityIDs {
-                if let value = store.load(key: key, entityID: entityID) {
-                    result[key] = value
-                    break
-                }
-            }
-        }
-        return result
+    public func credentials(store: SecretStore) -> [String: String] {
+        ConnectorSecretSeam.required.loadAllCredentials(keys: credentialKeys, facts: secretFacts, store: store)
     }
 
-    func missingCredentialKeys(store: SecretStore = KeychainSecretStore()) -> [String] {
+    public func missingCredentialKeys(store: SecretStore = SecretStoreSeam.required) -> [String] {
         let resolved = credentials(store: store)
         return credentialKeys.filter { key in
             let value = resolved[key]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -95,12 +96,12 @@ final class Connector {
         }
     }
 
-    var config: [String: String] {
+    public var config: [String: String] {
         Dictionary(zip(configKeys, configValues), uniquingKeysWith: { _, last in last })
     }
 
     /// All key-value pairs merged (for passing as env vars to the process)
-    var allEnvironmentVariables: [String: String] {
+    public var allEnvironmentVariables: [String: String] {
         var merged = credentials
         for (k, v) in config { merged[k] = v }
         return merged
@@ -109,13 +110,12 @@ final class Connector {
     /// Save a credential value to Keychain and keep the key in SwiftData only
     /// after the secure write succeeds.
     @discardableResult
-    func saveCredential(key: String, value: String, allowUserInteraction: Bool = false) -> Bool {
+    public func saveCredential(key: String, value: String, allowUserInteraction: Bool = false) -> Bool {
         let upperKey = key.uppercased()
-        let saved = KeychainService.save(
+        let saved = ConnectorSecretSeam.required.saveCredential(
+            value,
             key: upperKey,
-            value: value,
-            connector: self,
-            label: "Astra: \(name)",
+            facts: secretFacts,
             allowUserInteraction: allowUserInteraction
         )
         recordCredentialSaveResult(key: upperKey, saved: saved)
@@ -124,25 +124,23 @@ final class Connector {
 
     /// Test seam for credential key normalization and persistence behavior.
     /// Production uses `saveCredential(key:value:)` so KeychainService remains
-    /// the single app-facing persistence boundary.
+    /// the single app-facing persistence boundary. Routes through
+    /// `ConnectorSecretSeam` (not `KeychainSecretStore` directly) since
+    /// `ASTRAModels` cannot depend on `ASTRAPersistence`.
     @discardableResult
     func saveCredential(key: String, value: String, store: SecretStore) -> Bool {
         let upperKey = key.uppercased()
-        let entityIDs = KeychainSecretStore.connectorEntityIDs(for: self)
-        let saved = entityIDs.map { entityID in
-            store.save(key: upperKey, value: value, entityID: entityID, label: "Astra: \(name)")
-        }
-        let ok = saved.allSatisfy { $0 }
+        let ok = ConnectorSecretSeam.required.saveCredential(value, key: upperKey, facts: secretFacts, store: store)
         if !ok {
-            AppLogger.audit(.keychainSaveFailed, category: "Keychain", fields: [
-                "scope": "connector",
-                "namespace_count": String(entityIDs.count)
+            AuditLoggingSeam.required.audit(.keychainSaveFailed, category: "Keychain", fields: [
+                "scope": "connector"
             ], level: .warning)
         }
         recordCredentialSaveResult(key: upperKey, saved: ok)
         return ok
     }
 
+    /// Records the key only after the Keychain write succeeds — audit logging lives in `ConnectorSecretPersistence`.
     private func recordCredentialSaveResult(key upperKey: String, saved: Bool) {
         // Find existing entry case-insensitively to avoid duplicates
         if let idx = credentialKeys.firstIndex(where: { $0.caseInsensitiveCompare(upperKey) == .orderedSame }) {
@@ -160,63 +158,95 @@ final class Connector {
         if saved {
             updatedAt = Date()
         }
-        AppLogger.audit(.connectorSecretAdded, category: "Keychain", fields: [
-            "connector_id": id.uuidString,
-            "service_type": serviceType,
-            "result": saved ? "stored" : "failed"
-        ], level: saved ? .info : .warning)
     }
 
     /// Remove a credential from both Keychain and SwiftData.
-    func removeCredential(at index: Int) {
+    public func removeCredential(at index: Int) {
         guard index < credentialKeys.count else { return }
         let key = credentialKeys[index]
-        let deleted = KeychainService.delete(key: key, connector: self)
+        ConnectorSecretSeam.required.deleteCredential(key: key, facts: secretFacts)
         credentialKeys.remove(at: index)
         if index < credentialValues.count {
             credentialValues.remove(at: index)
         }
         updatedAt = Date()
-        AppLogger.audit(.connectorSecretRemoved, category: "Keychain", fields: [
-            "connector_id": id.uuidString,
-            "service_type": serviceType,
-            "result": deleted ? "removed" : "failed"
-        ], level: deleted ? .info : .warning)
     }
 
     /// Migrate any legacy plaintext credentials to Keychain.
-    func migrateToKeychain() {
-        for (idx, key) in credentialKeys.enumerated() {
-            guard idx < credentialValues.count else { continue }
-            let value = credentialValues[idx]
+    public func migrateToKeychain() {
+        let facts = secretFacts
+        for (index, key) in credentialKeys.enumerated() {
+            guard index < credentialValues.count else { continue }
+            let value = credentialValues[index]
             guard !value.isEmpty else { continue }
-            // Only migrate if not already in Keychain
-            if !KeychainService.exists(key: key, connector: self) {
-                KeychainService.save(key: key, value: value, connector: self, label: "Astra: \(name)")
+
+            if !ConnectorSecretSeam.required.credentialExists(key: key, facts: facts) {
+                ConnectorSecretSeam.required.saveCredential(value, key: key, facts: facts, allowUserInteraction: false)
             }
-            credentialValues[idx] = "" // Clear plaintext
+            credentialValues[index] = ""
         }
-        KeychainService.synchronizeConnectorCredentialNamespaces(connector: self)
+        ConnectorSecretSeam.required.synchronizeCredentialNamespaces(keys: credentialKeys, facts: facts)
     }
 
     /// Delete all Keychain entries when connector is deleted.
-    func cleanupKeychain() {
+    public func cleanupKeychain() {
         if isStanfordOutlookMail {
-            StanfordOutlookMailRegistry.remove(connectorID: id)
+            OutlookMailConnectionSeam.required.removeFromRegistry(connectorID: id)
         }
-        KeychainService.deleteAll(connector: self)
-        AppLogger.audit(.connectorDeleted, category: "Keychain", fields: [
+        ConnectorSecretSeam.required.deleteAllCredentials(facts: secretFacts)
+        AuditLoggingSeam.required.audit(.connectorDeleted, category: "Keychain", fields: [
             "connector_id": id.uuidString,
             "service_type": serviceType
         ])
+    }
+
+    // MARK: - Stanford Outlook Mail (pure members)
+    //
+    // Moved from `Astra/Services/Capabilities/StanfordOutlookMail.swift` as
+    // part of Track A2.5 — `testConnection()` below needs `isStanfordOutlookMail`
+    // and `outlookEmail`, and both only touch this class's own stored
+    // properties, so they belong here rather than behind a seam. The
+    // "stanford_outlook_mail" service-type ID and "ASTRA_MAIL_EMAIL" config
+    // key are duplicated (not imported) from `StanfordOutlookMail.serviceType`/
+    // `.emailKey` in the app-target file, which remains the source of truth
+    // for the rest of the Outlook OAuth/Graph flow — these are fixed
+    // connector-type identifiers, not values expected to change independently
+    // on either side.
+    public var isStanfordOutlookMail: Bool {
+        serviceType == "stanford_outlook_mail"
+    }
+
+    public func configValue(_ key: String) -> String {
+        guard let index = configKeys.firstIndex(of: key), index < configValues.count else {
+            return ""
+        }
+        return configValues[index]
+    }
+
+    public func setConfigValue(_ key: String, value: String) {
+        let normalizedKey = key.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        guard !normalizedKey.isEmpty else { return }
+        if let index = configKeys.firstIndex(of: normalizedKey) {
+            if index < configValues.count {
+                configValues[index] = value
+            }
+        } else {
+            configKeys.append(normalizedKey)
+            configValues.append(value)
+        }
+        updatedAt = Date()
+    }
+
+    public var outlookEmail: String {
+        configValue("ASTRA_MAIL_EMAIL")
     }
 
     // MARK: - Connectivity Test
 
     /// Test the connection by hitting a known health endpoint.
     /// Returns (success, message) tuple.
-    func testConnection(
-        store: SecretStore = KeychainSecretStore(),
+    public func testConnection(
+        store: SecretStore = SecretStoreSeam.required,
         transport: any ConnectorHTTPTransport = URLSessionConnectorHTTPTransport(),
         source: String = "manual",
         workspaceID: UUID? = nil,
@@ -229,24 +259,33 @@ final class Connector {
             packageID: packageID,
             traceID: traceID
         )
-        AppLogger.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
+        AuditLoggingSeam.required.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
             "result": "started"
         ], uniquingKeysWith: { _, new in new }))
 
         if isStanfordOutlookMail {
             do {
-                let me = try await StanfordOutlookMailGraphService().testConnection(connector: self)
-                AppLogger.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
+                let facts = ConnectorOutlookFacts(id: id, name: name, serviceType: serviceType, configKeys: configKeys, configValues: configValues)
+                let result = try await OutlookMailConnectionSeam.required.testConnection(facts: facts)
+                // Applied per changed key (not a wholesale configKeys/
+                // configValues replacement) so a live config edit made to
+                // self while the network call above was in flight isn't
+                // silently rolled back to the pre-await snapshot.
+                for (key, value) in result.changedConfigEntries {
+                    setConfigValue(key, value: value)
+                }
+                updatedAt = Date()
+                AuditLoggingSeam.required.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
                     "credential_evidence": "microsoft_graph_oauth",
                     "credential_state": "authenticated",
                     "auth_verified": "true",
                     "connector_updated_at": Self.auditTimestamp(updatedAt),
                     "result": "success"
                 ], uniquingKeysWith: { _, new in new }))
-                let identity = me.mail ?? me.userPrincipalName ?? outlookEmail
+                let identity = result.mail ?? result.userPrincipalName ?? outlookEmail
                 return (true, identity.isEmpty ? "Connected to Microsoft Graph" : "Connected as \(identity)")
             } catch {
-                AppLogger.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
+                AuditLoggingSeam.required.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
                     "credential_evidence": "microsoft_graph_oauth",
                     "credential_state": "failed",
                     "auth_verified": "false",
@@ -259,7 +298,7 @@ final class Connector {
         }
 
         guard !baseURL.isEmpty, let base = URL(string: baseURL) else {
-            AppLogger.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
+            AuditLoggingSeam.required.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
                 "credential_evidence": "connector_auth_v1",
                 "credential_state": "unknown",
                 "auth_verified": "false",
@@ -275,7 +314,7 @@ final class Connector {
             authMethod: authMethod,
             credentialKeys: credentialKeys
         ) {
-            AppLogger.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
+            AuditLoggingSeam.required.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
                 "credential_evidence": "connector_auth_v1",
                 "credential_state": "unknown",
                 "auth_verified": "false",
@@ -289,7 +328,7 @@ final class Connector {
         let creds = credentials(store: store)
         let missingKeys = missingCredentialKeys(store: store)
         if authMethod != "none", !credentialKeys.isEmpty, !missingKeys.isEmpty {
-            AppLogger.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
+            AuditLoggingSeam.required.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
                 "credential_evidence": "connector_auth_v1",
                 "credential_state": "missing",
                 "auth_verified": "false",
@@ -318,7 +357,7 @@ final class Connector {
                 config: config,
                 transport: transport
             ).test()
-            AppLogger.audit(
+            AuditLoggingSeam.required.audit(
                 .connectorTested,
                 category: "Keychain",
                 fields: outcome.auditFields(adding: auditContext.merging([
@@ -371,7 +410,7 @@ final class Connector {
         do {
             let (data, response) = try await transport.data(for: request)
             guard let http = response as? HTTPURLResponse else {
-                AppLogger.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
+                AuditLoggingSeam.required.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
                     "credential_evidence": "connector_auth_v1",
                     "credential_state": "unknown",
                     "auth_verified": "false",
@@ -384,7 +423,7 @@ final class Connector {
 
             if (200...299).contains(http.statusCode) {
                 if let apiError = redcapAPIError(in: data) {
-                    AppLogger.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
+                    AuditLoggingSeam.required.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
                         "credential_evidence": "connector_auth_v1",
                         "credential_state": "rejected",
                         "auth_verified": "false",
@@ -396,7 +435,7 @@ final class Connector {
                     return (false, apiError)
                 }
 
-                AppLogger.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
+                AuditLoggingSeam.required.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
                     "credential_evidence": "connector_auth_v1",
                     "credential_state": "authenticated",
                     "auth_verified": "true",
@@ -409,7 +448,7 @@ final class Connector {
                 return (true, "REDCap version endpoint responded successfully")
             }
 
-            AppLogger.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
+            AuditLoggingSeam.required.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
                 "credential_evidence": "connector_auth_v1",
                 "credential_state": http.statusCode == 401 || http.statusCode == 403 ? "rejected" : "unknown",
                 "auth_verified": "false",
@@ -421,7 +460,7 @@ final class Connector {
             ], uniquingKeysWith: { _, new in new }), level: .warning)
             return (false, "REDCap returned HTTP \(http.statusCode)")
         } catch {
-            AppLogger.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
+            AuditLoggingSeam.required.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
                 "credential_evidence": "connector_auth_v1",
                 "credential_state": "unknown",
                 "auth_verified": "false",
@@ -461,7 +500,7 @@ final class Connector {
             let (_, response) = try await transport.data(for: request)
             if let http = response as? HTTPURLResponse {
                 if (200...299).contains(http.statusCode) {
-                    AppLogger.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
+                    AuditLoggingSeam.required.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
                         "credential_evidence": "connector_auth_v1",
                         "credential_state": "authenticated",
                         "auth_verified": "true",
@@ -472,7 +511,7 @@ final class Connector {
                     ], uniquingKeysWith: { _, new in new }))
                     return (true, "HTTP \(http.statusCode) — connected successfully")
                 } else if http.statusCode == 401 || http.statusCode == 403 {
-                    AppLogger.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
+                    AuditLoggingSeam.required.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
                         "credential_evidence": "connector_auth_v1",
                         "credential_state": "rejected",
                         "auth_verified": "false",
@@ -483,7 +522,7 @@ final class Connector {
                     ], uniquingKeysWith: { _, new in new }), level: .warning)
                     return (false, "HTTP \(http.statusCode) — authentication failed")
                 } else {
-                    AppLogger.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
+                    AuditLoggingSeam.required.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
                         "credential_evidence": "connector_auth_v1",
                         "credential_state": "unknown",
                         "auth_verified": "false",
@@ -495,7 +534,7 @@ final class Connector {
                     return (false, "HTTP \(http.statusCode)")
                 }
             }
-            AppLogger.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
+            AuditLoggingSeam.required.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
                 "credential_evidence": "connector_auth_v1",
                 "credential_state": "unknown",
                 "auth_verified": "false",
@@ -505,7 +544,7 @@ final class Connector {
             ], uniquingKeysWith: { _, new in new }), level: .warning)
             return (false, "Unknown response")
         } catch {
-            AppLogger.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
+            AuditLoggingSeam.required.audit(.connectorTested, category: "Keychain", fields: auditContext.merging([
                 "credential_evidence": "connector_auth_v1",
                 "credential_state": "unknown",
                 "auth_verified": "false",
@@ -551,7 +590,7 @@ final class Connector {
     }
 
     /// Summary line for display
-    var displaySummary: String {
+    public var displaySummary: String {
         var parts: [String] = []
         if !baseURL.isEmpty {
             if let host = URL(string: baseURL)?.host {
@@ -570,7 +609,7 @@ final class Connector {
 
 extension CharacterSet {
     /// Characters safe for a URL-encoded form *value* (excludes &, =, +).
-    static let urlQueryValueAllowed: CharacterSet = {
+    public static let urlQueryValueAllowed: CharacterSet = {
         var cs = CharacterSet.urlQueryAllowed
         cs.remove(charactersIn: "&=+")
         return cs

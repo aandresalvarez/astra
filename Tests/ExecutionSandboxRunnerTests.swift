@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import ASTRAModels
 @testable import ASTRA
 import ASTRACore
 
@@ -21,6 +22,7 @@ struct ExecutionSandboxRunnerTests {
     private final class FakeLaunchAdapter: AgentRuntimeProcessLaunchPlanning, AgentRuntimeProcessEventParsing {
         let id: AgentRuntimeID
         let descriptor: AgentRuntimeDescriptor
+        let providerRuntimeMessages = ProviderRuntimeMessages.claudeCode
         let planCurrentDirectory: String
         let planExecutablePath: String
         let planArguments: [String]
@@ -82,7 +84,8 @@ struct ExecutionSandboxRunnerTests {
         workspacePath: String,
         permissionPolicy: PermissionPolicy = .restricted,
         executionPolicy: AgentRuntimeExecutionPolicy = .default,
-        contextText: String = ""
+        contextText: String = "",
+        launchResourcePlan: TaskLaunchResourcePlan? = nil
     ) -> AgentRuntimeProcessLaunchContext {
         AgentRuntimeProcessLaunchContext(
             prompt: "p",
@@ -94,7 +97,8 @@ struct ExecutionSandboxRunnerTests {
             executionPolicy: executionPolicy,
             permissionManifest: nil,
             timeoutSeconds: 1,
-            contextText: contextText
+            contextText: contextText,
+            launchResourcePlan: launchResourcePlan
         )
     }
 
@@ -308,8 +312,8 @@ struct ExecutionSandboxRunnerTests {
         }
     }
 
-    @Test("sandboxedPlan enables Codex native read access for Git credential context")
-    func sandboxedPlanEnablesCodexGitCredentialAccess() {
+    @Test("sandboxedPlan blocks restricted Codex when external Git credentials need native access")
+    func sandboxedPlanBlocksRestrictedCodexExternalGitCredentialAccess() {
         withStandardEnforcement(.off) {
             let runner = AgentRuntimeProcessRunner(gitCredentialContextProvider: { _ in
                 GitCredentialSandboxContext(
@@ -323,18 +327,160 @@ struct ExecutionSandboxRunnerTests {
                 adapter: FakeLaunchAdapter(runtime: .codexCLI, currentDirectory: "/tmp/whatever"),
                 context: makeContext(workspacePath: "/tmp/whatever", permissionPolicy: .restricted)
             )
-            guard case .plan(let plan) = outcome else {
-                Issue.record("Expected .plan when disabled")
+            guard case .blocked(let result) = outcome else {
+                Issue.record("Expected restricted Codex to fail closed when native credential access is unsupported")
                 return
             }
-            #expect(plan.arguments.contains("--config"))
-            #expect(plan.arguments.contains("sandbox_permissions=[\"disk-full-read-access\"]"))
-            #expect(plan.commandPlannedFields["git_provider_native_read_access"] == "codex_disk_full_read")
+            #expect(result.exitCode == -1)
+            #expect(result.runtimeStopReason == "credential_native_access_unavailable")
+            #expect(result.runtimeStopMessage?.contains("read-only native path grant") == true)
         }
     }
 
-    @Test("sandboxedPlan inserts Codex Git credential config before positional prompt")
-    func sandboxedPlanPlacesCodexGitCredentialConfigBeforePrompt() {
+    @Test("sandboxedPlan does not block restricted Codex when Git credential context has no paths")
+    func sandboxedPlanDoesNotBlockRestrictedCodexWhenGitCredentialContextHasNoPaths() {
+        let launchResourcePlan = TaskLaunchResourcePlan(
+            taskID: UUID(),
+            runID: UUID(),
+            runtime: AgentRuntimeID.codexCLI.rawValue,
+            phase: "run",
+            workspacePath: "/tmp/whatever",
+            executionEnvironmentID: WorkspaceExecutionEnvironment.host.id,
+            executionEnvironmentKind: ExecutionEnvironmentKind.host.rawValue,
+            providerPlacement: ExecutionEnvironmentProviderPlacement.host.rawValue,
+            gitCredential: RuntimeGitCredentialResource(
+                readablePaths: [],
+                writablePaths: [],
+                transports: [GitCredentialContextResolver.RemoteTransport.ssh.rawValue],
+                diagnostics: []
+            )
+        )
+
+        withStandardEnforcement(.off) {
+            let runner = AgentRuntimeProcessRunner(gitCredentialContextProvider: { _ in .empty })
+            let outcome = runner.sandboxedPlan(
+                adapter: FakeLaunchAdapter(runtime: .codexCLI, currentDirectory: "/tmp/whatever"),
+                context: makeContext(
+                    workspacePath: "/tmp/whatever",
+                    permissionPolicy: .restricted,
+                    launchResourcePlan: launchResourcePlan
+                )
+            )
+            guard case .plan(let plan) = outcome else {
+                Issue.record("Expected pathless Git credential context to avoid a native path-access block")
+                return
+            }
+            #expect(plan.commandPlannedFields["provider_native_credential_read_path_count"] == "0")
+            #expect(plan.commandPlannedFields["git_provider_native_read_access"] == nil)
+        }
+    }
+
+    @Test("sandboxedPlan does not block restricted Codex for local Git config reads")
+    func sandboxedPlanDoesNotBlockRestrictedCodexLocalGitConfigReads() {
+        let launchResourcePlan = TaskLaunchResourcePlan(
+            taskID: UUID(),
+            runID: UUID(),
+            runtime: AgentRuntimeID.codexCLI.rawValue,
+            phase: "run",
+            workspacePath: "/tmp/whatever",
+            executionEnvironmentID: WorkspaceExecutionEnvironment.host.id,
+            executionEnvironmentKind: ExecutionEnvironmentKind.host.rawValue,
+            providerPlacement: ExecutionEnvironmentProviderPlacement.host.rawValue,
+            hostPathGrants: [
+                RuntimePathGrant(
+                    path: "/tmp/astra-home/.gitconfig",
+                    access: .read,
+                    source: .gitCredential,
+                    reason: "Local Git inspection requires external Git config.",
+                    sensitivity: .credential,
+                    lifetime: .run,
+                    exists: true
+                )
+            ],
+            gitCredential: RuntimeGitCredentialResource(
+                readablePaths: ["/tmp/astra-home/.gitconfig"],
+                writablePaths: [],
+                transports: [],
+                diagnostics: ["local_git_config"]
+            )
+        )
+
+        withStandardEnforcement(.off) {
+            let runner = AgentRuntimeProcessRunner(gitCredentialContextProvider: { _ in .empty })
+            let outcome = runner.sandboxedPlan(
+                adapter: FakeLaunchAdapter(runtime: .codexCLI, currentDirectory: "/tmp/whatever"),
+                context: makeContext(
+                    workspacePath: "/tmp/whatever",
+                    permissionPolicy: .restricted,
+                    launchResourcePlan: launchResourcePlan
+                )
+            )
+            guard case .plan(let plan) = outcome else {
+                Issue.record("Expected local Git config reads to avoid a native credential-access block")
+                return
+            }
+            #expect(plan.sandboxReadablePaths.contains("/tmp/astra-home/.gitconfig"))
+            #expect(plan.commandPlannedFields["provider_native_credential_read_path_count"] == "0")
+            #expect(plan.commandPlannedFields["git_credential_transports"] == "")
+        }
+    }
+
+    @Test("sandboxedPlan blocks restricted Codex when SSH resource grants need native access")
+    func sandboxedPlanBlocksRestrictedCodexSSHResourceCredentialAccess() {
+        let launchResourcePlan = TaskLaunchResourcePlan(
+            taskID: UUID(),
+            runID: UUID(),
+            runtime: AgentRuntimeID.codexCLI.rawValue,
+            phase: "run",
+            workspacePath: "/tmp/whatever",
+            executionEnvironmentID: WorkspaceExecutionEnvironment.host.id,
+            executionEnvironmentKind: ExecutionEnvironmentKind.host.rawValue,
+            providerPlacement: ExecutionEnvironmentProviderPlacement.host.rawValue,
+            hostPathGrants: [
+                RuntimePathGrant(
+                    path: "/tmp/astra-home/.ssh/config",
+                    access: .read,
+                    source: .remoteWorkspace,
+                    reason: "Configured remote workspace SSH aliases require the user's SSH config.",
+                    sensitivity: .credential,
+                    lifetime: .run,
+                    exists: true
+                )
+            ],
+            credentialGrants: [
+                RuntimeCredentialGrant(
+                    label: "Remote workspace SSH",
+                    source: .remoteWorkspace,
+                    reason: "Remote workspace commands use SSH config, identity files, and known-host metadata.",
+                    projectedAsEnvironment: false,
+                    projectedAsFile: true
+                )
+            ],
+            gitCredential: nil
+        )
+
+        withStandardEnforcement(.off) {
+            let runner = AgentRuntimeProcessRunner(gitCredentialContextProvider: { _ in .empty })
+            let outcome = runner.sandboxedPlan(
+                adapter: FakeLaunchAdapter(runtime: .codexCLI, currentDirectory: "/tmp/whatever"),
+                context: makeContext(
+                    workspacePath: "/tmp/whatever",
+                    permissionPolicy: .restricted,
+                    launchResourcePlan: launchResourcePlan
+                )
+            )
+            guard case .blocked(let result) = outcome else {
+                Issue.record("Expected restricted Codex to fail closed for SSH credential path grants")
+                return
+            }
+            #expect(result.exitCode == -1)
+            #expect(result.runtimeStopReason == "credential_native_access_unavailable")
+            #expect(result.runtimeStopMessage?.contains("read-only native path grant") == true)
+        }
+    }
+
+    @Test("sandboxedPlan leaves autonomous Codex resume prompt unshifted for Git credential context")
+    func sandboxedPlanLeavesAutonomousCodexResumePromptUnshiftedForGitCredentialContext() {
         withStandardEnforcement(.off) {
             let runner = AgentRuntimeProcessRunner(gitCredentialContextProvider: { _ in
                 GitCredentialSandboxContext(
@@ -350,21 +496,22 @@ struct ExecutionSandboxRunnerTests {
                     currentDirectory: "/tmp/whatever",
                     arguments: ["exec", "resume", "--json", "--skip-git-repo-check", "session-id", "git pull origin main"]
                 ),
-                context: makeContext(workspacePath: "/tmp/whatever", permissionPolicy: .restricted)
+                context: makeContext(workspacePath: "/tmp/whatever", permissionPolicy: .autonomous)
             )
             guard case .plan(let plan) = outcome,
-                  let configFlagIndex = plan.arguments.firstIndex(of: "--config"),
                   let skipIndex = plan.arguments.firstIndex(of: "--skip-git-repo-check") else {
-                Issue.record("Expected Codex plan with --config and --skip-git-repo-check")
+                Issue.record("Expected Codex plan with --skip-git-repo-check")
                 return
             }
-            #expect(configFlagIndex < skipIndex)
-            #expect(plan.arguments[configFlagIndex + 1] == "sandbox_permissions=[\"disk-full-read-access\"]")
+            #expect(!plan.arguments.contains("sandbox_permissions=[\"disk-full-read-access\"]"))
+            #expect(plan.arguments[skipIndex + 1] == "session-id")
+            #expect(plan.arguments.last == "git pull origin main")
+            #expect(plan.sandboxReadablePaths.contains("/tmp/astra-gitconfig"))
         }
     }
 
-    @Test("sandboxedPlan enables Copilot native path access for Git credential context")
-    func sandboxedPlanEnablesCopilotGitCredentialAccess() {
+    @Test("sandboxedPlan does not append Copilot path access outside render evidence")
+    func sandboxedPlanDoesNotAppendCopilotGitCredentialAccessOutsideRenderEvidence() {
         withStandardEnforcement(.off) {
             let runner = AgentRuntimeProcessRunner(gitCredentialContextProvider: { _ in
                 GitCredentialSandboxContext(
@@ -387,8 +534,8 @@ struct ExecutionSandboxRunnerTests {
                 Issue.record("Expected .plan when disabled")
                 return
             }
-            #expect(plan.arguments.contains("--allow-all-paths"))
-            #expect(plan.commandPlannedFields["git_provider_native_read_access"] == "copilot_allow_all_paths")
+            #expect(!plan.arguments.contains("--allow-all-paths"))
+            #expect(plan.commandPlannedFields["git_provider_native_read_access"] == nil)
         }
     }
 
@@ -507,7 +654,7 @@ struct ExecutionSandboxRunnerTests {
                 return
             }
             #expect(plan.commandPlannedFields["git_credential_context"] == "true")
-            #expect(plan.commandPlannedFields["git_provider_native_read_access"] == "codex_disk_full_read")
+            #expect(plan.commandPlannedFields["git_provider_native_read_access"] == nil)
             #expect(plan.commandPlannedFields["workspace_executor_mode"] == "host_provider_container_workspace")
             #expect(plan.commandPlannedFields["workspace_executor"] == "docker")
             #expect(plan.sandboxReadablePaths.contains("/tmp/astra-gitconfig"))
@@ -553,10 +700,6 @@ struct ExecutionSandboxRunnerTests {
         )
 
         let plan = base.addingGitCredentialContext(context)
-            .enablingProviderNativeGitCredentialReads(
-                for: context,
-                permissionPolicy: .restricted
-            )
 
         #expect(plan.executionEnvironment.id == "image:workspace")
         #expect(plan.pathMapper?.containerPath(forHostPath: "/tmp/whatever") == "/workspace")

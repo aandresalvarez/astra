@@ -1,5 +1,10 @@
 import Foundation
 import Testing
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 @testable import WorkspaceToolSupport
 
 @Suite("Workspace Tool Support", .serialized)
@@ -239,6 +244,269 @@ struct WorkspaceToolSupportTests {
 
         let ssh = configuration.containerCommand(for: "ssh deid-jsn-workbench 'hostname'")
         #expect(ssh.errorMessage?.contains("host control-plane CLI 'ssh'") == true)
+    }
+
+    @Test("Workspace command path mapper rejects host control-plane commands hidden by shell syntax")
+    func workspaceCommandPathMapperRejectsShellExpandedHostControlPlaneCommands() throws {
+        let configuration = WorkspaceToolConfiguration(
+            dockerExecutable: "docker",
+            image: "astra/workspace:latest",
+            containerName: "astra-test",
+            workdir: "/workspace",
+            network: "bridge",
+            taskID: "task-1",
+            runID: "run-1",
+            mounts: [
+                WorkspaceDockerMount(hostPath: "/tmp/workspace", containerPath: "/workspace", access: "rw", role: "workspace"),
+                WorkspaceDockerMount(hostPath: "/tmp/gcloud", containerPath: "/root/.config/gcloud", access: "ro", role: "credential")
+            ],
+            containerEnvironment: [
+                "CLOUDSDK_CONFIG": "/root/.config/gcloud",
+                "GOOGLE_APPLICATION_CREDENTIALS": "/root/.config/gcloud/application_default_credentials.json"
+            ]
+        )
+
+        let commands = [
+            "echo $(gcloud auth list --format=json)",
+            "echo \"$(gcloud auth list --format=json)\"",
+            "echo $(printf \"\\\" )\"; gcloud auth list)",
+            "echo \"$(printf \"\\\" )\"; gcloud auth list)\"",
+            "echo `printf \\`; gcloud auth list`",
+            "echo \"`printf \\`; gcloud auth list`\"",
+            "env TOKEN=$(gcloud auth application-default print-access-token)",
+            "sh -c 'gcloud projects list'",
+            "cmd='gcloud auth list'; sh -c \"$cmd\"",
+            "sh -c -- 'gcloud projects list'",
+            "bash -lc 'gcloud projects list'",
+            "bash -lc -- 'gcloud projects list'",
+            "dash -c 'gcloud projects list'",
+            "bash -c \"$'gcloud' auth list\"",
+            "command gcloud projects list",
+            "command 2>/tmp/e ssh deid-jsn-workbench hostname",
+            "exec gcloud auth list",
+            "sh -c 'exec gcloud auth list'",
+            "sh -c 'echo \"$(gcloud auth list)\"'",
+            "env -u FOO gcloud auth list",
+            "env >/tmp/log gcloud auth list",
+            "env --unset FOO --chdir /tmp gcloud auth list",
+            "env -S'gcloud auth list'",
+            "env -iS'gcloud auth list'",
+            "cmd='--split-string=gcloud auth list'; env \"$cmd\"",
+            "gh -R owner/repo api repos/owner/repo",
+            "gh --repo owner/repo pr view 148",
+            "gh --repo=owner/repo api repos/owner/repo",
+            "gh run cancel 12345",
+            "gh workflow run ci.yml",
+            "cmd='gh --repo owner/repo api repos/owner/repo'; $cmd",
+            "env -S 'gh --repo owner/repo api repos/owner/repo'",
+            "$(ssh deid-jsn-workbench hostname)",
+            "bash -c 'cat <(gcloud auth list)'",
+            "g\\cloud auth list",
+            "s\\sh deid-jsn-workbench hostname",
+            "printf 'gcloud auth list\\n' | sh",
+            "printf '%s\\n' 'gcloud auth list' | sh",
+            "printf '%s auth list\\n' gcloud | sh",
+            "printf gcloud\\ auth\\ list | sh",
+            "echo gcloud auth list | sh",
+            "sh <<'EOF'\ngcloud auth list\nEOF",
+            "sh -s <<1\ngcloud auth list\n1",
+            "bash -c \"sh <<< 'gcloud auth list'\"",
+            "bash -c 'bash <(printf \"gcloud auth list\\n\")'",
+            "bash -c 'source <(printf \"gcloud auth list\\n\")'",
+            ">/tmp/out gcloud auth list",
+            "2>&1 gcloud auth list",
+            "2>/tmp/e ssh deid-jsn-workbench hostname",
+            "f() { gcloud auth list; }; f",
+            "function f() { gcloud auth list; }; f",
+            "if gcloud auth list; then echo ok; fi",
+            "while gcloud auth list; do break; done",
+            "case x in x) gcloud auth list;; esac",
+            "time -p gcloud auth list",
+            "nohup gcloud auth list",
+            "nice -n 5 gcloud auth list",
+            "setsid gh pr view 159",
+            "timeout 1 gcloud auth list",
+            "echo $(echo $(echo $(echo $(echo $(echo $(gcloud auth list))))))",
+            "/usr/bin/env gcloud auth list",
+            "cmd=gcloud; $cmd auth list",
+            "a=1 cmd=gcloud; $cmd auth list",
+            "cmd='gcloud auth list'; $cmd",
+            "${cmd:-gcloud} auth list",
+            "part=cl; g${part}oud auth list",
+            "cmd=x; ${cmd:+gcloud} auth list",
+            "${cmd:=gcloud} auth list",
+            "env -S 'gcloud auth list'",
+            "env -S '-i gcloud auth list'",
+            "env -S 'FOO=bar gcloud auth list'",
+            "env --split-string='gcloud auth list'",
+            "exec -a harmless gcloud auth list",
+            "eval 'gcloud auth list'",
+            "cmd=gcloud sh -c '$cmd auth list'",
+            "bash -c '$1 auth list' _ gcloud",
+            "bash -c 'exec \"$@\"' _ gcloud auth list",
+            "bash -c $'g\\143loud auth list'",
+            "command printf 'gcloud auth list\\n' | sh",
+            "printf 'gcloud auth list\\n' | env sh",
+            "$(printf gcloud) auth list",
+            "bash -c '$(printf gcloud) auth list'",
+            "g{cl,}oud auth list",
+            "coproc gcloud auth list",
+            "`printf gh` pr view 1",
+            "\"`printf gh`\" pr view 1",
+            "bash -c 'builtin eval gcloud auth list'",
+            "cat <<'EOF' | sh\ngcloud auth list\nEOF",
+            "cat <<EOF | bash\ngcloud auth list\nEOF",
+            "find . -exec gcloud auth list ';'",
+            "find . -name '*.swift' -execdir gh api repos/owner/repo \\;",
+            "g*oud auth list",
+            "g?oud auth list",
+            "sudo gcloud auth list",
+            "sudo -u root env FOO=bar gcloud auth list",
+            "sudo -b gcloud auth list",
+            "sudo -R /some/root gcloud auth list",
+            "gc\\\nloud auth list",
+            "bash -c 'gc\\\nloud auth list'",
+            "$(printf %s gcloud) auth list",
+            "cmd=gcloud; x=$cmd; $x auth list",
+            "eval -- gcloud auth list",
+            "env sh <<EOF\ngcloud auth list\nEOF",
+            "command sh <<EOF-1\ngcloud auth list\nEOF-1",
+            "env python3 - <<PY\nimport subprocess; subprocess.run(['gcloud', 'auth', 'list'])\nPY",
+            "printf 'import os; os.system(\"gcloud auth list\")\\n' | python3 -",
+            "cat <<PY | python3 -\nimport os; os.system(\"gcloud auth list\")\nPY",
+            "bash < <(echo gcloud auth list)",
+            "source <(cat <<EOF\ngcloud auth list\nEOF\n)",
+            "x() { \"$@\"; }; x gcloud auth list",
+            "python3 -c \"import subprocess; subprocess.run(['bq', 'ls'])\"",
+            "python3 -c \"import subprocess; subprocess.run(['gh', 'api', 'repos/owner/repo'])\"",
+            "python3 -c \"import subprocess; subprocess.run(('gcloud', 'auth', 'list'))\"",
+            "python3 -c \"import subprocess; subprocess.run(args=['gcloud', 'auth', 'list'])\"",
+            "python3 -c \"import subprocess; subprocess.run('gcloud auth list', shell=True)\"",
+            "python3 -c \"import subprocess; subprocess.run(args='gcloud auth list', shell=True)\"",
+            "python3 -c \"import subprocess; subprocess.run(r'gcloud auth list', shell=True)\"",
+            "python3 -c \"import subprocess; subprocess.run(shell=True, args='gcloud auth list')\"",
+            "python3 -c \"import os; os.system('ssh deid-jsn-workbench hostname')\"",
+            "python3 -c \"import os; os.system(f'gcloud auth list')\"",
+            "python3 -c 'import os; os.system(\"\"\"gcloud auth list\"\"\")'",
+            "python3 -c \"import os; os.system('g\\x63loud auth list')\"",
+            "python3 -c 'import os; os.system(\"g\" + \"cloud auth list\")'",
+            "printf '\\147cloud auth list\\n' | sh",
+            "printf '159\\n' | xargs gh pr view",
+            "echo -e 'g\\x63loud auth list' | sh"
+        ]
+
+        for command in commands {
+            let resolution = configuration.containerCommand(for: command)
+            #expect(
+                resolution.errorMessage?.contains("host control-plane CLI") == true,
+                "Expected host control-plane rejection for: \(command)"
+            )
+        }
+
+        let sixDeepSubstitution = configuration.containerCommand(
+            for: "echo $(echo $(echo $(echo $(echo $(echo $(gcloud auth list))))))"
+        )
+        #expect(sixDeepSubstitution.errorMessage?.contains("host control-plane CLI 'gcloud'") == true)
+        #expect(sixDeepSubstitution.errorMessage?.contains("too deeply nested") == false)
+    }
+
+    @Test("Workspace command path mapper fails closed on unresolved command variable expansions")
+    func workspaceCommandPathMapperFailsClosedOnUnresolvedCommandVariableExpansions() throws {
+        let configuration = WorkspaceToolConfiguration(
+            dockerExecutable: "docker",
+            image: "astra/workspace:latest",
+            containerName: "astra-test",
+            workdir: "/workspace",
+            network: "bridge",
+            taskID: "task-1",
+            runID: "run-1",
+            mounts: [
+                WorkspaceDockerMount(hostPath: "/tmp/workspace", containerPath: "/workspace", access: "rw", role: "workspace")
+            ],
+            containerEnvironment: [:]
+        )
+
+        let commands = [
+            "export cmd=gcloud; $cmd auth list",
+            "env cmd=gcloud sh -c \"$cmd auth list\"",
+            "`unresolved_command` pr view 1"
+        ]
+
+        for command in commands {
+            let resolution = configuration.containerCommand(for: command)
+            #expect(
+                resolution.errorMessage?.contains("shell expansions ASTRA cannot safely evaluate") == true,
+                "Expected opaque expansion rejection for: \(command)"
+            )
+            #expect(resolution.errorMessage?.contains("host control-plane CLI 'opaque shell expansion'") == false)
+        }
+    }
+
+    @Test("Workspace command path mapper reports recursive scan depth truthfully")
+    func workspaceCommandPathMapperReportsRecursiveScanDepthTruthfully() throws {
+        let configuration = WorkspaceToolConfiguration(
+            dockerExecutable: "docker",
+            image: "astra/workspace:latest",
+            containerName: "astra-test",
+            workdir: "/workspace",
+            network: "bridge",
+            taskID: "task-1",
+            runID: "run-1",
+            mounts: [
+                WorkspaceDockerMount(hostPath: "/tmp/workspace", containerPath: "/workspace", access: "rw", role: "workspace")
+            ],
+            containerEnvironment: [:]
+        )
+
+        let resolution = configuration.containerCommand(
+            for: "echo $(echo $(echo $(echo $(echo $(echo $(echo $(ssh deid-jsn-workbench hostname)))))))"
+        )
+
+        #expect(resolution.errorMessage?.contains("too deeply nested") == true)
+        #expect(resolution.errorMessage?.contains("host control-plane CLI 'gh'") == false)
+
+        let deeplyNestedRender = configuration.containerCommand(
+            for: "echo $(echo $(echo $(echo $(echo $(echo $(echo $(echo safe))))))))"
+        )
+        #expect(deeplyNestedRender.errorMessage?.contains("too deeply nested") == true)
+    }
+
+    @Test("Workspace command path mapper allows control-plane tool names as data")
+    func workspaceCommandPathMapperAllowsHostControlPlaneToolNamesAsData() throws {
+        let configuration = WorkspaceToolConfiguration(
+            dockerExecutable: "docker",
+            image: "astra/workspace:latest",
+            containerName: "astra-test",
+            workdir: "/workspace",
+            network: "bridge",
+            taskID: "task-1",
+            runID: "run-1",
+            mounts: [
+                WorkspaceDockerMount(hostPath: "/tmp/workspace", containerPath: "/workspace", access: "rw", role: "workspace")
+            ],
+            containerEnvironment: [:]
+        )
+
+        let commands = [
+            "grep -R gcloud docs",
+            "grep -R '$(gcloud auth list)' docs",
+            "printf '%s\\n' '$(gcloud auth list)'",
+            "printf '%s\\n' '\\$(gcloud auth list)'",
+            "grep \"subprocess.run(['gcloud', 'auth', 'list'])\" file.py",
+            "command -v gcloud",
+            "printf 'ssh\\n'",
+            "echo gh api repo data",
+            "awk '/bq/ { print }' README.md",
+            "cat <<'EOF'\ngcloud auth list\nEOF",
+            "[ -f Package.swift ] && echo ok",
+            "[[ -f Package.swift ]] && echo ok",
+            "PATTERN='gcloud auth list'; grep -R \"$PATTERN\" docs"
+        ]
+
+        for command in commands {
+            let resolution = configuration.containerCommand(for: command)
+            #expect(resolution.errorMessage == nil)
+        }
     }
 
     @Test("Workspace MCP server exposes and runs workspace_shell")
@@ -591,14 +859,14 @@ struct WorkspaceToolSupportTests {
 
         let docker = root.appendingPathComponent("docker")
         let log = root.appendingPathComponent("docker.log")
+        let quotedLogPath = log.path.replacingOccurrences(of: "'", with: "'\\''")
         try """
         #!/bin/sh
-        printf '%s\\n' "$*" >> "$FAKE_DOCKER_LOG"
+        LOG='\(quotedLogPath)'
+        printf '%s\\n' "$*" >> "$LOG"
         exit 99
         """.write(to: docker, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: docker.path)
-        setenv("FAKE_DOCKER_LOG", log.path, 1)
-        defer { unsetenv("FAKE_DOCKER_LOG") }
 
         let configuration = WorkspaceToolConfiguration(
             dockerExecutable: docker.path,
@@ -681,9 +949,11 @@ struct WorkspaceToolSupportTests {
 
         let docker = root.appendingPathComponent("docker")
         let log = root.appendingPathComponent("docker.log")
+        let quotedLogPath = log.path.replacingOccurrences(of: "'", with: "'\\''")
         try """
         #!/bin/sh
-        printf '%s\\n' "$*" >> "$FAKE_DOCKER_LOG"
+        LOG='\(quotedLogPath)'
+        printf '%s\\n' "$*" >> "$LOG"
         case "$1" in
           inspect) exit 1 ;;
           rm) exit 0 ;;
@@ -694,8 +964,6 @@ struct WorkspaceToolSupportTests {
         esac
         """.write(to: docker, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: docker.path)
-        setenv("FAKE_DOCKER_LOG", log.path, 1)
-        defer { unsetenv("FAKE_DOCKER_LOG") }
 
         let jobRoot = root.appendingPathComponent("jobs", isDirectory: true)
         let configuration = WorkspaceToolConfiguration(
@@ -732,6 +1000,43 @@ struct WorkspaceToolSupportTests {
         #expect(logLines.contains("exec -d --workdir /workspace astra-test-job sh -c"))
         #expect(logLines.contains("/workspace/jobs/\(job.jobID)"))
         #expect(logLines.contains("timeout_seconds=7200"))
+        #expect(!logLines.contains("command -v setsid"))
+        #expect(!logLines.contains("setsid_bin=\"$(command -v setsid)\""))
+        #expect(logLines.contains("for candidate in /usr/bin/setsid /bin/setsid /usr/sbin/setsid /sbin/setsid /usr/local/bin/setsid; do"))
+        #expect(logLines.contains("kill_bin=\"\""))
+        #expect(logLines.contains("for candidate in /bin/kill /usr/bin/kill /usr/local/bin/kill; do"))
+        #expect(logLines.contains("kill_bin=\"$candidate\""))
+        #expect(logLines.contains(#""exitCode":127"#))
+        #expect(logLines.contains("process group isolation unavailable"))
+        #expect(logLines.contains("\"$setsid_bin\" sh \"$job_dir/command.sh\" > \"$stdout\" 2> \"$stderr\" &"))
+        #expect(logLines.contains("pid_metadata=\"$job_dir/pid.meta\""))
+        #expect(logLines.contains("rm -f \"$timeout_marker\" \"$pidfile\" \"$pid_metadata\""))
+        #expect(logLines.contains("command_start_time=\"$(proc_start_time \"$command_pid\" || true)\""))
+        #expect(logLines.contains("printf 'mode=setsid-process-group\\n'"))
+        #expect(logLines.contains("printf 'start_time=%s\\n' \"$command_start_time\""))
+        #expect(logLines.contains("pid_metadata_tmp=\"$pid_metadata.tmp\""))
+        #expect(logLines.contains("} > \"$pid_metadata_tmp\""))
+        #expect(logLines.contains("mv -f \"$pid_metadata_tmp\" \"$pid_metadata\""))
+        #expect(!logLines.contains("} > \"$pid_metadata\""))
+        #expect(logLines.contains("rm -f \"$pidfile\" \"$pid_metadata\""))
+        #expect(logLines.contains("safe_pid \"$command_pid\" || return 0"))
+        #expect(logLines.contains("process_group_exists() {"))
+        #expect(logLines.contains("\"$kill_bin\" -0 -- -\"$group_pid\" 2>/dev/null"))
+        #expect(logLines.contains("kill -0 -\"$group_pid\" 2>/dev/null"))
+        #expect(logLines.contains("command_leader_matches_start_time() {"))
+        #expect(logLines.contains("kill -0 \"$command_pid\" 2>/dev/null || return 1"))
+        #expect(logLines.contains("current_start_time=\"$(proc_start_time \"$command_pid\" || true)\""))
+        #expect(logLines.contains("[ \"$command_start_time\" = \"$current_start_time\" ] || return 1"))
+        #expect(logLines.contains("signal_process_group() {"))
+        #expect(logLines.contains("\"$kill_bin\" -\"$signal\" -- -\"$group_pid\" 2>/dev/null"))
+        #expect(logLines.contains("kill -\"$signal\" -\"$group_pid\" 2>/dev/null || true"))
+        #expect(logLines.contains("if command_leader_matches_start_time && process_group_exists \"$command_pid\"; then"))
+        #expect(logLines.contains("signal_process_group TERM \"$command_pid\""))
+        #expect(logLines.contains("signal_process_group KILL \"$command_pid\""))
+        #expect(!logLines.contains("\"$kill_bin\" -TERM -\"$command_pid\" 2>/dev/null || true"))
+        #expect(!logLines.contains("\"$kill_bin\" -KILL -\"$command_pid\" 2>/dev/null || true"))
+        #expect(!logLines.contains("kill -TERM \"$command_pid\" 2>/dev/null || true"))
+        #expect(!logLines.contains("kill -KILL \"$command_pid\" 2>/dev/null || true"))
         #expect(logLines.contains("status=timed_out; code=124"))
 
         try #"{"status":"succeeded","exitCode":0,"completedAt":"2026-06-24T12:00:00Z"}"#
@@ -741,6 +1046,664 @@ struct WorkspaceToolSupportTests {
         #expect(completed.status == .succeeded)
         #expect(completed.exitCode == 0)
         #expect(manager.tail(jobID: job.jobID, stream: "stdout", lines: 10).text.contains("ok"))
+    }
+
+    @Test("Docker workspace job cancel rejects non-canonical job ids before Docker exec")
+    func dockerWorkspaceJobCancelRejectsNonCanonicalJobIDsBeforeDockerExec() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-workspace-job-cancel-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let docker = root.appendingPathComponent("docker")
+        let log = root.appendingPathComponent("docker.log")
+        let quotedLogPath = log.path.replacingOccurrences(of: "'", with: "'\\''")
+        try """
+        #!/bin/sh
+        LOG='\(quotedLogPath)'
+        printf '%s\\n' "$*" >> "$LOG"
+        case "$1" in
+          inspect) exit 1 ;;
+          rm) exit 0 ;;
+          run) echo container-id; exit 0 ;;
+          exec) exit 0 ;;
+          stop) exit 0 ;;
+          *) exit 99 ;;
+        esac
+        """.write(to: docker, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: docker.path)
+
+        let jobRoot = root.appendingPathComponent("jobs", isDirectory: true)
+        let configuration = WorkspaceToolConfiguration(
+            dockerExecutable: docker.path,
+            image: "astra/workspace:latest",
+            containerName: "astra-test-job-cancel",
+            workdir: "/workspace",
+            network: "bridge",
+            taskID: "task-cancel",
+            runID: "run-cancel",
+            mounts: [
+                WorkspaceDockerMount(hostPath: root.path, containerPath: "/workspace", access: "rw", role: "workspace")
+            ],
+            jobRootHostPath: jobRoot.path,
+            jobRootContainerPath: "/workspace/jobs"
+        )
+        let executor = DockerWorkspaceCommandExecutor(configuration: configuration)
+        let manager = DockerWorkspaceJobManager(configuration: configuration, executor: executor)
+
+        let job = manager.start(
+            command: "printf started && sleep 60",
+            timeoutSeconds: 7200,
+            label: "long validation",
+            progressProbe: "generic-log"
+        )
+        let logBeforeCancel = try String(contentsOf: log, encoding: .utf8)
+
+        let cancelled = manager.cancel(jobID: "../\(job.jobID)")
+        executor.cleanup()
+
+        #expect(cancelled.status == .failed)
+        #expect(cancelled.message?.contains("Invalid workspace job id") == true)
+        let logAfterCancel = try String(contentsOf: log, encoding: .utf8)
+        let cancelLog = String(logAfterCancel.dropFirst(logBeforeCancel.count))
+        #expect(!cancelLog.contains("exec astra-test-job-cancel sh -c"))
+        #expect(!cancelLog.contains("/workspace/jobs/../\(job.jobID)/pid"))
+        #expect(manager.status(jobID: job.jobID).status == .running)
+    }
+
+    @Test("Workspace managed job store canonicalizes uppercase job ids")
+    func workspaceManagedJobStoreCanonicalizesUppercaseJobIDs() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-workspace-job-case-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let store = WorkspaceManagedJobStore(rootPath: root.path)
+        let job = try store.create(
+            command: "echo ok",
+            timeoutSeconds: nil,
+            label: nil,
+            progressProbe: nil,
+            runtime: "docker"
+        )
+
+        let loaded = try store.load(jobID: job.jobID.uppercased())
+        #expect(loaded.jobID == job.jobID)
+
+        let cancelled = try store.mark(jobID: job.jobID.uppercased(), status: .cancelled)
+        #expect(cancelled.jobID == job.jobID)
+        #expect(cancelled.status == .cancelled)
+    }
+
+    @Test("Workspace managed job store persists canonical job ids")
+    func workspaceManagedJobStorePersistsCanonicalJobIDs() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-workspace-job-save-case-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let store = WorkspaceManagedJobStore(rootPath: root.path)
+        let now = Date(timeIntervalSince1970: 1_782_300_000)
+        let record = WorkspaceManagedJobRecord(
+            jobID: "JOB_ABC-123",
+            command: "echo ok",
+            runtime: "docker",
+            status: .queued,
+            createdAt: now,
+            updatedAt: now,
+            stdoutLogPath: "/tmp/job/stdout.log",
+            stderrLogPath: "/tmp/job/stderr.log",
+            heartbeatPath: "/tmp/job/heartbeat.json",
+            resultPath: "/tmp/job/result.json"
+        )
+
+        try store.save(record)
+
+        let loaded = try store.load(jobID: "JOB_ABC-123")
+        #expect(loaded.jobID == "job_abc-123")
+        #expect(loaded.command == "echo ok")
+        #expect(loaded.status == .queued)
+    }
+
+    @Test("Managed job tail derives log paths from trusted job directory")
+    func managedJobTailDerivesLogPathsFromTrustedJobDirectory() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-workspace-job-store-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let outside = root.appendingPathComponent("host-secret.txt", isDirectory: false)
+        try "HOST_SECRET_FROM_OUTSIDE_JOB_DIR\n".write(to: outside, atomically: true, encoding: .utf8)
+
+        let jobRoot = root.appendingPathComponent("jobs", isDirectory: true)
+        let store = WorkspaceManagedJobStore(rootPath: jobRoot.path)
+        var record = try store.create(
+            command: "printf safe",
+            timeoutSeconds: nil,
+            label: nil,
+            progressProbe: nil,
+            runtime: "docker"
+        )
+        let jobDirectory = jobRoot.appendingPathComponent(record.jobID, isDirectory: true)
+        try "SAFE_STDOUT\n".write(to: jobDirectory.appendingPathComponent("stdout.log"), atomically: true, encoding: .utf8)
+        try "SAFE_STDERR\n".write(to: jobDirectory.appendingPathComponent("stderr.log"), atomically: true, encoding: .utf8)
+
+        record.stdoutLogPath = outside.path
+        record.stderrLogPath = outside.path
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode(record).write(to: jobDirectory.appendingPathComponent("job.json"), options: [.atomic])
+
+        let stdout = try store.tail(jobID: record.jobID, stream: "stdout", lines: 10)
+        let stderr = try store.tail(jobID: record.jobID, stream: "stderr", lines: 10)
+
+        #expect(stdout.text.contains("SAFE_STDOUT"))
+        #expect(stderr.text.contains("SAFE_STDERR"))
+        #expect(!stdout.text.contains("HOST_SECRET_FROM_OUTSIDE_JOB_DIR"))
+        #expect(!stderr.text.contains("HOST_SECRET_FROM_OUTSIDE_JOB_DIR"))
+
+        let stdoutURL = jobDirectory.appendingPathComponent("stdout.log")
+        let stderrURL = jobDirectory.appendingPathComponent("stderr.log")
+        try FileManager.default.removeItem(at: stdoutURL)
+        try FileManager.default.removeItem(at: stderrURL)
+        try FileManager.default.createSymbolicLink(at: stdoutURL, withDestinationURL: outside)
+        try FileManager.default.createSymbolicLink(at: stderrURL, withDestinationURL: outside)
+
+        let symlinkedStdout = try store.tail(jobID: record.jobID, stream: "stdout", lines: 10)
+        let symlinkedStderr = try store.tail(jobID: record.jobID, stream: "stderr", lines: 10)
+
+        #expect(symlinkedStdout.text.isEmpty)
+        #expect(symlinkedStderr.text.isEmpty)
+        #expect(!symlinkedStdout.text.contains("HOST_SECRET_FROM_OUTSIDE_JOB_DIR"))
+        #expect(!symlinkedStderr.text.contains("HOST_SECRET_FROM_OUTSIDE_JOB_DIR"))
+
+        try FileManager.default.removeItem(at: stdoutURL)
+#if canImport(Darwin) || canImport(Glibc)
+        #expect(mkfifo(stdoutURL.path, 0o600) == 0)
+        let fifoStdout = try store.tail(jobID: record.jobID, stream: "stdout", lines: 10)
+        #expect(fifoStdout.text.isEmpty)
+        try FileManager.default.removeItem(at: stdoutURL)
+#endif
+
+        try FileManager.default.linkItem(at: outside, to: stdoutURL)
+        let hardLinkedStdout = try store.tail(jobID: record.jobID, stream: "stdout", lines: 10)
+        #expect(hardLinkedStdout.text.isEmpty)
+        #expect(!hardLinkedStdout.text.contains("HOST_SECRET_FROM_OUTSIDE_JOB_DIR"))
+        try FileManager.default.removeItem(at: stdoutURL)
+
+        try "RACE_SAFE_STDOUT\n".write(to: stdoutURL, atomically: true, encoding: .utf8)
+        let racedOutsideLink = root.appendingPathComponent("raced-stdout-hardlink.log", isDirectory: false)
+        store.afterTrustedRegularFileStatForTesting = { url in
+            guard url.lastPathComponent == "stdout.log" else { return }
+            try? FileManager.default.removeItem(at: racedOutsideLink)
+            try? FileManager.default.linkItem(at: stdoutURL, to: racedOutsideLink)
+        }
+        let racedHardLinkedStdout = try store.tail(jobID: record.jobID, stream: "stdout", lines: 10)
+        store.afterTrustedRegularFileStatForTesting = nil
+        #expect(racedHardLinkedStdout.text.isEmpty)
+        #expect(!racedHardLinkedStdout.text.contains("RACE_SAFE_STDOUT"))
+        try? FileManager.default.removeItem(at: racedOutsideLink)
+        try FileManager.default.removeItem(at: stdoutURL)
+
+        let heartbeatURL = jobDirectory.appendingPathComponent("heartbeat.json")
+        let resultURL = jobDirectory.appendingPathComponent("result.json")
+        let outsideHeartbeat = root.appendingPathComponent("host-heartbeat.json", isDirectory: false)
+        let outsideResult = root.appendingPathComponent("host-result.json", isDirectory: false)
+        try #"{"status":"running","timestamp":"2026-06-24T12:00:00Z"}"#
+            .write(to: outsideHeartbeat, atomically: true, encoding: .utf8)
+        try #"{"status":"succeeded","exitCode":0,"completedAt":"2026-06-24T12:00:00Z","message":"HOST_RESULT_FROM_OUTSIDE_JOB_DIR"}"#
+            .write(to: outsideResult, atomically: true, encoding: .utf8)
+        try FileManager.default.createSymbolicLink(at: heartbeatURL, withDestinationURL: outsideHeartbeat)
+        try FileManager.default.createSymbolicLink(at: resultURL, withDestinationURL: outsideResult)
+
+        let symlinkedRuntimeState = try store.load(jobID: record.jobID)
+        #expect(symlinkedRuntimeState.status == .queued)
+        #expect(symlinkedRuntimeState.lastHeartbeatAt == nil)
+        #expect(symlinkedRuntimeState.message == nil)
+
+        let outsideJobDirectory = root.appendingPathComponent("outside-job-dir", isDirectory: true)
+        try FileManager.default.createDirectory(at: outsideJobDirectory, withIntermediateDirectories: true)
+        try encoder.encode(record).write(to: outsideJobDirectory.appendingPathComponent("job.json"), options: [.atomic])
+        try "HOST_LOG_FROM_SYMLINKED_JOB_DIR\n"
+            .write(to: outsideJobDirectory.appendingPathComponent("stdout.log"), atomically: true, encoding: .utf8)
+        try FileManager.default.removeItem(at: jobDirectory)
+        try FileManager.default.createSymbolicLink(at: jobDirectory, withDestinationURL: outsideJobDirectory)
+
+        #expect(throws: (any Error).self) {
+            _ = try store.load(jobID: record.jobID)
+        }
+        #expect(throws: (any Error).self) {
+            _ = try store.tail(jobID: record.jobID, stream: "stdout", lines: 10)
+        }
+    }
+
+    @Test("Docker workspace job manager rejects symlinked job root before launch")
+    func dockerWorkspaceJobManagerRejectsSymlinkedJobRootBeforeLaunch() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-workspace-job-root-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let hostWorkspace = root.appendingPathComponent("repo", isDirectory: true)
+        try FileManager.default.createDirectory(at: hostWorkspace, withIntermediateDirectories: true)
+        let outsideJobs = root.appendingPathComponent("outside-jobs", isDirectory: true)
+        try FileManager.default.createDirectory(at: outsideJobs, withIntermediateDirectories: true)
+        let jobRoot = root.appendingPathComponent("jobs", isDirectory: true)
+        try FileManager.default.createSymbolicLink(at: jobRoot, withDestinationURL: outsideJobs)
+
+        let docker = root.appendingPathComponent("docker")
+        let log = root.appendingPathComponent("docker.log")
+        let quotedLogPath = log.path.replacingOccurrences(of: "'", with: "'\\''")
+        try """
+        #!/bin/sh
+        printf '%s\\n' "$*" >> '\(quotedLogPath)'
+        exit 0
+        """.write(to: docker, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: docker.path)
+
+        let configuration = WorkspaceToolConfiguration(
+            dockerExecutable: docker.path,
+            image: "astra/workspace:latest",
+            containerName: "astra-test-job-root",
+            workdir: "/workspace",
+            network: "bridge",
+            taskID: "task-root",
+            runID: "run-root",
+            mounts: [
+                WorkspaceDockerMount(hostPath: hostWorkspace.path, containerPath: "/workspace", access: "rw", role: "workspace")
+            ],
+            jobRootHostPath: jobRoot.path,
+            jobRootContainerPath: "/workspace/jobs"
+        )
+        let manager = DockerWorkspaceJobManager(
+            configuration: configuration,
+            executor: DockerWorkspaceCommandExecutor(configuration: configuration)
+        )
+
+        let job = manager.start(command: "printf should-not-run", timeoutSeconds: nil, label: nil, progressProbe: nil)
+
+        #expect(job.status == .failed)
+        #expect(job.message?.contains("Workspace job file is unsafe or unreadable") == true)
+        #expect(!FileManager.default.fileExists(atPath: log.path))
+    }
+
+    @Test("Managed job creation rejects symlinked Astra ancestors")
+    func managedJobCreationRejectsSymlinkedAstraAncestors() throws {
+        for symlinkedAncestor in [".astra", ".astra/tasks"] {
+            let root = FileManager.default.temporaryDirectory
+                .appendingPathComponent("astra-workspace-job-ancestor-\(UUID().uuidString)", isDirectory: true)
+            defer { try? FileManager.default.removeItem(at: root) }
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+            let workspace = root.appendingPathComponent("repo", isDirectory: true)
+            try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
+            let outsideAncestor = root.appendingPathComponent("outside-ancestor", isDirectory: true)
+            try FileManager.default.createDirectory(at: outsideAncestor, withIntermediateDirectories: true)
+
+            let symlinkURL = workspace.appendingPathComponent(symlinkedAncestor, isDirectory: true)
+            try FileManager.default.createDirectory(
+                at: symlinkURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try FileManager.default.createSymbolicLink(at: symlinkURL, withDestinationURL: outsideAncestor)
+
+            let jobRoot = workspace.appendingPathComponent(".astra/tasks/task-ancestor/jobs", isDirectory: true)
+            let store = WorkspaceManagedJobStore(rootPath: jobRoot.path)
+
+            #expect(throws: (any Error).self) {
+                _ = try store.create(
+                    command: "printf should-not-write",
+                    timeoutSeconds: nil,
+                    label: nil,
+                    progressProbe: nil,
+                    runtime: "codex"
+                )
+            }
+            #expect(!FileManager.default.fileExists(atPath: outsideAncestor.appendingPathComponent("task-ancestor").path))
+            #expect(!FileManager.default.fileExists(atPath: outsideAncestor.appendingPathComponent("tasks").path))
+        }
+    }
+
+    @Test("Managed job creation allows symlinked workspace root with trusted Astra tasks chain")
+    func managedJobCreationAllowsSymlinkedWorkspaceRootWithTrustedAstraTasksChain() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-workspace-job-symlink-root-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let realWorkspace = root.appendingPathComponent("real-repo", isDirectory: true)
+        try FileManager.default.createDirectory(at: realWorkspace, withIntermediateDirectories: true)
+        let importedWorkspace = root.appendingPathComponent("imported-repo", isDirectory: true)
+        try FileManager.default.createSymbolicLink(at: importedWorkspace, withDestinationURL: realWorkspace)
+
+        let jobRoot = importedWorkspace.appendingPathComponent(".astra/tasks/task-safe/jobs", isDirectory: true)
+        let store = WorkspaceManagedJobStore(rootPath: jobRoot.path)
+
+        let record = try store.create(
+            command: "printf safe",
+            timeoutSeconds: nil,
+            label: nil,
+            progressProbe: nil,
+            runtime: "codex"
+        )
+
+        let realJobDirectory = realWorkspace
+            .appendingPathComponent(".astra/tasks/task-safe/jobs", isDirectory: true)
+            .appendingPathComponent(record.jobID, isDirectory: true)
+        #expect(record.status == .queued)
+        #expect(FileManager.default.fileExists(atPath: realJobDirectory.appendingPathComponent("command.sh").path))
+        #expect(FileManager.default.fileExists(atPath: realJobDirectory.appendingPathComponent("job.json").path))
+        #expect(try store.load(jobID: record.jobID).jobID == record.jobID)
+    }
+
+    @Test("Managed job path containment handles filesystem root anchors")
+    func managedJobPathContainmentHandlesFilesystemRootAnchors() {
+        #expect(WorkspaceManagedJobPathContainment.isDescendant("/tmp/astra/jobs", of: "/"))
+        #expect(!WorkspaceManagedJobPathContainment.isDescendant("/", of: "/"))
+        #expect(WorkspaceManagedJobPathContainment.relativeComponents(from: "/", to: "/tmp/astra/jobs") == [
+            "tmp",
+            "astra",
+            "jobs"
+        ])
+
+        #expect(WorkspaceManagedJobPathContainment.isDescendant("/tmp/astra/jobs", of: "/tmp/astra"))
+        #expect(!WorkspaceManagedJobPathContainment.isDescendant("/tmp/astra-other/jobs", of: "/tmp/astra"))
+        #expect(WorkspaceManagedJobPathContainment.relativeComponents(from: "/tmp/astra", to: "/tmp/astra/jobs") == [
+            "jobs"
+        ])
+        #expect(WorkspaceManagedJobPathContainment.relativeComponents(from: "/tmp/astra", to: "/tmp/astra-other/jobs").isEmpty)
+    }
+
+    @Test("Managed job lookup reports missing jobs separately from unsafe files")
+    func managedJobLookupReportsMissingJobsSeparatelyFromUnsafeFiles() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-workspace-job-missing-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let jobRoot = root.appendingPathComponent("jobs", isDirectory: true)
+        let store = WorkspaceManagedJobStore(rootPath: jobRoot.path)
+
+        do {
+            _ = try store.load(jobID: "missing-job")
+            Issue.record("Expected missing job lookup to throw")
+        } catch {
+            #expect(error.localizedDescription.contains("Workspace job not found: missing-job"))
+            #expect(!error.localizedDescription.contains("unsafe or unreadable"))
+        }
+
+        let configuration = WorkspaceToolConfiguration(
+            dockerExecutable: "/bin/echo",
+            image: "astra/workspace:latest",
+            containerName: "astra-test-missing-job",
+            workdir: "/workspace",
+            network: "bridge",
+            taskID: "task-missing",
+            runID: "run-missing",
+            mounts: [],
+            jobRootHostPath: jobRoot.path,
+            jobRootContainerPath: "/workspace/jobs"
+        )
+        let manager = DockerWorkspaceJobManager(
+            configuration: configuration,
+            executor: DockerWorkspaceCommandExecutor(configuration: configuration)
+        )
+
+        let status = manager.status(jobID: "missing-job")
+        let tail = manager.tail(jobID: "missing-job", stream: "stdout", lines: 10)
+        #expect(status.status == .failed)
+        #expect(status.message?.contains("Workspace job not found: missing-job") == true)
+        #expect(tail.text.contains("Workspace job not found: missing-job"))
+        #expect(!tail.text.contains("unsafe or unreadable"))
+    }
+
+    @Test("Workspace managed job tail bounds bytes before returning capped lines")
+    func workspaceManagedJobTailBoundsBytesBeforeReturningCappedLines() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-workspace-job-tail-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let store = WorkspaceManagedJobStore(rootPath: root.path)
+        let job = try store.create(
+            command: "printf large-log",
+            timeoutSeconds: nil,
+            label: nil,
+            progressProbe: nil,
+            runtime: "docker"
+        )
+        let oversizedLinePrefix = "prefix-that-proves-the-whole-log-was-returned:"
+        let oversizedLastLine = oversizedLinePrefix + String(repeating: "x", count: 600_000)
+        try ("older output\n" + oversizedLastLine)
+            .write(to: URL(fileURLWithPath: job.stdoutLogPath), atomically: true, encoding: .utf8)
+
+        let tail = try store.tail(jobID: job.jobID, stream: "stdout", lines: 1)
+
+        #expect(!tail.text.contains(oversizedLinePrefix))
+        #expect(tail.text.utf8.count <= 64 * 1024)
+        #expect(tail.text.hasSuffix(String(repeating: "x", count: 64)))
+    }
+
+    @Test("Workspace managed job tail bounds decoded invalid UTF-8 expansion")
+    func workspaceManagedJobTailBoundsDecodedInvalidUTF8Expansion() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-workspace-job-tail-invalid-utf8-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let store = WorkspaceManagedJobStore(rootPath: root.path)
+        let job = try store.create(
+            command: "printf invalid-log-bytes",
+            timeoutSeconds: nil,
+            label: nil,
+            progressProbe: nil,
+            runtime: "docker"
+        )
+        var log = Data("older output\n".utf8)
+        log.append(Data(repeating: 0xFF, count: 600_000))
+        try log.write(to: URL(fileURLWithPath: job.stdoutLogPath), options: .atomic)
+
+        let tail = try store.tail(jobID: job.jobID, stream: "stdout", lines: 1)
+
+        #expect(!tail.text.isEmpty)
+        #expect(tail.text.utf8.count <= 64 * 1024)
+        #expect(!tail.text.contains("older output"))
+    }
+
+    @Test("Workspace managed job tail keeps bounded suffix when final long line ends with newline")
+    func workspaceManagedJobTailKeepsBoundedSuffixForTerminatedFinalLongLine() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-workspace-job-tail-long-final-line-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let store = WorkspaceManagedJobStore(rootPath: root.path)
+        let job = try store.create(
+            command: "printf long-final-line",
+            timeoutSeconds: nil,
+            label: nil,
+            progressProbe: nil,
+            runtime: "docker"
+        )
+        try ("older output\n" + String(repeating: "z", count: 600_000) + "\n")
+            .write(to: URL(fileURLWithPath: job.stdoutLogPath), atomically: true, encoding: .utf8)
+
+        let tail = try store.tail(jobID: job.jobID, stream: "stdout", lines: 1)
+
+        #expect(!tail.text.isEmpty)
+        #expect(tail.text.utf8.count <= 64 * 1024)
+        #expect(!tail.text.contains("older output"))
+        #expect(tail.text.hasSuffix(String(repeating: "z", count: 64)))
+    }
+
+    @Test("Workspace managed job tail keeps complete first line when byte window starts on a line boundary")
+    func workspaceManagedJobTailKeepsBoundaryAlignedFirstLine() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-workspace-job-tail-boundary-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let store = WorkspaceManagedJobStore(rootPath: root.path)
+        let job = try store.create(
+            command: "printf boundary-log",
+            timeoutSeconds: nil,
+            label: nil,
+            progressProbe: nil,
+            runtime: "docker"
+        )
+        let byteLimit = 64 * 1024
+        let secondLine = "second recent"
+        let firstLinePrefix = "first recent:"
+        let firstLine = firstLinePrefix
+            + String(repeating: "a", count: byteLimit - firstLinePrefix.utf8.count - 1 - secondLine.utf8.count)
+        let recentWindow = firstLine + "\n" + secondLine
+        #expect(recentWindow.utf8.count == byteLimit)
+        try ("older output\n" + recentWindow)
+            .write(to: URL(fileURLWithPath: job.stdoutLogPath), atomically: true, encoding: .utf8)
+
+        let tail = try store.tail(jobID: job.jobID, stream: "stdout", lines: 2)
+
+        #expect(tail.text.hasPrefix(firstLinePrefix))
+        #expect(tail.text.hasSuffix(secondLine))
+    }
+
+    @Test("Workspace managed job tail preserves content when previous byte is unavailable")
+    func workspaceManagedJobTailPreservesContentWhenPreviousByteIsUnavailable() {
+        #expect(!WorkspaceManagedJobLogTailPolicy.startsInsideLine(previousByte: nil))
+        #expect(!WorkspaceManagedJobLogTailPolicy.startsInsideLine(previousByte: UInt8(ascii: "\n")))
+        #expect(WorkspaceManagedJobLogTailPolicy.startsInsideLine(previousByte: UInt8(ascii: "a")))
+    }
+
+    @Test("Workspace managed job tail handles newline-dense suffixes without dropping recent content")
+    func workspaceManagedJobTailHandlesNewlineDenseSuffixes() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-workspace-job-tail-newlines-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let store = WorkspaceManagedJobStore(rootPath: root.path)
+        let job = try store.create(
+            command: "printf newline-log",
+            timeoutSeconds: nil,
+            label: nil,
+            progressProbe: nil,
+            runtime: "docker"
+        )
+        try (String(repeating: "\n", count: 200_000) + "final line")
+            .write(to: URL(fileURLWithPath: job.stdoutLogPath), atomically: true, encoding: .utf8)
+
+        let tail = try store.tail(jobID: job.jobID, stream: "stdout", lines: 2)
+
+        #expect(tail.text == "\nfinal line")
+    }
+
+    @Test("Docker workspace job cancel terminates command process group")
+    func dockerWorkspaceJobCancelTerminatesCommandProcessGroup() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-workspace-job-cancel-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let docker = root.appendingPathComponent("docker")
+        let log = root.appendingPathComponent("docker.log")
+        let quotedLogPath = log.path.replacingOccurrences(of: "'", with: "'\\''")
+        try """
+        #!/bin/sh
+        LOG='\(quotedLogPath)'
+        printf '%s\\n' "$*" >> "$LOG"
+        case "$1" in
+          inspect) exit 1 ;;
+          rm) exit 0 ;;
+          run) echo container-id; exit 0 ;;
+          exec) exit 0 ;;
+          stop) exit 0 ;;
+          *) exit 99 ;;
+        esac
+        """.write(to: docker, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: docker.path)
+
+        let jobRoot = root.appendingPathComponent("jobs", isDirectory: true)
+        let configuration = WorkspaceToolConfiguration(
+            dockerExecutable: docker.path,
+            image: "astra/workspace:latest",
+            containerName: "astra-test-job-cancel",
+            workdir: "/workspace",
+            network: "bridge",
+            taskID: "task-cancel",
+            runID: "run-cancel",
+            mounts: [
+                WorkspaceDockerMount(hostPath: root.path, containerPath: "/workspace", access: "rw", role: "workspace")
+            ],
+            jobRootHostPath: jobRoot.path,
+            jobRootContainerPath: "/workspace/jobs"
+        )
+        let executor = DockerWorkspaceCommandExecutor(configuration: configuration)
+        let manager = DockerWorkspaceJobManager(configuration: configuration, executor: executor)
+
+        let job = manager.start(command: "sleep 60", timeoutSeconds: 7200, label: nil, progressProbe: nil)
+        _ = manager.cancel(jobID: job.jobID)
+        executor.cleanup()
+
+        let logLines = try String(contentsOf: log, encoding: .utf8)
+        #expect(logLines.contains("pidfile='/workspace/jobs/\(job.jobID)/pid'"))
+        #expect(logLines.contains("pid_metadata='/workspace/jobs/\(job.jobID)/pid.meta'"))
+        #expect(logLines.contains("command_script='/workspace/jobs/\(job.jobID)/command.sh'"))
+        #expect(logLines.contains("kill_bin=\"\""))
+        #expect(logLines.contains("for candidate in /bin/kill /usr/bin/kill /usr/local/bin/kill; do"))
+        #expect(logLines.contains("kill_bin=\"$candidate\""))
+        #expect(logLines.contains("safe_pid() {"))
+        #expect(logLines.contains("''|*[!0-9]*) return 1"))
+        #expect(logLines.contains("[ \"$1\" -gt 1 ] 2>/dev/null"))
+        #expect(logLines.contains("pid_matches_managed_command() {"))
+        #expect(logLines.contains("cmdline=\"$(tr '\\0' ' ' < \"/proc/$1/cmdline\" 2>/dev/null || cat \"/proc/$1/cmdline\" 2>/dev/null || true)\""))
+        #expect(logLines.contains("case \"$cmdline\" in"))
+        #expect(logLines.contains("*\"$command_script\"*) return 0"))
+        #expect(logLines.contains("pid_matches_managed_session() {"))
+        #expect(logLines.contains("[ -r \"$pid_metadata\" ] || return 1"))
+        #expect(logLines.contains("[ \"$managed_pid\" = \"$1\" ] || return 1"))
+        #expect(logLines.contains("[ \"$managed_mode\" = \"setsid-process-group\" ] || return 1"))
+        #expect(logLines.contains("current_start_time=\"$(proc_start_time \"$1\" || true)\""))
+        #expect(logLines.contains("[ \"$managed_start_time\" = \"$current_start_time\" ] || return 1"))
+        #expect(logLines.contains("pid_metadata_names_managed_group() {"))
+        #expect(logLines.contains("pid) managed_pid=\"$value\""))
+        #expect(logLines.contains("mode) managed_mode=\"$value\""))
+        #expect(logLines.contains("start_time) managed_start_time=\"$value\""))
+        #expect(logLines.contains("[ \"$managed_mode\" = \"setsid-process-group\" ]"))
+        #expect(logLines.contains("[ -n \"$managed_start_time\" ] || return 1"))
+        #expect(!logLines.contains("grep -F -- \"$command_script\""))
+        #expect(logLines.contains("safe_pid \"$target_pid\" || return 0"))
+        #expect(logLines.contains("process_group_exists() {"))
+        #expect(logLines.contains("\"$kill_bin\" -0 -- -\"$group_pid\" 2>/dev/null"))
+        #expect(logLines.contains("kill -0 -\"$group_pid\" 2>/dev/null"))
+        #expect(logLines.contains("signal_process_group() {"))
+        #expect(logLines.contains("\"$kill_bin\" -\"$signal\" -- -\"$group_pid\" 2>/dev/null"))
+        #expect(logLines.contains("kill -\"$signal\" -\"$group_pid\" 2>/dev/null || true"))
+        #expect(logLines.contains("signal_direct_pid() {"))
+        #expect(logLines.contains("kill -\"$signal\" \"$target_pid\" 2>/dev/null || true"))
+        #expect(logLines.contains("terminate_verified_process_group() {"))
+        #expect(logLines.contains("terminate_direct_pid() {"))
+        #expect(logLines.contains("if pid_metadata_names_managed_group \"$target_pid\"; then"))
+        #expect(logLines.contains("elif pid_matches_managed_command \"$target_pid\"; then"))
+        #expect(logLines.contains("elif [ ! -e \"$pid_metadata\" ] && kill -0 \"$target_pid\" 2>/dev/null; then"))
+        #expect(logLines.contains("""
+          if pid_metadata_names_managed_group "$target_pid"; then
+            if kill -0 "$target_pid" 2>/dev/null; then
+              if pid_matches_managed_session "$target_pid"; then
+                if process_group_exists "$target_pid"; then
+                  terminate_verified_process_group "$target_pid"
+                else
+                  terminate_direct_pid "$target_pid"
+                fi
+              fi
+            elif process_group_exists "$target_pid"; then
+              terminate_verified_process_group "$target_pid"
+            fi
+        """))
+        #expect(logLines.contains("if proc_is_session_group_leader \"$target_pid\"; then"))
+        #expect(logLines.contains("signal_process_group TERM \"$group_pid\""))
+        #expect(logLines.contains("signal_process_group KILL \"$group_pid\""))
+        #expect(!logLines.contains("\"$kill_bin\" -TERM -\"$target_pid\" 2>/dev/null || true"))
+        #expect(!logLines.contains("\"$kill_bin\" -KILL -\"$target_pid\" 2>/dev/null || true"))
+        #expect(logLines.contains("if pid_matches_managed_session \"$target_pid\"; then"))
+        #expect(logLines.contains("signal_direct_pid TERM \"$target_pid\""))
+        #expect(logLines.contains("signal_direct_pid KILL \"$target_pid\""))
+        #expect(logLines.contains("IFS= read -r command_pid < \"$pidfile\" || command_pid=\"\""))
+        #expect(!logLines.contains("command_pid=\"$(cat \"$pidfile\")\""))
+        #expect(logLines.contains("rm -f \"$pidfile\""))
     }
 
     @Test("Docker workspace job manager maps host workspace path before persisting command")
@@ -754,9 +1717,11 @@ struct WorkspaceToolSupportTests {
         try FileManager.default.createDirectory(at: hostWorkspace, withIntermediateDirectories: true)
         let docker = root.appendingPathComponent("docker")
         let log = root.appendingPathComponent("docker.log")
+        let quotedLogPath = log.path.replacingOccurrences(of: "'", with: "'\\''")
         try """
         #!/bin/sh
-        printf '%s\\n' "$*" >> "$FAKE_DOCKER_LOG"
+        LOG='\(quotedLogPath)'
+        printf '%s\\n' "$*" >> "$LOG"
         case "$1" in
           inspect) exit 1 ;;
           rm) exit 0 ;;
@@ -767,8 +1732,6 @@ struct WorkspaceToolSupportTests {
         esac
         """.write(to: docker, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: docker.path)
-        setenv("FAKE_DOCKER_LOG", log.path, 1)
-        defer { unsetenv("FAKE_DOCKER_LOG") }
 
         let jobRoot = root.appendingPathComponent("jobs", isDirectory: true)
         let configuration = WorkspaceToolConfiguration(
@@ -816,9 +1779,11 @@ struct WorkspaceToolSupportTests {
 
         let docker = root.appendingPathComponent("docker")
         let log = root.appendingPathComponent("docker.log")
+        let quotedLogPath = log.path.replacingOccurrences(of: "'", with: "'\\''")
         try """
         #!/bin/sh
-        printf '%s\\n' "$*" >> "$FAKE_DOCKER_LOG"
+        LOG='\(quotedLogPath)'
+        printf '%s\\n' "$*" >> "$LOG"
         case "$1" in
           inspect) exit 1 ;;
           rm) exit 0 ;;
@@ -834,8 +1799,6 @@ struct WorkspaceToolSupportTests {
         esac
         """.write(to: docker, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: docker.path)
-        setenv("FAKE_DOCKER_LOG", log.path, 1)
-        defer { unsetenv("FAKE_DOCKER_LOG") }
 
         let jobRoot = root.appendingPathComponent(".astra/tasks/task-4/jobs", isDirectory: true)
         let diagnostics = root.appendingPathComponent(".astra/tasks/task-4/diagnostics", isDirectory: true)

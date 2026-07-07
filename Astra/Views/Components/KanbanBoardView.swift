@@ -1,6 +1,9 @@
 import SwiftUI
 import SwiftData
 import UniformTypeIdentifiers
+import ASTRAModels
+import ASTRAPersistence
+import ASTRACore
 
 // MARK: - Kanban Category
 
@@ -616,10 +619,9 @@ struct KanbanBoardView: View {
         }
 
         withAnimation(.easeInOut(duration: 0.2)) {
-            task.status = nextStatus
+            TaskStateMachine.setFromBoardMove(task, to: nextStatus, modelContext: modelContext)
             task.isDone = nextDone
-            task.updatedAt = Date()
-            try? modelContext.save()
+            WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
             AppLogger.info(
                 "Kanban drop applied task=\(task.id.uuidString) target=\(category.rawValue) status=\(previousStatus.rawValue)->\(task.status.rawValue) done=\(wasDone)->\(task.isDone)",
                 category: "UI"

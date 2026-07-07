@@ -1,98 +1,8 @@
 import Foundation
 import SwiftData
-
-enum TaskDeliverableProfile: String, Codable, Sendable, Equatable {
-    case notRequired = "not_required"
-    case standaloneWebArtifact = "standalone_web_artifact"
-    case documentArtifact = "document_artifact"
-    case codeArtifact = "code_artifact"
-    case dataArtifact = "data_artifact"
-    case genericArtifact = "generic_artifact"
-}
-
-enum TaskDeliverableQualityLevel: String, Codable, Sendable, Equatable {
-    case notApplicable = "not_applicable"
-    case noArtifact = "no_artifact"
-    case artifactOnly = "artifact_only"
-    case syntaxVerified = "syntax_verified"
-    case runtimeVerified = "runtime_verified"
-    case behaviorVerified = "behavior_verified"
-    case needsHumanReview = "needs_human_review"
-    case failed
-}
-
-enum TaskDeliverableCheckStatus: String, Codable, Sendable, Equatable {
-    case passed
-    case failed
-    case skipped
-    case warning
-}
-
-struct TaskDeliverableCheck: Codable, Sendable, Equatable, Hashable {
-    var id: String
-    var title: String
-    var status: TaskDeliverableCheckStatus
-    var summary: String
-    var path: String?
-}
-
-struct TaskDeliverableVerificationResult: Codable, Sendable, Equatable {
-    var version: Int
-    var profile: TaskDeliverableProfile
-    var level: TaskDeliverableQualityLevel
-    var status: String
-    var canComplete: Bool
-    var requiresHumanReview: Bool
-    var summary: String
-    var checks: [TaskDeliverableCheck]
-    var evidencePaths: [String]
-    var runID: UUID?
-    var verifiedAt: Date
-
-    var shouldBlockCompletion: Bool {
-        !canComplete
-    }
-
-    var userVisibleFailureMessage: String {
-        switch level {
-        case .noArtifact:
-            return summary
-        case .failed:
-            let failedChecks = checks
-                .filter { $0.status == .failed }
-                .map { "\($0.title): \($0.summary)" }
-                .prefix(4)
-                .joined(separator: "\n")
-            return """
-            ASTRA did not mark this task complete because the requested deliverable was present but failed deterministic verification.
-            \(failedChecks.isEmpty ? summary : failedChecks)
-            Fix the artifact and retry, or explicitly continue if you want the provider to repair it.
-            """
-        default:
-            return summary
-        }
-    }
-}
-
-struct TaskDeliverableVerificationEventPayload: Codable, Sendable, Equatable {
-    var version: Int
-    var profile: TaskDeliverableProfile
-    var level: TaskDeliverableQualityLevel
-    var status: String
-    var canComplete: Bool
-    var requiresHumanReview: Bool
-    var summary: String
-    var checks: [TaskDeliverableCheck]
-    var evidencePaths: [String]
-    var runID: UUID?
-    var verifiedAt: Date
-}
-
-enum TaskDeliverableVerificationEventTypes {
-    static let passed = TaskEventTypes.Deliverable.verificationPassed.rawValue
-    static let reviewNeeded = TaskEventTypes.Deliverable.verificationReviewNeeded.rawValue
-    static let failed = TaskEventTypes.Deliverable.verificationFailed.rawValue
-}
+import ASTRAModels
+import ASTRAPersistence
+import ASTRACore
 
 enum JavaScriptSyntaxCheckResult: Sendable, Equatable {
     case passed
@@ -286,28 +196,13 @@ enum TaskDeliverableVerificationService {
     }
 
     static func decode(_ payload: String) -> TaskDeliverableVerificationEventPayload? {
-        switch decodeResult(payload) {
-        case .success(let decoded):
-            decoded
-        case .failure:
-            nil
-        }
+        TaskDeliverableVerificationCodec.decode(payload)
     }
 
     static func decodeResult(
         _ payload: String
     ) -> Result<TaskDeliverableVerificationEventPayload, TaskEventPayloadDecodeError> {
-        guard let data = payload.data(using: .utf8) else {
-            return .failure(.invalidUTF8)
-        }
-        do {
-            return .success(try TaskEventPayloadCodec.makeISO8601Decoder().decode(
-                TaskDeliverableVerificationEventPayload.self,
-                from: data
-            ))
-        } catch {
-            return .failure(.decodingFailed(error.localizedDescription))
-        }
+        TaskDeliverableVerificationCodec.decodeResult(payload)
     }
 
     static func checkJavaScriptSyntaxWithNode(

@@ -173,7 +173,7 @@ public struct EnvironmentHealthChecker: Sendable {
 // MARK: - SemanticCheck interpretation
 
 public extension SemanticCheck {
-    func passes(stdout: String, stderr: String) -> Bool {
+    public func passes(stdout: String, stderr: String) -> Bool {
         switch self {
         case .stdoutNonEmpty:
             return !stdout.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -185,7 +185,7 @@ public extension SemanticCheck {
         }
     }
 
-    func failureDetail(stdout: String, stderr: String) -> String {
+    public func failureDetail(stdout: String, stderr: String) -> String {
         switch self {
         case .stdoutNonEmpty:
             return "no active account"
@@ -198,7 +198,7 @@ public extension SemanticCheck {
 // MARK: - String convenience
 
 private extension String {
-    func trimmed(max: Int) -> String {
+    public func trimmed(max: Int) -> String {
         let oneLine = replacingOccurrences(of: "\n", with: " ")
             .trimmingCharacters(in: .whitespaces)
         if oneLine.count <= max { return oneLine }

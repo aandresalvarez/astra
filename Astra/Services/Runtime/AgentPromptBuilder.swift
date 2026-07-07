@@ -1,5 +1,7 @@
 import Foundation
 import ASTRACore
+import ASTRAModels
+import ASTRAPersistence
 
 enum PromptContextSectionKind: String, Sendable, CaseIterable {
     case currentGoal
@@ -129,31 +131,43 @@ enum AgentPromptBuilder {
 
     static func buildPrompt(
         for task: AgentTask,
-        budgetProfile: PromptContextBudgetProfile = .standard
+        budgetProfile: PromptContextBudgetProfile = .standard,
+        executionPolicy: AgentRuntimeExecutionPolicy = .default
     ) -> String {
-        buildPromptAssembly(for: task, budgetProfile: budgetProfile).prompt
+        buildPromptAssembly(for: task, budgetProfile: budgetProfile, executionPolicy: executionPolicy).prompt
     }
 
     static func buildPromptAssembly(
         for task: AgentTask,
-        budgetProfile: PromptContextBudgetProfile = .standard
+        budgetProfile: PromptContextBudgetProfile = .standard,
+        executionPolicy: AgentRuntimeExecutionPolicy = .default
     ) -> PromptAssemblyManifest {
         assemblePrompt(
-            buildPromptSections(for: task),
+            buildPromptSections(for: task, executionPolicy: executionPolicy),
             mode: .initialRun,
             budgetProfile: budgetProfile
         )
     }
 
-    private static func buildPromptSections(for task: AgentTask) -> [PromptContextSection] {
+    private static func buildPromptSections(
+        for task: AgentTask,
+        executionPolicy: AgentRuntimeExecutionPolicy = .default
+    ) -> [PromptContextSection] {
         buildPromptSections(
             using: PromptContextSectionProviderRegistry.providerIDs(for: .initialRun),
             context: PromptContextSectionProviderContext(
                 mode: .initialRun,
                 task: task,
                 followUpMessage: "",
-                capabilityScope: TaskCapabilityResolver(task: task).promptScope(),
-                ioSnapshot: .empty
+                capabilityScope: TaskCapabilityResolver(
+                    task: task,
+                    additionalCredentialGrants: executionPolicy.permissionGrantsOverride ?? []
+                ).promptScope(),
+                ioSnapshot: .empty,
+                connectorCredentialExposurePolicy: connectorCredentialExposurePolicy(
+                    for: task,
+                    executionPolicy: executionPolicy
+                )
             )
         )
     }
@@ -183,6 +197,78 @@ enum AgentPromptBuilder {
         Do not spend an extended period on hidden planning before creating the baseline artifact. Create the baseline first, then improve it.
         If file-write permission is required, request that permission immediately instead of continuing hidden planning.
         """
+    }
+
+    /// Tier 2 (utility-model) objective re-assessment result, when it disagrees
+    /// with Tier 1's `.active` classification. Only `superseded` and
+    /// `original_satisfied` verdicts count as a pivot -- `original_active`
+    /// (or no assessment at all) leaves today's imperative framing untouched.
+    /// Purely advisory (INVARIANTS #3/#5): the original goal text is still
+    /// surfaced, just demoted to background framing, exactly like the Tier 1
+    /// `.delivered` branch already does.
+    ///
+    /// A persisted assessment is treated as invalidated (returns `nil`) when
+    /// Tier 1's deterministic resolver already found a newer, more
+    /// authoritative signal -- either an explicit objective-override message
+    /// (`activeObjectiveResolution(...).hasExplicitOverride`, true even when
+    /// the override's resolved text reaffirms `task.goal` verbatim -- an
+    /// explicit correction is still a fresh signal even if it lands back on
+    /// the original goal) or an approved/executing/completed plan whose goal
+    /// has already reconciled to something other than `task.goal` (mirrors
+    /// `TaskObjectiveAssessmentPivotReconciler`'s own invalidation logic; kept
+    /// duplicated here rather than shared because this section provider runs
+    /// before `.threadState`'s `refresh()` in the follow-up provider order,
+    /// so it must read the same signal independently within a single prompt
+    /// assembly) -- an explicit user override or an approved plan always wins
+    /// over an older, now-stale Tier 2 verdict (adversarial findings: an
+    /// explicit correction, or a plan approved after an earlier drift
+    /// episode, must not keep surfacing the earlier drift episode; nothing
+    /// else invalidates a persisted assessment once
+    /// `ObjectiveAssessmentTrigger.shouldAssess` stops re-running Tier 2 once
+    /// either signal is present).
+    ///
+    /// Also checks the opt-in "Objective Drift Detection" setting directly
+    /// rather than relying solely on the write side
+    /// (`AgentRuntimeRunPersistence.recordSessionTurn`, which only clears a
+    /// stale assessment when a turn *finishes* recording): this section
+    /// provider runs while building the prompt for the turn that follows the
+    /// user disabling the setting, before that write-side cleanup has had a
+    /// chance to run for this turn, so an independent read-side check is
+    /// required to avoid a one-turn window where a stale pivot still demotes
+    /// the original goal (adversarial finding).
+    ///
+    /// Also invalidates on `followUpMessage` itself (the CURRENT turn's raw
+    /// text, before it's persisted as a `user.message` event): `continueSession`
+    /// builds this very prompt before inserting that event, so a correction
+    /// arriving on this exact turn (e.g. "no, go back to the original goal")
+    /// would otherwise still see the stale pivot applied to the turn it was
+    /// meant to correct, only clearing on the NEXT turn (adversarial finding).
+    private static func followUpTier2ObjectivePivot(
+        for task: AgentTask,
+        followUpMessage: String
+    ) -> (verdict: String, currentObjective: String?)? {
+        guard UserDefaults.standard.bool(forKey: AppStorageKeys.objectiveDriftDetectionEnabled) else {
+            return nil
+        }
+        let folder = TaskWorkspaceAccess(task: task).taskFolder
+        guard !folder.isEmpty,
+              let assessment = TaskContextStateManager.load(taskFolder: folder)?.objectiveAssessment,
+              assessment.verdict == "superseded" || assessment.verdict == "original_satisfied" else {
+            return nil
+        }
+        let resolution = TaskContextStateManager.activeObjectiveResolution(
+            for: task,
+            planState: TaskPlanService.reconstruct(for: task),
+            startingRequest: task.goal,
+            approvedGoal: nil
+        )
+        let goal = task.goal.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedObjective = resolution.objective.trimmingCharacters(in: .whitespacesAndNewlines)
+        let tier1HasMovedPastOriginalGoal = resolution.hasExplicitOverride
+            || (!resolvedObjective.isEmpty && resolvedObjective.caseInsensitiveCompare(goal) != .orderedSame)
+            || TaskContextStateManager.isExplicitObjectiveOverrideMessage(followUpMessage)
+        guard !tier1HasMovedPastOriginalGoal else { return nil }
+        return (assessment.verdict, assessment.currentObjective)
     }
 
     private static func currentTaskReminder(for task: AgentTask) -> String {
@@ -233,8 +319,8 @@ enum AgentPromptBuilder {
             if !conn.configAlias.isEmpty { sshBlock += "\n- SSH config: this alias requires ~/.ssh/config and may include ProxyCommand/IAP settings; prefer the alias over the raw hostname." }
             if !conn.keyPath.isEmpty { sshBlock += "\n- Identity file: \(conn.keyPath)" }
             sshBlock += "\nWhen the user says \"the server\", \"the remote\", \"this connection\", or \"it\" in the context of SSH, they mean this server."
-            sshBlock += "\nTo run commands: ssh \(alias) '<command>'"
-            sshBlock += "\nTo run commands in a specific directory: ssh \(alias) 'cd \(conn.remotePath) && <command>'"
+            sshBlock += "\nASTRA host control can check SSH reachability for this alias, but it does not accept provider-supplied remote commands."
+            sshBlock += "\nRemote command execution requires a reviewed workspace capability that explicitly supports it."
             appendSection(
                 sshBlock,
                 kind: .supportingContext,
@@ -242,14 +328,15 @@ enum AgentPromptBuilder {
                 sourcePointers: sshSourcePointers(workspace: ws)
             )
         } else if connections.count > 1 {
-            var sshBlock = "Available SSH Connections (use these to access remote servers via Bash with ssh):"
+            var sshBlock = "Available SSH Connections:"
             for conn in connections {
                 let alias = conn.configAlias.isEmpty ? conn.sshTarget : conn.configAlias
                 sshBlock += "\n- \(conn.displayLabel): ssh \(alias) (remote path: \(conn.remotePath))"
                 if !conn.configAlias.isEmpty { sshBlock += " [uses ~/.ssh/config alias; may include ProxyCommand/IAP]" }
                 if !conn.keyPath.isEmpty { sshBlock += " [identity: \(conn.keyPath)]" }
             }
-            sshBlock += "\nTo run commands on a remote server, use: ssh <alias> '<command>'"
+            sshBlock += "\nASTRA host control can check SSH reachability for these aliases, but it does not accept provider-supplied remote commands."
+            sshBlock += "\nRemote command execution requires a reviewed workspace capability that explicitly supports it."
             appendSection(
                 sshBlock,
                 kind: .supportingContext,
@@ -286,11 +373,20 @@ enum AgentPromptBuilder {
         )
     }
 
-    private static func appendTaskOutputFolder(for task: AgentTask, to sections: inout [PromptContextSection]) {
+    private static func appendTaskOutputFolder(
+        for task: AgentTask,
+        followUpMessage: String = "",
+        to sections: inout [PromptContextSection]
+    ) {
         let taskDir = TaskWorkspaceAccess(task: task).taskFolder
         if !taskDir.isEmpty {
             let relativePath = relativeTaskFolderPath(for: task, taskDir: taskDir)
-            let artifactDirective = standaloneArtifactDirective(for: task, relativePath: relativePath, taskDir: taskDir)
+            let artifactDirective = standaloneArtifactDirective(
+                for: task,
+                followUpMessage: followUpMessage,
+                relativePath: relativePath,
+                taskDir: taskDir
+            )
             let stateHistoryDirective = stateHistoryOwnershipDirective(for: task)
             let stateReadDirective = providerStateReadDirective(for: task)
             if let relativePath {
@@ -332,10 +428,24 @@ enum AgentPromptBuilder {
 
     private static func standaloneArtifactDirective(
         for task: AgentTask,
+        followUpMessage: String = "",
         relativePath: String?,
         taskDir: String
     ) -> String {
         guard TaskDeliverableExpectation.requiresDeliverableArtifact(task) else { return "" }
+        // Mirrors `FollowUpIntroSectionProvider`'s own demotion check
+        // (Tier 1 `.delivered`, or a Tier 2 pivot) -- this directive is a
+        // SEPARATE section provider (`TaskOutputFolderSectionProvider`) that
+        // runs on every prompt, so suppressing the artifact contract in
+        // `FollowUpIntroSectionProvider` alone left this one still telling
+        // the provider its first action must be creating/updating the
+        // already-delivered or superseded original deliverable (adversarial
+        // finding). Never fires for a genuinely fresh/in-progress task: both
+        // signals are false until the goal is actually delivered or pivoted.
+        guard TaskContextStateManager.originalGoalDelivery(for: task) == .active,
+              followUpTier2ObjectivePivot(for: task, followUpMessage: followUpMessage) == nil else {
+            return ""
+        }
 
         let location = relativePath ?? taskDir
         let suggestedFile = suggestedStandaloneArtifactFilename(for: task)
@@ -431,9 +541,14 @@ enum AgentPromptBuilder {
     private static func appendConnectorContext(
         from capabilityScope: TaskCapabilityPromptScope,
         task: AgentTask,
+        credentialExposurePolicy: ConnectorRuntimeProjection.CredentialExposurePolicy?,
         to sections: inout [PromptContextSection]
     ) {
-        if let section = AgentPromptConnectorContextBuilder.section(from: capabilityScope, task: task) {
+        if let section = AgentPromptConnectorContextBuilder.section(
+            from: capabilityScope,
+            task: task,
+            credentialExposurePolicy: credentialExposurePolicy
+        ) {
             sections.append(section)
         }
     }
@@ -515,12 +630,14 @@ enum AgentPromptBuilder {
     static func buildFreshFollowUpPrompt(
         message: String,
         task: AgentTask,
-        budgetProfile: PromptContextBudgetProfile? = nil
+        budgetProfile: PromptContextBudgetProfile? = nil,
+        executionPolicy: AgentRuntimeExecutionPolicy = .default
     ) -> String {
         buildFreshFollowUpPromptAssembly(
             message: message,
             task: task,
-            budgetProfile: budgetProfile
+            budgetProfile: budgetProfile,
+            executionPolicy: executionPolicy
         ).prompt
     }
 
@@ -536,7 +653,8 @@ enum AgentPromptBuilder {
         message: String,
         task: AgentTask,
         budgetProfile: PromptContextBudgetProfile? = nil,
-        ioSnapshot: PromptContextIOSnapshot? = nil
+        ioSnapshot: PromptContextIOSnapshot? = nil,
+        executionPolicy: AgentRuntimeExecutionPolicy = .default
     ) -> PromptAssemblyManifest {
         let runtime = task.resolvedRuntimeID
         return assemblePrompt(
@@ -546,7 +664,8 @@ enum AgentPromptBuilder {
                 ioSnapshot: ioSnapshot ?? PromptContextIOSnapshotLoader.snapshot(
                     for: task,
                     window: continuityTranscriptWindow(for: runtime)
-                )
+                ),
+                executionPolicy: executionPolicy
             ),
             mode: .followUp,
             budgetProfile: budgetProfile ?? continuityBudgetProfile(for: runtime)
@@ -556,7 +675,8 @@ enum AgentPromptBuilder {
     private static func buildFreshFollowUpPromptSections(
         message: String,
         task: AgentTask,
-        ioSnapshot: PromptContextIOSnapshot
+        ioSnapshot: PromptContextIOSnapshot,
+        executionPolicy: AgentRuntimeExecutionPolicy = .default
     ) -> [PromptContextSection] {
         buildPromptSections(
             using: PromptContextSectionProviderRegistry.providerIDs(for: .followUp),
@@ -564,10 +684,27 @@ enum AgentPromptBuilder {
                 mode: .followUp,
                 task: task,
                 followUpMessage: message,
-                capabilityScope: TaskCapabilityResolver(task: task).promptScope(contextText: message),
-                ioSnapshot: ioSnapshot
+                capabilityScope: TaskCapabilityResolver(
+                    task: task,
+                    additionalCredentialGrants: executionPolicy.permissionGrantsOverride ?? []
+                ).promptScope(contextText: message),
+                ioSnapshot: ioSnapshot,
+                connectorCredentialExposurePolicy: connectorCredentialExposurePolicy(
+                    for: task,
+                    executionPolicy: executionPolicy
+                )
             )
         )
+    }
+
+    private static func connectorCredentialExposurePolicy(
+        for task: AgentTask,
+        executionPolicy: AgentRuntimeExecutionPolicy
+    ) -> ConnectorRuntimeProjection.CredentialExposurePolicy {
+        .approvedLabels(Set(TaskRuntimePermissionGrants.approvedCredentialLabels(
+            for: task,
+            additionalGrants: executionPolicy.permissionGrantsOverride ?? []
+        )))
     }
 
     static func promptSectionProviderIDs(for mode: PromptAssemblyMode) -> [PromptContextSectionProviderID] {
@@ -690,18 +827,100 @@ enum AgentPromptBuilder {
                 to: &sections,
                 sourcePointers: taskSourcePointers(task)
             )
+            switch TaskContextStateManager.originalGoalDelivery(for: task) {
+            case .active:
+                if let pivot = followUpTier2ObjectivePivot(for: task, followUpMessage: context.followUpMessage) {
+                    appendTier2DemotedOriginalGoal(pivot, for: task, to: &sections)
+                } else {
+                    appendSection(
+                        "Goal: \(task.goal)",
+                        kind: .currentGoal,
+                        to: &sections,
+                        sourcePointers: taskSourcePointers(task)
+                    )
+                    appendSection(
+                        initialArtifactActionContract(for: task),
+                        kind: .currentGoal,
+                        to: &sections,
+                        sourcePointers: taskSourcePointers(task)
+                    )
+                }
+            case .delivered:
+                appendDemotedOriginalGoal(
+                    reason: "already delivered",
+                    transparencyNote: "the original goal above is treated as already delivered based on recorded completion/verification signals, so it has been demoted to background framing here. The current objective for this turn (if any) is carried separately below.",
+                    for: task,
+                    to: &sections
+                )
+            }
+        }
+
+        /// Shared demotion path used by both the Tier 1 `.delivered` branch and
+        /// the Tier 2 `original_satisfied` verdict (PR 6): same wording, same
+        /// section kind, so a satisfied-via-model-assessment thread reads
+        /// identically to a deterministically-delivered one. Never silently
+        /// re-anchors (INVARIANT #1): the original goal text is always still
+        /// surfaced verbatim, just demoted to background framing (INVARIANT #5).
+        private func appendDemotedOriginalGoal(
+            reason: String,
+            transparencyNote: String,
+            for task: AgentTask,
+            to sections: inout [PromptContextSection]
+        ) {
             appendSection(
-                "Goal: \(task.goal)",
+                "Original request (\(reason) -- background context only; do not re-address unless the user asks): \(task.goal)",
                 kind: .currentGoal,
                 to: &sections,
                 sourcePointers: taskSourcePointers(task)
             )
             appendSection(
-                initialArtifactActionContract(for: task),
+                "Transparency note: \(transparencyNote)",
                 kind: .currentGoal,
                 to: &sections,
                 sourcePointers: taskSourcePointers(task)
             )
+        }
+
+        /// Tier 2 pivot framing (PR 6). `original_satisfied` reuses the exact
+        /// `.delivered` demotion wording via `appendDemotedOriginalGoal`
+        /// (nothing to duplicate). `superseded` reuses the same demotion for the
+        /// original goal, but must never invent a second, potentially
+        /// conflicting "current objective" string here -- the capsule's
+        /// `appendThreadIntentContext` (Thread Intent "Current objective" line
+        /// plus the "Objective assessment" block written by PR 3) is the single
+        /// place that renders the live directive from
+        /// `objectiveAssessment.currentObjective`. This section only needs to
+        /// make the divergence auditable per INVARIANT #1.
+        ///
+        /// This claim only holds because `TaskContextStateManager.refresh` also
+        /// calls `reconcileActiveObjectiveWithAssessmentPivot`
+        /// (TaskObjectiveAssessmentPivotReconciler.swift), which overwrites the
+        /// Thread Intent "Current objective" line with the same pivoted text
+        /// whenever this same `superseded` verdict is still valid (drift
+        /// detection enabled, no newer explicit Tier 1 marker) -- otherwise the
+        /// two sections would show two different "current objective" values in
+        /// the same prompt.
+        private func appendTier2DemotedOriginalGoal(
+            _ pivot: (verdict: String, currentObjective: String?),
+            for task: AgentTask,
+            to sections: inout [PromptContextSection]
+        ) {
+            switch pivot.verdict {
+            case "original_satisfied":
+                appendDemotedOriginalGoal(
+                    reason: "already delivered",
+                    transparencyNote: "a background objective assessment concluded the original goal above is already satisfied, so it has been demoted to background framing here. The current objective for this turn (if any) is carried separately below.",
+                    for: task,
+                    to: &sections
+                )
+            default:
+                appendDemotedOriginalGoal(
+                    reason: "superseded by later work -- Tier 2 objective assessment",
+                    transparencyNote: "a background objective assessment concluded the original goal above has been superseded, so it has been demoted to background framing here. The current objective carried below (Thread Intent / Objective assessment) reflects this pivot. This is advisory -- confirm with the user before assuming this is final.",
+                    for: task,
+                    to: &sections
+                )
+            }
         }
     }
 
@@ -713,7 +932,7 @@ enum AgentPromptBuilder {
             state _: inout PromptContextSectionProviderState,
             to sections: inout [PromptContextSection]
         ) {
-            appendThreadIntentContext(for: context.task, to: &sections)
+            appendThreadIntentContext(for: context.task, followUpMessage: context.followUpMessage, to: &sections)
         }
     }
 
@@ -936,7 +1155,7 @@ enum AgentPromptBuilder {
             state _: inout PromptContextSectionProviderState,
             to sections: inout [PromptContextSection]
         ) {
-            appendTaskOutputFolder(for: context.task, to: &sections)
+            appendTaskOutputFolder(for: context.task, followUpMessage: context.followUpMessage, to: &sections)
         }
     }
 
@@ -994,7 +1213,12 @@ enum AgentPromptBuilder {
                 }
                 appendSkillInstructions(from: context.capabilityScope, to: &sections)
             }
-            appendConnectorContext(from: context.capabilityScope, task: context.task, to: &sections)
+            appendConnectorContext(
+                from: context.capabilityScope,
+                task: context.task,
+                credentialExposurePolicy: context.connectorCredentialExposurePolicy,
+                to: &sections
+            )
             if context.mode == .initialRun {
                 appendToolContext(from: context.capabilityScope, to: &sections)
             }
@@ -1399,8 +1623,12 @@ enum AgentPromptBuilder {
         return files
     }
 
-    private static func appendThreadIntentContext(for task: AgentTask, to sections: inout [PromptContextSection]) {
-        guard var context = TaskContextStateManager.refreshedPromptContext(for: task),
+    private static func appendThreadIntentContext(
+        for task: AgentTask,
+        followUpMessage: String = "",
+        to sections: inout [PromptContextSection]
+    ) {
+        guard var context = TaskContextStateManager.refreshedPromptContext(for: task, followUpMessage: followUpMessage),
               !context.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return
         }

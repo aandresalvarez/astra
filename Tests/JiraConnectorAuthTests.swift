@@ -1,10 +1,12 @@
 import Foundation
 import Testing
+import ASTRAModels
+import ASTRAPersistence
 @testable import ASTRA
+import ASTRACore
 
 @Suite("Jira Connector Auth")
 struct JiraConnectorAuthTests {
-
     @Test("Jira test authenticates with permission probe first")
     func permissionProbeAuthenticatesBeforeMyself() async throws {
         let (connector, store) = makeConnector()
@@ -202,8 +204,8 @@ struct JiraConnectorAuthTests {
         #expect(!result.1.localizedCaseInsensitiveContains("invalid"))
     }
 
-    @Test("Jira test reports missing CREATE_ISSUES separately from invalid token")
-    func missingCreateIssuesIsDistinctFromInvalidToken() async throws {
+    @Test("Jira read-only auth accepts project Browse permission without Create Issues")
+    func projectBrowsePermissionDoesNotRequireCreateIssues() async throws {
         let (connector, store) = makeConnector(projects: "ENG")
         let transport = MockConnectorHTTPTransport(stubs: [
             .init(
@@ -222,10 +224,12 @@ struct JiraConnectorAuthTests {
 
         let result = await connector.testConnection(store: store, transport: transport)
 
-        #expect(!result.0)
-        #expect(result.1.contains("CREATE_ISSUES"))
-        #expect(result.1.contains("ENG"))
+        #expect(result.0)
+        #expect(result.1.contains("BROWSE_PROJECTS"))
+        #expect(!result.1.contains("CREATE_ISSUES"))
         #expect(!result.1.localizedCaseInsensitiveContains("invalid"))
+        #expect(transport.requests.last?.url?.query?.contains("permissions=BROWSE_PROJECTS") == true)
+        #expect(transport.requests.last?.url?.query?.contains("CREATE_ISSUES") == false)
     }
 
     @Test("Jira test only reports auth failure when all auth probes are rejected")

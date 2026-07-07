@@ -1,4 +1,7 @@
 import Foundation
+import ASTRAModels
+import ASTRAPersistence
+import ASTRACore
 
 enum TaskDeliverableExpectation {
     static let artifactScanEntryLimit = 500
@@ -472,7 +475,8 @@ enum TaskDeliverableExpectation {
         let taskFolder = TaskWorkspaceAccess(task: task).taskFolder
         guard !taskFolder.isEmpty else { return true }
         let normalizedPath = path.replacingOccurrences(of: "\\", with: "/")
-        if !normalizedPath.hasPrefix("/"), TaskOutputArtifactPathPolicy.isRuntimeDiagnosticRelativePath(normalizedPath) {
+        if !normalizedPath.hasPrefix("/"),
+           TaskOutputArtifactPathPolicy.isRuntimeDiagnosticRelativePath(normalizedPath, context: .taskFolder) {
             return false
         }
         let root = URL(fileURLWithPath: taskFolder)
@@ -482,7 +486,10 @@ enum TaskDeliverableExpectation {
             ? URL(fileURLWithPath: normalizedPath)
             : root.appendingPathComponent(normalizedPath)
         if let relative = relativePath(of: url, taskFolder: root) {
-            return !TaskOutputArtifactPathPolicy.isRuntimeDiagnosticRelativePath(relative)
+            return TaskOutputArtifactPathPolicy.displayableUserArtifactRelativePath(
+                relative,
+                context: .taskFolder
+            ) != nil
         }
 
         let workspacePath = TaskWorkspaceAccess(task: task).effectiveWorkspacePath
@@ -491,7 +498,10 @@ enum TaskDeliverableExpectation {
                 .resolvingSymlinksInPath()
                 .standardizedFileURL
             if let workspaceRelative = relativePath(of: url, taskFolder: workspaceRoot) {
-                return !TaskOutputArtifactPathPolicy.isRuntimeDiagnosticRelativePath(workspaceRelative)
+                return TaskOutputArtifactPathPolicy.displayableUserArtifactRelativePath(
+                    workspaceRelative,
+                    context: .workspace
+                ) != nil
             }
         }
 

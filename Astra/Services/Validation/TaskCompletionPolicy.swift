@@ -1,4 +1,5 @@
 import Foundation
+import ASTRAModels
 
 enum TaskCompletionPolicyGate: String, Sendable, Equatable {
     case validationContract = "validation_contract"

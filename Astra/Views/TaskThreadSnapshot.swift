@@ -1,5 +1,7 @@
 import Foundation
 import ASTRACore
+import ASTRAModels
+import ASTRAPersistence
 
 enum TaskConversationItem: Identifiable, Sendable {
     case userMessage(text: String, timestamp: Date)
@@ -426,8 +428,9 @@ struct TaskRunOutputPresentation: Hashable, Sendable {
         }
 
         guard let latestWorkIndex = events.lastIndex(where: Self.isOutputBoundaryEvent) else {
-            displayText = run.output
-            progressMessages = []
+            let presentation = Self.rawOutputPresentation(for: run)
+            displayText = presentation.displayText
+            progressMessages = presentation.progressMessages
             return
         }
 
@@ -439,19 +442,21 @@ struct TaskRunOutputPresentation: Hashable, Sendable {
             }
 
         guard !finalResponseEvents.isEmpty else {
-            displayText = run.output
-            progressMessages = []
+            let presentation = Self.rawOutputPresentation(for: run)
+            displayText = presentation.displayText
+            progressMessages = presentation.progressMessages
             return
         }
 
         let finalText = Self.joinResponsePayloads(finalResponseEvents)
         guard !finalText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            displayText = run.output
-            progressMessages = []
+            let presentation = Self.rawOutputPresentation(for: run)
+            displayText = presentation.displayText
+            progressMessages = presentation.progressMessages
             return
         }
 
-        displayText = finalText
+        displayText = TaskRunAnswerPresentationPolicy.presentation(rawText: finalText).answerText
         progressMessages = Self.progressMessages(from: responseEvents.filter { event in
             !finalResponseEvents.contains(where: { $0.id == event.id })
         })
@@ -466,19 +471,58 @@ struct TaskRunOutputPresentation: Hashable, Sendable {
         }
     }
 
+    private static func rawOutputPresentation(for run: TaskRunSnapshot) -> TaskRunOutputPresentation {
+        let presentation = TaskRunAnswerPresentationPolicy.presentation(rawText: run.output)
+        return TaskRunOutputPresentation(
+            displayText: presentation.answerText,
+            progressMessages: progressMessages(from: presentation.progressMessages, run: run),
+            rawText: run.output
+        )
+    }
+
     private static func progressMessages(from events: [TaskEventSnapshot]) -> [TaskRunProgressMessage] {
-        events.map {
-            TaskRunProgressMessage(
-                id: $0.id,
-                text: $0.payload.trimmingCharacters(in: .whitespacesAndNewlines),
-                timestamp: $0.timestamp
+        var previousKey: String?
+        return events.compactMap { event -> TaskRunProgressMessage? in
+            guard let progress = TaskRunAnswerPresentationPolicy.normalizedProgressText(event.payload),
+                  progress.comparisonKey != previousKey else {
+                return nil
+            }
+            previousKey = progress.comparisonKey
+            return TaskRunProgressMessage(
+                id: event.id,
+                text: progress.text,
+                timestamp: event.timestamp
             )
         }
-        .filter { !$0.text.isEmpty }
+    }
+
+    private static func progressMessages(from texts: [String], run: TaskRunSnapshot) -> [TaskRunProgressMessage] {
+        let timestamp = run.completedAt ?? run.startedAt
+        return texts.enumerated().map { index, text in
+            TaskRunProgressMessage(
+                id: derivedProgressMessageID(runID: run.id, index: index),
+                text: text,
+                timestamp: timestamp
+            )
+        }
+    }
+
+    private static func derivedProgressMessageID(runID: UUID, index: Int) -> UUID {
+        let source = runID.uuidString.replacingOccurrences(of: "-", with: "")
+        let suffix = String(format: "%012llx", CUnsignedLongLong(index))
+        let hex = String(source.prefix(20)) + suffix
+        let chunks = [
+            String(hex.prefix(8)),
+            String(hex.dropFirst(8).prefix(4)),
+            String(hex.dropFirst(12).prefix(4)),
+            String(hex.dropFirst(16).prefix(4)),
+            String(hex.dropFirst(20).prefix(12))
+        ]
+        return UUID(uuidString: chunks.joined(separator: "-")) ?? UUID()
     }
 
     private static func joinResponsePayloads(_ events: [TaskEventSnapshot]) -> String {
-        events.map(\.payload).joined()
+        TaskRunAnswerPresentationPolicy.joinedResponsePayloads(events.map(\.payload))
     }
 }
 
@@ -1010,7 +1054,7 @@ struct TaskThreadSnapshotTrigger: Equatable {
                 "status": status.rawValue,
                 "latest_run_status": latestRunStatus?.rawValue ?? "none",
                 "latest_run_output_bucket": PerformanceTelemetryFields.count(latestRunOutputBucket),
-                "latest_run_output_chars": PerformanceTelemetryFields.count(latestRunOutputCount),
+                "latest_run_output_bytes": PerformanceTelemetryFields.count(latestRunOutputCount),
                 "latest_run_output_byte_bucket": PerformanceTelemetryFields.byteBucket(latestRunOutputCount)
             ]
         )
@@ -1029,6 +1073,59 @@ struct TaskThreadSnapshotTrigger: Equatable {
     private static func outputBucket(for byteCount: Int) -> Int {
         guard byteCount > 0 else { return 0 }
         return ((byteCount - 1) / liveOutputBucketSize) + 1
+    }
+}
+
+/// Cheap, task-based liveness check used to gate how often the O(event count)
+/// `TaskThreadSnapshotTrigger` gets rebuilt (see `TaskThreadChangeObserver` in
+/// TaskMainView.swift), without needing to build the trigger itself just to find
+/// out. Reads directly off `task`/`task.runs` (O(run count), not O(event count))
+/// instead of via a constructed trigger.
+///
+/// An earlier version tried to make the trigger's `visibleEventCount` itself O(1)
+/// amortized via an incremental scan over `task.events`, trusting that new events
+/// only ever land at the tail. That assumption doesn't hold: `AgentEventRecorder`
+/// inserts new `TaskEvent`s through the model context rather than appending to
+/// `task.events` directly, and SwiftData doesn't guarantee that relationship
+/// array's ordering, so an incremental scan (even with a boundary-identity check)
+/// could silently miss a new event inserted ahead of the previously-scanned
+/// region. Rather than chase a provably-correct-but-intricate incremental scheme,
+/// this keeps `visibleEventCount` a plain, always-correct full scan and instead
+/// bounds how often it runs: `TaskThreadChangeObserver` polls at
+/// `livePollIntervalNanoseconds` while `isLive` is true instead of rebuilding the trigger on
+/// every single SwiftData-observed mutation.
+///
+/// Deliberately narrower than `TaskThreadViewModel.refreshSnapshot`'s inline
+/// liveness check (`status == .running/.queued || latestRunStatus == .running`),
+/// which also treats `.queued` as live — that's the right call for deciding
+/// whether the *terminal snapshot cache* applies (a queued task's plan could
+/// still change before its turn), but wrong for deciding whether to *poll*: a
+/// task queued behind another run has no live output or events yet, so polling
+/// it every tick is pure waste until an actual run starts.
+///
+/// Requires *both* `task.status == .running` *and* the latest run's status ==
+/// `.running` — either alone is insufficient:
+/// - `task.status` alone: `TaskQueue.continueSession` owns the continuation
+///   admission transition to `.running`, but the worker creates the follow-up
+///   run immediately after that. During that narrow launch handoff,
+///   `task.status == .running` doesn't guarantee any run has started producing
+///   events yet.
+/// - run status alone: `AgentInteractivePermissionChannel` sets
+///   `task.status = .pendingUser` for a permission prompt while leaving
+///   `run.status == .running` until the user decides — the run is still
+///   "open" but nothing is streaming while it waits on the user, so treating
+///   that run status alone as live would poll a large history every tick for
+///   as long as the prompt goes unanswered.
+/// Both conditions together correctly exclude `.queued`, the launch handoff
+/// before a run exists, and a pending-user permission pause, leaving all of
+/// them on the cheap reactive path
+/// (`TaskThreadChangeObserver.reactiveTriggerWhenNotLive`,
+/// `UsageDashboardView`'s query-driven follow-up) until a run is actually
+/// running.
+enum TaskLiveness {
+    static func isLive(task: AgentTask) -> Bool {
+        task.status == .running
+            && task.runs.max(by: { $0.startedAt < $1.startedAt })?.status == .running
     }
 }
 

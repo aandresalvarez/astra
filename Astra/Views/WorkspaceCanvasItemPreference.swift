@@ -1,4 +1,7 @@
 import Foundation
+import ASTRAPersistence
+import ASTRACore
+import ASTRAModels
 
 struct WorkspaceCanvasItemPreference: Equatable {
     static let closedRawValue = ""

@@ -33,6 +33,12 @@ struct AgentExecutionScopedProcessError: LocalizedError {
     }
 }
 
+enum AgentExecutionScopedProcessStdinMode {
+    case inherited
+    case closed
+    case pipe
+}
+
 /// Launches a provider in its own process group so cancellation can clean up
 /// tool subprocesses that the provider starts or backgrounds.
 final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProcessControl {
@@ -40,6 +46,7 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
     private let arguments: [String]
     private let currentDirectory: String
     private let environment: [String: String]
+    private let stdinMode: AgentExecutionScopedProcessStdinMode
     private let lock = NSLock()
 
     private var processID: pid_t = 0
@@ -80,13 +87,15 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
         arguments: [String],
         currentDirectory: String,
         environment: [String: String],
+        stdinMode: AgentExecutionScopedProcessStdinMode = .inherited,
         providesStdinChannel: Bool = false
     ) {
         self.executablePath = executablePath
         self.arguments = arguments
         self.currentDirectory = currentDirectory
         self.environment = environment
-        self.stdinPipe = providesStdinChannel ? Pipe() : nil
+        self.stdinMode = providesStdinChannel ? .pipe : stdinMode
+        self.stdinPipe = self.stdinMode == .pipe ? Pipe() : nil
     }
 
     /// Writes one line to the child's stdin. Safe to call after the child has
@@ -141,12 +150,15 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
                       operation: "posix_spawn_file_actions_addclose(stdin_read)")
             try check(posix_spawn_file_actions_addclose(&actions, stdinPipe.fileHandleForWriting.fileDescriptor),
                       operation: "posix_spawn_file_actions_addclose(stdin_write)")
+        } else if stdinMode == .closed {
+            try check(posix_spawn_file_actions_addopen(&actions, STDIN_FILENO, "/dev/null", O_RDONLY, 0),
+                      operation: "posix_spawn_file_actions_addopen(stdin)")
         }
         try addWorkingDirectory(to: &actions)
 
-        let flags = Int16(POSIX_SPAWN_SETPGROUP)
-        try check(posix_spawnattr_setflags(&attr, flags), operation: "posix_spawnattr_setflags")
-        try check(posix_spawnattr_setpgroup(&attr, 0), operation: "posix_spawnattr_setpgroup")
+        guard ProcessGroupSpawn.configureNewProcessGroup(&attr) else {
+            throw AgentExecutionScopedProcessError(operation: "posix_spawnattr_setflags", code: errno)
+        }
 
         var argv = makeCStringArray([executablePath] + arguments)
         var envp = makeCStringArray(environment.map { "\($0.key)=\($0.value)" }.sorted())
@@ -190,21 +202,24 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
         let ids = currentIDs()
         guard ids.isRunning else { return }
 
-        if ids.processGroupID > 0 && ids.processGroupID != getpgrp() {
-            kill(-ids.processGroupID, SIGTERM)
-        } else if ids.processID > 0 {
-            kill(ids.processID, SIGTERM)
-        }
+        Self.signal(processGroupID: ids.processGroupID, processID: ids.processID, signal: SIGTERM)
 
         DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + .seconds(3)) { [weak self] in
             guard let self else { return }
             let latest = self.currentIDs()
             guard latest.isRunning else { return }
-            if latest.processGroupID > 0 && latest.processGroupID != getpgrp() {
-                kill(-latest.processGroupID, SIGKILL)
-            } else if latest.processID > 0 {
-                kill(latest.processID, SIGKILL)
-            }
+            Self.signal(processGroupID: latest.processGroupID, processID: latest.processID, signal: SIGKILL)
+        }
+    }
+
+    /// Signals the whole process group (guarded against signalling our own
+    /// foreground group) so background children the provider spawned can't
+    /// outlive it, falling back to the bare pid if no group was recorded.
+    private static func signal(processGroupID: pid_t, processID: pid_t, signal: Int32) {
+        if processGroupID > 0, processGroupID != getpgrp() {
+            ProcessGroupSpawn.signalProcessGroup(processGroupID, signal: signal)
+        } else if processID > 0 {
+            kill(processID, signal)
         }
     }
 
@@ -247,15 +262,14 @@ final class AgentExecutionScopedProcess: @unchecked Sendable, AgentRuntimeProces
 
     private func cleanupResidualProcessGroup() {
         let ids = currentIDs()
-        guard ids.processGroupID > 0,
-              ids.processGroupID != getpgrp() else {
+        guard ids.processGroupID > 0, ids.processGroupID != getpgrp() else {
             return
         }
 
         if kill(-ids.processGroupID, SIGTERM) == 0 {
             usleep(200_000)
         }
-        kill(-ids.processGroupID, SIGKILL)
+        ProcessGroupSpawn.signalProcessGroup(ids.processGroupID, signal: SIGKILL)
     }
 
     private func currentIDs() -> (processID: pid_t, processGroupID: pid_t, isRunning: Bool) {
@@ -480,6 +494,8 @@ final class AgentRuntimeStreamTelemetry: @unchecked Sendable {
             completedEventCount += 1
         case .failed:
             failedEventCount += 1
+        case .teamEvent:
+            break
         case .unknown(_, let type, let raw):
             unknownEventCount += 1
             unknownTypeCounts[type, default: 0] += 1
@@ -1041,7 +1057,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
     }
 
     private static func managedWorkspaceJobFileState(atPath path: String) -> ManagedWorkspaceJobFileState? {
-        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path, isDirectory: false)),
+        guard let data = safeManagedWorkspaceJobFileData(atPath: path),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             return nil
         }
@@ -1054,7 +1070,53 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
     }
 
     private static func fileModificationDate(atPath path: String) -> Date? {
-        (try? FileManager.default.attributesOfItem(atPath: path)[.modificationDate]) as? Date
+        guard let statInfo = safeManagedWorkspaceJobFileStat(atPath: path) else { return nil }
+        return Date(timeIntervalSince1970: TimeInterval(statInfo.st_mtimespec.tv_sec) + TimeInterval(statInfo.st_mtimespec.tv_nsec) / 1_000_000_000)
+    }
+
+    private static func safeManagedWorkspaceJobFileData(atPath path: String) -> Data? {
+        guard let expectedStat = safeManagedWorkspaceJobFileStat(atPath: path) else { return nil }
+        let fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
+        guard fd >= 0 else { return nil }
+        defer { close(fd) }
+
+        var openedStat = stat()
+        guard fstat(fd, &openedStat) == 0,
+              sameManagedWorkspaceJobFile(openedStat, expectedStat),
+              (openedStat.st_mode & S_IFMT) == S_IFREG,
+              openedStat.st_nlink == 1 else {
+            return nil
+        }
+
+        var data = Data()
+        var buffer = [UInt8](repeating: 0, count: 64 * 1024)
+        while true {
+            let bytesRead = read(fd, &buffer, buffer.count)
+            if bytesRead > 0 {
+                data.append(buffer, count: bytesRead)
+            } else if bytesRead == 0 {
+                break
+            } else if errno == EINTR {
+                continue
+            } else {
+                return nil
+            }
+        }
+        return data
+    }
+
+    private static func safeManagedWorkspaceJobFileStat(atPath path: String) -> stat? {
+        var statInfo = stat()
+        guard lstat(path, &statInfo) == 0,
+              (statInfo.st_mode & S_IFMT) == S_IFREG,
+              statInfo.st_nlink == 1 else {
+            return nil
+        }
+        return statInfo
+    }
+
+    private static func sameManagedWorkspaceJobFile(_ lhs: stat, _ rhs: stat) -> Bool {
+        lhs.st_dev == rhs.st_dev && lhs.st_ino == rhs.st_ino
     }
 
     private static func parseISO8601Date(_ value: String) -> Date? {

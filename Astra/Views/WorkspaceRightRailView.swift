@@ -1,6 +1,8 @@
 import ASTRACore
 import SwiftData
 import SwiftUI
+import ASTRAModels
+import ASTRAPersistence
 
 private let workspaceRightRailScrollCoordinateSpace = "workspaceRightRailScrollCoordinateSpace"
 
@@ -252,6 +254,8 @@ struct WorkspaceRightRailView: View {
     @State private var pendingRailDeletion: PendingRailDeletion?
     @State private var approvedCapabilityPackages: [PluginPackage] = PluginCatalog.builtInPackages
     @State private var approvedCapabilityRecords: [CapabilityApprovalRecord] = []
+    @State private var approvedCapabilityPackPolicy = PackResolvedPolicy.empty
+    @State private var approvedCapabilityRefreshID = UUID()
     @State private var capabilityRailSnapshotCache = CapabilityRailSnapshotCache()
     @State private var capabilityError: String?
     @State private var capabilityPrerequisiteStatuses: [String: HealthStatus] = [:]
@@ -276,7 +280,8 @@ struct WorkspaceRightRailView: View {
             globalSkills: globalSkills,
             globalConnectors: globalConnectors,
             globalTools: globalTools,
-            packageDefinitions: approvedCapabilityPackages
+            packageDefinitions: approvedCapabilityPackages,
+            packPolicy: approvedCapabilityPackPolicy
         )
     }
 
@@ -286,7 +291,8 @@ struct WorkspaceRightRailView: View {
         // CapabilityApprovals directory on every body re-evaluation.
         CapabilityCatalogPolicyContext.currentUser(
             workspace: workspace,
-            approvalRecords: approvedCapabilityRecords
+            approvalRecords: approvedCapabilityRecords,
+            packPolicy: approvedCapabilityPackPolicy
         )
     }
 
@@ -520,6 +526,10 @@ struct WorkspaceRightRailView: View {
         .onChange(of: workspace.additionalPaths) {
             checkGitRepositories()
             checkDockerEnvironments()
+        }
+        .onChange(of: workspace.enabledPackIDs) {
+            refreshApprovedCapabilities()
+            rebuildCapabilityRailSnapshot(for: capabilityRailSnapshotSignature)
         }
         .onChange(of: workspace.activeExecutionEnvironmentJSON) {
             checkDockerEnvironments()
@@ -940,29 +950,8 @@ struct WorkspaceRightRailView: View {
 
     private func capabilityListSubtitle(for item: RailCapabilityItem) -> String {
         let source = isWorkspaceAuthoredCapability(item) ? "Custom" : "Built-in"
-        let composition = capabilityCompositionSummary(for: item)
+        let composition = WorkspaceRightRailPresentation.compositionSummary(for: item)
         return "\(source): \(composition)"
-    }
-
-    private func capabilityCompositionSummary(for item: RailCapabilityItem) -> String {
-        var parts: [String] = []
-        appendCount(item.skillNames.count, singular: "skill", plural: "skills", to: &parts)
-        appendCount(item.connectorNames.count, singular: "connector", plural: "connectors", to: &parts)
-        appendCount(item.toolNames.count, singular: "tool", plural: "tools", to: &parts)
-        appendCount(item.browserAdapterNames.count, singular: "browser adapter", plural: "browser adapters", to: &parts)
-        appendCount(item.templateNames.count, singular: "template", plural: "templates", to: &parts)
-
-        if !parts.isEmpty {
-            return parts.joined(separator: ", ")
-        }
-
-        let fallback = item.presentation.rowSubtitle.trimmingCharacters(in: .whitespacesAndNewlines)
-        return fallback.isEmpty ? "No resources" : fallback
-    }
-
-    private func appendCount(_ count: Int, singular: String, plural: String, to parts: inout [String]) {
-        guard count > 0 else { return }
-        parts.append("\(count) \(count == 1 ? singular : plural)")
     }
 
     private func isWorkspaceAuthoredCapability(_ item: RailCapabilityItem) -> Bool {
@@ -983,6 +972,7 @@ struct WorkspaceRightRailView: View {
             globalTools: globalTools,
             packages: approvedCapabilityPackages,
             approvalRecords: approvedCapabilityRecords,
+            packPolicy: approvedCapabilityPackPolicy,
             prerequisiteStatuses: capabilityPrerequisiteStatuses
         )
     }
@@ -1115,17 +1105,13 @@ struct WorkspaceRightRailView: View {
         state: CapabilityRailPackageSnapshotState,
         prerequisiteStatuses: [String: HealthStatus]
     ) -> RailCapabilityItem {
+        let packageSummary = CapabilityPackageResourceSummary(package: package)
         let sharedResourceCount = state.linkedSkills.filter(\.isGlobal).count
             + state.linkedConnectors.filter(\.isGlobal).count
             + state.linkedTools.filter(\.isGlobal).count
         let workspaceResourceCount = state.linkedSkills.filter { !$0.isGlobal }.count
             + state.linkedConnectors.filter { !$0.isGlobal }.count
             + state.linkedTools.filter { !$0.isGlobal }.count
-        let declaredResourceCount = package.skills.count
-            + package.connectors.count
-            + package.localTools.count
-            + package.templates.count
-            + package.browserAdapters.count
         let readiness = readiness(
             for: package,
             stateReadiness: state.readiness,
@@ -1137,8 +1123,8 @@ struct WorkspaceRightRailView: View {
             workspaceName: workspace.name,
             sharedResourceCount: sharedResourceCount,
             workspaceResourceCount: workspaceResourceCount,
-            declaredResourceCount: declaredResourceCount,
-            contentSummary: package.contentSummary
+            declaredResourceCount: packageSummary.declaredResourceCount,
+            contentSummary: packageSummary.contentSummary(separator: ", ")
         )
 
         return RailCapabilityItem(
@@ -1154,6 +1140,7 @@ struct WorkspaceRightRailView: View {
             skillNames: RailStringList.uniqueSorted(package.skills.map(\.name) + state.linkedSkills.map(\.name)),
             connectorNames: RailStringList.uniqueSorted(package.connectors.map(\.name) + state.linkedConnectors.map { $0.name.isEmpty ? "Untitled Connector" : $0.name }),
             toolNames: RailStringList.uniqueSorted(package.localTools.map(\.name) + state.linkedTools.map { $0.name.isEmpty ? "Untitled Tool" : $0.name }),
+            mcpServerNames: packageSummary.mcpServerNames,
             browserAdapterNames: RailStringList.uniqueSorted(package.browserAdapters.map(browserAdapterDisplayName)),
             templateNames: RailStringList.uniqueSorted(package.templates.map(\.name)),
             requirementNames: RailStringList.uniqueSorted(package.prerequisites.map(\.displayName))
@@ -1204,21 +1191,43 @@ struct WorkspaceRightRailView: View {
     }
 
     private func refreshApprovedCapabilities() {
-        // The only synchronous capability-storage scan in this view, run once on
-        // appear rather than on every body re-evaluation. Both the installed
-        // catalog and the approval records are cached into view state and read
-        // back by `capabilities` / `catalogPolicyContext`.
-        let snapshot = PerformanceTelemetry.measure(
-            "workspace_right_rail_capability_load",
-            thresholdMilliseconds: 20
-        ) {
-            (
-                packages: CapabilityLibrary().installedPackages(),
-                records: CapabilityApprovalStore().records()
+        let refreshID = UUID()
+        let enabledPackIDs = workspace.enabledPackIDs
+        approvedCapabilityRefreshID = refreshID
+
+        Task { @MainActor in
+            let snapshot = await Task.detached(priority: .userInitiated) {
+                PerformanceTelemetry.measure(
+                    "workspace_right_rail_capability_load",
+                    thresholdMilliseconds: 20
+                ) {
+                    ApprovedCapabilitiesSnapshot(
+                        packages: CapabilityLibrary().installedPackages(),
+                        records: CapabilityApprovalStore().records(),
+                        packPolicy: PackWorkspacePolicyProvider.resolvedPolicy(enabledPackIDs: enabledPackIDs)
+                    )
+                }
+            }.value
+
+            guard !Task.isCancelled, approvedCapabilityRefreshID == refreshID else { return }
+            let refreshPlan = WorkspaceRightRailApprovedCapabilityRefreshPlan.make(
+                previousPackageIDs: approvedCapabilityPackages.map(\.id),
+                nextPackageIDs: snapshot.packages.map(\.id),
+                previousApprovalRecords: approvedCapabilityRecords,
+                nextApprovalRecords: snapshot.records,
+                previousPolicy: approvedCapabilityPackPolicy,
+                nextPolicy: snapshot.packPolicy
             )
+            approvedCapabilityPackages = snapshot.packages.isEmpty ? PluginCatalog.builtInPackages : snapshot.packages
+            approvedCapabilityRecords = snapshot.records
+            approvedCapabilityPackPolicy = snapshot.packPolicy
+            if refreshPlan.shouldRefreshPrerequisites {
+                refreshCapabilityPrerequisiteStatuses()
+            }
+            if refreshPlan.shouldRebuildSnapshot {
+                rebuildCapabilityRailSnapshot(for: capabilityRailSnapshotSignature)
+            }
         }
-        approvedCapabilityPackages = snapshot.packages.isEmpty ? PluginCatalog.builtInPackages : snapshot.packages
-        approvedCapabilityRecords = snapshot.records
     }
 
     private func refreshCapabilityPrerequisiteStatuses() {
@@ -2312,4 +2321,10 @@ private struct PendingRailDeletion: Identifiable {
     let message: String
     let confirmTitle: String
     let perform: () -> Void
+}
+
+private struct ApprovedCapabilitiesSnapshot: Sendable {
+    var packages: [PluginPackage]
+    var records: [CapabilityApprovalRecord]
+    var packPolicy: PackResolvedPolicy
 }

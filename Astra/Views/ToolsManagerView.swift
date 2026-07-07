@@ -1,5 +1,7 @@
 import SwiftUI
 import SwiftData
+import ASTRAModels
+import ASTRAPersistence
 
 struct ToolsManagerView: View {
     var workspace: Workspace

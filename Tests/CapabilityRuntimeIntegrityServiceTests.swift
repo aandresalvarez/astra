@@ -1,5 +1,8 @@
+import Foundation
 import SwiftData
 import Testing
+import ASTRAModels
+import ASTRAPersistence
 @testable import ASTRA
 import ASTRACore
 
@@ -316,6 +319,117 @@ struct CapabilityRuntimeIntegrityServiceTests {
         #expect(issues.first?.message.contains("catalog policy blocks runtime activation") == true)
     }
 
+    @Test("pack-disabled enabled package does not block runtime activation")
+    func packDisabledEnabledPackageDoesNotBlockRuntimeActivation() throws {
+        let container = try makeRuntimeIntegrityContainer()
+        let context = container.mainContext
+        let package = PluginPackage(
+            id: "runtime-pack-disabled",
+            name: "Runtime Pack Disabled",
+            icon: "puzzlepiece.extension",
+            description: "Disabled by pack policy",
+            author: "Tests",
+            category: "Tests",
+            tags: [],
+            version: "1.0.0",
+            skills: [PluginSkill(
+                name: "Missing Pack Skill",
+                icon: "puzzlepiece.extension",
+                description: "Missing skill",
+                allowedTools: ["Read"],
+                disallowedTools: [],
+                customTools: [],
+                behaviorInstructions: "Read carefully.",
+                environmentKeys: [],
+                environmentValues: []
+            )],
+            connectors: [],
+            localTools: [],
+            templates: [],
+            governance: .builtInApproved()
+        )
+        let workspace = Workspace(name: "Runtime Pack Policy", primaryPath: "/tmp/runtime-pack-policy")
+        workspace.enabledCapabilityIDs = [package.id]
+        workspace.enabledPackIDs = ["astra.pack.policy-test"]
+        context.insert(workspace)
+        let task = AgentTask(title: "Use disabled package", goal: "Run disabled capability", workspace: workspace)
+        context.insert(task)
+        try context.save()
+        let packPolicy = runtimePackPolicy(restrictions: [
+            AstraPackPolicyRestriction(
+                id: "disable-runtime",
+                contributionKind: "capabilityPackage",
+                action: "disableCapability",
+                effect: "restrict",
+                targetID: package.id
+            )
+        ])
+
+        let issues = CapabilityRuntimeIntegrityService.issues(
+            for: task,
+            packages: [package],
+            checkExecutables: false,
+            policyContext: CapabilityCatalogPolicyContext.currentUser(
+                workspace: workspace,
+                approvalRecords: [],
+                packPolicy: packPolicy
+            )
+        )
+
+        #expect(issues.isEmpty)
+    }
+
+    @Test("pack review-gated enabled package reports policy issue")
+    func packReviewGatedEnabledPackageReportsPolicyIssue() throws {
+        let container = try makeRuntimeIntegrityContainer()
+        let context = container.mainContext
+        let package = PluginPackage(
+            id: "runtime-pack-review",
+            name: "Runtime Pack Review",
+            icon: "puzzlepiece.extension",
+            description: "Review gated by pack policy",
+            author: "Tests",
+            category: "Tests",
+            tags: [],
+            version: "1.0.0",
+            skills: [],
+            connectors: [],
+            localTools: [],
+            templates: [],
+            governance: .builtInApproved()
+        )
+        let workspace = Workspace(name: "Runtime Pack Review", primaryPath: "/tmp/runtime-pack-review")
+        workspace.enabledCapabilityIDs = [package.id]
+        context.insert(workspace)
+        let task = AgentTask(title: "Use review-gated package", goal: "Run review-gated capability", workspace: workspace)
+        context.insert(task)
+        try context.save()
+        let packPolicy = runtimePackPolicy(restrictions: [
+            AstraPackPolicyRestriction(
+                id: "review-runtime",
+                contributionKind: "capabilityPackage",
+                action: "requireReviewGate",
+                effect: "restrict",
+                targetID: package.id,
+                message: "Runtime pack review is required."
+            )
+        ])
+
+        let issues = CapabilityRuntimeIntegrityService.issues(
+            for: task,
+            packages: [package],
+            checkExecutables: false,
+            policyContext: CapabilityCatalogPolicyContext.currentUser(
+                workspace: workspace,
+                approvalRecords: [],
+                packPolicy: packPolicy
+            )
+        )
+
+        #expect(issues.map(\.resourceKind) == [.policy])
+        #expect(issues.first?.message.contains("Runtime pack review is required") == true)
+    }
+
     @Test("enabled package with unauthenticated prerequisite blocks runtime activation")
     func enabledPackageWithUnauthenticatedPrerequisiteBlocksRuntimeActivation() throws {
         let container = try makeRuntimeIntegrityContainer()
@@ -407,6 +521,64 @@ struct CapabilityRuntimeIntegrityServiceTests {
         #expect(issues.first?.message == "local tool Shared Helper is not active for this workspace")
     }
 
+    @Test("runtime integrity validates matched local tool executable")
+    func runtimeIntegrityValidatesMatchedLocalToolExecutable() throws {
+        let container = try makeRuntimeIntegrityContainer()
+        let context = container.mainContext
+        let packageCommand = "astra-missing-helper-\(UUID().uuidString)"
+        let package = PluginPackage(
+            id: "runtime-local-tool-executable",
+            name: "Runtime Local Tool Executable",
+            icon: "terminal",
+            description: "Package requiring a local tool",
+            author: "Tests",
+            category: "Tests",
+            tags: [],
+            version: "1.0.0",
+            skills: [],
+            connectors: [],
+            localTools: [
+                PluginLocalTool(
+                    name: "Shared Helper",
+                    description: "Shared helper",
+                    icon: "terminal",
+                    toolType: "cli",
+                    command: packageCommand,
+                    arguments: ""
+                )
+            ],
+            templates: [],
+            governance: .builtInApproved()
+        )
+        let workspace = Workspace(name: "Runtime Local Tool Executable", primaryPath: "/tmp/runtime-local-tool-executable")
+        workspace.enabledCapabilityIDs = [package.id]
+        context.insert(workspace)
+
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("CapabilityRuntimeIntegrityServiceTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let executable = directory.appendingPathComponent("shared-helper")
+        try "#!/bin/sh\nexit 0\n".write(to: executable, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
+
+        let configuredTool = LocalTool(name: "Shared Helper", toolType: "cli", command: executable.path)
+        configuredTool.workspace = workspace
+        context.insert(configuredTool)
+
+        let task = AgentTask(title: "Use local tool", goal: "Use shared helper", workspace: workspace)
+        context.insert(task)
+        try context.save()
+
+        let issues = CapabilityRuntimeIntegrityService.issues(
+            for: task,
+            packages: [package],
+            checkExecutables: true
+        )
+
+        #expect(issues.isEmpty)
+    }
+
     @Test("unknown browser adapter IDs are runtime integrity issues")
     func unknownBrowserAdapterIDsAreRuntimeIntegrityIssues() throws {
         let container = try makeRuntimeIntegrityContainer()
@@ -443,5 +615,21 @@ struct CapabilityRuntimeIntegrityServiceTests {
         #expect(issues.map(\.resourceKind) == [.browserAdapter])
         #expect(issues.first?.resourceName == "unknownAdapter")
         #expect(issues.first?.message.contains("not known to ASTRA") == true)
+    }
+
+    private func runtimePackPolicy(restrictions: [AstraPackPolicyRestriction]) -> PackResolvedPolicy {
+        AstraPackPolicyResolver.resolve(
+            composition: AstraPackComposition.resolve(packs: [
+                AstraPackManifest(
+                    formatVersion: 1,
+                    id: "astra.pack.policy-test",
+                    name: "Policy Test",
+                    version: "1.0.0",
+                    coreAPIVersion: "1.0",
+                    description: "Policy test pack.",
+                    policyRestrictions: restrictions
+                )
+            ])
+        )
     }
 }

@@ -48,6 +48,63 @@ struct TaskMainViewCrashRegressionTests {
         #expect(!gitSource.contains(".onChange(of: selectedTask?.id) {\n            viewModel.setup(for: workspace, selectedTask: selectedTask)"))
     }
 
+    @Test("Canvas refresh signatures do not walk live task relationships in SwiftUI body")
+    func canvasRefreshSignaturesAvoidLiveRelationshipWalks() throws {
+        for path in [
+            "Astra/Views/ContentView.swift",
+            "Astra/Views/WorkspaceCanvasPanelView.swift"
+        ] {
+            let source = try fileText(path)
+            #expect(!source.contains("selectedTask.runs.max"), "\(path) should not sort live task runs from body signatures")
+            #expect(!source.contains("selectedTask.runs.count"), "\(path) should not count live task runs from body signatures")
+            #expect(source.contains("TaskCanvasRefreshSignature"), "\(path) should use the value-snapshot canvas signature")
+        }
+
+        let signatureSource = try fileText("Astra/Views/TaskCanvasRefreshSignature.swift")
+        #expect(!signatureSource.contains("task.events.count"), "Canvas refresh signatures should use scalar task tokens, not live event relationship counts")
+        #expect(!signatureSource.contains("task.runs"), "Canvas refresh signatures should not walk live run relationships")
+    }
+
+    @Test("Composer capability snapshot loader reacts to approval changes without name-heavy signatures")
+    func composerCapabilitySnapshotLoaderAvoidsStaleApprovalAndNameHeavySignatures() throws {
+        let source = try fileText("Astra/Views/ComposerCapabilitySnapshot.swift")
+
+        #expect(source.contains(".onReceive(NotificationCenter.default.publisher(for: .capabilityApprovalsChanged))"))
+        #expect(source.contains("approvalRefreshID = UUID()"))
+        #expect(source.contains("withTaskCancellationHandler"))
+        #expect(source.contains("loadTask.cancel()"))
+        #expect(source.contains("revisionSignature(for skill: Skill)"))
+        #expect(!source.contains("\\($0.id.uuidString):\\($0.name)"))
+    }
+
+    @Test("Composer capability work stays out of large SwiftUI body views")
+    func composerCapabilityWorkStaysOutOfLargeSwiftUIBodyViews() throws {
+        for path in [
+            "Astra/Views/ChatPanelView.swift",
+            "Astra/Views/TaskMainView.swift"
+        ] {
+            let source = try fileText(path)
+            #expect(!source.contains("@Query(filter: #Predicate<Skill> { $0.isGlobal == true })"), "\(path) should not own global skill queries")
+            #expect(!source.contains("@Query(filter: #Predicate<Connector> { $0.isGlobal == true })"), "\(path) should not own global connector queries")
+            #expect(!source.contains("@Query(filter: #Predicate<LocalTool> { $0.isGlobal == true })"), "\(path) should not own global tool queries")
+            #expect(!source.contains("WorkspaceCapabilities("), "\(path) should not resolve capabilities from render-time computed properties")
+            #expect(source.contains("ComposerCapabilitySnapshotLoader"), "\(path) should consume cached composer capability snapshots")
+        }
+    }
+
+    @Test("Container environment picker keeps text from being squeezed by scope badge")
+    func containerEnvironmentPickerKeepsTextFromBeingSqueezedByScopeBadge() throws {
+        let dockerSource = try fileText("Astra/Views/WorkspaceDockerSectionView.swift")
+        let pickerStart = try #require(dockerSource.range(of: "private var environmentPickerRow"))
+        let nextRowStart = try #require(dockerSource[pickerStart.upperBound...].range(of: "private var credentialProjectionRow"))
+        let pickerSource = String(dockerSource[pickerStart.lowerBound..<nextRowStart.lowerBound])
+
+        #expect(pickerSource.contains("rowTitle(viewModel.environmentPickerTitle)"))
+        #expect(pickerSource.contains(".frame(maxWidth: .infinity, alignment: .leading)"))
+        #expect(pickerSource.contains("Image(systemName: \"chevron.up.chevron.down\")"))
+        #expect(!pickerSource.contains("RailCountBadge(viewModel.activeScopeLabel)"))
+    }
+
     private func fileText(_ path: String) throws -> String {
         let root = URL(filePath: #filePath)
             .deletingLastPathComponent()

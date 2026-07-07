@@ -1,5 +1,7 @@
 import SwiftUI
 import ASTRACore
+import ASTRAPersistence
+import ASTRAModels
 
 struct OnboardingCapabilityOption: Identifiable, Equatable {
     let id: String
@@ -193,7 +195,7 @@ enum OnboardingCapabilitySetup {
             id: jiraPackageID,
             packageID: jiraPackageID,
             title: "Jira",
-            subtitle: "Query, create, and update Jira tickets",
+            subtitle: "Search and read Jira tickets",
             icon: "list.bullet.clipboard"
         ),
         OnboardingCapabilityOption(
@@ -218,6 +220,21 @@ enum OnboardingCapabilitySetup {
             icon: "tablecells"
         )
     ]
+
+    static func outcomeSubtitle(for option: OnboardingCapabilityOption) -> String {
+        switch option.packageID {
+        case jiraPackageID:
+            return "Search, read, and summarize Jira tickets"
+        case githubPackageID:
+            return "Review PRs, issues, and CI"
+        case gcloudPackageID:
+            return "Query BigQuery and work with GCP resources"
+        case redcapPackageID:
+            return "Talk to REDCap projects and metadata"
+        default:
+            return option.subtitle
+        }
+    }
 
     static var installablePackageIDs: Set<String> {
         Set(configurableOptions.compactMap(\.packageID))

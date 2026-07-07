@@ -1,5 +1,7 @@
 import SwiftData
 import SwiftUI
+import ASTRAModels
+import ASTRAPersistence
 
 enum PlanShelfPresentation {
     static let showsTopSummaryChips = false
@@ -105,22 +107,7 @@ struct WorkspaceCanvasPanelView: View {
     }
 
     private var planInputSignature: String {
-        guard let selectedTask else { return "none" }
-        let latestRun = selectedTask.runs.max { $0.startedAt < $1.startedAt }
-        // Deliberately exclude `latestRun.output.count`: it is an
-        // O(output-length) walk on the live model that re-runs on every body
-        // pass (this signature is read ~6× per render) while output streams.
-        // The plan is derived from plan events/run structure, not raw output
-        // text, so event/run counts and status are sufficient change signals.
-        return [
-            selectedTask.id.uuidString,
-            selectedTask.status.rawValue,
-            String(Int(selectedTask.updatedAt.timeIntervalSince1970)),
-            String(selectedTask.events.count),
-            String(selectedTask.runs.count),
-            latestRun?.id.uuidString ?? "none",
-            latestRun?.status.rawValue ?? "none"
-        ].joined(separator: "|")
+        TaskCanvasRefreshSignature(task: selectedTask).rawValue
     }
 
     private var planSignature: String {
@@ -1164,7 +1151,6 @@ struct WorkspaceCanvasPanelView: View {
             selectedTask.goal = sanitized.goal
             selectedTask.updatedAt = Date()
         }
-        try? modelContext.save()
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: selectedTask.workspace, modelContext: modelContext)
         draftPlan = sanitized
         lastPlanSignature = planSignature
@@ -1178,7 +1164,6 @@ struct WorkspaceCanvasPanelView: View {
             modelContext: modelContext,
             reason: "Cancelled from shelf."
         )
-        try? modelContext.save()
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: selectedTask.workspace, modelContext: modelContext)
         isPresented = false
     }

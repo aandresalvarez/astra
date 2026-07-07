@@ -1,6 +1,8 @@
 import AppKit
 import SwiftUI
 import ASTRACore
+import ASTRAModels
+import ASTRAPersistence
 
 struct SettingsView: View {
     @ObservedObject var appUpdateController: AppUpdateController
@@ -21,6 +23,7 @@ struct SettingsView: View {
     @AppStorage(AppStorageKeys.browserDebugCapture) private var browserDebugCapture = LoggingPreferences.defaultBrowserDebugCapture
     @AppStorage(AppStorageKeys.logRetentionDays) private var logRetentionDays = LoggingPreferences.defaultLogRetentionDays
     @AppStorage(AppStorageKeys.browserAutoPromoteGoogleWorkspace) private var browserAutoPromoteGoogleWorkspace = false
+    @AppStorage(AppStorageKeys.objectiveDriftDetectionEnabled) private var objectiveDriftDetectionEnabled = false
     @AppStorage(AppStorageKeys.hasCompletedOnboarding) private var hasCompletedOnboarding = false
     @AppStorage(AppearancePreference.storageKey) private var appearanceRaw = AppearancePreference.system.rawValue
     @AppStorage(AppStorageKeys.claudeAvailableModels) private var claudeAvailableModels = ""
@@ -198,7 +201,7 @@ struct SettingsView: View {
             HStack {
                 Picker("Budget", selection: roleBudgetBinding(for: role)) {
                     ForEach(budgetPresets, id: \.self) { budget in
-                        Text(budget == 0 ? "Unlimited" : "\(budget / 1000)k tokens").tag(budget)
+                        Text(RuntimeBudgetPresentation.settingsLabel(for: budget)).tag(budget)
                     }
                 }
                 Picker("Policy", selection: rolePolicyBinding(for: role)) {
@@ -259,6 +262,11 @@ struct SettingsView: View {
 
                 modelSelectionRow(title: "Utility Model", selection: $validationModel)
                 Text("Used for short internal jobs such as title generation and AI validation. Pick a fast, inexpensive model when your provider offers one.")
+                    .font(Stanford.caption(12))
+                    .foregroundStyle(.secondary)
+
+                Toggle("Objective Drift Detection", isOn: $objectiveDriftDetectionEnabled)
+                Text("Experimental. Periodically asks the Utility Model, in the background, whether the task's original goal is still the right thing to keep working on. Never awaited on the UI path; failures leave existing behavior unchanged.")
                     .font(Stanford.caption(12))
                     .foregroundStyle(.secondary)
 

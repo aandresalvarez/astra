@@ -1,4 +1,7 @@
 import SwiftUI
+import ASTRAModels
+import ASTRAPersistence
+import ASTRACore
 
 struct TaskRowView: View {
     let task: AgentTask

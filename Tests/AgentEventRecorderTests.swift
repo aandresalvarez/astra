@@ -1,5 +1,6 @@
 import SwiftData
 import Testing
+import ASTRAModels
 @testable import ASTRA
 import ASTRACore
 
@@ -25,21 +26,21 @@ struct AgentEventRecorderTests {
         context.insert(run)
 
         let recordingState = AgentEventRecordingState()
-        AgentEventRecorder.recordClaudeRunEvent(
+        AgentEventRecorder.recordClaudeEvent(
             .text(text: "REM"),
             to: task,
             run: run,
             modelContext: context,
             recordingState: recordingState
         )
-        AgentEventRecorder.recordClaudeRunEvent(
+        AgentEventRecorder.recordClaudeEvent(
             .text(text: "REMEMBERED"),
             to: task,
             run: run,
             modelContext: context,
             recordingState: recordingState
         )
-        AgentEventRecorder.recordClaudeRunEvent(
+        AgentEventRecorder.recordClaudeEvent(
             .text(text: "REMEMBERED"),
             to: task,
             run: run,
@@ -153,6 +154,58 @@ struct AgentEventRecorderTests {
         #expect(!run.output.contains("ASTRA_EVENT"))
     }
 
+    @Test("Claude result summaries keep the last completed transcript output")
+    func claudeResultSummariesKeepLastCompletedOutput() throws {
+        let container = try makeAgentEventRecorderContainer()
+        let context = container.mainContext
+        let task = AgentTask(title: "Review", goal: "Second pass review")
+        let run = TaskRun(task: task)
+        context.insert(task)
+        context.insert(run)
+
+        let recordingState = AgentEventRecordingState()
+        func recordClaudeResult(
+            text: String,
+            totalInputTokens: Int,
+            totalOutputTokens: Int
+        ) {
+            let parsed = ParsedEvent.result(
+                text: text,
+                costUSD: nil,
+                totalInputTokens: totalInputTokens,
+                totalOutputTokens: totalOutputTokens,
+                durationMs: nil,
+                numTurns: nil,
+                isError: false
+            )
+            for agentEvent in AgentEventRecorder.agentEvents(from: parsed) {
+                AgentEventRecorder.recordClaudeEvent(
+                    agentEvent,
+                    to: task,
+                    run: run,
+                    modelContext: context,
+                    recordingState: recordingState
+                )
+            }
+        }
+
+        recordClaudeResult(
+            text: "I'll do a second review pass from the repository itself.",
+            totalInputTokens: 1,
+            totalOutputTokens: 1
+        )
+        recordClaudeResult(
+            text: "**Findings**\n1. High: resume flows can leave tasks stuck running.",
+            totalInputTokens: 2,
+            totalOutputTokens: 3
+        )
+
+        #expect(run.output == "**Findings**\n1. High: resume flows can leave tasks stuck running.")
+        #expect(run.tokensUsed == 5)
+        #expect(run.inputTokens == 2)
+        #expect(run.outputTokens == 3)
+    }
+
     @Test("Completed summary never clobbers streamed text output")
     func completedSummaryDoesNotClobberStreamedText() throws {
         let container = try makeAgentEventRecorderContainer()
@@ -218,5 +271,199 @@ struct AgentEventRecorderTests {
         )
 
         #expect(run.output == "Preamble. Streamed body.")
+    }
+
+    @Test("Claude follow-up token accounting accumulates across runs")
+    func claudeFollowUpTokenAccountingAccumulates() throws {
+        let container = try makeAgentEventRecorderContainer()
+        let context = container.mainContext
+        let task = AgentTask(title: "Follow-up", goal: "Continue the task")
+        let firstRun = TaskRun(task: task)
+        context.insert(task)
+        context.insert(firstRun)
+
+        let recordingState = AgentEventRecordingState()
+        for agentEvent in AgentEventRecorder.agentEvents(from: .usage(totalInputTokens: 10, totalOutputTokens: 5)) {
+            AgentEventRecorder.recordClaudeEvent(
+                agentEvent,
+                to: task,
+                run: firstRun,
+                modelContext: context,
+                recordingMode: .initial,
+                recordingState: recordingState
+            )
+        }
+        #expect(task.tokensUsed == 15)
+        #expect(firstRun.tokensUsed == 15)
+
+        // A follow-up run continues the same task and must add to, not
+        // replace, the task's accumulated token total.
+        let secondRun = TaskRun(task: task)
+        context.insert(secondRun)
+        for agentEvent in AgentEventRecorder.agentEvents(from: .usage(totalInputTokens: 20, totalOutputTokens: 8)) {
+            AgentEventRecorder.recordClaudeEvent(
+                agentEvent,
+                to: task,
+                run: secondRun,
+                modelContext: context,
+                recordingMode: .followUp,
+                recordingState: recordingState
+            )
+        }
+
+        #expect(secondRun.tokensUsed == 28)
+        #expect(task.tokensUsed == 15 + 28)
+    }
+
+    @Test("Claude multiple result envelopes keep the final answer, not the preamble")
+    func claudeMultipleResultEnvelopesKeepFinalAnswer() throws {
+        let container = try makeAgentEventRecorderContainer()
+        let context = container.mainContext
+        let task = AgentTask(title: "Review", goal: "Second pass review")
+        let run = TaskRun(task: task)
+        context.insert(task)
+        context.insert(run)
+
+        let recordingState = AgentEventRecordingState()
+        func recordResult(_ text: String) {
+            let parsed = ParsedEvent.result(
+                text: text, costUSD: nil, totalInputTokens: 1, totalOutputTokens: 1,
+                durationMs: nil, numTurns: nil, isError: false
+            )
+            for agentEvent in AgentEventRecorder.agentEvents(from: parsed) {
+                AgentEventRecorder.recordClaudeEvent(agentEvent, to: task, run: run, modelContext: context, recordingState: recordingState)
+            }
+        }
+
+        // Claude can stream several "result"-shaped envelopes before the
+        // definitive answer; the last one must win, mirroring Codex.
+        recordResult("I'll do a second review pass from the repository itself.")
+        recordResult("The checkout is clean, reviewing the current tree.")
+        recordResult("**Findings**\n1. High: resume flows can leave tasks stuck running.")
+
+        #expect(run.output == "**Findings**\n1. High: resume flows can leave tasks stuck running.")
+    }
+
+    @Test("Failed Claude result still preserves token/cost accounting and output text")
+    func failedClaudeResultPreservesAccountingAndOutput() throws {
+        let container = try makeAgentEventRecorderContainer()
+        let context = container.mainContext
+        let task = AgentTask(title: "Errored run", goal: "Should still record its final accounting")
+        let run = TaskRun(task: task)
+        context.insert(task)
+        context.insert(run)
+
+        let parsed = ParsedEvent.result(
+            text: "Ran out of context before finishing.",
+            costUSD: 0.42,
+            totalInputTokens: 100,
+            totalOutputTokens: 50,
+            durationMs: 1234,
+            numTurns: 3,
+            isError: true
+        )
+        for agentEvent in AgentEventRecorder.agentEvents(from: parsed) {
+            AgentEventRecorder.recordClaudeEvent(agentEvent, to: task, run: run, modelContext: context)
+        }
+
+        #expect(run.tokensUsed == 150)
+        #expect(run.costUSD == 0.42)
+        #expect(run.output == "Ran out of context before finishing.")
+    }
+
+    @Test("Claude Edit tool use preserves old/new string diff through the shared recorder")
+    func claudeEditToolUsePreservesDiff() throws {
+        let container = try makeAgentEventRecorderContainer()
+        let context = container.mainContext
+        let task = AgentTask(title: "Edit", goal: "Modify a file")
+        let run = TaskRun(task: task)
+        context.insert(task)
+        context.insert(run)
+
+        let parsed = ParsedEvent.toolUse(
+            name: "Edit",
+            id: "tool-1",
+            input: [
+                "file_path": "/tmp/example.swift",
+                "old_string": "let x = 1",
+                "new_string": "let x = 2"
+            ]
+        )
+        let agentEvents = AgentEventRecorder.agentEvents(from: parsed)
+        // A Write/Edit tool use must still surface as a generic tool-use
+        // event (for the transcript/audit trail) in addition to the precise
+        // .fileChange it maps to.
+        #expect(agentEvents.count == 2)
+        guard case .toolUse(let toolName, let toolID, _) = agentEvents.first else {
+            Issue.record("Expected Edit tool use to also emit .toolUse")
+            return
+        }
+        #expect(toolName == "Edit")
+        #expect(toolID == "tool-1")
+        guard case .fileChange(let path, let kind, _, let oldString, let newString) = agentEvents.last else {
+            Issue.record("Expected Edit tool use to map to .fileChange")
+            return
+        }
+        #expect(path == "/tmp/example.swift")
+        #expect(kind == "Edit")
+        #expect(oldString == "let x = 1")
+        #expect(newString == "let x = 2")
+
+        for agentEvent in agentEvents {
+            AgentEventRecorder.recordClaudeEvent(agentEvent, to: task, run: run, modelContext: context)
+        }
+
+        #expect(run.fileChanges.count == 1)
+        #expect(run.fileChanges.first?.oldString == "let x = 1")
+        #expect(run.fileChanges.first?.newString == "let x = 2")
+    }
+
+    @Test("Claude preserves every edit to the same file within one run, not just the first")
+    func claudePreservesRepeatedEditsToSamePath() throws {
+        let container = try makeAgentEventRecorderContainer()
+        let context = container.mainContext
+        let task = AgentTask(title: "Multi-edit", goal: "Edit the same file twice")
+        let run = TaskRun(task: task)
+        context.insert(task)
+        context.insert(run)
+
+        func recordEdit(id: String, old: String, new: String) {
+            let parsed = ParsedEvent.toolUse(
+                name: "Edit",
+                id: id,
+                input: ["file_path": "/tmp/example.swift", "old_string": old, "new_string": new]
+            )
+            for agentEvent in AgentEventRecorder.agentEvents(from: parsed) {
+                AgentEventRecorder.recordClaudeEvent(agentEvent, to: task, run: run, modelContext: context)
+            }
+        }
+
+        recordEdit(id: "tool-1", old: "let x = 1", new: "let x = 2")
+        recordEdit(id: "tool-2", old: "let x = 2", new: "let x = 3")
+
+        #expect(run.fileChanges.count == 2)
+        #expect(run.fileChanges.map(\.newString) == ["let x = 2", "let x = 3"])
+    }
+
+    @Test("Claude in-process teammate events still record through the shared recorder")
+    func claudeTeammateEventsRecordThroughSharedRecorder() throws {
+        let container = try makeAgentEventRecorderContainer()
+        let context = container.mainContext
+        let task = AgentTask(title: "Team", goal: "Spawn a teammate")
+        let run = TaskRun(task: task)
+        context.insert(task)
+        context.insert(run)
+
+        let started = ParsedEvent.teammateStarted(taskId: "agent-1", name: "pro-agent", prompt: "Investigate the bug")
+        for agentEvent in AgentEventRecorder.agentEvents(from: started) {
+            AgentEventRecorder.recordClaudeEvent(agentEvent, to: task, run: run, modelContext: context)
+        }
+        #expect(task.events.contains { $0.type == "team.agent.started" && $0.agentId == "agent-1" })
+
+        let completed = ParsedEvent.teammateCompleted(taskId: "agent-1", name: "pro-agent")
+        for agentEvent in AgentEventRecorder.agentEvents(from: completed) {
+            AgentEventRecorder.recordClaudeEvent(agentEvent, to: task, run: run, modelContext: context)
+        }
+        #expect(task.events.contains { $0.type == "team.agent.completed" && $0.agentId == "agent-1" })
     }
 }

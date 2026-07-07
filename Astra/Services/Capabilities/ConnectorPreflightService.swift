@@ -1,5 +1,7 @@
 import Foundation
 import ASTRACore
+import ASTRAModels
+import ASTRAPersistence
 
 struct ConnectorPreflightIssue {
     let connectorID: UUID

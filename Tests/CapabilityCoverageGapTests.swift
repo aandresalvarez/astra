@@ -1,6 +1,7 @@
 import Testing
 import Foundation
 import SwiftData
+import ASTRAModels
 @testable import ASTRA
 import ASTRACore
 
@@ -34,7 +35,7 @@ struct MCPServersFactValueTests {
             adapterVersion: 1,
             policyLevel: .review,
             configOwnership: .generated,
-            permissionMode: PermissionPolicy.restricted.rawValue,
+            permissionMode: .restricted,
             allowedTools: [],
             runtimeSupportTools: [],
             askFirstTools: [],

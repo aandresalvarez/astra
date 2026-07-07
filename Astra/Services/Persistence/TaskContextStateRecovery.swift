@@ -1,4 +1,5 @@
 import Foundation
+import ASTRACore
 
 /// Recovers task context state on load so a bad `current_state.json` can never silently
 /// erase real task history.
@@ -12,10 +13,10 @@ import Foundation
 ///
 /// `promptContext` intentionally keeps using the plain, side-effect-free loader: recovery
 /// belongs on the mutation paths (`recordTurn` / `refresh`), not on read-only rendering.
-enum TaskContextStateRecovery {
+public enum TaskContextStateRecovery {
     /// Returns usable state, or `nil` when the task should start from a fresh capsule.
     /// May quarantine or back up the on-disk file as a side effect.
-    static func recoverState(taskFolder: String, taskID: UUID?) -> TaskContextState? {
+    public static func recoverState(taskFolder: String, taskID: UUID?) -> TaskContextState? {
         let result = TaskContextStateManager.loadResult(taskFolder: taskFolder)
         switch result.status {
         case .loadedCurrent, .migratedLegacy:
@@ -82,7 +83,7 @@ enum TaskContextStateRecovery {
 
     private static func audit(result: String, reason: String, path: String, taskID: UUID?, diagnostic: String?) {
         guard let taskID else { return }
-        AppLogger.audit(.contextStateUpdated, category: "Worker", taskID: taskID, fields: [
+        AuditLoggingSeam.required.audit(.contextStateUpdated, category: "Worker", taskID: taskID, fields: [
             "result": result,
             "reason": reason,
             "recovery_path": path,

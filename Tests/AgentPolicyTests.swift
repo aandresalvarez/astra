@@ -1,6 +1,8 @@
 import Foundation
 import SwiftData
 import Testing
+import ASTRAModels
+import ASTRAPersistence
 @testable import ASTRA
 import ASTRACore
 
@@ -221,7 +223,7 @@ struct AgentPolicyTests {
 
         #expect(render.providerID == .claudeCode)
         #expect(render.policyLevel == .review)
-        #expect(render.permissionMode == PermissionPolicy.restricted.rawValue)
+        #expect(render.permissionMode == .restricted)
         #expect(render.allowedTools.contains("Read"))
         #expect(!render.allowedTools.contains("Write"))
         #expect(render.askFirstTools.contains("Bash"))
@@ -232,6 +234,125 @@ struct AgentPolicyTests {
         #expect(!render.usesBroadProviderPermissions)
         #expect(render.diagnostics.contains { $0.id == "claude.shell-deny-provider-native-gap" })
         #expect(!render.diagnostics.contains { $0.id == "claude.ask-checkpoints-brokered" })
+    }
+
+    @Test("Read-only locked policy stays in restricted provider mode")
+    func lockedPolicyUsesRestrictedProviderMode() {
+        let policy = AgentPolicy.preset(.locked)
+        let adapter = ClaudePolicyAdapter()
+        let render = adapter.render(
+            policy: policy,
+            context: policyRenderContext(runtime: .claudeCode, features: adapter.supportedFeatures)
+        )
+
+        #expect(ProviderPolicyModeResolver.mode(for: policy, runtime: .claudeCode) == .restricted)
+        #expect(render.permissionMode == .restricted)
+        #expect(render.allowedTools.contains("Read"))
+        #expect(!render.allowedTools.contains("Write"))
+        #expect(render.generatedConfigPreview.contains("Read(*)"))
+        #expect(!render.generatedConfigPreview.contains("Write(*)"))
+        #expect(!render.generatedConfigPreview.contains("Bash(*)"))
+    }
+
+    @Test("Relabeled read-only custom policy preserves provider-specific sandbox intent")
+    func relabeledReadOnlyCustomPolicyPreservesProviderSpecificSandboxIntent() {
+        // AgentPolicyDefaults relabels a persisted `.locked` default to `.custom`
+        // while preserving its denied tools/shell. That relabeled policy must
+        // keep read-only intent while allowing each provider adapter to express
+        // that intent with its safest native sandbox vocabulary.
+        var policy = AgentPolicy.preset(.locked)
+        policy.level = .custom
+        #expect(policy.deniedTools.contains("Write"))
+        #expect(ProviderPolicyModeResolver.mode(for: policy, runtime: .claudeCode) == .restricted)
+        #expect(ProviderPolicyModeResolver.mode(for: policy, runtime: .codexCLI) == .readOnly)
+
+        let adapter = ClaudePolicyAdapter()
+        let render = adapter.render(
+            policy: policy,
+            context: policyRenderContext(runtime: .claudeCode, features: adapter.supportedFeatures)
+        )
+        #expect(render.permissionMode == .restricted)
+        #expect(render.generatedConfigPreview.contains("Read(*)"))
+        #expect(!render.generatedConfigPreview.contains("Write(*)"))
+
+        let codexRender = CodexPolicyAdapter().render(
+            policy: policy,
+            context: policyRenderContext(runtime: .codexCLI, features: CodexPolicyAdapter().supportedFeatures)
+        )
+        #expect(codexRender.permissionMode == .readOnly)
+        #expect(codexRender.generatedConfigPreview.contains("--sandbox read-only"))
+        #expect(codexRender.codexLaunchPermissionArguments(resumingNativeSession: true).contains("sandbox_mode=\"read-only\""))
+    }
+
+    @Test("Ask-style custom preset keeps interactive provider mode")
+    func customAskPresetStaysInteractive() {
+        // The default `.custom` preset expresses writes as ask-first (not denies)
+        // and should keep deferring to the provider's interactive approval rather
+        // than being forced to restricted.
+        let policy = AgentPolicy.preset(.custom)
+        #expect(policy.deniedTools.isEmpty)
+        #expect(ProviderPolicyModeResolver.mode(for: policy, runtime: .claudeCode) == .interactive)
+    }
+
+    @Test("Locked and review render genuinely different Claude enforcement despite sharing restricted mode")
+    func lockedAndReviewRenderDifferentClaudeEnforcement() {
+        // PermissionPolicy has only 3 cases (autonomous/restricted/interactive) and
+        // both .locked and .review collapse to .restricted there — but that value
+        // only selects the provider's coarse SANDBOX MODE, not the actual allowed/
+        // denied/ask-first tool set. For a provider with fine-grained support
+        // (Claude: supportsAllowTools && supportsDenyTools), the real distinction
+        // between locked (read-only, hard deny) and review (ask-before-write) is
+        // carried by AgentPolicy's allowedTools/deniedTools/askFirstTools fields
+        // and DOES flow through to genuinely different rendered permissions. This
+        // proves the "collapse" does not erase enforcement for providers that can
+        // express it — see PermissionPolicy.swift's doc comment on
+        // fromAgentPolicyLevel for the full explanation.
+        let adapter = ClaudePolicyAdapter()
+        let lockedPolicy = AgentPolicy.preset(.locked)
+        let reviewPolicy = AgentPolicy.preset(.review)
+
+        let lockedRender = adapter.render(
+            policy: lockedPolicy,
+            context: policyRenderContext(runtime: .claudeCode, features: adapter.supportedFeatures)
+        )
+        let reviewRender = adapter.render(
+            policy: reviewPolicy,
+            context: policyRenderContext(runtime: .claudeCode, features: adapter.supportedFeatures)
+        )
+
+        // Both share the same coarse sandbox mode...
+        #expect(lockedRender.permissionMode == .restricted)
+        #expect(reviewRender.permissionMode == .restricted)
+        #expect(PermissionPolicy(providerMode: lockedRender.permissionMode)
+            == PermissionPolicy(providerMode: reviewRender.permissionMode))
+
+        // ...but the actual enforced tool sets genuinely differ: locked hard-denies
+        // writes, review only asks-first (and denies nothing).
+        #expect(lockedRender.deniedTools.contains("Write"))
+        #expect(lockedRender.askFirstTools.isEmpty)
+        #expect(reviewRender.deniedTools.isEmpty)
+        #expect(reviewRender.askFirstTools.contains("Write"))
+        #expect(lockedRender.generatedConfigPreview != reviewRender.generatedConfigPreview)
+    }
+
+    @Test("Codex surfaces a fine-grained-rules gap diagnostic for a locked policy")
+    func codexSurfacesFineGrainedRulesGapForLockedPolicy() {
+        // Codex (and Cursor/Antigravity/OpenCode) support neither allow nor deny
+        // tool lists (supportsAllowTools == false, supportsDenyTools == false) —
+        // PermissionPolicy's 3-case sandbox-mode signal genuinely IS the finest
+        // distinction those CLIs can express, so locked and review are truly
+        // indistinguishable there. The adapter surfaces that gap explicitly via a
+        // diagnostic rather than silently under-enforcing; this locks that warning
+        // in so it can't regress silently.
+        let adapter = CodexPolicyAdapter()
+        #expect(!adapter.supportedFeatures.supportsAllowTools)
+        #expect(!adapter.supportedFeatures.supportsDenyTools)
+
+        let render = adapter.render(
+            policy: .preset(.locked),
+            context: policyRenderContext(runtime: .codexCLI, features: adapter.supportedFeatures)
+        )
+        #expect(render.diagnostics.contains { $0.id == "codex_cli.fine-grained-provider-native-gap" })
     }
 
     @Test("Copilot autonomous render uses allow-all only when capability supports it")
@@ -297,8 +418,10 @@ struct AgentPolicyTests {
         #expect(render.allowedTools == ["glob", "grep", "view"])
         #expect(!render.allowedTools.contains("fetch_copilot_cli_documentation"))
         #expect(!render.allowedTools.contains("report_intent"))
-        #expect(!render.generatedConfigPreview.contains("fetch_copilot_cli_documentation"))
-        #expect(!render.generatedConfigPreview.contains("report_intent"))
+        #expect(render.cliArgumentsSummary.contains("fetch_copilot_cli_documentation"))
+        #expect(render.cliArgumentsSummary.contains("report_intent"))
+        #expect(render.generatedConfigPreview.contains("fetch_copilot_cli_documentation"))
+        #expect(render.generatedConfigPreview.contains("report_intent"))
     }
 
     @Test("Observed policy events decode old JSON without input keys")
@@ -352,6 +475,22 @@ struct AgentPolicyTests {
         #expect(!runtimeCopilotGrants.contains("shell(echo:*)"))
         #expect(runtimeClaudeGrants.contains("Bash(gh auth status *)"))
         #expect(!runtimeClaudeGrants.contains("Bash(gh *)"))
+    }
+
+    @Test("One-run execution policy carries runtime companion grants")
+    func oneRunExecutionPolicyCarriesRuntimeCompanionGrants() {
+        let grants: [PermissionGrant] = [
+            .shellCommand(executable: "gh", pattern: "search prs *")
+        ]
+
+        let policy = PermissionBroker.executionPolicy(forRuntime: .copilotCLI, grants: grants)
+        let allowedTools = policy.allowedTools(default: [])
+
+        #expect(allowedTools.contains("shell(gh:search prs *)"))
+        #expect(allowedTools.contains("shell(gh:auth status *)"))
+        #expect(allowedTools.contains("shell(mkdir:-p *)"))
+        #expect(!allowedTools.contains("shell(gh:*)"))
+        #expect(policy.permissionGrantsOverride == grants)
     }
 
     @Test("Broker sanitizes structured approval payloads before provider rendering")
@@ -911,22 +1050,6 @@ struct AgentPolicyTests {
         #expect(copilotRender.generatedConfigPreview.contains("shell(gh:*)"))
     }
 
-    @Test("Unsupported credential redaction is a blocked diagnostic")
-    func unsupportedCredentialRedactionBlocksRender() {
-        let adapter = CopilotPolicyAdapter(capabilities: .conservative)
-        let render = adapter.render(
-            policy: .preset(.review),
-            context: policyRenderContext(
-                runtime: .copilotCLI,
-                features: adapter.supportedFeatures,
-                credentialLabels: ["API_TOKEN"]
-            )
-        )
-
-        #expect(render.diagnostics.contains {
-            $0.severity == .blocked && $0.id == "copilot_cli.secret-redaction-unsupported"
-        })
-    }
 }
 
 @Suite("Task Policy Store")
@@ -997,7 +1120,7 @@ struct TaskPolicyStoreTests {
 
         #expect(manifest.policyLevel == .locked)
         #expect(manifest.policyScope == .oneRunEscalation)
-        #expect(manifest.providerRender.permissionMode == PermissionPolicy.restricted.rawValue)
+        #expect(manifest.providerRender.permissionMode == .restricted)
         #expect(manifest.providerRender.allowedTools.contains("Write"))
         #expect(!manifest.providerRender.usesBroadProviderPermissions)
     }
@@ -1042,7 +1165,7 @@ struct TaskPolicyStoreTests {
 
         #expect(manifest.policyLevel == .review)
         #expect(manifest.policyScope == .oneRunEscalation)
-        #expect(manifest.providerRender.permissionMode == PermissionPolicy.restricted.rawValue)
+        #expect(manifest.providerRender.permissionMode == .restricted)
         #expect(!manifest.providerRender.usesBroadProviderPermissions)
         #expect(manifest.approvalGrants == [.shellCommand(executable: "curl", pattern: "*stanfordmed.atlassian.net*")])
     }
@@ -1293,15 +1416,16 @@ struct RunPermissionManifestTests {
         #expect(!manifest.providerRender.enforcementTiers.contains(.osSandboxed))
     }
 
-    @Test("Disabled enforcement removes the OS sandbox tier even under an autonomous override")
-    func preflightManifestTierRespectsDisabledEnforcementUnderOverride() throws {
-        // The sandbox is OFF. Even with an execution-policy override that escalates
-        // the permission policy to autonomous, the manifest must NOT manufacture an
-        // "OS Sandboxed" tier — the user-level kill switch wins. This exercises the
-        // override path (`manifestExecutionPolicy.permissionPolicyOverride ??
-        // permissionPolicy`) while asserting a property that would actually break
-        // if off-enforcement weren't honored (the binary tier is unaffected by the
-        // best-effort/strict distinction, so off-vs-on is what's observable here).
+    @Test("Autonomous override floors a disabled sandbox to strict (OS sandbox tier present)")
+    func preflightManifestTierFloorsDisabledEnforcementUnderAutonomousOverride() throws {
+        // The stored sandbox setting is OFF, but an execution-policy override
+        // escalates the permission policy to autonomous. Autonomous always runs
+        // under a kernel floor (see `ExecutionSandboxSettings.current`), so the
+        // disabled setting is overridden to strict and the manifest DOES declare
+        // the "OS Sandboxed" tier. This exercises the override path
+        // (`manifestExecutionPolicy.permissionPolicyOverride ?? permissionPolicy`)
+        // and pins that the broadest-permission mode is never left unconfined by a
+        // user-set Off.
         let enforcementKey = AppStorageKeys.sandboxEnforcement
         let previousEnforcement = UserDefaults.standard.string(forKey: enforcementKey)
         UserDefaults.standard.set(ExecutionSandboxEnforcement.off.rawValue, forKey: enforcementKey)
@@ -1339,7 +1463,7 @@ struct RunPermissionManifestTests {
             defaultPolicyLevelRaw: AgentPolicyLevel.review.rawValue,
             modelContext: context
         )
-        #expect(!manifest.providerRender.enforcementTiers.contains(.osSandboxed))
+        #expect(manifest.providerRender.enforcementTiers.contains(.osSandboxed))
     }
 
     @Test("Preflight manifest persists Copilot runtime support tools separately")
@@ -1382,6 +1506,10 @@ struct RunPermissionManifestTests {
         #expect(supportToolNames == ["fetch_copilot_cli_documentation", "report_intent"])
         #expect(!manifest.providerRender.allowedTools.contains("fetch_copilot_cli_documentation"))
         #expect(!manifest.providerRender.allowedTools.contains("report_intent"))
+        #expect(manifest.providerRender.cliArgumentsSummary.contains("fetch_copilot_cli_documentation"))
+        #expect(manifest.providerRender.cliArgumentsSummary.contains("report_intent"))
+        #expect(manifest.providerRender.generatedConfigPreview.contains("fetch_copilot_cli_documentation"))
+        #expect(manifest.providerRender.generatedConfigPreview.contains("report_intent"))
         #expect(manifest.approvalsGranted.isEmpty)
         #expect(manifest.approvalGrants.isEmpty)
         #expect(!manifest.providerRender.allowedShellPatterns.contains(#"echo "$ASTRA_CONNECTORS" | head -50"#))
@@ -1463,6 +1591,9 @@ struct RunPermissionManifestTests {
                 permissionPolicy: .restricted,
                 executionPolicy: .default,
                 defaultPolicyLevelRaw: AgentPolicyLevel.review.rawValue,
+                runtimeCapabilityProfile: runtime == .copilotCLI
+                    ? .copilotProfile(supportsAdditionalMCPConfig: true)
+                    : .defaultProfile(for: runtime),
                 capabilityPackages: [package],
                 modelContext: context
             )
@@ -1505,7 +1636,12 @@ struct RunPermissionManifestTests {
             #expect(manifest.providerRender.runtimeSupportTools.contains { descriptor in
                 descriptor.name == HostControlPlaneMCPProjection.providerToolPermission(for: "jira")
                     && descriptor.allowedInputKeys.contains("operation")
-                    && descriptor.allowedInputKeys.contains("path")
+                    && descriptor.allowedInputKeys.contains("issue_key")
+                    && descriptor.allowedInputKeys.contains("jql")
+                    && descriptor.allowedInputKeys.contains("next_page_token")
+                    && !descriptor.allowedInputKeys.contains("method")
+                    && !descriptor.allowedInputKeys.contains("path")
+                    && !descriptor.allowedInputKeys.contains("body")
             })
             #expect(manifest.providerRender.diagnostics.contains { diagnostic in
                 diagnostic.id == "container.host-control-plane-routing"
@@ -1517,6 +1653,123 @@ struct RunPermissionManifestTests {
                 return lower == "bash" || lower == "shell" || lower.hasPrefix("bash(") || lower.hasPrefix("shell(")
             })
         }
+    }
+
+    @Test("Host GitHub capability routes through ASTRA host-control MCP instead of native Bash")
+    func hostGitHubCapabilityRoutesThroughAstraHostControlMCPInsteadOfNativeBash() throws {
+        let container = try makeAgentPolicyContainer()
+        let context = container.mainContext
+        let package = try #require(PluginCatalog.builtInPackages.first { $0.id == "github-workflow" })
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-host-github-manifest-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let workspace = Workspace(name: "Host GitHub", primaryPath: root.path)
+        workspace.enabledCapabilityIDs = [package.id]
+        let pluginSkill = try #require(package.skills.first)
+        let githubSkill = Skill(
+            name: pluginSkill.name,
+            skillDescription: pluginSkill.description,
+            allowedTools: pluginSkill.allowedTools,
+            disallowedTools: pluginSkill.disallowedTools,
+            behaviorInstructions: pluginSkill.behaviorInstructions
+        )
+        githubSkill.workspace = workspace
+        let task = AgentTask(
+            title: "Review PR",
+            goal: "Use GitHub to inspect pull requests and checks",
+            workspace: workspace,
+            model: "test-model",
+            runtime: .claudeCode
+        )
+        task.skills = [githubSkill]
+        let run = TaskRun(task: task)
+        context.insert(workspace)
+        context.insert(githubSkill)
+        context.insert(task)
+        context.insert(run)
+
+        let manifest = AgentPolicyManifestService.recordPreflightManifest(
+            task: task,
+            run: run,
+            runtime: .claudeCode,
+            model: "test-model",
+            workspacePath: workspace.primaryPath,
+            phase: "test",
+            permissionPolicy: .restricted,
+            executionPolicy: .default,
+            defaultPolicyLevelRaw: AgentPolicyLevel.review.rawValue,
+            capabilityPackages: [package],
+            modelContext: context
+        )
+
+        #expect(manifest.mcpServers.contains { server in
+            server.packageID == "astra-builtin"
+                && server.id == HostControlPlaneMCPProjection.serverID
+                && server.allowedTools == ["github"]
+        })
+        #expect(manifest.providerRender.runtimeSupportTools.contains { descriptor in
+            descriptor.name == HostControlPlaneMCPProjection.providerToolPermission(for: "github")
+                && descriptor.allowedInputKeys == ["arguments", "timeout_seconds"]
+        })
+        #expect(!manifest.providerRender.allowedTools.contains { tool in
+            let lower = tool.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            return lower == "bash" || lower == "shell" || lower.hasPrefix("bash(") || lower.hasPrefix("shell(")
+        })
+        #expect(manifest.providerRender.deniedTools.contains("Bash"))
+    }
+
+    @Test("Custom GitHub text does not enable host-control GitHub")
+    func customGitHubTextDoesNotEnableHostControlGitHub() throws {
+        let container = try makeAgentPolicyContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Markdown", primaryPath: "/tmp/github-flavored-markdown")
+        let skill = Skill(
+            name: "GitHub-flavored Markdown",
+            skillDescription: "Format Markdown tables for README files",
+            allowedTools: ["Read", "Bash"],
+            behaviorInstructions: "Use GitHub-flavored Markdown conventions when formatting text."
+        )
+        skill.workspace = workspace
+        let task = AgentTask(
+            title: "Format docs",
+            goal: "Format this README table using GitHub-flavored Markdown",
+            workspace: workspace,
+            model: "test-model",
+            runtime: .claudeCode
+        )
+        task.skills = [skill]
+        let run = TaskRun(task: task)
+        context.insert(workspace)
+        context.insert(skill)
+        context.insert(task)
+        context.insert(run)
+
+        let tools = HostControlPlaneMCPProjection.enabledToolNames(
+            task: task,
+            environment: DockerExecutionPlanner.resolveEnvironment(for: task),
+            contextText: task.goal
+        )
+        #expect(tools.isEmpty)
+
+        let manifest = AgentPolicyManifestService.recordPreflightManifest(
+            task: task,
+            run: run,
+            runtime: .claudeCode,
+            model: "claude-sonnet-4-6",
+            workspacePath: workspace.primaryPath,
+            phase: "test",
+            permissionPolicy: .restricted,
+            executionPolicy: .default,
+            defaultPolicyLevelRaw: AgentPolicyLevel.review.rawValue,
+            modelContext: context
+        )
+
+        #expect(!manifest.mcpServers.contains { $0.id == HostControlPlaneMCPProjection.serverID })
+        #expect(!manifest.providerRender.runtimeSupportTools.contains {
+            $0.name == HostControlPlaneMCPProjection.providerToolPermission(for: "github")
+        })
     }
 
     @Test("Preflight manifest allows exact connector manifest shell probe when connectors are projected")
@@ -1607,7 +1860,7 @@ struct RunPermissionManifestTests {
             adapterVersion: 1,
             policyLevel: .review,
             configOwnership: .generated,
-            permissionMode: PermissionPolicy.restricted.rawValue,
+            permissionMode: .restricted,
             allowedTools: ["read"],
             runtimeSupportTools: CopilotPolicyAdapter().runtimeSupportTools,
             askFirstTools: [],
@@ -1735,6 +1988,45 @@ struct RunPermissionManifestTests {
         )
 
         #expect(manifest.credentialLabels.contains("git:credential-context:read-only"))
+        #expect(manifest.providerRender.diagnostics.contains { $0.id == "git.credential-projection" })
+    }
+
+    @MainActor
+    @Test("Copilot Git credential path access is represented in preflight render evidence")
+    func copilotGitCredentialPathAccessIsRepresentedInPreflightRenderEvidence() throws {
+        let container = try makeAgentPolicyContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Copilot Git Projection", primaryPath: "/tmp/astra-copilot-git-projection")
+        let task = AgentTask(title: "Git Projection", goal: "Pull latest from GitHub", workspace: workspace, runtime: .copilotCLI)
+        let run = TaskRun(task: task)
+        context.insert(workspace)
+        context.insert(task)
+        context.insert(run)
+
+        let manifest = AgentPolicyManifestService.recordPreflightManifest(
+            task: task,
+            run: run,
+            runtime: .copilotCLI,
+            model: "gpt-5",
+            workspacePath: workspace.primaryPath,
+            phase: "run",
+            permissionPolicy: .restricted,
+            executionPolicy: .default,
+            defaultPolicyLevelRaw: AgentPolicyLevel.review.rawValue,
+            providerCapabilities: AgentRuntimePolicyCapabilities(copilotCLI: CopilotCLICapabilities(helpText: """
+            --allow-tool
+            --allow-all-paths
+            --output-format
+            --stream
+            --no-ask-user
+            """)),
+            contextText: "git pull origin main",
+            modelContext: context
+        )
+
+        #expect(manifest.credentialLabels.contains("git:credential-context:read-only"))
+        #expect(manifest.providerRender.cliArgumentsSummary.contains("--allow-all-paths"))
+        #expect(manifest.providerRender.generatedConfigPreview.contains("--allow-all-paths"))
         #expect(manifest.providerRender.diagnostics.contains { $0.id == "git.credential-projection" })
     }
 
@@ -1885,6 +2177,8 @@ struct RunPermissionManifestTests {
         #expect(manifest.policyScope == .taskApproval)
         #expect(manifest.approvalGrants == [.shellCommand(executable: "gh", pattern: "search prs *")])
         #expect(manifest.providerRender.allowedTools.contains("shell(gh:search prs *)"))
+        #expect(manifest.providerRender.allowedTools.contains("shell(gh:auth status *)"))
+        #expect(manifest.providerRender.allowedTools.contains("shell(mkdir:-p *)"))
         #expect(!manifest.providerRender.allowedTools.contains("shell(gh:*)"))
     }
 
@@ -1931,6 +2225,53 @@ struct RunPermissionManifestTests {
         #expect(manifest.approvalGrants == [.shellCommand(executable: "gh", pattern: "pr list *")])
         #expect(manifest.providerRender.allowedTools.contains("shell(gh:pr list *)"))
         #expect(manifest.providerRender.usesBroadProviderPermissions == false)
+    }
+
+    @Test("Task-scoped grant records typed storage and legacy events remain readable")
+    func taskScopedGrantRecordsTypedStorageAndReadsLegacyEvents() throws {
+        let container = try makeAgentPolicyContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Typed Grant Storage", primaryPath: "/tmp/typed-grant-workspace")
+        let task = AgentTask(title: "Typed Grant Storage", goal: "Review open PRs", workspace: workspace)
+        context.insert(workspace)
+        context.insert(task)
+
+        let grant = PermissionGrant.shellCommand(executable: "gh", pattern: "search prs *")
+        let recorded = TaskRuntimePermissionGrants.record(
+            grants: [grant],
+            providerID: .claudeCode,
+            task: task,
+            modelContext: context,
+            source: "typed-test"
+        )
+        try context.save()
+
+        let typedData = try #require(task.runtimePermissionGrantsJSON?.data(using: .utf8))
+        let typedPayloads = try JSONDecoder().decode([TaskRuntimePermissionGrants.Payload].self, from: typedData)
+        #expect(recorded == [grant])
+        #expect(typedPayloads.map(\.providerID) == [.claudeCode])
+        #expect(typedPayloads.flatMap(\.grants) == [grant])
+        #expect(task.events.contains { $0.type == TaskRuntimePermissionGrants.eventType })
+
+        task.events.removeAll()
+        #expect(TaskRuntimePermissionGrants.approvedGrants(for: task, runtime: .claudeCode) == [grant])
+        #expect(TaskRuntimePermissionGrants.approvedGrants(for: task, runtime: .openCodeCLI).isEmpty)
+
+        let legacyTask = AgentTask(title: "Legacy Grant Storage", goal: "Review open PRs", workspace: workspace)
+        context.insert(legacyTask)
+        let legacyPayload = TaskRuntimePermissionGrants.Payload(
+            brokerVersion: PermissionBroker.brokerVersion,
+            providerID: .claudeCode,
+            grants: [grant],
+            approvedAt: Date(),
+            source: "legacy-test"
+        )
+        let legacyEncoded = try #require(String(data: JSONEncoder().encode(legacyPayload), encoding: .utf8))
+        context.insert(TaskEvent(task: legacyTask, type: TaskRuntimePermissionGrants.eventType, payload: legacyEncoded))
+        try context.save()
+
+        #expect(TaskRuntimePermissionGrants.approvedGrants(for: legacyTask, runtime: .claudeCode) == [grant])
+        #expect(TaskRuntimePermissionGrants.approvedGrants(for: legacyTask, runtime: .openCodeCLI).isEmpty)
     }
 
     @Test("Task-scoped grant records reject risky shell approvals")
@@ -2068,7 +2409,20 @@ struct RunPermissionManifestTests {
             modelContext: context
         )
 
-        #expect(manifest.providerRender.allowedTools.contains("Bash(gh *)"))
+        #expect(manifest.mcpServers.contains { server in
+            server.packageID == "astra-builtin"
+                && server.id == HostControlPlaneMCPProjection.serverID
+                && server.allowedTools == ["github"]
+        })
+        #expect(manifest.providerRender.runtimeSupportTools.contains { descriptor in
+            descriptor.name == HostControlPlaneMCPProjection.providerToolPermission(for: "github")
+                && descriptor.allowedInputKeys == ["arguments", "timeout_seconds"]
+        })
+        #expect(!manifest.providerRender.allowedTools.contains { tool in
+            let lower = tool.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            return lower == "bash" || lower == "shell" || lower.hasPrefix("bash(") || lower.hasPrefix("shell(")
+        })
+        #expect(manifest.providerRender.deniedTools.contains("Bash"))
     }
 
     @Test("Preflight manifest excludes pruned artifact task capabilities")

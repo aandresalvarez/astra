@@ -1,6 +1,8 @@
 import AppKit
 import SwiftUI
 import ASTRACore
+import ASTRAPersistence
+import ASTRAModels
 
 struct SettingsRuntimeTab: View {
     @Environment(\.preflightCache) private var preflightCache
@@ -178,21 +180,23 @@ struct SettingsRuntimeTab: View {
 
                 Picker("Default Budget", selection: $defaultTokenBudget) {
                     ForEach(budgetPresets, id: \.self) { budget in
-                        Text(budget == 0 ? "Unlimited" : "\(budget / 1000)k tokens").tag(budget)
+                        Text(RuntimeBudgetPresentation.settingsLabel(for: budget)).tag(budget)
                     }
                 }
 
-                Picker("Budget Enforcement", selection: $budgetEnforcementModeRaw) {
-                    ForEach(BudgetEnforcementMode.allCases) { mode in
-                        Text(mode.label).tag(mode.rawValue)
+                if RuntimeBudgetPresentation.isEnabled(defaultTokenBudget) {
+                    Picker("Budget Enforcement", selection: $budgetEnforcementModeRaw) {
+                        ForEach(BudgetEnforcementMode.allCases) { mode in
+                            Text(mode.label).tag(mode.rawValue)
+                        }
                     }
-                }
-                .pickerStyle(.segmented)
+                    .pickerStyle(.segmented)
 
-                Text(selectedBudgetEnforcementMode.helpText)
-                    .font(Stanford.caption(12))
-                    .foregroundStyle(Stanford.coolGrey)
-                    .fixedSize(horizontal: false, vertical: true)
+                    Text(selectedBudgetEnforcementMode.helpText)
+                        .font(Stanford.caption(12))
+                        .foregroundStyle(Stanford.coolGrey)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
 
                 Picker("Default Policy", selection: defaultPolicySelectionBinding) {
                     ForEach(AgentPolicyLevel.primaryCases) { level in

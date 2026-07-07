@@ -1,8 +1,13 @@
 import Foundation
+import SwiftData
 import Testing
+import ASTRAModels
+import ASTRAPersistence
 @testable import ASTRA
+import ASTRACore
 
 @Suite("Connector Preflight")
+@MainActor
 struct ConnectorPreflightServiceTests {
     @Test("Non-blocking connector types do not preflight before launch")
     func nonBlockingConnectorsDoNotPreflight() async throws {
@@ -193,6 +198,64 @@ struct ConnectorPreflightServiceTests {
         #expect(transport.requests.last?.url?.query?.contains("projectKey=STAR") == true)
         #expect(transport.requests.last?.url?.query?.contains("projectKey=SS") == false)
     }
+
+    @Test("Launch preflight requests credential approval before HTTP connector egress")
+    func launchPreflightRequestsCredentialApprovalBeforeHTTPConnectorEgress() async throws {
+        let container = try makeConnectorPreflightContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Credential Gate", primaryPath: "/tmp/credential-gate")
+        let connector = Connector(
+            name: "Jira",
+            serviceType: "jira",
+            baseURL: "https://example.atlassian.net/",
+            authMethod: "basic"
+        )
+        connector.workspace = workspace
+        connector.credentialKeys = ["JIRA_API_TOKEN"]
+        let task = AgentTask(title: "Use Jira", goal: "Check Jira", workspace: workspace)
+        let run = TaskRun(task: task)
+        context.insert(workspace)
+        context.insert(connector)
+        context.insert(task)
+        context.insert(run)
+        try context.save()
+
+        let store = MockSecretStore()
+        store.save(
+            key: "JIRA_API_TOKEN",
+            value: "secret-token",
+            entityID: KeychainSecretStore.connectorEntityID(for: connector.id),
+            label: nil
+        )
+        let expectedLabel = ConnectorRuntimeProjection.credentialLabel(for: connector, key: "JIRA_API_TOKEN")
+
+        let result = await AgentRuntimeLaunchPreflight.preflightConnectorsBeforeLaunchResult(
+            task: task,
+            run: run,
+            modelContext: context,
+            phase: "test",
+            contextText: "Check Jira permissions",
+            secretStore: store
+        )
+
+        let approvalEvent = try #require(task.events.first {
+            $0.type == TaskEventTypes.Tool.permissionApprovalRequested.rawValue
+        })
+        let payload = try #require(PermissionApprovalEventPayload.decoded(from: approvalEvent.payload))
+
+        #expect(result.status == .connectorCredentialApprovalRequired)
+        #expect(result.detail == expectedLabel)
+        #expect(task.status == .pendingUser)
+        #expect(run.typedStopReason == .permissionApprovalRequired)
+        #expect(payload.request == .credential(label: expectedLabel))
+        #expect(payload.grants == [.credential(label: expectedLabel)])
+    }
+}
+
+private func makeConnectorPreflightContainer() throws -> ModelContainer {
+    let schema = ASTRASchema.current
+    let config = ModelConfiguration(isStoredInMemoryOnly: true)
+    return try ModelContainer(for: schema, migrationPlan: ASTRAMigrationPlan.self, configurations: [config])
 }
 
 private func makePreflightJiraConnector(projects: String = "") -> (Connector, MockSecretStore) {

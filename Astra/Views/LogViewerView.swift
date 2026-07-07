@@ -1,5 +1,8 @@
 import SwiftUI
 import AppKit
+import ASTRAPersistence
+import ASTRACore
+import ASTRAModels
 
 struct LogViewerView: View {
     private static let maxVisibleEntries = 2000
@@ -294,10 +297,10 @@ struct LogViewerView: View {
                     Button {
                         revealCrashReports()
                     } label: {
-                        Label("Crashes", systemImage: "exclamationmark.triangle")
+                        Label("Diagnostic Reports", systemImage: "exclamationmark.triangle")
                     }
                     .buttonStyle(.borderless)
-                    .help("Reveal recent ASTRA crash reports in Finder")
+                    .help("Reveal recent ASTRA macOS diagnostic reports in Finder")
                     .disabled(isGeneratingDiagnostics)
 
                     Spacer(minLength: 0)
@@ -610,9 +613,9 @@ struct LogViewerView: View {
             let directory = CrashDiagnosticsService.defaultDiagnosticReportsDirectory
             if FileManager.default.fileExists(atPath: directory.path) {
                 NSWorkspace.shared.open(directory)
-                diagnosticsMessage = "No ASTRA crash reports found. Opened macOS DiagnosticReports."
+                diagnosticsMessage = "No ASTRA diagnostic reports found. Opened macOS DiagnosticReports."
             } else {
-                diagnosticsMessage = "No ASTRA crash reports found, and macOS has not created a DiagnosticReports folder yet."
+                diagnosticsMessage = "No ASTRA diagnostic reports found, and macOS has not created a DiagnosticReports folder yet."
             }
             AppLogger.audit(.crashReportsRevealed, category: "Diagnostics", fields: [
                 "count": "0",
@@ -622,7 +625,7 @@ struct LogViewerView: View {
         }
 
         NSWorkspace.shared.activateFileViewerSelecting(reports.map(\.url))
-        diagnosticsMessage = "Revealed \(reports.count) recent ASTRA crash report\(reports.count == 1 ? "" : "s") in Finder."
+        diagnosticsMessage = "Revealed \(reports.count) recent ASTRA diagnostic report\(reports.count == 1 ? "" : "s") in Finder."
         AppLogger.audit(.crashReportsRevealed, category: "Diagnostics", fields: [
             "count": String(reports.count),
             "latest": reports.first?.fileName ?? "none",
@@ -650,8 +653,8 @@ struct LogViewerView: View {
         archive: LogDiagnosticsArchiveResult
     ) -> String {
         let crashText = archive.crashReportCount == 0
-            ? "no crash reports"
-            : "\(archive.crashReportCount) crash report\(archive.crashReportCount == 1 ? "" : "s")"
+            ? "no diagnostic reports"
+            : "\(archive.crashReportCount) diagnostic report\(archive.crashReportCount == 1 ? "" : "s")"
         if report.issueCount == 0 {
             return "Diagnostics bundle saved with \(archive.artifactCount) artifact\(archive.artifactCount == 1 ? "" : "s") and \(crashText) for \(scope.label.lowercased())."
         }

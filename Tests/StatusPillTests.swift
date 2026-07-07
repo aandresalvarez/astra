@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import ASTRAModels
 @testable import ASTRA
 
 /// `StatusPill.forStatus(_:)` pins run-outcome language so it does not collide

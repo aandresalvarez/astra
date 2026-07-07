@@ -1,6 +1,8 @@
 import Foundation
 import SwiftData
 import Testing
+import ASTRAModels
+import ASTRAPersistence
 @testable import ASTRA
 import ASTRACore
 
@@ -155,7 +157,12 @@ struct ExecutionEnvironmentTests {
         #expect(section.text.contains("short `workspace_job_wait` polling windows"))
         #expect(section.text.contains("Do not use native host Bash"))
         #expect(section.text.contains("Routing contract: provider reasoning runs on host macOS"))
-        #expect(section.text.contains("host control-plane actions such as GitHub PR metadata, Jira, Google Cloud, SSH, browser, and Keychain access"))
+        #expect(section.text.contains("host control-plane actions such as GitHub PR metadata, Jira, read-only Google Cloud checks, SSH, browser, and Keychain access"))
+        #expect(section.text.contains("`mcp__astra_host__gcloud`"))
+        #expect(section.text.contains("Use `mcp__astra_host__bq` only for bq help/version metadata"))
+        #expect(section.text.contains("BigQuery data access is not available through host-control"))
+        #expect(!section.text.contains("`mcp__astra_host__gcloud`, `mcp__astra_host__bq`"))
+        #expect(!section.text.contains("astra_host-gcloud`, `astra_host-bq`"))
         #expect(section.text.contains("Do not ask a subagent to \"run locally\""))
         #expect(section.text.contains("Path mapping: inside workspace MCP tools"))
         #expect(section.text.contains("Do not run `cd /Users/...`"))
@@ -163,6 +170,8 @@ struct ExecutionEnvironmentTests {
         #expect(section.text.contains("command -v dbt && dbt --version"))
         #expect(section.text.contains("verify credential readiness from inside the container"))
         #expect(section.text.contains("GOOGLE_APPLICATION_CREDENTIALS"))
+        #expect(section.text.contains("gcloud auth application-default print-access-token --quiet >/dev/null"))
+        #expect(section.text.contains("Never print access tokens into tool output or logs."))
         #expect(section.text.contains("Do not use host-created virtual environments"))
         #expect(section.text.contains("/workspace/.venv"))
         #expect(section.text.contains("Credential projections: GCP Application Default Credentials mounted read-only at /root/.config/gcloud."))
@@ -688,6 +697,28 @@ struct ExecutionEnvironmentTests {
             "CLOUDSDK_CONFIG": ExecutionEnvironmentCredentialProjection.gcpADCContainerPath,
             "GOOGLE_APPLICATION_CREDENTIALS": "\(ExecutionEnvironmentCredentialProjection.gcpADCContainerPath)/\(ExecutionEnvironmentCredentialProjection.gcpADCFileName)"
         ])
+    }
+
+    @Test("Credential projection sanitization fails closed when the host path cannot be canonicalized")
+    func credentialProjectionSanitizationFailsClosedForUncanonicalizablePath() throws {
+        let root = try makeTempDir("docker-credential-sanitize-uncanonicalizable")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        // An interior newline still ends in "/.config/gcloud" (so it clears the
+        // filename shape check) but ExecutionSandbox.canonicalize refuses to
+        // resolve it, returning nil. The sanitizer must reject this rather than
+        // skip the root-safety checks and approve it.
+        let poisonedPath = "\(root)/evil\npath/.config/gcloud"
+        let imported = WorkspaceExecutionEnvironment(
+            id: "image:test",
+            kind: .dockerImage,
+            displayName: "Test Image",
+            image: "astra/test:latest",
+            credentialProjections: [
+                ExecutionEnvironmentCredentialProjection.gcpADC(hostPath: poisonedPath)
+            ]
+        )
+
+        #expect(imported.effectiveCredentialProjections.isEmpty)
     }
 
     @Test("Run file changes translate container paths into host paths")

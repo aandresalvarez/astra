@@ -1,4 +1,5 @@
 import Foundation
+import ASTRACore
 
 enum TaskLaunchResourceAccess: String, Codable, Sendable {
     case read
@@ -127,7 +128,7 @@ struct TaskLaunchResourcePlan: Codable, Equatable, Sendable {
     var taskID: UUID
     var runID: UUID?
     var runtime: String
-    var phase: String
+    var phase: RunPhase
     var workspacePath: String
     var executionEnvironmentID: String
     var executionEnvironmentKind: String
@@ -150,7 +151,7 @@ struct TaskLaunchResourcePlan: Codable, Equatable, Sendable {
         taskID: UUID,
         runID: UUID?,
         runtime: String,
-        phase: String,
+        phase: RunPhase,
         workspacePath: String,
         executionEnvironmentID: String,
         executionEnvironmentKind: String,
@@ -236,6 +237,17 @@ struct TaskLaunchResourcePlan: Codable, Equatable, Sendable {
         })
     }
 
+    var providerNativeCredentialReadablePaths: [String] {
+        uniquePaths(hostPathGrants.compactMap { grant in
+            guard requiresProviderNativeCredentialRead(for: grant) else { return nil }
+            return grant.path
+        })
+    }
+
+    var needsProviderNativeCredentialReadAccess: Bool {
+        !providerNativeCredentialReadablePaths.isEmpty
+    }
+
     var gitCredentialSandboxContext: GitCredentialSandboxContext {
         gitCredential?.sandboxContext ?? .empty
     }
@@ -279,6 +291,7 @@ struct TaskLaunchResourcePlan: Codable, Equatable, Sendable {
                 return nil
             }
         }).count)
+        fields["provider_native_credential_read_path_count"] = String(providerNativeCredentialReadablePaths.count)
         if let gitCredential {
             fields["git_credential_context"] = "true"
             fields["git_credential_readable_path_count"] = String(gitCredential.readablePaths.count)
@@ -324,7 +337,7 @@ struct TaskLaunchResourcePlan: Codable, Equatable, Sendable {
         taskID = try container.decode(UUID.self, forKey: .taskID)
         runID = try container.decodeIfPresent(UUID.self, forKey: .runID)
         runtime = try container.decode(String.self, forKey: .runtime)
-        phase = try container.decode(String.self, forKey: .phase)
+        phase = try container.decode(RunPhase.self, forKey: .phase)
         workspacePath = try container.decode(String.self, forKey: .workspacePath)
         executionEnvironmentID = try container.decode(String.self, forKey: .executionEnvironmentID)
         executionEnvironmentKind = try container.decode(String.self, forKey: .executionEnvironmentKind)
@@ -394,6 +407,22 @@ struct TaskLaunchResourcePlan: Codable, Equatable, Sendable {
             let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else { return false }
             return seen.insert(trimmed).inserted
+        }
+    }
+
+    private func requiresProviderNativeCredentialRead(for grant: RuntimePathGrant) -> Bool {
+        switch grant.access {
+        case .read, .readWrite:
+            switch grant.source {
+            case .gitCredential:
+                return gitCredentialSandboxContext.needsExternalCredentialAccess
+            case .remoteWorkspace:
+                return true
+            default:
+                return false
+            }
+        case .write:
+            return false
         }
     }
 }

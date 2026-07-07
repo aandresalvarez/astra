@@ -1,6 +1,9 @@
 import Foundation
 import Testing
+import ASTRAModels
+import ASTRAPersistence
 @testable import ASTRA
+import ASTRACore
 import ASTRAGitContracts
 
 @Suite("Git Repository Panel Integration")
@@ -171,6 +174,7 @@ struct GitRepositoryPanelIntegrationTests {
         process.executableURL = URL(fileURLWithPath: "/bin/sh")
         process.arguments = ["-c", command]
         process.currentDirectoryURL = URL(fileURLWithPath: directory)
+        process.environment = GitLocalEnvironment.scrubbing(ProcessInfo.processInfo.environment)
         process.standardOutput = Pipe()
         process.standardError = Pipe()
         do {

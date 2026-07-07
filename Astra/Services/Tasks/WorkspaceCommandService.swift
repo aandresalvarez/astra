@@ -1,6 +1,8 @@
 import Foundation
 import SwiftData
 import ASTRACore
+import ASTRAModels
+import ASTRAPersistence
 
 enum WorkspaceCommandService {
     struct TemplateTaskCreation {
@@ -133,7 +135,7 @@ enum WorkspaceCommandService {
             model: mainModel,
             runtime: runtime
         )
-        mainTask.status = .queued
+        TaskStateMachine.enqueueFromWorkspaceCommand(mainTask, modelContext: modelContext)
         mainTask.templateID = template.id
         mainTask.templateHooksJSON = template.hooksJSON
         mainTask.skills = skills(for: template, selectedSkills: selectedSkills)
@@ -161,7 +163,7 @@ enum WorkspaceCommandService {
                 model: beforeModel,
                 runtime: runtime
             )
-            task.status = .queued
+            TaskStateMachine.enqueueFromWorkspaceCommand(task, modelContext: modelContext)
             task.templateID = template.id
             task.templateHooksJSON = template.hooksJSON
             task.skills = mainTask.skills
@@ -173,7 +175,7 @@ enum WorkspaceCommandService {
             task.chainedGoal = chainedMainGoal
             modelContext.insert(task)
             mainTask.chainedFromID = task.id
-            mainTask.status = .draft
+            TaskStateMachine.restoreDraftForEditing(mainTask, modelContext: modelContext)
             beforeTask = task
         }
 

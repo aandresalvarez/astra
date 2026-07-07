@@ -1,4 +1,7 @@
 import Foundation
+import ASTRAModels
+import ASTRAPersistence
+import ASTRACore
 
 struct TaskFileItem: Identifiable, Hashable {
     let path: String
@@ -41,6 +44,8 @@ enum TaskFileIndex {
         runs: [TaskRunSnapshot],
         generatedFilePaths: [String],
         inputs: [String],
+        taskFolder: String = "",
+        workspacePath: String = "",
         fileManager: FileManager = .default
     ) -> [TaskFileItem] {
         var seen = Set<String>()
@@ -48,7 +53,9 @@ enum TaskFileIndex {
 
         func append(path rawPath: String, source: String, change: StoredFileChange? = nil) {
             let path = normalizedPath(rawPath)
-            guard !path.isEmpty, seen.insert(path).inserted else { return }
+            guard !path.isEmpty,
+                  shouldIncludeUserFacingPath(path, source: source, taskFolder: taskFolder, workspacePath: workspacePath),
+                  seen.insert(path).inserted else { return }
 
             var isDirectory = ObjCBool(false)
             guard fileManager.fileExists(atPath: path, isDirectory: &isDirectory),
@@ -85,6 +92,7 @@ enum TaskFileIndex {
         taskFolderFiles: [TaskFileItem],
         inputs: [String],
         outputPathFiles: [TaskFileItem],
+        taskFolder: String = "",
         fileManager: FileManager = .default
     ) -> [TaskFileItem] {
         var files: [TaskFileItem] = []
@@ -93,7 +101,9 @@ enum TaskFileIndex {
         if let latestRun {
             for change in latestRun.fileChanges {
                 let path = normalizedPath(change.path)
-                guard !path.isEmpty, seen.insert(path).inserted else { continue }
+                guard !path.isEmpty,
+                      shouldIncludeUserFacingPath(path, taskFolder: taskFolder),
+                      seen.insert(path).inserted else { continue }
                 files.append(fileItem(
                     path: path,
                     isDirectory: false,
@@ -105,7 +115,9 @@ enum TaskFileIndex {
         }
 
         for file in taskFolderFiles where seen.insert(file.path).inserted {
-            files.append(file)
+            if shouldIncludeUserFacingPath(file.path, taskFolder: taskFolder) {
+                files.append(file)
+            }
         }
 
         for input in inputs {
@@ -123,7 +135,9 @@ enum TaskFileIndex {
         }
 
         for file in outputPathFiles where seen.insert(file.path).inserted {
-            files.append(file)
+            if shouldIncludeUserFacingPath(file.path, taskFolder: taskFolder) {
+                files.append(file)
+            }
         }
 
         return files
@@ -228,6 +242,45 @@ enum TaskFileIndex {
 
     static func normalizedPath(_ path: String) -> String {
         (path.trimmingCharacters(in: .whitespacesAndNewlines) as NSString).expandingTildeInPath
+    }
+
+    static func displayName(for path: String, duplicateBasenames: Set<String> = []) -> String {
+        let url = URL(fileURLWithPath: path)
+        let basename = url.lastPathComponent
+        guard duplicateBasenames.contains(basename.lowercased()) else {
+            return basename
+        }
+        let parent = url.deletingLastPathComponent().lastPathComponent
+        return parent.isEmpty ? basename : "\(parent)/\(basename)"
+    }
+
+    private static func shouldIncludeUserFacingPath(
+        _ path: String,
+        source: String = "",
+        taskFolder: String,
+        workspacePath: String = ""
+    ) -> Bool {
+        if source == "input" {
+            return true
+        }
+
+        if !taskFolder.isEmpty,
+           let relative = TaskOutputArtifactPathPolicy.relativePath(path, under: taskFolder) {
+            return TaskOutputArtifactPathPolicy.displayableUserArtifactRelativePath(
+                relative,
+                context: .taskFolder
+            ) != nil
+        }
+
+        if !workspacePath.isEmpty,
+           let relative = TaskOutputArtifactPathPolicy.relativePath(path, under: workspacePath) {
+            return TaskOutputArtifactPathPolicy.displayableUserArtifactRelativePath(
+                relative,
+                context: .workspace
+            ) != nil
+        }
+
+        return true
     }
 
     private static func shouldIncludeReferencedPath(_ path: String) -> Bool {

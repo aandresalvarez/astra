@@ -5,6 +5,7 @@
 
 import SwiftUI
 import ASTRACore
+import ASTRAModels
 
 /// A small green dot pinned to the corner of a row's leading icon to mark an
 /// item as configured. The contrasting ring lifts it off the glyph so it reads
@@ -268,6 +269,7 @@ struct RailCapabilityItem: Identifiable {
     let skillNames: [String]
     let connectorNames: [String]
     let toolNames: [String]
+    let mcpServerNames: [String]
     let browserAdapterNames: [String]
     let templateNames: [String]
     let requirementNames: [String]

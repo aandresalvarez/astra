@@ -1,5 +1,8 @@
 import Testing
 import Foundation
+import ASTRAPersistence
+import ASTRACore
+import ASTRAModels
 @testable import ASTRA
 
 /// Pin the `relativeShort` formatter behavior — Kanban cards rely on

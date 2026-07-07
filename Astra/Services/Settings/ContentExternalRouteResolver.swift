@@ -1,6 +1,8 @@
 import Foundation
 import SwiftData
 import ASTRACore
+import ASTRAModels
+import ASTRAPersistence
 
 enum ContentExternalRouteResolution {
     case openWorkspace(Workspace)
@@ -83,7 +85,9 @@ struct ContentExternalRouteResolver {
             model: RuntimeModelAvailability.normalizedModel(defaultModel, for: runtime),
             runtime: runtime
         )
-        task.status = shouldRun ? .queued : .draft
+        if shouldRun {
+            TaskStateMachine.enqueueFromUserSubmission(task, modelContext: modelContext)
+        }
         modelContext.insert(task)
 
         if shouldRun {

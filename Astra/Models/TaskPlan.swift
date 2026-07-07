@@ -1,13 +1,13 @@
 import Foundation
 
-enum TaskPlanPayloadStepStatus: String, Codable, CaseIterable, Sendable, Equatable, Hashable {
+public enum TaskPlanPayloadStepStatus: String, Codable, CaseIterable, Sendable, Equatable, Hashable {
     case pending
     case running
     case blocked
     case done
     case skipped
 
-    var isHistoricalTerminalStatus: Bool {
+    public var isHistoricalTerminalStatus: Bool {
         switch self {
         case .done, .skipped:
             true
@@ -17,20 +17,20 @@ enum TaskPlanPayloadStepStatus: String, Codable, CaseIterable, Sendable, Equatab
     }
 }
 
-enum TaskPlanPayloadRisk: String, Codable, CaseIterable, Sendable, Equatable, Hashable {
+public enum TaskPlanPayloadRisk: String, Codable, CaseIterable, Sendable, Equatable, Hashable {
     case low
     case medium
     case high
 }
 
-enum TaskPlanArtifactKind: String, Codable, CaseIterable, Sendable, Equatable, Hashable {
+public enum TaskPlanArtifactKind: String, Codable, CaseIterable, Sendable, Equatable, Hashable {
     case file
     case directory
     case url
     case text
     case evidence
 
-    init(from decoder: Decoder) throws {
+    public init(from decoder: Decoder) throws {
         let container = try decoder.singleValueContainer()
         let raw = try container.decode(String.self)
         let normalized = raw
@@ -58,13 +58,13 @@ enum TaskPlanArtifactKind: String, Codable, CaseIterable, Sendable, Equatable, H
     }
 }
 
-enum TaskPlanArtifactScope: String, Codable, CaseIterable, Sendable, Equatable, Hashable {
+public enum TaskPlanArtifactScope: String, Codable, CaseIterable, Sendable, Equatable, Hashable {
     case taskOutput = "task_output"
     case workspace
     case remote
     case chat
 
-    init(from decoder: Decoder) throws {
+    public init(from decoder: Decoder) throws {
         let container = try decoder.singleValueContainer()
         let raw = try container.decode(String.self)
         let normalized = raw
@@ -90,15 +90,15 @@ enum TaskPlanArtifactScope: String, Codable, CaseIterable, Sendable, Equatable, 
     }
 }
 
-struct TaskPlanStepOutput: Codable, Sendable, Equatable, Hashable {
-    var kind: TaskPlanArtifactKind
-    var scope: TaskPlanArtifactScope
-    var path: String?
-    var required: Bool
-    var prepareParentDirectories: Bool
-    var source: String?
+public struct TaskPlanStepOutput: Codable, Sendable, Equatable, Hashable {
+    public var kind: TaskPlanArtifactKind
+    public var scope: TaskPlanArtifactScope
+    public var path: String?
+    public var required: Bool
+    public var prepareParentDirectories: Bool
+    public var source: String?
 
-    init(
+    public init(
         kind: TaskPlanArtifactKind = .file,
         scope: TaskPlanArtifactScope = .taskOutput,
         path: String? = nil,
@@ -123,7 +123,7 @@ struct TaskPlanStepOutput: Codable, Sendable, Equatable, Hashable {
         case source
     }
 
-    init(from decoder: Decoder) throws {
+    public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         kind = try container.decodeIfPresent(TaskPlanArtifactKind.self, forKey: .kind) ?? .file
         scope = try container.decodeIfPresent(TaskPlanArtifactScope.self, forKey: .scope) ?? .taskOutput
@@ -134,17 +134,17 @@ struct TaskPlanStepOutput: Codable, Sendable, Equatable, Hashable {
     }
 }
 
-struct TaskPlanPayloadStep: Codable, Identifiable, Sendable, Equatable, Hashable {
-    var id: String
-    var title: String
-    var detail: String
-    var status: TaskPlanPayloadStepStatus
-    var risk: TaskPlanPayloadRisk
-    var likelyTools: [String]
-    var doneSignal: String
-    var outputs: [TaskPlanStepOutput]
+public struct TaskPlanPayloadStep: Codable, Identifiable, Sendable, Equatable, Hashable {
+    public var id: String
+    public var title: String
+    public var detail: String
+    public var status: TaskPlanPayloadStepStatus
+    public var risk: TaskPlanPayloadRisk
+    public var likelyTools: [String]
+    public var doneSignal: String
+    public var outputs: [TaskPlanStepOutput]
 
-    init(
+    public init(
         id: String,
         title: String,
         detail: String = "",
@@ -164,7 +164,7 @@ struct TaskPlanPayloadStep: Codable, Identifiable, Sendable, Equatable, Hashable
         self.outputs = outputs
     }
 
-    init(from decoder: Decoder) throws {
+    public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(String.self, forKey: .id)
         title = try container.decode(String.self, forKey: .title)
@@ -177,17 +177,17 @@ struct TaskPlanPayloadStep: Codable, Identifiable, Sendable, Equatable, Hashable
     }
 }
 
-struct TaskPlanPayload: Codable, Identifiable, Sendable, Equatable, Hashable {
-    var version: Int
-    var planID: UUID
-    var title: String
-    var goal: String
-    var steps: [TaskPlanPayloadStep]
-    var validationContract: TaskValidationContract?
+public struct TaskPlanPayload: Codable, Identifiable, Sendable, Equatable, Hashable {
+    public var version: Int
+    public var planID: UUID
+    public var title: String
+    public var goal: String
+    public var steps: [TaskPlanPayloadStep]
+    public var validationContract: TaskValidationContract?
 
-    var id: UUID { planID }
+    public var id: UUID { planID }
 
-    init(
+    public init(
         version: Int = 1,
         planID: UUID = UUID(),
         title: String,
@@ -204,7 +204,7 @@ struct TaskPlanPayload: Codable, Identifiable, Sendable, Equatable, Hashable {
     }
 }
 
-enum TaskPlanLifecycleStatus: String, Sendable, Equatable {
+public enum TaskPlanLifecycleStatus: String, Sendable, Equatable {
     case none
     case draft
     case approved
@@ -214,23 +214,35 @@ enum TaskPlanLifecycleStatus: String, Sendable, Equatable {
     case cancelled
 }
 
-enum TaskPlanExecutionMode: String, Sendable, Equatable {
+public enum TaskPlanExecutionMode: String, Sendable, Equatable {
     case fullPlan = "full_plan"
     case nextStep = "next_step"
 }
 
-struct TaskPlanState: Sendable, Equatable {
-    var plan: TaskPlanPayload?
-    var lifecycleStatus: TaskPlanLifecycleStatus
-    var approvedAt: Date?
-    var cancelledAt: Date?
-    var cancellationReason: String?
-    var executionStartedAt: Date?
-    var executionCompletedAt: Date?
-    var executionFailedAt: Date?
-    var latestEventAt: Date?
+public struct TaskPlanState: Sendable, Equatable {
+    public init(plan: TaskPlanPayload? = nil, lifecycleStatus: TaskPlanLifecycleStatus, approvedAt: Date? = nil, cancelledAt: Date? = nil, cancellationReason: String? = nil, executionStartedAt: Date? = nil, executionCompletedAt: Date? = nil, executionFailedAt: Date? = nil, latestEventAt: Date? = nil) {
+        self.plan = plan
+        self.lifecycleStatus = lifecycleStatus
+        self.approvedAt = approvedAt
+        self.cancelledAt = cancelledAt
+        self.cancellationReason = cancellationReason
+        self.executionStartedAt = executionStartedAt
+        self.executionCompletedAt = executionCompletedAt
+        self.executionFailedAt = executionFailedAt
+        self.latestEventAt = latestEventAt
+    }
 
-    static let empty = TaskPlanState(
+    public var plan: TaskPlanPayload?
+    public var lifecycleStatus: TaskPlanLifecycleStatus
+    public var approvedAt: Date?
+    public var cancelledAt: Date?
+    public var cancellationReason: String?
+    public var executionStartedAt: Date?
+    public var executionCompletedAt: Date?
+    public var executionFailedAt: Date?
+    public var latestEventAt: Date?
+
+    public static let empty = TaskPlanState(
         plan: nil,
         lifecycleStatus: .none,
         approvedAt: nil,
@@ -243,18 +255,30 @@ struct TaskPlanState: Sendable, Equatable {
     )
 }
 
-struct TaskPlanProgressPayload: Codable, Sendable, Equatable {
-    var version: Int
-    var type: String
-    var planID: UUID?
-    var stepID: String
-    var status: TaskPlanPayloadStepStatus
-    var title: String?
-    var detail: String?
-    var summary: String?
-    var reason: String?
+public struct TaskPlanProgressPayload: Codable, Sendable, Equatable {
+    public init(version: Int, type: String, planID: UUID? = nil, stepID: String, status: TaskPlanPayloadStepStatus, title: String? = nil, detail: String? = nil, summary: String? = nil, reason: String? = nil) {
+        self.version = version
+        self.type = type
+        self.planID = planID
+        self.stepID = stepID
+        self.status = status
+        self.title = title
+        self.detail = detail
+        self.summary = summary
+        self.reason = reason
+    }
 
-    enum CodingKeys: String, CodingKey {
+    public var version: Int
+    public var type: String
+    public var planID: UUID?
+    public var stepID: String
+    public var status: TaskPlanPayloadStepStatus
+    public var title: String?
+    public var detail: String?
+    public var summary: String?
+    public var reason: String?
+
+    public enum CodingKeys: String, CodingKey {
         case version = "v"
         case type
         case planID
@@ -267,25 +291,25 @@ struct TaskPlanProgressPayload: Codable, Sendable, Equatable {
     }
 }
 
-struct TaskPlanLifecyclePayload: Codable, Sendable, Equatable {
-    var version: Int
-    var planID: UUID
-    var reason: String?
+public struct TaskPlanLifecyclePayload: Codable, Sendable, Equatable {
+    public var version: Int
+    public var planID: UUID
+    public var reason: String?
 
-    init(version: Int = 1, planID: UUID, reason: String? = nil) {
+    public init(version: Int = 1, planID: UUID, reason: String? = nil) {
         self.version = version
         self.planID = planID
         self.reason = reason
     }
 
-    enum CodingKeys: String, CodingKey {
+    public enum CodingKeys: String, CodingKey {
         case version = "v"
         case planID
         case reason
     }
 }
 
-typealias TaskPlan = TaskPlanPayload
-typealias TaskPlanStep = TaskPlanPayloadStep
-typealias TaskPlanStepStatus = TaskPlanPayloadStepStatus
-typealias TaskPlanRisk = TaskPlanPayloadRisk
+public typealias TaskPlan = TaskPlanPayload
+public typealias TaskPlanStep = TaskPlanPayloadStep
+public typealias TaskPlanStepStatus = TaskPlanPayloadStepStatus
+public typealias TaskPlanRisk = TaskPlanPayloadRisk

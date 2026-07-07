@@ -1,6 +1,7 @@
 import Foundation
 import SwiftData
 import Testing
+import ASTRAModels
 @testable import ASTRA
 import ASTRACore
 import ASTRAGitContracts
@@ -21,6 +22,7 @@ struct GitPushEnablementTests {
         process.executableURL = URL(fileURLWithPath: "/bin/zsh")
         process.arguments = ["-c", command]
         process.currentDirectoryURL = URL(fileURLWithPath: directory)
+        process.environment = GitLocalEnvironment.scrubbing(ProcessInfo.processInfo.environment)
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = pipe

@@ -10,6 +10,12 @@ import ASTRACore
 @Suite("MarkdownTextView")
 struct MarkdownTextViewTests {
 
+    @Test("Task answer result bodies stay selectable")
+    func taskAnswerResultBodiesStaySelectable() {
+        #expect(TaskAnswerTextSelectionPolicy.liveAnswerTextIsSelectable)
+        #expect(TaskAnswerTextSelectionPolicy.completedAnswerMarkdownIsSelectable)
+    }
+
     @Test("Malformed schedule markdown is rendered as text instead of trapping")
     func malformedScheduleMarkdownDoesNotTrap() {
         let malformed = "Schedule result: [unterminated link with agent output"
@@ -103,6 +109,126 @@ struct MarkdownTextViewTests {
         #expect(rendered.contains("-----"))
         #expect(rendered.contains("Ada"))
         #expect(!rendered.contains("--- | ---: | :---"))
+    }
+
+    @Test("Parser keeps heading followed by pipe table as separate blocks")
+    func parserKeepsHeadingFollowedByPipeTableAsSeparateBlocks() {
+        let source = """
+        ### What passed across all runs (death-specific)
+
+        | Model/Test | Status | Details |
+        |---|---|---|
+        | `lpch_deaths` | PASS | 15.1k rows (prod) |
+        | `shc_deaths` | PASS | 504.5k rows (prod) |
+        """
+
+        let blocks = MarkdownTextView.parse(source)
+
+        #expect(blocks.count == 2)
+        #expect(blocks[0].kind == .heading(level: 3))
+        #expect(blocks[0].content == "What passed across all runs (death-specific)")
+        #expect(blocks[1].kind == .table)
+        #expect(blocks[1].content.contains("Model/Test | Status | Details"))
+        #expect(blocks[1].content.contains("`lpch_deaths` | PASS | 15.1k rows (prod)"))
+    }
+
+    @Test("Chunk joiner preserves table block boundary after heading")
+    func chunkJoinerPreservesTableBlockBoundaryAfterHeading() {
+        let joined = MarkdownRenderPreparation.joinChunks([
+            "### What passed across all runs (death-specific)\n",
+            """
+            | Model/Test | Status | Details |
+            |---|---|---|
+            | `lpch_deaths` | PASS | 15.1k rows (prod) |
+            """
+        ])
+
+        #expect(joined.contains("death-specific)\n\n| Model/Test | Status | Details |"))
+        #expect(MarkdownTextView.parse(joined).contains { $0.kind == .table })
+    }
+
+    @Test("Display preparation repairs missing blank line before table")
+    func displayPreparationRepairsMissingBlankLineBeforeTable() {
+        let prepared = MarkdownRenderPreparation.prepareForDisplay("""
+        ### What passed across all runs (death-specific)
+        | Model/Test | Status | Details |
+        |---|---|---|
+        | `lpch_deaths` | PASS | 15.1k rows (prod) |
+        """)
+
+        #expect(prepared.contains("death-specific)\n\n| Model/Test | Status | Details |"))
+
+        let blocks = MarkdownTextView.parse(prepared)
+        #expect(blocks.map(\.kind) == [.heading(level: 3), .table])
+    }
+
+    @Test("Display preparation repairs same-line heading table corruption")
+    func displayPreparationRepairsSameLineHeadingTableCorruption() {
+        let prepared = MarkdownRenderPreparation.prepareForDisplay("""
+        ### What passed across all runs (death-specific) | Model/Test | Status | Details |
+        |---|---|---|
+        | `lpch_deaths` | PASS | 15.1k rows (prod) |
+        """)
+
+        #expect(prepared.contains("death-specific)\n\n| Model/Test | Status | Details |"))
+
+        let blocks = MarkdownTextView.parse(prepared)
+        #expect(blocks.map(\.kind) == [.heading(level: 3), .table])
+    }
+
+    @Test("Display preparation preserves compact hash table headers")
+    func displayPreparationPreservesCompactHashTableHeaders() {
+        let prepared = MarkdownRenderPreparation.prepareForDisplay("""
+        #PR | Status | Details
+        --- | --- | ---
+        123 | Open | Needs review
+        """)
+
+        #expect(prepared.contains("#PR | Status | Details"))
+        #expect(!prepared.contains("#PR\n\n| Status | Details"))
+
+        let blocks = MarkdownTextView.parse(prepared)
+        #expect(blocks.count == 1)
+        #expect(blocks.first?.kind == .table)
+        #expect(blocks.first?.content.contains("#PR | Status | Details") == true)
+    }
+
+    @Test("Joined response payloads normalize after preserving chunk boundaries")
+    func joinedResponsePayloadsNormalizeAfterPreservingChunkBoundaries() {
+        let joined = TaskRunAnswerPresentationPolicy.joinedResponsePayloads([
+            "```swift\n",
+            "    let value = 1\n",
+            "```\n"
+        ])
+
+        #expect(joined.contains("```swift\n    let value = 1\n```"))
+    }
+
+    @Test("Joined response payloads drop protocol marker chunks without dropping answer")
+    func joinedResponsePayloadsDropProtocolMarkerChunksWithoutDroppingAnswer() {
+        let joined = TaskRunAnswerPresentationPolicy.joinedResponsePayloads([
+            "ASTRA_EVENT {\"type\":\"agent.response\"}",
+            "Final answer is visible."
+        ])
+
+        #expect(joined == "Final answer is visible.")
+    }
+
+    @Test("Display preparation preserves fenced table-looking text")
+    func displayPreparationPreservesFencedTableLookingText() {
+        let source = """
+        Before
+        ```markdown
+        ### Heading | A | B |
+        |---|---|
+        ```
+        After
+        """
+
+        let prepared = MarkdownRenderPreparation.prepareForDisplay(source)
+
+        #expect(prepared.contains("```markdown\n### Heading | A | B |\n|---|---|\n```"))
+        #expect(MarkdownTextView.parse(prepared).contains { $0.kind == .codeBlock(language: "markdown") })
     }
 
     @Test("Parser recognizes additional heading forms")
@@ -234,6 +360,20 @@ struct MarkdownTextViewTests {
         """)
 
         #expect(normalized == "First sentence. Second sentence continues here.")
+    }
+
+    @Test("Streaming text preserves markdown tables")
+    func streamingTextPreservesMarkdownTables() {
+        let normalized = MarkdownTextView.normalizedStreamingText("""
+        Progress summary
+        | Model/Test | Status |
+        |---|---|
+        | death | PASS |
+        """)
+
+        #expect(normalized.contains("Progress summary\n\n| Model/Test | Status |"))
+        #expect(normalized.contains("|---|---|"))
+        #expect(normalized.contains("| death | PASS |"))
     }
 }
 

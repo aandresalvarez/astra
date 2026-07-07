@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import ASTRAModels
 @testable import ASTRA
 import ASTRACore
 
@@ -180,6 +181,53 @@ struct PluginCatalogPresentationTests {
         ])
     }
 
+    @Test("state groups visible packages by category with status buckets inside each category")
+    func stateGroupsVisiblePackagesByCategoryWithStatusBucketsInsideEachCategory() {
+        let enabledIntegration = makePresentationPackage(
+            id: "mail",
+            name: "Mail",
+            category: "Integrations",
+            governance: .localDraft()
+        )
+        let needsIntegration = makePresentationPackage(
+            id: "jira",
+            name: "Jira",
+            category: "Integrations",
+            governance: .builtInApproved(riskLevel: .high)
+        )
+        let browser = makePresentationPackage(
+            id: "drive-browser",
+            name: "Drive Browser",
+            category: "Browser",
+            governance: .builtInApproved(riskLevel: .low)
+        )
+
+        let state = PluginCatalogPresentation.makeState(
+            packages: [enabledIntegration, needsIntegration, browser],
+            focus: .all,
+            selectedCategory: nil,
+            approvalFilter: .all,
+            riskFilter: .all,
+            showsNeedsAttentionOnly: false,
+            showsEnabledOnly: false,
+            searchText: "",
+            policyContext: CapabilityCatalogPolicyContext(isAdmin: true),
+            isEnabled: { $0.id == "mail" },
+            requiresSetup: { $0.id == "jira" || $0.id == "drive-browser" }
+        )
+
+        #expect(state.categorySections.map(\.category) == ["Integrations", "Browser"])
+        #expect(state.categorySections.map { $0.packages.map(\.id) } == [
+            ["jira", "mail"],
+            ["drive-browser"]
+        ])
+        #expect(state.categorySections[0].statusGroups.map(\.kind) == [.needsSetup, .enabled])
+        #expect(state.categorySections[0].statusGroups.map { $0.packages.map(\.id) } == [
+            ["jira"],
+            ["mail"]
+        ])
+    }
+
     @Test("approval-required packages group under needs attention, not blocked")
     func approvalRequiredPackagesGroupUnderNeedsAttention() {
         // Regression: a draft / admin-approval package sets canEnable == false
@@ -323,6 +371,26 @@ struct PluginCatalogPresentationTests {
         #expect(!CapabilityImportPresentation.shouldShowContentSummary(for: package))
     }
 
+    @Test("creation actions present MCP as a capability source")
+    func creationActionsPresentMCPAsCapabilitySource() {
+        #expect(CapabilityCreationPresentation.menuTitle == "New Capability")
+        #expect(CapabilityCreationPresentation.blankCapabilityTitle == "Blank Capability")
+        #expect(CapabilityCreationPresentation.mcpCapabilityTitle == "Create from MCP...")
+        #expect(CapabilityCreationPresentation.pasteSheetTitle == "Create from MCP")
+        #expect(CapabilityCreationPresentation.primaryActionTitles == ["Import Capability", "New Capability"])
+        #expect(!CapabilityCreationPresentation.primaryActionTitles.contains("Add MCP Server"))
+    }
+
+    @Test("MCP creation paste sheet keeps enough vertical room for form controls")
+    func mcpCreationPasteSheetKeepsEnoughVerticalRoomForFormControls() {
+        #expect(CapabilityCreationPresentation.mcpPasteSheetMinimumHeight >= 430)
+        #expect(CapabilityCreationPresentation.mcpPasteTextEditorMinimumHeight >= 150)
+        #expect(
+            CapabilityCreationPresentation.mcpPasteSheetMinimumHeight -
+                CapabilityCreationPresentation.mcpPasteTextEditorMinimumHeight >= 280
+        )
+    }
+
     @Test("setup presentation makes connector fields readable while preserving keys")
     func setupPresentationMakesConnectorFieldsReadableWhilePreservingKeys() {
         let connector = PluginConnector(
@@ -353,6 +421,46 @@ struct PluginCatalogPresentationTests {
         #expect(CapabilitySetupPresentation.authMethodLabel("api_key") == "API key")
         #expect(CapabilitySetupPresentation.credentialPlaceholder(for: credential) == "Paste API token")
         #expect(CapabilitySetupPresentation.configPlaceholder(for: config) == "ENG, OPS")
+    }
+
+    @Test("approval state builds policy and review from supplied records")
+    func approvalStateBuildsPolicyAndReviewFromSuppliedRecords() throws {
+        let workspace = Workspace(
+            name: "Approval Snapshot",
+            primaryPath: "/tmp/astra-approval-snapshot-\(UUID().uuidString)"
+        )
+        let package = makePresentationPackage(
+            id: "draft-\(UUID().uuidString)",
+            name: "Draft",
+            category: "Security",
+            governance: .localDraft()
+        )
+        let record = CapabilityApprovalRecord(
+            packageID: package.id,
+            packageVersion: package.version,
+            status: .approved,
+            approvedBy: "Security",
+            approvedAt: Date(timeIntervalSince1970: 1_234),
+            reviewNotes: "Reviewed",
+            sourceDigest: try CapabilityApprovalDigest.digest(for: package)
+        )
+
+        let policyContext = PluginCatalogApprovalState.policyContext(
+            workspace: workspace,
+            approvalRecords: [record]
+        )
+        let decision = CapabilityCatalogPolicy.decision(for: package, context: policyContext)
+        let reviewState = PluginCatalogApprovalState.adminReviewState(
+            for: package,
+            policyContext: policyContext,
+            approvalRecords: [record]
+        )
+
+        #expect(decision.canEnable)
+        #expect(!decision.requiresApproval)
+        #expect(reviewState?.record == record)
+        #expect(reviewState?.digestLabel == "Digest current")
+        #expect(reviewState?.shouldShow == true)
     }
 }
 

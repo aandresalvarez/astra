@@ -1,4 +1,6 @@
 import Foundation
+import ASTRAModels
+import ASTRAPersistence
 
 struct TaskVerificationLoadRequest: Hashable {
     let taskID: UUID

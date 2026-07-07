@@ -1,4 +1,5 @@
 import Testing
+import ASTRAModels
 @testable import ASTRA
 
 @Suite("Task decision dock presentation")

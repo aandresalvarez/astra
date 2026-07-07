@@ -44,9 +44,9 @@ enum CodexCLIRuntime {
         providerHomeDirectory: String = "",
         pathPrefix: [String] = [],
         includeAstraToolsPath: Bool = false,
-        allowExternalFileReadsForSSH: Bool = false,
         mcpConfigArguments: [String] = [],
-        resumeSessionID: String? = nil
+        resumeSessionID: String? = nil,
+        permissionArguments: [String]
     ) -> CodexCLICommandPlan {
         let providerModel = resolvedModelName(model)
         // No `--ephemeral`: native continuation needs the session persisted so a
@@ -64,10 +64,7 @@ enum CodexCLIRuntime {
                 "--model", providerModel
             ]
             args += mcpConfigArguments
-            args += codexResumePermissionArguments(policy: permissionPolicy)
-            if allowExternalFileReadsForSSH, permissionPolicy != .autonomous {
-                args += ["--config", "sandbox_permissions=[\"disk-full-read-access\"]"]
-            }
+            args += permissionArguments
             args.append("--skip-git-repo-check")
             args.append(trimmedResumeSessionID)
         } else {
@@ -86,10 +83,7 @@ enum CodexCLIRuntime {
                 args += ["--add-dir", path]
             }
 
-            args += codexPermissionArguments(policy: permissionPolicy)
-            if allowExternalFileReadsForSSH, permissionPolicy != .autonomous {
-                args += ["--config", "sandbox_permissions=[\"disk-full-read-access\"]"]
-            }
+            args += permissionArguments
             args.append("--skip-git-repo-check")
         }
         args.append(prompt)

@@ -2,6 +2,9 @@ import SwiftUI
 import SwiftData
 import AppKit
 import AppIntents
+import ASTRAModels
+import ASTRAPersistence
+import ASTRACore
 
 private let aboutAstraWindowID = "about-astra"
 
@@ -235,6 +238,10 @@ public struct ASTRAApp: App {
     @State private var runtime = AppRuntimeController()
 
     public init() {
+        // Must run before any code constructs a WorkspaceExecutionEnvironment
+        // with credential projections or reads TaskRoleProfile.runtime — see
+        // RuntimeSeamRegistration.swift.
+        RuntimeSeamRegistration.registerAll()
         var defaults = LoggingPreferences.registeredDefaults
         defaults[AppLogger.sensitiveModeKey] = true
         UserDefaults.standard.register(defaults: defaults)
@@ -347,6 +354,7 @@ public struct ASTRAApp: App {
                 modelContainerResult: "initial_failed",
                 level: .warning
             )
+            WorkspaceRecoveryService.exportReadableWorkspacesBeforeStoreReset(at: config.url)
             WorkspaceRecoveryService.backupStore(at: config.url)
             do {
                 modelContainer = try ModelContainer(
@@ -458,7 +466,15 @@ public struct ASTRAApp: App {
 
         if disallowedMigrated > 0 || globalMarked > 0 {
             do {
-                try modelContext.save()
+                // Skills are global (not workspace-scoped), so there is no
+                // workspace JSON mirror to refresh. The throwing coordinator
+                // path (not synchronicity — every variant here is synchronous)
+                // is what lets the catch below skip setting the build flag on
+                // a failed save, so the migration retries next launch.
+                try WorkspacePersistenceCoordinator.saveAndAutoExportOrThrow(
+                    workspace: nil,
+                    modelContext: modelContext
+                )
             } catch {
                 AppLogger.audit(.skillToolPermissionChanged, category: "App", fields: [
                     "migration": "startup_skill_migrations",

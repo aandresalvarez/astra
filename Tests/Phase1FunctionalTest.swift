@@ -1,5 +1,7 @@
 import Testing
 import Foundation
+import ASTRAModels
+import ASTRAPersistence
 @testable import ASTRA
 import ASTRACore
 import SwiftData
@@ -61,6 +63,7 @@ struct Phase1FunctionalTest {
         try context.save()
 
         let worker = AgentRuntimeWorker.scenarioWorker()
+        DirectWorkerLaunchAdmission.admitInitialRun(task, modelContext: context)
         await worker.execute(task: task, modelContext: context) { _ in }
 
         #expect(task.status == .failed, "Task without workspace should fail, got: \(task.status.rawValue)")
@@ -89,6 +92,7 @@ struct Phase1FunctionalTest {
         try context.save()
 
         let worker = AgentRuntimeWorker.scenarioWorker()
+        DirectWorkerLaunchAdmission.admitInitialRun(task, modelContext: context)
         await worker.execute(task: task, modelContext: context) { _ in }
 
         #expect(task.status == .failed, "Task with bad workspace should fail, got: \(task.status.rawValue)")
@@ -151,6 +155,7 @@ struct Phase1FunctionalTest {
         var receivedEvents: [ParsedEvent] = []
 
         try await E2ETestSupport.withLiveProviderSlot {
+            DirectWorkerLaunchAdmission.admitInitialRun(task, modelContext: context)
             await worker.execute(task: task, modelContext: context) { event in
                 receivedEvents.append(event)
             }

@@ -1,5 +1,8 @@
 import AppKit
 import Foundation
+import ASTRAPersistence
+import ASTRACore
+import ASTRAModels
 
 enum BrowserFailureDebugCapture {
     static let headerName = "x-astra-browser-debug-capture"

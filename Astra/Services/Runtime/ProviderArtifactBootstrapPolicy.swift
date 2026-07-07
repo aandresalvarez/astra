@@ -1,5 +1,6 @@
 import Foundation
 import ASTRACore
+import ASTRAModels
 
 enum ProviderArtifactBootstrapPolicy {
     static func launchTools(
@@ -11,6 +12,29 @@ enum ProviderArtifactBootstrapPolicy {
         guard permissionPolicy == .restricted,
               TaskDeliverableExpectation.requiresDeliverableArtifact(task),
               !providerAllowedTools.contains(where: isFileMutationTool),
+              askFirstTools.contains(where: isFileMutationTool) else {
+            return []
+        }
+        return ["Write"]
+    }
+
+    static func persistedLaunchTools(
+        task: AgentTask,
+        permissionPolicy: PermissionPolicy,
+        providerAllowedTools: [String],
+        askFirstTools: [String]
+    ) -> [String] {
+        if !launchTools(
+            task: task,
+            permissionPolicy: permissionPolicy,
+            providerAllowedTools: providerAllowedTools,
+            askFirstTools: askFirstTools
+        ).isEmpty {
+            return ["Write"]
+        }
+        guard permissionPolicy == .restricted,
+              TaskDeliverableExpectation.requiresDeliverableArtifact(task),
+              providerAllowedTools.contains(where: { normalizedToolName($0) == "write" }),
               askFirstTools.contains(where: isFileMutationTool) else {
             return []
         }

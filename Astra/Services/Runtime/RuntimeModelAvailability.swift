@@ -1,5 +1,7 @@
 import Foundation
 import ASTRACore
+import ASTRAPersistence
+import ASTRAModels
 
 enum RuntimeModelAvailabilityAuthority: String, Codable, Equatable, Sendable {
     case authoritative
@@ -130,10 +132,10 @@ struct RuntimeModelResolution: Equatable, Sendable {
         requestedModel != resolvedModel
     }
 
-    func diagnosticFields(phase: String) -> [String: String] {
+    func diagnosticFields(phase: RunPhase) -> [String: String] {
         var fields: [String: String] = [
             "runtime": runtime.rawValue,
-            "phase": phase,
+            "phase": phase.rawValue,
             "requested_model": requestedModel.isEmpty ? "empty" : requestedModel,
             "resolved_model": resolvedModel,
             "model_changed": String(changed),

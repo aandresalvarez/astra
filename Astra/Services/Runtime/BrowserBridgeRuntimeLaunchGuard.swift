@@ -33,7 +33,7 @@ enum BrowserBridgeRuntimeLaunchGuard {
         environment: [String: String],
         mcpToolSupported: Bool = false
     ) -> BrowserBridgeRuntimeLaunchMetadata {
-        let isAttached = environment["ASTRA_BROWSER_URL"]?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+        let isAttached = isBrowserBridgeAttached(environment: environment)
         let shellToolSupported = supportsShellToolForBrowserBridge(runtime: runtime)
         let launchSupported = shellToolSupported || mcpToolSupported
         return BrowserBridgeRuntimeLaunchMetadata(
@@ -44,8 +44,12 @@ enum BrowserBridgeRuntimeLaunchGuard {
         )
     }
 
+    static func isBrowserBridgeAttached(environment: [String: String]) -> Bool {
+        environment["ASTRA_BROWSER_URL"]?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+    }
+
     static func launchBlock(for plan: AgentRuntimeProcessLaunchPlan) -> AgentProcessResult? {
-        guard plan.environment["ASTRA_BROWSER_URL"]?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false,
+        guard isBrowserBridgeAttached(environment: plan.environment),
               plan.commandPlannedFields["browser_bridge_launch_block_reason"] == missingBrowserControlToolReason else {
             return nil
         }

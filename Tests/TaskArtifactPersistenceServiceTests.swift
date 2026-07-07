@@ -1,6 +1,8 @@
 import Foundation
 import SwiftData
 import Testing
+import ASTRAModels
+import ASTRAPersistence
 @testable import ASTRA
 import ASTRACore
 
@@ -151,6 +153,61 @@ struct TaskArtifactPersistenceServiceTests {
         #expect(first.version == 1)
         #expect(second.version == 2)
         #expect(task.artifacts.filter { $0.path == path }.map(\.version).sorted() == [1, 2])
+    }
+
+    @Test("file change artifact persistence skips task runtime diagnostics")
+    func fileChangeArtifactPersistenceSkipsTaskRuntimeDiagnostics() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let container = try makeTaskArtifactPersistenceContainer()
+        let context = ModelContext(container)
+        let task = makeTask(root: root, context: context, title: "Skip Runtime")
+        let folder = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
+
+        let configPath = (folder as NSString).appendingPathComponent(".runtime/docker-client/client-1/config.json")
+        let stdoutPath = (folder as NSString).appendingPathComponent("jobs/job-1/stdout.log")
+        let reportPath = (folder as NSString).appendingPathComponent("plan.md")
+        try FileManager.default.createDirectory(
+            atPath: (configPath as NSString).deletingLastPathComponent,
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(
+            atPath: (stdoutPath as NSString).deletingLastPathComponent,
+            withIntermediateDirectories: true
+        )
+        try "{}".write(toFile: configPath, atomically: true, encoding: .utf8)
+        try "log".write(toFile: stdoutPath, atomically: true, encoding: .utf8)
+        try "# Plan".write(toFile: reportPath, atomically: true, encoding: .utf8)
+
+        let config = StoredFileChange(from: FileChange(
+            path: configPath,
+            changeType: .write,
+            content: "{}",
+            oldString: nil,
+            newString: nil,
+            timestamp: Date()
+        ))
+        let stdout = StoredFileChange(from: FileChange(
+            path: stdoutPath,
+            changeType: .write,
+            content: "log",
+            oldString: nil,
+            newString: nil,
+            timestamp: Date()
+        ))
+        let report = StoredFileChange(from: FileChange(
+            path: reportPath,
+            changeType: .write,
+            content: "# Plan",
+            oldString: nil,
+            newString: nil,
+            timestamp: Date()
+        ))
+
+        #expect(TaskArtifactPersistenceService.persistFileChangeArtifact(config, for: task, modelContext: context) == nil)
+        #expect(TaskArtifactPersistenceService.persistFileChangeArtifact(stdout, for: task, modelContext: context) == nil)
+        #expect(TaskArtifactPersistenceService.persistFileChangeArtifact(report, for: task, modelContext: context)?.path == reportPath)
+        #expect(task.artifacts.map(\.path) == [reportPath])
     }
 
     @Test("deliverable verification promotes discovered artifacts")

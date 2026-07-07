@@ -1,4 +1,5 @@
 import Foundation
+import ASTRAModels
 
 enum TaskRuntimeHealthState: String, Equatable, Sendable {
     case notRunning = "not_running"

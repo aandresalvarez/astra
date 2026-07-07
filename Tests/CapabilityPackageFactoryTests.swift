@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import ASTRAModels
 @testable import ASTRA
 import ASTRACore
 
@@ -60,6 +61,31 @@ struct CapabilityPackageFactoryTests {
         #expect(package.localTools.first?.arguments == "--format=json")
     }
 
+    @Test("MCP-only capability creates standalone MCP server package")
+    @MainActor
+    func mcpOnlyCapability() {
+        let server = PluginMCPServer(
+            id: "github",
+            displayName: "GitHub MCP",
+            transport: .stdio,
+            command: "github-mcp-server",
+            arguments: ["stdio"],
+            allowedTools: ["issues.list"]
+        )
+
+        let package = CapabilityPackageFactory.makePackage(
+            name: "GitHub MCP",
+            description: "Expose GitHub MCP tools",
+            mcpServers: [server]
+        )
+        let report = CapabilityPackageValidator.validate(package: package, checkPrerequisites: false)
+
+        #expect(package.skills.isEmpty)
+        #expect(package.mcpServers == [server])
+        #expect(package.contentSummary == "1 MCP server")
+        #expect(report.blockers.isEmpty)
+    }
+
     @Test("full capability includes behavior connectors and tools")
     @MainActor
     func fullCapability() {
@@ -116,6 +142,114 @@ struct CapabilityPackageFactoryTests {
         )
 
         #expect(directory?.standardizedFileURL == override.standardizedFileURL)
+    }
+
+    @Test("source exporter skips broad parent search from translocated app contexts")
+    func sourceExporterSkipsBroadParentSearchFromTranslocatedAppContexts() throws {
+        let root = try temporaryDirectory(named: "astra-source-export-translocated")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try Data().write(to: root.appendingPathComponent("Package.swift"))
+        try FileManager.default.createDirectory(
+            at: root.appendingPathComponent("capabilities", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        let bundleURL = root
+            .appendingPathComponent("private", isDirectory: true)
+            .appendingPathComponent("var", isDirectory: true)
+            .appendingPathComponent("folders", isDirectory: true)
+            .appendingPathComponent("zz", isDirectory: true)
+            .appendingPathComponent("randomized", isDirectory: true)
+            .appendingPathComponent("T", isDirectory: true)
+            .appendingPathComponent("AppTranslocation", isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            .appendingPathComponent("d", isDirectory: true)
+            .appendingPathComponent("ASTRA Dev.app", isDirectory: true)
+        let startURL = bundleURL
+            .appendingPathComponent("Contents", isDirectory: true)
+            .appendingPathComponent("MacOS", isDirectory: true)
+        try FileManager.default.createDirectory(at: startURL, withIntermediateDirectories: true)
+
+        let directory = CapabilityPackageSourceExporter.defaultSourceDirectory(
+            startingAt: startURL,
+            bundleURL: bundleURL,
+            environment: [:]
+        )
+
+        #expect(directory == nil)
+    }
+
+    @Test("source exporter still searches stable start path when bundle is translocated")
+    func sourceExporterSearchesStableStartPathWhenBundleIsTranslocated() throws {
+        let root = URL(fileURLWithPath: "/tmp", isDirectory: true)
+            .appendingPathComponent("astra-source-export-stable-start-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try Data().write(to: root.appendingPathComponent("Package.swift"))
+        try FileManager.default.createDirectory(
+            at: root.appendingPathComponent("capabilities", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        let startURL = root
+            .appendingPathComponent("Sources", isDirectory: true)
+            .appendingPathComponent("ASTRA", isDirectory: true)
+        try FileManager.default.createDirectory(at: startURL, withIntermediateDirectories: true)
+        let bundleURL = URL(fileURLWithPath: "/private/var/folders/zz/randomized/T/AppTranslocation/\(UUID().uuidString)/d/ASTRA Dev.app", isDirectory: true)
+
+        let directory = CapabilityPackageSourceExporter.defaultSourceDirectory(
+            startingAt: startURL,
+            bundleURL: bundleURL,
+            environment: [:]
+        )
+
+        #expect(directory?.standardizedFileURL == root
+            .appendingPathComponent("capabilities", isDirectory: true)
+            .appendingPathComponent("local", isDirectory: true)
+            .standardizedFileURL)
+    }
+
+    @Test("capability creation waits for source directory resolution before create")
+    func capabilityCreationWaitsForSourceDirectoryResolutionBeforeCreate() {
+        #expect(!CapabilityCreationSourceExportPolicy.canCreate(
+            hasRequiredContent: true,
+            sourceState: .resolving
+        ))
+        #expect(CapabilityCreationSourceExportPolicy.canCreate(
+            hasRequiredContent: true,
+            sourceState: .unavailable
+        ))
+        #expect(CapabilityCreationSourceExportPolicy.canCreate(
+            hasRequiredContent: true,
+            sourceState: .resolved(URL(fileURLWithPath: "/tmp/capabilities/local", isDirectory: true))
+        ))
+        #expect(!CapabilityCreationSourceExportPolicy.canCreate(
+            hasRequiredContent: false,
+            sourceState: .unavailable
+        ))
+    }
+
+    @Test("capability creation wizard construction defers source directory resolver")
+    @MainActor
+    func capabilityCreationWizardConstructionDefersSourceDirectoryResolver() {
+        final class ResolverProbe {
+            var invoked = false
+
+            func resolve() async -> URL? {
+                invoked = true
+                return nil
+            }
+        }
+
+        let probe = ResolverProbe()
+        let workspace = Workspace(name: "Test Workspace", primaryPath: NSTemporaryDirectory())
+        _ = CapabilityCreationWizardView(
+            workspace: workspace,
+            onCreated: { _, _, _ in },
+            sourceExportDirectoryResolver: {
+                await probe.resolve()
+            }
+        )
+
+        #expect(probe.invoked == false)
     }
 
     @Test("source exporter writes normalized draft package JSON")

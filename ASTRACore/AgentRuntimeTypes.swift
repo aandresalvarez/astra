@@ -75,6 +75,34 @@ public struct AgentRuntimeID: RawRepresentable, Codable, Sendable, Hashable, Ide
     }
 }
 
+public struct RunPhase: Codable, Sendable, Hashable, Equatable, ExpressibleByStringLiteral, CustomStringConvertible {
+    public let rawValue: String
+
+    public init(rawValue: String) {
+        self.rawValue = rawValue
+    }
+
+    public init(stringLiteral value: StringLiteralType) {
+        self.init(rawValue: value)
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        self.init(rawValue: try container.decode(String.self))
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
+
+    public var description: String { rawValue }
+
+    public static let run = RunPhase(rawValue: "run")
+    public static let resume = RunPhase(rawValue: "resume")
+    public static let approvedPlan = RunPhase(rawValue: "approved_plan")
+}
+
 public struct AgentRuntimeDescriptor: Sendable, Equatable, Identifiable {
     public let id: AgentRuntimeID
     public let displayName: String
@@ -132,11 +160,33 @@ public enum AgentEvent: Sendable, Equatable {
     case text(text: String)
     case toolUse(name: String, id: String, inputSummary: String?)
     case toolResult(id: String, content: String)
-    case fileChange(path: String, kind: String, summary: String?)
+    /// `oldString`/`newString` carry a precise before/after diff when the
+    /// originating provider's structured tool input has them (currently only
+    /// Claude's `Edit` tool). Other providers always pass `nil` here and rely
+    /// on `summary` alone.
+    case fileChange(path: String, kind: String, summary: String?, oldString: String? = nil, newString: String? = nil)
     case permissionRequested(tool: String, reason: String)
     case stats(inputTokens: Int, outputTokens: Int, costUSD: Double?, durationMs: Int?, turns: Int?)
     case astraProtocol(AstraRunProtocolParsedEvent)
     case completed(summary: String?)
     case failed(message: String)
+    /// In-process teammate orchestration events. Currently only Claude Code's
+    /// CLI emits `local_agent`/`in_process_teammate` system events; the other
+    /// five runtimes never produce these, so this case is Claude-only in
+    /// practice but lives on the shared type so Claude can route through the
+    /// single provider-agnostic recording dispatcher like every other runtime.
+    case teamEvent(AgentTeamEvent)
     case unknown(provider: String, type: String, raw: String)
+}
+
+/// Structured payload for `AgentEvent.teamEvent`. Mirrors the team-oriented
+/// cases that used to live directly on `ParsedEvent` (Claude's in-process
+/// teammate feature: `TeamCreate`/`TeamDelete`/`SendMessage` tool calls plus
+/// `local_agent`/`in_process_teammate` system lifecycle events).
+public enum AgentTeamEvent: Sendable, Equatable {
+    case teammateStarted(taskId: String, name: String, prompt: String)
+    case teammateCompleted(taskId: String, name: String)
+    case teamCreated(name: String, description: String)
+    case teamDeleted(name: String)
+    case teamMessage(from: String, to: String, content: String)
 }

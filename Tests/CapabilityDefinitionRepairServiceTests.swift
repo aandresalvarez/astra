@@ -1,6 +1,7 @@
 import Foundation
 import SwiftData
 import Testing
+import ASTRAModels
 @testable import ASTRA
 
 private func makeCapabilityDefinitionRepairContainer() throws -> ModelContainer {
@@ -49,10 +50,11 @@ struct CapabilityDefinitionRepairServiceTests {
             approvedPackages: [package]
         )
 
-        #expect(library.installedVersion(of: "jira-workflow") == "2.0.3")
+        #expect(library.installedVersion(of: "jira-workflow") == "2.0.7")
         #expect(skill.allowedTools == package.skills[0].allowedTools)
-        #expect(skill.behaviorInstructions.contains("/rest/api/3/mypermissions"))
-        #expect(skill.behaviorInstructions.contains("/rest/api/3/search/jql?jql="))
+        #expect(skill.behaviorInstructions.contains("operation status"))
+        #expect(skill.behaviorInstructions.contains("operation search_jql"))
+        #expect(skill.behaviorInstructions.contains("/rest/api/3/mypermissions?permissions=BROWSE_PROJECTS"))
         #expect(!skill.behaviorInstructions.contains("/rest/api/3/search?jql="))
     }
 
@@ -90,8 +92,9 @@ struct CapabilityDefinitionRepairServiceTests {
             approvedPackages: [package]
         )
 
-        #expect(skill.behaviorInstructions.contains("/rest/api/3/mypermissions"))
-        #expect(skill.behaviorInstructions.contains("Only recommend generating a new API token"))
+        #expect(skill.behaviorInstructions.contains("operation status"))
+        #expect(skill.behaviorInstructions.contains("operation search_jql"))
+        #expect(skill.behaviorInstructions.contains("/rest/api/3/mypermissions?permissions=BROWSE_PROJECTS"))
     }
 
     @Test("Startup repair refreshes stale local package-created Jira skill")
@@ -129,8 +132,9 @@ struct CapabilityDefinitionRepairServiceTests {
             approvedPackages: [package]
         )
 
-        #expect(skill.behaviorInstructions.contains("/rest/api/3/mypermissions"))
-        #expect(skill.behaviorInstructions.contains("/rest/api/3/search/jql?jql="))
+        #expect(skill.behaviorInstructions.contains("operation status"))
+        #expect(skill.behaviorInstructions.contains("operation search_jql"))
+        #expect(skill.behaviorInstructions.contains("/rest/api/3/mypermissions?permissions=BROWSE_PROJECTS"))
         #expect(!skill.behaviorInstructions.contains("/rest/api/3/search?jql="))
     }
 

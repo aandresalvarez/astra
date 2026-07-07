@@ -1,6 +1,8 @@
 import SwiftUI
 import SwiftData
 import ASTRACore
+import ASTRAModels
+import ASTRAPersistence
 
 struct NewTaskView: View {
     @Environment(\.modelContext) private var modelContext
@@ -97,7 +99,7 @@ struct NewTaskView: View {
 
                     Picker("Token Budget", selection: $tokenBudget) {
                         ForEach(budgetPresets, id: \.self) { b in
-                            Text(b == 0 ? "Unlimited" : "\(b / 1000)k tokens").tag(b)
+                            Text(RuntimeBudgetPresentation.settingsLabel(for: b)).tag(b)
                         }
                     }
 
@@ -308,7 +310,7 @@ struct NewTaskView: View {
             allInputs.append(snippet)
         }
         task.inputs = allInputs
-        task.status = .queued
+        TaskStateMachine.enqueueFromUserSubmission(task, modelContext: modelContext)
 
         modelContext.insert(task)
         TaskPolicyStore.recordSelection(

@@ -1,0 +1,121 @@
+import Foundation
+import ASTRAModels
+import ASTRAPersistence
+
+struct WorkspaceAppManifestLocation: Equatable {
+    var manifestURL: URL
+    var appDirectoryURL: URL
+    var databaseURL: URL
+}
+
+struct WorkspaceAppLoadedManifest {
+    var manifest: WorkspaceAppManifest
+    var location: WorkspaceAppManifestLocation
+}
+
+enum WorkspaceAppManifestStoreError: Error, Equatable {
+    case noSafeManifestPath(String)
+}
+
+struct WorkspaceAppManifestStore {
+    var fileManager: FileManager = .default
+
+    func canonicalAppDirectoryURL(app: WorkspaceApp, workspace: Workspace) -> URL? {
+        WorkspaceFileLayout.appDirectoryURL(
+            workspacePath: workspace.primaryPath,
+            appID: app.logicalID
+        )
+    }
+
+    func canonicalManifestURL(app: WorkspaceApp, workspace: Workspace) -> URL? {
+        WorkspaceFileLayout.appManifestFileURL(
+            workspacePath: workspace.primaryPath,
+            appID: app.logicalID
+        )
+    }
+
+    func readableManifestURL(app: WorkspaceApp, workspace: Workspace) -> URL? {
+        existingManifestURL(app: app, workspace: workspace)
+            ?? canonicalManifestURL(app: app, workspace: workspace)
+    }
+
+    func existingManifestURL(app: WorkspaceApp, workspace: Workspace) -> URL? {
+        manifestCandidates(app: app, workspace: workspace)
+            .first { fileManager.fileExists(atPath: $0.path) }
+    }
+
+    func appDirectoryURL(app: WorkspaceApp, workspace: Workspace) -> URL? {
+        let canonical = canonicalAppDirectoryURL(app: app, workspace: workspace)
+        if let manifest = existingManifestURL(app: app, workspace: workspace) {
+            return manifest.deletingLastPathComponent()
+        }
+        if let stored = storedAppDirectoryURL(app: app, workspace: workspace),
+           fileManager.fileExists(atPath: stored.path) {
+            return stored
+        }
+        if let canonical, fileManager.fileExists(atPath: canonical.path) {
+            return canonical
+        }
+        return canonical
+    }
+
+    func loadManifest(app: WorkspaceApp, workspace: Workspace) throws -> WorkspaceAppLoadedManifest {
+        guard let manifestURL = readableManifestURL(app: app, workspace: workspace) else {
+            throw WorkspaceAppManifestStoreError.noSafeManifestPath(app.logicalID)
+        }
+        let data = try Data(contentsOf: manifestURL)
+        let manifest = try JSONDecoder().decode(WorkspaceAppManifest.self, from: data)
+        let appDirectoryURL = manifestURL.deletingLastPathComponent()
+        guard let databaseURL = WorkspaceFileLayout.appDatabaseFileURL(
+            appDirectoryURL: appDirectoryURL,
+            workspacePath: workspace.primaryPath
+        ) else {
+            throw WorkspaceAppManifestStoreError.noSafeManifestPath(app.logicalID)
+        }
+        return WorkspaceAppLoadedManifest(
+            manifest: manifest,
+            location: WorkspaceAppManifestLocation(
+                manifestURL: manifestURL,
+                appDirectoryURL: appDirectoryURL,
+                databaseURL: databaseURL
+            )
+        )
+    }
+
+    private func manifestCandidates(app: WorkspaceApp, workspace: Workspace) -> [URL] {
+        unique([canonicalManifestURL(app: app, workspace: workspace), storedManifestURL(app: app, workspace: workspace)])
+    }
+
+    private func storedManifestURL(app: WorkspaceApp, workspace: Workspace) -> URL? {
+        guard !app.manifestRelativePath.isEmpty else { return nil }
+        let url = URL(fileURLWithPath: workspace.primaryPath)
+            .appendingPathComponent(app.manifestRelativePath)
+            .standardizedFileURL
+        guard WorkspaceFileLayout.isContainedStoredAppManifestFile(url, workspacePath: workspace.primaryPath) else {
+            return nil
+        }
+        return url
+    }
+
+    private func storedAppDirectoryURL(app: WorkspaceApp, workspace: Workspace) -> URL? {
+        guard !app.appDirectoryRelativePath.isEmpty else { return nil }
+        let url = URL(fileURLWithPath: workspace.primaryPath)
+            .appendingPathComponent(app.appDirectoryRelativePath, isDirectory: true)
+            .standardizedFileURL
+        guard WorkspaceFileLayout.isContainedStoredAppDirectory(url, workspacePath: workspace.primaryPath) else {
+            return nil
+        }
+        return url
+    }
+
+    private func unique(_ urls: [URL?]) -> [URL] {
+        var seen = Set<String>()
+        var result: [URL] = []
+        for url in urls.compactMap({ $0 }) {
+            let path = url.standardizedFileURL.path
+            guard seen.insert(path).inserted else { continue }
+            result.append(url)
+        }
+        return result
+    }
+}

@@ -1,6 +1,8 @@
 import Testing
 import Foundation
 import Security
+import ASTRAModels
+import ASTRAPersistence
 @testable import ASTRA
 import ASTRACore
 
@@ -541,7 +543,6 @@ struct SessionHistoryRedactionTests {
 
 @Suite("Legacy Credential Removal")
 struct LegacyCredentialTests {
-
     @Test("Credentials only come from SecretStore, not legacy values")
     func noLegacyFallback() {
         let store = MockSecretStore()

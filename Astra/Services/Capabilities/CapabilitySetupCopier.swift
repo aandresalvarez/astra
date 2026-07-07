@@ -1,5 +1,7 @@
 import Foundation
 import ASTRACore
+import ASTRAModels
+import ASTRAPersistence
 
 struct CapabilitySetupCopySummary: Equatable {
     var sourceWorkspaceName: String

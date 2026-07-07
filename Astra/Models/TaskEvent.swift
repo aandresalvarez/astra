@@ -2,34 +2,36 @@ import Foundation
 import SwiftData
 
 @Model
-final class TaskEvent {
-    var id: UUID
-    var task: AgentTask?
-    var run: TaskRun?
-    var type: String
-    var payload: String
-    var timestamp: Date
+public final class TaskEvent {
+    public var id: UUID
+    public var task: AgentTask?
+    public var run: TaskRun?
+    public var type: String
+    public var payload: String
+    public var timestamp: Date
     // Agent Teams identity
-    var agentName: String?    // e.g. "pro-agent", nil = lead/orchestrator
-    var agentId: String?      // e.g. "pro-agent@rest-api-debate"
-    var teamName: String?     // e.g. "rest-api-debate"
-    var category: String       // "lifecycle", "conversation", "tool", "system", "team"
+    public var agentName: String?    // e.g. "pro-agent", nil = lead/orchestrator
+    public var agentId: String?      // e.g. "pro-agent@rest-api-debate"
+    public var teamName: String?     // e.g. "rest-api-debate"
+    public var category: String       // "lifecycle", "conversation", "tool", "system", "team"
 
-    init(task: AgentTask, type: String, payload: String = "", run: TaskRun? = nil,
+    public init(task: AgentTask, type: String, payload: String = "", run: TaskRun? = nil,
          agentName: String? = nil, agentId: String? = nil, teamName: String? = nil) {
+        let now = Date()
         self.id = UUID()
         self.task = task
         self.run = run
         self.type = type
         self.payload = payload
-        self.timestamp = Date()
+        self.timestamp = now
         self.agentName = agentName
         self.agentId = agentId
         self.teamName = teamName
         self.category = Self.categoryFor(type: type)
+        task.updatedAt = now
     }
 
-    convenience init(task: AgentTask, eventType: TaskEventType, payload: String = "", run: TaskRun? = nil,
+    public convenience init(task: AgentTask, eventType: TaskEventType, payload: String = "", run: TaskRun? = nil,
                      agentName: String? = nil, agentId: String? = nil, teamName: String? = nil) {
         self.init(
             task: task,
@@ -42,19 +44,19 @@ final class TaskEvent {
         )
     }
 
-    var eventType: TaskEventType? {
+    public var eventType: TaskEventType? {
         TaskEventType(rawValue: type)
     }
 
-    var typedCategory: TaskEventCategory {
+    public var typedCategory: TaskEventCategory {
         TaskEventTypes.category(forRawValue: type)
     }
 
-    func hasType(_ eventType: TaskEventType) -> Bool {
+    public func hasType(_ eventType: TaskEventType) -> Bool {
         type == eventType.rawValue
     }
 
-    func decodePayload<T: Decodable>(
+    public func decodePayload<T: Decodable>(
         as type: T.Type,
         expecting expectedType: TaskEventType? = nil,
         decoder: JSONDecoder = JSONDecoder()
@@ -72,7 +74,7 @@ final class TaskEvent {
         }
     }
 
-    static func encodePayload<T: Encodable>(
+    public static func encodePayload<T: Encodable>(
         _ payload: T,
         encoder: JSONEncoder = TaskEventPayloadCodec.makeEncoder()
     ) -> Result<String, TaskEventPayloadEncodeError> {
@@ -87,7 +89,7 @@ final class TaskEvent {
         }
     }
 
-    static func payloadString<T: Encodable>(
+    public static func payloadString<T: Encodable>(
         _ payload: T,
         fallback: String = "{}",
         encoder: JSONEncoder = TaskEventPayloadCodec.makeEncoder()
@@ -100,7 +102,7 @@ final class TaskEvent {
         }
     }
 
-    static func structuredPayloadEvent<T: Encodable>(
+    public static func structuredPayloadEvent<T: Encodable>(
         task: AgentTask,
         eventType: TaskEventType,
         payload: T,
@@ -122,7 +124,7 @@ final class TaskEvent {
         )
     }
 
-    static func structuredPayloadEvent<T: Encodable>(
+    public static func structuredPayloadEvent<T: Encodable>(
         task: AgentTask,
         type: String,
         payload: T,
@@ -144,16 +146,16 @@ final class TaskEvent {
         )
     }
 
-    static func categoryFor(type: String) -> String {
+    public static func categoryFor(type: String) -> String {
         TaskEventTypes.category(forRawValue: type).rawValue
     }
 }
 
-enum TaskEventPayloadEncodeError: Error, Equatable, CustomStringConvertible {
+public enum TaskEventPayloadEncodeError: Error, Equatable, CustomStringConvertible {
     case invalidUTF8
     case encodingFailed(String)
 
-    var description: String {
+    public var description: String {
         switch self {
         case .invalidUTF8:
             "Encoded event payload is not valid UTF-8."
@@ -163,30 +165,30 @@ enum TaskEventPayloadEncodeError: Error, Equatable, CustomStringConvertible {
     }
 }
 
-enum TaskEventPayloadCodec {
-    static func makeEncoder() -> JSONEncoder {
+public enum TaskEventPayloadCodec {
+    public static func makeEncoder() -> JSONEncoder {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         return encoder
     }
 
-    static func makeDecoder() -> JSONDecoder {
+    public static func makeDecoder() -> JSONDecoder {
         JSONDecoder()
     }
 
-    static func makeISO8601Encoder() -> JSONEncoder {
+    public static func makeISO8601Encoder() -> JSONEncoder {
         let encoder = makeEncoder()
         encoder.dateEncodingStrategy = .iso8601
         return encoder
     }
 
-    static func makeUnescapedEncoder() -> JSONEncoder {
+    public static func makeUnescapedEncoder() -> JSONEncoder {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         return encoder
     }
 
-    static func makeISO8601Decoder() -> JSONDecoder {
+    public static func makeISO8601Decoder() -> JSONDecoder {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         return decoder

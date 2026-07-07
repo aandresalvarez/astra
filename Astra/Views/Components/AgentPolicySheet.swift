@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import ASTRACore
+import ASTRAModels
 
 struct AgentPolicySheet: View {
     let runtime: AgentRuntimeID
@@ -104,7 +105,7 @@ struct AgentPolicySheet: View {
 
                 Section("Provider Preview") {
                     factRow("Runtime", value: runtime.displayName)
-                    factRow("Permission mode", value: render.permissionMode)
+                    factRow("Permission mode", value: render.permissionMode.rawValue)
                     askCoverageRow
                     factRow("Config source", value: render.configOwnership.displayName)
                     factRow("Enforcement", value: render.enforcementTiers.map(\.displayName).joined(separator: ", "))
@@ -718,26 +719,25 @@ struct AgentPolicySheet: View {
     /// tier + sandbox logic the worker uses.
     @ViewBuilder
     private var askCoverageRow: some View {
-        if let permissionPolicy = PermissionPolicy(rawValue: render.permissionMode) {
-            let badge = AskCoverageBadge.resolve(
-                runtime: runtime,
-                permissionPolicy: permissionPolicy,
-                sandboxSettings: ExecutionSandboxSettings.current(permissionPolicy: permissionPolicy)
-            )
-            HStack(alignment: .top, spacing: 8) {
-                Image(systemName: badge.symbolName)
-                    .foregroundStyle(askCoverageTint(badge.tier))
-                    .frame(width: 16)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Ask coverage: \(badge.label)")
-                        .font(Stanford.caption(12).weight(.semibold))
-                    Text(badge.detail)
-                        .font(Stanford.caption(11))
-                        .foregroundStyle(.secondary)
-                }
+        let permissionPolicy = PermissionPolicy(providerMode: render.permissionMode)
+        let badge = AskCoverageBadge.resolve(
+            runtime: runtime,
+            permissionPolicy: permissionPolicy,
+            sandboxSettings: ExecutionSandboxSettings.current(permissionPolicy: permissionPolicy)
+        )
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: badge.symbolName)
+                .foregroundStyle(askCoverageTint(badge.tier))
+                .frame(width: 16)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Ask coverage: \(badge.label)")
+                    .font(Stanford.caption(12).weight(.semibold))
+                Text(badge.detail)
+                    .font(Stanford.caption(11))
+                    .foregroundStyle(.secondary)
             }
-            .padding(.vertical, 2)
         }
+        .padding(.vertical, 2)
     }
 
     private func factRow(_ title: String, value: String) -> some View {
@@ -793,10 +793,10 @@ struct AgentPolicySheet: View {
     }
 
     private func resetProviderSettingsToGeneratedDefaults() {
-        guard runtime == .claudeCode,
-              let permissionPolicy = PermissionPolicy(rawValue: render.permissionMode) else {
+        guard runtime == .claudeCode else {
             return
         }
+        let permissionPolicy = PermissionPolicy(providerMode: render.permissionMode)
         _ = ClaudeSettingsStore.ensureSubAgentPermissions(
             at: workspacePath,
             policy: permissionPolicy,

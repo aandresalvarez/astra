@@ -1,37 +1,8 @@
 import Foundation
 import SwiftData
 import ASTRACore
-
-enum TaskPlanEventTypes {
-    static let created = TaskEventTypes.Plan.created.rawValue
-    static let updated = TaskEventTypes.Plan.updated.rawValue
-    static let approved = TaskEventTypes.Plan.approved.rawValue
-    static let cancelled = TaskEventTypes.Plan.cancelled.rawValue
-    static let executionStarted = TaskEventTypes.Plan.executionStarted.rawValue
-    static let executionCompleted = TaskEventTypes.Plan.executionCompleted.rawValue
-    static let executionFailed = TaskEventTypes.Plan.executionFailed.rawValue
-    static let userMessage = TaskEventTypes.Plan.userMessage.rawValue
-    static let assistantMessage = TaskEventTypes.Plan.assistantMessage.rawValue
-
-    static let stepStarted = TaskEventTypes.Plan.stepStarted.rawValue
-    static let stepCompleted = TaskEventTypes.Plan.stepCompleted.rawValue
-    static let stepBlocked = TaskEventTypes.Plan.stepBlocked.rawValue
-    static let stepSkipped = TaskEventTypes.Plan.stepSkipped.rawValue
-
-    static let stepEvents: Set<String> = [
-        stepStarted,
-        stepCompleted,
-        stepBlocked,
-        stepSkipped
-    ]
-}
-
-typealias TaskPlanEventType = TaskPlanEventTypes
-
-enum TaskPlanConversationEventTypes {
-    static let userMessage = TaskPlanEventTypes.userMessage
-    static let assistantMessage = TaskPlanEventTypes.assistantMessage
-}
+import ASTRAModels
+import ASTRAPersistence
 
 enum TaskPlanFallbackBuilder {
     static func plan(from responseText: String, fallbackGoal: String) -> TaskPlanPayload {
@@ -39,7 +10,7 @@ enum TaskPlanFallbackBuilder {
     }
 }
 
-enum TaskPlanService {
+enum TaskPlanService: Sendable {
     static func stateMutationCode(for eventType: String) -> Int? {
         switch eventType {
         case TaskPlanEventTypes.created: 0

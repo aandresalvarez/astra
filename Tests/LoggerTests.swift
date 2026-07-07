@@ -1,5 +1,8 @@
 import Testing
 import Foundation
+import ASTRAPersistence
+import ASTRACore
+import ASTRAModels
 @testable import ASTRA
 
 @Suite("AppLogger Thread Safety", .serialized)
@@ -66,6 +69,20 @@ struct AppLoggerTests {
         #expect(sanitized.contains("event=update_safety_signature"))
         #expect(!sanitized.contains("OPENAI_API_KEY"))
         #expect(!sanitized.contains("sk-test-secret"))
+    }
+
+    @Test("Sanitizer reuses compiled regex patterns")
+    func sanitizerReusesCompiledRegexPatterns() {
+        LogSanitizer.resetRegexCacheForTesting()
+
+        _ = LogSanitizer.sanitize("Person person@example.invalid used EXAMPLE_API_TOKEN=demo")
+        let compiledAfterFirstSanitize = LogSanitizer.compiledRegexCountForTesting
+
+        #expect(compiledAfterFirstSanitize > 0)
+
+        _ = LogSanitizer.sanitize("Other other@example.invalid used OTHER_API_TOKEN=demo")
+
+        #expect(LogSanitizer.compiledRegexCountForTesting == compiledAfterFirstSanitize)
     }
 
     @Test("Legacy logging stores sanitized message")

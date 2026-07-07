@@ -1,4 +1,5 @@
 import Foundation
+import ASTRAModels
 
 enum PendingTaskDismissalReason: Equatable {
     case noUsableResult

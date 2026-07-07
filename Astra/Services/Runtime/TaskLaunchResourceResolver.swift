@@ -1,5 +1,7 @@
 import Foundation
 import ASTRACore
+import ASTRAModels
+import ASTRAPersistence
 
 enum TaskLaunchResourceResolver {
     typealias GitCredentialContextProvider = (String, AgentTask, String, String) -> GitCredentialSandboxContext
@@ -9,11 +11,12 @@ enum TaskLaunchResourceResolver {
         task: AgentTask,
         runID: UUID?,
         runtime: AgentRuntimeID,
-        phase: String,
+        phase: RunPhase,
         prompt: String,
         contextText: String,
         workspacePath: String,
         executionEnvironment: WorkspaceExecutionEnvironment? = nil,
+        capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot? = nil,
         homeDirectoryPath: String = FileManager.default.homeDirectoryForCurrentUser.path,
         fileManager: FileManager = .default,
         gcloudExecutablePathProvider: GCloudExecutablePathProvider = defaultGCloudExecutablePath,
@@ -27,6 +30,10 @@ enum TaskLaunchResourceResolver {
         var providerRequirements: [RuntimeProviderRequirement] = []
         var controlPlaneResources: [RuntimeControlPlaneResource] = []
         var diagnostics: [RuntimeResourceDiagnostic] = []
+        let capabilityScope = capabilityResolutionSnapshot?.providerLaunch ?? TaskCapabilityResolutionSnapshot.capture(
+            for: task,
+            providerLaunchContextText: contextText
+        ).providerLaunch
 
         appendWorkspacePathGrants(
             task: task,
@@ -41,7 +48,16 @@ enum TaskLaunchResourceResolver {
             diagnostics: &diagnostics
         )
 
-        let gitCredentialContext = gitCredentialContextProvider(prompt, task, contextText, workspacePath)
+        let routesGitHubMetadataThroughHostControl = routesGitHubMetadataThroughHostControl(
+            task: task,
+            prompt: prompt,
+            contextText: contextText,
+            environment: environment,
+            capabilityScope: capabilityScope
+        )
+        let gitCredentialContext = routesGitHubMetadataThroughHostControl
+            ? .empty
+            : gitCredentialContextProvider(prompt, task, contextText, workspacePath)
         let gitResource = gitCredentialContext.isEmpty ? nil : RuntimeGitCredentialResource(
             readablePaths: uniquePaths(gitCredentialContext.readablePaths),
             writablePaths: uniquePaths(gitCredentialContext.writablePaths),
@@ -81,6 +97,8 @@ enum TaskLaunchResourceResolver {
         appendCapabilityGrants(
             task: task,
             contextText: contextText,
+            capabilityScope: capabilityScope,
+            routesGitHubMetadataThroughHostControl: routesGitHubMetadataThroughHostControl,
             executionEnvironment: environment,
             homeDirectoryPath: homeDirectoryPath,
             fileManager: fileManager,
@@ -112,6 +130,27 @@ enum TaskLaunchResourceResolver {
             controlPlaneResources: uniqueControlPlaneResources(controlPlaneResources),
             diagnostics: diagnostics,
             gitCredential: gitResource
+        )
+    }
+
+    private static func routesGitHubMetadataThroughHostControl(
+        task: AgentTask,
+        prompt: String,
+        contextText: String,
+        environment: WorkspaceExecutionEnvironment,
+        capabilityScope: TaskCapabilityPromptScope
+    ) -> Bool {
+        let hostControlGitHubAvailable = HostControlPlaneMCPProjection.enabledToolNames(
+            task: task,
+            environment: environment,
+            contextText: contextText,
+            capabilityScope: capabilityScope
+        ).contains("github")
+        return GitOperationIntentDetector.routesGitHubMetadataThroughHostControl(
+            prompt: prompt,
+            task: task,
+            contextText: contextText,
+            hostControlGitHubAvailable: hostControlGitHubAvailable
         )
     }
 
@@ -475,6 +514,8 @@ enum TaskLaunchResourceResolver {
     private static func appendCapabilityGrants(
         task: AgentTask,
         contextText: String,
+        capabilityScope: TaskCapabilityPromptScope,
+        routesGitHubMetadataThroughHostControl: Bool,
         executionEnvironment: WorkspaceExecutionEnvironment,
         homeDirectoryPath: String,
         fileManager: FileManager,
@@ -486,7 +527,8 @@ enum TaskLaunchResourceResolver {
         controlPlaneResources: inout [RuntimeControlPlaneResource],
         diagnostics: inout [RuntimeResourceDiagnostic]
     ) {
-        if TaskCapabilityResolver.shouldExposeBrowserBridge(for: task, contextText: contextText) {
+        if capabilityScope.exposesBrowserBridge ||
+            TaskCapabilityResolver.shouldExposeBrowserBridge(for: task, contextText: contextText) {
             providerRequirements.append(RuntimeProviderRequirement(
                 capability: "browser_bridge",
                 source: .browser,
@@ -504,8 +546,25 @@ enum TaskLaunchResourceResolver {
             ))
         }
 
-        let scope = TaskCapabilityResolver(task: task).promptScope(contextText: contextText)
-        let hasGCloudConnector = scope.connectors.contains { connector in
+        if routesGitHubMetadataThroughHostControl {
+            providerRequirements.append(RuntimeProviderRequirement(
+                capability: "github",
+                source: .controlPlane,
+                reason: "GitHub metadata/API intent is routed through ASTRA's host control plane.",
+                required: true
+            ))
+            controlPlaneResources.append(RuntimeControlPlaneResource(
+                capability: "github",
+                source: .controlPlane,
+                placement: "host_capability",
+                readiness: .configured,
+                reason: "GitHub metadata/API work uses ASTRA's host control-plane GitHub route instead of provider-native Git or gh credentials.",
+                failureText: "GitHub metadata/API work was requested, but no GitHub host-control route was available to the provider.",
+                repairAction: "Use a runtime that supports ASTRA host-control MCP tools, such as Codex CLI, Claude Code, or a Copilot CLI build with MCP config support."
+            ))
+        }
+
+        let hasGCloudConnector = capabilityScope.connectors.contains { connector in
             let normalized = connector.serviceType
                 .trimmingCharacters(in: .whitespacesAndNewlines)
                 .lowercased()
@@ -533,7 +592,7 @@ enum TaskLaunchResourceResolver {
             )
         }
 
-        for connector in scope.connectors {
+        for connector in capabilityScope.connectors {
             appendConnectorControlPlaneResource(
                 connector,
                 controlPlaneResources: &controlPlaneResources
@@ -575,8 +634,8 @@ enum TaskLaunchResourceResolver {
             }
         }
         appendSkillControlPlaneResources(
-            skills: scope.behaviorSkills,
-            localTools: scope.localTools,
+            skills: capabilityScope.behaviorSkills,
+            localTools: capabilityScope.localTools,
             controlPlaneResources: &controlPlaneResources
         )
     }

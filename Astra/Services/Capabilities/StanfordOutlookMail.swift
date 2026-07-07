@@ -1,4 +1,7 @@
 import Foundation
+import ASTRACore
+import ASTRAModels
+import ASTRAPersistence
 
 enum StanfordOutlookMail {
     static let capabilityID = "stanford-outlook-mail"
@@ -53,34 +56,10 @@ enum StanfordOutlookMail {
 }
 
 extension Connector {
-    var isStanfordOutlookMail: Bool {
-        serviceType == StanfordOutlookMail.serviceType
-    }
-
-    func configValue(_ key: String) -> String {
-        guard let index = configKeys.firstIndex(of: key), index < configValues.count else {
-            return ""
-        }
-        return configValues[index]
-    }
-
-    func setConfigValue(_ key: String, value: String) {
-        let normalizedKey = key.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
-        guard !normalizedKey.isEmpty else { return }
-        if let index = configKeys.firstIndex(of: normalizedKey) {
-            if index < configValues.count {
-                configValues[index] = value
-            }
-        } else {
-            configKeys.append(normalizedKey)
-            configValues.append(value)
-        }
-        updatedAt = Date()
-    }
-
-    var outlookEmail: String {
-        configValue(StanfordOutlookMail.emailKey)
-    }
+    // `isStanfordOutlookMail`, `configValue(_:)`, `setConfigValue(_:value:)`,
+    // and `outlookEmail` moved to `Astra/Models/Connector.swift` as part of
+    // Track A2.5 — see that file's "Stanford Outlook Mail (pure members)"
+    // section.
 
     var outlookTenantDomain: String {
         StanfordOutlookMail.normalizeTenant(configuredOutlookTenantDomain)
@@ -589,4 +568,49 @@ private func urlFormEncode(_ value: String) -> String {
     var allowed = CharacterSet.urlQueryAllowed
     allowed.remove(charactersIn: "&=+")
     return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
+}
+
+/// Registered as the `OutlookMailConnectionSeam`
+/// (`ASTRACore/OutlookMailConnectionSeam.swift`) backing implementation.
+///
+/// Rather than re-deriving `StanfordOutlookMailAuthService`/
+/// `StanfordOutlookMailGraphService`'s nested OAuth-refresh-then-Graph-call
+/// flow as primitives, this reconstructs a scratch, never-persisted
+/// `Connector` from `ConnectorOutlookFacts` and runs the existing flow on it
+/// unchanged. This is safe: Keychain entries are addressed by an entity-ID
+/// string computed from `id`/`serviceType`/`baseURL`/origin fields (see
+/// `KeychainSecretStore.connectorEntityIDs(for:)`), not by Swift object
+/// identity, so the scratch connector resolves to the exact same
+/// Keychain-stored tokens and `StanfordOutlookMailRegistry` entry as the real
+/// one — see `ASTRACore/OutlookMailConnectionSeam.swift`'s header for the
+/// full reasoning.
+enum OutlookMailConnectionAdapter: OutlookMailConnectionTesting {
+    static func testConnection(facts: ConnectorOutlookFacts) async throws -> OutlookConnectionResult {
+        let scratch = Connector(name: facts.name, serviceType: facts.serviceType)
+        scratch.id = facts.id
+        scratch.configKeys = facts.configKeys
+        scratch.configValues = facts.configValues
+
+        // Diff against configValue(_:) (first-match), not a collapsed dict,
+        // so a duplicate config row that the flow never touches doesn't
+        // register as "changed" just because its first/last occurrences
+        // differ (see this seam's other duplicate-row fix, same file).
+        let keysBefore = Set(scratch.configKeys)
+        let before = Dictionary(uniqueKeysWithValues: keysBefore.map { ($0, scratch.configValue($0)) })
+
+        let me = try await StanfordOutlookMailGraphService().testConnection(connector: scratch)
+
+        var changed: [String: String] = [:]
+        for key in Set(scratch.configKeys) {
+            let after = scratch.configValue(key)
+            if before[key] != after {
+                changed[key] = after
+            }
+        }
+        return OutlookConnectionResult(mail: me.mail, userPrincipalName: me.userPrincipalName, changedConfigEntries: changed)
+    }
+
+    static func removeFromRegistry(connectorID: UUID) {
+        StanfordOutlookMailRegistry.remove(connectorID: connectorID)
+    }
 }

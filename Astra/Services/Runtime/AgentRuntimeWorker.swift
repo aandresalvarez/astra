@@ -1,13 +1,16 @@
 import Foundation
 import SwiftData
 import ASTRACore
+import ASTRAModels
+import ASTRAPersistence
 
 @Observable
 final class AgentRuntimeWorker {
     private(set) var isRunning = false
     private var cancellationRequested = false
     private var runtimeConfiguration = AgentRuntimeConfiguration()
-    private let processRunner: AgentRuntimeProcessRunner
+    private let processRunner: any AgentRuntimeProcessRunning
+    private let providerSettingsSnapshotProvider: () -> ProviderSettingsSnapshot
     var budgetEnforcementModeOverride: BudgetEnforcementMode?
 
     private var currentBudgetEnforcementMode: BudgetEnforcementMode {
@@ -56,8 +59,14 @@ final class AgentRuntimeWorker {
     }
 
     var defaultAgentPolicyLevelRaw: String = AgentPolicyLevel.review.rawValue
-    @MainActor init(processRunner: AgentRuntimeProcessRunner = AgentRuntimeProcessRunner()) {
+    @MainActor init(
+        processRunner: any AgentRuntimeProcessRunning = AgentRuntimeProcessRunner(),
+        providerSettingsSnapshotProvider: @escaping () -> ProviderSettingsSnapshot = {
+            RuntimeSettingsSnapshotStore.providerSnapshot()
+        }
+    ) {
         self.processRunner = processRunner
+        self.providerSettingsSnapshotProvider = providerSettingsSnapshotProvider
         AppLogger.audit(.workerStarted, category: "Worker", fields: [
             "phase": "initialized",
             "default_runtime": defaultRuntimeID.rawValue,
@@ -111,8 +120,7 @@ final class AgentRuntimeWorker {
                 return
             }
             TaskPlanService.recordExecutionCompleted(planID: currentPlan.planID, task: task, modelContext: modelContext)
-            task.status = .completed
-            task.updatedAt = Date()
+            TaskStateMachine.completeFromRuntime(task, modelContext: modelContext)
             WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
             return
         }
@@ -130,6 +138,13 @@ final class AgentRuntimeWorker {
                 modelContext: modelContext,
                 reason: "artifact_preflight_failed"
             )
+            // The task was admitted to `.running` before this preflight (see
+            // TaskQueue approved-plan admission). Without a terminal transition
+            // here the queue removes the worker and the task is stranded Running
+            // forever with no way to retry from the UI. Fail it so it becomes
+            // actionable again, mirroring the completion path above.
+            TaskStateMachine.failFromRuntime(task, modelContext: modelContext)
+            WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
             return
         }
 
@@ -379,10 +394,7 @@ final class AgentRuntimeWorker {
             run: run
         )
         modelContext.insert(notice)
-        task.status = .pendingUser
-        task.completedAt = nil
-        task.updatedAt = Date()
-        task.markUnreadForCurrentStatus(at: task.updatedAt)
+        TaskStateMachine.pauseForValidationReview(task, modelContext: modelContext)
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
     }
 
@@ -398,7 +410,11 @@ final class AgentRuntimeWorker {
         let selectedRuntime = runtimeConfiguration.selectedRuntime(for: task)
         alignTaskModelWithSelectedRuntime(task, selectedRuntime: selectedRuntime, phase: "resume")
         clearMismatchedProviderSessionIfNeeded(for: task, selectedRuntime: selectedRuntime, phase: "resume")
-        let prompt = AgentPromptBuilder.buildFreshFollowUpPrompt(message: message, task: task)
+        let prompt = AgentPromptBuilder.buildFreshFollowUpPrompt(
+            message: message,
+            task: task,
+            executionPolicy: executionPolicy
+        )
         await executeRuntimeSession(
             task: task,
             modelContext: modelContext,
@@ -424,20 +440,21 @@ final class AgentRuntimeWorker {
         startEventType: String = "task.started",
         startEventPayload: String? = nil,
         sessionMessage: String? = nil,
-        auditPhase: String = "run",
+        auditPhase: RunPhase = .run,
         recordingMode: AgentRuntimeRecordingMode = .initial,
         executionPolicy: AgentRuntimeExecutionPolicy = .default
     ) async {
-        let runtimeAdapter = AgentRuntimeAdapterRegistry.adapter(for: selectedRuntime)
-        let launchSettings = runtimeAdapter.launchSettings(configuration: runtimeConfiguration)
+        var selectedRuntime = selectedRuntime
+        var runtimeAdapter = AgentRuntimeAdapterRegistry.adapter(for: selectedRuntime)
+        var launchSettings = runtimeAdapter.launchSettings(configuration: runtimeConfiguration)
         AppLogger.audit(.taskStarted, category: "Worker", taskID: task.id, fields: [
             "status": task.status.rawValue,
             "model": task.model,
             "runtime": selectedRuntime.rawValue,
-            "phase": auditPhase,
+            "phase": auditPhase.rawValue,
             "workspace_id": task.workspace?.id.uuidString ?? "none"
         ])
-        if auditPhase == "resume" {
+        if auditPhase == .resume {
             AppLogger.audit(.taskResumed, category: "Worker", taskID: task.id, fields: [
                 "mode": task.sessionId == nil ? "fresh_follow_up" : "session_follow_up",
                 "runtime": selectedRuntime.rawValue,
@@ -459,6 +476,13 @@ final class AgentRuntimeWorker {
             ], level: .warning)
             return
         }
+        guard AgentRuntimeStartAdmission.confirmRuntimeSessionStarted(
+            task: task,
+            modelContext: modelContext,
+            auditPhase: auditPhase
+        ) else {
+            return
+        }
         guard AgentRuntimeLaunchPreflight.prepareTaskFolderForLaunch(
             task,
             modelContext: modelContext,
@@ -472,9 +496,33 @@ final class AgentRuntimeWorker {
         if task.runtimeID == nil {
             task.runtimeID = selectedRuntime.rawValue
         }
-        task.status = .running
-        task.updatedAt = Date()
-        task.markRead()
+
+        let runtimeResolution = AgentRuntimeLaunchRuntimeResolver.resolve(
+            task: task,
+            requestedRuntime: selectedRuntime,
+            runtimeConfiguration: runtimeConfiguration,
+            promptOverride: promptOverride,
+            startEventPayload: startEventPayload,
+            sessionMessage: sessionMessage,
+            phase: auditPhase,
+            executionPolicy: executionPolicy
+        )
+        let appliedRuntime = AgentRuntimeLaunchRuntimeResolver.apply(
+            runtimeResolution,
+            task: task,
+            phase: auditPhase,
+            alignModel: { runtime in
+                alignTaskModelWithSelectedRuntime(task, selectedRuntime: runtime, phase: auditPhase)
+            },
+            clearMismatchedSession: { runtime in
+                clearMismatchedProviderSessionIfNeeded(for: task, selectedRuntime: runtime, phase: auditPhase)
+            }
+        )
+        if appliedRuntime.reroutedFrom != nil {
+            selectedRuntime = appliedRuntime.runtime
+            runtimeAdapter = AgentRuntimeAdapterRegistry.adapter(for: selectedRuntime)
+            launchSettings = runtimeAdapter.launchSettings(configuration: runtimeConfiguration)
+        }
 
         let run = TaskRun(task: task)
         run.runtimeID = selectedRuntime.rawValue
@@ -483,6 +531,12 @@ final class AgentRuntimeWorker {
         let startPayload = startEventPayload ?? runtimeAdapter.defaultStartEventPayload(task: task)
         let startEvent = TaskEvent(task: task, type: startEventType, payload: startPayload, run: run)
         modelContext.insert(startEvent)
+        AgentRuntimeLaunchRuntimeResolver.insertRerouteEventIfNeeded(
+            appliedRuntime,
+            task: task,
+            run: run,
+            modelContext: modelContext
+        )
 
         let providerLaunchContextText = runtimeAdapter.connectorPreflightContextText(
             task: task,
@@ -491,6 +545,24 @@ final class AgentRuntimeWorker {
             sessionMessage: sessionMessage,
             phase: auditPhase
         )
+        let capabilityResolutionSnapshot = TaskCapabilityResolutionSnapshot.capture(
+            for: task,
+            providerLaunchContextText: providerLaunchContextText,
+            additionalCredentialGrants: executionPolicy.permissionGrantsOverride ?? []
+        )
+        if let block = appliedRuntime.launchBlock {
+            AgentRuntimeCapabilityBlockRecorder.apply(
+                block,
+                runtime: selectedRuntime,
+                task: task,
+                run: run,
+                modelContext: modelContext,
+                phase: auditPhase,
+                selectedRuntimeEvidence: appliedRuntime.selectedRuntimeEvidence
+            )
+            isRunning = false
+            return
+        }
 
         guard FileManager.default.isExecutableFile(atPath: launchSettings.executablePath) else {
             AppLogger.audit(.taskFailed, category: "Worker", taskID: task.id, fields: [
@@ -502,9 +574,7 @@ final class AgentRuntimeWorker {
             if let stopReason = runtimeAdapter.missingExecutableStopReason() {
                 run.typedStopReason = TaskRunStopReason.custom(stopReason)
             }
-            task.status = .failed
-            task.updatedAt = Date()
-            task.markUnreadForCurrentStatus(at: task.updatedAt)
+            TaskStateMachine.failFromRuntime(task, modelContext: modelContext, at: run.completedAt ?? Date())
             let event = TaskEvent(task: task, eventType: TaskEventTypes.System.error,
                 payload: runtimeAdapter.missingExecutableMessage(executablePath: launchSettings.executablePath), run: run)
             modelContext.insert(event)
@@ -528,7 +598,13 @@ final class AgentRuntimeWorker {
             run: run,
             modelContext: modelContext,
             phase: auditPhase,
-            contextText: providerLaunchContextText
+            contextText: providerLaunchContextText,
+            executionPolicy: executionPolicy,
+            capabilityResolutionSnapshot: capabilityResolutionSnapshot,
+            runtimeConfiguration: runtimeConfiguration,
+            preflightCache: PreflightCache(checker: environmentHealthChecker),
+            mcpDetectExecutable: mcpServerExecutableDetector,
+            mcpIsExecutableFile: mcpServerExecutableIsResolvable
         ) else {
             isRunning = false
             return
@@ -554,9 +630,7 @@ final class AgentRuntimeWorker {
             run.status = .failed
             run.completedAt = Date()
             run.typedStopReason = .workspaceNotFound
-            task.status = .failed
-            task.updatedAt = Date()
-            task.markUnreadForCurrentStatus(at: task.updatedAt)
+            TaskStateMachine.failFromRuntime(task, modelContext: modelContext, at: run.completedAt ?? Date())
             let event = TaskEvent(task: task, eventType: TaskEventTypes.System.error,
                 payload: "Workspace directory not found: \(codeDir)", run: run)
             modelContext.insert(event)
@@ -604,9 +678,7 @@ final class AgentRuntimeWorker {
                 run.status = .failed
                 run.completedAt = Date()
                 run.typedStopReason = .isolationFailed
-                task.status = .failed
-                task.updatedAt = Date()
-                task.markUnreadForCurrentStatus(at: task.updatedAt)
+                TaskStateMachine.failFromRuntime(task, modelContext: modelContext, at: run.completedAt ?? Date())
                 let event = TaskEvent(task: task, eventType: TaskEventTypes.System.error,
                     payload: "Workspace isolation failed: \(error.localizedDescription)", run: run)
                 modelContext.insert(event)
@@ -626,7 +698,7 @@ final class AgentRuntimeWorker {
         task.executionEnvironmentSnapshotJSON = executionEnvironmentJSON
         run.executionEnvironmentSnapshotJSON = executionEnvironmentJSON
 
-        let prompt = promptOverride ?? buildPrompt(for: task)
+        let prompt = promptOverride ?? buildPrompt(for: task, executionPolicy: executionPolicy)
         let launchResourcePlan = TaskLaunchResourceResolver.resolve(
             task: task,
             runID: run.id,
@@ -635,7 +707,8 @@ final class AgentRuntimeWorker {
             prompt: prompt,
             contextText: providerLaunchContextText,
             workspacePath: executionPath,
-            executionEnvironment: executionEnvironment
+            executionEnvironment: executionEnvironment,
+            capabilityResolutionSnapshot: capabilityResolutionSnapshot
         )
         TaskLaunchResourceManifestStore.persist(launchResourcePlan, task: task)
         logContextPromptDiagnostics(for: task, prompt: prompt, phase: auditPhase)
@@ -656,17 +729,24 @@ final class AgentRuntimeWorker {
             for: task,
             runtime: selectedRuntime,
             phase: auditPhase,
-            contextText: providerLaunchContextText
+            contextText: providerLaunchContextText,
+            capabilityResolutionSnapshot: capabilityResolutionSnapshot
         )
         await AgentRuntimeCapabilityLaunchAudit.logGitHubCLIPreflightIfNeeded(
             for: task,
             runtime: selectedRuntime,
             phase: auditPhase,
-            contextText: providerLaunchContextText
+            contextText: providerLaunchContextText,
+            capabilityResolutionSnapshot: capabilityResolutionSnapshot
         )
         let policyRenderer = AgentRuntimeAdapterRegistry.policyRenderer(for: selectedRuntime)
         let providerCapabilities = policyRenderer.policyCapabilities(executablePath: launchSettings.executablePath)
-        let runPermissionPolicy = effectivePermissionPolicy(for: task, executionPolicy: executionPolicy)
+        let runtimeCapabilityProfile = AgentRuntimeCapabilityProfileService.profile(for: selectedRuntime, executablePath: launchSettings.executablePath)
+        let runPermissionPolicy = effectivePermissionPolicy(
+            for: task,
+            selectedRuntime: selectedRuntime,
+            executionPolicy: executionPolicy
+        )
         let manifest = AgentPolicyManifestService.recordPreflightManifest(
             task: task,
             run: run,
@@ -678,7 +758,10 @@ final class AgentRuntimeWorker {
             executionPolicy: executionPolicy,
             defaultPolicyLevelRaw: defaultAgentPolicyLevelRaw,
             providerCapabilities: providerCapabilities,
+            runtimeCapabilityProfile: runtimeCapabilityProfile,
             contextText: providerLaunchContextText,
+            capabilityResolutionSnapshot: capabilityResolutionSnapshot,
+            launchResourcePlan: launchResourcePlan,
             modelContext: modelContext
         )
         guard shouldStartProvider(with: manifest, task: task, run: run, modelContext: modelContext, phase: auditPhase) else {
@@ -687,10 +770,11 @@ final class AgentRuntimeWorker {
             }
             return
         }
-        let launchSignature = Self.providerLaunchSignature(
+        let launchSignature = ProviderLaunchSignatureService.make(
             for: task,
             manifest: manifest,
-            contextText: providerLaunchContextText
+            contextText: providerLaunchContextText,
+            capabilityResolutionSnapshot: capabilityResolutionSnapshot
         )
         let nativeContinuationDecision = Self.nativeContinuationSessionID(
             for: task,
@@ -698,16 +782,16 @@ final class AgentRuntimeWorker {
             runtimeAdapter: runtimeAdapter,
             phase: auditPhase,
             currentLaunchSignature: launchSignature,
-            grantNeutralizingStrings: Self.signatureGrantStrings(for: manifest)
+            grantNeutralizingStrings: ProviderLaunchSignatureService.grantStrings(for: manifest)
         )
-        Self.recordProviderLaunchSignature(
+        ProviderLaunchSignatureService.record(
             launchSignature,
             task: task,
             run: run,
             modelContext: modelContext
         )
         let nativeContinuationSessionID = nativeContinuationDecision.sessionID
-        if auditPhase == "resume" {
+        if auditPhase == .resume {
             AppLogger.audit(.taskResumed, category: "Worker", taskID: task.id, fields: [
                 "mode": task.sessionId == nil ? "fresh_follow_up" : "session_follow_up",
                 "runtime": selectedRuntime.rawValue,
@@ -731,7 +815,7 @@ final class AgentRuntimeWorker {
                 workspacePath: executionPath
             )
         }
-        let capabilityScope = TaskCapabilityResolver(task: task).promptScope(contextText: providerLaunchContextText)
+        let capabilityScope = capabilityResolutionSnapshot.providerLaunch
         if !capabilityScope.behaviorSkills.isEmpty {
             let skillNames = capabilityScope.behaviorSkills.map(\.name).joined(separator: ", ")
             let skillEvent = TaskEvent(task: task, eventType: TaskEventTypes.System.skillActive,
@@ -768,6 +852,7 @@ final class AgentRuntimeWorker {
             nativeContinuationSessionID: nativeContinuationSessionID,
             runID: run.id,
             launchResourcePlan: launchResourcePlan,
+            capabilityResolutionSnapshot: capabilityResolutionSnapshot,
             liveApprovalsEnabled: liveApprovalsEnabled,
             noSemanticProgressTimeoutSeconds: semanticProgressTimeout,
             onInteractiveAsk: Self.interactiveAskHandler(
@@ -787,10 +872,7 @@ final class AgentRuntimeWorker {
                     let emittedEvents = parsedBatch.events.flatMap {
                         runtimeAdapter.processWorkerStreamEvent($0, pipeline: eventPipeline)
                     }
-                    let emittedBatch = AgentRuntimeStreamEventBatch(
-                        representation: parsedBatch.representation,
-                        events: emittedEvents
-                    )
+                    let emittedBatch = AgentRuntimeStreamEventBatch(events: emittedEvents)
                     emittedBatch.recordEmitted(to: streamTelemetry)
                     emittedBatch.recordEmitted(to: streamDebugCapture)
                     for filtered in emittedEvents {
@@ -886,7 +968,7 @@ final class AgentRuntimeWorker {
                 runtime: selectedRuntime,
                 task: task,
                 run: run,
-                phase: auditPhase,
+                phase: auditPhase.rawValue,
                 exitCode: result.exitCode
             )
         }
@@ -907,25 +989,38 @@ final class AgentRuntimeWorker {
                 .runtimeFailureDiagnostic,
                 category: "Worker",
                 taskID: task.id,
-                fields: failureDiagnostic.auditFields(phase: auditPhase, stream: streamSnapshot),
+                fields: failureDiagnostic.auditFields(phase: auditPhase.rawValue, stream: streamSnapshot),
                 level: .error
             )
         }
         AppLogger.audit(.workerExited, category: "Worker", taskID: task.id, fields: [
             "exit_code": String(result.exitCode),
             "runtime": selectedRuntime.rawValue,
-            "phase": auditPhase,
+            "phase": auditPhase.rawValue,
             "terminated_after_terminal_progress": String(result.terminatedAfterTerminalProgress)
         ], level: processSucceeded ? .info : .warning)
 
         if cancellationRequested || task.status == .cancelled {
             run.status = .cancelled
             run.typedStopReason = .cancelled
-            task.status = .cancelled
+            TaskStateMachine.cancelFromRuntime(task, modelContext: modelContext)
+        } else if result.policyApprovalRequired {
+            run.status = .failed
+            run.typedStopReason = .permissionApprovalRequired
+            TaskStateMachine.pauseForRuntimePermission(task, modelContext: modelContext)
+            let payload = result.policyApprovalMessage ?? "The provider needs a runtime permission before it can continue."
+            TaskRuntimePermissionOpenRequestStore.recordOpenRequest(payload: payload, task: task)
+            let event = TaskEvent(
+                task: task,
+                eventType: TaskEventTypes.Tool.permissionApprovalRequested,
+                payload: payload,
+                run: run
+            )
+            modelContext.insert(event)
         } else if result.timedOut {
             run.status = .timeout
             run.typedStopReason = .timeout
-            task.status = .failed
+            TaskStateMachine.failFromRuntime(task, modelContext: modelContext)
             let event = TaskEvent(task: task, eventType: TaskEventTypes.System.error,
                                   payload: runtimeAdapter.timeoutPayload(
                                     phase: auditPhase,
@@ -935,27 +1030,16 @@ final class AgentRuntimeWorker {
         } else if result.maxTurnsExceeded {
             run.status = .budgetExceeded
             run.typedStopReason = .maxTurnsReached
-            task.status = .budgetExceeded
+            TaskStateMachine.exceedBudgetFromRuntime(task, modelContext: modelContext)
             let event = TaskEvent(task: task, eventType: TaskEventTypes.Budget.exceeded,
                                   payload: runtimeAdapter.maxTurnsPayload(phase: auditPhase, task: task), run: run)
             modelContext.insert(event)
         } else if applyRuntimeStopIfNeeded(result, task: task, run: run, modelContext: modelContext, phase: auditPhase) {
         } else if applyRepetitionStopIfNeeded(result, task: task, run: run, modelContext: modelContext, phase: auditPhase) {
-        } else if result.policyApprovalRequired {
-            run.status = .failed
-            run.typedStopReason = .permissionApprovalRequired
-            task.status = .pendingUser
-            let event = TaskEvent(
-                task: task,
-                eventType: TaskEventTypes.Tool.permissionApprovalRequested,
-                payload: result.policyApprovalMessage ?? "The provider needs a runtime permission before it can continue.",
-                run: run
-            )
-            modelContext.insert(event)
         } else if result.policyViolation {
             run.status = .failed
             run.typedStopReason = .policyViolation
-            task.status = .pendingUser
+            TaskStateMachine.pauseForRuntimeReview(task, modelContext: modelContext)
             let event = TaskEvent(
                 task: task,
                 eventType: TaskEventTypes.System.error,
@@ -970,7 +1054,7 @@ final class AgentRuntimeWorker {
         ) {
             run.status = .budgetExceeded
             run.typedStopReason = .maxBudgetReached
-            task.status = .budgetExceeded
+            TaskStateMachine.exceedBudgetFromRuntime(task, modelContext: modelContext)
             let reason = "Token budget exceeded"
             let outcome = result.budgetExceeded ? "Process killed." : "Provider reported usage above budget."
             let event = TaskEvent(task: task, eventType: TaskEventTypes.Budget.exceeded,
@@ -1025,15 +1109,15 @@ final class AgentRuntimeWorker {
                         let testResult = await ValidationService.runTests(task: task)
                         switch testResult {
                         case .passed(let details):
-                            task.status = .completed
+                            TaskStateMachine.completeFromRuntime(task, modelContext: modelContext)
                             let event = TaskEvent(task: task, eventType: TaskEventTypes.Task.completed, payload: "\(ValidationOutcomeMarker.testsPassed.rawValue). \(String(details.prefix(300)))", run: run)
                             modelContext.insert(event)
                         case .failed(let details):
-                            task.status = .failed
+                            TaskStateMachine.failFromValidation(task, modelContext: modelContext)
                             let event = TaskEvent(task: task, eventType: TaskEventTypes.System.error, payload: "\(ValidationOutcomeMarker.testsFailed.rawValue):\n\(String(details.prefix(500)))", run: run)
                             modelContext.insert(event)
                         case .error(let msg):
-                            task.status = .pendingUser
+                            TaskStateMachine.pauseForValidationReview(task, modelContext: modelContext)
                             let event = TaskEvent(task: task, eventType: TaskEventTypes.System.error, payload: "\(ValidationOutcomeMarker.validationError.rawValue): \(msg). Needs manual review.", run: run)
                             modelContext.insert(event)
                         }
@@ -1054,15 +1138,15 @@ final class AgentRuntimeWorker {
                         )
                         switch aiResult {
                         case .passed(let details):
-                            task.status = .completed
+                            TaskStateMachine.completeFromRuntime(task, modelContext: modelContext)
                             let event = TaskEvent(task: task, eventType: TaskEventTypes.Task.completed, payload: "\(ValidationOutcomeMarker.aiCheckPassed.rawValue). \(String(details.prefix(300)))", run: run)
                             modelContext.insert(event)
                         case .failed(let details):
-                            task.status = .pendingUser
+                            TaskStateMachine.pauseForValidationReview(task, modelContext: modelContext)
                             let event = TaskEvent(task: task, eventType: TaskEventTypes.System.error, payload: "\(ValidationOutcomeMarker.aiCheckFlagged.rawValue) issues:\n\(String(details.prefix(500)))", run: run)
                             modelContext.insert(event)
                         case .error(let msg):
-                            task.status = .pendingUser
+                            TaskStateMachine.pauseForValidationReview(task, modelContext: modelContext)
                             let event = TaskEvent(task: task, eventType: TaskEventTypes.System.error, payload: "\(ValidationOutcomeMarker.aiCheckError.rawValue): \(msg). Needs manual review.", run: run)
                             modelContext.insert(event)
                         }
@@ -1090,11 +1174,12 @@ final class AgentRuntimeWorker {
         ) {
             run.status = .failed
             run.typedStopReason = .permissionApprovalRequired
-            task.status = .pendingUser
+            TaskStateMachine.pauseForRuntimePermission(task, modelContext: modelContext)
             let payload = permissionApprovalRequestPayload(
                 diagnostic: failureDiagnostic,
                 result: result
             )
+            TaskRuntimePermissionOpenRequestStore.recordOpenRequest(payload: payload, task: task)
             let event = TaskEvent(task: task, eventType: TaskEventTypes.Tool.permissionApprovalRequested, payload: payload, run: run)
             modelContext.insert(event)
         } else {
@@ -1121,7 +1206,7 @@ final class AgentRuntimeWorker {
                 let event = TaskEvent(task: task, eventType: TaskEventTypes.System.error, payload: payload, run: run)
                 modelContext.insert(event)
             }
-            task.status = .failed
+            TaskStateMachine.failFromRuntime(task, modelContext: modelContext)
         }
 
         AgentRuntimeRunPersistence.recordSessionTurn(
@@ -1136,7 +1221,7 @@ final class AgentRuntimeWorker {
             )
         )
 
-        if auditPhase == "run",
+        if auditPhase == .run,
            task.status == .completed,
            runtimeAdapter.performsPostRunFollowUps(phase: auditPhase),
            !task.chainedGoal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -1171,7 +1256,7 @@ final class AgentRuntimeWorker {
     // MARK: - Private
 
     private func runtimeReadinessConfiguration(for runtime: AgentRuntimeID) -> RuntimeReadinessConfiguration {
-        let providerSnapshot = RuntimeSettingsSnapshotStore.providerSnapshot()
+        let providerSnapshot = providerSettingsSnapshotProvider()
         return RuntimeReadinessConfiguration(
             runtime: runtime,
             providerSettings: runtimeConfiguration.configuredProviderSettings,
@@ -1191,7 +1276,7 @@ final class AgentRuntimeWorker {
         run: TaskRun,
         modelContext: ModelContext,
         result: AgentProcessResult,
-        phase: String
+        phase: RunPhase
     ) -> Bool {
         let visibleOutput = !run.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         let visibleFileResult = TaskDeliverableExpectation.hasRunScopedArtifact(for: task, run: run)
@@ -1201,8 +1286,7 @@ final class AgentRuntimeWorker {
 
         run.status = .failed
         run.typedStopReason = .noUsableResult
-        task.status = .pendingUser
-        task.completedAt = nil
+        TaskStateMachine.pauseForRuntimeReview(task, modelContext: modelContext)
 
         let providerName = runtimeAdapter.descriptor.displayName
         let requiredArtifact = TaskDeliverableExpectation.requiresDeliverableArtifact(task)
@@ -1224,7 +1308,7 @@ final class AgentRuntimeWorker {
         modelContext.insert(event)
         var auditFields = [
             "runtime": runtimeAdapter.id.rawValue,
-            "phase": phase,
+            "phase": phase.rawValue,
             "exit_code": String(result.exitCode),
             "run_output_chars": String(run.output.count),
             "file_changes": String(run.fileChanges.count),
@@ -1331,7 +1415,7 @@ final class AgentRuntimeWorker {
             return false
         }
 
-        task.status = .completed
+        TaskStateMachine.completeFromRuntime(task, modelContext: modelContext)
         let event = TaskEvent(task: task, eventType: TaskEventTypes.Task.completed, payload: successPayload, run: run)
         modelContext.insert(event)
         return true
@@ -1346,8 +1430,7 @@ final class AgentRuntimeWorker {
     ) {
         run.status = .failed
         run.typedStopReason = decision.typedStopReason ?? TaskRunStopReason.custom(decision.gate.rawValue)
-        task.status = .pendingUser
-        task.completedAt = nil
+        TaskStateMachine.pauseForValidationReview(task, modelContext: modelContext)
         modelContext.insert(TaskEvent(
             task: task,
             eventType: TaskEventTypes.System.error,
@@ -1395,7 +1478,7 @@ final class AgentRuntimeWorker {
     }
 
     @MainActor
-    private func logContextPromptDiagnostics(for task: AgentTask, prompt: String, phase: String) {
+    private func logContextPromptDiagnostics(for task: AgentTask, prompt: String, phase: RunPhase) {
         AppLogger.audit(
             .contextPromptDiagnostics,
             category: "Worker",
@@ -1403,7 +1486,7 @@ final class AgentRuntimeWorker {
             fields: TaskContextStateManager.promptDiagnosticsFields(
                 task: task,
                 prompt: prompt,
-                phase: phase
+                phase: phase.rawValue
             ),
             level: .debug
         )
@@ -1448,7 +1531,7 @@ final class AgentRuntimeWorker {
             isolationStrategy: task.isolationStrategy,
             validationStrategy: task.validationStrategy
         )
-        nextTask.status = .queued
+        TaskStateMachine.enqueueChainedFollowUp(nextTask, modelContext: modelContext)
         nextTask.chainedFromID = task.id
         nextTask.runtimeID = task.runtimeID
         // A chained follow-up continues in the same checkout and execution
@@ -1530,7 +1613,7 @@ final class AgentRuntimeWorker {
         task: AgentTask,
         run: TaskRun,
         modelContext: ModelContext,
-        phase: String
+        phase: RunPhase
     ) -> Bool {
         let blockedDiagnostics = manifest.providerRender.diagnostics.filter { $0.severity == .blocked }
         guard !blockedDiagnostics.isEmpty else { return true }
@@ -1538,9 +1621,7 @@ final class AgentRuntimeWorker {
         run.status = .failed
         run.completedAt = Date()
         run.typedStopReason = .policyBlocked
-        task.status = .pendingUser
-        task.updatedAt = Date()
-        task.markUnreadForCurrentStatus(at: task.updatedAt)
+        TaskStateMachine.pauseForRuntimeReview(task, modelContext: modelContext, at: run.completedAt ?? Date())
 
         let details = blockedDiagnostics
             .map { diagnostic in
@@ -1563,7 +1644,7 @@ final class AgentRuntimeWorker {
         )
         AppLogger.audit(.workerBlocked, category: "Worker", taskID: task.id, fields: [
             "reason": "policy_blocked",
-            "phase": phase,
+            "phase": phase.rawValue,
             "blocked_diagnostics": String(blockedDiagnostics.count),
             "policy_level": manifest.policyLevel.rawValue,
             "runtime": manifest.providerID.rawValue
@@ -1591,13 +1672,12 @@ final class AgentRuntimeWorker {
 
     static let compactionThreshold = AgentEventCompactor.threshold
     static let compactionKeepCount = AgentEventCompactor.keepCount
-    private static let providerLaunchSignatureEventType = "astra.provider_launch_signature"
 
     @MainActor
     private func alignTaskModelWithSelectedRuntime(
         _ task: AgentTask,
         selectedRuntime: AgentRuntimeID,
-        phase: String
+        phase: RunPhase
     ) {
         let resolution = RuntimeModelAvailability.resolveModel(task.model, for: selectedRuntime)
         var fields = resolution.diagnosticFields(phase: phase)
@@ -1619,7 +1699,7 @@ final class AgentRuntimeWorker {
     private func clearMismatchedProviderSessionIfNeeded(
         for task: AgentTask,
         selectedRuntime: AgentRuntimeID,
-        phase: String
+        phase: RunPhase
     ) {
         guard let sessionID = task.sessionId?.trimmingCharacters(in: .whitespacesAndNewlines),
               !sessionID.isEmpty else {
@@ -1642,7 +1722,7 @@ final class AgentRuntimeWorker {
             "reason": "runtime_changed",
             "from_runtime": owningRuntime.rawValue,
             "to_runtime": selectedRuntime.rawValue,
-            "phase": phase,
+            "phase": phase.rawValue,
             "history_run_count": String(task.runs.count)
         ], level: .info)
     }
@@ -1653,105 +1733,16 @@ final class AgentRuntimeWorker {
         let signatureMatched: Bool
     }
 
-    private struct ProviderLaunchSignaturePayload: Codable, Equatable {
-        let version: Int
-        let runtimeID: String
-        let model: String
-        let policyLevel: String
-        var policyScope: String
-        let providerAdapterVersion: Int
-        let permissionMode: String
-        var allowedTools: [String]
-        var askFirstTools: [String]
-        var deniedTools: [String]
-        let allowedShellPatterns: [String]
-        let askFirstShellPatterns: [String]
-        let deniedShellPatterns: [String]
-        let allowedURLPatterns: [String]
-        let deniedURLPatterns: [String]
-        let runtimeSupportTools: [String]
-        let scopedSkillIDs: [String]
-        let scopedSkillNames: [String]
-        let scopedConnectorDescriptors: [String]
-        let scopedLocalToolCommands: [String]
-        let environmentKeyNames: [String]
-        let credentialLabels: [String]
-        let mcpServerIDs: [String]
-        let browserAdapters: [String]
-        let promptSchemaVersion: String
-        let executionEnvironmentFingerprint: String?
-
-        var signatureValue: String {
-            [
-                "v=\(version)",
-                "runtime=\(runtimeID)",
-                "model=\(model)",
-                "policyLevel=\(policyLevel)",
-                "policyScope=\(policyScope)",
-                "adapter=\(providerAdapterVersion)",
-                "permission=\(permissionMode)",
-                "allowed=\(allowedTools.joined(separator: ","))",
-                "ask=\(askFirstTools.joined(separator: ","))",
-                "denied=\(deniedTools.joined(separator: ","))",
-                "allowShell=\(allowedShellPatterns.joined(separator: ","))",
-                "askShell=\(askFirstShellPatterns.joined(separator: ","))",
-                "denyShell=\(deniedShellPatterns.joined(separator: ","))",
-                "allowURL=\(allowedURLPatterns.joined(separator: ","))",
-                "denyURL=\(deniedURLPatterns.joined(separator: ","))",
-                "support=\(runtimeSupportTools.joined(separator: ","))",
-                "skillIDs=\(scopedSkillIDs.joined(separator: ","))",
-                "skillNames=\(scopedSkillNames.joined(separator: ","))",
-                "connectors=\(scopedConnectorDescriptors.joined(separator: ","))",
-                "tools=\(scopedLocalToolCommands.joined(separator: ","))",
-                "env=\(environmentKeyNames.joined(separator: ","))",
-                "credentials=\(credentialLabels.joined(separator: ","))",
-                "mcp=\(mcpServerIDs.joined(separator: ","))",
-                "browserAdapters=\(browserAdapters.joined(separator: ","))",
-                "prompt=\(promptSchemaVersion)",
-                "environment=\(executionEnvironmentFingerprint ?? WorkspaceExecutionEnvironment.host.signatureFingerprint)"
-            ].joined(separator: "\u{1f}")
-        }
-    }
-
-    // Approval grants accumulate inside a task, so signatures are compared
-    // modulo grant-derived entries: otherwise the first post-approval turn
-    // always reads as a policy change and drops the provider session.
-    private static func grantNeutralizedSignatureValue(
-        _ payload: ProviderLaunchSignaturePayload,
-        grantStrings: Set<String>
-    ) -> String {
-        guard !grantStrings.isEmpty else { return payload.signatureValue }
-        let grantKeys = Set(grantStrings.map(canonicalToolKey))
-        var neutral = payload
-        neutral.allowedTools = payload.allowedTools.filter { !grantStrings.contains($0) }
-        neutral.askFirstTools = payload.askFirstTools.filter { !grantKeys.contains(canonicalToolKey($0)) }
-        neutral.deniedTools = payload.deniedTools.filter { !grantKeys.contains(canonicalToolKey($0)) }
-        neutral.policyScope = "grant_neutral"
-        return neutral.signatureValue
-    }
-
-    private static func canonicalToolKey(_ value: String) -> String {
-        value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-    }
-
-    private static func signatureGrantStrings(for manifest: RunPermissionManifest) -> Set<String> {
-        guard !manifest.approvalGrants.isEmpty else { return [] }
-        return Set(
-            PermissionBroker.providerGrantStrings(for: manifest.approvalGrants, runtime: manifest.providerID)
-                + PermissionBroker.providerRuntimeGrantStrings(for: manifest.approvalGrants, runtime: manifest.providerID)
-        )
-    }
-
     @MainActor
     private static func nativeContinuationSessionID(
         for task: AgentTask,
         currentRun: TaskRun,
         runtimeAdapter: any AgentRuntimeDescriptorReadiness,
-        phase: String,
+        phase: RunPhase,
         currentLaunchSignature: ProviderLaunchSignaturePayload,
         grantNeutralizingStrings: Set<String> = []
     ) -> NativeContinuationDecision {
-        guard phase == "resume",
+        guard phase == .resume,
               runtimeAdapter.descriptor.supportsNativeContinuation else {
             return NativeContinuationDecision(sessionID: nil, skipReason: "unsupported_or_not_resume_phase", signatureMatched: false)
         }
@@ -1769,12 +1760,18 @@ final class AgentRuntimeWorker {
             return NativeContinuationDecision(sessionID: nil, skipReason: "missing_previous_session_run", signatureMatched: false)
         }
 
-        guard let previousSignature = providerLaunchSignature(for: task, run: previousRun) else {
+        guard let previousSignature = ProviderLaunchSignatureService.storedSignature(for: task, run: previousRun) else {
             return NativeContinuationDecision(sessionID: nil, skipReason: "missing_previous_launch_signature", signatureMatched: false)
         }
 
-        let previousValue = grantNeutralizedSignatureValue(previousSignature, grantStrings: grantNeutralizingStrings)
-        let currentValue = grantNeutralizedSignatureValue(currentLaunchSignature, grantStrings: grantNeutralizingStrings)
+        let previousValue = ProviderLaunchSignatureService.grantNeutralizedValue(
+            previousSignature,
+            grantStrings: grantNeutralizingStrings
+        )
+        let currentValue = ProviderLaunchSignatureService.grantNeutralizedValue(
+            currentLaunchSignature,
+            grantStrings: grantNeutralizingStrings
+        )
         guard previousValue == currentValue else {
             return NativeContinuationDecision(sessionID: nil, skipReason: "launch_signature_changed", signatureMatched: false)
         }
@@ -1804,95 +1801,6 @@ final class AgentRuntimeWorker {
             .max { $0.startedAt < $1.startedAt }
     }
 
-    @MainActor
-    private static func providerLaunchSignature(
-        for task: AgentTask,
-        manifest: RunPermissionManifest,
-        contextText: String
-    ) -> ProviderLaunchSignaturePayload {
-        let scope = TaskCapabilityResolver(task: task).promptScope(contextText: contextText)
-        let supportTools = manifest.providerRender.runtimeSupportTools.map { descriptor in
-            [
-                descriptor.name,
-                descriptor.providerNativePermission ?? "",
-                descriptor.allowedInputKeys.joined(separator: "+"),
-                descriptor.deniedInputKeys.joined(separator: "+")
-            ].joined(separator: ":")
-        }
-        let connectorDescriptors = scope.connectors.map { connector in
-            [
-                connector.id.uuidString,
-                connector.name,
-                connector.serviceType,
-                connector.baseURL
-            ].joined(separator: ":")
-        }
-        let localToolCommands = scope.localTools.compactMap { tool -> String? in
-            let command = tool.command.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !command.isEmpty else { return nil }
-            return command
-        }
-        return ProviderLaunchSignaturePayload(
-            version: 1,
-            runtimeID: manifest.providerID.rawValue,
-            model: manifest.model,
-            policyLevel: manifest.policyLevel.rawValue,
-            policyScope: manifest.policyScope.rawValue,
-            providerAdapterVersion: manifest.providerRender.adapterVersion,
-            permissionMode: manifest.providerRender.permissionMode,
-            allowedTools: canonicalStrings(manifest.providerRender.allowedTools),
-            askFirstTools: canonicalStrings(manifest.providerRender.askFirstTools),
-            deniedTools: canonicalStrings(manifest.providerRender.deniedTools),
-            allowedShellPatterns: canonicalStrings(manifest.providerRender.allowedShellPatterns),
-            askFirstShellPatterns: canonicalStrings(manifest.providerRender.askFirstShellPatterns),
-            deniedShellPatterns: canonicalStrings(manifest.providerRender.deniedShellPatterns),
-            allowedURLPatterns: canonicalStrings(manifest.providerRender.allowedURLPatterns),
-            deniedURLPatterns: canonicalStrings(manifest.providerRender.deniedURLPatterns),
-            runtimeSupportTools: canonicalStrings(supportTools),
-            scopedSkillIDs: canonicalStrings(scope.behaviorSkills.map { $0.id.uuidString }),
-            scopedSkillNames: canonicalStrings(scope.behaviorSkills.map(\.name)),
-            scopedConnectorDescriptors: canonicalStrings(connectorDescriptors),
-            scopedLocalToolCommands: canonicalStrings(localToolCommands),
-            environmentKeyNames: canonicalStrings(manifest.environmentKeyNames),
-            credentialLabels: canonicalStrings(manifest.credentialLabels),
-            mcpServerIDs: canonicalStrings(manifest.mcpServers.map { "\($0.packageID):\($0.id)" }),
-            browserAdapters: canonicalStrings(scope.enabledBrowserAdapters),
-            promptSchemaVersion: "context_capsule_v2",
-            executionEnvironmentFingerprint: DockerExecutionPlanner.resolveEnvironment(for: task).signatureFingerprint
-        )
-    }
-
-    @MainActor
-    private static func recordProviderLaunchSignature(
-        _ signature: ProviderLaunchSignaturePayload,
-        task: AgentTask,
-        run: TaskRun,
-        modelContext: ModelContext
-    ) {
-        guard let data = try? JSONEncoder().encode(signature),
-              let payload = String(data: data, encoding: .utf8) else {
-            return
-        }
-        modelContext.insert(TaskEvent(task: task, type: providerLaunchSignatureEventType, payload: payload, run: run))
-    }
-
-    private static func providerLaunchSignature(for task: AgentTask, run: TaskRun) -> ProviderLaunchSignaturePayload? {
-        task.events
-            .filter { $0.type == providerLaunchSignatureEventType && $0.run?.id == run.id }
-            .sorted { $0.timestamp < $1.timestamp }
-            .compactMap { event -> ProviderLaunchSignaturePayload? in
-                guard let data = event.payload.data(using: .utf8) else { return nil }
-                return try? JSONDecoder().decode(ProviderLaunchSignaturePayload.self, from: data)
-            }
-            .last
-    }
-
-    private static func canonicalStrings(_ values: [String]) -> [String] {
-        Array(Set(values.map {
-            $0.trimmingCharacters(in: .whitespacesAndNewlines)
-        }.filter { !$0.isEmpty })).sorted()
-    }
-
     private static func runtimeID(from rawValue: String?) -> AgentRuntimeID? {
         rawValue.flatMap(AgentRuntimeID.init(rawValue:))
     }
@@ -1916,6 +1824,17 @@ final class AgentRuntimeWorker {
         plan: TaskPlanPayload,
         step approvedStep: TaskPlanPayloadStep? = nil
     ) -> [String] {
+        // This resolves capabilities independently of the shared
+        // `TaskCapabilityResolutionSnapshot` captured later in
+        // `executeRuntimeSession`, and that is intentional, not a redundant
+        // fifth resolution to fold into the snapshot: the allowed-tools set here
+        // feeds the approved-plan `AgentRuntimeExecutionPolicy`, which is an
+        // INPUT to `execute()` — but `execute()` runs
+        // `TaskCapabilitySnapshotter.refreshForFreshRun` and only then captures
+        // the authoritative launch snapshot. Reusing a snapshot taken at this
+        // point would predate that refresh (and it's plan-scoped, layering the
+        // approved step's likely tools on top). The launch snapshot remains the
+        // enforcement authority; this is the pre-refresh planning view.
         var tools = Set(TaskCapabilityResolver(task: task).promptScope().resolver.resolvedProviderAllowedTools)
         let scopedSteps = approvedStep.map { [$0] } ?? plan.steps
         for step in scopedSteps {
@@ -1950,19 +1869,23 @@ final class AgentRuntimeWorker {
         task: AgentTask,
         run: TaskRun,
         modelContext: ModelContext,
-        phase: String
+        phase: RunPhase
     ) -> Bool {
         guard let reason = result.runtimeStopReason, !reason.isEmpty else { return false }
 
         run.status = .failed
         run.typedStopReason = TaskRunStopReason.custom(reason)
-        task.status = Self.isTerminalRuntimeStop(reason) ? .failed : .pendingUser
+        if Self.isTerminalRuntimeStop(reason) {
+            TaskStateMachine.failFromRuntime(task, modelContext: modelContext)
+        } else {
+            TaskStateMachine.pauseForRuntimeReview(task, modelContext: modelContext)
+        }
 
         let payload = result.runtimeStopMessage
             ?? "ASTRA stopped the provider because browser control reached a terminal guardrail: \(reason)."
         modelContext.insert(TaskEvent(task: task, eventType: TaskEventTypes.System.error, payload: payload, run: run))
         AppLogger.audit(.workerBlocked, category: "Worker", taskID: task.id, fields: [
-            "phase": phase,
+            "phase": phase.rawValue,
             "reason": reason,
             "source": "runtime_stop"
         ], level: .error)
@@ -1991,13 +1914,13 @@ final class AgentRuntimeWorker {
         task: AgentTask,
         run: TaskRun,
         modelContext: ModelContext,
-        phase: String
+        phase: RunPhase
     ) -> Bool {
         guard result.repetitionKilled else { return false }
 
         run.status = .failed
         run.typedStopReason = .repetitionDetected
-        task.status = .failed
+        TaskStateMachine.failFromRuntime(task, modelContext: modelContext)
 
         modelContext.insert(TaskEvent(
             task: task,
@@ -2006,7 +1929,7 @@ final class AgentRuntimeWorker {
             run: run
         ))
         AppLogger.audit(.workerBlocked, category: "Worker", taskID: task.id, fields: [
-            "phase": phase,
+            "phase": phase.rawValue,
             "reason": "repetition_detected",
             "source": "runtime_repetition_guard"
         ], level: .error)
@@ -2032,13 +1955,17 @@ final class AgentRuntimeWorker {
     }
 
     @MainActor
-    func buildPrompt(for task: AgentTask) -> String {
-        AgentPromptBuilder.buildPrompt(for: task)
+    func buildPrompt(
+        for task: AgentTask,
+        executionPolicy: AgentRuntimeExecutionPolicy = .default
+    ) -> String {
+        AgentPromptBuilder.buildPrompt(for: task, executionPolicy: executionPolicy)
     }
 
     @MainActor
     private func effectivePermissionPolicy(
         for task: AgentTask,
+        selectedRuntime: AgentRuntimeID,
         executionPolicy: AgentRuntimeExecutionPolicy
     ) -> PermissionPolicy {
         if skipPermissions {
@@ -2050,13 +1977,37 @@ final class AgentRuntimeWorker {
             fallbackPermissionPolicy: permissionPolicy,
             executionPolicy: executionPolicy
         )
-        return PermissionPolicy.fromAgentPolicyLevel(resolution.level)
+        return ProviderPolicyModeResolver.permissionPolicy(
+            for: resolution.policy,
+            runtime: selectedRuntime
+        )
     }
 
     /// Model used for AI validation checks
     var validationModel: String = "claude-haiku-4-5-20251001"
 
     var runtimeReadinessService = RuntimeReadinessService()
+    /// Backs the capability-prerequisite preflight (e.g. `gh auth status`
+    /// for the GitHub capability). A fresh `PreflightCache` is constructed
+    /// from this per launch (see the call site below) so a retry after the
+    /// user fixes a CLI/auth issue always re-probes instead of replaying a
+    /// stale cached failure. Scenario tests swap this for a checker wired
+    /// to `InstantSuccessBinaryRunner` so the check never shells out to
+    /// real host CLIs.
+    var environmentHealthChecker = EnvironmentHealthChecker()
+    /// Whether an MCP stdio server's resolved command path is executable
+    /// (e.g. ~/.astra/tools/astra-host-control for the GitHub host-control
+    /// server). Scenario tests override this so the capability preflight
+    /// never depends on ASTRA's bundled tools being installed on the
+    /// machine running the test.
+    var mcpServerExecutableIsResolvable: (String) -> Bool = {
+        FileManager.default.isExecutableFile(atPath: $0)
+    }
+    /// Resolves a bare MCP server command name via PATH, mirroring
+    /// `RuntimePathResolver.detectExecutablePath` in production.
+    var mcpServerExecutableDetector: (String) -> String = {
+        RuntimePathResolver.detectExecutablePath(named: $0)
+    }
     /// Maximum execution time in seconds (10 minutes default)
     var timeoutSeconds: TimeInterval = 600
 

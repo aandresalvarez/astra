@@ -1,6 +1,9 @@
 import Testing
 import CoreGraphics
 import Foundation
+import ASTRAPersistence
+import ASTRACore
+import ASTRAModels
 @testable import ASTRA
 
 /// Regression tests for the panel layout math that drives the
@@ -50,6 +53,9 @@ struct PanelLayoutGeometryTests {
         #expect(WorkspaceCanvasItem.markdown.rawValue == "markdown")
         #expect(WorkspaceCanvasItem.browser.rawValue == "browser")
         #expect(WorkspaceCanvasItem.query.rawValue == "query")
+        #expect(WorkspaceCanvasItem.appPreview.rawValue == "appPreview")
+        #expect(WorkspaceCanvasItem.markdown.shelfID == .files)
+        #expect(ShelfID.files.workspaceCanvasItem.rawValue == "markdown")
         #expect(WorkspaceCanvasItemPreference.item(for: "") == nil)
         #expect(WorkspaceCanvasItemPreference.rawValue(for: nil) == "")
         #expect(WorkspaceCanvasItemPreference.rawValue(for: .browser) == "browser")
@@ -249,6 +255,109 @@ struct PanelLayoutGeometryTests {
             nextTaskID: nil,
             isComposingTask: false
         ) == nil)
+    }
+
+    @Test("App Studio startup respects app preview shelf policy")
+    func appStudioStartupRespectsAppPreviewShelfPolicy() {
+        let context = ShelfAvailabilityPolicy.Context(
+            hasOpenTaskThread: false,
+            hasWorkspaceContext: true,
+            hasPlanContent: false,
+            hasFilesShelfContent: false,
+            hasQueryShelfContent: false,
+            isComposingWorkspaceApp: true,
+            activeShelfID: nil
+        )
+
+        #expect(WorkspaceCanvasPolicyTransition.itemAfterAppStudioStart(
+            policy: ShelfAvailabilityPolicy(),
+            context: context
+        ) == .appPreview)
+        #expect(WorkspaceCanvasPolicyTransition.itemAfterAppStudioStart(
+            policy: ShelfAvailabilityPolicy(disabledShelfIDs: [.appPreview]),
+            context: context
+        ) == nil)
+    }
+
+    @Test("Active shelf clears when profile policy hides it")
+    func activeShelfClearsWhenProfilePolicyHidesIt() {
+        let context = ShelfAvailabilityPolicy.Context(
+            hasOpenTaskThread: true,
+            hasWorkspaceContext: true,
+            hasPlanContent: true,
+            hasFilesShelfContent: true,
+            hasQueryShelfContent: true,
+            isComposingWorkspaceApp: false,
+            activeShelfID: .browser
+        )
+
+        #expect(WorkspaceCanvasPolicyTransition.itemAfterPolicyChange(
+            currentItem: .browser,
+            policy: ShelfAvailabilityPolicy(),
+            context: context
+        ) == .browser)
+        #expect(WorkspaceCanvasPolicyTransition.itemAfterPolicyChange(
+            currentItem: .browser,
+            policy: ShelfAvailabilityPolicy(disabledShelfIDs: [.browser]),
+            context: context
+        ) == nil)
+    }
+
+    @Test("Pending App Preview restore waits for profile policy to allow Studio preview")
+    func pendingAppPreviewRestoreWaitsForProfilePolicyToAllowStudioPreview() {
+        let context = ShelfAvailabilityPolicy.Context(
+            hasOpenTaskThread: false,
+            hasWorkspaceContext: true,
+            hasPlanContent: false,
+            hasFilesShelfContent: false,
+            hasQueryShelfContent: false,
+            isComposingWorkspaceApp: true,
+            activeShelfID: nil
+        )
+
+        #expect(WorkspaceCanvasPolicyTransition.itemAfterPendingAppPreviewPolicyRestore(
+            currentItem: nil,
+            pendingRestore: true,
+            policy: ShelfAvailabilityPolicy(disabledShelfIDs: [.appPreview]),
+            context: context
+        ) == nil)
+        #expect(WorkspaceCanvasPolicyTransition.itemAfterPendingAppPreviewPolicyRestore(
+            currentItem: nil,
+            pendingRestore: true,
+            policy: ShelfAvailabilityPolicy(),
+            context: context
+        ) == .appPreview)
+        #expect(WorkspaceCanvasPolicyTransition.itemAfterPendingAppPreviewPolicyRestore(
+            currentItem: .browser,
+            pendingRestore: true,
+            policy: ShelfAvailabilityPolicy(),
+            context: context
+        ) == .browser)
+    }
+
+    @Test("Target plan presentation seeds cache from the validated target task")
+    func targetPlanPresentationSeedsCacheFromValidatedTargetTask() {
+        let previousTaskID = UUID()
+        let targetTaskID = UUID()
+
+        #expect(WorkspacePlanCanvasPresentationTransition.cachedHasPlanContentAfterTargetValidation(
+            previousTaskID: previousTaskID,
+            targetTaskID: targetTaskID,
+            currentCachedHasPlanContent: false,
+            targetHasPlanContent: true
+        ))
+        #expect(!WorkspacePlanCanvasPresentationTransition.cachedHasPlanContentAfterTargetValidation(
+            previousTaskID: previousTaskID,
+            targetTaskID: targetTaskID,
+            currentCachedHasPlanContent: true,
+            targetHasPlanContent: false
+        ))
+        #expect(!WorkspacePlanCanvasPresentationTransition.cachedHasPlanContentAfterTargetValidation(
+            previousTaskID: targetTaskID,
+            targetTaskID: targetTaskID,
+            currentCachedHasPlanContent: false,
+            targetHasPlanContent: true
+        ))
     }
 
     // MARK: - isCompactPanelLayout
@@ -472,6 +581,11 @@ struct PanelLayoutGeometryTests {
 
     @Test("Files shelf minimum preserves navigator and preview")
     func filesShelfMinimumPreservesNavigatorAndPreview() {
+        #expect(PanelLayoutGeometry.filesShelfNavigatorDefaultWidth == ShelfWidthMetrics.filesNavigatorDefaultWidth)
+        #expect(PanelLayoutGeometry.filesShelfResizeHandleWidth == ShelfWidthMetrics.filesResizeHandleWidth)
+        #expect(PanelLayoutGeometry.filesShelfMinimumPreviewWidth == ShelfWidthMetrics.filesMinimumPreviewWidth)
+        #expect(PanelLayoutGeometry.filesShelfMinReadableWidth == ShelfWidthMetrics.filesMinReadableWidth)
+        #expect(PanelLayoutGeometry.browserShelfMinWidth == ShelfWidthMetrics.browserMinWidth)
         #expect(PanelLayoutGeometry.filesShelfMinReadableWidth == 550)
         #expect(PanelLayoutGeometry.filesShelfPreviewWidth(shelfWidth: 360) < PanelLayoutGeometry.filesShelfMinimumPreviewWidth)
         #expect(PanelLayoutGeometry.filesShelfPreviewWidth(

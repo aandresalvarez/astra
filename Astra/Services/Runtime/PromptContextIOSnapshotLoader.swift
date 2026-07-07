@@ -1,6 +1,11 @@
 import Foundation
+import ASTRAModels
+import ASTRAPersistence
+import ASTRACore
 
 enum PromptContextIOSnapshotLoader {
+    private static let maximumSnapshotReadBytes = 1_048_576
+
     /// How much raw turn history a rebuilt follow-up prompt may carry. Runtimes
     /// without provider-native session resume depend entirely on this window for
     /// multi-turn coherence, so they get the wider preset.
@@ -69,18 +74,20 @@ enum PromptContextIOSnapshotLoader {
 
         let intent = HostFileAccessIntent.astraManagedStorage(root: accessRoot)
         let transcriptSections = turnFiles.enumerated().compactMap { offset, path -> String? in
-            guard let text = try? hostFileAccess.readString(
+            let recentIndex = turnFiles.count - offset
+            let maxCharacters = recentIndex <= window.fullOutputFileLimit
+                ? window.fullOutputMaxCharacters
+                : window.olderOutputMaxCharacters
+            guard let text = try? boundedString(
                 at: URL(fileURLWithPath: path),
-                encoding: .utf8,
+                maxCharacters: maxCharacters,
+                keeping: .prefix,
+                hostFileAccess: hostFileAccess,
                 intent: intent
             ),
                   !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 return nil
             }
-            let recentIndex = turnFiles.count - offset
-            let maxCharacters = recentIndex <= window.fullOutputFileLimit
-                ? window.fullOutputMaxCharacters
-                : window.olderOutputMaxCharacters
             let excerpt = boundedText(text, maxCharacters: maxCharacters, keeping: .prefix)
             return "--- \((path as NSString).lastPathComponent) ---\n\(excerpt)"
         }
@@ -107,9 +114,11 @@ enum PromptContextIOSnapshotLoader {
         accessRoot: URL
     ) -> PromptContextSnapshotText? {
         let historyPath = SessionHistoryManager.historyPath(taskFolder: taskFolder)
-        guard let history = try? hostFileAccess.readString(
+        guard let history = try? boundedString(
             at: URL(fileURLWithPath: historyPath),
-            encoding: .utf8,
+            maxCharacters: window.fullOutputMaxCharacters,
+            keeping: .suffix,
+            hostFileAccess: hostFileAccess,
             intent: .astraManagedStorage(root: accessRoot)
         ),
               !history.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -157,9 +166,65 @@ enum PromptContextIOSnapshotLoader {
         return boundedText(summary, maxCharacters: window.fullOutputMaxCharacters, keeping: .suffix)
     }
 
-    private enum TextBound {
+    private static func boundedString(
+        at url: URL,
+        maxCharacters: Int,
+        keeping bound: TextBound,
+        hostFileAccess: HostFileAccessBroker,
+        intent: HostFileAccessIntent
+    ) throws -> String {
+        let data = try hostFileAccess.readData(
+            at: url,
+            maxBytes: byteLimit(for: maxCharacters),
+            keeping: bound.fileReadBound,
+            intent: intent
+        )
+        guard let string = utf8String(from: data, keeping: bound) else {
+            throw CocoaError(.fileReadInapplicableStringEncoding)
+        }
+        return string
+    }
+
+    static func byteLimit(for maxCharacters: Int) -> Int {
+        guard maxCharacters > 0 else { return 0 }
+        let scaledLimit = maxCharacters <= Int.max / 4
+            ? maxCharacters * 4
+            : Int.max
+        return min(scaledLimit, maximumSnapshotReadBytes)
+    }
+
+    static func utf8String(from data: Data, keeping bound: TextBound) -> String? {
+        if let string = String(data: data, encoding: .utf8) {
+            return string
+        }
+
+        for trimCount in 1...min(3, data.count) {
+            let repaired: Data
+            switch bound {
+            case .prefix:
+                repaired = Data(data.dropLast(trimCount))
+            case .suffix:
+                repaired = Data(data.dropFirst(trimCount))
+            }
+            if let string = String(data: repaired, encoding: .utf8) {
+                return string
+            }
+        }
+        return nil
+    }
+
+    enum TextBound {
         case prefix
         case suffix
+
+        var fileReadBound: HostFileReadBound {
+            switch self {
+            case .prefix:
+                return .prefix
+            case .suffix:
+                return .suffix
+            }
+        }
     }
 
     private static func boundedText(_ text: String, maxCharacters: Int, keeping bound: TextBound) -> String {

@@ -1,5 +1,7 @@
 import Foundation
 import SwiftData
+import ASTRAModels
+import ASTRAPersistence
 
 struct TaskExecutionArtifactExpectation: Sendable, Equatable, Hashable {
     var kind: TaskPlanArtifactKind
@@ -344,17 +346,19 @@ enum TaskExecutionArtifactPreparer {
         reason: String,
         message: String
     ) {
-        task.status = .failed
         let now = Date()
-        task.updatedAt = now
-        task.completedAt = now
-        task.markUnreadForCurrentStatus(at: now)
+        TaskStateMachine.failFromValidation(task, modelContext: modelContext, at: now)
         modelContext.insert(TaskEvent(task: task, eventType: TaskEventTypes.System.error, payload: message))
         AppLogger.audit(.taskFailed, category: "Worker", taskID: task.id, fields: [
             "reason": reason,
             "phase": phase
         ], level: .error)
-        try? modelContext.save()
+        WorkspacePersistenceCoordinator.saveAndAutoExport(
+            workspace: task.workspace,
+            modelContext: modelContext,
+            taskID: task.id,
+            auditFields: ["operation": "artifact_preparation_failure"]
+        )
     }
 
 }

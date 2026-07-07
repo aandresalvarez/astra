@@ -1,4 +1,5 @@
 import Foundation
+import ASTRACore
 import ASTRAGitContracts
 
 struct GitRepositoryInfo: Identifiable, Hashable {
@@ -560,6 +561,41 @@ private final class GitProcessState: @unchecked Sendable {
     }
 }
 
+/// Environment variables git uses to scope an invocation to one specific
+/// repository (the set `git rev-parse --local-env-vars` reports). Git exports
+/// these to every hook and child process, so a `git`/shell subprocess spawned
+/// from inside a hook (or from a process descended from one, e.g. `swift test`
+/// launched by `script/prepush.sh`) silently inherits them. Any caller that
+/// targets a directory via an explicit path (`-C repoPath`, `currentDirectoryURL`)
+/// rather than relying on git's own discovery must strip these first, or an
+/// inherited `GIT_DIR` overrides that path and redirects the child at whatever
+/// repository the ambient environment points to instead — e.g. `git init --bare`
+/// in a disposable test fixture silently reinitializing the real shared repo as
+/// bare (`core.bare = true`), corrupting `.git/config` for every worktree.
+enum GitLocalEnvironment {
+    static let variableNames: Set<String> = [
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_CONFIG",
+        "GIT_CONFIG_PARAMETERS",
+        "GIT_CONFIG_COUNT",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_IMPLICIT_WORK_TREE",
+        "GIT_GRAFT_FILE",
+        "GIT_INDEX_FILE",
+        "GIT_NO_REPLACE_OBJECTS",
+        "GIT_REPLACE_REF_BASE",
+        "GIT_PREFIX",
+        "GIT_SHALLOW_FILE",
+        "GIT_COMMON_DIR"
+    ]
+
+    static func scrubbing(_ environment: [String: String]) -> [String: String] {
+        environment.filter { !variableNames.contains($0.key) }
+    }
+}
+
 class GitService: GitRepositoryOperating {
     static let shared = GitService()
 
@@ -684,8 +720,13 @@ class GitService: GitRepositoryOperating {
     ///
     /// Disables terminal prompts, pagers, and optional index locks so git can
     /// never block waiting for a controlling terminal that a GUI process lacks.
+    /// Also strips `GitLocalEnvironment` repo-scoping variables inherited from
+    /// the ambient process environment: if ASTRA (or its dev tooling) is ever
+    /// launched from a context that has `GIT_DIR`/`GIT_WORK_TREE` etc. set
+    /// (e.g. from inside a git hook), every git subprocess must still resolve
+    /// against the `-C repoPath` we pass explicitly, not that leaked scope.
     private static func gitEnvironment() -> [String: String] {
-        var environment = ProcessInfo.processInfo.environment
+        var environment = GitLocalEnvironment.scrubbing(ProcessInfo.processInfo.environment)
         environment["GIT_TERMINAL_PROMPT"] = "0"
         environment["GIT_PAGER"] = "cat"
         environment["GIT_OPTIONAL_LOCKS"] = "0"
@@ -1135,6 +1176,70 @@ class GitService: GitRepositoryOperating {
                 "reason": error.localizedDescription
             ], level: .warning, fieldMaxLength: 240)
             return .unavailable(error.localizedDescription)
+        }
+    }
+
+    /// Read-only PR listing for a Workspace App `pullRequest.read` connector (`astra.read`). Builds a
+    /// FIXED `gh search prs --author=@me` (or `gh pr list --repo` for one repo) argument vector — the
+    /// only caller-influenced inputs are `state` (validated to a fixed set), an optional `repo`
+    /// (validated to `owner/name`, rejected otherwise so a hostile value can't act as a `gh` flag), and a
+    /// clamped `limit`. Uses the user's own `gh` auth; no token is read or returned, only the `--json`
+    /// stdout. The HTML page never reaches this directly — it goes through the governed executor +
+    /// dependency binding; this is just the gh transport. Throws `GitHubCLIError`.
+    func workspaceAppPullRequestJSON(
+        repo: String?,
+        state: String,
+        limit: Int,
+        ghPathOverride: String? = nil
+    ) async throws -> String {
+        let ghPath = ghPathOverride ?? RuntimePathResolver.detectExecutablePath(named: "gh")
+        guard !ghPath.isEmpty, FileManager.default.isExecutableFile(atPath: ghPath) else {
+            throw GitHubCLIError.notInstalled
+        }
+        let allowedStates: Set<String> = ["open", "closed", "merged", "all"]
+        let normalizedState = allowedStates.contains(state) ? state : "open"
+        let clampedLimit = min(max(1, limit), 100)
+        var arguments: [String]
+        if let repo, Self.isValidRepoSlug(repo) {
+            // `gh pr list` is scoped to one repo, so its --json schema has no `repository` field.
+            arguments = ["pr", "list", "--repo", repo, "--state", normalizedState,
+                         "--json", "number,title,url,state,isDraft,updatedAt,author",
+                         "--limit", "\(clampedLimit)"]
+        } else {
+            // No repo: list the authenticated user's own PRs across repos, so include `repository`.
+            // `gh search prs --state` accepts only open|closed; merged/all omit the state filter.
+            arguments = ["search", "prs", "--author", "@me",
+                         "--json", "number,title,url,state,isDraft,updatedAt,author,repository",
+                         "--limit", "\(clampedLimit)"]
+            if normalizedState == "open" || normalizedState == "closed" {
+                arguments += ["--state", normalizedState]
+            }
+        }
+        do {
+            return try await runProcess(
+                executableURL: URL(fileURLWithPath: ghPath),
+                arguments: arguments,
+                environment: RuntimeProcessEnvironment.enriched(),
+                timeout: 45,
+                label: "gh workspace-app pr read"
+            )
+        } catch {
+            let detail = error.localizedDescription.lowercased()
+            if detail.contains("auth") || detail.contains("logged in") {
+                throw GitHubCLIError.notAuthenticated(error.localizedDescription)
+            }
+            throw GitHubCLIError.commandFailed(error.localizedDescription)
+        }
+    }
+
+    /// `owner/name` slug validator for the PR-read connector: exactly one `/`, each segment non-empty,
+    /// drawn only from `[A-Za-z0-9._-]`, and not starting with `-` (so it can never be read as a flag).
+    static func isValidRepoSlug(_ repo: String) -> Bool {
+        let parts = repo.split(separator: "/", omittingEmptySubsequences: false)
+        guard parts.count == 2 else { return false }
+        let allowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-")
+        return parts.allSatisfy { part in
+            !part.isEmpty && part.first != "-" && part.unicodeScalars.allSatisfy { allowed.contains($0) }
         }
     }
 

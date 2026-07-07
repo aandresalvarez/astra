@@ -1,12 +1,14 @@
 import Foundation
+import ASTRACore
+import ASTRAModels
 
 enum AgentRuntimeProgressTimeoutPolicy {
     static func semanticProgressTimeout(
         task: AgentTask,
-        phase: String,
+        phase: RunPhase,
         idleTimeoutSeconds: TimeInterval
     ) -> TimeInterval {
-        guard phase == "run",
+        guard phase == .run,
               TaskDeliverableExpectation.requiresDeliverableArtifact(task) else {
             return min(idleTimeoutSeconds, 180)
         }

@@ -1,5 +1,8 @@
 import SwiftUI
 import SwiftData
+import ASTRAModels
+import ASTRAPersistence
+import ASTRACore
 
 struct WorkspaceDetailView: View {
     @Bindable var workspace: Workspace
@@ -91,6 +94,8 @@ struct WorkspaceDetailView: View {
                         }
                         .padding(.vertical, 4)
                     }
+
+                    WorkspacePackSettingsSection(workspace: workspace)
 
                     // Primary Path
                     GroupBox("Working Directory") {
@@ -461,7 +466,9 @@ struct WorkspaceDetailView: View {
 
     private func autoExportConfig() {
         WorkspacePersistenceCoordinator.flushPendingExport(workspace: workspace, modelContext: modelContext)
-        withAnimation { exportMessage = "Saved to \(workspace.displayPath)/\(WorkspaceFileLayout.workspaceConfigFileName)" }
+        withAnimation {
+            exportMessage = "Saved to \(workspace.displayPath)/\(WorkspaceFileLayout.supportDirectoryName)/\(WorkspaceFileLayout.workspaceConfigFileName)"
+        }
         DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
             withAnimation { exportMessage = "" }
         }

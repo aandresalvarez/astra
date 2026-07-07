@@ -155,6 +155,7 @@ struct LogDiagnosticsTests {
         try extractZip(archive.url, to: extractDirectory)
         let bundleRoot = extractDirectory.appendingPathComponent(archive.url.deletingPathExtension().lastPathComponent, isDirectory: true)
         let manifest = try String(contentsOf: bundleRoot.appendingPathComponent("manifest.json"), encoding: .utf8)
+        let readme = try String(contentsOf: bundleRoot.appendingPathComponent("README.txt"), encoding: .utf8)
         let analyzedLog = try String(
             contentsOf: bundleRoot.appendingPathComponent("logs/analyzed-log-entries.jsonl"),
             encoding: .utf8
@@ -168,6 +169,12 @@ struct LogDiagnosticsTests {
         #expect(FileManager.default.fileExists(atPath: bundleRoot.appendingPathComponent("logs/last-actions.jsonl").path))
         #expect(FileManager.default.fileExists(atPath: bundleRoot.appendingPathComponent("crashes/ASTRA Dev-2023-11-14-120000.ips").path))
         #expect(manifest.contains("browser_flight_logs_when_present"))
+        #expect(manifest.contains("macos_crash_reports_when_present"))
+        #expect(manifest.contains("macos_crash_hang_reports_when_present"))
+        #expect(manifest.contains("macos_diagnostic_reports_when_present"))
+        #expect(manifest.contains(#""kind" : "crash""#))
+        #expect(readme.contains("*.ips, *.crash, *.hang, or *.spin"))
+        #expect(readme.contains("macOS diagnostic reports"))
         #expect(analyzedLog.contains("app.started"))
         #expect(!analyzedLog.contains("stale.failure"))
     }
@@ -210,15 +217,132 @@ struct LogDiagnosticsTests {
         #expect(reports.allSatisfy { $0.sizeBytes > 0 })
     }
 
-    @Test("Report includes crash report retrieval details")
-    func reportIncludesCrashReports() {
+    @Test("Diagnostic report locator classifies hang and crash reports")
+    func diagnosticReportLocatorClassifiesHangAndCrashReports() throws {
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-diagnostic-report-kinds-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let hang = directory.appendingPathComponent("ASTRA Dev-2023-11-14-120000.ips")
+        let crash = directory.appendingPathComponent("ASTRA Dev-2023-11-14-115900.ips")
+        let legacyCrash = directory.appendingPathComponent("ASTRA Dev-2023-11-14-115800.crash")
+        let hangExtension = directory.appendingPathComponent("ASTRA Dev-2023-11-14-115700.hang")
+        let spinExtension = directory.appendingPathComponent("ASTRA Dev-2023-11-14-115600.spin")
+        let crashAfterUnknownEvent = directory.appendingPathComponent("ASTRA Dev-2023-11-14-115500.ips")
+
+        try """
+        {"app_name":"ASTRA Dev","timestamp":"2023-11-14 12:00:00.00 -0500"}
+        Event: hang
+        Duration: 1.35s
+        """.write(to: hang, atomically: true, encoding: .utf8)
+        try """
+        {"app_name":"ASTRA Dev","timestamp":"2023-11-14 11:59:00.00 -0500","bug_type":"309"}
+        {
+          "exception" : { "type" : "EXC_CRASH", "signal" : "SIGABRT" },
+          "termination" : { "namespace" : "SIGNAL", "code" : 6 }
+        }
+        """.write(to: crash, atomically: true, encoding: .utf8)
+        try """
+        Process: ASTRA Dev [12345]
+        Exception Type: EXC_CRASH (SIGABRT)
+        """.write(to: legacyCrash, atomically: true, encoding: .utf8)
+        try Data().write(to: hangExtension)
+        try Data().write(to: spinExtension)
+        try """
+        {"app_name":"ASTRA Dev","timestamp":"2023-11-14 11:55:00.00 -0500","bug_type":"309"}
+        Event: process-exit
+        {
+          "exception" : { "type" : "EXC_CRASH", "signal" : "SIGABRT" }
+        }
+        """.write(to: crashAfterUnknownEvent, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.modificationDate: now.addingTimeInterval(-60)], ofItemAtPath: hang.path)
+        try FileManager.default.setAttributes([.modificationDate: now.addingTimeInterval(-120)], ofItemAtPath: crash.path)
+        try FileManager.default.setAttributes([.modificationDate: now.addingTimeInterval(-180)], ofItemAtPath: legacyCrash.path)
+        try FileManager.default.setAttributes([.modificationDate: now.addingTimeInterval(-240)], ofItemAtPath: hangExtension.path)
+        try FileManager.default.setAttributes([.modificationDate: now.addingTimeInterval(-300)], ofItemAtPath: spinExtension.path)
+        try FileManager.default.setAttributes([.modificationDate: now.addingTimeInterval(-360)], ofItemAtPath: crashAfterUnknownEvent.path)
+
+        let reports = CrashDiagnosticsService.recentReports(
+            limit: 10,
+            withinDays: 30,
+            prefixes: ["ASTRA Dev"],
+            searchDirectories: [directory],
+            now: now
+        )
+
+        #expect(reports.map(\.fileName) == [
+            "ASTRA Dev-2023-11-14-120000.ips",
+            "ASTRA Dev-2023-11-14-115900.ips",
+            "ASTRA Dev-2023-11-14-115800.crash",
+            "ASTRA Dev-2023-11-14-115700.hang",
+            "ASTRA Dev-2023-11-14-115600.spin",
+            "ASTRA Dev-2023-11-14-115500.ips"
+        ])
+        #expect(reports.map(\.kind) == [.hang, .crash, .crash, .hang, .spin, .crash])
+    }
+
+    @Test("Diagnostic report locator classifies only selected limited reports")
+    func diagnosticReportLocatorClassifiesOnlySelectedLimitedReports() throws {
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-diagnostic-report-limit-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let newest = directory.appendingPathComponent("ASTRA Dev-2023-11-14-120000.ips")
+        let middle = directory.appendingPathComponent("ASTRA Dev-2023-11-14-115900.ips")
+        let oldest = directory.appendingPathComponent("ASTRA Dev-2023-11-14-115800.ips")
+
+        for file in [newest, middle, oldest] {
+            try #"{"app_name":"ASTRA Dev"}"#.write(to: file, atomically: true, encoding: .utf8)
+        }
+        try FileManager.default.setAttributes([.modificationDate: now.addingTimeInterval(-60)], ofItemAtPath: newest.path)
+        try FileManager.default.setAttributes([.modificationDate: now.addingTimeInterval(-120)], ofItemAtPath: middle.path)
+        try FileManager.default.setAttributes([.modificationDate: now.addingTimeInterval(-180)], ofItemAtPath: oldest.path)
+
+        var classifiedFileNames: [String] = []
+        let reports = CrashDiagnosticsService.reports(
+            limit: 2,
+            modifiedIn: nil,
+            prefixes: ["ASTRA Dev"],
+            searchDirectories: [directory],
+            kindForReport: { url in
+                classifiedFileNames.append(url.lastPathComponent)
+                return .unknown
+            }
+        )
+
+        #expect(reports.map(\.fileName) == [
+            "ASTRA Dev-2023-11-14-120000.ips",
+            "ASTRA Dev-2023-11-14-115900.ips"
+        ])
+        #expect(classifiedFileNames == [
+            "ASTRA Dev-2023-11-14-120000.ips",
+            "ASTRA Dev-2023-11-14-115900.ips"
+        ])
+    }
+
+    @Test("Report includes crash and hang report retrieval details")
+    func reportIncludesCrashAndHangReports() {
         let crashURL = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Logs/DiagnosticReports/ASTRA Dev-2023-11-14-120000.ips")
+        let hangURL = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Logs/DiagnosticReports/ASTRA Dev-2023-11-14-121500.ips")
         let crash = CrashReportSummary(
             url: crashURL,
             appName: "ASTRA Dev",
             modifiedAt: Date(timeIntervalSince1970: 1_700_000_000),
-            sizeBytes: 42_000
+            sizeBytes: 42_000,
+            kind: .crash
+        )
+        let hang = CrashReportSummary(
+            url: hangURL,
+            appName: "ASTRA Dev",
+            modifiedAt: Date(timeIntervalSince1970: 1_700_000_900),
+            sizeBytes: 12_000,
+            kind: .hang
         )
 
         let report = LogDiagnosticsService.makeReport(
@@ -226,14 +350,18 @@ struct LogDiagnosticsTests {
                 LogEntry(level: .info, category: "App", message: "app.started channel=dev")
             ],
             generatedAt: Date(timeIntervalSince1970: 1_700_000_100),
-            crashReports: [crash]
+            crashReports: [hang, crash]
         )
 
-        #expect(report.crashReports == [crash])
-        #expect(report.markdown.contains("## Crash Reports"))
+        #expect(report.crashReports == [hang, crash])
+        #expect(report.markdown.contains("- Diagnostic reports found: 2"))
+        #expect(!report.markdown.contains("Crash / hang reports found"))
+        #expect(report.markdown.contains("## Diagnostic Reports"))
+        #expect(report.markdown.contains("Hang report: `ASTRA Dev-2023-11-14-121500.ips`"))
+        #expect(report.markdown.contains("Crash report: `ASTRA Dev-2023-11-14-120000.ips`"))
         #expect(report.markdown.contains("ASTRA Dev-2023-11-14-120000.ips"))
         #expect(report.markdown.contains("$HOME/Library/Logs/DiagnosticReports"))
-        #expect(report.markdown.contains("Crashes button"))
+        #expect(report.markdown.contains("Diagnostic Reports button"))
     }
 
     @Test("Collects persisted app and task log entries")

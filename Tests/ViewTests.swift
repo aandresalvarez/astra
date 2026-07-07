@@ -1,6 +1,7 @@
 import Testing
 import AppKit
 import SwiftUI
+import ASTRAModels
 @testable import ASTRA
 import ASTRACore
 
@@ -86,8 +87,17 @@ struct ContentSelectionResolverTests {
         let selectedWorkspace = makeWorkspace(name: "Selected")
         let taskWorkspace = makeWorkspace(name: "Task")
         let task = makeTask(workspace: taskWorkspace)
+        let appWorkspace = makeWorkspace(name: "Apps")
+        let app = WorkspaceApp(
+            workspaceID: appWorkspace.id,
+            logicalID: "journal",
+            name: "Journal",
+            manifestRelativePath: ".astra/apps/journal/manifest.json",
+            appDirectoryRelativePath: ".astra/apps/journal",
+            manifestDigest: "digest"
+        )
         let coordinator = ContentSceneCoordinator(
-            workspaces: [selectedWorkspace, taskWorkspace],
+            workspaces: [selectedWorkspace, taskWorkspace, appWorkspace],
             selectedTask: task,
             selectedWorkspace: selectedWorkspace,
             lastSelectedWorkspaceID: selectedWorkspace.id.uuidString,
@@ -96,6 +106,7 @@ struct ContentSelectionResolverTests {
 
         #expect(coordinator.effectiveWorkspace?.id == taskWorkspace.id)
         #expect(coordinator.effectiveWorkspaceID == taskWorkspace.id)
+        #expect(coordinator.workspace(for: app)?.id == appWorkspace.id)
         #expect(coordinator.workspaceSelectionSignature.contains(taskWorkspace.primaryPath))
         #expect(coordinator.presentation(isComposingTask: false) == .existingTask)
         #expect(coordinator.restoredWorkspace()?.id == selectedWorkspace.id)

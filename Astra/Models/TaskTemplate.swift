@@ -1,53 +1,54 @@
 import Foundation
 import SwiftData
+import ASTRACore
 
 @Model
-final class TaskTemplate {
-    var id: UUID
-    var name: String
-    var icon: String
-    var templateDescription: String
-    var workspace: Workspace?
+public final class TaskTemplate {
+    public var id: UUID
+    public var name: String
+    public var icon: String
+    public var templateDescription: String
+    public var workspace: Workspace?
 
     // Phase goals (before/after are optional)
-    var beforeGoal: String
-    var mainGoal: String
-    var afterGoal: String
+    public var beforeGoal: String
+    public var mainGoal: String
+    public var afterGoal: String
 
     // Per-phase token budgets
-    var beforeBudget: Int
-    var mainBudget: Int
-    var afterBudget: Int
+    public var beforeBudget: Int
+    public var mainBudget: Int
+    public var afterBudget: Int
 
     // Per-phase model overrides (empty = use workspace default)
-    var beforeModel: String
-    var mainModel: String
-    var afterModel: String
+    public var beforeModel: String
+    public var mainModel: String
+    public var afterModel: String
 
     // Variables: JSON-encoded array of TemplateVariable
-    var variablesJSON: String
+    public var variablesJSON: String
 
     // Hooks: JSON-encoded TemplateHooks written to .claude/settings.local.json during execution
-    var hooksJSON: String
+    public var hooksJSON: String
 
     // Whether to pass before-phase output as context to the main phase
-    var passContextToMain: Bool
+    public var passContextToMain: Bool
 
     // Whether to pass main-phase output as context to the after phase
-    var passContextToAfter: Bool
+    public var passContextToAfter: Bool
 
     // Default skills to attach when creating tasks from this template
-    var defaultSkillIDs: [String] = []
-    var originPackageID: String?
-    var originPackageVersion: String?
-    var originComponentID: String?
-    var originComponentKind: String?
-    var originSourceKind: String?
+    public var defaultSkillIDs: [String] = []
+    public var originPackageID: String?
+    public var originPackageVersion: String?
+    public var originComponentID: String?
+    public var originComponentKind: String?
+    public var originSourceKind: String?
 
-    var createdAt: Date
-    var updatedAt: Date
+    public var createdAt: Date
+    public var updatedAt: Date
 
-    init(
+    public init(
         name: String,
         mainGoal: String,
         workspace: Workspace? = nil,
@@ -84,7 +85,7 @@ final class TaskTemplate {
 
     // MARK: - Variable helpers
 
-    var variables: [TemplateVariable] {
+    public var variables: [TemplateVariable] {
         get {
             guard let data = variablesJSON.data(using: .utf8) else { return [] }
             return (try? JSONDecoder().decode([TemplateVariable].self, from: data)) ?? []
@@ -95,11 +96,11 @@ final class TaskTemplate {
         }
     }
 
-    var hasBeforePhase: Bool { !beforeGoal.isEmpty }
-    var hasAfterPhase: Bool { !afterGoal.isEmpty }
+    public var hasBeforePhase: Bool { !beforeGoal.isEmpty }
+    public var hasAfterPhase: Bool { !afterGoal.isEmpty }
 
     /// Resolves a goal string by replacing {{variable}} placeholders with provided values
-    func resolveGoal(_ goal: String, with values: [String: String]) -> String {
+    public func resolveGoal(_ goal: String, with values: [String: String]) -> String {
         var resolved = goal
         for (key, value) in values {
             resolved = resolved.replacingOccurrences(of: "{{\(key)}}", with: value)
@@ -110,14 +111,14 @@ final class TaskTemplate {
 
 // MARK: - Supporting types
 
-struct TemplateVariable: Codable, Identifiable {
-    var id: UUID
-    var name: String           // e.g. "vm_name"
-    var label: String          // e.g. "VM Name"
-    var defaultValue: String
-    var isRequired: Bool
+public struct TemplateVariable: Codable, Identifiable {
+    public var id: UUID
+    public var name: String           // e.g. "vm_name"
+    public var label: String          // e.g. "VM Name"
+    public var defaultValue: String
+    public var isRequired: Bool
 
-    init(name: String, label: String, defaultValue: String = "", isRequired: Bool = true) {
+    public init(name: String, label: String, defaultValue: String = "", isRequired: Bool = true) {
         self.id = UUID()
         self.name = name
         self.label = label
@@ -126,13 +127,20 @@ struct TemplateVariable: Codable, Identifiable {
     }
 }
 
-struct TemplateHooks: Codable {
-    var preToolUse: [TemplateHookEntry]?
-    var postToolUse: [TemplateHookEntry]?
-    var stop: [TemplateHookEntry]?
-    var notification: [TemplateHookEntry]?
+public struct TemplateHooks: Codable {
+    public init(preToolUse: [TemplateHookEntry]? = nil, postToolUse: [TemplateHookEntry]? = nil, stop: [TemplateHookEntry]? = nil, notification: [TemplateHookEntry]? = nil) {
+        self.preToolUse = preToolUse
+        self.postToolUse = postToolUse
+        self.stop = stop
+        self.notification = notification
+    }
 
-    enum CodingKeys: String, CodingKey {
+    public var preToolUse: [TemplateHookEntry]?
+    public var postToolUse: [TemplateHookEntry]?
+    public var stop: [TemplateHookEntry]?
+    public var notification: [TemplateHookEntry]?
+
+    public enum CodingKeys: String, CodingKey {
         case preToolUse = "PreToolUse"
         case postToolUse = "PostToolUse"
         case stop = "Stop"
@@ -140,7 +148,12 @@ struct TemplateHooks: Codable {
     }
 }
 
-struct TemplateHookEntry: Codable {
-    var matcher: String
-    var command: String
+public struct TemplateHookEntry: Codable {
+    public init(matcher: String, command: String) {
+        self.matcher = matcher
+        self.command = command
+    }
+
+    public var matcher: String
+    public var command: String
 }

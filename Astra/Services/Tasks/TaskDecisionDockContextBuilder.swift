@@ -1,5 +1,6 @@
 import Foundation
 import ASTRACore
+import ASTRAModels
 
 struct TaskRuntimePermissionState {
     struct Event: Hashable, Sendable {
@@ -23,6 +24,10 @@ struct TaskRuntimePermissionState {
         decision: nil,
         taskScopedGrants: []
     )
+
+    static func build(task: AgentTask) -> TaskRuntimePermissionState {
+        TaskRuntimePermissionOpenRequestStore.state(for: task)
+    }
 
     static func build(events: [Event]) -> TaskRuntimePermissionState {
         let latestRequest = events

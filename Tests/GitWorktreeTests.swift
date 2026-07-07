@@ -1,6 +1,8 @@
 import Foundation
 import SwiftData
 import Testing
+import ASTRAModels
+import ASTRAPersistence
 @testable import ASTRA
 import ASTRACore
 
@@ -16,7 +18,6 @@ import ASTRACore
 /// - GitService worktree add/list/remove behave and surface typed errors.
 @Suite("Git Worktrees")
 struct GitWorktreeTests {
-
     // MARK: - Helpers
 
     private func runShell(_ command: String, in directory: String) -> Int {
@@ -24,6 +25,7 @@ struct GitWorktreeTests {
         process.executableURL = URL(fileURLWithPath: "/bin/zsh")
         process.arguments = ["-c", command]
         process.currentDirectoryURL = URL(fileURLWithPath: directory)
+        process.environment = GitLocalEnvironment.scrubbing(ProcessInfo.processInfo.environment)
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = pipe

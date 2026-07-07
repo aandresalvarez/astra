@@ -1,6 +1,7 @@
 import Foundation
 import SwiftData
 import Testing
+import ASTRAModels
 @testable import ASTRA
 import ASTRACore
 
@@ -25,18 +26,63 @@ struct AstraExternalRoutingTests {
         #expect(AstraExternalRouteCodec.route(from: url, channel: .production) == nil)
     }
 
-    @Test("create and run route preserves goal and run flag")
-    func createAndRunRoutePreservesGoalAndRunFlag() throws {
+    @Test("external create task URL cannot authorize immediate run")
+    func externalCreateTaskURLCannotAuthorizeImmediateRun() throws {
         let workspaceID = UUID()
         let goal = "Fix checkout and add tests"
+        var components = URLComponents()
+        components.scheme = AstraExternalRouteCodec.scheme(for: .production)
+        components.host = "create-task"
+        components.queryItems = [
+            URLQueryItem(name: "workspace", value: workspaceID.uuidString),
+            URLQueryItem(name: "goal", value: goal),
+            URLQueryItem(name: "run", value: "1")
+        ]
+
+        let url = try #require(components.url)
+        let decoded = try #require(AstraExternalRouteCodec.route(from: url, channel: .production))
+
+        #expect(decoded.destination == .createTask(workspaceID: workspaceID, goal: goal, shouldRun: false))
+    }
+
+    @Test("generated external create task URL does not request immediate run")
+    func generatedExternalCreateTaskURLDoesNotRequestImmediateRun() throws {
+        let workspaceID = UUID()
         let route = AstraExternalRoute(
-            destination: .createTask(workspaceID: workspaceID, goal: goal, shouldRun: true)
+            destination: .createTask(workspaceID: workspaceID, goal: "Run the analysis", shouldRun: true)
         )
 
         let url = try #require(AstraExternalRouteCodec.url(for: route, channel: .production))
-        let decoded = try #require(AstraExternalRouteCodec.route(from: url, channel: .production))
+        let components = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
+        let runValue = components.queryItems?.first { $0.name == "run" }?.value
 
-        #expect(decoded.destination == .createTask(workspaceID: workspaceID, goal: goal, shouldRun: true))
+        #expect(runValue == "0")
+    }
+
+    @Test("external create task URL duplicate query keys preserve first value")
+    func externalCreateTaskURLDuplicateQueryKeysPreserveFirstValue() throws {
+        let workspaceID = UUID()
+        let ignoredWorkspaceID = UUID()
+        var components = URLComponents()
+        components.scheme = AstraExternalRouteCodec.scheme(for: .development)
+        components.host = "create-task"
+        components.queryItems = [
+            URLQueryItem(name: "workspace", value: workspaceID.uuidString),
+            URLQueryItem(name: "workspace", value: ignoredWorkspaceID.uuidString),
+            URLQueryItem(name: "goal", value: "Keep this goal"),
+            URLQueryItem(name: "goal", value: "Ignore this duplicate goal"),
+            URLQueryItem(name: "run", value: "1"),
+            URLQueryItem(name: "run", value: "false")
+        ]
+
+        let url = try #require(components.url)
+        let decoded = try #require(AstraExternalRouteCodec.route(from: url, channel: .development))
+
+        #expect(decoded.destination == .createTask(
+            workspaceID: workspaceID,
+            goal: "Keep this goal",
+            shouldRun: false
+        ))
     }
 
     @Test("voice task titles are compact and readable")
@@ -159,6 +205,38 @@ struct ContentExternalRouteResolverTests {
         #expect(task.events.count == 1)
         #expect(task.events.first?.type == "user.message")
         #expect(task.events.first?.payload == "Run the analysis")
+    }
+
+    @Test("external create task URL with run flag creates draft task")
+    @MainActor
+    func externalCreateTaskURLWithRunFlagCreatesDraftTask() throws {
+        let container = try makeExternalRouteContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Research", primaryPath: "/tmp/research-\(UUID().uuidString)")
+        context.insert(workspace)
+        try context.save()
+
+        var components = URLComponents()
+        components.scheme = AstraExternalRouteCodec.scheme(for: .development)
+        components.host = "create-task"
+        components.queryItems = [
+            URLQueryItem(name: "workspace", value: workspace.id.uuidString),
+            URLQueryItem(name: "goal", value: "Run the analysis"),
+            URLQueryItem(name: "run", value: "true")
+        ]
+        let url = try #require(components.url)
+        let route = try #require(AstraExternalRouteCodec.route(from: url, channel: .development))
+
+        let resolver = makeResolver(context: context)
+        guard case .createdTask(let task, let shouldRun) = resolver.resolve(route, workspaces: [workspace]) else {
+            Issue.record("Expected URL-originated task to resolve as a created draft")
+            return
+        }
+
+        #expect(shouldRun == false)
+        #expect(task.status == .draft)
+        #expect(task.events.isEmpty)
+        #expect(task.draftMessages.contains("Run the analysis"))
     }
 
     @Test("missing task routes return visible notice")

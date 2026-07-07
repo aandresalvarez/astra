@@ -1,5 +1,7 @@
 import Foundation
 import SwiftData
+import ASTRAModels
+import ASTRACore
 
 /// One-time-per-launch housekeeping that keeps the task store aligned with the
 /// board invariant ("only meaningful supervisable work"). It does two things,
@@ -13,10 +15,10 @@ import SwiftData
 ///     Keeps the earliest copy.
 ///
 /// It never deletes work the user ran, pinned, planned, or recently touched.
-enum TaskStoreMaintenance {
+public enum TaskStoreMaintenance {
     @discardableResult
     @MainActor
-    static func runStartupMaintenance(modelContext: ModelContext, now: Date = Date()) -> (prunedDrafts: Int, dedupedImports: Int) {
+    public static func runStartupMaintenance(modelContext: ModelContext, now: Date = Date()) -> (prunedDrafts: Int, dedupedImports: Int) {
         let allTasks = (try? modelContext.fetch(FetchDescriptor<AgentTask>())) ?? []
         let pruned = pruneAbandonedDrafts(allTasks, modelContext: modelContext, now: now)
         let deduped = deduplicateImportedSessions(allTasks, modelContext: modelContext)
@@ -31,7 +33,7 @@ enum TaskStoreMaintenance {
         // pruned drafts are a subset of the hidden set (`allTasks` is the
         // pre-prune snapshot), so subtract them to keep the count accurate.
         let hidden = max(0, allTasks.filter(TaskHygiene.isHiddenFromBoard).count - pruned)
-        AppLogger.audit(.taskStats, category: "App", fields: [
+        AuditLoggingSeam.required.audit(.taskStats, category: "App", fields: [
             "operation": "task_store_maintenance",
             "scanned_tasks": String(allTasks.count),
             "pruned_abandoned_drafts": String(pruned),
@@ -43,7 +45,7 @@ enum TaskStoreMaintenance {
 
     /// Delete low-signal drafts that have gone stale. Returns the count removed.
     @MainActor
-    static func pruneAbandonedDrafts(
+    public static func pruneAbandonedDrafts(
         _ tasks: [AgentTask],
         modelContext: ModelContext,
         olderThan staleInterval: TimeInterval = 24 * 3600,
@@ -60,7 +62,7 @@ enum TaskStoreMaintenance {
     /// Collapse duplicate Claude Code session imports that share a workspace and
     /// `sessionId`, keeping the earliest-created copy. Returns the count removed.
     @MainActor
-    static func deduplicateImportedSessions(_ tasks: [AgentTask], modelContext: ModelContext) -> Int {
+    public static func deduplicateImportedSessions(_ tasks: [AgentTask], modelContext: ModelContext) -> Int {
         // Group imported-session tasks by their (workspace, sessionId) identity.
         var groups: [String: [AgentTask]] = [:]
         for task in tasks where isImportedSessionTask(task) {

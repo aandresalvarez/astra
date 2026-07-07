@@ -1,6 +1,8 @@
 import Foundation
 import Testing
+import ASTRAModels
 @testable import ASTRA
+import ASTRACore
 
 @Suite("Task decision dock context builder")
 struct TaskDecisionDockContextBuilderTests {
@@ -25,6 +27,37 @@ struct TaskDecisionDockContextBuilderTests {
         #expect(reopened.decision?.title.isEmpty == false)
         #expect(reopened.taskScopedGrants == [.shellCommand(executable: "gh", pattern: "search prs *")])
         #expect(reopened.canApproveSimilarForTask)
+    }
+
+    @Test("runtime permission state reads typed open requests without audit events")
+    func runtimePermissionStateReadsTypedOpenRequestsWithoutAuditEvents() {
+        let workspace = Workspace(name: "Typed Approval", primaryPath: "/tmp/typed-approval")
+        let task = AgentTask(title: "Typed Approval", goal: "Review pull requests", workspace: workspace)
+        let payload = PermissionBroker.approvalPayloadString(
+            providerID: .claudeCode,
+            request: .shell(command: "gh search prs author:@me --limit 10", toolName: "Bash"),
+            reason: "The shell command requires user approval by the effective ASTRA policy.",
+            grants: [.shellCommand(executable: "gh", pattern: "search prs *")],
+            requestID: "typed-request-1"
+        )
+
+        TaskRuntimePermissionOpenRequestStore.recordOpenRequest(
+            payload: payload,
+            task: task,
+            at: Date(timeIntervalSince1970: 2_000)
+        )
+
+        let state = TaskRuntimePermissionState.build(task: task)
+        #expect(state.hasOpenApprovalRequest)
+        #expect(state.latestRequestPayload == payload)
+        #expect(state.taskScopedGrants == [.shellCommand(executable: "gh", pattern: "search prs *")])
+        #expect(TaskRuntimePermissionOpenRequestStore.latestRequestedToolName(for: task) == "Bash")
+
+        TaskRuntimePermissionOpenRequestStore.resolveOpenRequest(requestID: "typed-request-1", task: task)
+
+        #expect(!TaskRuntimePermissionState.build(task: task).hasOpenApprovalRequest)
+        #expect(TaskRuntimePermissionOpenRequestStore.latestRequestPayload(for: task) == nil)
+        #expect(task.runtimePermissionOpenRequestsJSON == "[]")
     }
 
     @Test("artifact paths are trimmed deduplicated and preserve first occurrence order")

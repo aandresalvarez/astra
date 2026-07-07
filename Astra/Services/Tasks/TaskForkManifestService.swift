@@ -1,4 +1,7 @@
 import Foundation
+import ASTRACore
+import ASTRAModels
+import ASTRAPersistence
 
 struct TaskForkManifest: Codable, Sendable, Equatable {
     struct FileReference: Codable, Sendable, Equatable, Hashable {
@@ -25,7 +28,7 @@ struct TaskForkManifest: Codable, Sendable, Equatable {
     var createdAt: Date
 }
 
-enum TaskForkManifestService {
+enum TaskForkManifestService: Sendable {
     static func manifestPath(taskFolder: String) -> String {
         guard !taskFolder.isEmpty else { return "" }
         return (taskFolder as NSString).appendingPathComponent(TaskForkManifest.fileName)
@@ -87,6 +90,15 @@ enum TaskForkManifestService {
         return load(taskFolder: folder, fileManager: fileManager)
     }
 
+    /// Primitive-ized for `TaskForkSourcePointerSeam`: the flattened checkpoint
+    /// file paths `WorkspaceFileIndexService` lists in the files shelf,
+    /// without exposing `TaskForkManifest`/`FileReference` across the seam.
+    static func checkpointFilePaths(for task: AgentTask, fileManager: FileManager) -> [String] {
+        guard let manifest = load(for: task, fileManager: fileManager) else { return [] }
+        return (manifest.sourceOutputFiles + manifest.sourceArtifacts)
+            .map { $0.localCopyPath ?? $0.sourcePath }
+    }
+
     static func load(taskFolder: String, fileManager: FileManager = .default) -> TaskForkManifest? {
         let path = manifestPath(taskFolder: taskFolder)
         let hostFileAccess = HostFileAccessBroker(fileManager: fileManager)
@@ -101,9 +113,9 @@ enum TaskForkManifestService {
         return try? JSONDecoder().decode(TaskForkManifest.self, from: data)
     }
 
-    static func sourcePointers(for task: AgentTask) -> [TaskContextState.SourcePointer] {
+    static func sourcePointers(for task: AgentTask) -> [TaskContextSourcePointer] {
         guard let manifest = load(for: task) else { return [] }
-        var pointers: [TaskContextState.SourcePointer] = []
+        var pointers: [TaskContextSourcePointer] = []
         let forkFolder = TaskWorkspaceAccess(task: task).taskFolder
         let path = manifestPath(taskFolder: forkFolder)
         if !path.isEmpty {
@@ -330,8 +342,8 @@ enum TaskForkManifestService {
         id: String?,
         path: String? = nil,
         summary: String
-    ) -> TaskContextState.SourcePointer {
-        TaskContextState.SourcePointer(kind: kind, id: id, path: path, summary: summary)
+    ) -> TaskContextSourcePointer {
+        TaskContextSourcePointer(kind: kind, id: id, path: path, summary: summary)
     }
 
     private static func dedupe(_ paths: [String]) -> [String] {
@@ -360,5 +372,51 @@ enum TaskForkManifestService {
             index += 1
         }
         return candidate
+    }
+}
+
+/// Registered as the `TaskForkManifestWritingSeam`
+/// (`ASTRACore/TaskForkLifecycleSeams.swift`) backing implementation - see
+/// that file's header for why this reconstructs scratch, never-persisted
+/// `AgentTask`/`TaskRun`/`Artifact`/`Workspace` instances from
+/// `TaskForkManifestRequest` and runs the real, unchanged
+/// `TaskForkManifestService.writeManifest(source:forked:targetRun:...)` on
+/// them, rather than re-deriving its file-I/O logic as primitives.
+enum TaskForkManifestWritingAdapter: TaskForkManifestWriting {
+    static func writeManifest(_ request: TaskForkManifestRequest) throws -> TaskForkManifestSummary {
+        let sourceWorkspace = Workspace(name: "fork-source-scratch", primaryPath: request.sourceWorkspacePath)
+        let source = AgentTask(title: "", goal: "", workspace: sourceWorkspace)
+        source.id = request.sourceTaskID
+        source.artifacts = request.sourceArtifacts.map { fact in
+            let artifact = Artifact(task: source, type: "file", path: fact.path)
+            artifact.createdAt = fact.createdAt
+            return artifact
+        }
+
+        let forkedWorkspace = Workspace(name: "fork-scratch", primaryPath: request.forkedWorkspacePath)
+        let forked = AgentTask(title: "", goal: "", workspace: forkedWorkspace)
+        forked.id = request.forkedTaskID
+
+        let targetRun = TaskRun(task: forked)
+        targetRun.id = request.checkpointRunID
+        targetRun.startedAt = request.checkpointRunStartedAt
+        targetRun.completedAt = request.checkpointRunCompletedAt
+
+        let manifest = try TaskForkManifestService.writeManifest(
+            source: source,
+            forked: forked,
+            targetRun: targetRun,
+            checkpointRunIndex: request.checkpointRunIndex,
+            copiedRunIDs: request.copiedRunIDs
+        )
+        return TaskForkManifestSummary(
+            sourceTaskID: manifest.sourceTaskID,
+            checkpointRunID: manifest.checkpointRunID,
+            checkpointRunIndex: manifest.checkpointRunIndex
+        )
+    }
+
+    static func manifestPath(taskFolder: String) -> String {
+        TaskForkManifestService.manifestPath(taskFolder: taskFolder)
     }
 }

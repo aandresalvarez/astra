@@ -1,5 +1,8 @@
 import Foundation
 import SwiftData
+import ASTRACore
+import ASTRAModels
+import ASTRAPersistence
 
 @MainActor
 enum AgentRuntimeRunPersistence {
@@ -23,13 +26,31 @@ enum AgentRuntimeRunPersistence {
             durationMs: run.completedAt.map { Int($0.timeIntervalSince(run.startedAt) * 1000) }
         )
         TaskContextStateManager.recordTurn(task: task, run: run, message: message)
+
+        // Tier 2 objective re-assessment: opt-in, background-only, and gated by
+        // its own deterministic trigger predicate (turn/hash/staleness) so it
+        // never runs on every turn even when the setting is on. Never awaited
+        // here -- this must stay off the render/refresh path (INVARIANTS #2).
+        if UserDefaults.standard.bool(forKey: AppStorageKeys.objectiveDriftDetectionEnabled) {
+            Task { @MainActor in
+                await ObjectiveAssessmentService.assessIfNeeded(task: task)
+            }
+        } else {
+            // Setting is off: drop any stale assessment left over from when it
+            // was previously enabled so follow-up framing reverts to Tier-1-only
+            // behavior immediately, per the Settings copy's "failures leave
+            // existing behavior unchanged" contract. Synchronous and cheap (a
+            // no-op when nothing is persisted); see
+            // ObjectiveAssessmentService.clearAssessmentIfDriftDetectionDisabled.
+            ObjectiveAssessmentService.clearAssessmentIfDriftDetectionDisabled(task: task)
+        }
     }
 
     static func finalizeAndPersist(
         task: AgentTask,
         run: TaskRun,
         modelContext: ModelContext,
-        phase: String,
+        phase: RunPhase,
         handoffDiscoveredFiles: [TaskOutputDiscoveredFile]? = nil
     ) {
         let start = DispatchTime.now().uptimeNanoseconds
@@ -90,7 +111,7 @@ enum AgentRuntimeRunPersistence {
     static func fields(
         task: AgentTask,
         run: TaskRun,
-        phase: String,
+        phase: RunPhase,
         persistedArtifactCount: Int = 0
     ) -> [String: String] {
         let start = DispatchTime.now().uptimeNanoseconds
@@ -102,7 +123,7 @@ enum AgentRuntimeRunPersistence {
         let errorEventCount = runEvents.filter { $0.type == "error" }.count
         let artifactCount = task.artifacts.count
         var fields: [String: String] = [
-            "phase": phase,
+            "phase": phase.rawValue,
             "runtime": run.runtimeID ?? task.resolvedRuntimeID.rawValue,
             "task_status": task.status.rawValue,
             "run_status": run.status.rawValue,

@@ -1,6 +1,8 @@
 import Foundation
 import SwiftData
 import ASTRACore
+import ASTRAModels
+import ASTRAPersistence
 
 @MainActor
 struct CapabilityUninstaller {

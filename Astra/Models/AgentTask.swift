@@ -2,7 +2,7 @@ import Foundation
 import SwiftData
 import ASTRACore
 
-enum TaskStatus: String, Codable, CaseIterable, Sendable {
+public enum TaskStatus: String, Codable, CaseIterable, Sendable {
     case draft
     case queued
     case running
@@ -13,81 +13,87 @@ enum TaskStatus: String, Codable, CaseIterable, Sendable {
     case budgetExceeded = "budget_exceeded"
 }
 
-enum IsolationStrategy: String, Codable, CaseIterable {
+public enum IsolationStrategy: String, Codable, CaseIterable {
     case sameDirectory = "same_directory"
     case gitBranch = "git_branch"
     case copy
 }
 
-enum ValidationStrategy: String, Codable, CaseIterable {
+public enum ValidationStrategy: String, Codable, CaseIterable {
     case manual
     case runTests = "run_tests"
     case aiCheck = "ai_check"
 }
 
 @Model
-final class AgentTask {
-    var id: UUID
-    var title: String
-    var goal: String
-    var inputs: [String]
-    var constraints: [String]
-    var acceptanceCriteria: [String]
-    var status: TaskStatus
-    var workspace: Workspace?
-    var isolationStrategy: IsolationStrategy
-    var validationStrategy: ValidationStrategy
-    var tokenBudget: Int
-    var tokensUsed: Int
-    var model: String
-    var runtimeID: String?
-    var testCommand: String
-    var costUSD: Double
-    var queuePosition: Int
-    var sessionId: String?
-    var chainedGoal: String          // If set, auto-creates a follow-up task on completion
-    var chainedFromID: UUID?         // ID of the task that spawned this one
-    var forkedFromID: UUID?          // ID of the source task this was forked from
-    var forkedAtRunIndex: Int        // Index of the run at the fork point (0-based)
-    var draftMessages: String        // JSON-encoded conversation for draft tasks
-    var maxTurns: Int               // 0 = unlimited
+public final class AgentTask {
+    public var id: UUID
+    public var title: String
+    public var goal: String
+    public var inputs: [String]
+    public var constraints: [String]
+    public var acceptanceCriteria: [String]
+    public var status: TaskStatus
+    public var workspace: Workspace?
+    public var isolationStrategy: IsolationStrategy
+    public var validationStrategy: ValidationStrategy
+    public var tokenBudget: Int
+    public var tokensUsed: Int
+    public var model: String
+    public var runtimeID: String?
+    public var testCommand: String
+    public var costUSD: Double
+    public var queuePosition: Int
+    public var sessionId: String?
+    public var chainedGoal: String          // If set, auto-creates a follow-up task on completion
+    public var chainedFromID: UUID?         // ID of the task that spawned this one
+    public var forkedFromID: UUID?          // ID of the source task this was forked from
+    public var forkedAtRunIndex: Int        // Index of the run at the fork point (0-based)
+    public var draftMessages: String        // JSON-encoded conversation for draft tasks
+    public var maxTurns: Int               // 0 = unlimited
     // Agent Teams
-    var useAgentTeam: Bool
-    var teamSize: Int
-    var teamInstructions: String
-    var templateID: UUID?          // TaskTemplate this task was created from
-    var templateHooksJSON: String   // Hooks to inject during execution (from template)
-    var originScheduleID: UUID?    // Schedule that spawned this task (for result routing)
-    var skillSnapshotsJSON: String  // JSON-encoded task-time skill definitions for durable history
-    var isPinned: Bool
-    var isDone: Bool
-    var unreadAt: Date?
+    public var useAgentTeam: Bool
+    public var teamSize: Int
+    public var teamInstructions: String
+    public var templateID: UUID?          // TaskTemplate this task was created from
+    public var templateHooksJSON: String   // Hooks to inject during execution (from template)
+    public var originScheduleID: UUID?    // Schedule that spawned this task (for result routing)
+    public var skillSnapshotsJSON: String  // JSON-encoded task-time skill definitions for durable history
+    public var isPinned: Bool
+    public var isDone: Bool
+    public var unreadAt: Date?
     /// The code root this thread is pinned to for its entire life, captured at
     /// creation time. `nil` means resolve from the workspace as before. A
     /// non-nil value is the absolute path of a git worktree, so resuming this
     /// thread always lands in the same checkout regardless of how the
     /// workspace's active location later changes.
-    var executionRootPath: String?
+    public var executionRootPath: String?
     /// JSON-encoded immutable execution environment for this thread. Nil means
     /// host unless the first run snapshots the workspace default.
-    var executionEnvironmentSnapshotJSON: String?
-    var createdAt: Date
-    var updatedAt: Date
-    var completedAt: Date?
+    public var executionEnvironmentSnapshotJSON: String?
+    /// JSON-encoded runtime permission requests that are currently open for
+    /// user action. Events remain the audit trail; this field owns live state.
+    public var runtimePermissionOpenRequestsJSON: String?
+    /// JSON-encoded task-scoped runtime permission grants approved for reuse.
+    /// Events remain the audit trail; this field owns replay decisions.
+    public var runtimePermissionGrantsJSON: String?
+    public var createdAt: Date
+    public var updatedAt: Date
+    public var completedAt: Date?
 
     @Relationship(deleteRule: .cascade, inverse: \TaskRun.task)
-    var runs: [TaskRun] = []
+    public var runs: [TaskRun] = []
 
     @Relationship(deleteRule: .cascade, inverse: \TaskEvent.task)
-    var events: [TaskEvent] = []
+    public var events: [TaskEvent] = []
 
     @Relationship(deleteRule: .cascade, inverse: \Artifact.task)
-    var artifacts: [Artifact] = []
+    public var artifacts: [Artifact] = []
 
     @Relationship
-    var skills: [Skill] = []
+    public var skills: [Skill] = []
 
-    init(
+    public init(
         title: String,
         goal: String,
         workspace: Workspace? = nil,
@@ -133,15 +139,17 @@ final class AgentTask {
         self.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encodeSnapshot(
             ExecutionEnvironmentStore.decode(workspace?.activeExecutionEnvironmentJSON)
         )
+        self.runtimePermissionOpenRequestsJSON = "[]"
+        self.runtimePermissionGrantsJSON = "[]"
         self.createdAt = Date()
         self.updatedAt = Date()
     }
 
-    var resolvedRuntimeID: AgentRuntimeID {
+    public var resolvedRuntimeID: AgentRuntimeID {
         AgentRuntimeID(rawValue: runtimeID ?? "") ?? TaskExecutionDefaults.runtime
     }
 
-    var skillSnapshots: [SkillSnapshotConfig] {
+    public var skillSnapshots: [SkillSnapshotConfig] {
         get {
             guard let data = skillSnapshotsJSON.data(using: .utf8) else { return [] }
             return (try? JSONDecoder().decode([SkillSnapshotConfig].self, from: data)) ?? []
@@ -155,25 +163,26 @@ final class AgentTask {
         }
     }
 
-    var isForked: Bool { forkedFromID != nil }
+    public var isForked: Bool { forkedFromID != nil }
 
-    var hasProviderSession: Bool {
+    public var hasProviderSession: Bool {
         sessionId?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
     }
 
-    static func fork(from source: AgentTask, upToRun targetRun: TaskRun, in context: ModelContext) -> AgentTask {
+    @MainActor
+    public static func fork(from source: AgentTask, upToRun targetRun: TaskRun, in context: ModelContext) -> AgentTask {
         AgentTaskForkService.fork(from: source, upToRun: targetRun, in: context)
     }
 
-    var isTerminal: Bool {
+    public var isTerminal: Bool {
         [.completed, .failed, .cancelled, .budgetExceeded].contains(status)
     }
 
-    var shouldShowUnread: Bool {
+    public var shouldShowUnread: Bool {
         unreadAt != nil
     }
 
-    func markUnreadForCurrentStatus(at date: Date = Date()) {
+    public func markUnreadForCurrentStatus(at date: Date = Date()) {
         if [.completed, .failed, .pendingUser, .budgetExceeded].contains(status) {
             unreadAt = date
         } else {
@@ -181,16 +190,16 @@ final class AgentTask {
         }
     }
 
-    func markRead() {
+    public func markRead() {
         unreadAt = nil
     }
 
-    var budgetProgress: Double {
+    public var budgetProgress: Double {
         guard tokenBudget > 0 else { return 0 }
         return min(1.0, max(0, Double(tokensUsed) / Double(tokenBudget)))
     }
 
-    var threadMessageCount: Int {
+    public var threadMessageCount: Int {
         let messageCount = events.filter { event in
             event.type == "user.message" || event.type == "agent.response"
         }.count
@@ -202,12 +211,12 @@ final class AgentTask {
         return Self.fallbackThreadMessageCount(forGoal: goal)
     }
 
-    static func fallbackThreadMessageCount(forGoal goal: String) -> Int {
+    public static func fallbackThreadMessageCount(forGoal goal: String) -> Int {
         goal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 0 : 1
     }
 
-    var statusColor: String {
-        TaskPresentationState.statusColor(for: status)
+    public var statusColor: String {
+        TaskStatusPresentation.color(for: status.rawValue)
     }
 
 }

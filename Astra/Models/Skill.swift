@@ -3,31 +3,31 @@ import SwiftData
 import ASTRACore
 
 @Model
-final class Skill {
-    var id: UUID
-    var name: String
-    var skillDescription: String
-    var icon: String
-    var allowedTools: [String]
-    var disallowedTools: [String]
-    var customTools: [String]
-    var behaviorInstructions: String
-    var environmentKeys: [String]
+public final class Skill {
+    public var id: UUID
+    public var name: String
+    public var skillDescription: String
+    public var icon: String
+    public var allowedTools: [String]
+    public var disallowedTools: [String]
+    public var customTools: [String]
+    public var behaviorInstructions: String
+    public var environmentKeys: [String]
     // Non-secret values remain here. Secret values are migrated to Keychain and
     // their stored placeholders are kept blank for compatibility.
-    var environmentValues: [String]
-    var originPackageID: String?
-    var originPackageVersion: String?
-    var originComponentID: String?
-    var originComponentKind: String?
-    var originSourceKind: String?
-    var createdAt: Date
-    var updatedAt: Date
+    public var environmentValues: [String]
+    public var originPackageID: String?
+    public var originPackageVersion: String?
+    public var originComponentID: String?
+    public var originComponentKind: String?
+    public var originSourceKind: String?
+    public var createdAt: Date
+    public var updatedAt: Date
 
-    var isGlobal: Bool = false
-    var isBuiltIn: Bool = false
+    public var isGlobal: Bool = false
+    public var isBuiltIn: Bool = false
 
-    static let builtInNames: Set<String> = [
+    public static let builtInNames: Set<String> = [
         "Read-Only",
         "Safe Bash",
         "Test Runner",
@@ -35,29 +35,29 @@ final class Skill {
         "Safe Executor"
     ]
 
-    var isSystemBuiltIn: Bool {
+    public var isSystemBuiltIn: Bool {
         isBuiltIn || Self.isBuiltInName(name)
     }
 
-    static func isBuiltInName(_ name: String) -> Bool {
+    public static func isBuiltInName(_ name: String) -> Bool {
         builtInNames.contains(name.trimmingCharacters(in: .whitespacesAndNewlines))
     }
 
-    var workspace: Workspace?
+    public var workspace: Workspace?
 
     @Relationship(inverse: \AgentTask.skills)
-    var tasks: [AgentTask] = []
+    public var tasks: [AgentTask] = []
 
     // Three-layer architecture: skills reference connectors and local tools
     @Relationship(inverse: \Connector.skill)
-    var connectors: [Connector] = []
+    public var connectors: [Connector] = []
 
     @Relationship(inverse: \LocalTool.skill)
-    var localTools: [LocalTool] = []
+    public var localTools: [LocalTool] = []
 
-    static let secretPatterns = ["KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL", "AUTH"]
+    public static let secretPatterns = ["KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL", "AUTH"]
 
-    init(
+    public init(
         name: String = "",
         icon: String = "puzzlepiece.extension",
         skillDescription: String = "",
@@ -88,7 +88,7 @@ final class Skill {
     }
 
     /// Environment variables as a dictionary (stored as parallel arrays for SwiftData compatibility)
-    var environmentVariables: [String: String] {
+    public var environmentVariables: [String: String] {
         get {
             var merged: [String: String] = [:]
             for (index, key) in environmentKeys.enumerated() {
@@ -118,39 +118,40 @@ final class Skill {
 
             let newSecretKeys = Set(environmentKeys.filter(Self.isSecretEnvironmentKey))
             for key in oldSecretKeys where !newSecretKeys.contains(key) {
-                KeychainService.delete(key: key, skillID: id)
+                let deleted = SkillSecretSeam.required.deleteSecret(key: key, skillID: id)
+                AuditLoggingSeam.required.audit(.skillSecretRemoved, category: "Keychain", fields: [
+                    "skill_id": id.uuidString,
+                    "result": deleted ? "removed" : "failed"
+                ], level: deleted ? .info : .warning)
             }
         }
     }
 
-    static func isSecretEnvironmentKey(_ key: String) -> Bool {
+    public static func isSecretEnvironmentKey(_ key: String) -> Bool {
         let upper = key.uppercased()
         return secretPatterns.contains { upper.contains($0) }
     }
 
-    var exportableEnvironmentValues: [String] {
+    public var exportableEnvironmentValues: [String] {
         normalizedEnvironmentValues().enumerated().map { index, value in
             let key = environmentKeys[index]
             return Self.isSecretEnvironmentKey(key) ? "" : value
         }
     }
 
-    func valueForEnvironmentKey(at index: Int) -> String {
-        valueForEnvironmentKey(at: index, store: KeychainSecretStore())
+    public func valueForEnvironmentKey(at index: Int) -> String {
+        valueForEnvironmentKey(at: index, store: SecretStoreSeam.required)
     }
 
-    func valueForEnvironmentKey(at index: Int, store: SecretStore) -> String {
+    public func valueForEnvironmentKey(at index: Int, store: SecretStore) -> String {
         guard index < environmentKeys.count else { return "" }
         let key = environmentKeys[index]
         let storedValue = normalizedEnvironmentValue(at: index)
-        if Self.isSecretEnvironmentKey(key) {
-            let entityID = KeychainSecretStore.skillEntityID(for: id)
-            return store.load(key: key, entityID: entityID) ?? storedValue
-        }
-        return storedValue
+        guard Self.isSecretEnvironmentKey(key) else { return storedValue }
+        return SkillSecretSeam.required.loadSecretValue(key: key, skillID: id, store: store) ?? storedValue
     }
 
-    func upsertEnvironmentEntry(
+    public func upsertEnvironmentEntry(
         key rawKey: String,
         value: String,
         allowUserInteraction: Bool = false
@@ -168,21 +169,21 @@ final class Skill {
         }
     }
 
-    func setEnvironmentValue(_ value: String, at index: Int, allowUserInteraction: Bool = false) {
+    public func setEnvironmentValue(_ value: String, at index: Int, allowUserInteraction: Bool = false) {
         guard index < environmentKeys.count else { return }
         ensureEnvironmentValueCapacity()
 
         let key = environmentKeys[index]
         if Self.isSecretEnvironmentKey(key) {
             if !value.isEmpty {
-                let saved = KeychainService.save(
+                let saved = SkillSecretSeam.required.saveSecretValue(
+                    value,
                     key: key,
-                    value: value,
                     skillID: id,
-                    label: "Astra: \(name)",
+                    skillName: name,
                     allowUserInteraction: allowUserInteraction
                 )
-                AppLogger.audit(.skillSecretAdded, category: "Keychain", fields: [
+                AuditLoggingSeam.required.audit(.skillSecretAdded, category: "Keychain", fields: [
                     "skill_id": id.uuidString,
                     "result": saved ? "stored" : "failed"
                 ], level: saved ? .info : .warning)
@@ -196,12 +197,12 @@ final class Skill {
         updatedAt = Date()
     }
 
-    func removeEnvironmentEntry(at index: Int) {
+    public func removeEnvironmentEntry(at index: Int) {
         guard index < environmentKeys.count else { return }
         let key = environmentKeys[index]
         if Self.isSecretEnvironmentKey(key) {
-            let deleted = KeychainService.delete(key: key, skillID: id)
-            AppLogger.audit(.skillSecretRemoved, category: "Keychain", fields: [
+            let deleted = SkillSecretSeam.required.deleteSecret(key: key, skillID: id)
+            AuditLoggingSeam.required.audit(.skillSecretRemoved, category: "Keychain", fields: [
                 "skill_id": id.uuidString,
                 "result": deleted ? "removed" : "failed"
             ], level: deleted ? .info : .warning)
@@ -213,32 +214,32 @@ final class Skill {
         updatedAt = Date()
     }
 
-    func migrateSecretsToKeychain() {
+    public func migrateSecretsToKeychain() {
         ensureEnvironmentValueCapacity()
 
         for (index, key) in environmentKeys.enumerated() where Self.isSecretEnvironmentKey(key) {
             let legacyValue = environmentValues[index]
             guard !legacyValue.isEmpty else { continue }
 
-            if KeychainService.exists(key: key, skillID: id) {
+            if SkillSecretSeam.required.secretExists(key: key, skillID: id) {
                 environmentValues[index] = ""
                 continue
             }
 
-            if KeychainService.save(key: key, value: legacyValue, skillID: id, label: "Astra: \(name)") {
+            if SkillSecretSeam.required.saveSecretValue(legacyValue, key: key, skillID: id, skillName: name, allowUserInteraction: false) {
                 environmentValues[index] = ""
             }
         }
     }
 
-    func cleanupKeychain() {
-        KeychainService.deleteAll(skillID: id)
-        AppLogger.audit(.skillDeleted, category: "Keychain", fields: [
+    public func cleanupKeychain() {
+        SkillSecretSeam.required.deleteAllSecrets(skillID: id)
+        AuditLoggingSeam.required.audit(.skillDeleted, category: "Keychain", fields: [
             "skill_id": id.uuidString
         ])
     }
 
-    private func normalizedEnvironmentValue(at index: Int) -> String {
+    public func normalizedEnvironmentValue(at index: Int) -> String {
         guard index < environmentValues.count else { return "" }
         return environmentValues[index]
     }
@@ -250,7 +251,7 @@ final class Skill {
         return environmentValues + Array(repeating: "", count: environmentKeys.count - environmentValues.count)
     }
 
-    private func ensureEnvironmentValueCapacity() {
+    public func ensureEnvironmentValueCapacity() {
         if environmentValues.count < environmentKeys.count {
             environmentValues.append(contentsOf: Array(repeating: "", count: environmentKeys.count - environmentValues.count))
         } else if environmentValues.count > environmentKeys.count {
@@ -259,19 +260,33 @@ final class Skill {
     }
 
     /// All environment variables: legacy env vars + connector env vars merged
-    var resolvedAllEnvironmentVariables: [String: String] {
+    public var resolvedAllEnvironmentVariables: [String: String] {
         var merged = environmentVariables
-        for (key, value) in ConnectorRuntimeProjection(connectors: connectors).environmentVariables() {
+        let facts = connectors.map { connector in
+            ConnectorEnvironmentFacts(
+                id: connector.id,
+                name: connector.name,
+                serviceType: connector.serviceType,
+                baseURL: connector.baseURL,
+                authMethod: connector.authMethod,
+                credentialKeys: connector.credentialKeys,
+                configKeys: connector.configKeys,
+                configValues: connector.configValues,
+                originPackageID: connector.originPackageID,
+                originComponentID: connector.originComponentID
+            )
+        }
+        for (key, value) in ConnectorEnvironmentProjectionSeam.required.environmentVariables(for: facts) {
             merged[key] = value
         }
         return merged
     }
 
     /// System tools always included — agent can't function without these
-    static let systemTools: Set<String> = ["Read", "Glob", "Grep"]
+    public static let systemTools: Set<String> = ["Read", "Glob", "Grep"]
 
     /// All logical tools the agent can use, including system tools, custom tools and named local tools.
-    var allAllowedTools: [String] {
+    public var allAllowedTools: [String] {
         var tools = allowedTools + customTools
         for tool in localTools where !tool.command.isEmpty {
             tools.append(tool.command)
@@ -285,25 +300,25 @@ final class Skill {
     }
 
     /// Summary of attached connectors for display
-    var connectorSummary: String {
+    public var connectorSummary: String {
         connectors.isEmpty ? "" : connectors.map(\.name).joined(separator: ", ")
     }
 
     /// Summary of attached local tools for display
-    var localToolSummary: String {
+    public var localToolSummary: String {
         localTools.isEmpty ? "" : localTools.map(\.name).joined(separator: ", ")
     }
 
-    static let knownTools = [
+    public static let knownTools = [
         "Read", "Write", "Edit", "Bash", "Glob", "Grep",
         "WebFetch", "WebSearch", "Agent", "NotebookEdit", "TodoWrite"
     ]
 
-    static let defaultAllowed = [
+    public static let defaultAllowed = [
         "Write", "Edit", "Read", "Bash", "Glob", "Grep"
     ]
 
-    static let toolDescriptions: [String: String] = [
+    public static let toolDescriptions: [String: String] = [
         "Read": "Read file contents",
         "Write": "Create new files",
         "Edit": "Modify existing files",

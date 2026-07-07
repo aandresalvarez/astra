@@ -1,4 +1,5 @@
 import Testing
+import ASTRAModels
 @testable import ASTRA
 import ASTRACore
 
@@ -144,6 +145,37 @@ struct CapabilityGalleryInventoryTests {
 
         #expect(userPackages.map(\.id) == ["approved"])
         #expect(Set(adminPackages.map(\.id)) == ["approved", "blocked", "draft"])
+    }
+
+    @Test("management inventory excludes hidden packages even for admins")
+    @MainActor
+    func managementInventoryExcludesHiddenPackagesEvenForAdmins() {
+        let workspace = Workspace(name: "Gallery", primaryPath: "/tmp/gallery")
+        let visible = makeGalleryPackage(id: "visible", name: "Visible", category: "A")
+        let hidden = makeGalleryPackage(
+            id: "hidden",
+            name: "Hidden",
+            category: "A",
+            governance: CapabilityGovernance(
+                approvalStatus: .approved,
+                riskLevel: .low,
+                visibility: .hidden,
+                requiresAdminApproval: false,
+                requiresExplicitUserConsent: false
+            )
+        )
+
+        let packages = CapabilityGalleryInventory.managementPackages(
+            catalogPackages: [hidden, visible],
+            capabilities: WorkspaceCapabilities(workspace: workspace),
+            workspace: workspace,
+            policyContext: CapabilityCatalogPolicyContext(
+                isAdmin: true,
+                currentAppVersion: SemanticVersion(1, 0, 0)
+            )
+        )
+
+        #expect(packages.map(\.id) == ["visible"])
     }
 
     @Test("gallery applies role and workspace tag policy context")

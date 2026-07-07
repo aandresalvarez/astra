@@ -1,7 +1,18 @@
 import Foundation
+import SwiftData
 import Testing
+import ASTRAModels
 @testable import ASTRA
 import ASTRACore
+
+private func makeCodexRuntimeTestContainer() throws -> ModelContainer {
+    let config = ModelConfiguration(isStoredInMemoryOnly: true)
+    return try ModelContainer(
+        for: ASTRASchema.current,
+        migrationPlan: ASTRAMigrationPlan.self,
+        configurations: [config]
+    )
+}
 
 @Suite("Codex CLI Runtime")
 struct CodexCLIRuntimeTests {
@@ -70,6 +81,32 @@ struct CodexCLIRuntimeTests {
         }
     }
 
+    @MainActor
+    @Test("Codex adapter follow-up mode accumulates usage instead of resetting task total")
+    func codexAdapterFollowUpModeAccumulatesUsage() throws {
+        let container = try makeCodexRuntimeTestContainer()
+        let context = container.mainContext
+        let task = AgentTask(title: "Follow-up", goal: "Continue a Codex run")
+        task.tokensUsed = 40
+        let run = TaskRun(task: task)
+        context.insert(task)
+        context.insert(run)
+
+        CodexCLIRuntimeAdapter().recordWorkerStreamEvent(
+            .agent(.stats(inputTokens: 3, outputTokens: 7, costUSD: nil, durationMs: nil, turns: nil)),
+            mode: .followUp,
+            task: task,
+            run: run,
+            modelContext: context,
+            recordingState: AgentEventRecordingState()
+        )
+
+        #expect(run.tokensUsed == 10)
+        #expect(run.inputTokens == 3)
+        #expect(run.outputTokens == 7)
+        #expect(task.tokensUsed == 50)
+    }
+
     @Test("Codex stream parser treats known lifecycle and item shapes as typed events")
     func codexStreamParserTreatsKnownLifecycleAndItemShapesAsTypedEvents() {
         let lines = [
@@ -108,7 +145,7 @@ struct CodexCLIRuntimeTests {
             Issue.record("Expected command execution item completion to map to tool result")
         }
 
-        if case .fileChange(let path, let kind, let summary) = parsedEvents[3].first {
+        if case .fileChange(let path, let kind, let summary, _, _) = parsedEvents[3].first {
             #expect(path == ".astra/tasks/EBF58891/index.html")
             #expect(kind == "modified")
             #expect(summary == "Wrote the validation page")
@@ -139,7 +176,11 @@ struct CodexCLIRuntimeTests {
             taskEnvironment: ["ASTRA_TASK_ID": "task-1"],
             providerHomeDirectory: "/tmp/codex-home",
             pathPrefix: ["/tmp/tools"],
-            includeAstraToolsPath: true
+            includeAstraToolsPath: true,
+            permissionArguments: ProviderPolicyRender.codexLaunchPermissionArguments(
+                policy: .restricted,
+                resumingNativeSession: false
+            )
         )
 
         #expect(plan.executablePath == "/opt/codex")
@@ -235,7 +276,11 @@ struct CodexCLIRuntimeTests {
             permissionPolicy: .restricted,
             timeoutSeconds: 60,
             taskEnvironment: [:],
-            resumeSessionID: "thread-abc-123"
+            resumeSessionID: "thread-abc-123",
+            permissionArguments: ProviderPolicyRender.codexLaunchPermissionArguments(
+                policy: .restricted,
+                resumingNativeSession: true
+            )
         )
 
         #expect(plan.arguments.starts(with: ["exec", "resume", "--json"]))
@@ -295,7 +340,11 @@ struct CodexCLIRuntimeTests {
             additionalPaths: [],
             permissionPolicy: .autonomous,
             timeoutSeconds: 60,
-            taskEnvironment: [:]
+            taskEnvironment: [:],
+            permissionArguments: ProviderPolicyRender.codexLaunchPermissionArguments(
+                policy: .autonomous,
+                resumingNativeSession: false
+            )
         )
 
         #expect(plan.arguments.contains("--sandbox") == false)
@@ -327,5 +376,49 @@ struct CodexCLIRuntimeTests {
         #expect(render.generatedConfigPreview.contains("--ask-for-approval") == false)
         #expect(render.diagnostics.contains { $0.id == "codex_cli.fine-grained-provider-native-gap" })
         #expect(render.usesBroadProviderPermissions == false)
+    }
+
+    @Test("Codex locked policy render uses read-only provider mode")
+    func codexLockedPolicyRenderUsesReadOnlyProviderMode() {
+        let render = CodexPolicyAdapter().render(
+            policy: .preset(.locked),
+            context: PolicyRenderContext(
+                runtimeID: .codexCLI,
+                model: "gpt-5.5",
+                workspacePath: "/tmp/workspace",
+                additionalPaths: [],
+                requestedAllowedTools: ["Read", "Bash"],
+                localToolCommands: [],
+                environmentKeyNames: [],
+                credentialLabels: [],
+                providerFeatures: CodexPolicyAdapter().supportedFeatures
+            )
+        )
+
+        #expect(render.policyLevel == .locked)
+        #expect(render.permissionMode == .readOnly)
+        #expect(render.generatedConfigPreview.contains("--sandbox read-only"))
+        #expect(render.generatedConfigPreview.contains("--sandbox workspace-write") == false)
+        #expect(render.codexLaunchPermissionArguments(resumingNativeSession: true).contains("sandbox_mode=\"read-only\""))
+    }
+
+    @Test("Provider permission mode decodes legacy strings fail closed")
+    func providerPermissionModeDecodesLegacyStringsFailClosed() throws {
+        let known = try JSONDecoder().decode(
+            ProviderPermissionMode.self,
+            from: Data(#""restricted""#.utf8)
+        )
+        let readOnly = try JSONDecoder().decode(
+            ProviderPermissionMode.self,
+            from: Data(#""readOnly""#.utf8)
+        )
+        let unknown = try JSONDecoder().decode(
+            ProviderPermissionMode.self,
+            from: Data(#""future-provider-mode""#.utf8)
+        )
+
+        #expect(known == .restricted)
+        #expect(readOnly == .readOnly)
+        #expect(unknown == .restricted)
     }
 }

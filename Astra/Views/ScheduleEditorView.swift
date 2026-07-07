@@ -2,6 +2,8 @@ import AppKit
 import SwiftUI
 import SwiftData
 import ASTRACore
+import ASTRAModels
+import ASTRAPersistence
 
 struct ScheduleEditorView: View {
     @Environment(\.modelContext) private var modelContext
@@ -341,7 +343,7 @@ struct ScheduleEditorView: View {
                                 Spacer()
                                 Picker("", selection: $tokenBudget) {
                                     ForEach(budgetPresets, id: \.self) { b in
-                                        Text(b == 0 ? "Unlimited" : "\(b / 1000)k").tag(b)
+                                        Text(RuntimeBudgetPresentation.compactLabel(for: b)).tag(b)
                                     }
                                 }
                                 .labelsHidden()
@@ -709,7 +711,7 @@ struct ScheduleEditorView: View {
             ) ?? Date().addingTimeInterval(604800)
         }
 
-        s.isEnabled = true
+        s.isEnabled = ScheduleEditorPersistencePolicy.enabledStateAfterSave(existingIsEnabled: schedule?.isEnabled)
         s.updatedAt = Date()
 
         if schedule == nil {

@@ -1,6 +1,8 @@
 import Foundation
 import SwiftData
 import Testing
+import ASTRAModels
+import ASTRAPersistence
 @testable import ASTRA
 import ASTRACore
 
@@ -530,6 +532,7 @@ struct TaskContextStateTests {
     func contextCapsuleMarksOptionalOnlyValidationContractPassed() async throws {
         let root = try temporaryRoot()
         defer { try? FileManager.default.removeItem(atPath: root) }
+        try writeMinimalSwiftPackage(at: root)
         let container = try makeTaskContextStateContainer()
         let context = ModelContext(container)
         let workspace = Workspace(name: "Optional Contract Plan", primaryPath: root)
@@ -552,7 +555,7 @@ struct TaskContextStateTests {
                     description: "Advisory proof command passes",
                     method: .command,
                     required: false,
-                    command: "true"
+                    command: "swift build --package-path \(root)"
                 )
             ])
         )
@@ -576,6 +579,7 @@ struct TaskContextStateTests {
     func contextCapsuleScopesValidationContractOutcomeToCurrentPlan() async throws {
         let root = try temporaryRoot()
         defer { try? FileManager.default.removeItem(atPath: root) }
+        try writeMinimalSwiftPackage(at: root)
         let container = try makeTaskContextStateContainer()
         let context = ModelContext(container)
         let workspace = Workspace(name: "Scoped Contract Plan", primaryPath: root)
@@ -594,7 +598,7 @@ struct TaskContextStateTests {
                     id: "old-proof",
                     description: "Old proof passes",
                     method: .command,
-                    command: "true"
+                    command: "swift build --package-path \(root)"
                 )
             ])
         )
@@ -610,7 +614,7 @@ struct TaskContextStateTests {
                     id: "new-proof",
                     description: "New proof has not run",
                     method: .command,
-                    command: "true"
+                    command: "swift build --package-path \(root)"
                 )
             ])
         )
@@ -891,6 +895,80 @@ struct TaskContextStateTests {
         #expect(legacy.type == "HTML")
     }
 
+    @Test("context capsule hides polluted runtime artifact rows without deleting them")
+    func contextCapsuleHidesPollutedRuntimeArtifactRowsWithoutDeletingThem() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let container = try makeTaskContextStateContainer()
+        let context = ModelContext(container)
+        let workspace = Workspace(name: "Polluted Artifacts", primaryPath: root)
+        let task = AgentTask(
+            title: "Polluted artifact state",
+            goal: "Render current state without runtime diagnostics",
+            workspace: workspace
+        )
+        context.insert(workspace)
+        context.insert(task)
+
+        let folder = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
+        let planPath = (folder as NSString).appendingPathComponent("plan.md")
+        let configPath = (folder as NSString).appendingPathComponent(".runtime/docker-client/client-1/config.json")
+        let stdoutPath = (folder as NSString).appendingPathComponent("jobs/job-1/stdout.log")
+        try FileManager.default.createDirectory(
+            atPath: (configPath as NSString).deletingLastPathComponent,
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(
+            atPath: (stdoutPath as NSString).deletingLastPathComponent,
+            withIntermediateDirectories: true
+        )
+        try "# Plan".write(toFile: planPath, atomically: true, encoding: .utf8)
+        try "{}".write(toFile: configPath, atomically: true, encoding: .utf8)
+        try "log".write(toFile: stdoutPath, atomically: true, encoding: .utf8)
+
+        let planArtifact = Artifact(task: task, type: "markdown", path: planPath)
+        let configArtifact = Artifact(task: task, type: "json", path: configPath)
+        let stdoutArtifact = Artifact(task: task, type: "log", path: stdoutPath)
+        context.insert(planArtifact)
+        context.insert(configArtifact)
+        context.insert(stdoutArtifact)
+        task.artifacts.append(contentsOf: [planArtifact, configArtifact, stdoutArtifact])
+
+        let run = TaskRun(task: task)
+        run.status = .completed
+        run.stopReason = "completed"
+        run.output = "Generated the plan."
+        run.completedAt = Date()
+        run.appendFileChange(StoredFileChange(from: FileChange(
+            path: configPath,
+            changeType: .write,
+            content: "{}",
+            oldString: nil,
+            newString: nil,
+            timestamp: Date()
+        )))
+        run.appendFileChange(StoredFileChange(from: FileChange(
+            path: stdoutPath,
+            changeType: .write,
+            content: "log",
+            oldString: nil,
+            newString: nil,
+            timestamp: Date()
+        )))
+        context.insert(run)
+        task.status = .completed
+
+        TaskContextStateManager.recordTurn(task: task, run: run, message: "Create plan")
+
+        let state = try #require(TaskContextStateManager.load(taskFolder: folder))
+        #expect(state.artifacts.map(\.path) == [planPath])
+        #expect(!state.filesChanged.contains(configPath))
+        #expect(!state.filesChanged.contains(stdoutPath))
+        #expect(!state.changedFiles.contains { $0.path == configPath || $0.path == stdoutPath })
+        #expect(task.artifacts.contains { $0.path == configPath })
+        #expect(task.artifacts.contains { $0.path == stdoutPath })
+    }
+
     @Test("context capsule discovers task output files when provider metadata is missing")
     func contextCapsuleDiscoversTaskOutputFilesWhenProviderMetadataIsMissing() throws {
         let root = try temporaryRoot()
@@ -1141,7 +1219,13 @@ struct TaskContextStateTests {
         let capsuleRange = try #require(prompt.range(of: "Context Capsule v2:"))
         let transcriptRange = try #require(prompt.range(of: "Recent conversation transcript"))
         #expect(capsuleRange.lowerBound < transcriptRange.lowerBound)
-        #expect(prompt.contains("Current objective: Current objective from edited task must stay primary"))
+        // The task is completed, so the edited goal is correctly demoted to
+        // background framing rather than also asserted as a live "Current
+        // objective" line -- a completed goal must not be shown as both
+        // "already delivered" and "current" in the same prompt (adversarial
+        // finding). The edit still propagates immediately either way.
+        #expect(prompt.contains("Original request (already delivered -- background context only; do not re-address unless the user asks): Current objective from edited task must stay primary"))
+        #expect(!prompt.contains("- Current objective: Current objective from edited task must stay primary"))
         #expect(prompt.contains("Old transcript says: use provider-native session memory"))
     }
 
@@ -1320,10 +1404,10 @@ struct TaskContextStateTests {
         let fields = TaskContextStateManager.promptDiagnosticsFields(task: task, prompt: prompt, phase: "resume")
         #expect(fields["has_context_capsule"] == "true")
         #expect(fields["has_thread_intent"] == "true")
-        #expect(Int(fields["state_json_chars"] ?? "0", radix: 10) ?? 0 > 0)
-        #expect(Int(fields["session_history_chars"] ?? "0", radix: 10) ?? 0 > 0)
+        #expect(Int(fields["state_json_bytes"] ?? "0", radix: 10) ?? 0 > 0)
+        #expect(Int(fields["session_history_bytes"] ?? "0", radix: 10) ?? 0 > 0)
         #expect(fields["output_file_count"] == "1")
-        #expect(Int(fields["output_latest_chars"] ?? "0", radix: 10) ?? 0 > 0)
+        #expect(Int(fields["output_latest_bytes"] ?? "0", radix: 10) ?? 0 > 0)
     }
 
     @Test("oversized capsule truncates the body but preserves the recovery pointer")
@@ -1531,6 +1615,33 @@ struct TaskContextStateTests {
             .appendingPathComponent("astra-context-state-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         return url.path
+    }
+
+    private func writeMinimalSwiftPackage(at root: String) throws {
+        let package = """
+        // swift-tools-version: 5.9
+        import PackageDescription
+
+        let package = Package(
+            name: "ContextStateValidationFixture",
+            targets: [
+                .executableTarget(name: "ContextStateValidationFixture")
+            ]
+        )
+        """
+        let sources = URL(fileURLWithPath: root)
+            .appendingPathComponent("Sources/ContextStateValidationFixture", isDirectory: true)
+        try FileManager.default.createDirectory(at: sources, withIntermediateDirectories: true)
+        try package.write(
+            to: URL(fileURLWithPath: root).appendingPathComponent("Package.swift"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try #"@main struct ContextStateValidationFixture { static func main() {} }"#.write(
+            to: sources.appendingPathComponent("main.swift"),
+            atomically: true,
+            encoding: .utf8
+        )
     }
 
     private func minimalState(schemaVersion: Int = 2) -> TaskContextState {

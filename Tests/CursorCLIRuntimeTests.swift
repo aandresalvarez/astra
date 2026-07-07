@@ -51,7 +51,8 @@ struct CursorCLIRuntimeTests {
             timeoutSeconds: 60,
             taskEnvironment: ["ASTRA_TASK_ID": "task-1"],
             pathPrefix: ["/tmp/tools"],
-            includeAstraToolsPath: true
+            includeAstraToolsPath: true,
+            permissionArguments: ProviderPolicyRender.cursorLaunchPermissionArguments(policy: .restricted)
         )
 
         #expect(plan.executablePath == "/opt/cursor-agent")
@@ -85,7 +86,8 @@ struct CursorCLIRuntimeTests {
             additionalPaths: [],
             permissionPolicy: .interactive,
             timeoutSeconds: 60,
-            taskEnvironment: [:]
+            taskEnvironment: [:],
+            permissionArguments: ProviderPolicyRender.cursorLaunchPermissionArguments(policy: .interactive)
         )
 
         let modeIndex = try #require(plan.arguments.firstIndex(of: "--mode"))
@@ -107,7 +109,8 @@ struct CursorCLIRuntimeTests {
             additionalPaths: [],
             permissionPolicy: .autonomous,
             timeoutSeconds: 60,
-            taskEnvironment: [:]
+            taskEnvironment: [:],
+            permissionArguments: ProviderPolicyRender.cursorLaunchPermissionArguments(policy: .autonomous)
         )
 
         let sandboxIndex = try #require(plan.arguments.firstIndex(of: "--sandbox"))

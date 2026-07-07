@@ -1,7 +1,38 @@
 import Foundation
 import ASTRACore
+import ASTRAModels
+import ASTRAPersistence
 
 struct ConnectorRuntimeProjection {
+    struct CredentialExposurePolicy: Equatable {
+        var approvedCredentialLabels: Set<String>
+        var allowUnapprovedNonHTTPConnectorCredentials: Bool
+        var exposeAllCredentials: Bool
+
+        static let none = CredentialExposurePolicy(
+            approvedCredentialLabels: [],
+            allowUnapprovedNonHTTPConnectorCredentials: false,
+            exposeAllCredentials: false
+        )
+
+        static let allowAllCredentials = CredentialExposurePolicy(
+            approvedCredentialLabels: [],
+            allowUnapprovedNonHTTPConnectorCredentials: true,
+            exposeAllCredentials: true
+        )
+
+        static func approvedLabels(
+            _ labels: Set<String>,
+            allowUnapprovedNonHTTPConnectorCredentials: Bool = false
+        ) -> CredentialExposurePolicy {
+            CredentialExposurePolicy(
+                approvedCredentialLabels: labels,
+                allowUnapprovedNonHTTPConnectorCredentials: allowUnapprovedNonHTTPConnectorCredentials,
+                exposeAllCredentials: false
+            )
+        }
+    }
+
     struct Manifest: Codable, Equatable {
         var connectors: [ManifestConnector]
     }
@@ -32,14 +63,21 @@ struct ConnectorRuntimeProjection {
         var envKey: String
         var value: String
         var kind: BindingKind
+        var credentialLabel: String?
     }
 
     private let connectors: [Connector]
     private let secretStore: SecretStore
+    private let credentialExposurePolicy: CredentialExposurePolicy
 
-    init(connectors: [Connector], secretStore: SecretStore = KeychainSecretStore()) {
+    init(
+        connectors: [Connector],
+        secretStore: SecretStore = KeychainSecretStore(),
+        credentialExposurePolicy: CredentialExposurePolicy = .none
+    ) {
         self.connectors = connectors
         self.secretStore = secretStore
+        self.credentialExposurePolicy = credentialExposurePolicy
     }
 
     var aliasesByConnectorID: [UUID: String] {
@@ -117,6 +155,27 @@ struct ConnectorRuntimeProjection {
 
     func environmentBindings() -> [EnvironmentBinding] {
         environmentBindings(aliases: aliasesByConnectorID)
+    }
+
+    func configuredCredentialLabels() -> [String] {
+        Self.uniquedSorted(configuredCredentialBindings().map(\.label))
+    }
+
+    func unapprovedCredentialLabelsRequiringApproval() -> [String] {
+        Self.uniquedSorted(configuredCredentialBindings().compactMap { binding in
+            guard !credentialExposurePolicy.exposeAllCredentials,
+                  !credentialExposurePolicy.approvedCredentialLabels.contains(binding.label),
+                  !(credentialExposurePolicy.allowUnapprovedNonHTTPConnectorCredentials
+                    && Self.allowsCompatibilityCredentialEgress(for: binding.connector)) else {
+                return nil
+            }
+            return binding.label
+        })
+    }
+
+    static func credentialLabel(for connector: Connector, key: String) -> String {
+        let trimmedKey = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        return "connector:\(connector.id.uuidString):\(trimmedKey)"
     }
 
     static func alias(for connector: Connector) -> String {
@@ -223,9 +282,11 @@ struct ConnectorRuntimeProjection {
 
         for key in connector.credentialKeys {
             let originalKey = key.trimmingCharacters(in: .whitespacesAndNewlines)
+            let label = Self.credentialLabel(for: connector, key: originalKey)
             guard !originalKey.isEmpty,
                   let value = credentials[key] ?? credentials[originalKey],
-                  !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                  !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  canExposeCredential(label: label, connector: connector) else {
                 continue
             }
             Self.appendBinding(
@@ -235,6 +296,7 @@ struct ConnectorRuntimeProjection {
                 originalKey: originalKey,
                 value: value,
                 kind: .credential,
+                credentialLabel: label,
                 usedEnvKeys: &usedEnvKeys,
                 usedLogicalNames: &usedLogicalNames,
                 to: &bindings
@@ -254,6 +316,7 @@ struct ConnectorRuntimeProjection {
                 originalKey: originalKey,
                 value: value,
                 kind: .config,
+                credentialLabel: nil,
                 usedEnvKeys: &usedEnvKeys,
                 usedLogicalNames: &usedLogicalNames,
                 to: &bindings
@@ -263,6 +326,28 @@ struct ConnectorRuntimeProjection {
         return bindings
     }
 
+    private func configuredCredentialBindings() -> [(connector: Connector, label: String)] {
+        connectors.flatMap { connector in
+            let credentials = connector.credentials(store: secretStore)
+            return connector.credentialKeys.compactMap { key -> (Connector, String)? in
+                let originalKey = key.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !originalKey.isEmpty,
+                      let value = credentials[key] ?? credentials[originalKey],
+                      !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    return nil
+                }
+                return (connector, Self.credentialLabel(for: connector, key: originalKey))
+            }
+        }
+    }
+
+    private func canExposeCredential(label: String, connector: Connector) -> Bool {
+        credentialExposurePolicy.exposeAllCredentials
+            || credentialExposurePolicy.approvedCredentialLabels.contains(label)
+            || (credentialExposurePolicy.allowUnapprovedNonHTTPConnectorCredentials
+                && Self.allowsCompatibilityCredentialEgress(for: connector))
+    }
+
     private static func appendBinding(
         connector: Connector,
         alias: String,
@@ -270,6 +355,7 @@ struct ConnectorRuntimeProjection {
         originalKey: String,
         value: String,
         kind: BindingKind,
+        credentialLabel: String?,
         usedEnvKeys: inout Set<String>,
         usedLogicalNames: inout Set<String>,
         to bindings: inout [EnvironmentBinding]
@@ -287,7 +373,8 @@ struct ConnectorRuntimeProjection {
             originalKey: originalKey,
             envKey: envKey,
             value: value,
-            kind: kind
+            kind: kind,
+            credentialLabel: credentialLabel
         ))
     }
 
@@ -316,6 +403,24 @@ struct ConnectorRuntimeProjection {
 
     private static func normalizedServiceType(_ value: String) -> String {
         value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    private static func allowsCompatibilityCredentialEgress(for connector: Connector) -> Bool {
+        let service = normalizedServiceType(connector.serviceType)
+        guard [
+            "gcloud",
+            "google_cloud",
+            "googlecloud",
+            "gcp",
+            "mail",
+            "apple_mail",
+            "outlook",
+            "stanford_outlook_mail"
+        ].contains(service) else {
+            return false
+        }
+        let baseURL = connector.baseURL.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return !baseURL.hasPrefix("http://") && !baseURL.hasPrefix("https://")
     }
 
     private static func aliasBase(for connector: Connector) -> String {
@@ -347,6 +452,10 @@ struct ConnectorRuntimeProjection {
             if usedNames.insert(candidate).inserted { return candidate }
             index += 1
         }
+    }
+
+    private static func uniquedSorted(_ values: [String]) -> [String] {
+        Array(Set(values.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty })).sorted()
     }
 
     private static func uniqueManifestName(startingWith preferred: String, usedNames: inout Set<String>) -> String {
@@ -441,5 +550,39 @@ struct ConnectorRuntimeProjection {
             guard let first = value.first else { return "" }
             return first.uppercased() + String(value.dropFirst())
         }
+    }
+}
+
+/// Registered as the `ConnectorEnvironmentProjectionSeam`
+/// (`ASTRACore/ConnectorEnvironmentProjectionSeam.swift`) backing
+/// implementation.
+///
+/// Rather than re-deriving this file's alias/collision/credential-policy
+/// logic as primitives, this reconstructs scratch, never-persisted
+/// `Connector`s from `ConnectorEnvironmentFacts` (preserving `credentialKeys`/
+/// `configKeys`/`configValues` order exactly) and runs the existing
+/// `ConnectorRuntimeProjection.environmentVariables()` on them unchanged —
+/// same reasoning as `OutlookMailConnectionAdapter` in
+/// `StanfordOutlookMail.swift`: Keychain lookups resolve by a computed
+/// entity-ID string, not Swift object identity, so the scratch connectors
+/// read the same real credentials the live ones would.
+enum ConnectorEnvironmentProjectionAdapter: ConnectorEnvironmentProjecting {
+    static func environmentVariables(for connectors: [ConnectorEnvironmentFacts]) -> [String: String] {
+        let scratchConnectors = connectors.map { facts -> Connector in
+            let scratch = Connector(
+                name: facts.name,
+                serviceType: facts.serviceType,
+                baseURL: facts.baseURL,
+                authMethod: facts.authMethod
+            )
+            scratch.id = facts.id
+            scratch.credentialKeys = facts.credentialKeys
+            scratch.configKeys = facts.configKeys
+            scratch.configValues = facts.configValues
+            scratch.originPackageID = facts.originPackageID
+            scratch.originComponentID = facts.originComponentID
+            return scratch
+        }
+        return ConnectorRuntimeProjection(connectors: scratchConnectors).environmentVariables()
     }
 }

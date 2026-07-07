@@ -1,5 +1,7 @@
 import Testing
 import Foundation
+@testable import ASTRAModels
+import ASTRAPersistence
 @testable import ASTRA
 import ASTRACore
 
@@ -72,7 +74,6 @@ struct DuplicateKeyTests {
 
 @Suite("Credential Key Case Normalization")
 struct CredentialKeyCaseTests {
-
     @Test("saveCredential uppercases key and deduplicates")
     func saveCredentialUppercaseDedup() {
         let connector = Connector(name: "Test")
@@ -188,7 +189,6 @@ struct AgentTaskDefaultTests {
 
 @Suite("Workspace Deletion Cleanup")
 struct WorkspaceDeletionTests {
-
     @Test("Connector cleanupKeychain is idempotent")
     func connectorCleanupIdempotent() {
         let connector = Connector(name: "Test")

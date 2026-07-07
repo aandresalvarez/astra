@@ -18,6 +18,7 @@ gh api \
     "strict": true,
     "contexts": [
       "Focused Swift tests",
+      "Full Swift test suite",
       "Whitespace"
     ]
   },

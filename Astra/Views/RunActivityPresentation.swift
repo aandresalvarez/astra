@@ -1,5 +1,6 @@
 import Foundation
 import ASTRACore
+import ASTRAModels
 
 enum RunActivitySeverity: String, Hashable, Sendable {
     case info

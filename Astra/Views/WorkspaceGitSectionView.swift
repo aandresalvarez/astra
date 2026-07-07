@@ -1,6 +1,8 @@
 import SwiftUI
 import SwiftData
+import ASTRACore
 import ASTRAGitContracts
+import ASTRAModels
 
 // MARK: - Repository Panel (Git Panel v3)
 //

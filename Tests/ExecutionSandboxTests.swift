@@ -1,6 +1,8 @@
 import Foundation
 import Darwin
 import Testing
+import ASTRAPersistence
+import ASTRAModels
 @testable import ASTRA
 import ASTRACore
 
@@ -616,7 +618,15 @@ struct ExecutionSandboxTests {
             copilotHome: providerHome,
             copilotStateHome: copilotStateHome,
             userHome: userHome,
-            providerEnvironment: ["HOME": "/tmp/provider-home"]
+            providerEnvironment: ["HOME": "/tmp/provider-home"],
+            permissionArguments: ProviderPolicyRender.copilotLaunchPermissionArguments(
+                policy: .autonomous,
+                allowedTools: [],
+                capabilities: CopilotCLICapabilities(helpText: "--output-format=FORMAT --stream=MODE --no-ask-user --allow-all"),
+                localToolCommands: [],
+                runtimeSupportTools: [],
+                allowAllPathsForSSHConnections: false
+            )
         )
         let plan = makePlan(
             runtime: .copilotCLI,
@@ -854,6 +864,23 @@ struct ExecutionSandboxTests {
         #expect(BrowserBridgeRuntimeLaunchGuard.launchBlock(for: plan) == nil)
     }
 
+    @Test("Host-control launch block fails closed when provider cannot attach MCP server")
+    func hostControlLaunchBlockFailsClosedWhenProviderCannotAttachMCPServer() throws {
+        let plan = makePlan(
+            runtime: .copilotCLI,
+            commandPlannedFields: [
+                "host_control_plane_launch_block_reason": "host_control_plane_unsupported_runtime",
+                "host_control_plane_unsupported_detail": "GitHub Copilot CLI does not support --additional-mcp-config."
+            ]
+        )
+
+        let result = try #require(HostControlPlaneRuntimeLaunchGuard.launchBlock(for: plan))
+
+        #expect(result.exitCode == -1)
+        #expect(result.runtimeStopReason == "host_control_plane_unsupported_runtime")
+        #expect(result.runtimeStopMessage?.contains("additional-mcp-config") == true)
+    }
+
     @Test("Best-effort enforcement falls back when there is no execution path")
     func decisionFallback() {
         let decision = ExecutionSandbox.decide(
@@ -879,7 +906,14 @@ struct ExecutionSandboxTests {
         }
         #expect(wrapped.executablePath == ExecutionSandbox.sandboxExecPath)
         #expect(wrapped.currentDirectory == plan.currentDirectory)
-        #expect(wrapped.environment == plan.environment)
+        // The wrapped environment is the plan's, plus a pinned DEVELOPER_DIR so the
+        // sandboxed toolchain shims resolve deterministically. The plan set no
+        // DEVELOPER_DIR, so the only addition (if any) is the resolved toolchain dir.
+        let expectedEnvironment = plan.environment.merging(
+            ExecutionSandbox.developerDirectoryEnvironment(plan: plan)
+        ) { current, _ in current }
+        #expect(wrapped.environment == expectedEnvironment)
+        #expect(wrapped.environment["HOME"] == plan.environment["HOME"])
         #expect(wrapped.runtime == plan.runtime)
         // Original executable + args preserved at the tail.
         #expect(wrapped.arguments.contains(plan.executablePath))
@@ -994,9 +1028,11 @@ struct ExecutionSandboxTests {
         #expect(custom.shouldWrap(runtime: .antigravityCLI))
         #expect(custom.shouldWrap(runtime: .openCodeCLI))
 
-        // Off disables wrapping for every runtime.
+        // Off disables wrapping for every runtime — for non-autonomous policies.
+        // (Autonomous escalates Off to a strict floor; see
+        // `autonomousEscalatesOffToStrict`.)
         defaults.set(ExecutionSandboxEnforcement.off.rawValue, forKey: AppStorageKeys.sandboxEnforcement)
-        let off = ExecutionSandboxSettings.current(permissionPolicy: .autonomous, defaults: defaults)
+        let off = ExecutionSandboxSettings.current(permissionPolicy: .restricted, defaults: defaults)
         #expect(off.enforcement == .off)
         #expect(off.readScope == .open)
         #expect(!off.shouldWrap(runtime: .claudeCode))
@@ -1790,6 +1826,30 @@ struct ExecutionSandboxTests {
         defaults.set(ExecutionSandboxEnforcement.strict.rawValue, forKey: AppStorageKeys.sandboxEnforcement)
         let resolved = ExecutionSandboxSettings.current(permissionPolicy: .autonomous, defaults: defaults)
         #expect(resolved.enforcement == .strict)
+    }
+
+    @Test("Autonomous escalates Off to a strict kernel floor (Auto is always sandboxed)")
+    func autonomousEscalatesOffToStrict() {
+        let (defaults, suite) = freshDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(ExecutionSandboxEnforcement.off.rawValue, forKey: AppStorageKeys.sandboxEnforcement)
+
+        // Non-autonomous honors the user's explicit Off (no wrapping).
+        let restricted = ExecutionSandboxSettings.current(permissionPolicy: .restricted, defaults: defaults)
+        #expect(restricted.enforcement == .off)
+        #expect(!restricted.shouldWrap(runtime: .claudeCode))
+
+        // Autonomous overrides Off and forces a strict, read-enforced, fully
+        // wrapped floor so the broadest-permission mode never runs unconfined —
+        // matching the "Auto (autonomous) runs always use strict" help text.
+        let auto = ExecutionSandboxSettings.current(permissionPolicy: .autonomous, defaults: defaults)
+        #expect(auto.enforcement == .strict)
+        #expect(auto.readScope == .enforce)
+        #expect(auto.shouldWrap(runtime: .claudeCode))
+        #expect(auto.shouldWrap(runtime: .codexCLI))
+        #expect(auto.shouldWrap(runtime: .cursorCLI))
+        #expect(auto.shouldWrap(runtime: .antigravityCLI))
+        #expect(auto.shouldWrap(runtime: .openCodeCLI))
     }
 
     @Test("shouldWrap matrix: only no-native-sandbox runtimes wrap, and never when off")

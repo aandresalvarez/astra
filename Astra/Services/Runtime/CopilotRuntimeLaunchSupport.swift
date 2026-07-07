@@ -1,5 +1,6 @@
 import Foundation
 import ASTRACore
+import ASTRAModels
 
 struct CopilotMCPLaunchProjection {
     let servers: [MCPRuntimeProjection.ResolvedServer]
@@ -10,6 +11,8 @@ struct CopilotMCPLaunchProjection {
     let dockerWorkspaceExecutorSupported: Bool
     let dockerWorkspaceUnsupportedDetail: String
     let hostControlPlaneSupported: Bool
+    let hostControlPlaneUnsupportedDetail: String
+    let hostControlPlaneLaunchBlockReason: String
     let browserBridgeMCPToolSupported: Bool
 
     var readablePaths: [String] {
@@ -47,14 +50,16 @@ struct CopilotMCPLaunchProjection {
                 environment: executionEnvironment,
                 currentDirectory: workspacePath,
                 runID: runID,
-                taskEnvironment: taskEnvironment
+                taskEnvironment: taskEnvironment,
+                contextText: contextText
             )
             if let hostControlServer = HostControlPlaneMCPProjection.resolvedServer(
                 task: task,
                 environment: executionEnvironment,
                 currentDirectory: workspacePath,
                 runID: runID,
-                taskEnvironment: taskEnvironment.merging(hostControlEnvironment) { current, _ in current }
+                taskEnvironment: taskEnvironment.merging(hostControlEnvironment) { current, _ in current },
+                contextText: contextText
             ) {
                 servers.append(hostControlServer)
             }
@@ -78,7 +83,8 @@ struct CopilotMCPLaunchProjection {
             environment: executionEnvironment,
             currentDirectory: workspacePath,
             runID: runID,
-            taskEnvironment: taskEnvironment
+            taskEnvironment: taskEnvironment,
+            contextText: contextText
         )
         let explicitMCPEnvironment = taskEnvironment
             .merging(workspaceExecutorEnvironment) { current, _ in current }
@@ -92,23 +98,39 @@ struct CopilotMCPLaunchProjection {
             )
         let dockerWorkspaceExecutorSupported = !usesDockerWorkspaceExecutor
             || (capabilities.supportsAdditionalMCPConfig && configURL != nil)
-        let hostControlPlaneSupported = !usesDockerWorkspaceExecutor
+        let requiresHostControlPlane = !hostControlEnvironment.isEmpty
+        let requiredHostControlTools = HostControlPlaneRuntimeLaunchGuard.requiredTools(from: hostControlEnvironment)
+        let hostControlPlaneSupported = !requiresHostControlPlane
             || (capabilities.supportsAdditionalMCPConfig && configURL != nil)
         let unsupportedDetail = unsupportedDockerWorkspaceDetail(
             usesDockerWorkspaceExecutor: usesDockerWorkspaceExecutor,
             supportsAdditionalMCPConfig: capabilities.supportsAdditionalMCPConfig,
             configURL: configURL
         )
+        let hostControlUnsupportedDetail = unsupportedHostControlPlaneDetail(
+            requiresHostControlPlane: requiresHostControlPlane,
+            requiredTools: requiredHostControlTools,
+            supportsAdditionalMCPConfig: capabilities.supportsAdditionalMCPConfig,
+            configURL: configURL
+        )
+        let hostControlLaunchBlockReason = hostControlPlaneSupported
+            ? "none"
+            : HostControlPlaneRuntimeLaunchGuard.missingHostControlMCPReason
 
         return CopilotMCPLaunchProjection(
             servers: servers,
             configURL: configURL,
-            allowedTools: configURL == nil ? [] : MCPRuntimeProjection.allowedToolPermissions(servers: servers),
+            allowedTools: configURL == nil ? [] : MCPRuntimeProjection.allowedToolPermissions(
+                servers: servers,
+                availableEnvironment: explicitMCPEnvironment
+            ),
             workspaceExecutorEnvironment: workspaceExecutorEnvironment,
             hostControlEnvironment: hostControlEnvironment,
             dockerWorkspaceExecutorSupported: dockerWorkspaceExecutorSupported,
             dockerWorkspaceUnsupportedDetail: unsupportedDetail,
             hostControlPlaneSupported: hostControlPlaneSupported,
+            hostControlPlaneUnsupportedDetail: hostControlUnsupportedDetail,
+            hostControlPlaneLaunchBlockReason: hostControlLaunchBlockReason,
             browserBridgeMCPToolSupported: browserServerProjected && configURL != nil
         )
     }
@@ -126,6 +148,128 @@ struct CopilotMCPLaunchProjection {
             return "ASTRA could not render the Docker workspace shell MCP config for GitHub Copilot CLI."
         }
         return ""
+    }
+
+    private static func unsupportedHostControlPlaneDetail(
+        requiresHostControlPlane: Bool,
+        requiredTools: [String],
+        supportsAdditionalMCPConfig: Bool,
+        configURL: URL?
+    ) -> String {
+        if !requiresHostControlPlane { return "" }
+        if !supportsAdditionalMCPConfig {
+            return "GitHub Copilot CLI does not support --additional-mcp-config, so ASTRA cannot attach the \(HostControlPlaneRuntimeLaunchGuard.serverDescription(requiredTools: requiredTools))."
+        }
+        if configURL == nil {
+            return "ASTRA could not render the host-control MCP config for GitHub Copilot CLI."
+        }
+        return ""
+    }
+}
+
+enum HostControlPlaneRuntimeLaunchGuard {
+    static let missingHostControlMCPReason = "host_control_plane_unsupported_runtime"
+
+    static func planMetadata(runtime: AgentRuntimeID, requiredTools: [String]) -> [String: String] {
+        let requiredTools = normalizedUniqueTools(requiredTools)
+        let requiresHostControlPlane = !requiredTools.isEmpty
+        let supportsHostControlPlane = !requiresHostControlPlane
+            || HostControlPlaneMCPProjection.supportsHostControlPlane(runtime: runtime)
+        return [
+            "host_control_plane_tool_count": String(requiredTools.count),
+            "host_control_plane_supported": String(supportsHostControlPlane),
+            "host_control_plane_unsupported_detail": supportsHostControlPlane
+                ? ""
+                : unsupportedRuntimeDetail(runtime: runtime, requiredTools: requiredTools),
+            "host_control_plane_launch_block_reason": supportsHostControlPlane
+                ? "none"
+                : missingHostControlMCPReason
+        ]
+    }
+
+    static func requiredTools(from environment: [String: String]) -> [String] {
+        normalizedUniqueTools(splitToolList(environment["ASTRA_HOST_CONTROL_ALLOWED_TOOLS"]))
+    }
+
+    static func serverDescription(requiredTools: [String]) -> String {
+        let requiredTools = normalizedUniqueTools(requiredTools)
+        guard !requiredTools.isEmpty else { return "host-control MCP server" }
+        return "host-control MCP server for \(requiredTools.joined(separator: ", "))"
+    }
+
+    static func unsupportedRuntimeDetail(runtime: AgentRuntimeID, requiredTools: [String]) -> String {
+        let requiredTools = normalizedUniqueTools(requiredTools)
+        if requiredTools.contains("github") {
+            return "\(runtime.displayName) cannot attach ASTRA's host-control MCP route for GitHub metadata/API work, so ASTRA will not fall back to provider-visible native Git or gh credentials. Switch to Codex CLI, Claude Code, or a Copilot CLI build with MCP config support."
+        }
+        return "\(runtime.displayName) does not support provider MCP servers, so ASTRA cannot attach the \(serverDescription(requiredTools: requiredTools))."
+    }
+
+    static func unsupportedRuntimeRemediation(requiredTools: [String]) -> String {
+        let requiredTools = normalizedUniqueTools(requiredTools)
+        if requiredTools.contains("github") {
+            return "Switch to Codex CLI, Claude Code, or a Copilot CLI build with MCP config support, or remove the GitHub host-control capability route for this run."
+        }
+        return "Switch to a runtime that supports ASTRA host-control MCP tools, such as Codex CLI, Claude Code, or a Copilot CLI build with MCP config support."
+    }
+
+    static func removingNativeLocalToolCommands(_ commands: [String], requiredTools: [String]) -> [String] {
+        let executableNames = nativeExecutableNames(for: requiredTools)
+        guard !executableNames.isEmpty else { return commands }
+        return commands.filter { command in
+            guard let firstToken = command
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .split(separator: " ")
+                .first else {
+                return true
+            }
+            let executable = URL(fileURLWithPath: String(firstToken)).lastPathComponent.lowercased()
+            return !executableNames.contains(executable)
+        }
+    }
+
+    private static func normalizedUniqueTools(_ tools: [String]) -> [String] {
+        var seen: Set<String> = []
+        return tools.compactMap { tool in
+            let normalized = tool.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard !normalized.isEmpty, seen.insert(normalized).inserted else { return nil }
+            return normalized
+        }
+    }
+
+    private static func splitToolList(_ value: String?) -> [String] {
+        value?
+            .split(separator: ",")
+            .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) } ?? []
+    }
+
+    private static func nativeExecutableNames(for requiredTools: [String]) -> Set<String> {
+        Set(normalizedUniqueTools(requiredTools).map { tool in
+            switch tool {
+            case "github":
+                return "gh"
+            default:
+                return tool
+            }
+        })
+    }
+
+    static func launchBlock(for plan: AgentRuntimeProcessLaunchPlan) -> AgentProcessResult? {
+        guard plan.commandPlannedFields["host_control_plane_launch_block_reason"] == missingHostControlMCPReason else {
+            return nil
+        }
+
+        let detail = plan.commandPlannedFields["host_control_plane_unsupported_detail"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let message = detail?.isEmpty == false
+            ? detail!
+            : "\(plan.runtime.displayName) cannot attach ASTRA's host-control MCP server for this task. Switch to a runtime that supports provider MCP config, then retry."
+        return AgentProcessResult(
+            exitCode: -1,
+            error: message,
+            runtimeStopReason: missingHostControlMCPReason,
+            runtimeStopMessage: message
+        )
     }
 }
 
@@ -148,7 +292,7 @@ enum CopilotLaunchDiagnostics {
 
     static func commandPlannedFields(
         id: AgentRuntimeID,
-        phase: String,
+        phase: RunPhase,
         model: String,
         plan: CopilotCLICommandPlan,
         capabilities: CopilotCLICapabilities,
@@ -172,7 +316,7 @@ enum CopilotLaunchDiagnostics {
     ) -> [String: String] {
         var fields: [String: String] = [
             "runtime": id.rawValue,
-            "phase": phase,
+            "phase": phase.rawValue,
             "model": model,
             "parses_json_lines": String(plan.parsesJSONLines),
             "supports_output_format_json": String(capabilities.supportsOutputFormatJSON),
@@ -213,6 +357,8 @@ enum CopilotLaunchDiagnostics {
             "docker_workspace_mcp_env_key_count": String(mcpProjection.workspaceExecutorEnvironment.count),
             "host_control_plane_tool_count": String(HostControlPlaneMCPProjection.toolNames.count),
             "host_control_plane_supported": String(mcpProjection.hostControlPlaneSupported),
+            "host_control_plane_unsupported_detail": mcpProjection.hostControlPlaneUnsupportedDetail,
+            "host_control_plane_launch_block_reason": mcpProjection.hostControlPlaneLaunchBlockReason,
             "host_control_plane_mcp_env_key_count": String(mcpProjection.hostControlEnvironment.count),
             "docker_workspace_container_env_key_count": String(dockerContainerEnvCount),
             "docker_workspace_credential_projection_count": String(dockerCredentialProjectionCount),

@@ -1,6 +1,8 @@
 import Foundation
 import SwiftData
 import Testing
+import ASTRAModels
+import ASTRAPersistence
 @testable import ASTRA
 
 private func makeTaskOutputDiscoveryContainer() throws -> ModelContainer {
@@ -108,6 +110,38 @@ struct TaskOutputDiscoveryTests {
         )
 
         #expect(files.map(\.path) == [report])
+    }
+
+    @Test("task-folder scan ignores runtime and job diagnostics")
+    func taskFolderScanIgnoresRuntimeAndJobDiagnostics() throws {
+        let fixture = try makeFixture(goal: "Create task docs")
+        defer { try? FileManager.default.removeItem(atPath: fixture.root) }
+
+        let taskFolder = try TaskWorkspaceAccess(task: fixture.task).ensureTaskFolder()
+        let folderURL = URL(fileURLWithPath: taskFolder, isDirectory: true)
+        let deliverables = ["plan.md", "guidelines.md", "status_report.md", "pr_review_analysis.md", "pr_description.md"]
+        for name in deliverables {
+            try "# \(name)".write(to: folderURL.appendingPathComponent(name), atomically: true, encoding: .utf8)
+        }
+
+        let runtimeConfig = folderURL.appendingPathComponent(".runtime/docker-client/client-1/config.json")
+        let jobFolder = folderURL.appendingPathComponent("jobs/job-1", isDirectory: true)
+        try FileManager.default.createDirectory(at: runtimeConfig.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: jobFolder, withIntermediateDirectories: true)
+        try "{}".write(to: runtimeConfig, atomically: true, encoding: .utf8)
+        for name in ["command.sh", "heartbeat.json", "job.json", "pid", "result.json", "stdout.log", "stderr.log", "timeout"] {
+            try "diagnostic".write(to: jobFolder.appendingPathComponent(name), atomically: true, encoding: .utf8)
+        }
+
+        let files = TaskOutputDiscovery.files(for: fixture.task)
+        let relativePaths = Set(files.map(\.relativePath))
+
+        for name in deliverables {
+            #expect(relativePaths.contains(name))
+        }
+        #expect(!relativePaths.contains(".runtime/docker-client/client-1/config.json"))
+        #expect(!relativePaths.contains("jobs/job-1/command.sh"))
+        #expect(!relativePaths.contains("jobs/job-1/stdout.log"))
     }
 
     @Test("workspace scan includes artifacts at shared depth boundary")

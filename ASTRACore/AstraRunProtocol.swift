@@ -595,42 +595,42 @@ public enum AstraRunProtocolParser {
 }
 
 private struct RawEnvelope: Decodable {
-    let v: Int?
-    let type: String?
-    let items: [RawTodoItem]?
-    let summary: String?
-    let verifiedBy: String?
-    let planID: String?
-    let stepID: String?
-    let status: String?
-    let title: String?
-    let detail: String?
-    let reason: String?
+    public let v: Int?
+    public let type: String?
+    public let items: [RawTodoItem]?
+    public let summary: String?
+    public let verifiedBy: String?
+    public let planID: String?
+    public let stepID: String?
+    public let status: String?
+    public let title: String?
+    public let detail: String?
+    public let reason: String?
 }
 
 private struct RawTodoItem: Decodable {
-    let text: String?
-    let status: String?
+    public let text: String?
+    public let status: String?
 }
 
 private struct NormalizedTodoReplace: Encodable {
-    let v = 1
-    let type = "todo.replace"
-    let items: [AstraRunProtocolEvent.TodoItem]
+    public let v = 1
+    public let type = "todo.replace"
+    public let items: [AstraRunProtocolEvent.TodoItem]
 }
 
 private struct NormalizedPlanStep: Encodable {
-    let v = 1
-    let type: String
-    let planID: String?
-    let stepID: String
-    let status: AstraRunProtocolEvent.PlanStepStatus
-    let title: String?
-    let detail: String?
-    let summary: String?
-    let reason: String?
+    public let v = 1
+    public let type: String
+    public let planID: String?
+    public let stepID: String
+    public let status: AstraRunProtocolEvent.PlanStepStatus
+    public let title: String?
+    public let detail: String?
+    public let summary: String?
+    public let reason: String?
 
-    init(progress: AstraRunProtocolEvent.PlanStepProgress) {
+    public init(progress: AstraRunProtocolEvent.PlanStepProgress) {
         type = progress.type
         planID = progress.planID
         stepID = progress.stepID
@@ -643,20 +643,20 @@ private struct NormalizedPlanStep: Encodable {
 }
 
 private struct NormalizedComplete: Encodable {
-    let v = 1
-    let type = "complete"
-    let summary: String
-    let verifiedBy: String?
+    public let v = 1
+    public let type = "complete"
+    public let summary: String
+    public let verifiedBy: String?
 }
 
 private struct NormalizedInvalid: Encodable {
-    let v = 1
-    let type = "protocol.invalid"
-    let reason: String
+    public let v = 1
+    public let type = "protocol.invalid"
+    public let reason: String
 }
 
 private extension [AstraRunProtocolTextFilterOutput] {
-    var visibleText: String {
+    public var visibleText: String {
         compactMap { output -> String? in
             guard case .text(let text) = output else { return nil }
             return text
@@ -665,7 +665,7 @@ private extension [AstraRunProtocolTextFilterOutput] {
 }
 
 private extension String {
-    var mayContainRunProtocolLeak: Bool {
+    public var mayContainRunProtocolLeak: Bool {
         contains("ASTRA_EVENT") ||
             contains(#"tepID":"#) ||
             contains("\"stepID\":") ||
@@ -673,7 +673,7 @@ private extension String {
             contains("\"verifiedBy\":")
     }
 
-    var protocolDisplayCandidate: String {
+    public var protocolDisplayCandidate: String {
         var candidate = trimmingCharacters(in: .whitespacesAndNewlines)
         for prefix in ["- ", "* ", "• ", "● ", "◦ ", "▪ ", "> "] {
             if candidate.hasPrefix(prefix) {
@@ -685,11 +685,11 @@ private extension String {
         return candidate
     }
 
-    var nilIfEmpty: String? {
+    public var nilIfEmpty: String? {
         isEmpty ? nil : self
     }
 
-    var boundedPlanText: String? {
+    public var boundedPlanText: String? {
         let trimmed = trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
         return String(trimmed.prefix(AstraRunProtocolLimits.maxPlanStepTextCharacters))

@@ -1,4 +1,6 @@
 import Foundation
+import ASTRACore
+import ASTRAModels
 
 enum ExecutionEnvironmentCredentialProjectionState: String, Sendable, Equatable {
     case notRequired = "not_required"

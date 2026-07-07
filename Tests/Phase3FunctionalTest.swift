@@ -1,5 +1,7 @@
 import Testing
 import Foundation
+import ASTRAModels
+import ASTRAPersistence
 @testable import ASTRA
 import ASTRACore
 import SwiftData
@@ -109,6 +111,7 @@ struct Phase3FunctionalTest {
         var receivedEvents: [ParsedEvent] = []
 
         try await E2ETestSupport.withLiveProviderSlot {
+            DirectWorkerLaunchAdmission.admitInitialRun(task, modelContext: context)
             await worker.execute(task: task, modelContext: context) { event in
                 receivedEvents.append(event)
             }
@@ -257,6 +260,7 @@ struct Phase3FunctionalTest {
         try E2ETestSupport.configureUnattended(worker, for: runtimeCase, temporaryRootPath: testDir)
         worker.budgetEnforcementModeOverride = .hardStop
         try await E2ETestSupport.withLiveProviderSlot {
+            DirectWorkerLaunchAdmission.admitInitialRun(task, modelContext: context)
             await worker.execute(task: task, modelContext: context) { _ in }
         }
         LiveProviderDiagnostics.printSummary(

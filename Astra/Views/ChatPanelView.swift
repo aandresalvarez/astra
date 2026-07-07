@@ -1,6 +1,8 @@
 import SwiftUI
 import SwiftData
 import ASTRACore
+import ASTRAModels
+import ASTRAPersistence
 
 /// Chat message for the conversation
 struct ChatMessage: Identifiable {
@@ -8,6 +10,11 @@ struct ChatMessage: Identifiable {
     let role: String  // "user" or "assistant"
     let content: String
     let timestamp = Date()
+}
+
+private struct DraftChatMessagePayload: Codable {
+    let role: String
+    let content: String
 }
 
 // MARK: - Slash Command Wizard
@@ -370,6 +377,8 @@ struct ChatPanelView: View {
     var onManageSkills: (() -> Void)?
     var isPlanCanvasVisible = false
     var onOpenPlan: ((AgentTask) -> Void)?
+    var onStartWorkspaceAppStudio: ((String?) -> Void)?
+    var onStartMCPInstallReview: ((MCPInstallChatRequest) -> Void)?
 
     @Environment(\.modelContext) private var modelContext
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -423,30 +432,18 @@ struct ChatPanelView: View {
     @State private var planGenerationTask: Task<Void, Never>?
     @State private var isApprovedPlanHistoryExpanded = false
     @State private var excludedSkillIDs: Set<UUID> = []
+    @State private var capabilitySnapshot = ComposerCapabilitySnapshot.empty
     @State private var runtimeReadinessStates: [AgentRuntimeID: RuntimeReadinessState] = [:]
     // Random per session; a live-cycling prompt mutated while the user was reading it.
     @State private var newTaskPromptIndex = Int.random(in: 0..<ChatPanelView.newTaskPrompts.count)
     @FocusState private var isComposerFocused: Bool
 
-    @Query(filter: #Predicate<Skill> { $0.isGlobal == true })
-    private var globalSkills: [Skill]
-    @Query(filter: #Predicate<Connector> { $0.isGlobal == true })
-    private var globalConnectors: [Connector]
-    @Query(filter: #Predicate<LocalTool> { $0.isGlobal == true })
-    private var globalTools: [LocalTool]
-
     private var availableSkills: [Skill] {
-        guard let workspace else { return [] }
-        return WorkspaceCapabilities(
-            workspace: workspace,
-            globalSkills: globalSkills,
-            globalConnectors: globalConnectors,
-            globalTools: globalTools
-        ).activeSkills
+        capabilitySnapshot.availableSkills
     }
 
     private var selectedSkills: [Skill] {
-        availableSkills.filter { !excludedSkillIDs.contains($0.id) }
+        capabilitySnapshot.selectedSkills(excluding: excludedSkillIDs)
     }
 
     private var hasInput: Bool {
@@ -553,41 +550,11 @@ struct ChatPanelView: View {
     }
 
     private var isSlashCommandInput: Bool {
-        let lower = messageText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        return ["/skill", "/tool", "/connector", "/template", "/routine", "/schedule", "/remember", "/recap"].contains { command in
-            lower == command || lower.hasPrefix(command + " ")
-        }
+        ChatPanelSlashCommandRouting.isSlashCommandInput(messageText)
     }
 
-    private struct SlashOption: Identifiable {
-        let id: String
-        let command: String
-        let icon: String
-        let color: Color
-        let title: String
-        let description: String
-    }
-
-    private var slashOptions: [SlashOption] {
-        let all: [SlashOption] = [
-            SlashOption(id: "skill", command: "/skill", icon: "puzzlepiece.extension", color: Stanford.lagunita,
-                       title: "Create Skill", description: "Define agent behavior, allowed tools, and instructions"),
-            SlashOption(id: "tool", command: "/tool", icon: "wrench.and.screwdriver", color: Stanford.plum,
-                       title: "Create Tool", description: "Add a CLI command, script, or MCP tool"),
-            SlashOption(id: "connector", command: "/connector", icon: "bolt.horizontal.circle", color: Stanford.paloAltoGreen,
-                       title: "Create Connector", description: "Set up auth for Jira, GitHub, Slack, or APIs"),
-            SlashOption(id: "template", command: "/template", icon: "rectangle.3.group", color: Stanford.poppy,
-                       title: "Use Template", description: "Create a multi-phase task from a template"),
-            SlashOption(id: "schedule", command: "/routine", icon: "arrow.triangle.2.circlepath", color: Stanford.poppy,
-                       title: "Create Routine", description: "Automate recurring work with instructions and capabilities"),
-            SlashOption(id: "remember", command: "/remember", icon: "text.badge.checkmark", color: Stanford.lagunita,
-                       title: "Add Memory", description: "Save a fact for the agent to remember in this workspace"),
-            SlashOption(id: "recap", command: "/recap", icon: "doc.text", color: Stanford.paloAltoGreen,
-                       title: "Recap Task", description: "Summarize this conversation so you can pause and resume later"),
-        ]
-        let filter = messageText.trimmingCharacters(in: .whitespaces).lowercased()
-        if filter == "/" { return all }
-        return all.filter { $0.command.hasPrefix(filter) }
+    private var slashOptions: [ChatPanelSlashOption] {
+        ChatPanelSlashOption.matching(messageText)
     }
 
     private var hasConversation: Bool {
@@ -787,6 +754,11 @@ struct ChatPanelView: View {
         }
         .navigationTitle(draftTask != nil ? "Draft" : "New Task")
         .navigationSubtitle(workspace?.name ?? "Astra")
+        .background {
+            ComposerCapabilitySnapshotLoader(workspace: workspace) { snapshot in
+                capabilitySnapshot = snapshot
+            }
+        }
         .task(id: runtimeAvailabilitySignature) {
             await refreshRuntimeAvailability()
         }
@@ -948,39 +920,7 @@ struct ChatPanelView: View {
     @ViewBuilder
     private func messageBubble(_ msg: ChatMessage) -> some View {
         if msg.role == "user" {
-            // User bubble — right-aligned, subtle fill
-            HStack(alignment: .top, spacing: 10) {
-                Spacer(minLength: 120)
-                VStack(alignment: .trailing, spacing: 4) {
-                    Text(msg.content)
-                        .font(Stanford.chatBody())
-                        .lineSpacing(Stanford.chatBodyLineSpacing)
-                        .textSelection(.enabled)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 12)
-                        .background(Stanford.sky.opacity(0.055))
-                        .foregroundStyle(Stanford.readingText)
-                        .clipShape(UnevenRoundedRectangle(
-                            topLeadingRadius: 16,
-                            bottomLeadingRadius: 16,
-                            bottomTrailingRadius: 4,
-                            topTrailingRadius: 16
-                        ))
-                        .overlay(
-                            UnevenRoundedRectangle(
-                                topLeadingRadius: 16,
-                                bottomLeadingRadius: 16,
-                                bottomTrailingRadius: 4,
-                                topTrailingRadius: 16
-                            )
-                            .stroke(Stanford.sky.opacity(0.11), lineWidth: 1)
-                        )
-
-                    Text(msg.timestamp, style: .time)
-                        .font(Stanford.chatMeta())
-                        .foregroundStyle(.tertiary)
-                        .padding(.trailing, 4)
-                }
+            ChatTranscriptUserBubble(text: msg.content, timestamp: msg.timestamp, style: .workspace)
                 .contextMenu {
                     Button {
                         NSPasteboard.general.clearContents()
@@ -994,7 +934,6 @@ struct ChatPanelView: View {
                         Label("Reuse in Composer", systemImage: "arrow.uturn.up")
                     }
                 }
-            }
         } else {
             // AI response — flows directly on background, no card
             VStack(alignment: .leading, spacing: 6) {
@@ -1547,9 +1486,7 @@ struct ChatPanelView: View {
             return
         }
 
-        if let slashType = (["/skill", "/tool", "/connector", "/template", "/routine", "/schedule"] as [String])
-            .first(where: { lower == $0 || lower.hasPrefix($0 + " ") }) {
-
+        if let slashType = ChatPanelSlashCommandRouting.providerContextCommand(for: input) {
             // Build context for the slash command
             let slashContext = buildSlashContext(for: slashType)
             if let slashContext {
@@ -1568,6 +1505,17 @@ struct ChatPanelView: View {
             // will be injected into the system prompt
         }
 
+        if let mcpTurn = MCPInstallChatCommand.installTurnOutcome(input: input, hasWorkspace: workspace != nil) {
+            messages.append(ChatMessage(role: "user", content: input)); messageText = ""
+            messages.append(ChatMessage(role: "assistant", content: mcpTurn.assistantMessage))
+            if let request = mcpTurn.request { onStartMCPInstallReview?(request) }
+            return
+        }
+        if let appStudioRequest = WorkspaceAppChatCommand.launchRequest(input: input) {
+            messages.append(ChatMessage(role: "user", content: input)); messageText = ""
+            guard workspace != nil else { messages.append(ChatMessage(role: "assistant", content: "Select a workspace first — Workspace Apps are workspace-scoped.")); return }
+            onStartWorkspaceAppStudio?(appStudioRequest.initialPrompt); return
+        }
         // /recap — one-shot prose summary for resuming later. Injected into skillCtx
         // for this message only; does not use activeSlashContext (no ongoing wizard).
         let recapContext: String? = (lower == "/recap" || lower.hasPrefix("/recap "))
@@ -1678,7 +1626,7 @@ struct ChatPanelView: View {
             model: model,
             runtime: runtime
         )
-        task.status = .queued
+        TaskStateMachine.enqueueFromChatSubmission(task, modelContext: modelContext)
         task.inputs = attachedFiles
         task.skills = taskSkills
         TaskCapabilitySnapshotter.capture(for: task)
@@ -1782,8 +1730,6 @@ struct ChatPanelView: View {
         TaskPlanService.recordApproved(plan, task: task, modelContext: modelContext)
         task.title = plan.title
         task.goal = plan.goal.isEmpty ? task.goal : plan.goal
-        task.status = .draft
-        task.updatedAt = Date()
         pendingPlan = nil
         isApprovedPlanHistoryExpanded = false
         isPlanMode = false
@@ -1811,13 +1757,10 @@ struct ChatPanelView: View {
         TaskPlanService.recordApproved(plan, task: task, modelContext: modelContext)
         task.title = plan.title
         task.goal = plan.goal.isEmpty ? plan.title : plan.goal
-        task.status = .queued
-        task.completedAt = nil
-        task.updatedAt = Date()
+        TaskStateMachine.enqueueFromChatSubmission(task, modelContext: modelContext)
         pendingPlan = nil
         isApprovedPlanHistoryExpanded = false
         isPlanMode = false
-        try? modelContext.save()
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
         onTaskCreated?(task)
         showPlanCanvasIfNeeded(for: task)
@@ -1865,7 +1808,7 @@ struct ChatPanelView: View {
             model: model,
             runtime: runtime
         )
-        task.status = .queued
+        TaskStateMachine.enqueueFromChatSubmission(task, modelContext: modelContext)
         task.inputs = spec.inputs + attachedFiles
         task.constraints = spec.constraints
         task.acceptanceCriteria = spec.acceptanceCriteria
@@ -1907,70 +1850,25 @@ struct ChatPanelView: View {
     // MARK: - Slash Menu
 
     private var slashMenuHeight: CGFloat {
-        CGFloat(slashOptions.count) * 52
+        SlashCommandMenuPresentation.menuHeight(rowCount: slashOptions.count)
     }
 
     private var slashMenuView: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            ForEach(Array(slashOptions.enumerated()), id: \.element.id) { idx, option in
-                Button {
-                    selectSlashOption(option)
-                } label: {
-                    HStack(spacing: 10) {
-                        Image(systemName: option.icon)
-                            .font(Stanford.ui(16))
-                            .foregroundStyle(option.color)
-                            .frame(width: 24)
-                        VStack(alignment: .leading, spacing: 2) {
-                            HStack(spacing: 6) {
-                                Text(option.command)
-                                    .font(Stanford.ui(15, weight: .semibold, design: .monospaced))
-                                    .foregroundStyle(Stanford.black)
-                                Text(option.title)
-                                    .font(Stanford.body(14))
-                                    .foregroundStyle(Stanford.coolGrey)
-                            }
-                            Text(option.description)
-                                .font(Stanford.caption(13))
-                                .foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        if idx == slashSelectedIndex {
-                            Image(systemName: "return")
-                                .font(Stanford.ui(11))
-                                .foregroundStyle(.tertiary)
-                        }
-                    }
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 10)
-                    .background(idx == slashSelectedIndex ? Stanford.lagunita.opacity(0.08) : Color.clear)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .onHover { hovering in
-                    if hovering { slashSelectedIndex = idx }
-                }
-
-                if idx < slashOptions.count - 1 {
-                    Divider().padding(.leading, 48)
-                }
-            }
-        }
-        .background(.ultraThickMaterial)
-        .clipShape(RoundedRectangle(cornerRadius: 12))
-        .overlay(
-            RoundedRectangle(cornerRadius: 12)
-                .stroke(Stanford.sandstone.opacity(0.3), lineWidth: 1)
+        ChatPanelSlashCommandMenu(
+            options: slashOptions,
+            selectedIndex: $slashSelectedIndex,
+            onSelect: selectSlashOption
         )
-        .shadow(color: .black.opacity(0.12), radius: 12, y: -4)
-        .frame(maxWidth: 420)
-        .padding(.leading, 4)
     }
 
-    private func selectSlashOption(_ option: SlashOption) {
-        messageText = option.command
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-            sendMessage()
+    private func selectSlashOption(_ option: ChatPanelSlashOption) {
+        messageText = ChatPanelSlashCommandRouting.selectionText(for: option)
+        if option.executesImmediately {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                sendMessage()
+            }
+        } else {
+            isComposerFocused = true
         }
     }
 
@@ -2146,42 +2044,12 @@ struct ChatPanelView: View {
 
     @discardableResult
     private func smartPaste() -> Bool {
-        let pb = NSPasteboard.general
-        let types = pb.types ?? []
-
-        if let urls = pb.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL], !urls.isEmpty {
-            for url in urls where !attachedFiles.contains(url.path) {
-                attachedFiles.append(url.path)
-            }
-            return true
-        }
-
-        if types.contains(.png) || types.contains(.tiff) {
-            if let image = pb.readObjects(forClasses: [NSImage.self]) as? [NSImage], let first = image.first {
-                if let tiff = first.tiffRepresentation,
-                   let bitmap = NSBitmapImageRep(data: tiff),
-                   let png = bitmap.representation(using: .png, properties: [:]) {
-                    let tempPath = NSTemporaryDirectory() + "astra_paste_\(UUID().uuidString.prefix(8)).png"
-                    try? png.write(to: URL(fileURLWithPath: tempPath))
-                    attachedFiles.append(tempPath)
-                    return true
-                }
-            }
-        }
-
-        if let text = pb.string(forType: .string), !text.isEmpty {
-            let lineCount = text.components(separatedBy: .newlines).count
-            if lineCount > 10 || text.count > 500 {
-                let ext = text.hasPrefix("{") || text.hasPrefix("[") ? "json" : "txt"
-                let tempPath = NSTemporaryDirectory() + "astra_paste_\(UUID().uuidString.prefix(8)).\(ext)"
-                try? text.write(toFile: tempPath, atomically: true, encoding: .utf8)
-                attachedFiles.append(tempPath)
-                return true
-            }
-            return false
-        }
-
-        return false
+        let result = ComposerPasteIntake.intake(
+            pasteboard: .general,
+            existingAttachments: Set(attachedFiles)
+        )
+        attachedFiles.append(contentsOf: result.attachmentPaths)
+        return result.handled
     }
 
     private func installPasteMonitor() {
@@ -2193,7 +2061,8 @@ struct ChatPanelView: View {
                 messageText.append("\n")
                 return nil
             }
-            if event.modifierFlags.contains(.command),
+            if isComposerFocused,
+               event.modifierFlags.contains(.command),
                event.charactersIgnoringModifiers == "v" {
                 if smartPaste() { return nil }
             }
@@ -2611,11 +2480,7 @@ struct ChatPanelView: View {
     private func saveDraft() -> AgentTask? {
         guard !messages.isEmpty else { return draftTask }
 
-        struct DraftMessage: Codable {
-            let role: String
-            let content: String
-        }
-        let draftMessages = messages.map { DraftMessage(role: $0.role, content: $0.content) }
+        let draftMessages = messages.map { DraftChatMessagePayload(role: $0.role, content: $0.content) }
         guard let data = try? JSONEncoder().encode(draftMessages),
               let json = String(data: data, encoding: .utf8) else { return draftTask }
 
@@ -2670,7 +2535,6 @@ struct ChatPanelView: View {
                 model: model,
                 runtime: runtime
             )
-            draft.status = .draft
             draft.draftMessages = json
             draft.inputs = attachedFiles
             draft.skills = scopedSelectedSkills(forTaskText: draft.goal, inputs: attachedFiles)
@@ -2755,15 +2619,10 @@ struct ChatPanelView: View {
     }
 
     private func loadDraftMessages(_ task: AgentTask) {
-        struct DraftMessage: Codable {
-            let role: String
-            let content: String
-        }
-
         // First try loading from draftMessages JSON
         if !task.draftMessages.isEmpty,
            let data = task.draftMessages.data(using: .utf8),
-           let decoded = try? JSONDecoder().decode([DraftMessage].self, from: data) {
+           let decoded = try? JSONDecoder().decode([DraftChatMessagePayload].self, from: data) {
             messages = decoded.map { ChatMessage(role: $0.role, content: $0.content) }
             draftTask = task
             isPlanMode = true
@@ -3162,40 +3021,6 @@ struct EditableListField: View {
                 .buttonStyle(.plain)
                 .disabled(newItem.trimmingCharacters(in: .whitespaces).isEmpty)
             }
-        }
-    }
-}
-
-struct ChatBubbleView: View {
-    let event: TaskEvent
-
-    var isUser: Bool {
-        event.type == "user.message"
-    }
-
-    var body: some View {
-        HStack {
-            if isUser { Spacer(minLength: 60) }
-
-            VStack(alignment: isUser ? .trailing : .leading, spacing: 4) {
-                Text(event.payload)
-                    .font(Stanford.chatBody())
-                    .lineSpacing(Stanford.chatBodyLineSpacing)
-                    .padding(10)
-                    .background(isUser ? Stanford.sky.opacity(0.055) : Stanford.fog)
-                    .foregroundStyle(Stanford.readingText)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 12)
-                            .stroke(isUser ? Stanford.sky.opacity(0.11) : Color.clear, lineWidth: 1)
-                    )
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
-
-                Text(event.timestamp, style: .time)
-                    .font(Stanford.chatMeta())
-                    .foregroundStyle(.tertiary)
-            }
-
-            if !isUser { Spacer(minLength: 60) }
         }
     }
 }

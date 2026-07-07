@@ -1,53 +1,57 @@
 import Foundation
+import ASTRACore
+import ASTRAPersistence
 
-enum TaskGeneratedFileShelfDestination: Equatable {
-    case browser
-    case files
-    case query
-
+// Bare cases moved to ASTRACore/TaskGeneratedFileShelfDestination.swift for
+// Track A4 (ASTRAPersistence), which needs the case set as a stored-property
+// type; this extension's Shelf-registry-dependent members stay app-side.
+extension TaskGeneratedFileShelfDestination {
     var title: String {
-        switch self {
-        case .browser: "Open in Browser Shelf"
-        case .files: "Open in Files Shelf"
-        case .query: "Open in Query Shelf"
-        }
+        generatedFileDestination.title
     }
 
     var compactTitle: String {
-        switch self {
-        case .browser: "Browser"
-        case .files: "Files"
-        case .query: "Query"
-        }
+        generatedFileDestination.compactTitle
     }
 
     var systemImage: String {
-        switch self {
-        case .browser: "globe"
-        case .files: "doc.text"
-        case .query: "cylinder.split.1x2"
+        generatedFileDestination.systemImage
+    }
+
+    init?(shelfID: ShelfID) {
+        switch shelfID {
+        case .browser:
+            self = .browser
+        case .files:
+            self = .files
+        case .query:
+            self = .query
+        case .plan, .appPreview:
+            return nil
         }
+    }
+
+    var shelfID: ShelfID {
+        switch self {
+        case .browser:
+            .browser
+        case .files:
+            .files
+        case .query:
+            .query
+        }
+    }
+
+    private var generatedFileDestination: ShelfGeneratedFileDestinationMetadata {
+        let descriptor = CoreShelfRegistry.requiredDescriptor(for: shelfID)
+        guard let destination = descriptor.generatedFileDestination else {
+            preconditionFailure("CoreShelfRegistry shelf '\(shelfID.rawValue)' is missing generated-file destination metadata")
+        }
+        return destination
     }
 }
 
-enum TaskGeneratedFiles {
-    private static let markdownExtensions: Set<String> = ["md", "markdown", "qmd"]
-
-    private static let filesShelfExtensions: Set<String> = [
-        "md", "markdown", "qmd", "txt", "text", "log",
-        "json", "jsonl", "csv", "tsv", "yaml", "yml", "toml", "xml", "plist",
-        "swift", "py", "js", "jsx", "ts", "tsx", "css", "scss", "html", "htm",
-        "sh", "bash", "zsh", "fish", "sql", "r", "rb", "go", "rs",
-        "java", "kt", "kts", "c", "cc", "cpp", "cxx", "h", "hpp", "m", "mm",
-        "php", "pl", "lua", "env", "ini", "cfg", "conf"
-    ]
-
-    private static let filesShelfFileNames: Set<String> = [
-        ".env", ".gitignore", ".npmrc", ".zshrc", ".bashrc",
-        "dockerfile", "makefile", "rakefile", "gemfile", "podfile",
-        "readme", "license", "changelog"
-    ]
-
+enum TaskGeneratedFiles: Sendable {
     static func files(in folder: String, fileManager: FileManager = .default) -> [String] {
         guard !folder.isEmpty else { return [] }
         let rootURL = URL(fileURLWithPath: folder)
@@ -91,36 +95,10 @@ enum TaskGeneratedFiles {
     }
 
     static func shouldDisplayTaskFolderFile(relativePath: String) -> Bool {
-        let rel = relativePath.replacingOccurrences(of: "\\", with: "/")
-        let name = (rel as NSString).lastPathComponent.lowercased()
-        if rel == "session_history.md" || rel == "outputs" || rel.hasPrefix("outputs/") {
-            return false
-        }
-        if rel == ".runtime-bin" || rel.hasPrefix(".runtime-bin/") {
-            return false
-        }
-        if rel == "turns" || rel.hasPrefix("turns/") {
-            return false
-        }
-        if rel == "diagnostics" || rel.hasPrefix("diagnostics/") {
-            return false
-        }
-        if rel == "run_resource_manifest.json" {
-            return false
-        }
-        if rel == "fork_sources/history" || rel.hasPrefix("fork_sources/history/") {
-            return false
-        }
-        if name == "current_state.json" || name == "current_state.md" {
-            return false
-        }
-        if name == TaskForkManifest.fileName {
-            return false
-        }
-        if name.hasPrefix("turn_") && name.hasSuffix(".md") {
-            return false
-        }
-        return true
+        TaskOutputArtifactPathPolicy.displayableUserArtifactRelativePath(
+            relativePath,
+            context: .taskFolder
+        ) != nil
     }
 
     static func filesAsync(in folder: String) async -> [String] {
@@ -196,31 +174,23 @@ enum TaskGeneratedFiles {
     }
 
     static func isHTMLFile(_ path: String) -> Bool {
-        ["html", "htm"].contains(URL(fileURLWithPath: path).pathExtension.lowercased())
+        TaskGeneratedFilePathPolicy.isHTMLFile(path)
     }
 
     static func isMarkdownFile(_ path: String) -> Bool {
-        markdownExtensions.contains(URL(fileURLWithPath: path).pathExtension.lowercased())
+        TaskGeneratedFilePathPolicy.isMarkdownFile(path)
     }
 
     static func isSQLFile(_ path: String) -> Bool {
-        URL(fileURLWithPath: path).pathExtension.lowercased() == "sql"
+        TaskGeneratedFilePathPolicy.isSQLFile(path)
     }
 
     static func isFilesShelfFile(_ path: String) -> Bool {
-        let url = URL(fileURLWithPath: path)
-        let ext = url.pathExtension.lowercased()
-        let name = url.lastPathComponent.lowercased()
-        return filesShelfExtensions.contains(ext)
-            || filesShelfFileNames.contains(name)
-            || name.hasPrefix(".env.")
+        ShelfArtifactRouter.isFilesShelfFile(path)
     }
 
     static func shelfDestination(for path: String) -> TaskGeneratedFileShelfDestination? {
-        if isHTMLFile(path) { return .browser }
-        if isSQLFile(path) { return .query }
-        if isFilesShelfFile(path) { return .files }
-        return nil
+        ShelfArtifactRouter.shelfID(for: path).flatMap(TaskGeneratedFileShelfDestination.init(shelfID:))
     }
 
     static func shouldLoadGeneratedHTMLOnUserOpen(currentBrowserURL: String, targetPath: String) -> Bool {

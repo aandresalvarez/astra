@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import ASTRAModels
 @testable import ASTRA
 
 @Suite("Workspace Isolation")
@@ -10,6 +11,7 @@ struct IsolationTests {
         p.executableURL = URL(fileURLWithPath: "/bin/zsh")
         p.arguments = ["-c", cmd]
         p.currentDirectoryURL = URL(fileURLWithPath: dir)
+        p.environment = GitLocalEnvironment.scrubbing(ProcessInfo.processInfo.environment)
         let pipe = Pipe()
         p.standardOutput = pipe
         p.standardError = pipe

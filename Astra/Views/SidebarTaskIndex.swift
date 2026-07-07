@@ -1,4 +1,5 @@
 import Foundation
+import ASTRAModels
 
 struct SidebarTaskIndex {
     private let searchText: String

@@ -1,6 +1,9 @@
 import Combine
 import Foundation
 import Sparkle
+import ASTRAPersistence
+import ASTRACore
+import ASTRAModels
 
 @MainActor
 final class AppUpdateController: NSObject, ObservableObject, SPUUpdaterDelegate {

@@ -1,0 +1,817 @@
+import Foundation
+import ASTRAModels
+
+struct WorkspaceAppManifest: Codable, Sendable, Equatable {
+    var schemaVersion: Int
+    var app: WorkspaceAppManifestMetadata
+    var requirements: [WorkspaceAppRequirement]
+    var storage: WorkspaceAppStorageSchema?
+    var sources: [WorkspaceAppSource]
+    var views: [WorkspaceAppViewSpec]
+    var actions: [WorkspaceAppActionSpec]
+    var automations: [WorkspaceAppAutomationSpec]
+    var permissions: WorkspaceAppPermissions
+    // Slice 5b: durable "submit blocked / needs review" reasons (e.g. a form field whose REDCap
+    // branching ASTRA cannot honor exactly). Optional + nil-default so the fully-synthesized
+    // Codable OMITS it for every existing manifest — digests stay byte-stable.
+    var submitBlockedReasons: [String]?
+    // Self-test (Tier 2/3): builder-authored / AI-authored acceptance checks that travel with the
+    // app and run in the sandbox. Optional + nil-default → fully-synthesized Codable omits it, so
+    // check-less manifests keep byte-stable digests.
+    var checks: [WorkspaceAppCheck]?
+    // Phase 1 dynamic apps: a self-contained HTML/CSS/JS UI authored by the model for interactive
+    // tools the declarative vocabulary can't express (a calculator, converter, timer, custom
+    // visualization). Stored as the INNER content (markup + <style> + <script>); Swift wraps it in
+    // a CSP-locked, no-network, no-bridge WebView shell at render time (`WorkspaceAppWebReportHTML
+    // .appDocument`). Non-nil ⇒ "this is an HTML app": `WorkspaceAppSurfaceView` renders the sandbox
+    // full-surface instead of the native sections. Optional + nil-default → the synthesized Codable
+    // omits it, so every existing (declarative) manifest keeps a byte-stable digest.
+    var html: String?
+
+    init(
+        schemaVersion: Int = 1,
+        app: WorkspaceAppManifestMetadata,
+        requirements: [WorkspaceAppRequirement] = [],
+        storage: WorkspaceAppStorageSchema? = nil,
+        sources: [WorkspaceAppSource] = [],
+        views: [WorkspaceAppViewSpec] = [],
+        actions: [WorkspaceAppActionSpec] = [],
+        automations: [WorkspaceAppAutomationSpec] = [],
+        permissions: WorkspaceAppPermissions = WorkspaceAppPermissions(),
+        submitBlockedReasons: [String]? = nil,
+        checks: [WorkspaceAppCheck]? = nil,
+        html: String? = nil
+    ) {
+        self.schemaVersion = schemaVersion
+        self.app = app
+        self.requirements = requirements
+        self.storage = storage
+        self.sources = sources
+        self.views = views
+        self.actions = actions
+        self.automations = automations
+        self.permissions = permissions
+        self.submitBlockedReasons = submitBlockedReasons
+        self.checks = checks
+        self.html = html
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion, app, requirements, storage, sources, views, actions
+        case automations, permissions, submitBlockedReasons, checks, html
+    }
+
+    /// Lenient decoder: a model-authored manifest (especially a minimal HTML-app manifest with
+    /// "empty" collections) routinely OMITS keys that carry no data instead of emitting `[]`/the
+    /// default. The synthesized decoder would reject those with an opaque keyNotFound ("the data
+    /// couldn't be read because it is missing"), forcing the generator to fall back to a template.
+    /// Default every omittable field to its empty/baseline value so a manifest that's missing only
+    /// no-op fields decodes; the validator (authoritative) then reports any genuinely missing
+    /// content (e.g. an empty app id/name) as an actionable blocker. `encode(to:)` stays synthesized
+    /// from `CodingKeys`, so existing manifests keep byte-stable digests.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
+        // A model that omits the whole `app` block (or sends it null) should hit the validator's
+        // dedicated "App name is required." blocker — actionable — rather than an opaque decode
+        // failure. Default to empty identity; the validator is authoritative on it (same rationale
+        // as the per-field defaults in WorkspaceAppManifestMetadata's decoder).
+        app = try container.decodeIfPresent(WorkspaceAppManifestMetadata.self, forKey: .app)
+            ?? WorkspaceAppManifestMetadata(id: "", name: "")
+        requirements = try container.decodeIfPresent([WorkspaceAppRequirement].self, forKey: .requirements) ?? []
+        storage = try container.decodeIfPresent(WorkspaceAppStorageSchema.self, forKey: .storage)
+        sources = try container.decodeIfPresent([WorkspaceAppSource].self, forKey: .sources) ?? []
+        views = try container.decodeIfPresent([WorkspaceAppViewSpec].self, forKey: .views) ?? []
+        actions = try container.decodeIfPresent([WorkspaceAppActionSpec].self, forKey: .actions) ?? []
+        automations = try container.decodeIfPresent([WorkspaceAppAutomationSpec].self, forKey: .automations) ?? []
+        permissions = try container.decodeIfPresent(WorkspaceAppPermissions.self, forKey: .permissions) ?? WorkspaceAppPermissions()
+        submitBlockedReasons = try container.decodeIfPresent([String].self, forKey: .submitBlockedReasons)
+        checks = try container.decodeIfPresent([WorkspaceAppCheck].self, forKey: .checks)
+        html = try container.decodeIfPresent(String.self, forKey: .html)
+    }
+}
+
+/// A builder- or AI-authored acceptance check: run `steps` in the sandbox, then assert `expect`.
+struct WorkspaceAppCheck: Codable, Sendable, Equatable, Identifiable {
+    var id: String
+    var label: String
+    var steps: [WorkspaceAppCheckStep]
+    var expect: WorkspaceAppCheckExpectation
+}
+
+struct WorkspaceAppCheckStep: Codable, Sendable, Equatable {
+    var actionID: String
+    /// Optional explicit input record; when omitted the engine supplies a sample record.
+    var record: [String: WorkspaceAppStorageValue]?
+}
+
+/// A flat, fully-Codable expectation. `kind`:
+///   "noErrors"        — every step ran without throwing.
+///   "rowCount"        — `table` row count `op` (eq|gte|lte|gt|lt, default eq) `value`.
+///   "summaryContains" — the last run of `actionID` produced an outputSummary containing `text`.
+struct WorkspaceAppCheckExpectation: Codable, Sendable, Equatable {
+    var kind: String
+    var table: String?
+    var op: String?
+    var value: Int?
+    var text: String?
+    var actionID: String?
+}
+
+struct WorkspaceAppManifestMetadata: Codable, Sendable, Equatable {
+    var id: String
+    var name: String
+    var icon: String
+    var description: String
+    var tags: [String]
+    var archetypes: [String]
+
+    init(
+        id: String,
+        name: String,
+        icon: String = "square.grid.2x2",
+        description: String = "",
+        tags: [String] = [],
+        archetypes: [String] = []
+    ) {
+        self.id = id
+        self.name = name
+        self.icon = icon
+        self.description = description
+        self.tags = tags
+        self.archetypes = archetypes
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, name, icon, description, tags, archetypes
+    }
+
+    /// Lenient decoder (mirrors `WorkspaceAppManifest`): a model often emits only `id`/`name` for a
+    /// minimal HTML-app, omitting `icon`/`description`/`tags`/`archetypes`. Default the omitted
+    /// fields rather than failing to decode; `id`/`name` default to "" so the validator reports a
+    /// missing identity as a clear blocker instead of an opaque decode error. `encode(to:)` stays
+    /// synthesized, so digests are unaffected.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decodeIfPresent(String.self, forKey: .id) ?? ""
+        name = try container.decodeIfPresent(String.self, forKey: .name) ?? ""
+        icon = try container.decodeIfPresent(String.self, forKey: .icon) ?? "square.grid.2x2"
+        description = try container.decodeIfPresent(String.self, forKey: .description) ?? ""
+        tags = try container.decodeIfPresent([String].self, forKey: .tags) ?? []
+        archetypes = try container.decodeIfPresent([String].self, forKey: .archetypes) ?? []
+    }
+}
+
+struct WorkspaceAppRequirement: Codable, Sendable, Equatable {
+    var id: String
+    var contract: String
+    var minVersion: String?
+    var operations: [String]
+    var providerHint: String?
+    var providerRequired: String?
+    var dataClass: String?
+    var optional: Bool
+    var reason: String?
+
+    init(
+        id: String,
+        contract: String,
+        minVersion: String? = nil,
+        operations: [String],
+        providerHint: String? = nil,
+        providerRequired: String? = nil,
+        dataClass: String? = nil,
+        optional: Bool = false,
+        reason: String? = nil
+    ) {
+        self.id = id
+        self.contract = contract
+        self.minVersion = minVersion
+        self.operations = operations
+        self.providerHint = providerHint
+        self.providerRequired = providerRequired
+        self.dataClass = dataClass
+        self.optional = optional
+        self.reason = reason
+    }
+}
+
+struct WorkspaceAppStorageSchema: Codable, Sendable, Equatable {
+    var tables: [WorkspaceAppStorageTable]
+
+    init(tables: [WorkspaceAppStorageTable] = []) {
+        self.tables = tables
+    }
+}
+
+struct WorkspaceAppStorageTable: Codable, Sendable, Equatable {
+    var name: String
+    var columns: [WorkspaceAppStorageColumn]
+
+    init(name: String, columns: [WorkspaceAppStorageColumn]) {
+        self.name = name
+        self.columns = columns
+    }
+}
+
+struct WorkspaceAppStorageColumn: Codable, Sendable, Equatable {
+    var name: String
+    var type: String
+    var primaryKey: Bool
+    var required: Bool
+
+    init(name: String, type: String, primaryKey: Bool = false, required: Bool = false) {
+        self.name = name
+        self.type = type
+        self.primaryKey = primaryKey
+        self.required = required
+    }
+}
+
+struct WorkspaceAppSource: Codable, Sendable, Equatable {
+    var id: String
+    var requirementRef: String?
+    var operation: String?
+    var mode: String
+    var query: String?
+    var projectRef: String?
+    var tableRef: String?
+    var sourceRef: String?
+
+    init(
+        id: String,
+        requirementRef: String? = nil,
+        operation: String? = nil,
+        mode: String = "read",
+        query: String? = nil,
+        projectRef: String? = nil,
+        tableRef: String? = nil,
+        sourceRef: String? = nil
+    ) {
+        self.id = id
+        self.requirementRef = requirementRef
+        self.operation = operation
+        self.mode = mode
+        self.query = query
+        self.projectRef = projectRef
+        self.tableRef = tableRef
+        self.sourceRef = sourceRef
+    }
+}
+
+struct WorkspaceAppViewSpec: Codable, Sendable, Equatable {
+    var id: String
+    var type: String
+    var title: String?
+    var table: String?
+    var widgets: [WorkspaceAppWidgetSpec]
+    // Slice 5b: a "form" view carries form fields (REDCap data-entry replacement). Optional
+    // + defaulted so existing manifests + their digests are unaffected (same pattern as widgets).
+    var formFields: [WorkspaceAppFormFieldSpec]
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case type
+        case title
+        case table
+        case widgets
+        case formFields
+    }
+
+    init(
+        id: String,
+        type: String,
+        title: String? = nil,
+        table: String? = nil,
+        widgets: [WorkspaceAppWidgetSpec] = [],
+        formFields: [WorkspaceAppFormFieldSpec] = []
+    ) {
+        self.id = id
+        self.type = type
+        self.title = title
+        self.table = table
+        self.widgets = widgets
+        self.formFields = formFields
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        type = try container.decode(String.self, forKey: .type)
+        title = try container.decodeIfPresent(String.self, forKey: .title)
+        table = try container.decodeIfPresent(String.self, forKey: .table)
+        widgets = try container.decodeIfPresent([WorkspaceAppWidgetSpec].self, forKey: .widgets) ?? []
+        formFields = try container.decodeIfPresent([WorkspaceAppFormFieldSpec].self, forKey: .formFields) ?? []
+    }
+
+    // Custom encode so an empty formFields is OMITTED — existing form-less manifests encode
+    // byte-for-byte as before, keeping their digests (and Slice 3's revert digest check) stable.
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(type, forKey: .type)
+        try container.encodeIfPresent(title, forKey: .title)
+        try container.encodeIfPresent(table, forKey: .table)
+        try container.encode(widgets, forKey: .widgets)
+        if !formFields.isEmpty {
+            try container.encode(formFields, forKey: .formFields)
+        }
+    }
+}
+
+/// Slice 5b: a single field on a form view. Drives a draft-record input control, maps to a
+/// local draft-table column, and submits through the declared write mode. `visibleWhen` carries
+/// the field's raw REDCap branching logic and MUST be classified safe by
+/// `WorkspaceAppREDCapBranchingAnalyzer` (the validator enforces this); unsupported branching is
+/// dropped to `readOnly` + flagged by the builder rather than silently approximated.
+struct WorkspaceAppFormFieldSpec: Codable, Sendable, Equatable {
+    var name: String
+    var label: String
+    var fieldType: String          // text | textarea | number | date | choice | multichoice | yesno
+    var required: Bool
+    var choices: [WorkspaceAppFormChoice]?
+    var visibleWhen: String?       // raw REDCap branching logic; must be 5a-safe when present
+    var readOnly: Bool
+    var readOnlyReason: String?    // why a field was forced read-only (unsupported branching / type)
+
+    enum CodingKeys: String, CodingKey {
+        case name, label, fieldType, required, choices, visibleWhen, readOnly, readOnlyReason
+    }
+
+    init(
+        name: String,
+        label: String,
+        fieldType: String,
+        required: Bool = false,
+        choices: [WorkspaceAppFormChoice]? = nil,
+        visibleWhen: String? = nil,
+        readOnly: Bool = false,
+        readOnlyReason: String? = nil
+    ) {
+        self.name = name
+        self.label = label
+        self.fieldType = fieldType
+        self.required = required
+        self.choices = choices
+        self.visibleWhen = visibleWhen
+        self.readOnly = readOnly
+        self.readOnlyReason = readOnlyReason
+    }
+
+    // Lenient decode: only name/label/fieldType are required, so a model-generated field
+    // missing the booleans/choices still decodes (untrusted output is validated afterward).
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        name = try container.decode(String.self, forKey: .name)
+        label = try container.decode(String.self, forKey: .label)
+        fieldType = try container.decode(String.self, forKey: .fieldType)
+        required = try container.decodeIfPresent(Bool.self, forKey: .required) ?? false
+        choices = try container.decodeIfPresent([WorkspaceAppFormChoice].self, forKey: .choices)
+        visibleWhen = try container.decodeIfPresent(String.self, forKey: .visibleWhen)
+        readOnly = try container.decodeIfPresent(Bool.self, forKey: .readOnly) ?? false
+        readOnlyReason = try container.decodeIfPresent(String.self, forKey: .readOnlyReason)
+    }
+}
+
+/// A selectable option for a `choice`/`multichoice` form field (a REDCap choice-list entry).
+struct WorkspaceAppFormChoice: Codable, Sendable, Equatable {
+    var value: String
+    var label: String
+
+    enum CodingKeys: String, CodingKey {
+        case value, label
+    }
+
+    init(value: String, label: String) {
+        self.value = value
+        self.label = label
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        value = try container.decode(String.self, forKey: .value)
+        // Fall back to the value when no display label is supplied.
+        label = try container.decodeIfPresent(String.self, forKey: .label) ?? value
+    }
+}
+
+struct WorkspaceAppWidgetSpec: Codable, Sendable, Equatable {
+    var id: String
+    var type: String
+    var label: String
+    var table: String?
+    var field: String?
+    var groupBy: String?
+    var aggregation: String?
+    var chartKind: String?         // chart widget: bar (default) | line | pie
+    var markdownContent: String?
+    var diagramContent: String?
+    var diagramKind: String?
+    var webRenderer: String?
+    var allowedActions: [String]
+    var requiredAssets: [String]
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case type
+        case label
+        case table
+        case field
+        case groupBy
+        case aggregation
+        case chartKind
+        case markdownContent
+        case diagramContent
+        case diagramKind
+        case webRenderer
+        case allowedActions
+        case requiredAssets
+    }
+
+    init(
+        id: String,
+        type: String,
+        label: String,
+        table: String? = nil,
+        field: String? = nil,
+        groupBy: String? = nil,
+        aggregation: String? = nil,
+        chartKind: String? = nil,
+        markdownContent: String? = nil,
+        diagramContent: String? = nil,
+        diagramKind: String? = nil,
+        webRenderer: String? = nil,
+        allowedActions: [String] = [],
+        requiredAssets: [String] = []
+    ) {
+        self.id = id
+        self.type = type
+        self.label = label
+        self.table = table
+        self.field = field
+        self.groupBy = groupBy
+        self.aggregation = aggregation
+        self.chartKind = chartKind
+        self.markdownContent = markdownContent
+        self.diagramContent = diagramContent
+        self.diagramKind = diagramKind
+        self.webRenderer = webRenderer
+        self.allowedActions = allowedActions
+        self.requiredAssets = requiredAssets
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        type = try container.decode(String.self, forKey: .type)
+        label = try container.decode(String.self, forKey: .label)
+        table = try container.decodeIfPresent(String.self, forKey: .table)
+        field = try container.decodeIfPresent(String.self, forKey: .field)
+        groupBy = try container.decodeIfPresent(String.self, forKey: .groupBy)
+        aggregation = try container.decodeIfPresent(String.self, forKey: .aggregation)
+        chartKind = try container.decodeIfPresent(String.self, forKey: .chartKind)
+        markdownContent = try container.decodeIfPresent(String.self, forKey: .markdownContent)
+        diagramContent = try container.decodeIfPresent(String.self, forKey: .diagramContent)
+        diagramKind = try container.decodeIfPresent(String.self, forKey: .diagramKind)
+        webRenderer = try container.decodeIfPresent(String.self, forKey: .webRenderer)
+        allowedActions = try container.decodeIfPresent([String].self, forKey: .allowedActions) ?? []
+        requiredAssets = try container.decodeIfPresent([String].self, forKey: .requiredAssets) ?? []
+    }
+}
+
+struct WorkspaceAppActionSpec: Codable, Sendable, Equatable {
+    var id: String
+    var type: String
+    var label: String?
+    var requirementRef: String?
+    var operation: String?
+    var sourceRef: String?
+    var table: String?
+    var exportFormat: String?
+    var targetURL: String?
+    var clipboardText: String?
+    var notificationTitle: String?
+    var notificationBody: String?
+    var taskTitle: String?
+    var taskGoal: String?
+    var approvalPrompt: String?
+    var approvalDecisions: [String]
+    var agentPrompt: String?
+    var agentInputBindings: [String]
+    var agentDecisions: [String]
+    var agentPolicyMode: String?
+    var agentTokenBudget: Int?
+    var agentRequiresApproval: Bool
+    var gateField: String?
+    var gateOperator: String?
+    var gateValue: WorkspaceAppStorageValue?
+    var steps: [String]
+    var maxIterations: Int?
+    var timeoutSeconds: Int?
+    var delaySeconds: Int?
+    // Slice 9 Phase C composite/leaf action fields.
+    var fanOutStep: String?       // task.fanOut: child task.createAndRun template (one task per bound row)
+    var thenStep: String?         // gate.branch: step to run when the predicate passes
+    var elseStep: String?         // gate.branch: step to run when the predicate fails (optional)
+    var reduceStrategy: String?   // rows.reduce: count | sum | concat | first | last
+    var reduceColumn: String?     // rows.reduce: row key to fold over
+    // Slice 10: workflow I/O binding for agent task steps (task.createDraft/createAndRun/fanOut).
+    var inputBinding: WorkspaceAppActionInputBinding?    // inject app data into the spawned agent goal
+    var outputBinding: WorkspaceAppActionOutputBinding?  // capture the agent's answer back into the workflow
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case type
+        case label
+        case requirementRef
+        case operation
+        case sourceRef
+        case table
+        case exportFormat
+        case targetURL
+        case clipboardText
+        case notificationTitle
+        case notificationBody
+        case taskTitle
+        case taskGoal
+        case approvalPrompt
+        case approvalDecisions
+        case agentPrompt
+        case agentInputBindings
+        case agentDecisions
+        case agentPolicyMode
+        case agentTokenBudget
+        case agentRequiresApproval
+        case gateField
+        case gateOperator
+        case gateValue
+        case steps
+        case maxIterations
+        case timeoutSeconds
+        case delaySeconds
+        case fanOutStep
+        case thenStep
+        case elseStep
+        case reduceStrategy
+        case reduceColumn
+        case inputBinding
+        case outputBinding
+    }
+
+    init(
+        id: String,
+        type: String,
+        label: String? = nil,
+        requirementRef: String? = nil,
+        operation: String? = nil,
+        sourceRef: String? = nil,
+        table: String? = nil,
+        exportFormat: String? = nil,
+        targetURL: String? = nil,
+        clipboardText: String? = nil,
+        notificationTitle: String? = nil,
+        notificationBody: String? = nil,
+        taskTitle: String? = nil,
+        taskGoal: String? = nil,
+        approvalPrompt: String? = nil,
+        approvalDecisions: [String] = [],
+        agentPrompt: String? = nil,
+        agentInputBindings: [String] = [],
+        agentDecisions: [String] = [],
+        agentPolicyMode: String? = nil,
+        agentTokenBudget: Int? = nil,
+        agentRequiresApproval: Bool = false,
+        gateField: String? = nil,
+        gateOperator: String? = nil,
+        gateValue: WorkspaceAppStorageValue? = nil,
+        steps: [String] = [],
+        maxIterations: Int? = nil,
+        timeoutSeconds: Int? = nil,
+        delaySeconds: Int? = nil,
+        fanOutStep: String? = nil,
+        thenStep: String? = nil,
+        elseStep: String? = nil,
+        reduceStrategy: String? = nil,
+        reduceColumn: String? = nil,
+        inputBinding: WorkspaceAppActionInputBinding? = nil,
+        outputBinding: WorkspaceAppActionOutputBinding? = nil
+    ) {
+        self.id = id
+        self.type = type
+        self.label = label
+        self.requirementRef = requirementRef
+        self.operation = operation
+        self.sourceRef = sourceRef
+        self.table = table
+        self.exportFormat = exportFormat
+        self.targetURL = targetURL
+        self.clipboardText = clipboardText
+        self.notificationTitle = notificationTitle
+        self.notificationBody = notificationBody
+        self.taskTitle = taskTitle
+        self.taskGoal = taskGoal
+        self.approvalPrompt = approvalPrompt
+        self.approvalDecisions = approvalDecisions
+        self.agentPrompt = agentPrompt
+        self.agentInputBindings = agentInputBindings
+        self.agentDecisions = agentDecisions
+        self.agentPolicyMode = agentPolicyMode
+        self.agentTokenBudget = agentTokenBudget
+        self.agentRequiresApproval = agentRequiresApproval
+        self.gateField = gateField
+        self.gateOperator = gateOperator
+        self.gateValue = gateValue
+        self.steps = steps
+        self.maxIterations = maxIterations
+        self.timeoutSeconds = timeoutSeconds
+        self.delaySeconds = delaySeconds
+        self.fanOutStep = fanOutStep
+        self.thenStep = thenStep
+        self.elseStep = elseStep
+        self.reduceStrategy = reduceStrategy
+        self.reduceColumn = reduceColumn
+        self.inputBinding = inputBinding
+        self.outputBinding = outputBinding
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        type = try container.decode(String.self, forKey: .type)
+        label = try container.decodeIfPresent(String.self, forKey: .label)
+        requirementRef = try container.decodeIfPresent(String.self, forKey: .requirementRef)
+        operation = try container.decodeIfPresent(String.self, forKey: .operation)
+        sourceRef = try container.decodeIfPresent(String.self, forKey: .sourceRef)
+        table = try container.decodeIfPresent(String.self, forKey: .table)
+        exportFormat = try container.decodeIfPresent(String.self, forKey: .exportFormat)
+        targetURL = try container.decodeIfPresent(String.self, forKey: .targetURL)
+        clipboardText = try container.decodeIfPresent(String.self, forKey: .clipboardText)
+        notificationTitle = try container.decodeIfPresent(String.self, forKey: .notificationTitle)
+        notificationBody = try container.decodeIfPresent(String.self, forKey: .notificationBody)
+        taskTitle = try container.decodeIfPresent(String.self, forKey: .taskTitle)
+        taskGoal = try container.decodeIfPresent(String.self, forKey: .taskGoal)
+        approvalPrompt = try container.decodeIfPresent(String.self, forKey: .approvalPrompt)
+        approvalDecisions = try container.decodeIfPresent([String].self, forKey: .approvalDecisions) ?? []
+        agentPrompt = try container.decodeIfPresent(String.self, forKey: .agentPrompt)
+        agentInputBindings = try container.decodeIfPresent([String].self, forKey: .agentInputBindings) ?? []
+        agentDecisions = try container.decodeIfPresent([String].self, forKey: .agentDecisions) ?? []
+        agentPolicyMode = try container.decodeIfPresent(String.self, forKey: .agentPolicyMode)
+        agentTokenBudget = try container.decodeIfPresent(Int.self, forKey: .agentTokenBudget)
+        agentRequiresApproval = try container.decodeIfPresent(Bool.self, forKey: .agentRequiresApproval) ?? false
+        gateField = try container.decodeIfPresent(String.self, forKey: .gateField)
+        gateOperator = try container.decodeIfPresent(String.self, forKey: .gateOperator)
+        gateValue = try container.decodeIfPresent(WorkspaceAppStorageValue.self, forKey: .gateValue)
+        steps = try container.decodeIfPresent([String].self, forKey: .steps) ?? []
+        maxIterations = try container.decodeIfPresent(Int.self, forKey: .maxIterations)
+        timeoutSeconds = try container.decodeIfPresent(Int.self, forKey: .timeoutSeconds)
+        delaySeconds = try container.decodeIfPresent(Int.self, forKey: .delaySeconds)
+        fanOutStep = try container.decodeIfPresent(String.self, forKey: .fanOutStep)
+        thenStep = try container.decodeIfPresent(String.self, forKey: .thenStep)
+        elseStep = try container.decodeIfPresent(String.self, forKey: .elseStep)
+        reduceStrategy = try container.decodeIfPresent(String.self, forKey: .reduceStrategy)
+        reduceColumn = try container.decodeIfPresent(String.self, forKey: .reduceColumn)
+        inputBinding = try container.decodeIfPresent(WorkspaceAppActionInputBinding.self, forKey: .inputBinding)
+        outputBinding = try container.decodeIfPresent(WorkspaceAppActionOutputBinding.self, forKey: .outputBinding)
+    }
+    // No custom encode(to:): the synthesized Encodable omits nil optionals (encodeIfPresent), so a
+    // manifest without bindings encodes byte-for-byte as before — version digests stay stable.
+}
+
+/// Slice 10: injects app-owned data into a spawned agent task's goal so the AI step can actually see
+/// the app's records / the prior pipeline step's output (closing the "AI steps remember the
+/// workspace, not the app" gap). Reads only app-owned data — never an external capability — so it
+/// adds no new egress beyond what the app already reads locally.
+struct WorkspaceAppActionInputBinding: Codable, Sendable, Equatable {
+    var source: String        // "boundRows" (prior step output) | "table" (read a local storage table)
+    var table: String?        // required when source == "table"
+    var label: String?        // header for the injected block, e.g. "Records to review"
+    var limit: Int?           // cap rows injected (clamped 1...200; default 50)
+}
+
+/// Slice 10: captures a spawned agent task's answer back into the workflow as a row keyed by `field`
+/// (threaded to the next step via boundRows) and, when `table` is set, persisted to a storage column
+/// — so the agent's output becomes durable app data instead of being dropped.
+struct WorkspaceAppActionOutputBinding: Codable, Sendable, Equatable {
+    var field: String         // row key / storage column to bind the captured answer to
+    var capture: String?      // "text" (default — the raw answer) | "json" (parse a JSON object into fields)
+    var table: String?        // optional: persist the captured row into this storage table on resume
+}
+
+enum WorkspaceAppExpressionGateOperator: String, CaseIterable, Sendable {
+    case exists
+    case notExists
+    case equals
+    case notEquals
+    case greaterThan
+    case greaterThanOrEquals
+    case lessThan
+    case lessThanOrEquals
+
+    static var allRawValues: Set<String> {
+        Set(Self.allCases.map(\.rawValue))
+    }
+
+    static func requiresExpectedValue(_ rawValue: String) -> Bool {
+        guard let value = Self(rawValue: rawValue) else { return false }
+        switch value {
+        case .exists, .notExists:
+            return false
+        case .equals, .notEquals, .greaterThan, .greaterThanOrEquals, .lessThan, .lessThanOrEquals:
+            return true
+        }
+    }
+}
+
+struct WorkspaceAppAutomationSpec: Codable, Sendable, Equatable {
+    var id: String
+    var type: String
+    var enabledByDefault: Bool
+    var action: String?
+    var scheduleType: String?
+    var intervalSeconds: Int?
+    var dailyHour: Int?
+    var dailyMinute: Int?
+    var weeklyDayOfWeek: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case type
+        case enabledByDefault
+        case action
+        case scheduleType
+        case intervalSeconds
+        case dailyHour
+        case dailyMinute
+        case weeklyDayOfWeek
+    }
+
+    init(
+        id: String,
+        type: String,
+        enabledByDefault: Bool = false,
+        action: String? = nil,
+        scheduleType: String? = nil,
+        intervalSeconds: Int? = nil,
+        dailyHour: Int? = nil,
+        dailyMinute: Int? = nil,
+        weeklyDayOfWeek: Int? = nil
+    ) {
+        self.id = id
+        self.type = type
+        self.enabledByDefault = enabledByDefault
+        self.action = action
+        self.scheduleType = scheduleType
+        self.intervalSeconds = intervalSeconds
+        self.dailyHour = dailyHour
+        self.dailyMinute = dailyMinute
+        self.weeklyDayOfWeek = weeklyDayOfWeek
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        type = try container.decode(String.self, forKey: .type)
+        enabledByDefault = try container.decodeIfPresent(Bool.self, forKey: .enabledByDefault) ?? false
+        action = try container.decodeIfPresent(String.self, forKey: .action)
+        scheduleType = try container.decodeIfPresent(String.self, forKey: .scheduleType)
+        intervalSeconds = try container.decodeIfPresent(Int.self, forKey: .intervalSeconds)
+        dailyHour = try container.decodeIfPresent(Int.self, forKey: .dailyHour)
+        dailyMinute = try container.decodeIfPresent(Int.self, forKey: .dailyMinute)
+        weeklyDayOfWeek = try container.decodeIfPresent(Int.self, forKey: .weeklyDayOfWeek)
+    }
+}
+
+struct WorkspaceAppPermissions: Codable, Sendable, Equatable {
+    var reads: [String]
+    var writes: [String]
+    var externalWrites: [String]
+    var defaultMode: WorkspaceAppPermissionMode
+
+    init(
+        reads: [String] = [],
+        writes: [String] = [],
+        externalWrites: [String] = [],
+        defaultMode: WorkspaceAppPermissionMode = .readOnly
+    ) {
+        self.reads = reads
+        self.writes = writes
+        self.externalWrites = externalWrites
+        self.defaultMode = defaultMode
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case reads, writes, externalWrites, defaultMode
+    }
+
+    /// Lenient decoder (mirrors `WorkspaceAppManifest`): a model commonly emits `permissions` with
+    /// only `defaultMode` (especially for a minimal HTML app), omitting the empty grant arrays.
+    /// Default them rather than failing to decode; `encode(to:)` stays synthesized, so digests are
+    /// unaffected.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        reads = try container.decodeIfPresent([String].self, forKey: .reads) ?? []
+        writes = try container.decodeIfPresent([String].self, forKey: .writes) ?? []
+        externalWrites = try container.decodeIfPresent([String].self, forKey: .externalWrites) ?? []
+        defaultMode = try container.decodeIfPresent(WorkspaceAppPermissionMode.self, forKey: .defaultMode) ?? .readOnly
+    }
+}

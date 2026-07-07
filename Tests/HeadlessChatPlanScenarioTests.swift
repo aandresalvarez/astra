@@ -1,6 +1,8 @@
 import Foundation
 import SwiftData
 import Testing
+import ASTRAModels
+import ASTRAPersistence
 @testable import ASTRA
 import ASTRACore
 
@@ -97,7 +99,7 @@ extension HeadlessChatScenarioTests {
                     id: "proof-command",
                     description: "Proof command passes",
                     method: .command,
-                    command: "false"
+                    command: "swift build --package-path \(harness.rootURL.path)/missing-package"
                 )
             ])
         )
@@ -134,6 +136,7 @@ extension HeadlessChatScenarioTests {
     func approvedPlanCompletionProceedsWhenValidationContractPasses() async throws {
         let harness = try HeadlessChatHarness()
         defer { harness.cleanup() }
+        try Self.writeMinimalSwiftPackage(at: harness.workspaceURL)
 
         let plan = TaskPlanPayload(
             title: "Contract gated plan",
@@ -146,7 +149,7 @@ extension HeadlessChatScenarioTests {
                     id: "proof-command",
                     description: "Proof command passes",
                     method: .command,
-                    command: "true"
+                    command: "swift build --package-path \(harness.workspaceURL.path)"
                 )
             ])
         )
@@ -400,7 +403,12 @@ extension HeadlessChatScenarioTests {
         defer { harness.cleanup() }
 
         let countFile = harness.rootURL.appendingPathComponent("review-contract-count.txt")
-        let proofURL = harness.rootURL.appendingPathComponent("final-proof.txt")
+        // Validation `.command` assertions are policy-gated to workspace-relative
+        // paths (ValidationCommandPolicy.fileTestPathIsWorkspaceRelative rejects
+        // any path starting with "/") so a plan can't assert against arbitrary
+        // filesystem locations outside its sandbox. The proof file therefore has
+        // to live under the task's workspace, not the harness's outer root.
+        let proofURL = harness.workspaceURL.appendingPathComponent("final-proof.txt")
         let plan = TaskPlanPayload(
             title: "Two step proof plan",
             goal: "Build proof across multiple approvals",
@@ -413,7 +421,7 @@ extension HeadlessChatScenarioTests {
                     id: "final-proof",
                     description: "Final proof exists",
                     method: .command,
-                    command: "test -f \(Self.shQuote(proofURL.path))"
+                    command: "test -f final-proof.txt"
                 )
             ])
         )
@@ -426,7 +434,7 @@ extension HeadlessChatScenarioTests {
             if [ "$count" = "1" ]; then
               printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"ASTRA_EVENT {\\"v\\":1,\\"type\\":\\"plan.step.completed\\",\\"stepID\\":\\"step-1\\",\\"summary\\":\\"Prepared\\"}\\n"}}'
             else
-              touch \(Self.shQuote(proofURL.path))
+              printf 'proof complete' > \(Self.shQuote(proofURL.path))
               printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"ASTRA_EVENT {\\"v\\":1,\\"type\\":\\"plan.step.completed\\",\\"stepID\\":\\"step-2\\",\\"summary\\":\\"Finished\\"}\\n"}}'
             fi
             printf '%s\\n' '{"type":"usage","usage":{"input_tokens":2,"output_tokens":3},"duration_ms":11,"turns":1}'
@@ -1047,5 +1055,30 @@ extension HeadlessChatScenarioTests {
         #expect(task.events.contains { $0.type == "error" && $0.payload.contains("does not map to a scoped runtime permission") })
         #expect(!task.events.contains { $0.type == "permission.approval.requested" })
         #expect(!task.events.contains { $0.type == "error" && $0.payload.contains("idle timeout") })
+    }
+
+    private static func writeMinimalSwiftPackage(at root: URL) throws {
+        let sources = root.appendingPathComponent("Sources/ValidationFixture", isDirectory: true)
+        try FileManager.default.createDirectory(at: sources, withIntermediateDirectories: true)
+        try """
+        // swift-tools-version: 5.9
+        import PackageDescription
+
+        let package = Package(
+            name: "ValidationFixture",
+            targets: [
+                .executableTarget(name: "ValidationFixture")
+            ]
+        )
+        """.write(
+            to: root.appendingPathComponent("Package.swift"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try #"@main struct ValidationFixture { static func main() {} }"#.write(
+            to: sources.appendingPathComponent("main.swift"),
+            atomically: true,
+            encoding: .utf8
+        )
     }
 }

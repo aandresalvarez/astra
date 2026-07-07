@@ -1,6 +1,6 @@
 import Foundation
 
-enum TaskEventCategory: String, Codable, Sendable, Equatable, Hashable {
+public enum TaskEventCategory: String, Codable, Sendable, Equatable, Hashable {
     case lifecycle
     case conversation
     case tool
@@ -8,30 +8,30 @@ enum TaskEventCategory: String, Codable, Sendable, Equatable, Hashable {
     case team
 }
 
-struct TaskEventType: RawRepresentable, Codable, Sendable, Hashable, ExpressibleByStringLiteral {
-    let rawValue: String
+public struct TaskEventType: RawRepresentable, Codable, Sendable, Hashable, ExpressibleByStringLiteral {
+    public let rawValue: String
 
-    init?(rawValue: String) {
+    public init?(rawValue: String) {
         let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
         self.rawValue = trimmed
     }
 
-    init(stringLiteral value: StringLiteralType) {
+    public init(stringLiteral value: StringLiteralType) {
         self.rawValue = value
     }
 
-    var category: TaskEventCategory {
+    public var category: TaskEventCategory {
         TaskEventTypes.category(for: self)
     }
 }
 
-enum TaskEventPayloadDecodeError: Error, Equatable, CustomStringConvertible {
+public enum TaskEventPayloadDecodeError: Error, Equatable, CustomStringConvertible {
     case typeMismatch(expected: String, actual: String)
     case invalidUTF8
     case decodingFailed(String)
 
-    var description: String {
+    public var description: String {
         switch self {
         case .typeMismatch(let expected, let actual):
             "Expected event type '\(expected)', got '\(actual)'."
@@ -43,148 +43,148 @@ enum TaskEventPayloadDecodeError: Error, Equatable, CustomStringConvertible {
     }
 }
 
-enum TaskEventTypes {
-    enum Task {
-        static let started: TaskEventType = "task.started"
-        static let completed: TaskEventType = "task.completed"
-        static let cancelled: TaskEventType = "task.cancelled"
-        static let interrupted: TaskEventType = "task.interrupted"
-        static let retried: TaskEventType = "task.retried"
-        static let resumed: TaskEventType = "task.resumed"
-        static let approved: TaskEventType = "task.approved"
-        static let dismissed: TaskEventType = "task.dismissed"
-        static let checkpoint: TaskEventType = "task.checkpoint"
-        static let stats: TaskEventType = "task.stats"
-        static let chained: TaskEventType = "task.chained"
+public enum TaskEventTypes {
+    public enum Task {
+        public static let started: TaskEventType = "task.started"
+        public static let completed: TaskEventType = "task.completed"
+        public static let cancelled: TaskEventType = "task.cancelled"
+        public static let interrupted: TaskEventType = "task.interrupted"
+        public static let retried: TaskEventType = "task.retried"
+        public static let resumed: TaskEventType = "task.resumed"
+        public static let approved: TaskEventType = "task.approved"
+        public static let dismissed: TaskEventType = "task.dismissed"
+        public static let checkpoint: TaskEventType = "task.checkpoint"
+        public static let stats: TaskEventType = "task.stats"
+        public static let chained: TaskEventType = "task.chained"
     }
 
-    enum Conversation {
-        static let userMessage: TaskEventType = "user.message"
-        static let agentResponse: TaskEventType = "agent.response"
-        static let agentThinking: TaskEventType = "agent.thinking"
-        static let planUserMessage: TaskEventType = "plan.user.message"
-        static let planAssistantMessage: TaskEventType = "plan.assistant.message"
+    public enum Conversation {
+        public static let userMessage: TaskEventType = "user.message"
+        public static let agentResponse: TaskEventType = "agent.response"
+        public static let agentThinking: TaskEventType = "agent.thinking"
+        public static let planUserMessage: TaskEventType = "plan.user.message"
+        public static let planAssistantMessage: TaskEventType = "plan.assistant.message"
     }
 
-    enum Tool {
-        static let use: TaskEventType = "tool.use"
-        static let result: TaskEventType = "tool.result"
-        static let permissionDenied: TaskEventType = "permission.denied"
-        static let permissionApprovalRequested: TaskEventType = "permission.approval.requested"
+    public enum Tool {
+        public static let use: TaskEventType = "tool.use"
+        public static let result: TaskEventType = "tool.result"
+        public static let permissionDenied: TaskEventType = "permission.denied"
+        public static let permissionApprovalRequested: TaskEventType = "permission.approval.requested"
         /// Emitted when a live in-flight ask is answered (allow or deny) without
         /// a `task.approved` (the deny path, and any provider whose answer
         /// resolves the same running process). Closes the open-request card.
-        static let permissionRequestResolved: TaskEventType = "permission.request.resolved"
-        static let permissionGrantTask: TaskEventType = "permission.grant.task"
+        public static let permissionRequestResolved: TaskEventType = "permission.request.resolved"
+        public static let permissionGrantTask: TaskEventType = "permission.grant.task"
     }
 
-    enum Budget {
-        static let warning: TaskEventType = "budget.warning"
-        static let exceeded: TaskEventType = "budget.exceeded"
+    public enum Budget {
+        public static let warning: TaskEventType = "budget.warning"
+        public static let exceeded: TaskEventType = "budget.exceeded"
     }
 
-    enum Activity {
-        static let compacted: TaskEventType = "activity.compacted"
+    public enum Activity {
+        public static let compacted: TaskEventType = "activity.compacted"
     }
 
-    enum Plan {
-        static let created: TaskEventType = "plan.created"
-        static let updated: TaskEventType = "plan.updated"
-        static let approved: TaskEventType = "plan.approved"
-        static let cancelled: TaskEventType = "plan.cancelled"
-        static let executionStarted: TaskEventType = "plan.execution.started"
-        static let executionCompleted: TaskEventType = "plan.execution.completed"
-        static let executionFailed: TaskEventType = "plan.execution.failed"
-        static let userMessage: TaskEventType = "plan.user.message"
-        static let assistantMessage: TaskEventType = "plan.assistant.message"
-        static let stepStarted: TaskEventType = "plan.step.started"
-        static let stepCompleted: TaskEventType = "plan.step.completed"
-        static let stepBlocked: TaskEventType = "plan.step.blocked"
-        static let stepSkipped: TaskEventType = "plan.step.skipped"
+    public enum Plan {
+        public static let created: TaskEventType = "plan.created"
+        public static let updated: TaskEventType = "plan.updated"
+        public static let approved: TaskEventType = "plan.approved"
+        public static let cancelled: TaskEventType = "plan.cancelled"
+        public static let executionStarted: TaskEventType = "plan.execution.started"
+        public static let executionCompleted: TaskEventType = "plan.execution.completed"
+        public static let executionFailed: TaskEventType = "plan.execution.failed"
+        public static let userMessage: TaskEventType = "plan.user.message"
+        public static let assistantMessage: TaskEventType = "plan.assistant.message"
+        public static let stepStarted: TaskEventType = "plan.step.started"
+        public static let stepCompleted: TaskEventType = "plan.step.completed"
+        public static let stepBlocked: TaskEventType = "plan.step.blocked"
+        public static let stepSkipped: TaskEventType = "plan.step.skipped"
     }
 
-    enum Validation {
-        static let contractCreated: TaskEventType = "validation.contract.created"
-        static let contractUpdated: TaskEventType = "validation.contract.updated"
-        static let contractPassed: TaskEventType = "validation.contract.passed"
-        static let contractFailed: TaskEventType = "validation.contract.failed"
-        static let contractOverridden: TaskEventType = "validation.contract.override"
-        static let assertionDefined: TaskEventType = "validation.assertion.defined"
-        static let assertionStarted: TaskEventType = "validation.assertion.started"
-        static let assertionPassed: TaskEventType = "validation.assertion.passed"
-        static let assertionFailed: TaskEventType = "validation.assertion.failed"
-        static let assertionSkipped: TaskEventType = "validation.assertion.skipped"
-        static let assertionReviewed: TaskEventType = "validation.assertion.reviewed"
-        static let evidence: TaskEventType = "validation.evidence"
-        static let behaviorStarted: TaskEventType = "validation.behavior.started"
-        static let behaviorPassed: TaskEventType = "validation.behavior.passed"
-        static let behaviorFailed: TaskEventType = "validation.behavior.failed"
-        static let behaviorEvidenceAttached: TaskEventType = "validation.behavior.evidence.attached"
+    public enum Validation {
+        public static let contractCreated: TaskEventType = "validation.contract.created"
+        public static let contractUpdated: TaskEventType = "validation.contract.updated"
+        public static let contractPassed: TaskEventType = "validation.contract.passed"
+        public static let contractFailed: TaskEventType = "validation.contract.failed"
+        public static let contractOverridden: TaskEventType = "validation.contract.override"
+        public static let assertionDefined: TaskEventType = "validation.assertion.defined"
+        public static let assertionStarted: TaskEventType = "validation.assertion.started"
+        public static let assertionPassed: TaskEventType = "validation.assertion.passed"
+        public static let assertionFailed: TaskEventType = "validation.assertion.failed"
+        public static let assertionSkipped: TaskEventType = "validation.assertion.skipped"
+        public static let assertionReviewed: TaskEventType = "validation.assertion.reviewed"
+        public static let evidence: TaskEventType = "validation.evidence"
+        public static let behaviorStarted: TaskEventType = "validation.behavior.started"
+        public static let behaviorPassed: TaskEventType = "validation.behavior.passed"
+        public static let behaviorFailed: TaskEventType = "validation.behavior.failed"
+        public static let behaviorEvidenceAttached: TaskEventType = "validation.behavior.evidence.attached"
     }
 
-    enum Deliverable {
-        static let verificationPassed: TaskEventType = "deliverable.verification.passed"
-        static let verificationReviewNeeded: TaskEventType = "deliverable.verification.review_needed"
-        static let verificationFailed: TaskEventType = "deliverable.verification.failed"
+    public enum Deliverable {
+        public static let verificationPassed: TaskEventType = "deliverable.verification.passed"
+        public static let verificationReviewNeeded: TaskEventType = "deliverable.verification.review_needed"
+        public static let verificationFailed: TaskEventType = "deliverable.verification.failed"
     }
 
-    enum Verifier {
-        static let started: TaskEventType = "verifier.started"
-        static let completed: TaskEventType = "verifier.completed"
-        static let failed: TaskEventType = "verifier.failed"
+    public enum Verifier {
+        public static let started: TaskEventType = "verifier.started"
+        public static let completed: TaskEventType = "verifier.completed"
+        public static let failed: TaskEventType = "verifier.failed"
     }
 
-    enum Handoff {
-        static let created: TaskEventType = "handoff.created"
-        static let updated: TaskEventType = "handoff.updated"
-        static let missing: TaskEventType = "handoff.missing"
+    public enum Handoff {
+        public static let created: TaskEventType = "handoff.created"
+        public static let updated: TaskEventType = "handoff.updated"
+        public static let missing: TaskEventType = "handoff.missing"
     }
 
-    enum Corrective {
-        static let stepCreated: TaskEventType = "corrective.step.created"
-        static let stepApproved: TaskEventType = "corrective.step.approved"
-        static let stepDismissed: TaskEventType = "corrective.step.dismissed"
-        static let taskCreated: TaskEventType = "corrective.task.created"
+    public enum Corrective {
+        public static let stepCreated: TaskEventType = "corrective.step.created"
+        public static let stepApproved: TaskEventType = "corrective.step.approved"
+        public static let stepDismissed: TaskEventType = "corrective.step.dismissed"
+        public static let taskCreated: TaskEventType = "corrective.task.created"
     }
 
-    enum ResourceLock {
-        static let requested: TaskEventType = "resource.lock.requested"
-        static let waiting: TaskEventType = "resource.lock.waiting"
-        static let acquired: TaskEventType = "resource.lock.acquired"
-        static let released: TaskEventType = "resource.lock.released"
+    public enum ResourceLock {
+        public static let requested: TaskEventType = "resource.lock.requested"
+        public static let waiting: TaskEventType = "resource.lock.waiting"
+        public static let acquired: TaskEventType = "resource.lock.acquired"
+        public static let released: TaskEventType = "resource.lock.released"
     }
 
-    enum Mission {
-        static let actionApproved: TaskEventType = "mission.action.approved"
-        static let actionDismissed: TaskEventType = "mission.action.dismissed"
-        static let actionRetryRequested: TaskEventType = "mission.action.retry_requested"
-        static let actionCorrectionCreated: TaskEventType = "mission.action.correction_created"
-        static let milestoneCreated: TaskEventType = "mission.milestone.created"
-        static let milestoneCompleted: TaskEventType = "mission.milestone.completed"
-        static let checkpointCreated: TaskEventType = "mission.checkpoint.created"
-        static let auditBundleCreated: TaskEventType = "mission.audit_bundle.created"
+    public enum Mission {
+        public static let actionApproved: TaskEventType = "mission.action.approved"
+        public static let actionDismissed: TaskEventType = "mission.action.dismissed"
+        public static let actionRetryRequested: TaskEventType = "mission.action.retry_requested"
+        public static let actionCorrectionCreated: TaskEventType = "mission.action.correction_created"
+        public static let milestoneCreated: TaskEventType = "mission.milestone.created"
+        public static let milestoneCompleted: TaskEventType = "mission.milestone.completed"
+        public static let checkpointCreated: TaskEventType = "mission.checkpoint.created"
+        public static let auditBundleCreated: TaskEventType = "mission.audit_bundle.created"
     }
 
-    enum RoleProfile {
-        static let selected: TaskEventType = "role.profile.selected"
-        static let changed: TaskEventType = "role.profile.changed"
+    public enum RoleProfile {
+        public static let selected: TaskEventType = "role.profile.selected"
+        public static let changed: TaskEventType = "role.profile.changed"
     }
 
-    enum Team {
-        static let agentStarted: TaskEventType = "team.agent.started"
-        static let agentCompleted: TaskEventType = "team.agent.completed"
-        static let created: TaskEventType = "team.created"
-        static let deleted: TaskEventType = "team.deleted"
-        static let message: TaskEventType = "team.message"
+    public enum Team {
+        public static let agentStarted: TaskEventType = "team.agent.started"
+        public static let agentCompleted: TaskEventType = "team.agent.completed"
+        public static let created: TaskEventType = "team.created"
+        public static let deleted: TaskEventType = "team.deleted"
+        public static let message: TaskEventType = "team.message"
     }
 
-    enum System {
-        static let info: TaskEventType = "system.info"
-        static let error: TaskEventType = "error"
-        static let skillActive: TaskEventType = "skill.active"
-        static let recapResult: TaskEventType = "recap.result"
-        static let scheduleResult: TaskEventType = "schedule.result"
-        static let astraArtifactPreflight: TaskEventType = "astra.artifact_preflight"
+    public enum System {
+        public static let info: TaskEventType = "system.info"
+        public static let error: TaskEventType = "error"
+        public static let skillActive: TaskEventType = "skill.active"
+        public static let recapResult: TaskEventType = "recap.result"
+        public static let scheduleResult: TaskEventType = "schedule.result"
+        public static let astraArtifactPreflight: TaskEventType = "astra.artifact_preflight"
     }
 
     private static let lifecycleTypes: Set<TaskEventType> = [
@@ -281,7 +281,7 @@ enum TaskEventTypes {
         System.scheduleResult
     ]
 
-    static func category(for eventType: TaskEventType) -> TaskEventCategory {
+    public static func category(for eventType: TaskEventType) -> TaskEventCategory {
         if lifecycleTypes.contains(eventType) { return .lifecycle }
         if conversationTypes.contains(eventType) { return .conversation }
         if toolTypes.contains(eventType) { return .tool }
@@ -291,7 +291,7 @@ enum TaskEventTypes {
         return .system
     }
 
-    static func category(forRawValue rawValue: String) -> TaskEventCategory {
+    public static func category(forRawValue rawValue: String) -> TaskEventCategory {
         guard let eventType = TaskEventType(rawValue: rawValue) else { return .system }
         return category(for: eventType)
     }

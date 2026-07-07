@@ -1,6 +1,9 @@
 import Foundation
 import SwiftData
 import Testing
+import ASTRAModels
+import ASTRAPersistence
+import ASTRACore
 @testable import ASTRA
 
 @Suite("Workspace Import Discovery")

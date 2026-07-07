@@ -1,6 +1,7 @@
 import Foundation
 import SwiftData
 import Testing
+import ASTRAModels
 @testable import ASTRA
 import ASTRACore
 
@@ -398,8 +399,8 @@ struct AstraRunProtocolRecordingTests {
         context.insert(run)
 
         let protocolEvent = AstraRunProtocolParsedEvent.valid(.complete(summary: "Finished implementation.", verifiedBy: "swift test"))
-        AgentEventRecorder.recordClaudeRunEvent(.astraProtocol(protocolEvent), to: task, run: run, modelContext: context)
-        AgentEventRecorder.recordClaudeRunEvent(.text(text: "Visible output"), to: task, run: run, modelContext: context)
+        AgentEventRecorder.recordClaudeEvent(.astraProtocol(protocolEvent), to: task, run: run, modelContext: context)
+        AgentEventRecorder.recordClaudeEvent(.text(text: "Visible output"), to: task, run: run, modelContext: context)
 
         #expect(run.output == "Visible output")
         #expect(task.events.contains { $0.type == "astra.complete" })
@@ -432,7 +433,7 @@ struct AstraRunProtocolRecordingTests {
             status: .done,
             summary: "Inspected files"
         )))
-        AgentEventRecorder.recordClaudeRunEvent(.astraProtocol(protocolEvent), to: task, run: run, modelContext: context)
+        AgentEventRecorder.recordClaudeEvent(.astraProtocol(protocolEvent), to: task, run: run, modelContext: context)
 
         let state = TaskPlanService.reconstruct(for: task)
         #expect(state.plan?.steps.first?.status == .done)

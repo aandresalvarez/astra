@@ -1,6 +1,9 @@
 name: CI
 
 on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 9 * * *"
   pull_request:
   push:
     branches:
@@ -14,18 +17,78 @@ jobs:
   focused-swift-tests:
     name: Focused Swift tests
     runs-on: macos-26
+    # Typical green run is ~10 minutes; a hang must fail fast instead of
+    # holding a macOS runner (10x billing) for the 6-hour default cap.
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
+      - name: Cache SwiftPM
+        uses: actions/cache@v4
+        with:
+          path: |
+            .build
+            ~/.swiftpm
+          key: ${{ runner.os }}-swiftpm-${{ hashFiles('Package.swift', 'Package.resolved') }}
+          restore-keys: |
+            ${{ runner.os }}-swiftpm-
+
       - name: Run focused Swift protection suites
         run: script/prepush.sh
+
+  full-swift-test-suite:
+    name: Full Swift test suite
+    # Runs on every trigger the workflow supports (pull_request, push to
+    # main, schedule, workflow_dispatch). This job previously deadlocked
+    # 100% of the time on pull_request: Swift Testing executes tests
+    # concurrently, and the suite's synchronous process-spawning tests
+    # exhaust the 3-4 core runner's cooperative thread pool - every test
+    # reports "started", zero ever complete, and the job burns a macOS
+    # runner until the 6-hour cap (evidence: run 28639570525 - 4,002
+    # started / 0 finished / orphaned bash+sleep children at cleanup;
+    # three more runs hung identically). Locally the wider core count
+    # masks the deadlock. --no-parallel below serializes execution and
+    # fixed it - the suite itself runs in ~3-4 minutes once built, and the
+    # full job (checkout, cache restore, build, test) completes in
+    # ~13-14 minutes on a warm cache (PR #209's own run: 13m30s). Two
+    # further CI-only failures (real, unmocked host dependencies in
+    # scenario tests - gh auth status, then
+    # ~/.astra/tools/astra-host-control - both only present on a
+    # developer machine, not a clean runner) were found and fixed in
+    # #207 and #208. Gating restored on pull_request after a final green
+    # dispatch run (28767049711) on main with both fixes merged.
+    # timeout-minutes gives ~3x headroom over the observed warm-cache run
+    # (enough for a cold-cache build too) without leaving a hang-prone job
+    # able to burn a macOS runner (10x billing) for hours if the deadlock
+    # regresses.
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Cache SwiftPM
+        uses: actions/cache@v4
+        with:
+          path: |
+            .build
+            ~/.swiftpm
+          key: ${{ runner.os }}-swiftpm-${{ hashFiles('Package.swift', 'Package.resolved') }}
+          restore-keys: |
+            ${{ runner.os }}-swiftpm-
+
+      - name: Run full Swift test suite
+        run: swift test --no-parallel
 
   whitespace:
     name: Whitespace
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@v4

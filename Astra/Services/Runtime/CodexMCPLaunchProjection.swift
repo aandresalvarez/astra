@@ -1,5 +1,6 @@
 import Foundation
 import ASTRACore
+import ASTRAModels
 
 struct CodexMCPLaunchProjection {
     let servers: [MCPRuntimeProjection.ResolvedServer]
@@ -39,14 +40,16 @@ struct CodexMCPLaunchProjection {
             environment: executionEnvironment,
             currentDirectory: workspacePath,
             runID: runID,
-            taskEnvironment: taskEnvironment
+            taskEnvironment: taskEnvironment,
+            contextText: contextText
         )
         if let hostControlServer = HostControlPlaneMCPProjection.resolvedServer(
             task: task,
             environment: executionEnvironment,
             currentDirectory: workspacePath,
             runID: runID,
-            taskEnvironment: taskEnvironment.merging(hostControlEnvironment) { current, _ in current }
+            taskEnvironment: taskEnvironment.merging(hostControlEnvironment) { current, _ in current },
+            contextText: contextText
         ) {
             servers.append(hostControlServer)
         }
@@ -77,7 +80,8 @@ struct CodexMCPLaunchProjection {
             usesDockerWorkspaceExecutor: usesDockerWorkspaceExecutor,
             configArguments: configArguments
         )
-        let hostControlPlaneSupported = !usesDockerWorkspaceExecutor
+        let requiresHostControlPlane = !hostControlEnvironment.isEmpty
+        let hostControlPlaneSupported = !requiresHostControlPlane
             || configArguments.containsMCPServerConfig(for: HostControlPlaneMCPProjection.serverID)
 
         return CodexMCPLaunchProjection(
@@ -119,7 +123,16 @@ enum CodexMCPConfigRenderer {
         for resolved: MCPRuntimeProjection.ResolvedServer,
         availableEnvironment: [String: String]
     ) -> String? {
+        guard let resolved = RemoteMCPGatewayProjection.providerFacingResolvedServer(for: resolved) else {
+            return nil
+        }
         let server = resolved.server
+        guard RemoteMCPGatewayProjection.missingRequiredEnvironmentKeys(
+            for: server,
+            availableEnvironment: availableEnvironment
+        ).isEmpty else {
+            return nil
+        }
         guard MCPEnvironmentKeyPolicy.isValidPermissionName(server.id) else {
             AppLogger.audit(.capabilityEnableFailed, category: "Capabilities", fields: [
                 "source": "codex_mcp_projection",

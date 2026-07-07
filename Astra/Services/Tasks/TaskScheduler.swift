@@ -1,6 +1,8 @@
 import Foundation
 import SwiftData
 import ASTRACore
+import ASTRAModels
+import ASTRAPersistence
 
 @Observable @MainActor
 final class TaskScheduler {
@@ -132,7 +134,7 @@ final class TaskScheduler {
             task.inputs.append(path)
         }
 
-        task.status = .queued
+        TaskStateMachine.enqueueFromScheduler(task, modelContext: modelContext)
         task.originScheduleID = schedule.id
         modelContext.insert(task)
 

@@ -1,27 +1,39 @@
 import Foundation
 import SwiftData
+import ASTRAModels
+import ASTRACore
 
-struct TaskArtifactReconciliationSummary {
-    enum Status: String {
+public struct TaskArtifactReconciliationSummary {
+    public init(discoveredFiles: [TaskOutputDiscoveredFile], createdArtifacts: [Artifact], normalizedArtifacts: [Artifact], normalizedArtifactKinds: [Artifact], duplicateArtifacts: [Artifact], currentArtifacts: [Artifact], staleArtifacts: [Artifact]) {
+        self.discoveredFiles = discoveredFiles
+        self.createdArtifacts = createdArtifacts
+        self.normalizedArtifacts = normalizedArtifacts
+        self.normalizedArtifactKinds = normalizedArtifactKinds
+        self.duplicateArtifacts = duplicateArtifacts
+        self.currentArtifacts = currentArtifacts
+        self.staleArtifacts = staleArtifacts
+    }
+
+    public enum Status: String {
         case unchanged
         case artifactsChanged
         case staleArtifacts
         case duplicateArtifacts
     }
 
-    var discoveredFiles: [TaskOutputDiscoveredFile]
-    var createdArtifacts: [Artifact]
-    var normalizedArtifacts: [Artifact]
-    var normalizedArtifactKinds: [Artifact]
-    var duplicateArtifacts: [Artifact]
-    var currentArtifacts: [Artifact]
-    var staleArtifacts: [Artifact]
+    public var discoveredFiles: [TaskOutputDiscoveredFile]
+    public var createdArtifacts: [Artifact]
+    public var normalizedArtifacts: [Artifact]
+    public var normalizedArtifactKinds: [Artifact]
+    public var duplicateArtifacts: [Artifact]
+    public var currentArtifacts: [Artifact]
+    public var staleArtifacts: [Artifact]
 
-    var didChangeArtifactRows: Bool {
+    public var didChangeArtifactRows: Bool {
         !createdArtifacts.isEmpty || !normalizedArtifacts.isEmpty || !normalizedArtifactKinds.isEmpty
     }
 
-    var status: Status {
+    public var status: Status {
         if !duplicateArtifacts.isEmpty {
             return .duplicateArtifacts
         }
@@ -34,7 +46,7 @@ struct TaskArtifactReconciliationSummary {
         return .unchanged
     }
 
-    var auditFields: [String: String] {
+    public var auditFields: [String: String] {
         [
             "result": status.rawValue,
             "discovered_file_count": String(discoveredFiles.count),
@@ -49,9 +61,9 @@ struct TaskArtifactReconciliationSummary {
 }
 
 @MainActor
-enum TaskArtifactPersistenceService {
+public enum TaskArtifactPersistenceService {
     @discardableResult
-    static func reconcileTaskOutputArtifacts(
+    public static func reconcileTaskOutputArtifacts(
         for task: AgentTask,
         modelContext: ModelContext? = nil,
         fileManager: FileManager = .default
@@ -65,7 +77,7 @@ enum TaskArtifactPersistenceService {
     }
 
     @discardableResult
-    static func reconcileTaskOutputArtifacts(
+    public static func reconcileTaskOutputArtifacts(
         _ files: [TaskOutputDiscoveredFile],
         for task: AgentTask,
         modelContext: ModelContext? = nil,
@@ -115,7 +127,7 @@ enum TaskArtifactPersistenceService {
             currentArtifacts: task.artifacts.filter { artifactExists($0, fileManager: fileManager) },
             staleArtifacts: task.artifacts.filter { !artifactExists($0, fileManager: fileManager) }
         )
-        AppLogger.audit(
+        AuditLoggingSeam.required.audit(
             .runtimePersistenceSummary,
             category: "Worker",
             taskID: task.id,
@@ -126,7 +138,7 @@ enum TaskArtifactPersistenceService {
     }
 
     @discardableResult
-    static func persistDiscoveredTaskOutputArtifacts(
+    public static func persistDiscoveredTaskOutputArtifacts(
         for task: AgentTask,
         modelContext: ModelContext? = nil,
         fileManager: FileManager = .default
@@ -135,7 +147,7 @@ enum TaskArtifactPersistenceService {
     }
 
     @discardableResult
-    static func persistDiscoveredTaskOutputArtifacts(
+    public static func persistDiscoveredTaskOutputArtifacts(
         _ files: [TaskOutputDiscoveredFile],
         for task: AgentTask,
         modelContext: ModelContext? = nil
@@ -144,13 +156,14 @@ enum TaskArtifactPersistenceService {
     }
 
     @discardableResult
-    static func persistFileChangeArtifact(
+    public static func persistFileChangeArtifact(
         _ change: StoredFileChange,
         for task: AgentTask,
         modelContext: ModelContext? = nil
     ) -> Artifact? {
         let path = normalizedPath(change.path, task: task)
-        guard !path.isEmpty else { return nil }
+        guard !path.isEmpty,
+              shouldPersistFileChangeArtifact(path, for: task) else { return nil }
         let artifact = Artifact(
             task: task,
             type: artifactKind(for: change).rawValue,
@@ -164,6 +177,23 @@ enum TaskArtifactPersistenceService {
 
     private static func normalizedPath(_ path: String, task: AgentTask) -> String {
         TaskArtifactPathNormalizer.normalizedPath(path, task: task)
+    }
+
+    private static func shouldPersistFileChangeArtifact(_ path: String, for task: AgentTask) -> Bool {
+        let access = TaskWorkspaceAccess(task: task)
+        if let relative = TaskOutputArtifactPathPolicy.relativePath(path, under: access.taskFolder) {
+            return TaskOutputArtifactPathPolicy.displayableUserArtifactRelativePath(
+                relative,
+                context: .taskFolder
+            ) != nil
+        }
+        if let relative = TaskOutputArtifactPathPolicy.relativePath(path, under: access.effectiveWorkspacePath) {
+            return TaskOutputArtifactPathPolicy.displayableUserArtifactRelativePath(
+                relative,
+                context: .workspace
+            ) != nil
+        }
+        return true
     }
 
     private static func nextVersion(for normalizedPath: String, task: AgentTask) -> Int {

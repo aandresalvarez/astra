@@ -1,9 +1,10 @@
 import Foundation
 import Testing
+import ASTRAModels
 @testable import ASTRA
 import ASTRACore
 
-@Suite("Capability Library")
+@Suite("Capability Library", .serialized)
 struct CapabilityLibraryTests {
     @Test("capability directory is isolated by app channel")
     func channelDirectoriesAreIsolated() {
@@ -284,6 +285,43 @@ struct CapabilityLibraryTests {
         #expect(secondIDs.contains(second.id))
     }
 
+    @Test("Package definitions fingerprint changes when an asset-backed directory package is installed")
+    func packageDefinitionsFingerprintChangesForDirectoryPackage() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-capability-fingerprint-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sourceRoot = root.appendingPathComponent("source", isDirectory: true)
+        let sourceAssets = sourceRoot.appendingPathComponent("assets", isDirectory: true)
+        try FileManager.default.createDirectory(at: sourceAssets, withIntermediateDirectories: true)
+        try Data("<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 1 1\"><path d=\"M0 0h1v1H0z\"/></svg>".utf8)
+            .write(to: sourceAssets.appendingPathComponent("icon.svg"))
+
+        let library = CapabilityLibrary(directory: root.appendingPathComponent("library", isDirectory: true))
+        let beforeFingerprint = CapabilityRuntimeResourceMatcher.packageDefinitionsFingerprint(library: library)
+
+        var package = PluginPackage(
+            id: "local.fingerprint-asset-package",
+            name: "Fingerprint Asset Package",
+            icon: "puzzlepiece.extension",
+            iconDescriptor: .asset("assets/icon.svg", fallbackSystemName: "puzzlepiece.extension"),
+            description: "Directory-backed package for fingerprint coverage",
+            author: "Tests",
+            category: "Tests",
+            tags: [],
+            version: "1.0.0",
+            skills: [],
+            connectors: [],
+            localTools: [],
+            templates: [],
+            governance: .localDraft()
+        )
+        package.sourceMetadata = .localLibrary()
+        try library.install(CapabilityPackageSource(package: package, manifestURL: nil, assetRootURL: sourceRoot))
+
+        let afterInstallFingerprint = CapabilityRuntimeResourceMatcher.packageDefinitionsFingerprint(library: library)
+        #expect(afterInstallFingerprint != beforeFingerprint)
+    }
+
     @Test("in-memory enabledPackages filters to enabled ids, merges built-ins, and de-dupes")
     func enabledPackagesInMemoryOverloadResolvesWithoutFilesystem() throws {
         let builtInID = try #require(PluginCatalog.builtInPackages.first?.id)
@@ -319,6 +357,167 @@ struct CapabilityLibraryTests {
         #expect(CapabilityRuntimeResourceMatcher.enabledPackages(for: nil, in: PluginCatalog.builtInPackages).isEmpty)
     }
 
+    @Test("enabled packages excludes pack-disabled runtime packages")
+    func enabledPackagesExcludesPackDisabledRuntimePackages() {
+        let allowed = makeTestPackage(id: "local.test/allowed", name: "Allowed")
+        let disabled = makeTestPackage(id: "local.test/disabled", name: "Disabled")
+        let workspace = Workspace(name: "Policy", primaryPath: "/tmp/policy")
+        workspace.enabledCapabilityIDs = [allowed.id, disabled.id]
+        let packPolicy = Self.policy(restrictions: [
+            AstraPackPolicyRestriction(
+                id: "disable-local",
+                contributionKind: "capabilityPackage",
+                action: "disableCapability",
+                effect: "restrict",
+                targetID: disabled.id
+            )
+        ])
+
+        let ids = CapabilityRuntimeResourceMatcher
+            .enabledPackages(for: workspace, in: [allowed, disabled], packPolicy: packPolicy)
+            .map(\.id)
+
+        #expect(ids.contains(allowed.id))
+        #expect(!ids.contains(disabled.id))
+    }
+
+    @Test("in-memory enabled packages applies only supplied pack policy")
+    func inMemoryEnabledPackagesAppliesOnlySuppliedPackPolicy() {
+        let disabled = makeTestPackage(id: "local.test/disabled", name: "Disabled")
+        let workspace = Workspace(name: "Policy", primaryPath: "/tmp/policy")
+        workspace.enabledCapabilityIDs = [disabled.id]
+        workspace.enabledPackIDs = ["astra.pack.policy-test"]
+        let packPolicy = Self.policy(restrictions: [
+            AstraPackPolicyRestriction(
+                id: "disable-local",
+                contributionKind: "capabilityPackage",
+                action: "disableCapability",
+                effect: "restrict",
+                targetID: disabled.id
+            )
+        ])
+
+        let withoutSuppliedPolicy = CapabilityRuntimeResourceMatcher.enabledPackages(
+            for: workspace,
+            in: [disabled]
+        )
+        let withSuppliedPolicy = CapabilityRuntimeResourceMatcher.enabledPackages(
+            for: workspace,
+            in: [disabled],
+            packPolicy: packPolicy
+        )
+
+        #expect(withoutSuppliedPolicy.map(\.id) == [disabled.id])
+        #expect(withSuppliedPolicy.isEmpty)
+    }
+
+    @Test("enabled packages avoids approval store reads without pack review gates")
+    func enabledPackagesAvoidsApprovalStoreReadsWithoutPackReviewGates() {
+        let disabled = makeTestPackage(id: "local.test/disabled", name: "Disabled")
+        let workspace = Workspace(name: "Policy", primaryPath: "/tmp/policy")
+        workspace.enabledCapabilityIDs = [disabled.id]
+        let disabledPolicy = Self.policy(restrictions: [
+            AstraPackPolicyRestriction(
+                id: "disable-local",
+                contributionKind: "capabilityPackage",
+                action: "disableCapability",
+                effect: "restrict",
+                targetID: disabled.id
+            )
+        ])
+        var approvalLoadCount = 0
+        CapabilityRuntimeResourceMatcher.withApprovalRecordsLoaderForTesting({
+            approvalLoadCount += 1
+            return []
+        }) {
+            let packages = CapabilityRuntimeResourceMatcher.enabledPackages(
+                for: workspace,
+                in: [disabled],
+                packPolicy: disabledPolicy
+            )
+
+            #expect(packages.isEmpty)
+            #expect(approvalLoadCount == 0)
+
+            let gated = makeTestPackage(id: "local.test/gated", name: "Gated")
+            workspace.enabledCapabilityIDs = [gated.id]
+            let gatedPolicy = Self.policy(restrictions: [
+                AstraPackPolicyRestriction(
+                    id: "review-gated",
+                    contributionKind: "capabilityPackage",
+                    action: "requireReviewGate",
+                    effect: "restrict",
+                    targetID: gated.id
+                )
+            ])
+            let gatedPackages = CapabilityRuntimeResourceMatcher.enabledPackages(
+                for: workspace,
+                in: [gated],
+                packPolicy: gatedPolicy
+            )
+
+            #expect(gatedPackages.isEmpty)
+            #expect(approvalLoadCount == 1)
+        }
+    }
+
+    @Test("enabled packages honors pack review gate approvals")
+    func enabledPackagesHonorsPackReviewGateApprovals() throws {
+        let gated = makeTestPackage(id: "local.test/gated", name: "Gated")
+        let workspace = Workspace(name: "Review Gate", primaryPath: "/tmp/review-gate")
+        workspace.enabledCapabilityIDs = [gated.id]
+        let packPolicy = Self.policy(restrictions: [
+            AstraPackPolicyRestriction(
+                id: "review-gated",
+                contributionKind: "capabilityPackage",
+                action: "requireReviewGate",
+                effect: "restrict",
+                targetID: gated.id
+            )
+        ])
+        let approved = CapabilityApprovalRecord(
+            packageID: gated.id,
+            packageVersion: gated.version,
+            status: .approved,
+            approvedBy: "Vertical Owner",
+            approvedAt: Date(),
+            reviewNotes: "Approved.",
+            sourceDigest: try CapabilityApprovalDigest.digest(for: gated)
+        )
+
+        let blocked = CapabilityRuntimeResourceMatcher.enabledPackages(
+            for: workspace,
+            in: [gated],
+            approvalRecords: [],
+            packPolicy: packPolicy
+        )
+        let allowed = CapabilityRuntimeResourceMatcher.enabledPackages(
+            for: workspace,
+            in: [gated],
+            approvalRecords: [approved],
+            packPolicy: packPolicy
+        )
+
+        #expect(blocked.isEmpty)
+        #expect(allowed.map(\.id) == [gated.id])
+    }
+
+    private static func policy(restrictions: [AstraPackPolicyRestriction]) -> PackResolvedPolicy {
+        AstraPackPolicyResolver.resolve(
+            composition: AstraPackComposition.resolve(packs: [
+                AstraPackManifest(
+                    formatVersion: 1,
+                    id: "astra.pack.policy-test",
+                    name: "Policy Test",
+                    version: "1.0.0",
+                    coreAPIVersion: "1.0",
+                    description: "Policy test pack.",
+                    policyRestrictions: restrictions
+                )
+            ])
+        )
+    }
+
     private func makeTestPackage(id: String, name: String) -> PluginPackage {
         PluginPackage(
             id: id,
@@ -332,7 +531,8 @@ struct CapabilityLibraryTests {
             skills: [],
             connectors: [],
             localTools: [],
-            templates: []
+            templates: [],
+            governance: CapabilityGovernance(approvalStatus: .approved)
         )
     }
 
@@ -681,7 +881,9 @@ struct CapabilityLibraryTests {
             "gcloud-workflow",
             "github-workflow",
             "google-drive-browser",
+            "google-workspace",
             "jira-workflow",
+            "mcp-smoke-test",
             "redcap-workflow",
             "security-auditor",
             "stanford-apple-mail",
@@ -703,13 +905,26 @@ struct CapabilityLibraryTests {
         }
         #expect(packages.first { $0.id == "gcloud-workflow" }?.connectors.map(\.name) == ["Google Cloud"])
         #expect(packages.first { $0.id == "github-workflow" }?.connectors.isEmpty == true)
-        #expect(packages.first { $0.id == "github-workflow" }?.browserAdapters == [BrowserSiteAdapterID.github])
-        #expect(packages.first { $0.id == "github-workflow" }?.localTools.map(\.command) == ["gh"])
+        #expect(packages.first { $0.id == "github-workflow" }?.browserAdapters.isEmpty == true)
+        #expect(packages.first { $0.id == "github-workflow" }?.localTools.isEmpty == true)
         #expect(packages.first { $0.id == "github-workflow" }?.prerequisites.map(\.binary) == ["gh", "gh"])
-        #expect(packages.first { $0.id == "github-workflow" }?.version == "2.1.2")
-        #expect(packages.first { $0.id == "github-workflow" }?.skills.first?.behaviorInstructions.contains("gh search prs --author \"@me\"") == true)
-        #expect(packages.first { $0.id == "github-workflow" }?.skills.first?.behaviorInstructions.contains("Do not pipe JSON into `python3 - <<'PY'`") == true)
-        #expect(packages.first { $0.id == "github-workflow" }?.skills.first?.behaviorInstructions.contains("gh api /search/issues") == true)
+        let github = packages.first { $0.id == "github-workflow" }
+        #expect(github?.version == "2.1.4")
+        #expect(github?.governance.externalEffects == [.readOnly])
+        #expect(github?.skills.first?.allowedTools.contains("Bash") == false)
+        #expect(github?.skills.first?.disallowedTools.contains("Bash") == true)
+        #expect(github?.skills.first?.behaviorInstructions.contains("mcp__astra_host__github") == true)
+        #expect(github?.skills.first?.behaviorInstructions.contains("astra_host-github") == true)
+        #expect(github?.skills.first?.behaviorInstructions.contains("via Bash") == false)
+        #expect(github?.skills.first?.behaviorInstructions.contains("gh search issues") == false)
+        #expect(github?.skills.first?.behaviorInstructions.contains("gh search prs --author \"@me\"") == false)
+        #expect(github?.skills.first?.behaviorInstructions.contains("Do not pipe JSON into `python3 - <<'PY'`") == true)
+        #expect(github?.skills.first?.behaviorInstructions.contains("gh api /search/issues") == false)
+        #expect(github?.skills.first?.behaviorInstructions.contains("do not use `--jq` or `-q`") == true)
+        #expect(github?.skills.first?.behaviorInstructions.contains("Prefer `--json` with `--jq`") == false)
+        #expect(github?.skills.first?.behaviorInstructions.contains("This capability is read-only") == true)
+        #expect(github?.skills.first?.behaviorInstructions.contains("gh issue create") == false)
+        #expect(github?.skills.first?.behaviorInstructions.contains("gh pr comment") == false)
         #expect(packages.first { $0.id == "google-drive-browser" }?.browserAdapters == [BrowserSiteAdapterID.googleDrive])
         #expect(packages.first { $0.id == "redcap-workflow" }?.connectors.map(\.baseURL) == ["https://redcap.stanford.edu/api/"])
         #expect(packages.first { $0.id == "redcap-workflow" }?.connectors.first?.credentialHints.map(\.key) == ["REDCAP_API_TOKEN"])

@@ -1,6 +1,7 @@
 import Testing
 import AppKit
 import SwiftUI
+import ASTRAModels
 @testable import ASTRA
 import ASTRACore
 
@@ -448,20 +449,39 @@ struct SidebarGroupingTests {
         #expect(SidebarLeanPresentation.workspaceMetadataAndActionsShareTrailingSlot)
         #expect(!SidebarLeanPresentation.selectedWorkspaceChildrenUseGuide)
         #expect(SidebarLeanPresentation.sidebarTaskStatusesShowExceptionsOnly)
+        #expect(SidebarLeanPresentation.sidebarTaskStatusesNeverAddSecondLine)
+        #expect(SidebarLeanPresentation.workspaceRowsShowRestStateDisclosure)
+        #expect(SidebarLeanPresentation.workspaceDisclosureChevronWidth == 11)
+        #expect(SidebarLeanPresentation.pinnedDropZoneAppearsOnlyDuringDrag)
         #expect(SidebarLeanPresentation.pinnedPreviewLimit == 5)
         #expect(SidebarLeanPresentation.childTaskListLeadingPadding == 0)
-        #expect(SidebarLeanPresentation.childTaskContentLeadingPadding == 0)
+        // Child content steps in 12pt so containment reads without a
+        // guide rail; row surfaces still span the full rail width.
+        #expect(SidebarLeanPresentation.childTaskContentLeadingPadding == 12)
         #expect(!SidebarThreadRowLayout.isActionableStatus(.completed))
         #expect(SidebarThreadRowLayout.isActionableStatus(.running))
-        #expect(SidebarThreadRowLayout.showsStatusIcon(for: .completed, isHovered: false, isSelected: false) == false)
-        #expect(SidebarThreadRowLayout.showsStatusIcon(for: .completed, isHovered: true, isSelected: false))
-        #expect(SidebarThreadRowLayout.showsStatusIcon(for: .completed, isHovered: false, isSelected: true))
-        #expect(SidebarThreadRowLayout.showsStatusIcon(for: .running, isHovered: false, isSelected: false))
+        #expect(SidebarThreadRowLayout.showsStatusIcon(for: .completed, isUnread: false, isHovered: false, isSelected: false) == false)
+        #expect(SidebarThreadRowLayout.showsStatusIcon(for: .completed, isUnread: true, isHovered: false, isSelected: false))
+        #expect(SidebarThreadRowLayout.showsStatusIcon(for: .completed, isUnread: false, isHovered: true, isSelected: false))
+        #expect(SidebarThreadRowLayout.showsStatusIcon(for: .completed, isUnread: false, isHovered: false, isSelected: true))
+        #expect(SidebarThreadRowLayout.showsStatusIcon(for: .running, isUnread: false, isHovered: false, isSelected: false))
+        // Rest-state glyphs: actionable work and unseen results only —
+        // read terminal states stay bare so the rail scans as navigation.
+        #expect(SidebarThreadRowLayout.showsRestStateGlyph(for: .completed, isUnread: true))
+        #expect(SidebarThreadRowLayout.showsRestStateGlyph(for: .failed, isUnread: false))
+        #expect(!SidebarThreadRowLayout.showsRestStateGlyph(for: .completed, isUnread: false))
+        #expect(!SidebarThreadRowLayout.showsRestStateGlyph(for: .cancelled, isUnread: false))
         #expect(SidebarThreadRowLayout.restingTitleLeadingOffset(
             childListPadding: SidebarLeanPresentation.childTaskListLeadingPadding,
             contentLeadingPadding: SidebarLeanPresentation.childTaskContentLeadingPadding,
             status: .completed
-        ) == 8)
+        ) == 20)
+        #expect(SidebarThreadRowLayout.restingTitleLeadingOffset(
+            childListPadding: SidebarLeanPresentation.childTaskListLeadingPadding,
+            contentLeadingPadding: SidebarLeanPresentation.childTaskContentLeadingPadding,
+            status: .completed,
+            isUnread: true
+        ) == 43)
         #expect(SidebarThreadRowLayout.titleFontSize == 14)
     }
 
@@ -470,6 +490,8 @@ struct SidebarGroupingTests {
         let readableTitleWidth: CGFloat = 200
         let workspaceRowFixedChrome =
             SidebarLeanPresentation.workspaceRowTrailingSlotWidth
+            + SidebarLeanPresentation.workspaceDisclosureChevronWidth
+            + 7 // chevron/folder spacing
             + 17 // folder icon width
             + 7 // workspace row icon/title spacing
             + 8 // horizontal row padding

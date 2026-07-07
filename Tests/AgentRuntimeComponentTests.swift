@@ -1,6 +1,8 @@
 import Testing
 import Foundation
 import SwiftData
+import ASTRAModels
+import ASTRAPersistence
 @testable import ASTRA
 import ASTRACore
 
@@ -79,6 +81,108 @@ struct AgentRuntimeAsyncWorkTests {
 @Suite("Agent Runtime Progress Timeout Policy")
 @MainActor
 struct AgentRuntimeProgressTimeoutPolicyTests {
+    @Test("Run phases are typed but preserve manifest string encoding")
+    func runPhasesAreTypedButPreserveManifestStringEncoding() throws {
+        let manifest = RunPermissionManifest(
+            taskID: UUID(),
+            runID: UUID(),
+            phase: .approvedPlan,
+            providerID: .claudeCode,
+            providerVersion: nil,
+            model: "test-model",
+            policyLevel: .build,
+            policyScope: .globalDefault,
+            providerRender: ProviderPolicyRender.failClosedLaunchRender(for: .claudeCode),
+            workspacePath: "/tmp/runtime-phase",
+            additionalPaths: [],
+            environmentKeyNames: [],
+            credentialLabels: [],
+            approvalsGranted: []
+        )
+
+        let data = try JSONEncoder().encode(manifest)
+        let json = try #require(String(data: data, encoding: .utf8))
+        #expect(json.contains(#""phase":"approved_plan""#))
+
+        let decoded = try JSONDecoder().decode(RunPermissionManifest.self, from: data)
+        #expect(decoded.phase == .approvedPlan)
+        #expect(RunPhase(rawValue: "resume") == .resume)
+        #expect(RunPhase(rawValue: "custom_phase").rawValue == "custom_phase")
+    }
+
+    @Test("Runtime launch protocols use typed run phase")
+    func runtimeLaunchProtocolsUseTypedRunPhase() throws {
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let adapterSource = try String(
+            contentsOf: repoRoot
+                .appendingPathComponent("Astra")
+                .appendingPathComponent("Services")
+                .appendingPathComponent("Runtime")
+                .appendingPathComponent("AgentRuntimeAdapter.swift"),
+            encoding: .utf8
+        )
+        let runnerSource = try String(
+            contentsOf: repoRoot
+                .appendingPathComponent("Astra")
+                .appendingPathComponent("Services")
+                .appendingPathComponent("Runtime")
+                .appendingPathComponent("AgentRuntimeProcessRunner.swift"),
+            encoding: .utf8
+        )
+
+        #expect(adapterSource.contains("func shouldPrepareIsolation(phase: RunPhase) -> Bool"))
+        #expect(adapterSource.contains("let phase: RunPhase"))
+        #expect(runnerSource.contains("phase: RunPhase = .run"))
+        #expect(!adapterSource.contains("func shouldPrepareIsolation(phase: String) -> Bool"))
+    }
+
+    @Test("Provider messages centralize runtime copy")
+    func providerMessagesCentralizeRuntimeCopy() {
+        #expect(ProviderMessages.start(providerName: nil, goal: "Say hi") == "Agent started working on: Say hi")
+        #expect(ProviderMessages.start(providerName: "Codex", goal: "Say hi") == "Codex started working on: Say hi")
+        #expect(ProviderMessages.manualCompletion(providerName: nil, phase: .resume) == "Follow-up completed.")
+        #expect(ProviderMessages.manualCompletion(providerName: "Codex", phase: .run) == "Codex finished.")
+        #expect(ProviderMessages.failurePrefix(providerName: nil, phase: .resume, exitCode: 2) == "Follow-up failed (exit 2).")
+        #expect(ProviderMessages.failurePrefix(providerName: "Codex", phase: .run, exitCode: 2) == "Codex exited with code 2.")
+        #expect(ProviderMessages.timeout(phase: .resume, timeoutSeconds: 12) == "Resume idle timeout - no output for 12s. Process killed.")
+        #expect(ProviderMessages.maxTurns(phase: .resume, maxTurns: 3) == "Max turns reached (3) during resume. Process killed.")
+        #expect(ProviderMessages.missingExecutable(
+            providerName: "Codex",
+            installAction: "Install Codex CLI",
+            authAction: "authenticate with `codex login`."
+        ) == "Codex CLI not found. Install Codex CLI, then authenticate with `codex login`.")
+    }
+
+    @Test("Agent runtime worker depends on process runner protocol")
+    func agentRuntimeWorkerDependsOnProcessRunnerProtocol() throws {
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let workerSource = try String(
+            contentsOf: repoRoot
+                .appendingPathComponent("Astra")
+                .appendingPathComponent("Services")
+                .appendingPathComponent("Runtime")
+                .appendingPathComponent("AgentRuntimeWorker.swift"),
+            encoding: .utf8
+        )
+        let runnerSource = try String(
+            contentsOf: repoRoot
+                .appendingPathComponent("Astra")
+                .appendingPathComponent("Services")
+                .appendingPathComponent("Runtime")
+                .appendingPathComponent("AgentRuntimeProcessRunner.swift"),
+            encoding: .utf8
+        )
+
+        #expect(runnerSource.contains("protocol AgentRuntimeProcessRunning"))
+        #expect(workerSource.contains("private let processRunner: any AgentRuntimeProcessRunning"))
+        #expect(workerSource.contains("processRunner: any AgentRuntimeProcessRunning = AgentRuntimeProcessRunner()"))
+        #expect(!workerSource.contains("private let processRunner: AgentRuntimeProcessRunner"))
+    }
+
     @Test("Artifact tasks receive a wider bounded semantic progress window")
     func artifactTasksReceiveWiderBoundedSemanticProgressWindow() {
         let workspace = Workspace(name: "Progress Timeout", primaryPath: "/tmp/progress-timeout")
@@ -979,6 +1083,19 @@ struct AgentRuntimeBudgetPolicyTests {
         ))
     }
 
+    @Test("Disabled budgets ignore budget result flags")
+    func disabledBudgetsIgnoreBudgetResultFlags() {
+        let disabledBudget = AgentRuntimeBudgetSnapshot(effectiveTokenBudget: Int.max, tokensUsed: 1_000_000)
+        let result = AgentProcessResult(exitCode: 1, budgetExceeded: true)
+
+        #expect(!disabledBudget.hasReportedTokensAboveBudget)
+        #expect(!AgentRuntimeBudgetPolicy.shouldTreatAsBudgetExceeded(
+            result: result,
+            budget: disabledBudget,
+            budgetEnforcementMode: .hardStop
+        ))
+    }
+
     @Test("Final warning records budget warning event")
     func finalWarningRecordsBudgetWarningEvent() throws {
         let container = try makeRuntimeComponentContainer()
@@ -998,6 +1115,28 @@ struct AgentRuntimeBudgetPolicyTests {
         )
 
         #expect(task.events.contains { $0.type == "budget.warning" && $0.run?.id == run.id })
+    }
+
+    @Test("Disabled budgets suppress final budget warnings")
+    func disabledBudgetsSuppressFinalBudgetWarnings() throws {
+        let container = try makeRuntimeComponentContainer()
+        let context = container.mainContext
+        let task = AgentTask(title: "Budget", goal: "Goal", tokenBudget: 0)
+        task.tokensUsed = 1_000_000
+        let run = TaskRun(task: task)
+        context.insert(task)
+        context.insert(run)
+
+        AgentRuntimeBudgetPolicy.recordFinalBudgetWarningIfNeeded(
+            result: AgentProcessResult(exitCode: 0, budgetWarning: true),
+            task: task,
+            run: run,
+            modelContext: context,
+            phase: "run",
+            budgetEnforcementMode: .warning
+        )
+
+        #expect(!task.events.contains { $0.type == "budget.warning" })
     }
 }
 

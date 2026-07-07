@@ -4,6 +4,8 @@ import Combine
 import SwiftData
 import ASTRACore
 import ASTRAGitContracts
+import ASTRAModels
+import ASTRAPersistence
 
 @MainActor
 final class WorkspaceGitViewModel: ObservableObject {
@@ -628,7 +630,6 @@ final class WorkspaceGitViewModel: ObservableObject {
             model: model,
             runtime: runtime
         )
-        task.status = .draft
         task.executionRootPath = path
         task.draftMessages = AstraTaskIntentSupport.draftMessagesJSON(for: goal)
         modelContext.insert(task)

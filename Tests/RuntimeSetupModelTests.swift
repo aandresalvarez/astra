@@ -1,5 +1,7 @@
 import Testing
 import Foundation
+import ASTRAPersistence
+import ASTRAModels
 @testable import ASTRA
 import ASTRACore
 

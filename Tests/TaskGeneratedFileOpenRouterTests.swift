@@ -40,6 +40,75 @@ struct TaskGeneratedFileOpenRouterTests {
         ) == .system(path: "/tmp/image.png"))
     }
 
+    @Test("destination policy blocks hidden shelves before routing")
+    func destinationPolicyBlocksHiddenShelvesBeforeRouting() {
+        let openTask = ShelfAvailabilityPolicy.Context(
+            hasOpenTaskThread: true,
+            hasWorkspaceContext: true,
+            hasPlanContent: true,
+            hasFilesShelfContent: true,
+            hasQueryShelfContent: true,
+            isComposingWorkspaceApp: false,
+            activeShelfID: nil
+        )
+        let policy = ShelfAvailabilityPolicy(disabledShelfIDs: [.browser])
+
+        #expect(!TaskGeneratedFileOpenRouter.canOpenInShelf(
+            destination: .browser,
+            policy: policy,
+            context: openTask
+        ))
+        #expect(TaskGeneratedFileOpenRouter.route(
+            path: "/tmp/index.html",
+            destination: .browser,
+            canOpenInShelf: TaskGeneratedFileOpenRouter.canOpenInShelf(
+                destination: .browser,
+                policy: policy,
+                context: openTask
+            )
+        ) == .system(path: "/tmp/index.html"))
+        #expect(TaskGeneratedFileOpenRouter.canOpenInShelf(
+            destination: .files,
+            policy: policy,
+            context: openTask
+        ))
+
+        let filesPolicy = ShelfAvailabilityPolicy(disabledShelfIDs: [.files])
+        #expect(!TaskGeneratedFileOpenRouter.canOpenInShelf(
+            destination: .files,
+            policy: filesPolicy,
+            context: openTask
+        ))
+        #expect(TaskGeneratedFileOpenRouter.route(
+            path: "/tmp/report.md",
+            destination: .files,
+            canOpenInShelf: TaskGeneratedFileOpenRouter.canOpenInShelf(
+                destination: .files,
+                policy: filesPolicy,
+                context: openTask
+            )
+        ) == .system(path: "/tmp/report.md"))
+    }
+
+    @Test("query generated files seed query shelf availability")
+    func queryGeneratedFilesSeedQueryShelfAvailability() {
+        let taskWithoutDiscoveredQueryContent = ShelfAvailabilityPolicy.Context(
+            hasOpenTaskThread: true,
+            hasWorkspaceContext: true,
+            hasPlanContent: true,
+            hasFilesShelfContent: false,
+            hasQueryShelfContent: false,
+            isComposingWorkspaceApp: false,
+            activeShelfID: nil
+        )
+
+        #expect(TaskGeneratedFileOpenRouter.canOpenInShelf(
+            destination: .query,
+            policy: ShelfAvailabilityPolicy(),
+            context: taskWithoutDiscoveredQueryContent
+        ))
+    }
+
     @Test("open URL interception only handles shelf capable file URLs")
     func openURLInterceptionOnlyHandlesShelfCapableFileURLs() {
         #expect(TaskGeneratedFileOpenRouter.route(

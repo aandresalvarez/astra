@@ -3,7 +3,10 @@ import Foundation
 import Security
 import SwiftData
 import AstraObjCSupport
+import ASTRAModels
+@testable import ASTRAPersistence
 @testable import ASTRA
+import ASTRACore
 
 /// Helpers for exercising the real keychain in a CI-safe way. Every test that
 /// touches the keychain is gated behind `isAvailable`, which probes once whether
@@ -105,7 +108,6 @@ enum AstraSecureKeychainTestSupport {
 
 @Suite("ASTRA dedicated secret keychain", .serialized)
 struct AstraSecureKeychainTests {
-
     // MARK: - Configuration (no keychain access — always runs)
 
     @Test("Dedicated keychain path is a separate file, never login.keychain-db")

@@ -1,6 +1,8 @@
 import Testing
 import Foundation
+import ASTRAModels
 @testable import ASTRA
+@testable import ASTRAPersistence
 import ASTRACore
 
 // MARK: - Helper
@@ -503,6 +505,28 @@ struct PromptWithSkillsTests {
 
 @Suite("Environment Variables")
 struct EnvironmentVariableTests {
+    @Test("Connector env vars projected through the seam match ConnectorRuntimeProjection directly")
+    func resolvedAllEnvironmentVariablesMatchesDirectProjection() {
+        let connector = Connector(name: "REDCap", serviceType: "redcap", baseURL: "https://redcap.example.invalid/api/")
+        connector.credentialKeys = ["REDCAP_API_TOKEN"]
+        connector.configKeys = ["REDCAP_PROJECT_ID"]
+        connector.configValues = ["42"]
+
+        let skill = Skill(name: "REDCap Skill", environmentVariables: ["LEGACY_KEY": "legacy-value"])
+        skill.connectors = [connector]
+
+        let viaSeam = skill.resolvedAllEnvironmentVariables
+        let direct = ConnectorRuntimeProjection(connectors: [connector]).environmentVariables()
+
+        // Every key the direct (unseamed) projection produces must appear,
+        // byte-identical, in the seam-routed result - the seam is a pure
+        // relay to the same underlying logic, not a reimplementation.
+        for (key, value) in direct {
+            #expect(viaSeam[key] == value, "mismatch for \(key)")
+        }
+        #expect(viaSeam["LEGACY_KEY"] == "legacy-value")
+        #expect(viaSeam["REDCAP_PROJECT_ID"] == nil, "config key name is remapped via alias/prefix, not passed through verbatim")
+    }
 
     @Test("No skills returns empty env vars")
     func noSkillsEmptyEnv() {
@@ -566,6 +590,49 @@ struct EnvironmentVariableTests {
         #expect(skill.environmentKeys == ["TOKEN"])
         #expect(skill.exportableEnvironmentValues == [""])
         #expect(skill.environmentVariables["TOKEN"] == "abc123")
+    }
+
+    @Test("Bulk env var update deletes secrets dropped from the new value")
+    func bulkUpdateDeletesRemovedSecret() {
+        let skill = Skill(name: "Test")
+        let canAssertRealKeychain = AstraSecureKeychainTestSupport.isAvailable
+        let tempKeychainPath = AstraSecureKeychainTestSupport.tempKeychainPath()
+        let tempBootstrap = "astra-test-bootstrap-\(UUID().uuidString)"
+        if canAssertRealKeychain {
+            AstraSecureKeychainTestSupport.installTestBootstrapPassword(service: tempBootstrap)
+        }
+        defer {
+            if canAssertRealKeychain {
+                AstraSecureKeychainTestSupport.cleanup(
+                    keychainPath: tempKeychainPath,
+                    bootstrapService: tempBootstrap,
+                    services: [KeychainSecretStore.skillEntityID(for: skill.id)]
+                )
+            }
+        }
+
+        func withTemporaryKeychain<T>(_ body: () -> T) -> T {
+            guard canAssertRealKeychain else { return body() }
+            return AstraSecureKeychainStore.$keychainPathOverride.withValue(tempKeychainPath) {
+                AstraSecureKeychainStore.$bootstrapServiceOverride.withValue(tempBootstrap) {
+                    body()
+                }
+            }
+        }
+
+        withTemporaryKeychain {
+            skill.environmentVariables = ["TOKEN": "abc123"]
+            if canAssertRealKeychain {
+                #expect(SkillSecretSeam.required.secretExists(key: "TOKEN", skillID: skill.id))
+            }
+
+            // Replacing the whole dict without TOKEN should delete its Keychain
+            // entry (previously silent - no audit event - see this fix's PR review).
+            skill.environmentVariables = ["OTHER": "value"]
+            if canAssertRealKeychain {
+                #expect(!SkillSecretSeam.required.secretExists(key: "TOKEN", skillID: skill.id))
+            }
+        }
     }
 
     @Test("Empty env var skill doesn't affect resolution")

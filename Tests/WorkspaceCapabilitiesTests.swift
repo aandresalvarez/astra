@@ -1,6 +1,8 @@
 import Foundation
 import SwiftData
 import Testing
+import ASTRAModels
+import ASTRAPersistence
 @testable import ASTRA
 import ASTRACore
 
@@ -97,6 +99,50 @@ struct WorkspaceCapabilitiesTests {
 
         #expect(capabilities.activeSkills.map(\.name) == ["Jira Agent"])
         #expect(capabilities.activeConnectors.map(\.name) == ["Configured Jira"])
+    }
+
+    @Test("enabled pack IDs do not grant capability package resources")
+    @MainActor
+    func enabledPackIDsDoNotGrantCapabilityPackageResources() {
+        let workspace = Workspace(name: "Pack Profile Only", primaryPath: "/tmp/pack-profile-only")
+        workspace.enabledPackIDs = ["jira-workflow"]
+
+        let jiraSkill = Skill(name: "Jira Agent", allowedTools: ["Read", "Bash"])
+        jiraSkill.isGlobal = true
+        let package = PluginPackage(
+            id: "jira-workflow",
+            name: "Jira Workflow",
+            icon: "checklist",
+            description: "Jira workflow capabilities.",
+            author: "ASTRA",
+            category: "Integrations",
+            tags: [],
+            version: "1.0.0",
+            skills: [
+                PluginSkill(
+                    name: "Jira Agent",
+                    icon: "checklist",
+                    description: "Jira issue agent.",
+                    allowedTools: ["Read", "Bash"],
+                    disallowedTools: [],
+                    customTools: [],
+                    behaviorInstructions: "Read Jira issues.",
+                    environmentKeys: [],
+                    environmentValues: []
+                )
+            ],
+            connectors: [],
+            localTools: [],
+            templates: []
+        )
+
+        let capabilities = WorkspaceCapabilities(
+            workspace: workspace,
+            globalSkills: [jiraSkill],
+            packageDefinitions: [package]
+        )
+
+        #expect(capabilities.activeSkills.isEmpty)
     }
 
     @Test("enabled package skills include matched tool owner when package skill name changes")
@@ -798,6 +844,35 @@ struct WorkspaceCapabilitiesTests {
         #expect(packages.map(\.name) == ["Jira Workflow"])
     }
 
+    @Test("preloaded package definitions honor supplied pack policy")
+    @MainActor
+    func preloadedPackageDefinitionsHonorSuppliedPackPolicy() {
+        let workspace = Workspace(name: "Pack Policy", primaryPath: "/tmp/pack-policy")
+        let skill = Skill(name: "Pack Analyst", allowedTools: ["Read"])
+        skill.isGlobal = true
+        let package = makeCapabilityPackage(id: "local.test/pack-analyst", skillName: "Pack Analyst")
+        workspace.enabledCapabilityIDs = [package.id]
+        workspace.enabledPackIDs = ["astra.pack.policy-test"]
+        let packPolicy = makeCapabilityPackPolicy(restrictions: [
+            AstraPackPolicyRestriction(
+                id: "disable-pack-analyst",
+                contributionKind: "capabilityPackage",
+                action: "disableCapability",
+                effect: "restrict",
+                targetID: package.id
+            )
+        ])
+
+        let capabilities = WorkspaceCapabilities(
+            workspace: workspace,
+            globalSkills: [skill],
+            packageDefinitions: [package],
+            packPolicy: packPolicy
+        )
+
+        #expect(capabilities.activeSkills.isEmpty)
+    }
+
     @Test("promoting a workspace connector to shared keeps it enabled here")
     @MainActor
     func promotingConnectorKeepsCurrentWorkspaceEnabled() {
@@ -1153,5 +1228,21 @@ private func makeCapabilityPackage(id: String, skillName: String) -> PluginPacka
         connectors: [],
         localTools: [],
         templates: []
+    )
+}
+
+private func makeCapabilityPackPolicy(restrictions: [AstraPackPolicyRestriction]) -> PackResolvedPolicy {
+    AstraPackPolicyResolver.resolve(
+        composition: AstraPackComposition.resolve(packs: [
+            AstraPackManifest(
+                formatVersion: 1,
+                id: "astra.pack.policy-test",
+                name: "Policy Test",
+                version: "1.0.0",
+                coreAPIVersion: "1.0",
+                description: "Policy test pack.",
+                policyRestrictions: restrictions
+            )
+        ])
     )
 }

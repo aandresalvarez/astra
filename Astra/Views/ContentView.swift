@@ -2,143 +2,13 @@ import SwiftUI
 import SwiftData
 import ASTRACore
 import AppKit
+import ASTRAModels
+import ASTRAPersistence
 
-/// Layout-level artifacts shown in the docked Shelf column.
-/// Future cases can choose wider sizing for browser or file previews.
-enum WorkspaceCanvasItem: String, Equatable {
-    case plan
-    case markdown
-    case browser
-    case query
-    var minWidth: CGFloat {
-        switch self {
-        case .plan: 400
-        case .markdown: PanelLayoutGeometry.filesShelfMinReadableWidth
-        case .browser: PanelLayoutGeometry.browserShelfMinWidth
-        case .query: 460
-        }
-    }
-    var idealWidth: CGFloat {
-        switch self {
-        case .plan: 520
-        case .markdown: 620
-        case .browser: 440
-        case .query: 640
-        }
-    }
-    var maxWidth: CGFloat {
-        switch self {
-        case .plan: 1040
-        case .markdown: 980
-        case .browser: 1120
-        case .query: 1180
-        }
-    }
-    var title: String {
-        switch self {
-        case .plan: "Plan"
-        case .markdown: "Files"
-        case .browser: "Browser"
-        case .query: "Query"
-        }
-    }
-    var closesWhenDraggedBelowMinimum: Bool {
-        self == .markdown
-    }
-}
+// `WorkspaceCanvasItem`, `WorkspaceRightPanel`, and the shelf-boundary metrics live in
+// WorkspaceCanvasItem.swift (extracted to keep this file within its line budget).
 
-private enum WorkspaceRightPanel: Equatable {
-    case canvas(WorkspaceCanvasItem)
-    case context(UUID)
-    var isContext: Bool {
-        if case .context = self { return true }
-        return false
-    }
-}
-
-private struct ShelfBoundaryMetrics: Equatable {
-    var width: CGFloat = 0
-    var isVisible = false
-    var isResizing = false
-    static let hidden = ShelfBoundaryMetrics()
-}
-
-private struct ShelfBoundaryMetricsPreferenceKey: PreferenceKey {
-    static var defaultValue = ShelfBoundaryMetrics.hidden
-
-    static func reduce(value: inout ShelfBoundaryMetrics, nextValue: () -> ShelfBoundaryMetrics) {
-        let next = nextValue()
-        if next.isVisible {
-            value = next
-        }
-    }
-}
-
-/// Reports window width and right-panel presence to `SidebarPresentationModel`.
-/// A background `GeometryReader` measures the full content width; both signals are
-/// pure proposals — the model alone turns them into sidebar visibility.
-private struct SidebarLayoutObserver: ViewModifier {
-    let hasRightSidePanel: Bool
-    let onWidthChanged: (CGFloat) -> Void
-    let onRightSidePanelChanged: (Bool) -> Void
-
-    func body(content: Content) -> some View {
-        content
-            .background {
-                GeometryReader { proxy in
-                    Color.clear
-                        .onAppear {
-                            onWidthChanged(proxy.size.width)
-                            onRightSidePanelChanged(hasRightSidePanel)
-                        }
-                        .onChange(of: proxy.size.width) {
-                            onWidthChanged(proxy.size.width)
-                        }
-                        .onChange(of: hasRightSidePanel) {
-                            onRightSidePanelChanged(hasRightSidePanel)
-                        }
-                }
-            }
-    }
-}
-
-private struct ShelfBoundaryOverlayModifier: ViewModifier {
-    func body(content: Content) -> some View {
-        content.overlayPreferenceValue(ShelfBoundaryMetricsPreferenceKey.self) { metrics in
-            ShelfBoundaryOverlay(metrics: metrics)
-        }
-    }
-}
-
-private struct ShelfBoundaryOverlay: View {
-    let metrics: ShelfBoundaryMetrics
-
-    var body: some View {
-        if metrics.isVisible {
-            HStack(spacing: 0) {
-                Spacer(minLength: 0)
-                HStack(spacing: 0) {
-                    Rectangle()
-                        .fill(borderColor)
-                        .frame(width: borderWidth)
-                    Spacer(minLength: 0)
-                }
-                .frame(width: metrics.width)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .ignoresSafeArea(.all, edges: .top)
-            .allowsHitTesting(false)
-        }
-    }
-
-    private var borderColor: Color {
-        metrics.isResizing ? Stanford.lagunita.opacity(0.95) : Color.primary.opacity(0.12)
-    }
-
-    private var borderWidth: CGFloat {
-        metrics.isResizing ? 3 : 1
-    }
-}
+// The shelf-boundary overlay views live in WorkspaceCanvasItem.swift (extracted for budget).
 
 private extension View {
     func shelfBoundaryOverlay() -> some View {
@@ -182,53 +52,30 @@ struct NewWorkspaceDraft: Equatable {
     }
 }
 
-/// Leaf observer that watches the task queue's update-safety signal in
-/// isolation. Reading `taskQueue.isProcessing/activeCount/activeTasks` here —
-/// rather than in `ContentView.body` — keeps queue churn (task start/exit)
-/// from invalidating ContentView's very large body. See the UI responsiveness
-/// audit (Cluster 1): this is the only body-level reader of those fields.
-private struct UpdateSafetyObserver: View {
-    let taskQueue: TaskQueue
-    let runningTaskCount: Int
-    let onChange: () -> Void
-
-    private var signature: String {
-        [
-            String(taskQueue.isProcessing),
-            String(taskQueue.activeCount),
-            String(taskQueue.activeTasks.count),
-            String(runningTaskCount)
-        ].joined(separator: "|")
-    }
-
-    var body: some View {
-        Color.clear
-            .onChange(of: signature) { onChange() }
-    }
-}
-
 struct ContentView: View {
     @ObservedObject var appUpdateController: AppUpdateController
     let runtime: AppRuntimeController
     @Environment(\.modelContext) private var modelContext
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Query(sort: \Workspace.name) private var workspaces: [Workspace]
-    @State private var selectedTask: AgentTask?
-    @State private var selectedWorkspace: Workspace?
+    @StateObject private var sceneSelection = SceneSelectionModel()
     @State private var showingConfigure = false
     @State private var configureInitialTab: ConfigureTab = .capabilities
     @State private var configureFocusItemID: UUID?
     @State private var configureFocusCapabilityPackageID: String?
+    @State private var pendingMCPInstallRequest: MCPInstallChatRequest?
     @State private var showingWorkspaceEditor = false
     @State private var showingNewWorkspace = false
     @State private var showingSSHEditor = false
     @State private var editingSSHConnection: SSHConnection?
-    @State private var isComposingTask = false
     @State private var sshReloadTrigger = 0
     @State private var newWorkspaceDraft = NewWorkspaceDraft()
     @StateObject private var browserSessionStore = ShelfBrowserSessionStore()
     @StateObject private var markdownSessionStore = ShelfMarkdownSessionStore()
     @StateObject private var querySession = ShelfQuerySession()
+    // App Studio is a conversation (center) + a docked live preview (the .appPreview shelf);
+    // both observe this one session, so a chat turn updates the preview.
+    @StateObject private var workspaceAppStudioSession = WorkspaceAppStudioSession()
     @StateObject private var externalRouteStore = AstraExternalRouteStore.shared
     @State private var showingNewSchedule = false
     @State private var editingSchedule: TaskSchedule?
@@ -259,9 +106,8 @@ struct ContentView: View {
     @AppStorage(AppStorageKeys.markdownPinnedToTask) private var isMarkdownPinnedToTask = true
     @AppStorage("lastSelectedWorkspaceID") private var lastSelectedWorkspaceID = ""
     @AppStorage("lastSelectedWorkspacePath") private var lastSelectedWorkspacePath = ""
-    @AppStorage("isWorkspaceRightRailVisible") private var isWorkspaceRightRailVisible = true
     @AppStorage(WorkspaceRecoveryService.recoveryNoticeKey) private var recoveryNotice = ""
-    @State private var activeWorkspaceCanvasItem: WorkspaceCanvasItem?
+    @State private var pendingAppPreviewPolicyRestore = false
     @State private var browserToolbarEngine = ShelfBrowserEngine.embedded
     // MARK: Sidebar Presentation
     /// The single owner of sidebar visibility — docked column, floating overlay
@@ -270,6 +116,14 @@ struct ContentView: View {
     /// guard now *propose* changes through this model instead of racing on
     /// `splitVisibility` directly.
     @StateObject private var presentation = SidebarPresentationModel()
+    // MARK: Right Panel Presentation
+    /// The single owner of right-panel presentation — the workspace context
+    /// rail's durable visibility intent plus the transient active shelf item.
+    /// Replaces the former `isWorkspaceRightRailVisible` persisted flag
+    /// (written directly from four independent call sites) and the
+    /// `activeWorkspaceCanvasItem` `@State`; every writer now routes through
+    /// this model instead of touching either property directly.
+    @StateObject private var rightPanel = RightPanelPresentationModel()
     private let sidebarTitlebarCommands = SidebarTitlebarCommandBridge.shared
     /// Hover state of the show-sidebar toggle, which drives the transient
     /// hover-preview of the overlay drawer (`SidebarPeekContainer`).
@@ -292,7 +146,11 @@ struct ContentView: View {
     @State private var selectedTaskPreferredMarkdownPath = ""
     @State private var selectedTaskHasQueryShelfContent = false
     @State private var selectedTaskPreferredQueryPath = ""
-    @State private var rememberedWorkspaceCanvasItemsRaw = WorkspaceCanvasItemPreferenceStore.load()
+    @State private var cachedShelfAvailabilityPolicy = ShelfAvailabilityPolicy()
+    @State private var cachedShelfAvailabilityPolicySignature = ""
+    @State private var browserSessionPolicyCache = BrowserSessionPolicyCache()
+    @State private var cachedBrowserSessionPolicy = BrowserSessionPolicy.failClosed
+    @State private var cachedBrowserSessionPolicySignature: BrowserSessionPolicySignature?
     /// First-run flag. Flips to true once the user finishes the
     /// onboarding wizard. Exposed via Settings → "Show Onboarding Again"
     /// so users can replay the guide on demand.
@@ -311,12 +169,53 @@ struct ContentView: View {
         self.runtime = runtime
     }
 
+    private var selectedTask: AgentTask? {
+        sceneSelection.selectedTask
+    }
+
+    private var selectedWorkspace: Workspace? {
+        sceneSelection.selectedWorkspace
+    }
+
+    private var selectedWorkspaceApp: WorkspaceApp? {
+        sceneSelection.selectedWorkspaceApp
+    }
+
+    private var isComposingTask: Bool {
+        sceneSelection.isComposingTask
+    }
+
+    /// Read-only forward to `RightPanelPresentationModel`. Every write goes
+    /// through the model's methods (`presentCanvas`, `setActiveCanvasItem`,
+    /// etc.) — never assign this directly.
+    private var activeWorkspaceCanvasItem: WorkspaceCanvasItem? {
+        rightPanel.activeCanvasItem
+    }
+
+    /// Read-only forward to `RightPanelPresentationModel`. Every write goes
+    /// through the model's methods (`presentRail`, `dismissRail`,
+    /// `setRailPresented`) — never assign this directly.
+    private var isWorkspaceRightRailVisible: Bool {
+        rightPanel.isRailShown
+    }
+
+    private var isComposingWorkspaceApp: Bool {
+        sceneSelection.isComposingWorkspaceApp
+    }
+
     private var effectiveWorkspace: Workspace? {
         sceneCoordinator.effectiveWorkspace
     }
 
     private var effectiveWorkspaceID: UUID? {
         sceneCoordinator.effectiveWorkspaceID
+    }
+
+    private var workspaceAppStudioWorkspace: Workspace? {
+        guard let workspaceID = workspaceAppStudioSession.workspaceID else {
+            return effectiveWorkspace
+        }
+        return sceneCoordinator.workspace(id: workspaceID)
     }
 
     private var queryUtilityRuntime: AgentUtilityRuntimeConfiguration {
@@ -373,11 +272,31 @@ struct ContentView: View {
         )
     }
 
+    private var selectedWorkspaceBinding: Binding<Workspace?> {
+        Binding(
+            get: { selectedWorkspace },
+            set: { selectWorkspaceFromSidebar($0) }
+        )
+    }
+
+    private var renameWorkspaceAlertBinding: Binding<Bool> {
+        Binding(
+            get: { renamingWorkspace != nil },
+            set: { isPresented in
+                if !isPresented {
+                    renamingWorkspace = nil
+                }
+            }
+        )
+    }
+
     private var currentBrowserSession: ShelfBrowserSession {
-        browserSessionStore.session(
+        let policy = currentBrowserSessionPolicy
+        return browserSessionStore.session(
             for: selectedTask?.id,
             pinnedToTask: isBrowserPinnedToTask,
-            enabledBrowserAdapters: enabledBrowserAdapterIDs(for: selectedTask)
+            enabledBrowserAdapters: policy.enabledBrowserAdapters,
+            githubReadOnlyMode: policy.githubReadOnlyMode
         )
     }
 
@@ -388,9 +307,23 @@ struct ContentView: View {
         )
     }
 
-    private func enabledBrowserAdapterIDs(for task: AgentTask?) -> [String] {
-        guard let task else { return [] }
-        return TaskCapabilityResolver(task: task).enabledBrowserAdapters
+    private var currentBrowserSessionPolicy: BrowserSessionPolicy {
+        let expectedSignature = makeBrowserSessionPolicySignature()
+        guard cachedBrowserSessionPolicySignature == expectedSignature else {
+            return .failClosed
+        }
+        return cachedBrowserSessionPolicy
+    }
+
+    private var browserSessionPolicyRefreshTriggerSignature: String {
+        makeBrowserSessionPolicySignature().refreshKey
+    }
+
+    private func normalizedEnabledCapabilityIDs(for task: AgentTask?) -> [String] {
+        (task?.workspace?.enabledCapabilityIDs ?? [])
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .sorted()
     }
 
     private var browserPinnedToTaskBinding: Binding<Bool> {
@@ -414,34 +347,7 @@ struct ContentView: View {
     }
 
     private var selectedTaskCanvasSignature: String {
-        guard let selectedTask else { return "none" }
-        // Compute the latest run once (was scanned twice — here and in the
-        // HTML-preview helper). Deliberately exclude `output.count`: it is an
-        // O(output-length) walk that re-runs every body pass while output
-        // streams, and the canvas only reflects file changes, not raw output.
-        let latestRun = selectedTask.runs.max { $0.startedAt < $1.startedAt }
-        let inputSignature = selectedTask.inputs.joined(separator: "|")
-        let htmlPreviewSignature = [
-            selectedTask.status.rawValue,
-            latestRun?.id.uuidString ?? "none",
-            String(latestRun?.fileChangesJSON.count ?? 0)
-        ].joined(separator: "|")
-        let latestRunSignature = [
-            latestRun?.id.uuidString ?? "none",
-            latestRun?.status.rawValue ?? "none",
-            String(Int(latestRun?.startedAt.timeIntervalSince1970 ?? 0)),
-            String(latestRun?.fileChangesJSON.count ?? 0)
-        ].joined(separator: ":")
-        return [
-            selectedTask.id.uuidString,
-            selectedTask.status.rawValue,
-            String(Int(selectedTask.updatedAt.timeIntervalSince1970)),
-            String(selectedTask.events.count),
-            String(selectedTask.runs.count),
-            latestRunSignature,
-            htmlPreviewSignature,
-            inputSignature
-        ].joined(separator: "|")
+        TaskCanvasRefreshSignature(task: selectedTask).rawValue
     }
 
     private var hasWorkspaceCanvasContent: Bool { cachedHasCanvasContent }
@@ -450,18 +356,65 @@ struct ContentView: View {
         selectedTask != nil || isComposingTask
     }
 
-    private var hasQueryShelfAffordance: Bool {
-        activeWorkspaceCanvasItem == .query
-            || selectedTaskHasQueryShelfContent
+    private var shelfAvailabilityPolicy: ShelfAvailabilityPolicy {
+        guard cachedShelfAvailabilityPolicySignature == shelfAvailabilityPolicyRefreshSignature else {
+            return loadingShelfAvailabilityPolicy
+        }
+        return cachedShelfAvailabilityPolicy
+    }
+
+    private var loadingShelfAvailabilityPolicy: ShelfAvailabilityPolicy {
+        shelfAvailabilityPolicyWorkspaceHasEnabledPacks
+            ? .loadingForPackEnabledWorkspace()
+            : ShelfAvailabilityPolicy()
+    }
+
+    private var shelfAvailabilityPolicyRefreshSignature: String {
+        guard let workspace = effectiveWorkspace else { return "no-workspace" }
+        let enabledPacks = workspace.enabledPackIDs
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .sorted()
+            .joined(separator: ",")
+        let overrides = workspace.shelfVisibilityOverrides
+            .sorted { $0.key < $1.key }
+            .map { "\($0.key)=\($0.value)" }
+            .joined(separator: ",")
+        return [
+            workspace.id.uuidString,
+            enabledPacks,
+            overrides
+        ].joined(separator: "|")
+    }
+
+    private var shelfAvailabilityPolicyWorkspaceHasEnabledPacks: Bool {
+        effectiveWorkspace?.enabledPackIDs.contains {
+            !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        } ?? false
+    }
+
+    private var shelfAvailabilityContext: ShelfAvailabilityPolicy.Context {
+        ShelfAvailabilityPolicy.Context(
+            hasOpenTaskThread: hasOpenTaskThread,
+            hasWorkspaceContext: effectiveWorkspace != nil,
+            hasPlanContent: hasWorkspaceCanvasContent,
+            hasFilesShelfContent: selectedTaskHasMarkdownShelfContent,
+            hasQueryShelfContent: selectedTaskHasQueryShelfContent,
+            isComposingWorkspaceApp: isComposingWorkspaceApp,
+            activeShelfID: activeWorkspaceCanvasItem?.shelfID
+        )
     }
 
     private var topRightActions: WorkspaceTopRightActions {
-        WorkspaceTopRightActions(
+        let policy = shelfAvailabilityPolicy
+        let context = shelfAvailabilityContext
+        return WorkspaceTopRightActions(
             hasWorkspace: effectiveWorkspace != nil,
-            canShowPlanShelf: hasOpenTaskThread && hasWorkspaceCanvasContent,
-            canShowTextShelf: effectiveWorkspace != nil || activeWorkspaceCanvasItem == .markdown,
-            canShowBrowserShelf: hasOpenTaskThread,
-            canShowQueryShelf: hasOpenTaskThread && hasQueryShelfAffordance,
+            canShowPlanShelf: policy.isToolbarAvailable(.plan, in: context),
+            canShowTextShelf: policy.isToolbarAvailable(.files, in: context),
+            canShowBrowserShelf: policy.isToolbarAvailable(.browser, in: context),
+            canShowQueryShelf: policy.isToolbarAvailable(.query, in: context),
+            canShowAppPreviewShelf: policy.isToolbarAvailable(.appPreview, in: context),
             activeCanvasItem: activeWorkspaceCanvasItem,
             browserEngine: browserToolbarEngine,
             isRightRailVisible: isWorkspaceRightRailVisible
@@ -476,7 +429,7 @@ struct ContentView: View {
     /// is currently presented. Fed into `SidebarPresentationModel` so it can decide
     /// whether the sidebar docks alongside it or presents as an overlay drawer.
     private var hasRightSidePanelPresented: Bool {
-        activeWorkspaceCanvasItem != nil || (effectiveWorkspace != nil && isWorkspaceRightRailVisible)
+        rightPanel.hasAnyPanelPresented(hasWorkspace: effectiveWorkspace != nil)
     }
 
     private var panelTransitionAnimation: Animation? {
@@ -547,7 +500,7 @@ struct ContentView: View {
             selectedTask: selectedTaskBinding,
             taskQueue: runtime.taskQueue,
             workspaces: workspaces,
-            selectedWorkspace: $selectedWorkspace,
+            selectedWorkspace: selectedWorkspaceBinding,
             onNewTask: startComposingTask,
             onRunQueue: runQueue,
             onRunTask: runSingleTask,
@@ -562,7 +515,10 @@ struct ContentView: View {
             onDeleteWorkspace: deleteWorkspace,
             onRenameWorkspace: beginRenamingWorkspace,
             onNewSchedule: showNewSchedule,
-            onEditSchedule: beginEditingSchedule
+            onEditSchedule: beginEditingSchedule,
+            onNewApp: { startWorkspaceAppStudio() },
+            onOpenWorkspaceApp: setSelectedWorkspaceApp,
+            selectedWorkspaceApp: selectedWorkspaceApp
         )
     }
 
@@ -605,7 +561,31 @@ struct ContentView: View {
         )
     }
 
+    @ViewBuilder
     private var detailArea: some View {
+        switch detailPresentation {
+        case .workspaceApp:
+            if let app = selectedWorkspaceApp {
+                workspaceAppDetailArea(app: app)
+            } else {
+                taskAndHomeDetailArea
+            }
+        default:
+            taskAndHomeDetailArea
+        }
+    }
+
+    private var detailPresentation: ContentDetailPresentation {
+        ContentDetailPresentation.resolve(
+            selectedTask: selectedTask,
+            effectiveWorkspace: sceneCoordinator.workspace(for: selectedWorkspaceApp) ?? effectiveWorkspace,
+            isComposingTask: isComposingTask,
+            selectedWorkspaceApp: selectedWorkspaceApp,
+            isComposingWorkspaceApp: isComposingWorkspaceApp
+        )
+    }
+
+    private var taskAndHomeDetailArea: some View {
         ContentDetailAreaView(
             selectedTask: selectedTask,
             effectiveWorkspace: effectiveWorkspace,
@@ -635,6 +615,7 @@ struct ContentView: View {
             onMoveToDraft: moveTaskToDraft,
             onForkTask: setSelectedTask,
             onCreateTask: startComposingTask,
+            onOpenWorkspaceApp: setSelectedWorkspaceApp,
             onOpenTask: openExistingTask,
             onDeleteTask: requestDeleteTask,
             onSetDoneState: setDoneState,
@@ -651,8 +632,189 @@ struct ContentView: View {
             onCreateWorkspace: createWorkspace,
             onImportWorkspace: importWorkspace,
             onOpenGeneratedFile: openGeneratedFile,
-            onOpenWorkspaceFile: openWorkspaceFileInShelf
+            canOpenGeneratedFileInShelf: canOpenGeneratedFileInShelf,
+            onOpenWorkspaceFile: openWorkspaceFileInShelf,
+            isComposingWorkspaceApp: isComposingWorkspaceApp,
+            studioSession: workspaceAppStudioSession,
+            onStartWorkspaceAppStudio: { prompt in startWorkspaceAppStudio(initialPrompt: prompt) },
+            onStartMCPInstallReview: { request in pendingMCPInstallRequest = request },
+            onPublishApp: { seed in publishWorkspaceAppFromStudio(seedSampleData: seed) },
+            onDraftChanged: { WorkspaceAppStudioDraftAutosaveCoordinator.autosave(session: workspaceAppStudioSession, preferredWorkspace: effectiveWorkspace, modelContext: modelContext) },
+            onCancelStudio: { cancelWorkspaceAppStudio() }
         )
+    }
+
+    // MARK: - F7 Workspace App surfaces
+
+    @ViewBuilder
+    private func workspaceAppDetailArea(app: WorkspaceApp) -> some View {
+        let appWorkspace = sceneCoordinator.workspace(for: app)
+        WorkspaceAppDetailView(
+            app: app,
+            workspace: appWorkspace,
+            onOpenStudio: { manifest in startWorkspaceAppStudio(existingManifest: manifest, workspace: appWorkspace) },
+            onRefresh: {},
+            onExportPackage: {
+                guard let workspace = appWorkspace else { throw WorkspaceAppUIError.exportUnavailableFromDetail }
+                return try WorkspaceAppPackageExporter().exportTemplatePackage(app: app, workspace: workspace).packageURL
+            },
+            onRunAction: { action, manifest, input in
+                try await runWorkspaceAppAction(app: app, action: action, manifest: manifest, input: input)
+            }, onDeleted: { setSelectedWorkspaceApp(nil) }
+        )
+        .id(app.id)
+    }
+
+    private func startWorkspaceAppStudio(
+        existingManifest: WorkspaceAppManifest? = nil,
+        initialPrompt: String? = nil,
+        workspace targetWorkspace: Workspace? = nil
+    ) {
+        let studioWorkspace = targetWorkspace ?? effectiveWorkspace
+        applySceneSelectionIntent {
+            sceneSelection.composeApp(workspace: studioWorkspace)
+        }
+        rightPanel.hideRailWithoutClearingCanvasItem()
+        if let workspace = studioWorkspace {
+            workspaceAppStudioSession.reset(for: workspace, existingManifest: existingManifest, initialPrompt: initialPrompt)
+        }
+        let appPreviewItem = WorkspaceCanvasPolicyTransition.itemAfterAppStudioStart(
+            policy: shelfAvailabilityPolicy,
+            context: shelfAvailabilityContext
+        )
+        pendingAppPreviewPolicyRestore = appPreviewItem == nil
+        setActiveWorkspaceCanvasItem(appPreviewItem, remember: false)
+    }
+
+    /// Leave the Studio without publishing: drop the composer, collapse the preview, cancel gen.
+    private func cancelWorkspaceAppStudio() {
+        workspaceAppStudioSession.cancelGeneration()
+        sceneSelection.clearWorkspaceAppSurface()
+        pendingAppPreviewPolicyRestore = false
+        if activeWorkspaceCanvasItem == .appPreview {
+            setActiveWorkspaceCanvasItem(nil, remember: false)
+        }
+    }
+
+    private func toggleAppPreviewCanvas() {
+        if activeWorkspaceCanvasItem == .appPreview {
+            pendingAppPreviewPolicyRestore = false
+            animatePanelChange {
+                setActiveWorkspaceCanvasItem(nil, remember: false)
+            }
+        } else {
+            guard canPresentWorkspaceCanvasItem(.appPreview) else { return }
+            pendingAppPreviewPolicyRestore = false
+            animatePanelChange {
+                rightPanel.hideRailWithoutClearingCanvasItem()
+                setActiveWorkspaceCanvasItem(.appPreview, remember: false)
+            }
+        }
+    }
+
+    /// Publish the session's current draft (called from the chat header's Publish button).
+    private func publishWorkspaceAppFromStudio(seedSampleData: Bool) {
+        guard let workspace = workspaceAppStudioWorkspace,
+              let draft = workspaceAppStudioSession.draft else { return }
+        do {
+            try publishWorkspaceApp(draft, seedSampleData: seedSampleData, workspace: workspace)
+        } catch {
+            AppLogger.error("App Studio publish failed: \(error)", category: "WorkspaceApps")
+            workspaceAppStudioSession.notePublishFailure((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
+        }
+    }
+
+    private func setSelectedWorkspaceApp(_ app: WorkspaceApp?) {
+        let draftResolution = WorkspaceAppStudioDraftOpenResolver.resolve(app: app, workspaces: workspaces, fallbackWorkspace: effectiveWorkspace)
+        if case .routed(let route) = draftResolution {
+            startWorkspaceAppStudio(existingManifest: route.manifest, workspace: route.workspace)
+            return
+        }
+        if case .failed(let failure) = draftResolution {
+            applySceneSelectionIntent {
+                sceneSelection.clear()
+            }
+            if let workspace = failure.workspace ?? effectiveWorkspace {
+                startWorkspaceAppStudio(workspace: workspace)
+                workspaceAppStudioSession.noteDraftOpenFailure(appName: app?.name ?? "this draft app", detail: failure.detail)
+            } else if activeWorkspaceCanvasItem == .appPreview {
+                setActiveWorkspaceCanvasItem(nil, remember: false)
+            }
+            return
+        }
+        if activeWorkspaceCanvasItem == .appPreview {
+            setActiveWorkspaceCanvasItem(nil, remember: false)
+        }
+        applySceneSelectionIntent {
+            sceneSelection.openApp(app, workspace: sceneCoordinator.workspace(for: app))
+        }
+    }
+
+    private func runWorkspaceAppAction(
+        app: WorkspaceApp,
+        action: WorkspaceAppActionSpec,
+        manifest: WorkspaceAppManifest,
+        input: WorkspaceAppActionInput
+    ) async throws -> WorkspaceAppActionExecutionResult {
+        guard let workspace = sceneCoordinator.workspace(for: app) else {
+            throw WorkspaceAppUIError.noWorkspace
+        }
+        let appID = app.id
+        let bindings = (try? modelContext.fetch(
+            FetchDescriptor<WorkspaceAppDependencyBinding>()
+        ))?.filter { $0.appID == appID } ?? []
+        // Route through the ASYNC executor so a workflow action that contains a
+        // connector `capability.read` step resolves on the live async client
+        // instead of hitting the unavailable synchronous one.
+        return try await WorkspaceAppActionExecutor().executeAsync(
+            actionID: action.id,
+            app: app,
+            workspace: workspace,
+            manifest: manifest,
+            dependencyBindings: bindings,
+            input: input,
+            modelContext: modelContext
+        )
+    }
+
+    private func publishWorkspaceApp(_ draft: WorkspaceAppStudioDraft, seedSampleData: Bool = false, workspace: Workspace) throws {
+        let allApps = (try? modelContext.fetch(FetchDescriptor<WorkspaceApp>())) ?? []
+        let service = WorkspaceAppService()
+        let result: WorkspaceAppCreationResult
+        let isNewApp: Bool
+        let target: Workspace   // the workspace the published app actually lives in
+        if let editingID = workspaceAppStudioSession.editingAppLogicalID {
+            // Editing: update the app IN ITS OWN workspace (found by logical id, preferring the
+            // session's workspace) — NOT the currently-selected one, which may differ. Version in place,
+            // no forked sibling. If it's truly gone, fail loudly rather than recreating it empty.
+            let sessionWS = workspaceAppStudioSession.workspaceID
+            guard let existing = allApps.first(where: { $0.logicalID == editingID && $0.workspaceID == sessionWS }) ?? allApps.first(where: { $0.logicalID == editingID }),
+                  let appWorkspace = ((try? modelContext.fetch(FetchDescriptor<Workspace>())) ?? []).first(where: { $0.id == existing.workspaceID }) else {
+                throw WorkspaceAppServiceError.fileOperationFailed("The app you were editing no longer exists. Use Save as a Copy to keep your changes.")
+            }
+            let isDraftFirstPublish = existing.lifecycleStatus == .draft && existing.latestVersionNumber == 0
+            target = appWorkspace
+            result = try service.updateApp(existing, manifest: draft.manifest, in: appWorkspace, modelContext: modelContext, status: .published, persistence: .saveOnly)
+            isNewApp = isDraftFirstPublish
+        } else {
+            // New app: create in the selected workspace, deduping the logical id within it.
+            target = workspace
+            let manifest = WorkspaceAppStudioBuilder.manifestForPublishing(draft.manifest, existingLogicalIDs: Set(allApps.filter { $0.workspaceID == workspace.id }.map(\.logicalID)))
+            result = try service.createApp(manifest: manifest, in: workspace, modelContext: modelContext, status: .published, persistence: .saveOnly)
+            isNewApp = true
+        }
+        // Flush the build journal + snapshot the version (best-effort) into the app's OWN workspace.
+        WorkspaceAppStudioJournalService().save(workspaceAppStudioSession.journal, appID: result.app.logicalID, workspacePath: target.primaryPath)
+        workspaceAppStudioSession.cancelGeneration()
+        do {
+            let publishedData = try WorkspaceAppService.encodeManifest(result.manifest)
+            try WorkspaceAppVersionService().recordPublish(app: result.app, manifestData: publishedData, validated: true, in: target, modelContext: modelContext)
+        } catch {
+            WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: target, modelContext: modelContext)
+            AppLogger.error("Workspace app published but version snapshot failed: \(error)", category: "WorkspaceApps")
+        }
+        if seedSampleData, isNewApp { WorkspaceAppSampleSeeder.seed(manifest: result.manifest, workspacePath: target.primaryPath, appID: result.app.logicalID) }
+        setSelectedWorkspaceApp(result.app)
     }
 
     /// Keeps ⌘F toggling search even though the visible search button lives in
@@ -666,6 +828,19 @@ struct ContentView: View {
             .keyboardShortcut("f", modifiers: .command)
             .opacity(0)
             .accessibilityHidden(true)
+    }
+
+    // F7: ⌘⇧A opens the Workspace App Studio (New App). Hidden hotkey mirroring
+    // searchHotkey so it registers without threading a button through the detail
+    // view hierarchy; only active when a workspace is selected.
+    private var newWorkspaceAppHotkey: some View {
+        Button(action: { if effectiveWorkspace != nil { startWorkspaceAppStudio() } }) {
+            Color.clear.frame(width: 0, height: 0)
+        }
+        .buttonStyle(.plain)
+        .keyboardShortcut("a", modifiers: [.command, .shift])
+        .opacity(0)
+        .accessibilityHidden(true)
     }
 
     // Split out of `body` so each modifier chain stays small enough for the
@@ -683,6 +858,7 @@ struct ContentView: View {
             isSidebarHidden: presentation.isSidebarHidden
         )
         .background(searchHotkey)
+        .background(newWorkspaceAppHotkey)
         .astraHiddenToolbarBackground()
         // Right-rail toggle. Attached to the NavigationSplitView root so
         // .primaryAction lands at the WINDOW's trailing edge — past the
@@ -708,6 +884,7 @@ struct ContentView: View {
                         onTogglePlan: toggleWorkspaceCanvas,
                         onToggleText: toggleMarkdownCanvas,
                         onToggleQuery: toggleQueryCanvas,
+                        onToggleAppPreview: toggleAppPreviewCanvas,
                         onToggleControlPanel: toggleRightRail
                     )
                 }
@@ -720,7 +897,7 @@ struct ContentView: View {
                 SearchPanelOverlayContainer(
                     workspaces: workspaces,
                     selectedTask: selectedTaskBinding,
-                    selectedWorkspace: $selectedWorkspace,
+                    selectedWorkspace: selectedWorkspaceBinding,
                     isActive: $isSearchActive
                 )
             }
@@ -754,10 +931,8 @@ struct ContentView: View {
             handleSelectedTaskCanvasSignatureChanged()
         }
         .onChange(of: hasOpenTaskThread) {
-            if !hasOpenTaskThread, activeWorkspaceCanvasItem != nil {
-                if activeWorkspaceCanvasItem == .markdown, effectiveWorkspace != nil {
-                    return
-                }
+            if let activeWorkspaceCanvasItem,
+               !canPresentWorkspaceCanvasItem(activeWorkspaceCanvasItem) {
                 animatePanelChange {
                     setActiveWorkspaceCanvasItem(nil, remember: false)
                 }
@@ -769,6 +944,17 @@ struct ContentView: View {
                 presentation.handleSelectionCommitted()
             }
         }
+        .onChange(of: shelfAvailabilityPolicy) {
+            invalidateActiveWorkspaceCanvasItemIfUnavailable(remember: false)
+            restorePendingAppPreviewAfterShelfPolicyLoadIfAvailable()
+        }
+        .task(id: shelfAvailabilityPolicyRefreshSignature) {
+            await refreshShelfAvailabilityPolicy()
+        }
+        .modifier(BrowserSessionPolicyObserver(
+            signature: browserSessionPolicyRefreshTriggerSignature,
+            onRefresh: refreshBrowserSessionPolicy(source:)
+        ))
         .onChange(of: activeWorkspaceCanvasItem) {
             syncBrowserPresentation()
         }
@@ -785,6 +971,11 @@ struct ContentView: View {
                 )
             }
         }
+        .mcpInstallReviewSheet(
+            request: $pendingMCPInstallRequest,
+            workspace: effectiveWorkspace,
+            onInstalled: openCapabilityPackage
+        )
         .sheet(isPresented: $showingWorkspaceEditor) {
             if let ws = effectiveWorkspace {
                 WorkspaceDetailView(workspace: ws, onDelete: {
@@ -792,17 +983,17 @@ struct ContentView: View {
                 })
             }
         }
-        .alert("Rename Workspace", isPresented: Binding(
-            get: { renamingWorkspace != nil },
-            set: { if !$0 { renamingWorkspace = nil } }
-        )) {
+        .alert("Rename Workspace", isPresented: renameWorkspaceAlertBinding) {
             TextField("Name", text: $renameText)
             Button("Cancel", role: .cancel) { renamingWorkspace = nil }
             Button("Rename") {
                 if let ws = renamingWorkspace, !renameText.isEmpty {
                     ws.name = renameText
                     do {
-                        try modelContext.save()
+                        try WorkspacePersistenceCoordinator.saveAndAutoExportOrThrow(
+                            workspace: ws,
+                            modelContext: modelContext
+                        )
                     } catch {
                         AppLogger.audit(.workspaceExported, category: "UI", fields: [
                             "operation": "rename_workspace",
@@ -977,7 +1168,9 @@ struct ContentView: View {
     }
 
     private func beginEditingWorkspace(_ workspace: Workspace) {
-        selectedWorkspace = workspace
+        applySceneSelectionIntent {
+            sceneSelection.openWorkspace(workspace)
+        }
         showingWorkspaceEditor = true
     }
 
@@ -1016,20 +1209,15 @@ struct ContentView: View {
 
         animatePanelChange {
             setActiveWorkspaceCanvasItem(nil, remember: true)
-            isWorkspaceRightRailVisible = false
+            rightPanel.dismissRail()
             presentation.revealAfterClearingRightSidePanel()
         }
     }
 
     private func handleSelectedTaskCanvasSignatureChanged() {
         cachedHasCanvasContent = selectedTask.flatMap { TaskPlanService.reconstruct(for: $0).plan } != nil
-        if !cachedHasCanvasContent, activeWorkspaceCanvasItem == .plan {
-            setActiveWorkspaceCanvasItem(nil, remember: false)
-        }
-        if selectedTask == nil, !isComposingTask, activeWorkspaceCanvasItem == .browser {
-            setActiveWorkspaceCanvasItem(nil, remember: false)
-        }
-        if selectedTask == nil, !isComposingTask, effectiveWorkspace == nil, activeWorkspaceCanvasItem == .markdown {
+        if let activeWorkspaceCanvasItem,
+           !canPresentWorkspaceCanvasItem(activeWorkspaceCanvasItem) {
             setActiveWorkspaceCanvasItem(nil, remember: false)
         }
         refreshMarkdownShelfAvailabilityForSelectedTask()
@@ -1039,33 +1227,34 @@ struct ContentView: View {
     }
 
     private func setRightRailPresented(_ isPresented: Bool) {
-        if isPresented {
-            presentRightRail()
-        } else {
-            animatePanelChange {
-                isWorkspaceRightRailVisible = false
-            }
+        animatePanelChange {
+            rightPanel.setRailPresented(isPresented, conversationID: selectedWorkspaceCanvasConversationID)
         }
     }
 
     private func presentRightRail(rememberShelfState: Bool = true) {
         animatePanelChange {
-            setActiveWorkspaceCanvasItem(nil, remember: rememberShelfState)
-            isWorkspaceRightRailVisible = true
+            rightPanel.presentRail(
+                rememberShelfState: rememberShelfState,
+                conversationID: selectedWorkspaceCanvasConversationID
+            )
         }
     }
 
     private func presentCanvas(_ item: WorkspaceCanvasItem) {
+        guard canPresentWorkspaceCanvasItem(item) else { return }
         animatePanelChange {
-            isWorkspaceRightRailVisible = false
-            setActiveWorkspaceCanvasItem(item, remember: true)
+            rightPanel.presentCanvas(item, conversationID: selectedWorkspaceCanvasConversationID)
         }
     }
 
     private var workspaceCanvasItemBinding: Binding<WorkspaceCanvasItem?> {
         Binding(
             get: { activeWorkspaceCanvasItem },
-            set: { setActiveWorkspaceCanvasItem($0, remember: true) }
+            set: { item in
+                guard item.map(canPresentWorkspaceCanvasItem) ?? true else { return }
+                setActiveWorkspaceCanvasItem(item, remember: true)
+            }
         )
     }
 
@@ -1073,56 +1262,49 @@ struct ContentView: View {
         selectedTask?.id.uuidString
     }
 
-    private var rememberedWorkspaceCanvasItem: WorkspaceCanvasItem? {
-        WorkspaceCanvasItemPreference.item(
-            in: rememberedWorkspaceCanvasItemsRaw,
-            for: selectedWorkspaceCanvasConversationID
-        )
-    }
-
     private func setActiveWorkspaceCanvasItem(_ item: WorkspaceCanvasItem?, remember: Bool) {
-        activeWorkspaceCanvasItem = item
-        let currentStorage = rememberedWorkspaceCanvasItemsRaw
-        let updatedStorage = WorkspaceCanvasItemPreference.updatedStorageRawValue(
-            currentStorageRawValue: currentStorage,
-            conversationID: selectedWorkspaceCanvasConversationID,
-            item: item,
-            remember: remember
-        )
-        rememberedWorkspaceCanvasItemsRaw = updatedStorage
-        WorkspaceCanvasItemPreferenceStore.saveIfChanged(
-            currentRawValue: currentStorage,
-            updatedRawValue: updatedStorage
-        )
+        rightPanel.setActiveCanvasItem(item, remember: remember, conversationID: selectedWorkspaceCanvasConversationID)
     }
 
     private func restoreRememberedWorkspaceCanvasItemIfAvailable() {
-        let rememberedItem = rememberedWorkspaceCanvasItem
-        guard WorkspaceCanvasItemPreference.shouldRestoreRememberedItem(
-            activeItem: activeWorkspaceCanvasItem,
-            isRightRailVisible: isWorkspaceRightRailVisible,
-            rememberedItem: rememberedItem,
-            canPresentRememberedItem: rememberedItem.map(canPresentWorkspaceCanvasItem) ?? false
-        ), let item = rememberedItem else {
+        guard let item = rightPanel.restoreRememberedItemIfAvailable(
+            conversationID: selectedWorkspaceCanvasConversationID,
+            canPresent: canPresentWorkspaceCanvasItem
+        ) else {
             return
         }
 
-        isWorkspaceRightRailVisible = false
         prepareWorkspaceCanvasItemForPresentation(item, source: "remembered_shelf_restore")
-        setActiveWorkspaceCanvasItem(item, remember: false)
+    }
+
+    private func invalidateActiveWorkspaceCanvasItemIfUnavailable(remember: Bool) {
+        let nextItem = WorkspaceCanvasPolicyTransition.itemAfterPolicyChange(
+            currentItem: activeWorkspaceCanvasItem,
+            policy: shelfAvailabilityPolicy,
+            context: shelfAvailabilityContext
+        )
+        guard nextItem != activeWorkspaceCanvasItem else { return }
+        setActiveWorkspaceCanvasItem(nextItem, remember: remember)
+    }
+
+    private func restorePendingAppPreviewAfterShelfPolicyLoadIfAvailable() {
+        guard pendingAppPreviewPolicyRestore else { return }
+        let nextItem = WorkspaceCanvasPolicyTransition.itemAfterPendingAppPreviewPolicyRestore(
+            currentItem: activeWorkspaceCanvasItem,
+            pendingRestore: true,
+            policy: shelfAvailabilityPolicy,
+            context: shelfAvailabilityContext
+        )
+        if nextItem != activeWorkspaceCanvasItem {
+            pendingAppPreviewPolicyRestore = false
+            setActiveWorkspaceCanvasItem(nextItem, remember: false)
+            return
+        }
+        if !isComposingWorkspaceApp { pendingAppPreviewPolicyRestore = false }
     }
 
     private func canPresentWorkspaceCanvasItem(_ item: WorkspaceCanvasItem) -> Bool {
-        switch item {
-        case .plan:
-            return hasOpenTaskThread && hasWorkspaceCanvasContent
-        case .markdown:
-            return effectiveWorkspace != nil || selectedTaskHasMarkdownShelfContent || selectedTask != nil || isComposingTask
-        case .browser:
-            return hasOpenTaskThread
-        case .query:
-            return hasOpenTaskThread && hasQueryShelfAffordance
-        }
+        shelfAvailabilityPolicy.canPresent(item.shelfID, in: shelfAvailabilityContext)
     }
 
     private func prepareWorkspaceCanvasItemForPresentation(_ item: WorkspaceCanvasItem, source: String) {
@@ -1146,6 +1328,9 @@ struct ContentView: View {
             if querySession.selectedDocument?.sourcePath != url.path {
                 querySession.loadFile(url)
             }
+        case .appPreview:
+            // The studio session is already bound when the Studio opens — nothing to prepare.
+            return
         }
     }
 
@@ -1158,7 +1343,7 @@ struct ContentView: View {
     }
 
     private func toggleWorkspaceCanvas() {
-        guard hasWorkspaceCanvasContent else {
+        guard canPresentWorkspaceCanvasItem(.plan) else {
             animatePanelChange {
                 if activeWorkspaceCanvasItem == .plan {
                     setActiveWorkspaceCanvasItem(nil, remember: true)
@@ -1176,18 +1361,20 @@ struct ContentView: View {
     }
 
     private func toggleBrowserCanvas() {
-        currentBrowserSession.bindToTask(selectedTask?.id)
         if activeWorkspaceCanvasItem == .browser {
             animatePanelChange {
                 setActiveWorkspaceCanvasItem(nil, remember: true)
             }
         } else {
+            guard canPresentWorkspaceCanvasItem(.browser) else { return }
+            currentBrowserSession.bindToTask(selectedTask?.id)
             loadPreferredGeneratedHTMLForBrowserShelfIfNeeded(source: "browser_shelf_open")
             presentCanvas(.browser)
         }
     }
 
     private func openBrowserCanvas(engine: ShelfBrowserEngine) {
+        guard canPresentWorkspaceCanvasItem(.browser) else { return }
         let session = currentBrowserSession
         session.bindToTask(selectedTask?.id)
         if session.engine != engine {
@@ -1201,7 +1388,7 @@ struct ContentView: View {
     }
 
     private func toggleMarkdownCanvas() {
-        guard effectiveWorkspace != nil || selectedTaskHasMarkdownShelfContent || selectedTask != nil || isComposingTask else {
+        guard canPresentWorkspaceCanvasItem(.markdown) else {
             if activeWorkspaceCanvasItem == .markdown {
                 animatePanelChange {
                     setActiveWorkspaceCanvasItem(nil, remember: true)
@@ -1226,7 +1413,7 @@ struct ContentView: View {
     }
 
     private func toggleQueryCanvas() {
-        guard hasQueryShelfAffordance else {
+        guard canPresentWorkspaceCanvasItem(.query) else {
             if activeWorkspaceCanvasItem == .query {
                 animatePanelChange {
                     setActiveWorkspaceCanvasItem(nil, remember: true)
@@ -1488,10 +1675,12 @@ struct ContentView: View {
         guard !selectedTaskPreferredHTMLPath.isEmpty else { return }
 
         let taskID = selectedTask?.id
+        let policy = currentBrowserSessionPolicy
         let session = browserSessionStore.session(
             for: taskID,
             pinnedToTask: isBrowserPinnedToTask,
-            enabledBrowserAdapters: enabledBrowserAdapterIDs(for: selectedTask)
+            enabledBrowserAdapters: policy.enabledBrowserAdapters,
+            githubReadOnlyMode: policy.githubReadOnlyMode
         )
         guard TaskGeneratedFiles.shouldLoadGeneratedHTMLOnUserOpen(
             currentBrowserURL: session.currentURL,
@@ -1525,15 +1714,106 @@ struct ContentView: View {
         AppLogger.audit(.shelfBrowserPreview, category: "Browser", taskID: taskID, fields: fields)
     }
 
+    @MainActor
+    private func refreshShelfAvailabilityPolicy() async {
+        let signature = shelfAvailabilityPolicyRefreshSignature
+        let workspace = effectiveWorkspace
+        let hasEnabledPacks = shelfAvailabilityPolicyWorkspaceHasEnabledPacks
+        let catalogSnapshot = hasEnabledPacks
+            ? await Task.detached { AstraPackCatalog().load() }.value
+            : nil
+        guard !Task.isCancelled, signature == shelfAvailabilityPolicyRefreshSignature else { return }
+        cachedShelfAvailabilityPolicy = AstraPackWorkspaceProfileProvider.shelfAvailabilityPolicy(
+            for: workspace,
+            catalogSnapshot: catalogSnapshot
+        )
+        cachedShelfAvailabilityPolicySignature = signature
+    }
+
+    private func refreshBrowserSessionPolicy(source: String) {
+        let signature = makeBrowserSessionPolicySignature()
+        let policy = browserSessionPolicyCache.policy(
+            for: signature,
+            source: makeBrowserSessionPolicySource(for: selectedTask)
+        )
+        cachedBrowserSessionPolicy = policy
+        cachedBrowserSessionPolicySignature = signature
+        syncBrowserPresentation()
+        AppLogger.audit(.shelfBrowserPreview, category: "Browser", taskID: selectedTask?.id, fields: [
+            "event": "browser_session_policy_refreshed",
+            "source": source,
+            "enabled_browser_adapters": policy.enabledBrowserAdapters.joined(separator: ","),
+            "github_read_only_mode": String(policy.githubReadOnlyMode)
+        ])
+    }
+
+    private func makeBrowserSessionPolicySignature() -> BrowserSessionPolicySignature {
+        makeBrowserSessionPolicySignature(for: selectedTask)
+    }
+
+    private func makeBrowserSessionPolicySignature(for task: AgentTask?) -> BrowserSessionPolicySignature {
+        BrowserSessionPolicySignature(
+            taskID: task?.id,
+            enabledCapabilityIDs: normalizedEnabledCapabilityIDs(for: task),
+            approvalRevision: CapabilityApprovalStore().revisionFingerprint(),
+            packageDefinitionFingerprint: CapabilityRuntimeResourceMatcher.packageDefinitionsFingerprint(),
+            taskEventRevision: BrowserSessionPolicyContext.taskEventRevision(for: task)
+        )
+    }
+
+    private func browserSessionPolicy(for task: AgentTask?) -> BrowserSessionPolicy {
+        browserSessionPolicyCache.policy(
+            for: makeBrowserSessionPolicySignature(for: task),
+            source: makeBrowserSessionPolicySource(for: task)
+        )
+    }
+
+    private func makeBrowserSessionPolicySource(for task: AgentTask?) -> BrowserSessionPolicySource {
+        guard let task else {
+            return BrowserSessionPolicySource(
+                packageDefinitions: { [] },
+                approvalRecords: { [] },
+                latestContextText: { "" },
+                environment: { .host }
+            )
+        }
+        return BrowserSessionPolicySource(
+            packageDefinitions: { CapabilityRuntimeResourceMatcher.packageDefinitions() },
+            approvalRecords: { CapabilityApprovalStore().records() },
+            latestContextText: { BrowserSessionPolicyContext.latestContextText(for: task) },
+            environment: { DockerExecutionPlanner.resolveEnvironment(for: task) },
+            enabledBrowserAdapters: { _, packages, approvalRecords in
+                TaskCapabilityResolver.enabledBrowserAdapters(
+                    for: task.workspace,
+                    packages: packages,
+                    approvalRecords: approvalRecords
+                )
+            },
+            githubReadOnlyMode: { environment, contextText in
+                HostControlPlaneMCPProjection.enabledToolNames(
+                    task: task,
+                    environment: environment,
+                    contextText: contextText
+                ).contains("github")
+            }
+        )
+    }
+
     private func openGeneratedFile(_ path: String) {
         let url = URL(fileURLWithPath: path)
         switch TaskGeneratedFiles.shelfDestination(for: path) {
         case .browser?:
+            guard canOpenGeneratedFileInShelf(.browser) else {
+                NSWorkspace.shared.open(url)
+                return
+            }
             let taskID = selectedTask?.id
+            let policy = currentBrowserSessionPolicy
             let session = browserSessionStore.session(
                 for: taskID,
                 pinnedToTask: isBrowserPinnedToTask,
-                enabledBrowserAdapters: enabledBrowserAdapterIDs(for: selectedTask)
+                enabledBrowserAdapters: policy.enabledBrowserAdapters,
+                githubReadOnlyMode: policy.githubReadOnlyMode
             )
             session.load(url, source: "generated_file")
             if let taskID {
@@ -1546,6 +1826,10 @@ struct ContentView: View {
             return
 
         case .files?:
+            guard canOpenGeneratedFileInShelf(.files) else {
+                NSWorkspace.shared.open(url)
+                return
+            }
             let taskID = selectedTask?.id
             selectedTaskPreferredMarkdownPath = path
             selectedTaskHasMarkdownShelfContent = true
@@ -1555,6 +1839,10 @@ struct ContentView: View {
             return
 
         case .query?:
+            guard canOpenGeneratedFileInShelf(.query) else {
+                NSWorkspace.shared.open(url)
+                return
+            }
             querySession.bindToTask(selectedTask?.id)
             selectedTaskPreferredQueryPath = path
             selectedTaskHasQueryShelfContent = true
@@ -1567,9 +1855,25 @@ struct ContentView: View {
         }
     }
 
+    private func canOpenGeneratedFileInShelf(_ destination: TaskGeneratedFileShelfDestination?) -> Bool {
+        TaskGeneratedFileOpenRouter.canOpenInShelf(
+            destination: destination,
+            policy: shelfAvailabilityPolicy,
+            context: shelfAvailabilityContext
+        )
+    }
+
     private func openWorkspaceFileInShelf(_ path: String) {
         let url = URL(fileURLWithPath: path).standardizedFileURL
         let taskID = selectedTask?.id
+        guard canOpenGeneratedFileInShelf(.files) else {
+            NSWorkspace.shared.open(url)
+            AppLogger.audit(.gitChangedFileOpenedInShelf, category: "Git", taskID: taskID, fields: [
+                "path": url.path,
+                "result": FileManager.default.fileExists(atPath: url.path) ? "opened_system" : "missing_system"
+            ], level: FileManager.default.fileExists(atPath: url.path) ? .info : .warning)
+            return
+        }
         selectedTaskPreferredMarkdownPath = url.path
         selectedTaskHasMarkdownShelfContent = true
         let session = markdownSessionStore.session(for: taskID, pinnedToTask: isMarkdownPinnedToTask)
@@ -1582,11 +1886,13 @@ struct ContentView: View {
     }
 
     private func syncBrowserPresentation() {
+        let policy = currentBrowserSessionPolicy
         browserSessionStore.setPresented(
             activeWorkspaceCanvasItem == .browser,
             taskID: selectedTask?.id,
             pinnedToTask: isBrowserPinnedToTask,
-            enabledBrowserAdapters: enabledBrowserAdapterIDs(for: selectedTask)
+            enabledBrowserAdapters: policy.enabledBrowserAdapters,
+            githubReadOnlyMode: policy.githubReadOnlyMode
         )
     }
 
@@ -1622,34 +1928,60 @@ struct ContentView: View {
         if pinnedToTask { refreshMarkdownShelfAvailabilityForSelectedTask() }
     }
 
+    private func selectWorkspaceFromSidebar(_ workspace: Workspace?) {
+        let wasComposingWorkspaceApp = isComposingWorkspaceApp
+        applySceneSelectionIntent {
+            sceneSelection.openWorkspace(workspace)
+        }
+        clearWorkspaceAppSurfaceSideEffects(wasComposing: wasComposingWorkspaceApp)
+    }
+
+    private func clearWorkspaceAppSurfaceSelection() {
+        let wasComposing = isComposingWorkspaceApp
+        sceneSelection.clearWorkspaceAppSurface()
+        clearWorkspaceAppSurfaceSideEffects(wasComposing: wasComposing)
+    }
+
+    private func clearWorkspaceAppSurfaceSideEffects(wasComposing: Bool) {
+        if wasComposing {
+            workspaceAppStudioSession.cancelGeneration()
+            pendingAppPreviewPolicyRestore = false
+        }
+        if activeWorkspaceCanvasItem == .appPreview {
+            setActiveWorkspaceCanvasItem(nil, remember: false)
+        }
+    }
+
     private func startComposingTask() {
+        let wasComposingWorkspaceApp = isComposingWorkspaceApp
         setSelectedTask(nil)
-        isComposingTask = true
+        sceneSelection.composeTask()
+        clearWorkspaceAppSurfaceSideEffects(wasComposing: wasComposingWorkspaceApp)
         presentRightRail(rememberShelfState: false)
     }
 
     private func handleQuickRunTask(_ task: AgentTask) {
         promoteDraftBrowserSessionIfNeeded(to: task)
         setSelectedTask(task)
-        isComposingTask = false
         runSingleTask(task)
     }
 
     private func handleTaskCreated(_ task: AgentTask) {
         promoteDraftBrowserSessionIfNeeded(to: task)
         setSelectedTask(task)
-        isComposingTask = false
         presentRightRail(rememberShelfState: false)
     }
 
     private func promoteDraftBrowserSessionIfNeeded(to task: AgentTask) {
         guard selectedTask == nil || isComposingTask else { return }
         let wasPresented = activeWorkspaceCanvasItem == .browser
+        let policy = currentBrowserSessionPolicy
         let promoted = browserSessionStore.promoteSharedSession(
             to: task.id,
             pinnedToTask: isBrowserPinnedToTask,
             isPresented: wasPresented,
-            enabledBrowserAdapters: enabledBrowserAdapterIDs(for: task)
+            enabledBrowserAdapters: policy.enabledBrowserAdapters,
+            githubReadOnlyMode: policy.githubReadOnlyMode
         )
         guard promoted else { return }
 
@@ -1662,27 +1994,36 @@ struct ContentView: View {
     }
 
     private func openPlanCanvas(_ task: AgentTask) {
-        if selectedTask?.id == task.id {
-            guard cachedHasCanvasContent else { return }
+        let previousTaskID = selectedTask?.id
+        let currentCachedHasPlanContent = cachedHasCanvasContent
+        let targetHasPlanContent: Bool
+        if previousTaskID == task.id {
+            targetHasPlanContent = currentCachedHasPlanContent
         } else {
-            guard TaskPlanService.reconstruct(for: task).plan != nil else { return }
+            targetHasPlanContent = TaskPlanService.reconstruct(for: task).plan != nil
         }
-        if selectedTask?.id == task.id, activeWorkspaceCanvasItem == .plan {
+        guard targetHasPlanContent else { return }
+
+        if previousTaskID == task.id, activeWorkspaceCanvasItem == .plan {
             animatePanelChange {
                 setActiveWorkspaceCanvasItem(nil, remember: true)
             }
             return
         }
-        if selectedTask?.id != task.id {
+        if previousTaskID != task.id {
             setSelectedTask(task)
+            cachedHasCanvasContent = WorkspacePlanCanvasPresentationTransition.cachedHasPlanContentAfterTargetValidation(
+                previousTaskID: previousTaskID,
+                targetTaskID: task.id,
+                currentCachedHasPlanContent: currentCachedHasPlanContent,
+                targetHasPlanContent: targetHasPlanContent
+            )
         }
-        isComposingTask = false
         presentCanvas(.plan)
     }
 
     private func openExistingTask(_ task: AgentTask) {
         setSelectedTask(task)
-        isComposingTask = false
     }
 
     private func handlePendingExternalRoute() {
@@ -1722,7 +2063,6 @@ struct ContentView: View {
     }
 
     private func moveTaskToDraft(_ task: AgentTask) {
-        isComposingTask = false
         setSelectedTask(nil)
         DispatchQueue.main.async {
             setSelectedTask(task)
@@ -1832,7 +2172,10 @@ struct ContentView: View {
         }
 
         do {
-            try modelContext.save()
+            try WorkspacePersistenceCoordinator.saveAndAutoExportOrThrow(
+                workspace: nil,
+                modelContext: modelContext
+            )
         } catch {
             AppLogger.audit(.appUpdateBlocked, category: "Updater", fields: [
                 "reason": "swiftdata_save_failed",
@@ -1918,15 +2261,16 @@ struct ContentView: View {
     }
 
     private func applyWorkspaceSelectionUpdate(_ update: ContentWorkspaceSelectionUpdate) {
-        if selectedWorkspace?.id != update.selectedWorkspace?.id {
-            selectedWorkspace = update.selectedWorkspace
+        let previousTaskID = selectedTask?.id
+        updateCanvasForTaskSelectionChange(previousTaskID: previousTaskID, nextTaskID: update.selectedTask?.id)
+        let sceneUpdate = sceneSelection.apply(update)
+        if previousTaskID != update.selectedTask?.id {
+            handleSelectedTaskIdentityChanged(to: update.selectedTask)
         }
-        if selectedTask?.id != update.selectedTask?.id {
-            setSelectedTask(update.selectedTask)
-        } else {
-            selectedTask = update.selectedTask
+        markTaskRead(update.selectedTask)
+        if sceneUpdate.clearedWorkspaceAppSurface {
+            clearWorkspaceAppSurfaceSideEffects(wasComposing: sceneUpdate.cancelledWorkspaceAppComposer)
         }
-        isComposingTask = update.isComposingTask
         if update.shouldPresentRightRail {
             presentRightRail(
                 rememberShelfState: update.shouldRememberShelfStateWhenPresentingRightRail
@@ -1934,41 +2278,65 @@ struct ContentView: View {
         }
     }
 
+    private func applySceneSelectionIntent(_ intent: () -> Void) {
+        let previousTaskID = selectedTask?.id
+        let isComposingTaskForTransition = isComposingTask
+        intent()
+        guard previousTaskID != selectedTask?.id else { return }
+        updateCanvasForTaskSelectionChange(
+            previousTaskID: previousTaskID,
+            nextTaskID: selectedTask?.id,
+            isComposingTaskForTransition: isComposingTaskForTransition
+        )
+        handleSelectedTaskIdentityChanged(to: selectedTask)
+        markTaskRead(selectedTask)
+    }
+
     // MARK: - Task Actions
 
     private func setSelectedTask(_ task: AgentTask?) {
         let previousTaskID = selectedTask?.id
+        updateCanvasForTaskSelectionChange(previousTaskID: previousTaskID, nextTaskID: task?.id)
+        let wasComposingWorkspaceApp = isComposingWorkspaceApp
+        sceneSelection.openTask(task)
+        clearWorkspaceAppSurfaceSideEffects(wasComposing: wasComposingWorkspaceApp)
         if previousTaskID != task?.id {
-            let nextCanvasItem = WorkspaceCanvasItemSelectionTransition.itemAfterTaskSelectionChange(
-                currentItem: activeWorkspaceCanvasItem,
-                previousTaskID: previousTaskID,
-                nextTaskID: task?.id,
-                isComposingTask: isComposingTask
-            )
-            if nextCanvasItem != activeWorkspaceCanvasItem {
-                setActiveWorkspaceCanvasItem(nextCanvasItem, remember: false)
-            }
-        }
-        if let taskWorkspace = task?.workspace,
-           selectedWorkspace?.id != taskWorkspace.id {
-            selectedWorkspace = taskWorkspace
-        }
-        selectedTask = task
-        if previousTaskID != task?.id {
-            clearGeneratedHTMLDiscoveryState()
-            currentBrowserSession.bindToTask(task?.id)
-            currentMarkdownSession.bindToTask(task?.id)
-            querySession.bindToTask(task?.id)
-            syncBrowserPresentation()
-            refreshMarkdownShelfAvailabilityForSelectedTask()
-            refreshQueryShelfAvailabilityForSelectedTask()
-            refreshGeneratedHTMLAvailabilityForSelectedTask()
-            restoreRememberedWorkspaceCanvasItemIfAvailable()
-        }
-        if task != nil {
-            isComposingTask = false
+            handleSelectedTaskIdentityChanged(to: task)
         }
         markTaskRead(task)
+    }
+
+    private func updateCanvasForTaskSelectionChange(
+        previousTaskID: UUID?,
+        nextTaskID: UUID?,
+        isComposingTaskForTransition: Bool? = nil
+    ) {
+        guard previousTaskID != nextTaskID else { return }
+        let nextCanvasItem = WorkspaceCanvasItemSelectionTransition.itemAfterTaskSelectionChange(
+            currentItem: activeWorkspaceCanvasItem,
+            previousTaskID: previousTaskID,
+            nextTaskID: nextTaskID,
+            isComposingTask: isComposingTaskForTransition ?? isComposingTask
+        )
+        if nextCanvasItem != activeWorkspaceCanvasItem {
+            setActiveWorkspaceCanvasItem(nextCanvasItem, remember: false)
+        }
+    }
+
+    private func handleSelectedTaskIdentityChanged(to task: AgentTask?) {
+        clearGeneratedHTMLDiscoveryState()
+        bindTaskScopedSessions(to: task?.id)
+        syncBrowserPresentation()
+        refreshMarkdownShelfAvailabilityForSelectedTask()
+        refreshQueryShelfAvailabilityForSelectedTask()
+        refreshGeneratedHTMLAvailabilityForSelectedTask()
+        restoreRememberedWorkspaceCanvasItemIfAvailable()
+    }
+
+    private func bindTaskScopedSessions(to taskID: UUID?) {
+        currentBrowserSession.bindToTask(taskID)
+        currentMarkdownSession.bindToTask(taskID)
+        querySession.bindToTask(taskID)
     }
 
     private func markSelectedTaskReadIfNeeded() {
@@ -1979,14 +2347,16 @@ struct ContentView: View {
         guard let task, task.unreadAt != nil else { return }
         task.markRead()
         do {
-            try modelContext.save()
+            try WorkspacePersistenceCoordinator.saveAndAutoExportOrThrow(
+                workspace: task.workspace,
+                modelContext: modelContext
+            )
         } catch {
             AppLogger.audit(.taskFailed, category: "UI", taskID: task.id, fields: [
                 "operation": "mark_task_read",
                 "error_type": String(describing: type(of: error))
             ], level: .error)
         }
-        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
     }
 
     private func runQueue() {
@@ -2102,12 +2472,23 @@ struct ContentView: View {
         if selectedTask != nil, taskWorkspaceID != selectedWorkspaceID {
             setSelectedTask(nil)
         }
+        // Switching away from an app surface exits App Studio/detail. Workspace
+        // changes caused by app/app-studio intents are already bound to the new
+        // workspace and must not clear themselves via this observer.
+        if sceneSelection.shouldClearWorkspaceAppSurfaceAfterWorkspaceChange {
+            clearWorkspaceAppSurfaceSelection()
+        }
         if isUITestingSeededLaunch {
             setSelectedTask(nil)
-            isComposingTask = selectedWorkspace != nil
-        } else {
-            isComposingTask = false
+            if selectedWorkspace != nil {
+                sceneSelection.composeTask()
+            } else {
+                sceneSelection.openWorkspace(nil)
+            }
+        } else if isComposingTask {
+            sceneSelection.openWorkspace(selectedWorkspace)
         }
+        invalidateActiveWorkspaceCanvasItemIfUnavailable(remember: false)
         persistWorkspaceSelection()
     }
 
@@ -2191,7 +2572,7 @@ struct ContentView: View {
         guard isUITestingSeededLaunch, selectedWorkspace != nil else { return }
 
         setSelectedTask(nil)
-        isComposingTask = true
+        sceneSelection.composeTask()
     }
 
     private func seedTestDataIfNeeded() {
@@ -2213,7 +2594,7 @@ struct ContentView: View {
         guard (try? modelContext.fetchCount(descriptor)) == 0 else {
             let wsDescriptor = FetchDescriptor<Workspace>()
             if let existing = try? modelContext.fetch(wsDescriptor).first {
-                selectedWorkspace = existing
+                sceneSelection.openWorkspace(existing)
                 enterUITestComposerIfNeeded()
             }
             return
@@ -2232,7 +2613,7 @@ struct ContentView: View {
 
         let ws = Workspace(name: "Test Workspace", primaryPath: testPath)
         modelContext.insert(ws)
-        selectedWorkspace = ws
+        sceneSelection.openWorkspace(ws)
         enterUITestComposerIfNeeded()
 
         if args.contains("--uitesting-seed") {
@@ -2245,10 +2626,10 @@ struct ContentView: View {
                 model: RuntimeModelAvailability.defaultModel(for: runtime),
                 runtime: runtime
             )
-            task.status = .queued
+            TaskStateMachine.enqueueFromUITestSeed(task, modelContext: modelContext)
             modelContext.insert(task)
         }
-        try? modelContext.save()
+        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: ws, modelContext: modelContext)
     }
 
     private func applySettings() {
@@ -2322,342 +2703,6 @@ struct ContentView: View {
     }
 }
 
-private struct WorkspaceTopRightActions: Equatable {
-    let hasWorkspace: Bool
-    let canShowPlanShelf: Bool
-    let canShowTextShelf: Bool
-    let canShowBrowserShelf: Bool
-    let canShowQueryShelf: Bool
-    let activeCanvasItem: WorkspaceCanvasItem?
-    let browserEngine: ShelfBrowserEngine
-    let isRightRailVisible: Bool
-
-    var isPlanShelfVisible: Bool { activeCanvasItem == .plan }
-    var isTextShelfVisible: Bool { activeCanvasItem == .markdown }
-    var isBrowserShelfVisible: Bool { activeCanvasItem == .browser }
-    var isQueryShelfVisible: Bool { activeCanvasItem == .query }
-
-    var hasShelfControls: Bool {
-        canShowPlanShelf || canShowTextShelf || canShowQueryShelf || canShowBrowserShelf
-    }
-}
-
-private struct WorkspaceTopRightToolbar: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    let actions: WorkspaceTopRightActions
-    let onToggleBrowser: () -> Void
-    let onOpenBrowserEngine: (ShelfBrowserEngine) -> Void
-    let onTogglePlan: () -> Void
-    let onToggleText: () -> Void
-    let onToggleQuery: () -> Void
-    let onToggleControlPanel: () -> Void
-
-    @State private var browserMenuAnchor: NSView?
-
-    var body: some View {
-        HStack(spacing: 18) {
-            AstraToolbarCommandCluster {
-                shelfControls
-            }
-            .background(alignment: .leading) {
-                shelfActiveIndicator
-            }
-            .frame(width: shelfClusterWidth, alignment: .trailing)
-            .clipped()
-            .allowsHitTesting(actions.hasShelfControls)
-            .accessibilityHidden(!actions.hasShelfControls)
-            .animation(commandAnimation, value: shelfClusterWidth)
-            .animation(commandAnimation, value: activeShelfIndicator?.key)
-            .fixedSize(horizontal: true, vertical: false)
-            .accessibilityElement(children: .contain)
-            .accessibilityLabel("Shelf controls")
-
-            AstraToolbarContextCommandCluster {
-                toolbarButton(
-                    title: actions.isRightRailVisible ? "Hide Workspace Context" : "Show Workspace Context",
-                    systemImage: "sidebar.right",
-                    isActive: actions.isRightRailVisible,
-                    action: onToggleControlPanel
-                )
-                // Restores the Cmd-Opt-I shortcut that SwiftUI's built-in
-                // `.inspector(isPresented:)` modifier used to provide; we
-                // dropped that modifier when moving to a custom HStack column.
-                .keyboardShortcut("i", modifiers: [.command, .option])
-                .help(actions.isRightRailVisible ? "Hide Workspace Context (⌥⌘I)" : "Show Workspace Context (⌥⌘I)")
-                .accessibilityIdentifier("ControlPanelToolbarButton")
-            }
-            .fixedSize(horizontal: true, vertical: false)
-            .accessibilityElement(children: .contain)
-            .accessibilityLabel("Workspace Context")
-        }
-        .fixedSize(horizontal: true, vertical: false)
-    }
-
-    @ViewBuilder
-    private var shelfControls: some View {
-        if actions.canShowPlanShelf {
-            shelfToolbarButton(
-                title: actions.isPlanShelfVisible ? "Hide Plan Shelf" : "Show Plan Shelf",
-                label: "Plan",
-                systemImage: "list.bullet.clipboard",
-                isActive: actions.isPlanShelfVisible,
-                action: onTogglePlan
-            )
-            .accessibilityLabel("Plan shelf")
-        }
-
-        if actions.canShowTextShelf {
-            shelfToolbarButton(
-                title: actions.isTextShelfVisible ? "Hide Files Shelf" : "Show Files Shelf",
-                label: "Files",
-                systemImage: "folder",
-                isActive: actions.isTextShelfVisible,
-                action: onToggleText
-            )
-            .accessibilityLabel("Files shelf")
-        }
-
-        if actions.canShowQueryShelf {
-            shelfToolbarButton(
-                title: actions.isQueryShelfVisible ? "Hide Query Shelf" : "Show Query Shelf",
-                label: "Query",
-                systemImage: "cylinder.split.1x2",
-                isActive: actions.isQueryShelfVisible,
-                action: onToggleQuery
-            )
-            .accessibilityLabel("Query shelf")
-        }
-
-        if actions.canShowBrowserShelf {
-            browserMenuButton
-                .accessibilityLabel("Browser shelf")
-        }
-    }
-
-    private var browserMenuButton: some View {
-        Button {
-            presentBrowserMenu()
-        } label: {
-            AstraToolbarCommandLabel(
-                systemImage: "globe",
-                text: "Browser",
-                isActive: actions.isBrowserShelfVisible,
-                showsMenuIndicator: true,
-                showsActiveBackground: false
-            )
-        }
-        .buttonStyle(.plain)
-        .fixedSize(horizontal: true, vertical: false)
-        .background {
-            ToolbarMenuAnchorView(anchor: $browserMenuAnchor)
-        }
-        .help("Open Browser Shelf")
-        .accessibilityLabel("Browser shelf mode")
-    }
-
-    private func presentBrowserMenu() {
-        let menu = NSMenu()
-        menu.autoenablesItems = false
-        menu.addItem(
-            ToolbarClosureMenuItem(
-                title: "Open Embedded Browser",
-                systemSymbolName: actions.browserEngine == .embedded ? "checkmark" : "globe"
-            ) {
-                onOpenBrowserEngine(.embedded)
-            }
-        )
-        menu.addItem(
-            ToolbarClosureMenuItem(
-                title: "Open Controlled Browser",
-                systemSymbolName: actions.browserEngine == .controlled ? "checkmark" : "macwindow"
-            ) {
-                onOpenBrowserEngine(.controlled)
-            }
-        )
-
-        if actions.isBrowserShelfVisible {
-            menu.addItem(.separator())
-            menu.addItem(
-                ToolbarClosureMenuItem(
-                    title: "Hide Browser Shelf",
-                    systemSymbolName: "xmark"
-                ) {
-                    onToggleBrowser()
-                }
-            )
-        }
-
-        if let browserMenuAnchor {
-            menu.popUp(
-                positioning: nil,
-                at: NSPoint(x: 0, y: browserMenuAnchor.bounds.minY - 4),
-                in: browserMenuAnchor
-            )
-        } else if let event = NSApp.currentEvent, let view = event.window?.contentView {
-            NSMenu.popUpContextMenu(menu, with: event, for: view)
-        }
-    }
-
-    private var shelfClusterWidth: CGFloat {
-        guard !shelfControlWidths.isEmpty else { return 0 }
-        return shelfControlWidths.reduce(0, +)
-            + (CGFloat(shelfControlWidths.count - 1) * AstraToolbarCommandMetrics.clusterSpacing)
-            + (AstraToolbarCommandMetrics.clusterHorizontalPadding * 2)
-    }
-
-    private var shelfControlWidths: [CGFloat] {
-        var widths: [CGFloat] = []
-        if actions.canShowPlanShelf { widths.append(AstraToolbarCommandMetrics.labeledControlMinWidth) }
-        if actions.canShowTextShelf { widths.append(AstraToolbarCommandMetrics.labeledControlMinWidth) }
-        if actions.canShowQueryShelf { widths.append(AstraToolbarCommandMetrics.labeledControlMinWidth) }
-        if actions.canShowBrowserShelf { widths.append(AstraToolbarCommandMetrics.labeledMenuControlMinWidth) }
-        return widths
-    }
-
-    private var commandAnimation: Animation? {
-        AstraMotion.toolbarCommand(reduceMotion: reduceMotion)
-    }
-
-    @ViewBuilder
-    private var shelfActiveIndicator: some View {
-        if let activeShelfIndicator {
-            Capsule()
-                .fill(Stanford.lagunita.opacity(AstraToolbarCommandMetrics.activeFillOpacity))
-                .frame(
-                    width: activeShelfIndicator.width,
-                    height: AstraToolbarCommandMetrics.controlHeight
-                )
-                .offset(x: activeShelfIndicator.offset)
-        }
-    }
-
-    private var activeShelfIndicator: ShelfActiveIndicator? {
-        var offset = AstraToolbarCommandMetrics.clusterHorizontalPadding
-
-        if actions.canShowPlanShelf {
-            if actions.isPlanShelfVisible {
-                return ShelfActiveIndicator(key: "plan", offset: offset, width: AstraToolbarCommandMetrics.labeledControlMinWidth)
-            }
-            offset += AstraToolbarCommandMetrics.labeledControlMinWidth + AstraToolbarCommandMetrics.clusterSpacing
-        }
-
-        if actions.canShowTextShelf {
-            if actions.isTextShelfVisible {
-                return ShelfActiveIndicator(key: "files", offset: offset, width: AstraToolbarCommandMetrics.labeledControlMinWidth)
-            }
-            offset += AstraToolbarCommandMetrics.labeledControlMinWidth + AstraToolbarCommandMetrics.clusterSpacing
-        }
-
-        if actions.canShowQueryShelf {
-            if actions.isQueryShelfVisible {
-                return ShelfActiveIndicator(key: "query", offset: offset, width: AstraToolbarCommandMetrics.labeledControlMinWidth)
-            }
-            offset += AstraToolbarCommandMetrics.labeledControlMinWidth + AstraToolbarCommandMetrics.clusterSpacing
-        }
-
-        if actions.canShowBrowserShelf, actions.isBrowserShelfVisible {
-            return ShelfActiveIndicator(key: "browser", offset: offset, width: AstraToolbarCommandMetrics.labeledMenuControlMinWidth)
-        }
-
-        return nil
-    }
-
-    private func shelfToolbarButton(
-        title: String,
-        label: String,
-        systemImage: String,
-        isActive: Bool,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button(action: action) {
-            AstraToolbarCommandLabel(
-                systemImage: systemImage,
-                text: label,
-                isActive: isActive,
-                showsActiveBackground: false
-            )
-        }
-        .buttonStyle(.plain)
-        .help(title)
-        .accessibilityLabel(title)
-    }
-
-    private func toolbarButton(
-        title: String,
-        label: String? = nil,
-        systemImage: String,
-        isActive: Bool,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button(action: action) {
-            if let label {
-                AstraToolbarCommandLabel(systemImage: systemImage, text: label, isActive: isActive)
-            } else {
-                AstraToolbarCommandIcon(systemImage: systemImage, isActive: isActive)
-            }
-        }
-        .buttonStyle(.plain)
-        .help(title)
-        .accessibilityLabel(title)
-    }
-}
-
-private struct ShelfActiveIndicator: Equatable {
-    let key: String
-    let offset: CGFloat
-    let width: CGFloat
-}
-
-private struct ToolbarMenuAnchorView: NSViewRepresentable {
-    @Binding var anchor: NSView?
-
-    func makeNSView(context: Context) -> NSView {
-        let view = ToolbarMenuAnchorNSView()
-        resolve(view)
-        return view
-    }
-
-    func updateNSView(_ nsView: NSView, context: Context) {
-        resolve(nsView)
-    }
-
-    private func resolve(_ nsView: NSView) {
-        guard anchor == nil || anchor !== nsView else { return }
-        DispatchQueue.main.async {
-            if anchor == nil || anchor !== nsView {
-                anchor = nsView
-            }
-        }
-    }
-}
-
-private final class ToolbarMenuAnchorNSView: NSView {
-    override func hitTest(_ point: NSPoint) -> NSView? {
-        nil
-    }
-}
-
-private final class ToolbarClosureMenuItem: NSMenuItem {
-    private let handler: () -> Void
-
-    init(title: String, systemSymbolName: String, handler: @escaping () -> Void) {
-        self.handler = handler
-        super.init(title: title, action: #selector(performMenuAction), keyEquivalent: "")
-        target = self
-        image = NSImage(systemSymbolName: systemSymbolName, accessibilityDescription: nil)
-    }
-
-    @available(*, unavailable)
-    required init(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
-
-    @objc private func performMenuAction() {
-        handler()
-    }
-}
-
 private struct ContentToolbar: ToolbarContent {
     @ObservedObject var appUpdateController: AppUpdateController
 
@@ -2696,6 +2741,7 @@ private struct ContentDetailAreaView: View {
     @AppStorage(AppStorageKeys.browserShelfWidth) private var browserShelfStoredWidth = Double(WorkspaceCanvasItem.browser.idealWidth)
     @AppStorage(AppStorageKeys.markdownShelfWidth) private var markdownShelfStoredWidth = Double(WorkspaceCanvasItem.markdown.idealWidth)
     @AppStorage(AppStorageKeys.queryShelfWidth) private var queryShelfStoredWidth = Double(WorkspaceCanvasItem.query.idealWidth)
+    @AppStorage(AppStorageKeys.appPreviewShelfWidth) private var appPreviewShelfStoredWidth = Double(WorkspaceCanvasItem.appPreview.idealWidth)
     @AppStorage(AppStorageKeys.rightRailWidth) private var rightRailStoredWidth = 0.0
     @State private var shelfDragStartWidth: CGFloat?
     @State private var shelfTransientWidth: CGFloat?
@@ -2719,6 +2765,7 @@ private struct ContentDetailAreaView: View {
     let onMoveToDraft: (AgentTask) -> Void
     let onForkTask: (AgentTask) -> Void
     let onCreateTask: () -> Void
+    var onOpenWorkspaceApp: ((WorkspaceApp) -> Void)?
     let onOpenTask: (AgentTask) -> Void
     let onDeleteTask: (AgentTask) -> Void
     let onSetDoneState: (AgentTask, Bool) -> Void
@@ -2735,7 +2782,15 @@ private struct ContentDetailAreaView: View {
     let onCreateWorkspace: () -> Void
     let onImportWorkspace: () -> Void
     let onOpenGeneratedFile: (String) -> Void
+    let canOpenGeneratedFileInShelf: (TaskGeneratedFileShelfDestination?) -> Bool
     let onOpenWorkspaceFile: (String) -> Void
+    let isComposingWorkspaceApp: Bool
+    @ObservedObject var studioSession: WorkspaceAppStudioSession
+    let onStartWorkspaceAppStudio: (String?) -> Void
+    let onStartMCPInstallReview: (MCPInstallChatRequest) -> Void
+    let onPublishApp: (_ seedSampleData: Bool) -> Void
+    let onDraftChanged: () -> Void
+    let onCancelStudio: () -> Void
 
     private static let contentMinWidth: CGFloat = 480
 
@@ -2985,6 +3040,8 @@ private struct ContentDetailAreaView: View {
             storedWidth = CGFloat(browserShelfStoredWidth)
         case .query:
             storedWidth = CGFloat(queryShelfStoredWidth)
+        case .appPreview:
+            storedWidth = CGFloat(appPreviewShelfStoredWidth)
         }
         return clampedShelfWidth(storedWidth, for: item, availableWidth: availableWidth)
     }
@@ -3020,6 +3077,8 @@ private struct ContentDetailAreaView: View {
             browserShelfStoredWidth = Double(clampedWidth)
         case .query:
             queryShelfStoredWidth = Double(clampedWidth)
+        case .appPreview:
+            appPreviewShelfStoredWidth = Double(clampedWidth)
         }
     }
 
@@ -3087,6 +3146,7 @@ private struct ContentDetailAreaView: View {
             onMoveToDraft: onMoveToDraft,
             onForkTask: onForkTask,
             onCreateTask: onCreateTask,
+            onOpenWorkspaceApp: onOpenWorkspaceApp,
             onOpenTask: onOpenTask,
             onDeleteTask: onDeleteTask,
             onSetDoneState: onSetDoneState,
@@ -3097,7 +3157,15 @@ private struct ContentDetailAreaView: View {
             onManageCapabilities: onManageCapabilities,
             onCreateWorkspace: onCreateWorkspace,
             onImportWorkspace: onImportWorkspace,
-            onOpenGeneratedFile: onOpenGeneratedFile
+            onOpenGeneratedFile: onOpenGeneratedFile,
+            canOpenGeneratedFileInShelf: canOpenGeneratedFileInShelf,
+            isComposingWorkspaceApp: isComposingWorkspaceApp,
+            studioSession: studioSession,
+            onStartWorkspaceAppStudio: onStartWorkspaceAppStudio,
+            onStartMCPInstallReview: onStartMCPInstallReview,
+            onPublishApp: onPublishApp,
+            onDraftChanged: onDraftChanged,
+            onCancelStudio: onCancelStudio
         )
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -3132,6 +3200,11 @@ private struct ContentDetailAreaView: View {
                 task: selectedTask,
                 utilityRuntime: queryUtilityRuntime,
                 isPresented: canvasPresentedBinding(for: .query)
+            )
+        case .appPreview:
+            ShelfWorkspaceAppPreviewView(
+                session: studioSession,
+                workspace: effectiveWorkspace
             )
         }
     }
@@ -3171,6 +3244,7 @@ private struct ContentDetailContentView: View {
     let onMoveToDraft: (AgentTask) -> Void
     let onForkTask: (AgentTask) -> Void
     let onCreateTask: () -> Void
+    var onOpenWorkspaceApp: ((WorkspaceApp) -> Void)?
     let onOpenTask: (AgentTask) -> Void
     let onDeleteTask: (AgentTask) -> Void
     let onSetDoneState: (AgentTask, Bool) -> Void
@@ -3182,12 +3256,21 @@ private struct ContentDetailContentView: View {
     let onCreateWorkspace: () -> Void
     let onImportWorkspace: () -> Void
     let onOpenGeneratedFile: (String) -> Void
+    let canOpenGeneratedFileInShelf: (TaskGeneratedFileShelfDestination?) -> Bool
+    let isComposingWorkspaceApp: Bool
+    @ObservedObject var studioSession: WorkspaceAppStudioSession
+    let onStartWorkspaceAppStudio: (String?) -> Void
+    let onStartMCPInstallReview: (MCPInstallChatRequest) -> Void
+    let onPublishApp: (_ seedSampleData: Bool) -> Void
+    let onDraftChanged: () -> Void
+    let onCancelStudio: () -> Void
 
     var body: some View {
         switch ContentDetailPresentation.resolve(
             selectedTask: selectedTask,
             effectiveWorkspace: effectiveWorkspace,
-            isComposingTask: isComposingTask
+            isComposingTask: isComposingTask,
+            isComposingWorkspaceApp: isComposingWorkspaceApp
         ) {
         case .draftTask:
             if let task = selectedTask {
@@ -3201,7 +3284,9 @@ private struct ContentDetailContentView: View {
                     onAddSSHConnection: onAddSSHConnection,
                     onManageSkills: onManageSkills,
                     isPlanCanvasVisible: isPlanCanvasVisible,
-                    onOpenPlan: onOpenPlan
+                    onOpenPlan: onOpenPlan,
+                    onStartWorkspaceAppStudio: onStartWorkspaceAppStudio,
+                    onStartMCPInstallReview: onStartMCPInstallReview
                 )
                 .id(task.id)
             }
@@ -3222,7 +3307,9 @@ private struct ContentDetailContentView: View {
                     onMoveToDraft: onMoveToDraft,
                     onManageSkills: onManageSkills,
                     onForkTask: onForkTask,
-                    onOpenGeneratedFile: onOpenGeneratedFile
+                    onOpenGeneratedFile: onOpenGeneratedFile,
+                    canOpenGeneratedFileInShelf: canOpenGeneratedFileInShelf,
+                    onStartMCPInstallReview: onStartMCPInstallReview
                 )
                 .id(task.id)
             }
@@ -3236,7 +3323,9 @@ private struct ContentDetailContentView: View {
                 onAddSSHConnection: onAddSSHConnection,
                 onManageSkills: onManageSkills,
                 isPlanCanvasVisible: isPlanCanvasVisible,
-                onOpenPlan: onOpenPlan
+                onOpenPlan: onOpenPlan,
+                onStartWorkspaceAppStudio: onStartWorkspaceAppStudio,
+                onStartMCPInstallReview: onStartMCPInstallReview
             )
         case .workspaceHome:
             if let workspace = effectiveWorkspace {
@@ -3251,7 +3340,21 @@ private struct ContentDetailContentView: View {
                     onConfigure: onConfigure,
                     onNewSchedule: onNewSchedule,
                     onEditSchedule: onEditSchedule,
-                    onManageCapabilities: onManageCapabilities
+                    onManageCapabilities: onManageCapabilities,
+                    onOpenWorkspaceApp: onOpenWorkspaceApp
+                )
+            }
+        case .workspaceApp:
+            EmptyView()
+        case .workspaceAppStudio:
+            if let workspace = effectiveWorkspace {
+                WorkspaceAppStudioChatView(
+                    session: studioSession,
+                    workspace: workspace,
+                    enabledPackIDs: WorkspaceAppStudioTemplatePackLoadingSource(workspace: workspace).enabledPackIDs,
+                    onPublish: onPublishApp,
+                    onDraftChanged: onDraftChanged,
+                    onCancel: onCancelStudio
                 )
             }
         case .noWorkspace:
@@ -3888,18 +3991,7 @@ struct WorkspaceSetupForm: View {
     }
 
     private func capabilityOutcomeSubtitle(for option: OnboardingCapabilityOption) -> String {
-        switch option.packageID {
-        case OnboardingCapabilitySetup.jiraPackageID:
-            return "Create, update, and summarize Jira tickets"
-        case OnboardingCapabilitySetup.githubPackageID:
-            return "Review PRs, issues, and CI"
-        case OnboardingCapabilitySetup.gcloudPackageID:
-            return "Query BigQuery and work with GCP resources"
-        case OnboardingCapabilitySetup.redcapPackageID:
-            return "Talk to REDCap projects and metadata"
-        default:
-            return option.subtitle
-        }
+        OnboardingCapabilitySetup.outcomeSubtitle(for: option)
     }
 
     private func capabilityReadyMessage(for packageID: String) -> String {
@@ -4636,56 +4728,6 @@ struct WorkspaceSetupForm: View {
     }
 }
 
-private struct WorkspaceEmptyStateView: View {
-    let onCreateWorkspace: () -> Void
-    let onImportWorkspace: () -> Void
-
-    var body: some View {
-        VStack(spacing: 24) {
-            Image(systemName: "folder.badge.plus")
-                .font(Stanford.ui(48))
-                .foregroundStyle(Stanford.cardinalRed)
-
-            VStack(spacing: 8) {
-                Text("Pick a Workspace")
-                    .font(Stanford.heading(24))
-                    .foregroundStyle(Stanford.black)
-
-                Text("Tasks always belong to a workspace. Create a new one or import an existing folder — ASTRA will reopen it automatically next time.")
-                    .font(Stanford.body(15))
-                    .foregroundStyle(Stanford.coolGrey)
-                    .multilineTextAlignment(.center)
-                    .frame(maxWidth: 460)
-            }
-
-            HStack(spacing: 12) {
-                Button {
-                    onCreateWorkspace()
-                } label: {
-                    Label("New Workspace", systemImage: "plus")
-                }
-                .buttonStyle(StanfordButtonStyle())
-                .accessibilityIdentifier("OnboardingNewWorkspaceButton")
-
-                Button {
-                    onImportWorkspace()
-                } label: {
-                    Label("Import Workspace", systemImage: "square.and.arrow.down")
-                }
-                .buttonStyle(StanfordButtonStyle(isPrimary: false))
-
-                SettingsLink {
-                    Label("Settings", systemImage: "gear")
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding(24)
-        .background(Stanford.panelBackground)
-    }
-}
-
 private struct LinkedScheduleWarning: Identifiable {
     enum Action {
         case markDone
@@ -4719,111 +4761,4 @@ private struct LinkedScheduleWarning: Identifiable {
         let names = schedules.map(\.name).joined(separator: ", ")
         return "This task is the same-thread conversation source for active routines: \(names). Continuing will pause those routines first so future runs do not lose their thread."
     }
-}
-
-// Resize handle for the canvas shelf (Plan / Browser).
-//
-// The hit area is a 14pt-wide invisible rectangle straddling the panel's leading edge
-// (offset -7) so the cursor changes a few pixels before and after the visible boundary —
-// this is what makes the divider feel "sticky." On hover and during drag we paint a
-// thin lagunita line at the boundary so the user has a clear visual to lock onto.
-//
-// Cursor management uses AppKit's window-level cursor rect (addCursorRect via
-// CursorRectView) instead of NSCursor.push/pop on hover. push/pop is fragile during
-// SwiftUI gestures because the hover state ends when the drag begins, popping the
-// cursor mid-drag. A registered cursor rect keeps the resize cursor for the entire
-// time the pointer is over the area, including throughout drags.
-private struct ShelfResizeHandle: View {
-    let isResizing: Bool
-    let helpText: String
-    let onChanged: (CGSize) -> Void
-    let onEnded: () -> Void
-
-    @State private var isHovered = false
-
-    var body: some View {
-        ZStack(alignment: .leading) {
-            // Visible divider accent — hidden at rest, lagunita on hover, brighter while dragging.
-            Rectangle()
-                .fill(Stanford.lagunita.opacity(indicatorOpacity))
-                .frame(width: 2)
-                .offset(x: 6) // center the 2pt bar on the canvas's leading edge
-                .allowsHitTesting(false)
-
-            // Invisible hit target.
-            //
-            // coordinateSpace: .global is critical. With the default .local space, translation
-            // is measured against the handle's own coord space — but the handle is anchored to
-            // the canvas's leading edge, which moves as the panel resizes. That creates a
-            // feedback loop: panel grows → handle moves with it → translation collapses back
-            // to 0 → panel shrinks → translation reappears → panel grows… visible as a
-            // side-to-side shake. Measuring translation against the screen breaks the loop.
-            Rectangle()
-                .fill(Color.clear)
-                .frame(width: 14)
-                .contentShape(Rectangle())
-                .background(CursorRectView(cursor: .resizeLeftRight))
-                .gesture(
-                    DragGesture(minimumDistance: 0, coordinateSpace: .global)
-                        .onChanged { value in onChanged(value.translation) }
-                        .onEnded { _ in onEnded() }
-                )
-        }
-        .frame(maxHeight: .infinity)
-        .offset(x: -7) // straddle the boundary: 7pt outside panel, 7pt inside
-        .onContinuousHover { phase in
-            switch phase {
-            case .active: isHovered = true
-            case .ended: isHovered = false
-            }
-        }
-        .animation(.easeOut(duration: 0.12), value: isHovered)
-        .animation(.easeOut(duration: 0.12), value: isResizing)
-        .help(helpText)
-    }
-
-    private var indicatorOpacity: Double {
-        if isResizing { return 0.55 }
-        if isHovered { return 0.30 }
-        return 0
-    }
-}
-
-// AppKit-backed cursor rect — survives SwiftUI drags. Unlike NSCursor.push/pop on
-// SwiftUI's onHover (which ends the moment a drag begins), addCursorRect registers
-// the cursor at the window level so macOS keeps showing it for as long as the
-// pointer is in the rect, regardless of what gesture is active.
-private struct CursorRectView: NSViewRepresentable {
-    let cursor: NSCursor
-
-    func makeNSView(context: Context) -> NSView {
-        CursorRectNSView(cursor: cursor)
-    }
-
-    func updateNSView(_ nsView: NSView, context: Context) {
-        guard let view = nsView as? CursorRectNSView else { return }
-        if view.cursor !== cursor {
-            view.cursor = cursor
-            view.window?.invalidateCursorRects(for: view)
-        }
-    }
-}
-
-private final class CursorRectNSView: NSView {
-    var cursor: NSCursor
-
-    init(cursor: NSCursor) {
-        self.cursor = cursor
-        super.init(frame: .zero)
-    }
-
-    @available(*, unavailable)
-    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-
-    override func resetCursorRects() {
-        addCursorRect(bounds, cursor: cursor)
-    }
-
-    // Don't intercept mouse events — the SwiftUI DragGesture above handles them.
-    override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }

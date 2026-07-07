@@ -1,6 +1,8 @@
 import Foundation
 import SwiftData
 import Testing
+import ASTRAModels
+import ASTRAPersistence
 @testable import ASTRA
 import ASTRACore
 
@@ -289,7 +291,7 @@ extension HeadlessChatScenarioTests {
             model: "gpt-5",
             tokenBudget: 200_000
         )
-        let queue = TaskQueue(poolSize: 1)
+        let queue = TaskQueue.scenarioQueue(poolSize: 1)
         queue.applySettings(
             claudePath: nil,
             copilotPath: copilotPath,
@@ -305,6 +307,7 @@ extension HeadlessChatScenarioTests {
         #expect(task.status == .pendingUser)
         #expect(task.runs.first?.stopReason == "permission_approval_required")
         #expect(task.events.contains { $0.type == "permission.approval.requested" })
+        #expect(TaskRuntimePermissionOpenRequestStore.hasOpenRequest(for: task))
 
         let continuation = coordinator.approveTask(task)
         let completed = await harness.waitUntil(task: task, timeoutSeconds: 20) { $0.status == .completed }
@@ -319,6 +322,7 @@ extension HeadlessChatScenarioTests {
         #expect(args.contains("create"))
         #expect(runs.last?.output == "Approved through UI path")
         #expect(task.events.contains { $0.type == "task.approved" && $0.payload.contains("Runtime permission approved") })
+        #expect(!TaskRuntimePermissionOpenRequestStore.hasOpenRequest(for: task))
     }
 
     @Test("UI approval repairs Copilot wrapper shell grants")
@@ -384,8 +388,9 @@ extension HeadlessChatScenarioTests {
             run: blockedRun
         ))
         try harness.context.save()
+        #expect(TaskRuntimePermissionOpenRequestStore.hasOpenRequest(for: task))
 
-        let queue = TaskQueue(poolSize: 1)
+        let queue = TaskQueue.scenarioQueue(poolSize: 1)
         queue.applySettings(
             claudePath: nil,
             copilotPath: copilotPath,
@@ -474,7 +479,7 @@ extension HeadlessChatScenarioTests {
         harness.context.insert(permissionEvent)
         try harness.context.save()
 
-        let queue = TaskQueue(poolSize: 1)
+        let queue = TaskQueue.scenarioQueue(poolSize: 1)
         queue.applySettings(
             claudePath: nil,
             copilotPath: copilotPath,
@@ -555,7 +560,7 @@ extension HeadlessChatScenarioTests {
         ))
         try harness.context.save()
 
-        let queue = TaskQueue(poolSize: 1)
+        let queue = TaskQueue.scenarioQueue(poolSize: 1)
         queue.applySettings(
             claudePath: nil,
             copilotPath: copilotPath,
@@ -584,6 +589,7 @@ extension HeadlessChatScenarioTests {
         #expect(TaskRuntimePermissionGrants.approvedGrants(for: task) == [
             .shellCommand(executable: "gh", pattern: "search prs *")
         ])
+        #expect(!TaskRuntimePermissionOpenRequestStore.hasOpenRequest(for: task))
         #expect(runs.last?.output == "Reviewed open PRs after task-scoped approval")
     }
 
@@ -618,7 +624,7 @@ extension HeadlessChatScenarioTests {
             model: "claude-sonnet-4-6",
             tokenBudget: 200_000
         )
-        let queue = TaskQueue(poolSize: 1)
+        let queue = TaskQueue.scenarioQueue(poolSize: 1)
         queue.applySettings(
             claudePath: claudePath,
             copilotPath: nil,
@@ -697,7 +703,7 @@ extension HeadlessChatScenarioTests {
             )
         )
 
-        let queue = TaskQueue(poolSize: 1)
+        let queue = TaskQueue.scenarioQueue(poolSize: 1)
         queue.applySettings(
             claudePath: claudePath,
             copilotPath: nil,
@@ -827,7 +833,7 @@ extension HeadlessChatScenarioTests {
         ))
         try harness.context.save()
 
-        let queue = TaskQueue(poolSize: 1)
+        let queue = TaskQueue.scenarioQueue(poolSize: 1)
         queue.applySettings(
             claudePath: claudePath,
             copilotPath: nil,
@@ -901,7 +907,7 @@ extension HeadlessChatScenarioTests {
         ))
         try harness.context.save()
 
-        let queue = TaskQueue(poolSize: 1)
+        let queue = TaskQueue.scenarioQueue(poolSize: 1)
         queue.applySettings(
             claudePath: claudePath,
             copilotPath: nil,
@@ -991,7 +997,7 @@ extension HeadlessChatScenarioTests {
         harness.context.insert(latestEvent)
         try harness.context.save()
 
-        let queue = TaskQueue(poolSize: 1)
+        let queue = TaskQueue.scenarioQueue(poolSize: 1)
         queue.applySettings(
             claudePath: claudePath,
             copilotPath: nil,

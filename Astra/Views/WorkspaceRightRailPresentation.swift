@@ -33,6 +33,28 @@ enum WorkspaceRightRailPresentation {
     /// Kept here rather than borrowing the git panel's constant so the rail and
     /// git presentation layers stay independent.
     static let hideActionTitle = "Hide"
+
+    static func compositionSummary(for item: RailCapabilityItem) -> String {
+        var parts: [String] = []
+        appendCount(item.skillNames.count, singular: "skill", plural: "skills", to: &parts)
+        appendCount(item.connectorNames.count, singular: "connector", plural: "connectors", to: &parts)
+        appendCount(item.toolNames.count, singular: "tool", plural: "tools", to: &parts)
+        appendCount(item.mcpServerNames.count, singular: "MCP server", plural: "MCP servers", to: &parts)
+        appendCount(item.browserAdapterNames.count, singular: "browser adapter", plural: "browser adapters", to: &parts)
+        appendCount(item.templateNames.count, singular: "template", plural: "templates", to: &parts)
+
+        if !parts.isEmpty {
+            return parts.joined(separator: ", ")
+        }
+
+        let fallback = item.presentation.rowSubtitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        return fallback.isEmpty ? "No resources" : fallback
+    }
+
+    private static func appendCount(_ count: Int, singular: String, plural: String, to parts: inout [String]) {
+        guard count > 0 else { return }
+        parts.append("\(count) \(count == 1 ? singular : plural)")
+    }
 }
 
 enum WorkspaceInstructionEditorPresentation {

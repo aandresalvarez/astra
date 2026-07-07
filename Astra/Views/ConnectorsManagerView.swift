@@ -1,6 +1,8 @@
 import SwiftUI
 import SwiftData
 import AppKit
+import ASTRAModels
+import ASTRAPersistence
 
 struct ConnectorsManagerView: View {
     var workspace: Workspace

@@ -1,5 +1,6 @@
 import Foundation
 import ASTRACore
+import ASTRAModels
 
 struct CapabilityRailSnapshotSignature: Hashable {
     let workspaceID: UUID
@@ -18,6 +19,7 @@ struct CapabilityRailSnapshotSignature: Hashable {
     let globalTools: [CapabilityRailResourceSignature]
     let packages: [CapabilityRailPackageSignature]
     let approvalRecords: [CapabilityRailApprovalSignature]
+    let packPolicy: CapabilityRailPackPolicySignature
     let prerequisiteStatuses: [CapabilityRailPrerequisiteStatusSignature]
 
     init(
@@ -27,6 +29,7 @@ struct CapabilityRailSnapshotSignature: Hashable {
         globalTools: [LocalTool],
         packages: [PluginPackage],
         approvalRecords: [CapabilityApprovalRecord],
+        packPolicy: PackResolvedPolicy = .empty,
         prerequisiteStatuses: [String: HealthStatus]
     ) {
         workspaceID = workspace.id
@@ -55,6 +58,7 @@ struct CapabilityRailSnapshotSignature: Hashable {
         self.globalTools = globalTools.map(CapabilityRailResourceSignature.init(tool:)).sorted()
         self.packages = packages.map(CapabilityRailPackageSignature.init(package:)).sorted()
         self.approvalRecords = approvalRecords.map(CapabilityRailApprovalSignature.init(record:)).sorted()
+        self.packPolicy = CapabilityRailPackPolicySignature(policy: packPolicy)
         self.prerequisiteStatuses = prerequisiteStatuses.map(CapabilityRailPrerequisiteStatusSignature.init(id:status:)).sorted()
     }
 }
@@ -156,14 +160,7 @@ struct CapabilityRailPackageSignature: Hashable, Comparable {
         category = package.category
         sourceKind = package.sourceMetadata?.kind
         governanceStatus = package.governance.approvalStatus.rawValue
-        resourceCounts = [
-            package.skills.count,
-            package.connectors.count,
-            package.localTools.count,
-            package.templates.count,
-            package.browserAdapters.count,
-            package.prerequisites.count
-        ]
+        resourceCounts = CapabilityPackageResourceSummary(package: package).resourceCountsForCacheSignature
         requirementNames = package.prerequisites.map(\.displayName).sorted()
     }
 
@@ -185,6 +182,112 @@ struct CapabilityRailApprovalSignature: Hashable, Comparable {
 
     static func < (lhs: CapabilityRailApprovalSignature, rhs: CapabilityRailApprovalSignature) -> Bool {
         lhs.id == rhs.id ? lhs.approvedAt < rhs.approvedAt : lhs.id < rhs.id
+    }
+}
+
+struct CapabilityRailPackPolicySignature: Hashable {
+    let hiddenShelfIDs: [String]
+    let hiddenCapabilityPackageIDs: [String]
+    let hiddenCapabilityTags: [String]
+    let disabledCapabilityPackageIDs: [String]
+    let disabledCapabilityTags: [String]
+    let hiddenRules: [CapabilityRailPackPolicyRuleSignature]
+    let disabledRules: [CapabilityRailPackPolicyRuleSignature]
+    let warningRules: [CapabilityRailPackPolicyRuleSignature]
+    let reviewGateRules: [CapabilityRailPackPolicyRuleSignature]
+    let explicitConsentRules: [CapabilityRailPackPolicyRuleSignature]
+    let unresolvedEnabledPackIDs: [String]
+    let diagnostics: [CapabilityRailPackPolicyDiagnosticSignature]
+
+    init(policy: PackResolvedPolicy) {
+        hiddenShelfIDs = policy.hiddenShelfIDs.map(\.rawValue).sorted()
+        hiddenCapabilityPackageIDs = policy.hiddenCapabilityPackageIDs.sorted()
+        hiddenCapabilityTags = policy.hiddenCapabilityTags.sorted()
+        disabledCapabilityPackageIDs = policy.disabledCapabilityPackageIDs.sorted()
+        disabledCapabilityTags = policy.disabledCapabilityTags.sorted()
+        hiddenRules = policy.hiddenCapabilityRules.map(CapabilityRailPackPolicyRuleSignature.init(rule:)).sorted()
+        disabledRules = policy.disabledCapabilityRules.map(CapabilityRailPackPolicyRuleSignature.init(rule:)).sorted()
+        warningRules = policy.warningRules.map(CapabilityRailPackPolicyRuleSignature.init(rule:)).sorted()
+        reviewGateRules = policy.reviewGateRules.map(CapabilityRailPackPolicyRuleSignature.init(rule:)).sorted()
+        explicitConsentRules = policy.explicitConsentRules.map(CapabilityRailPackPolicyRuleSignature.init(rule:)).sorted()
+        unresolvedEnabledPackIDs = policy.unresolvedEnabledPackIDs.sorted()
+        diagnostics = policy.diagnostics.map(CapabilityRailPackPolicyDiagnosticSignature.init(diagnostic:)).sorted()
+    }
+}
+
+struct CapabilityRailPackPolicyRuleSignature: Hashable, Comparable {
+    let targetID: String?
+    let targetTag: String?
+    let targetMCPServerID: String?
+    let targetMCPToolName: String?
+    let evidence: CapabilityRailPackPolicyEvidenceSignature
+
+    init(rule: PackPolicyRule) {
+        targetID = rule.targetID
+        targetTag = rule.targetTag
+        targetMCPServerID = rule.targetMCPServerID
+        targetMCPToolName = rule.targetMCPToolName
+        evidence = CapabilityRailPackPolicyEvidenceSignature(evidence: rule.evidence)
+    }
+
+    static func < (lhs: CapabilityRailPackPolicyRuleSignature, rhs: CapabilityRailPackPolicyRuleSignature) -> Bool {
+        [
+            lhs.targetID ?? "",
+            lhs.targetTag ?? "",
+            lhs.targetMCPServerID ?? "",
+            lhs.targetMCPToolName ?? "",
+            lhs.evidence.sortKey
+        ].joined(separator: "\u{1F}")
+            < [
+                rhs.targetID ?? "",
+                rhs.targetTag ?? "",
+                rhs.targetMCPServerID ?? "",
+                rhs.targetMCPToolName ?? "",
+                rhs.evidence.sortKey
+            ].joined(separator: "\u{1F}")
+    }
+}
+
+struct CapabilityRailPackPolicyEvidenceSignature: Hashable {
+    let kind: String
+    let packID: String?
+    let restrictionID: String?
+    let contributionKind: String
+    let action: String
+    let target: String
+    let message: String
+
+    var sortKey: String {
+        [kind, packID ?? "", restrictionID ?? "", contributionKind, action, target, message].joined(separator: "\u{1F}")
+    }
+
+    init(evidence: PackPolicyEvidence) {
+        kind = evidence.kind.rawValue
+        packID = evidence.packID
+        restrictionID = evidence.restrictionID
+        contributionKind = evidence.contributionKind
+        action = evidence.action
+        target = evidence.target
+        message = evidence.message
+    }
+}
+
+struct CapabilityRailPackPolicyDiagnosticSignature: Hashable, Comparable {
+    let code: String
+    let packID: String?
+    let restrictionID: String
+    let message: String
+
+    init(diagnostic: PackPolicyDiagnostic) {
+        code = diagnostic.code.rawValue
+        packID = diagnostic.packID
+        restrictionID = diagnostic.restrictionID
+        message = diagnostic.message
+    }
+
+    static func < (lhs: CapabilityRailPackPolicyDiagnosticSignature, rhs: CapabilityRailPackPolicyDiagnosticSignature) -> Bool {
+        [lhs.code, lhs.packID ?? "", lhs.restrictionID, lhs.message].joined(separator: "\u{1F}")
+            < [rhs.code, rhs.packID ?? "", rhs.restrictionID, rhs.message].joined(separator: "\u{1F}")
     }
 }
 

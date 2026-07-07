@@ -1,12 +1,24 @@
 import Foundation
 import SwiftData
+import ASTRAModels
 
 enum AgentEventCompactor {
     static let threshold = 200
     static let keepCount = 50
+    private static let maxPreservedFinalResponseChunks = 24
 
     private enum FilePathPattern {
-        static let regex = try! NSRegularExpression(pattern: #"(?:~|/)[A-Za-z0-9._~+@%=\-/:]+"#)
+        /// Failable so a bad pattern degrades to "no paths in the compaction
+        /// summary" instead of crashing at first use; the positive match is
+        /// covered by `CompactionTests`, so a pattern typo fails CI.
+        static let regex: NSRegularExpression? = {
+            do {
+                return try NSRegularExpression(pattern: #"(?:~|/)[A-Za-z0-9._~+@%=\-/:]+"#)
+            } catch {
+                AppLogger.error("File-path pattern failed to compile; compaction summaries omit paths: \(error)", category: "Worker")
+                return nil
+            }
+        }()
     }
     private static let semanticLineLimit = 12
 
@@ -74,7 +86,9 @@ enum AgentEventCompactor {
         // (see latestReconstructedEventIDs for the per-key rules). Bounded by the
         // number of distinct keys, so high-volume plan.step.* streams still compact.
         let reconstructionCriticalIDs = latestReconstructedEventIDs(in: compactionCandidates)
-        let toCompact = compactionCandidates.filter { !reconstructionCriticalIDs.contains($0.id) }
+        let outputPresentationAnchorIDs = latestOutputPresentationAnchorIDs(in: compactionCandidates)
+        let preservedIDs = reconstructionCriticalIDs.union(outputPresentationAnchorIDs)
+        let toCompact = compactionCandidates.filter { !preservedIDs.contains($0.id) }
         guard !toCompact.isEmpty else {
             logCompactionIfNeeded(
                 start: start,
@@ -97,7 +111,7 @@ enum AgentEventCompactor {
             .sorted { $0.value > $1.value }
             .map { "\($0.value) \($0.key)" }
             .joined(separator: ", ")
-        let semanticLines = semanticSummaryLines(from: toCompact)
+        let semanticLines = semanticSummaryLines(from: compactionCandidates)
         var payload = "Compacted \(toCompact.count) earlier events. Breakdown: \(summary)"
         if !semanticLines.isEmpty {
             payload += "\nCompacted detail index:\n" + semanticLines.joined(separator: "\n")
@@ -183,6 +197,48 @@ enum AgentEventCompactor {
         return Set(latestByKey.values.map(\.id))
     }
 
+    private static func latestOutputPresentationAnchorIDs(in events: [TaskEvent]) -> Set<UUID> {
+        let grouped = Dictionary(grouping: events.filter { isOutputPresentationEvent($0) }) { event in
+            event.run?.id.uuidString ?? "task"
+        }
+        var output = Set<UUID>()
+        for runEvents in grouped.values {
+            let sorted = runEvents.sorted { $0.timestamp < $1.timestamp }
+            guard let latestBoundaryIndex = sorted.lastIndex(where: isOutputPresentationBoundaryEvent) else {
+                if let latestResponse = sorted.last(where: { $0.type == "agent.response" }) {
+                    output.insert(latestResponse.id)
+                }
+                continue
+            }
+
+            output.insert(sorted[latestBoundaryIndex].id)
+            let finalResponses = sorted
+                .dropFirst(latestBoundaryIndex + 1)
+                .filter { $0.type == "agent.response" }
+            guard finalResponses.count <= maxPreservedFinalResponseChunks else {
+                output.remove(sorted[latestBoundaryIndex].id)
+                continue
+            }
+            for event in finalResponses {
+                output.insert(event.id)
+            }
+        }
+        return output
+    }
+
+    private static func isOutputPresentationEvent(_ event: TaskEvent) -> Bool {
+        event.type == "agent.response" || isOutputPresentationBoundaryEvent(event)
+    }
+
+    private static func isOutputPresentationBoundaryEvent(_ event: TaskEvent) -> Bool {
+        switch event.type {
+        case "tool.use", "tool.result", "permission.denied", "permission.approval.requested":
+            return true
+        default:
+            return false
+        }
+    }
+
     private static func isReconstructedLifecycleEvent(_ event: TaskEvent) -> Bool {
         reconstructedEventTypePrefixes.contains { event.type.hasPrefix($0) }
     }
@@ -201,8 +257,8 @@ enum AgentEventCompactor {
             return "contract:\(planID):\(event.type)"
         }
         if event.type.hasPrefix("corrective."),
-           let payload = TaskCorrectiveWorkService.decode(event.payload) {
-            return "corrective:\(TaskCorrectiveWorkService.normalizedCorrectiveStepID(payload))"
+           let payload = TaskCorrectiveWorkQueries.decode(event.payload) {
+            return "corrective:\(TaskCorrectiveWorkQueries.normalizedCorrectiveStepID(payload))"
         }
         return event.type
     }
@@ -372,10 +428,9 @@ enum AgentEventCompactor {
     }
 
     private static func filePaths(in text: String) -> [String] {
-        guard !text.isEmpty else {
+        guard !text.isEmpty, let regex = FilePathPattern.regex else {
             return []
         }
-        let regex = FilePathPattern.regex
         let nsRange = NSRange(text.startIndex..<text.endIndex, in: text)
         return regex.matches(in: text, range: nsRange).compactMap { match -> String? in
             guard let range = Range(match.range, in: text) else { return nil }

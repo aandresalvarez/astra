@@ -14,7 +14,10 @@ enum CapabilityRuntimeSupportPresentation {
     static func mcpSupportingRuntimes(
         descriptors: [AgentRuntimeDescriptor]
     ) -> [AgentRuntimeDescriptor] {
-        descriptors.filter(\.supportsMCPServers)
+        let supportingRuntimeIDs = Set(MCPRuntimeSupportMatrix.profiles(for: descriptors)
+            .filter(\.supportsDelivery)
+            .map(\.runtimeID))
+        return descriptors.filter { supportingRuntimeIDs.contains($0.id) }
     }
 
     /// One-line subtitle for the catalog's MCP section, e.g.
@@ -31,5 +34,71 @@ enum CapabilityRuntimeSupportPresentation {
             return "Delivered on all runtimes"
         }
         return "Delivered on \(names) runs; other runtimes skip these servers"
+    }
+
+    static func mcpSupportSubtitle(
+        for package: PluginPackage,
+        descriptors: [AgentRuntimeDescriptor] = allRuntimeDescriptors()
+    ) -> String {
+        guard !package.mcpServers.isEmpty else {
+            return "No MCP servers declared"
+        }
+        let profiles = MCPRuntimeSupportMatrix.profiles(for: descriptors)
+        let support = profiles.reduce(into: (full: [AgentRuntimeID](), partial: [AgentRuntimeID]())) { result, profile in
+            let deliveredCount = package.mcpServers.filter { server in
+                MCPRuntimeDeliveryPlanner.plan(package: package, server: server, profiles: [profile]).first?.compatibility == .compatible
+            }.count
+            if deliveredCount == package.mcpServers.count {
+                result.full.append(profile.runtimeID)
+            } else if deliveredCount > 0 {
+                result.partial.append(profile.runtimeID)
+            }
+        }
+        return supportSubtitle(full: support.full, partial: support.partial, descriptors: descriptors)
+    }
+
+    static func mcpSupportSubtitle(
+        for servers: [PluginMCPServer],
+        descriptors: [AgentRuntimeDescriptor] = allRuntimeDescriptors()
+    ) -> String {
+        guard !servers.isEmpty else {
+            return "No MCP servers declared"
+        }
+        let profiles = MCPRuntimeSupportMatrix.profiles(for: descriptors)
+        let support = profiles.reduce(into: (full: [AgentRuntimeID](), partial: [AgentRuntimeID]())) { result, profile in
+            let deliveredCount = servers.filter { server in
+                MCPRuntimeDeliveryPlanner.plan(server: server, profiles: [profile]).first?.compatibility == .compatible
+            }.count
+            if deliveredCount == servers.count {
+                result.full.append(profile.runtimeID)
+            } else if deliveredCount > 0 {
+                result.partial.append(profile.runtimeID)
+            }
+        }
+        return supportSubtitle(full: support.full, partial: support.partial, descriptors: descriptors)
+    }
+
+    private static func supportSubtitle(
+        full fullIDs: [AgentRuntimeID],
+        partial partialIDs: [AgentRuntimeID],
+        descriptors: [AgentRuntimeDescriptor]
+    ) -> String {
+        let full = descriptors.filter { fullIDs.contains($0.id) }
+        let partial = descriptors.filter { partialIDs.contains($0.id) }
+        guard !full.isEmpty || !partial.isEmpty else {
+            return "Not delivered to any installed runtime yet"
+        }
+        if full.count == descriptors.count {
+            return "Delivered on all runtimes"
+        }
+        let fullNames = full.map(\.displayName).sorted().joined(separator: ", ")
+        let partialNames = partial.map(\.displayName).sorted().joined(separator: ", ")
+        if full.isEmpty {
+            return "Partially delivered on \(partialNames) runs; some servers are skipped"
+        }
+        if partial.isEmpty {
+            return "Delivered on \(fullNames) runs; other runtimes skip these servers"
+        }
+        return "Delivered on \(fullNames) runs; partially delivered on \(partialNames) runs"
     }
 }

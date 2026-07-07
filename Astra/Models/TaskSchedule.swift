@@ -2,19 +2,19 @@ import Foundation
 import SwiftData
 import ASTRACore
 
-enum ScheduleType: String, Codable, CaseIterable {
+public enum ScheduleType: String, Codable, CaseIterable {
     case once
     case interval
     case daily
     case weekly
 }
 
-enum ScheduleResultMode: String, Codable, CaseIterable {
+public enum ScheduleResultMode: String, Codable, CaseIterable {
     case sameThread = "same_thread"     // Post results back to the source task's conversation
     case newTask = "new_task"           // Each run creates an independent task
     case scheduleLog = "schedule_log"   // Store results in the routine's own run history
 
-    var label: String {
+    public var label: String {
         switch self {
         case .sameThread: return "Same thread"
         case .newTask: return "New task"
@@ -22,7 +22,7 @@ enum ScheduleResultMode: String, Codable, CaseIterable {
         }
     }
 
-    var description: String {
+    public var description: String {
         switch self {
         case .sameThread: return "Post results to the original conversation"
         case .newTask: return "Create a new task for each run"
@@ -32,7 +32,7 @@ enum ScheduleResultMode: String, Codable, CaseIterable {
 }
 
 @Model
-final class TaskSchedule {
+public final class TaskSchedule {
     private static let routineDescriptionKey = "__astra_routine_description"
     private static let routinePathsKey = "__astra_routine_paths_json"
     private static let routineMetadataKeys: Set<String> = [
@@ -40,48 +40,48 @@ final class TaskSchedule {
         routinePathsKey
     ]
 
-    var id: UUID
-    var name: String
-    var isEnabled: Bool
+    public var id: UUID
+    public var name: String
+    public var isEnabled: Bool
 
     // What to run — goal (simple) or template reference (complex)
-    var goal: String
-    var templateID: UUID?
-    var templateVariablesJSON: String
+    public var goal: String
+    public var templateID: UUID?
+    public var templateVariablesJSON: String
 
     // Execution defaults
-    var runtimeID: String?
-    var model: String
-    var tokenBudget: Int
-    var skillIDs: [String]  // UUIDs of skills to attach to created tasks
+    public var runtimeID: String?
+    public var model: String
+    public var tokenBudget: Int
+    public var skillIDs: [String]  // UUIDs of skills to attach to created tasks
 
     // Schedule configuration
-    var scheduleType: ScheduleType
-    var nextFireDate: Date
-    var intervalSeconds: Int      // For .interval (e.g. 3600 = hourly)
-    var dailyHour: Int            // For .daily/.weekly (0-23)
-    var dailyMinute: Int          // For .daily/.weekly (0-59)
-    var weeklyDayOfWeek: Int      // For .weekly (1=Sun..7=Sat)
+    public var scheduleType: ScheduleType
+    public var nextFireDate: Date
+    public var intervalSeconds: Int      // For .interval (e.g. 3600 = hourly)
+    public var dailyHour: Int            // For .daily/.weekly (0-23)
+    public var dailyMinute: Int          // For .daily/.weekly (0-59)
+    public var weeklyDayOfWeek: Int      // For .weekly (1=Sun..7=Sat)
 
     // Conversation context snapshot (captured at schedule creation time)
-    var conversationContext: String
+    public var conversationContext: String
 
     // Result routing
-    var resultMode: ScheduleResultMode
-    var sourceTaskID: UUID?          // Task this schedule was created from (for sameThread mode)
-    var runResultsJSON: String       // JSON array of run results (for scheduleLog mode)
+    public var resultMode: ScheduleResultMode
+    public var sourceTaskID: UUID?          // Task this schedule was created from (for sameThread mode)
+    public var runResultsJSON: String       // JSON array of run results (for scheduleLog mode)
 
     // Audit
-    var lastFiredAt: Date?
-    var fireCount: Int
+    public var lastFiredAt: Date?
+    public var fireCount: Int
 
     // Ownership
-    var workspace: Workspace?
+    public var workspace: Workspace?
 
-    var createdAt: Date
-    var updatedAt: Date
+    public var createdAt: Date
+    public var updatedAt: Date
 
-    init(
+    public init(
         name: String,
         goal: String = "",
         workspace: Workspace? = nil,
@@ -115,12 +115,12 @@ final class TaskSchedule {
         self.updatedAt = Date()
     }
 
-    var resolvedRuntimeID: AgentRuntimeID {
+    public var resolvedRuntimeID: AgentRuntimeID {
         AgentRuntimeID(rawValue: runtimeID ?? "") ?? TaskExecutionDefaults.runtime
     }
 
     /// Advances nextFireDate based on scheduleType. For .once, disables the schedule.
-    func advanceNextFireDate() {
+    public func advanceNextFireDate() {
         let now = Date()
         switch scheduleType {
         case .once:
@@ -143,7 +143,7 @@ final class TaskSchedule {
         updatedAt = now
     }
 
-    var templateVariables: [String: String] {
+    public var templateVariables: [String: String] {
         get {
             guard let data = templateVariablesJSON.data(using: .utf8) else { return [:] }
             return (try? JSONDecoder().decode([String: String].self, from: data)) ?? [:]
@@ -155,21 +155,21 @@ final class TaskSchedule {
         }
     }
 
-    var templateSubstitutionVariables: [String: String] {
+    public var templateSubstitutionVariables: [String: String] {
         templateVariables.filter { !Self.routineMetadataKeys.contains($0.key) }
     }
 
-    var routineDescription: String {
+    public var routineDescription: String {
         get { templateVariables[Self.routineDescriptionKey] ?? "" }
         set { setRoutineMetadataValue(newValue, forKey: Self.routineDescriptionKey) }
     }
 
-    var routineInstructions: String {
+    public var routineInstructions: String {
         get { goal }
         set { goal = newValue }
     }
 
-    var routinePaths: [String] {
+    public var routinePaths: [String] {
         get {
             guard let json = templateVariables[Self.routinePathsKey],
                   let data = json.data(using: .utf8) else {
@@ -190,7 +190,7 @@ final class TaskSchedule {
     }
 
     /// The full goal including conversation context, used when firing the schedule.
-    var effectiveGoal: String {
+    public var effectiveGoal: String {
         let description = routineDescription.trimmingCharacters(in: .whitespacesAndNewlines)
         let instructions = routineInstructions.trimmingCharacters(in: .whitespacesAndNewlines)
         let paths = routinePaths
@@ -219,7 +219,7 @@ final class TaskSchedule {
     }
 
     /// Human-readable summary of the schedule frequency
-    var frequencySummary: String {
+    public var frequencySummary: String {
         switch scheduleType {
         case .once:
             return "Once"
@@ -242,14 +242,21 @@ final class TaskSchedule {
 
     // MARK: - Run Results (for scheduleLog mode)
 
-    struct RunResult: Codable {
-        var date: Date
-        var status: String       // "completed", "failed", etc.
-        var summary: String      // First ~500 chars of output
-        var taskID: String       // ID of the spawned task
+    public struct RunResult: Codable {
+        public var date: Date
+        public var status: String       // "completed", "failed", etc.
+        public var summary: String      // First ~500 chars of output
+        public var taskID: String       // ID of the spawned task
+
+        public init(date: Date, status: String, summary: String, taskID: String) {
+            self.date = date
+            self.status = status
+            self.summary = summary
+            self.taskID = taskID
+        }
     }
 
-    var runResults: [RunResult] {
+    public var runResults: [RunResult] {
         get {
             guard let data = runResultsJSON.data(using: .utf8) else { return [] }
             return (try? JSONDecoder().decode([RunResult].self, from: data)) ?? []
@@ -261,7 +268,7 @@ final class TaskSchedule {
         }
     }
 
-    func appendRunResult(status: String, summary: String, taskID: UUID) {
+    public func appendRunResult(status: String, summary: String, taskID: UUID) {
         var results = runResults
         results.append(RunResult(date: Date(), status: status, summary: summary, taskID: taskID.uuidString))
         // Keep last 50 results

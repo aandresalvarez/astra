@@ -1,5 +1,7 @@
 import Foundation
 import ASTRACore
+import ASTRAModels
+import ASTRAPersistence
 
 struct AntigravityCLICommandPlan: Equatable {
     var executablePath: String
@@ -135,7 +137,8 @@ enum AntigravityCLIRuntime {
         providerHomeDirectory: String = "",
         pathPrefix: [String] = [],
         includeAstraToolsPath: Bool = false,
-        diagnosticLogPath: String? = nil
+        diagnosticLogPath: String? = nil,
+        permissionArguments: [String]
     ) -> AntigravityCLICommandPlan {
         var args = [
             "--print",
@@ -152,7 +155,7 @@ enum AntigravityCLIRuntime {
         for path in uniquePaths {
             args += ["--add-dir", path]
         }
-        args += antigravityPermissionArguments(policy: permissionPolicy)
+        args += permissionArguments
 
         var extraVars: [String: String] = [
             "NO_COLOR": "1",

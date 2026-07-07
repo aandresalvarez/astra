@@ -1,42 +1,94 @@
 import Foundation
 import SwiftData
 import ASTRACore
+import ASTRAModels
 
 /// Exports and imports workspace configurations as shareable JSON files.
-/// SwiftData is the local cache. The workspace JSON is the durable recovery and sharing format.
+/// SwiftData remains the source of truth. The workspace JSON is a bounded recovery and sharing surface.
 ///
 /// Data safety contract:
 /// - UUIDs are exported for every durable entity so names are display text only.
 /// - Connector credential values are never exported. Only credential key names are written.
-/// - v1-v9 configs remain importable through optional fields and legacy name fallback.
-enum WorkspaceConfigManager {
+/// - v1-v10 configs remain importable through optional fields and legacy name fallback.
+public enum WorkspaceConfigManager {
 
-    // MARK: - Config Schema (v10)
+    // MARK: - Config Schema (v11)
 
-    static let currentVersion = 10
+    public static let currentVersion = 11
 
-    struct WorkspaceConfigExportResult {
-        enum Status: String {
+    private struct WorkspaceAppRunMirrorSnapshot {
+        public var runs: [WorkspaceAppRun]
+        public var events: [WorkspaceAppRunEvent]
+    }
+
+    public enum MirrorLimits {
+        public static let maxRunsPerTask = 10
+        public static let maxEventsPerTask = 10
+        public static let maxWorkspaceAppRuns = 10
+        public static let maxWorkspaceAppRunEvents = 10
+        public static let maxRunOutputCharacters = 8_000
+        public static let maxEventPayloadCharacters = 4_000
+        public static let maxWorkspaceAppRunOutputCharacters = 8_000
+        public static let maxWorkspaceAppRunEventPayloadCharacters = 4_000
+    }
+
+    public enum ScheduleImportTrustPolicy {
+        case quarantineEnabledSchedules
+        case preserveEnabledState
+
+        public func enabledState(for config: ScheduleConfig) -> Bool {
+            switch self {
+            case .quarantineEnabledSchedules:
+                false
+            case .preserveEnabledState:
+                config.isEnabled
+            }
+        }
+
+        public func quarantinedScheduleCount(in schedules: [ScheduleConfig]?) -> Int {
+            switch self {
+            case .quarantineEnabledSchedules:
+                schedules?.filter(\.isEnabled).count ?? 0
+            case .preserveEnabledState:
+                0
+            }
+        }
+    }
+
+    public struct WorkspaceConfigExportResult {
+        public init(status: Status, workspaceID: String, path: String, errorType: String? = nil, errorDomain: String? = nil, errorCode: Int? = nil, errorDescription: String? = nil, parentExists: Bool, parentWritable: Bool) {
+            self.status = status
+            self.workspaceID = workspaceID
+            self.path = path
+            self.errorType = errorType
+            self.errorDomain = errorDomain
+            self.errorCode = errorCode
+            self.errorDescription = errorDescription
+            self.parentExists = parentExists
+            self.parentWritable = parentWritable
+        }
+
+        public enum Status: String {
             case exported
             case skippedNoConfig
             case writeFailed
         }
 
-        var status: Status
-        var workspaceID: String
-        var path: String
-        var errorType: String?
-        var errorDomain: String?
-        var errorCode: Int?
-        var errorDescription: String?
-        var parentExists: Bool
-        var parentWritable: Bool
+        public var status: Status
+        public var workspaceID: String
+        public var path: String
+        public var errorType: String?
+        public var errorDomain: String?
+        public var errorCode: Int?
+        public var errorDescription: String?
+        public var parentExists: Bool
+        public var parentWritable: Bool
 
-        var didExport: Bool {
+        public var didExport: Bool {
             status == .exported
         }
 
-        var auditFields: [String: String] {
+        public var auditFields: [String: String] {
             var fields: [String: String] = [
                 "workspace_id": workspaceID,
                 "config_file": URL(fileURLWithPath: path).lastPathComponent,
@@ -61,46 +113,70 @@ enum WorkspaceConfigManager {
         }
     }
 
-    struct WorkspaceConfigLoadResult {
-        enum Status: String {
+    public struct WorkspaceConfigLoadResult {
+        public init(status: Status, path: String, config: WorkspaceConfig? = nil, errorType: String? = nil, errorDomain: String? = nil, errorCode: Int? = nil, errorDescription: String? = nil) {
+            self.status = status
+            self.path = path
+            self.config = config
+            self.errorType = errorType
+            self.errorDomain = errorDomain
+            self.errorCode = errorCode
+            self.errorDescription = errorDescription
+        }
+
+        public enum Status: String {
             case loaded
             case unreadableFile
             case decodeFailed
         }
 
-        var status: Status
-        var path: String
-        var config: WorkspaceConfig?
-        var errorType: String?
-        var errorDomain: String?
-        var errorCode: Int?
-        var errorDescription: String?
+        public var status: Status
+        public var path: String
+        public var config: WorkspaceConfig?
+        public var errorType: String?
+        public var errorDomain: String?
+        public var errorCode: Int?
+        public var errorDescription: String?
 
-        var didLoad: Bool {
+        public var didLoad: Bool {
             config != nil
         }
     }
 
-    struct WorkspaceConfigImportResult {
-        enum Status: String {
+    public struct WorkspaceConfigImportResult {
+        public init(status: Status, workspace: Workspace, workspaceID: String, skillCount: Int, connectorCount: Int, localToolCount: Int, taskCount: Int, quarantinedScheduleCount: Int, skippedConnectorCount: Int, skippedLocalToolCount: Int) {
+            self.status = status
+            self.workspace = workspace
+            self.workspaceID = workspaceID
+            self.skillCount = skillCount
+            self.connectorCount = connectorCount
+            self.localToolCount = localToolCount
+            self.taskCount = taskCount
+            self.quarantinedScheduleCount = quarantinedScheduleCount
+            self.skippedConnectorCount = skippedConnectorCount
+            self.skippedLocalToolCount = skippedLocalToolCount
+        }
+
+        public enum Status: String {
             case imported
         }
 
-        var status: Status
-        var workspace: Workspace
-        var workspaceID: String
-        var skillCount: Int
-        var connectorCount: Int
-        var localToolCount: Int
-        var taskCount: Int
-        var skippedConnectorCount: Int
-        var skippedLocalToolCount: Int
+        public var status: Status
+        public var workspace: Workspace
+        public var workspaceID: String
+        public var skillCount: Int
+        public var connectorCount: Int
+        public var localToolCount: Int
+        public var taskCount: Int
+        public var quarantinedScheduleCount: Int
+        public var skippedConnectorCount: Int
+        public var skippedLocalToolCount: Int
 
-        var didImport: Bool {
+        public var didImport: Bool {
             status == .imported
         }
 
-        var auditFields: [String: String] {
+        public var auditFields: [String: String] {
             [
                 "result": status.rawValue,
                 "workspace_id": workspaceID,
@@ -108,257 +184,739 @@ enum WorkspaceConfigManager {
                 "connector_count": String(connectorCount),
                 "local_tool_count": String(localToolCount),
                 "task_count": String(taskCount),
+                "quarantined_schedule_count": String(quarantinedScheduleCount),
                 "skipped_connector_count": String(skippedConnectorCount),
                 "skipped_local_tool_count": String(skippedLocalToolCount)
             ]
         }
     }
 
-    struct WorkspaceConfig: Codable, Sendable {
-        var version: Int = WorkspaceConfigManager.currentVersion
-        var id: String?
-        var name: String
-        var primaryPath: String
-        var additionalPaths: [String]
-        var icon: String
-        var instructions: String
-        var isStarred: Bool? = nil
+    public struct WorkspaceConfig: Codable, Sendable {
+        public init(version: Int = WorkspaceConfigManager.currentVersion, id: String? = nil, name: String, primaryPath: String, additionalPaths: [String], icon: String, instructions: String, isStarred: Bool? = nil, activeWorkingPath: String? = nil, activeExecutionEnvironmentJSON: String? = nil, lastUsedSkillNames: [String]? = nil, enabledGlobalSkillIDs: [String]? = nil, enabledGlobalConnectorIDs: [String]? = nil, enabledGlobalToolIDs: [String]? = nil, enabledCapabilityIDs: [String]? = nil, enabledPackIDs: [String]? = nil, shelfVisibilityOverrides: [String: Bool]? = nil, memories: [String]? = nil, createdAt: Date? = nil, updatedAt: Date? = nil, skills: [SkillConfig], connectors: [ConnectorConfig]? = nil, localTools: [LocalToolConfig]? = nil, templates: [TemplateConfig]? = nil, schedules: [ScheduleConfig]? = nil, sshConnections: [SSHConnection], tasks: [TaskConfig]? = nil, workspaceApps: [WorkspaceAppConfig]? = nil, workspaceAppRuns: [WorkspaceAppRunConfig]? = nil, workspaceAppRunEvents: [WorkspaceAppRunEventConfig]? = nil, workspaceAppDependencyBindings: [WorkspaceAppDependencyBindingConfig]? = nil, workspaceAppAutomationStates: [WorkspaceAppAutomationStateConfig]? = nil, googleOAuthAccountProfiles: [GoogleOAuthAccountProfileConfig]? = nil, installedPlugins: [InstalledPluginRef]? = nil, exportedAt: Date) {
+            self.version = version
+            self.id = id
+            self.name = name
+            self.primaryPath = primaryPath
+            self.additionalPaths = additionalPaths
+            self.icon = icon
+            self.instructions = instructions
+            self.isStarred = isStarred
+            self.activeWorkingPath = activeWorkingPath
+            self.activeExecutionEnvironmentJSON = activeExecutionEnvironmentJSON
+            self.lastUsedSkillNames = lastUsedSkillNames
+            self.enabledGlobalSkillIDs = enabledGlobalSkillIDs
+            self.enabledGlobalConnectorIDs = enabledGlobalConnectorIDs
+            self.enabledGlobalToolIDs = enabledGlobalToolIDs
+            self.enabledCapabilityIDs = enabledCapabilityIDs
+            self.enabledPackIDs = enabledPackIDs
+            self.shelfVisibilityOverrides = shelfVisibilityOverrides
+            self.memories = memories
+            self.createdAt = createdAt
+            self.updatedAt = updatedAt
+            self.skills = skills
+            self.connectors = connectors
+            self.localTools = localTools
+            self.templates = templates
+            self.schedules = schedules
+            self.sshConnections = sshConnections
+            self.tasks = tasks
+            self.workspaceApps = workspaceApps
+            self.workspaceAppRuns = workspaceAppRuns
+            self.workspaceAppRunEvents = workspaceAppRunEvents
+            self.workspaceAppDependencyBindings = workspaceAppDependencyBindings
+            self.workspaceAppAutomationStates = workspaceAppAutomationStates
+            self.googleOAuthAccountProfiles = googleOAuthAccountProfiles
+            self.installedPlugins = installedPlugins
+            self.exportedAt = exportedAt
+        }
+
+        public var version: Int = WorkspaceConfigManager.currentVersion
+        public var id: String?
+        public var name: String
+        public var primaryPath: String
+        public var additionalPaths: [String]
+        public var icon: String
+        public var instructions: String
+        public var isStarred: Bool? = nil
         /// Absolute path of the worktree new chats default to, or nil for the
         /// repository root. Travels with the workspace; it is re-validated on
         /// import and reset to root when the worktree is absent on this machine.
-        var activeWorkingPath: String? = nil
+        public var activeWorkingPath: String? = nil
         /// JSON-encoded workspace execution-environment default. Nil means host.
-        var activeExecutionEnvironmentJSON: String? = nil
-        var lastUsedSkillNames: [String]?
-        var enabledGlobalSkillIDs: [String]?
-        var enabledGlobalConnectorIDs: [String]?
-        var enabledGlobalToolIDs: [String]?
-        var enabledCapabilityIDs: [String]?
-        var memories: [String]?
-        var createdAt: Date?
-        var updatedAt: Date?
-        var skills: [SkillConfig]
-        var connectors: [ConnectorConfig]?
-        var localTools: [LocalToolConfig]?
-        var templates: [TemplateConfig]?
-        var schedules: [ScheduleConfig]?
-        var sshConnections: [SSHConnection]
-        var tasks: [TaskConfig]?
-        var installedPlugins: [InstalledPluginRef]?
-        var exportedAt: Date
+        public var activeExecutionEnvironmentJSON: String? = nil
+        public var lastUsedSkillNames: [String]?
+        public var enabledGlobalSkillIDs: [String]?
+        public var enabledGlobalConnectorIDs: [String]?
+        public var enabledGlobalToolIDs: [String]?
+        public var enabledCapabilityIDs: [String]?
+        public var enabledPackIDs: [String]? = nil
+        public var shelfVisibilityOverrides: [String: Bool]? = nil
+        public var memories: [String]?
+        public var createdAt: Date?
+        public var updatedAt: Date?
+        public var skills: [SkillConfig]
+        public var connectors: [ConnectorConfig]?
+        public var localTools: [LocalToolConfig]?
+        public var templates: [TemplateConfig]?
+        public var schedules: [ScheduleConfig]?
+        public var sshConnections: [SSHConnection]
+        public var tasks: [TaskConfig]?
+        public var workspaceApps: [WorkspaceAppConfig]? = nil
+        public var workspaceAppRuns: [WorkspaceAppRunConfig]? = nil
+        public var workspaceAppRunEvents: [WorkspaceAppRunEventConfig]? = nil
+        public var workspaceAppDependencyBindings: [WorkspaceAppDependencyBindingConfig]? = nil
+        public var workspaceAppAutomationStates: [WorkspaceAppAutomationStateConfig]? = nil
+        public var googleOAuthAccountProfiles: [GoogleOAuthAccountProfileConfig]? = nil
+        public var installedPlugins: [InstalledPluginRef]?
+        public var exportedAt: Date
     }
 
-    struct InstalledPluginRef: Codable, Sendable {
-        var id: String
-        var version: String
-        var name: String?
+    public struct InstalledPluginRef: Codable, Sendable {
+        public init(id: String, version: String, name: String? = nil) {
+            self.id = id
+            self.version = version
+            self.name = name
+        }
+
+        public var id: String
+        public var version: String
+        public var name: String?
     }
 
-    struct SkillConfig: Codable, Sendable {
-        var id: String?
-        var name: String
-        var icon: String
-        var description: String
-        var allowedTools: [String]
-        var disallowedTools: [String]
-        var customTools: [String]
-        var behaviorInstructions: String
-        var environmentKeys: [String]
-        var environmentValues: [String]
-        var isGlobal: Bool?
-        var connectorIDs: [String]?
-        var localToolIDs: [String]?
-        var connectorNames: [String]?
-        var localToolNames: [String]?
-        var originPackageID: String? = nil
-        var originPackageVersion: String? = nil
-        var originComponentID: String? = nil
-        var originComponentKind: String? = nil
-        var originSourceKind: String? = nil
-        var createdAt: Date?
-        var updatedAt: Date?
+    public struct SkillConfig: Codable, Sendable {
+        public init(id: String? = nil, name: String, icon: String, description: String, allowedTools: [String], disallowedTools: [String], customTools: [String], behaviorInstructions: String, environmentKeys: [String], environmentValues: [String], isGlobal: Bool? = nil, connectorIDs: [String]? = nil, localToolIDs: [String]? = nil, connectorNames: [String]? = nil, localToolNames: [String]? = nil, originPackageID: String? = nil, originPackageVersion: String? = nil, originComponentID: String? = nil, originComponentKind: String? = nil, originSourceKind: String? = nil, createdAt: Date? = nil, updatedAt: Date? = nil) {
+            self.id = id
+            self.name = name
+            self.icon = icon
+            self.description = description
+            self.allowedTools = allowedTools
+            self.disallowedTools = disallowedTools
+            self.customTools = customTools
+            self.behaviorInstructions = behaviorInstructions
+            self.environmentKeys = environmentKeys
+            self.environmentValues = environmentValues
+            self.isGlobal = isGlobal
+            self.connectorIDs = connectorIDs
+            self.localToolIDs = localToolIDs
+            self.connectorNames = connectorNames
+            self.localToolNames = localToolNames
+            self.originPackageID = originPackageID
+            self.originPackageVersion = originPackageVersion
+            self.originComponentID = originComponentID
+            self.originComponentKind = originComponentKind
+            self.originSourceKind = originSourceKind
+            self.createdAt = createdAt
+            self.updatedAt = updatedAt
+        }
+
+        public var id: String?
+        public var name: String
+        public var icon: String
+        public var description: String
+        public var allowedTools: [String]
+        public var disallowedTools: [String]
+        public var customTools: [String]
+        public var behaviorInstructions: String
+        public var environmentKeys: [String]
+        public var environmentValues: [String]
+        public var isGlobal: Bool?
+        public var connectorIDs: [String]?
+        public var localToolIDs: [String]?
+        public var connectorNames: [String]?
+        public var localToolNames: [String]?
+        public var originPackageID: String? = nil
+        public var originPackageVersion: String? = nil
+        public var originComponentID: String? = nil
+        public var originComponentKind: String? = nil
+        public var originSourceKind: String? = nil
+        public var createdAt: Date?
+        public var updatedAt: Date?
     }
 
-    struct ConnectorConfig: Codable, Sendable {
-        var id: String?
-        var name: String
-        var serviceType: String
-        var icon: String
-        var description: String
-        var baseURL: String
-        var authMethod: String
-        var credentialKeys: [String]
-        var configKeys: [String]
-        var configValues: [String]
-        var isGlobal: Bool?
-        var notes: String
-        var originPackageID: String? = nil
-        var originPackageVersion: String? = nil
-        var originComponentID: String? = nil
-        var originComponentKind: String? = nil
-        var originSourceKind: String? = nil
-        var createdAt: Date?
-        var updatedAt: Date?
+    public struct ConnectorConfig: Codable, Sendable {
+        public init(id: String? = nil, name: String, serviceType: String, icon: String, description: String, baseURL: String, authMethod: String, credentialKeys: [String], configKeys: [String], configValues: [String], isGlobal: Bool? = nil, notes: String, originPackageID: String? = nil, originPackageVersion: String? = nil, originComponentID: String? = nil, originComponentKind: String? = nil, originSourceKind: String? = nil, createdAt: Date? = nil, updatedAt: Date? = nil) {
+            self.id = id
+            self.name = name
+            self.serviceType = serviceType
+            self.icon = icon
+            self.description = description
+            self.baseURL = baseURL
+            self.authMethod = authMethod
+            self.credentialKeys = credentialKeys
+            self.configKeys = configKeys
+            self.configValues = configValues
+            self.isGlobal = isGlobal
+            self.notes = notes
+            self.originPackageID = originPackageID
+            self.originPackageVersion = originPackageVersion
+            self.originComponentID = originComponentID
+            self.originComponentKind = originComponentKind
+            self.originSourceKind = originSourceKind
+            self.createdAt = createdAt
+            self.updatedAt = updatedAt
+        }
+
+        public var id: String?
+        public var name: String
+        public var serviceType: String
+        public var icon: String
+        public var description: String
+        public var baseURL: String
+        public var authMethod: String
+        public var credentialKeys: [String]
+        public var configKeys: [String]
+        public var configValues: [String]
+        public var isGlobal: Bool?
+        public var notes: String
+        public var originPackageID: String? = nil
+        public var originPackageVersion: String? = nil
+        public var originComponentID: String? = nil
+        public var originComponentKind: String? = nil
+        public var originSourceKind: String? = nil
+        public var createdAt: Date?
+        public var updatedAt: Date?
     }
 
-    struct LocalToolConfig: Codable, Sendable {
-        var id: String?
-        var name: String
-        var description: String
-        var icon: String
-        var toolType: String
-        var command: String
-        var arguments: String
-        var isGlobal: Bool?
-        var originPackageID: String? = nil
-        var originPackageVersion: String? = nil
-        var originComponentID: String? = nil
-        var originComponentKind: String? = nil
-        var originSourceKind: String? = nil
-        var createdAt: Date?
-        var updatedAt: Date?
+    public struct LocalToolConfig: Codable, Sendable {
+        public init(id: String? = nil, name: String, description: String, icon: String, toolType: String, command: String, arguments: String, isGlobal: Bool? = nil, originPackageID: String? = nil, originPackageVersion: String? = nil, originComponentID: String? = nil, originComponentKind: String? = nil, originSourceKind: String? = nil, createdAt: Date? = nil, updatedAt: Date? = nil) {
+            self.id = id
+            self.name = name
+            self.description = description
+            self.icon = icon
+            self.toolType = toolType
+            self.command = command
+            self.arguments = arguments
+            self.isGlobal = isGlobal
+            self.originPackageID = originPackageID
+            self.originPackageVersion = originPackageVersion
+            self.originComponentID = originComponentID
+            self.originComponentKind = originComponentKind
+            self.originSourceKind = originSourceKind
+            self.createdAt = createdAt
+            self.updatedAt = updatedAt
+        }
+
+        public var id: String?
+        public var name: String
+        public var description: String
+        public var icon: String
+        public var toolType: String
+        public var command: String
+        public var arguments: String
+        public var isGlobal: Bool?
+        public var originPackageID: String? = nil
+        public var originPackageVersion: String? = nil
+        public var originComponentID: String? = nil
+        public var originComponentKind: String? = nil
+        public var originSourceKind: String? = nil
+        public var createdAt: Date?
+        public var updatedAt: Date?
     }
 
-    struct TemplateConfig: Codable, Sendable {
-        var id: String?
-        var name: String
-        var icon: String
-        var description: String
-        var beforeGoal: String
-        var mainGoal: String
-        var afterGoal: String
-        var beforeBudget: Int
-        var mainBudget: Int
-        var afterBudget: Int
-        var beforeModel: String
-        var mainModel: String
-        var afterModel: String
-        var variablesJSON: String
-        var hooksJSON: String
-        var passContextToMain: Bool
-        var passContextToAfter: Bool
-        var defaultSkillIDs: [String]?
-        var originPackageID: String? = nil
-        var originPackageVersion: String? = nil
-        var originComponentID: String? = nil
-        var originComponentKind: String? = nil
-        var originSourceKind: String? = nil
-        var createdAt: Date?
-        var updatedAt: Date?
+    public struct TemplateConfig: Codable, Sendable {
+        public init(id: String? = nil, name: String, icon: String, description: String, beforeGoal: String, mainGoal: String, afterGoal: String, beforeBudget: Int, mainBudget: Int, afterBudget: Int, beforeModel: String, mainModel: String, afterModel: String, variablesJSON: String, hooksJSON: String, passContextToMain: Bool, passContextToAfter: Bool, defaultSkillIDs: [String]? = nil, originPackageID: String? = nil, originPackageVersion: String? = nil, originComponentID: String? = nil, originComponentKind: String? = nil, originSourceKind: String? = nil, createdAt: Date? = nil, updatedAt: Date? = nil) {
+            self.id = id
+            self.name = name
+            self.icon = icon
+            self.description = description
+            self.beforeGoal = beforeGoal
+            self.mainGoal = mainGoal
+            self.afterGoal = afterGoal
+            self.beforeBudget = beforeBudget
+            self.mainBudget = mainBudget
+            self.afterBudget = afterBudget
+            self.beforeModel = beforeModel
+            self.mainModel = mainModel
+            self.afterModel = afterModel
+            self.variablesJSON = variablesJSON
+            self.hooksJSON = hooksJSON
+            self.passContextToMain = passContextToMain
+            self.passContextToAfter = passContextToAfter
+            self.defaultSkillIDs = defaultSkillIDs
+            self.originPackageID = originPackageID
+            self.originPackageVersion = originPackageVersion
+            self.originComponentID = originComponentID
+            self.originComponentKind = originComponentKind
+            self.originSourceKind = originSourceKind
+            self.createdAt = createdAt
+            self.updatedAt = updatedAt
+        }
+
+        public var id: String?
+        public var name: String
+        public var icon: String
+        public var description: String
+        public var beforeGoal: String
+        public var mainGoal: String
+        public var afterGoal: String
+        public var beforeBudget: Int
+        public var mainBudget: Int
+        public var afterBudget: Int
+        public var beforeModel: String
+        public var mainModel: String
+        public var afterModel: String
+        public var variablesJSON: String
+        public var hooksJSON: String
+        public var passContextToMain: Bool
+        public var passContextToAfter: Bool
+        public var defaultSkillIDs: [String]?
+        public var originPackageID: String? = nil
+        public var originPackageVersion: String? = nil
+        public var originComponentID: String? = nil
+        public var originComponentKind: String? = nil
+        public var originSourceKind: String? = nil
+        public var createdAt: Date?
+        public var updatedAt: Date?
     }
 
-    struct ScheduleConfig: Codable, Sendable {
-        var id: String?
-        var name: String
-        var isEnabled: Bool
-        var goal: String
-        var routineDescription: String?
-        var routineInstructions: String?
-        var routinePaths: [String]?
-        var templateID: String?
-        var templateVariablesJSON: String
-        var model: String
-        var tokenBudget: Int
-        var scheduleType: String
-        var nextFireDate: Date
-        var intervalSeconds: Int
-        var dailyHour: Int
-        var dailyMinute: Int
-        var weeklyDayOfWeek: Int
-        var fireCount: Int
-        var skillIDs: [String]?
-        var conversationContext: String?
-        var resultMode: String?
-        var sourceTaskID: String?
-        var runResultsJSON: String?
-        var runtimeID: String?
-        var lastFiredAt: Date?
-        var createdAt: Date?
-        var updatedAt: Date?
+    public struct ScheduleConfig: Codable, Sendable {
+        public init(id: String? = nil, name: String, isEnabled: Bool, goal: String, routineDescription: String? = nil, routineInstructions: String? = nil, routinePaths: [String]? = nil, templateID: String? = nil, templateVariablesJSON: String, model: String, tokenBudget: Int, scheduleType: String, nextFireDate: Date, intervalSeconds: Int, dailyHour: Int, dailyMinute: Int, weeklyDayOfWeek: Int, fireCount: Int, skillIDs: [String]? = nil, conversationContext: String? = nil, resultMode: String? = nil, sourceTaskID: String? = nil, runResultsJSON: String? = nil, runtimeID: String? = nil, lastFiredAt: Date? = nil, createdAt: Date? = nil, updatedAt: Date? = nil) {
+            self.id = id
+            self.name = name
+            self.isEnabled = isEnabled
+            self.goal = goal
+            self.routineDescription = routineDescription
+            self.routineInstructions = routineInstructions
+            self.routinePaths = routinePaths
+            self.templateID = templateID
+            self.templateVariablesJSON = templateVariablesJSON
+            self.model = model
+            self.tokenBudget = tokenBudget
+            self.scheduleType = scheduleType
+            self.nextFireDate = nextFireDate
+            self.intervalSeconds = intervalSeconds
+            self.dailyHour = dailyHour
+            self.dailyMinute = dailyMinute
+            self.weeklyDayOfWeek = weeklyDayOfWeek
+            self.fireCount = fireCount
+            self.skillIDs = skillIDs
+            self.conversationContext = conversationContext
+            self.resultMode = resultMode
+            self.sourceTaskID = sourceTaskID
+            self.runResultsJSON = runResultsJSON
+            self.runtimeID = runtimeID
+            self.lastFiredAt = lastFiredAt
+            self.createdAt = createdAt
+            self.updatedAt = updatedAt
+        }
+
+        public var id: String?
+        public var name: String
+        public var isEnabled: Bool
+        public var goal: String
+        public var routineDescription: String?
+        public var routineInstructions: String?
+        public var routinePaths: [String]?
+        public var templateID: String?
+        public var templateVariablesJSON: String
+        public var model: String
+        public var tokenBudget: Int
+        public var scheduleType: String
+        public var nextFireDate: Date
+        public var intervalSeconds: Int
+        public var dailyHour: Int
+        public var dailyMinute: Int
+        public var weeklyDayOfWeek: Int
+        public var fireCount: Int
+        public var skillIDs: [String]?
+        public var conversationContext: String?
+        public var resultMode: String?
+        public var sourceTaskID: String?
+        public var runResultsJSON: String?
+        public var runtimeID: String?
+        public var lastFiredAt: Date?
+        public var createdAt: Date?
+        public var updatedAt: Date?
     }
 
-    struct TaskConfig: Codable, Sendable {
-        var id: String?
-        var title: String
-        var goal: String
-        var status: String
-        var isPinned: Bool?
-        var isDone: Bool?
-        var inputs: [String]
-        var constraints: [String]
-        var acceptanceCriteria: [String]
-        var tokenBudget: Int
-        var tokensUsed: Int
-        var model: String
-        var runtimeID: String?
-        var costUSD: Double
-        var sessionId: String?
-        var maxTurns: Int
-        var createdAt: Date
-        var updatedAt: Date
-        var completedAt: Date?
-        var unreadAt: Date?
-        var isolationStrategy: String?
-        var validationStrategy: String?
-        var testCommand: String?
-        var draftMessages: String?
-        var chainedGoal: String?
-        var chainedFromID: String?
-        var useAgentTeam: Bool?
-        var teamSize: Int?
-        var teamInstructions: String?
-        var templateID: String?
-        var templateHooksJSON: String?
-        var runs: [RunConfig]
-        var events: [EventConfig]
-        var artifacts: [ArtifactConfig]?
-        var skillIDs: [String]?
-        var skillNames: [String]
-        var skillSnapshots: [SkillSnapshotConfig]?
-        var executionEnvironmentSnapshotJSON: String?
+    public struct TaskConfig: Codable, Sendable {
+        public init(id: String? = nil, title: String, goal: String, status: String, isPinned: Bool? = nil, isDone: Bool? = nil, inputs: [String], constraints: [String], acceptanceCriteria: [String], tokenBudget: Int, tokensUsed: Int, model: String, runtimeID: String? = nil, costUSD: Double, sessionId: String? = nil, maxTurns: Int, createdAt: Date, updatedAt: Date, completedAt: Date? = nil, unreadAt: Date? = nil, isolationStrategy: String? = nil, validationStrategy: String? = nil, testCommand: String? = nil, draftMessages: String? = nil, chainedGoal: String? = nil, chainedFromID: String? = nil, useAgentTeam: Bool? = nil, teamSize: Int? = nil, teamInstructions: String? = nil, templateID: String? = nil, templateHooksJSON: String? = nil, queuePosition: Int? = nil, forkedFromID: String? = nil, forkedAtRunIndex: Int? = nil, originScheduleID: String? = nil, executionRootPath: String? = nil, runs: [RunConfig], events: [EventConfig], artifacts: [ArtifactConfig]? = nil, skillIDs: [String]? = nil, skillNames: [String], skillSnapshots: [SkillSnapshotConfig]? = nil, executionEnvironmentSnapshotJSON: String? = nil, runtimePermissionOpenRequestsJSON: String? = nil, runtimePermissionGrantsJSON: String? = nil) {
+            self.id = id
+            self.title = title
+            self.goal = goal
+            self.status = status
+            self.isPinned = isPinned
+            self.isDone = isDone
+            self.inputs = inputs
+            self.constraints = constraints
+            self.acceptanceCriteria = acceptanceCriteria
+            self.tokenBudget = tokenBudget
+            self.tokensUsed = tokensUsed
+            self.model = model
+            self.runtimeID = runtimeID
+            self.costUSD = costUSD
+            self.sessionId = sessionId
+            self.maxTurns = maxTurns
+            self.createdAt = createdAt
+            self.updatedAt = updatedAt
+            self.completedAt = completedAt
+            self.unreadAt = unreadAt
+            self.isolationStrategy = isolationStrategy
+            self.validationStrategy = validationStrategy
+            self.testCommand = testCommand
+            self.draftMessages = draftMessages
+            self.chainedGoal = chainedGoal
+            self.chainedFromID = chainedFromID
+            self.useAgentTeam = useAgentTeam
+            self.teamSize = teamSize
+            self.teamInstructions = teamInstructions
+            self.templateID = templateID
+            self.templateHooksJSON = templateHooksJSON
+            self.queuePosition = queuePosition
+            self.forkedFromID = forkedFromID
+            self.forkedAtRunIndex = forkedAtRunIndex
+            self.originScheduleID = originScheduleID
+            self.executionRootPath = executionRootPath
+            self.runs = runs
+            self.events = events
+            self.artifacts = artifacts
+            self.skillIDs = skillIDs
+            self.skillNames = skillNames
+            self.skillSnapshots = skillSnapshots
+            self.executionEnvironmentSnapshotJSON = executionEnvironmentSnapshotJSON
+            self.runtimePermissionOpenRequestsJSON = runtimePermissionOpenRequestsJSON
+            self.runtimePermissionGrantsJSON = runtimePermissionGrantsJSON
+        }
+
+        public var id: String?
+        public var title: String
+        public var goal: String
+        public var status: String
+        public var isPinned: Bool?
+        public var isDone: Bool?
+        public var inputs: [String]
+        public var constraints: [String]
+        public var acceptanceCriteria: [String]
+        public var tokenBudget: Int
+        public var tokensUsed: Int
+        public var model: String
+        public var runtimeID: String?
+        public var costUSD: Double
+        public var sessionId: String?
+        public var maxTurns: Int
+        public var createdAt: Date
+        public var updatedAt: Date
+        public var completedAt: Date?
+        public var unreadAt: Date?
+        public var isolationStrategy: String?
+        public var validationStrategy: String?
+        public var testCommand: String?
+        public var draftMessages: String?
+        public var chainedGoal: String?
+        public var chainedFromID: String?
+        public var useAgentTeam: Bool?
+        public var teamSize: Int?
+        public var teamInstructions: String?
+        public var templateID: String?
+        public var templateHooksJSON: String?
+        public var queuePosition: Int? = nil
+        public var forkedFromID: String? = nil
+        public var forkedAtRunIndex: Int? = nil
+        public var originScheduleID: String? = nil
+        public var executionRootPath: String? = nil
+        public var runs: [RunConfig]
+        public var events: [EventConfig]
+        public var artifacts: [ArtifactConfig]?
+        public var skillIDs: [String]?
+        public var skillNames: [String]
+        public var skillSnapshots: [SkillSnapshotConfig]?
+        public var executionEnvironmentSnapshotJSON: String?
+        public var runtimePermissionOpenRequestsJSON: String?
+        public var runtimePermissionGrantsJSON: String?
     }
 
-    struct RunConfig: Codable, Sendable {
-        var id: String?
-        var status: String
-        var startedAt: Date
-        var completedAt: Date?
-        var tokensUsed: Int
-        var inputTokens: Int?
-        var outputTokens: Int?
-        var runtimeID: String?
-        var providerSessionId: String?
-        var providerVersion: String?
-        var executionEnvironmentSnapshotJSON: String?
-        var exitCode: Int?
-        var output: String
-        var costUSD: Double
-        var stopReason: String
-        var fileChangesJSON: String
+    public struct WorkspaceAppConfig: Codable, Sendable {
+        public init(id: String? = nil, workspaceID: String, logicalID: String, name: String, icon: String, description: String, lifecycleStatus: String, permissionMode: String, dependencyStatus: String, manifestRelativePath: String, appDirectoryRelativePath: String, manifestDigest: String, publishedManifestDigest: String? = nil, lastKnownGoodManifestDigest: String? = nil, latestVersionNumber: Int? = nil, sourcePackageID: String? = nil, sourcePackageVersion: String? = nil, sourcePackageDigest: String? = nil, lastOpenedAt: Date? = nil, lastRefreshedAt: Date? = nil, lastRunAt: Date? = nil, createdAt: Date? = nil, updatedAt: Date? = nil) {
+            self.id = id
+            self.workspaceID = workspaceID
+            self.logicalID = logicalID
+            self.name = name
+            self.icon = icon
+            self.description = description
+            self.lifecycleStatus = lifecycleStatus
+            self.permissionMode = permissionMode
+            self.dependencyStatus = dependencyStatus
+            self.manifestRelativePath = manifestRelativePath
+            self.appDirectoryRelativePath = appDirectoryRelativePath
+            self.manifestDigest = manifestDigest
+            self.publishedManifestDigest = publishedManifestDigest
+            self.lastKnownGoodManifestDigest = lastKnownGoodManifestDigest
+            self.latestVersionNumber = latestVersionNumber
+            self.sourcePackageID = sourcePackageID
+            self.sourcePackageVersion = sourcePackageVersion
+            self.sourcePackageDigest = sourcePackageDigest
+            self.lastOpenedAt = lastOpenedAt
+            self.lastRefreshedAt = lastRefreshedAt
+            self.lastRunAt = lastRunAt
+            self.createdAt = createdAt
+            self.updatedAt = updatedAt
+        }
+
+        public var id: String?
+        public var workspaceID: String
+        public var logicalID: String
+        public var name: String
+        public var icon: String
+        public var description: String
+        public var lifecycleStatus: String
+        public var permissionMode: String
+        public var dependencyStatus: String
+        public var manifestRelativePath: String
+        public var appDirectoryRelativePath: String
+        public var manifestDigest: String
+        public var publishedManifestDigest: String?
+        public var lastKnownGoodManifestDigest: String?
+        public var latestVersionNumber: Int?
+        public var sourcePackageID: String?
+        public var sourcePackageVersion: String?
+        public var sourcePackageDigest: String?
+        public var lastOpenedAt: Date?
+        public var lastRefreshedAt: Date?
+        public var lastRunAt: Date?
+        public var createdAt: Date?
+        public var updatedAt: Date?
     }
 
-    struct EventConfig: Codable, Sendable {
-        var id: String?
-        var type: String
-        var payload: String
-        var timestamp: Date
-        var category: String
-        var agentName: String?
-        var agentId: String?
-        var teamName: String?
-        var runIndex: Int?
+    public struct WorkspaceAppRunConfig: Codable, Sendable {
+        public init(id: String? = nil, workspaceID: String, appID: String, appLogicalID: String, actionID: String, trigger: String, status: String, startedAt: Date, completedAt: Date? = nil, inputSummary: String, outputSummary: String, errorMessage: String? = nil, linkedTaskID: String? = nil, linkedArtifactPath: String? = nil, pendingActionID: String? = nil, pendingStepIndex: Int? = nil, consumedTokens: Int? = nil, awaitedTaskIDsJSON: String? = nil, pendingApprovalActionID: String? = nil) {
+            self.id = id
+            self.workspaceID = workspaceID
+            self.appID = appID
+            self.appLogicalID = appLogicalID
+            self.actionID = actionID
+            self.trigger = trigger
+            self.status = status
+            self.startedAt = startedAt
+            self.completedAt = completedAt
+            self.inputSummary = inputSummary
+            self.outputSummary = outputSummary
+            self.errorMessage = errorMessage
+            self.linkedTaskID = linkedTaskID
+            self.linkedArtifactPath = linkedArtifactPath
+            self.pendingActionID = pendingActionID
+            self.pendingStepIndex = pendingStepIndex
+            self.consumedTokens = consumedTokens
+            self.awaitedTaskIDsJSON = awaitedTaskIDsJSON
+            self.pendingApprovalActionID = pendingApprovalActionID
+        }
+
+        public var id: String?
+        public var workspaceID: String
+        public var appID: String
+        public var appLogicalID: String
+        public var actionID: String
+        public var trigger: String
+        public var status: String
+        public var startedAt: Date
+        public var completedAt: Date?
+        public var inputSummary: String
+        public var outputSummary: String
+        public var errorMessage: String?
+        public var linkedTaskID: String?
+        public var linkedArtifactPath: String?
+        public var pendingActionID: String?
+        public var pendingStepIndex: Int?
+        public var consumedTokens: Int?
+        public var awaitedTaskIDsJSON: String?
+        public var pendingApprovalActionID: String?
+    }
+
+    public struct WorkspaceAppRunEventConfig: Codable, Sendable {
+        public init(id: String? = nil, runID: String, workspaceID: String, appID: String, actionID: String, type: String, payload: String, timestamp: Date) {
+            self.id = id
+            self.runID = runID
+            self.workspaceID = workspaceID
+            self.appID = appID
+            self.actionID = actionID
+            self.type = type
+            self.payload = payload
+            self.timestamp = timestamp
+        }
+
+        public var id: String?
+        public var runID: String
+        public var workspaceID: String
+        public var appID: String
+        public var actionID: String
+        public var type: String
+        public var payload: String
+        public var timestamp: Date
+    }
+
+    public struct WorkspaceAppDependencyBindingConfig: Codable, Sendable {
+        public init(id: String? = nil, workspaceID: String, appID: String, appLogicalID: String, requirementID: String, contract: String, operationsSummary: String, optional: Bool, status: String, implementationID: String? = nil, provider: String? = nil, transport: String? = nil, createdAt: Date? = nil, updatedAt: Date? = nil) {
+            self.id = id
+            self.workspaceID = workspaceID
+            self.appID = appID
+            self.appLogicalID = appLogicalID
+            self.requirementID = requirementID
+            self.contract = contract
+            self.operationsSummary = operationsSummary
+            self.optional = optional
+            self.status = status
+            self.implementationID = implementationID
+            self.provider = provider
+            self.transport = transport
+            self.createdAt = createdAt
+            self.updatedAt = updatedAt
+        }
+
+        public var id: String?
+        public var workspaceID: String
+        public var appID: String
+        public var appLogicalID: String
+        public var requirementID: String
+        public var contract: String
+        public var operationsSummary: String
+        public var optional: Bool
+        public var status: String
+        public var implementationID: String?
+        public var provider: String?
+        public var transport: String?
+        public var createdAt: Date?
+        public var updatedAt: Date?
+    }
+
+    public struct WorkspaceAppAutomationStateConfig: Codable, Sendable {
+        public init(id: String? = nil, workspaceID: String, appID: String, appLogicalID: String, automationID: String, automationType: String, actionID: String? = nil, isEnabled: Bool, status: String, lastRunAt: Date? = nil, nextRunAt: Date? = nil, createdAt: Date? = nil, updatedAt: Date? = nil) {
+            self.id = id
+            self.workspaceID = workspaceID
+            self.appID = appID
+            self.appLogicalID = appLogicalID
+            self.automationID = automationID
+            self.automationType = automationType
+            self.actionID = actionID
+            self.isEnabled = isEnabled
+            self.status = status
+            self.lastRunAt = lastRunAt
+            self.nextRunAt = nextRunAt
+            self.createdAt = createdAt
+            self.updatedAt = updatedAt
+        }
+
+        public var id: String?
+        public var workspaceID: String
+        public var appID: String
+        public var appLogicalID: String
+        public var automationID: String
+        public var automationType: String
+        public var actionID: String?
+        public var isEnabled: Bool
+        public var status: String
+        public var lastRunAt: Date?
+        public var nextRunAt: Date?
+        public var createdAt: Date?
+        public var updatedAt: Date?
+    }
+
+    public struct GoogleOAuthAccountProfileConfig: Codable, Sendable {
+        public init(id: String? = nil, subject: String, email: String, displayName: String, avatarURLString: String? = nil, hostedDomain: String? = nil, grantedScopes: [String], requestedScopes: [String], authState: String, authStateReason: String, createdAt: Date, updatedAt: Date, lastAuthenticatedAt: Date? = nil, revokedAt: Date? = nil) {
+            self.id = id
+            self.subject = subject
+            self.email = email
+            self.displayName = displayName
+            self.avatarURLString = avatarURLString
+            self.hostedDomain = hostedDomain
+            self.grantedScopes = grantedScopes
+            self.requestedScopes = requestedScopes
+            self.authState = authState
+            self.authStateReason = authStateReason
+            self.createdAt = createdAt
+            self.updatedAt = updatedAt
+            self.lastAuthenticatedAt = lastAuthenticatedAt
+            self.revokedAt = revokedAt
+        }
+
+        public var id: String?
+        public var subject: String
+        public var email: String
+        public var displayName: String
+        public var avatarURLString: String?
+        public var hostedDomain: String?
+        public var grantedScopes: [String]
+        public var requestedScopes: [String]
+        public var authState: String
+        public var authStateReason: String
+        public var createdAt: Date
+        public var updatedAt: Date
+        public var lastAuthenticatedAt: Date?
+        public var revokedAt: Date?
+    }
+
+    public struct RunConfig: Codable, Sendable {
+        public init(id: String? = nil, status: String, startedAt: Date, completedAt: Date? = nil, tokensUsed: Int, inputTokens: Int? = nil, outputTokens: Int? = nil, runtimeID: String? = nil, providerSessionId: String? = nil, providerVersion: String? = nil, executionEnvironmentSnapshotJSON: String? = nil, providerLaunchSignatureJSON: String? = nil, exitCode: Int? = nil, output: String, costUSD: Double, stopReason: String, fileChangesJSON: String) {
+            self.id = id
+            self.status = status
+            self.startedAt = startedAt
+            self.completedAt = completedAt
+            self.tokensUsed = tokensUsed
+            self.inputTokens = inputTokens
+            self.outputTokens = outputTokens
+            self.runtimeID = runtimeID
+            self.providerSessionId = providerSessionId
+            self.providerVersion = providerVersion
+            self.executionEnvironmentSnapshotJSON = executionEnvironmentSnapshotJSON
+            self.providerLaunchSignatureJSON = providerLaunchSignatureJSON
+            self.exitCode = exitCode
+            self.output = output
+            self.costUSD = costUSD
+            self.stopReason = stopReason
+            self.fileChangesJSON = fileChangesJSON
+        }
+
+        public var id: String?
+        public var status: String
+        public var startedAt: Date
+        public var completedAt: Date?
+        public var tokensUsed: Int
+        public var inputTokens: Int?
+        public var outputTokens: Int?
+        public var runtimeID: String?
+        public var providerSessionId: String?
+        public var providerVersion: String?
+        public var executionEnvironmentSnapshotJSON: String?
+        public var providerLaunchSignatureJSON: String?
+        public var exitCode: Int?
+        public var output: String
+        public var costUSD: Double
+        public var stopReason: String
+        public var fileChangesJSON: String
+    }
+
+    public struct EventConfig: Codable, Sendable {
+        public init(id: String? = nil, type: String, payload: String, timestamp: Date, category: String, agentName: String? = nil, agentId: String? = nil, teamName: String? = nil, runIndex: Int? = nil) {
+            self.id = id
+            self.type = type
+            self.payload = payload
+            self.timestamp = timestamp
+            self.category = category
+            self.agentName = agentName
+            self.agentId = agentId
+            self.teamName = teamName
+            self.runIndex = runIndex
+        }
+
+        public var id: String?
+        public var type: String
+        public var payload: String
+        public var timestamp: Date
+        public var category: String
+        public var agentName: String?
+        public var agentId: String?
+        public var teamName: String?
+        public var runIndex: Int?
     }
 
     // MARK: - Export
 
-    static func export(workspace: Workspace) -> WorkspaceConfig? {
+    public static func export(workspace: Workspace) -> WorkspaceConfig? {
         guard let modelContext = workspace.modelContext else {
             return export(workspace: workspace, globalSkills: [])
         }
         return export(workspace: workspace, modelContext: modelContext)
     }
 
-    static func export(workspace: Workspace, modelContext: ModelContext) -> WorkspaceConfig? {
+    public static func export(workspace: Workspace, modelContext: ModelContext) -> WorkspaceConfig? {
         let globalSkills = fetchGlobalSkills(modelContext: modelContext)
         let globalConnectors = fetchGlobalConnectors(modelContext: modelContext)
         let globalTools = fetchGlobalTools(modelContext: modelContext)
@@ -370,7 +928,7 @@ enum WorkspaceConfigManager {
         )
     }
 
-    static func export(
+    public static func export(
         workspace: Workspace,
         globalSkills: [Skill],
         globalConnectors: [Connector] = [],
@@ -398,6 +956,15 @@ enum WorkspaceConfigManager {
         let scheduleConfigs = workspace.schedules.map(scheduleConfig)
         let sshConnections = SSHConnectionManager.load(workspacePath: workspace.primaryPath)
         let taskConfigs = workspace.tasks.map(taskConfig)
+        let workspaceAppConfigs = workspaceAppsForExport(workspace: workspace).map(workspaceAppConfig)
+        let workspaceAppRunSnapshot = workspaceAppRunMirrorSnapshotForExport(workspace: workspace)
+        let workspaceAppRunConfigs = workspaceAppRunSnapshot.runs.map(workspaceAppRunConfig)
+        let workspaceAppRunEventConfigs = workspaceAppRunSnapshot.events.map(workspaceAppRunEventConfig)
+        let workspaceAppDependencyBindingConfigs = workspaceAppDependencyBindingsForExport(workspace: workspace)
+            .map(workspaceAppDependencyBindingConfig)
+        let workspaceAppAutomationStateConfigs = workspaceAppAutomationStatesForExport(workspace: workspace)
+            .map(workspaceAppAutomationStateConfig)
+        let googleOAuthProfileConfigs = googleOAuthProfilesForExport(workspace: workspace).map(googleOAuthAccountProfileConfig)
 
         var pluginRefs: [InstalledPluginRef] = []
         for (idx, pluginID) in workspace.installedPluginIDs.enumerated() {
@@ -421,6 +988,8 @@ enum WorkspaceConfigManager {
             enabledGlobalConnectorIDs: workspace.enabledGlobalConnectorIDs,
             enabledGlobalToolIDs: workspace.enabledGlobalToolIDs,
             enabledCapabilityIDs: workspace.enabledCapabilityIDs,
+            enabledPackIDs: workspace.enabledPackIDs,
+            shelfVisibilityOverrides: workspace.shelfVisibilityOverrides,
             memories: workspace.memories,
             createdAt: workspace.createdAt,
             updatedAt: workspace.updatedAt,
@@ -431,23 +1000,31 @@ enum WorkspaceConfigManager {
             schedules: scheduleConfigs,
             sshConnections: sshConnections,
             tasks: taskConfigs,
+            workspaceApps: workspaceAppConfigs.isEmpty ? nil : workspaceAppConfigs,
+            workspaceAppRuns: workspaceAppRunConfigs.isEmpty ? nil : workspaceAppRunConfigs,
+            workspaceAppRunEvents: workspaceAppRunEventConfigs.isEmpty ? nil : workspaceAppRunEventConfigs,
+            workspaceAppDependencyBindings: workspaceAppDependencyBindingConfigs.isEmpty ? nil : workspaceAppDependencyBindingConfigs,
+            workspaceAppAutomationStates: workspaceAppAutomationStateConfigs.isEmpty ? nil : workspaceAppAutomationStateConfigs,
+            googleOAuthAccountProfiles: googleOAuthProfileConfigs.isEmpty ? nil : googleOAuthProfileConfigs,
             installedPlugins: pluginRefs.isEmpty ? nil : pluginRefs,
             exportedAt: Date()
         )
     }
 
-    static func exportToFile(workspace: Workspace, url: URL) throws {
+    public static func exportToFile(workspace: Workspace, url: URL) throws {
         guard let config = export(workspace: workspace) else { return }
+        try prepareMirrorParentIfNeeded(workspace: workspace, url: url)
         try write(config, to: url)
     }
 
-    static func exportToFile(workspace: Workspace, modelContext: ModelContext, url: URL) throws {
+    public static func exportToFile(workspace: Workspace, modelContext: ModelContext, url: URL) throws {
         guard let config = export(workspace: workspace, modelContext: modelContext) else { return }
+        try prepareMirrorParentIfNeeded(workspace: workspace, url: url)
         try write(config, to: url)
     }
 
     @discardableResult
-    static func exportToFileResult(workspace: Workspace, url: URL) -> WorkspaceConfigExportResult {
+    public static func exportToFileResult(workspace: Workspace, url: URL) -> WorkspaceConfigExportResult {
         guard let config = export(workspace: workspace) else {
             return exportResult(
                 status: .skippedNoConfig,
@@ -456,11 +1033,16 @@ enum WorkspaceConfigManager {
                 error: nil
             )
         }
+        do {
+            try prepareMirrorParentIfNeeded(workspace: workspace, url: url)
+        } catch {
+            return exportResult(status: .writeFailed, workspaceID: workspace.id.uuidString, url: url, error: error)
+        }
         return writeResult(config, workspaceID: workspace.id.uuidString, to: url)
     }
 
     @discardableResult
-    static func exportToFileResult(workspace: Workspace, modelContext: ModelContext, url: URL) -> WorkspaceConfigExportResult {
+    public static func exportToFileResult(workspace: Workspace, modelContext: ModelContext, url: URL) -> WorkspaceConfigExportResult {
         guard let config = export(workspace: workspace, modelContext: modelContext) else {
             return exportResult(
                 status: .skippedNoConfig,
@@ -468,6 +1050,11 @@ enum WorkspaceConfigManager {
                 url: url,
                 error: nil
             )
+        }
+        do {
+            try prepareMirrorParentIfNeeded(workspace: workspace, url: url)
+        } catch {
+            return exportResult(status: .writeFailed, workspaceID: workspace.id.uuidString, url: url, error: error)
         }
         return writeResult(config, workspaceID: workspace.id.uuidString, to: url)
     }
@@ -481,7 +1068,7 @@ enum WorkspaceConfigManager {
     /// `encode(.prettyPrinted)` + `data.write` stall from every `modelContext.save()`
     /// on a live run. The result-returning `exportToFileResult` path (used by tests,
     /// explicit user export, and flush-on-disappear) is intentionally left synchronous.
-    static func autoExport(workspace: Workspace) {
+    public static func autoExport(workspace: Workspace) {
         let target = autoExportTarget(for: workspace.primaryPath)
         guard let url = target.url else {
             logAutoExportSkipped(workspace: workspace, reason: target.reason)
@@ -494,7 +1081,7 @@ enum WorkspaceConfigManager {
         }
     }
 
-    static func autoExport(workspace: Workspace, modelContext: ModelContext) {
+    public static func autoExport(workspace: Workspace, modelContext: ModelContext) {
         let target = autoExportTarget(for: workspace.primaryPath)
         guard let url = target.url else {
             logAutoExportSkipped(workspace: workspace, reason: target.reason)
@@ -507,12 +1094,12 @@ enum WorkspaceConfigManager {
         }
     }
 
-    struct AutoExportTarget {
-        let url: URL?
-        let reason: String
+    public struct AutoExportTarget {
+        public let url: URL?
+        public let reason: String
     }
 
-    static func autoExportTarget(for workspacePath: String) -> AutoExportTarget {
+    public static func autoExportTarget(for workspacePath: String) -> AutoExportTarget {
         guard !workspacePath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return AutoExportTarget(url: nil, reason: "primary_path_empty")
         }
@@ -526,12 +1113,22 @@ enum WorkspaceConfigManager {
         guard !configPath.isEmpty else {
             return AutoExportTarget(url: nil, reason: "config_path_empty")
         }
+        let supportPath = WorkspaceFileLayout.supportDirectory(for: workspacePath)
+        do {
+            try FileManager.default.createDirectory(
+                atPath: supportPath,
+                withIntermediateDirectories: true
+            )
+            try WorkspaceGeneratedStateExcluder.ensureExcluded(workspacePath: workspacePath)
+        } catch {
+            return AutoExportTarget(url: nil, reason: "support_directory_unavailable")
+        }
 
         return AutoExportTarget(url: URL(fileURLWithPath: configPath), reason: "ready")
     }
 
     private static func logAutoExportSkipped(workspace: Workspace, reason: String) {
-        AppLogger.audit(.workspaceExported, category: "Persistence", fields: [
+        AuditLoggingSeam.required.audit(.workspaceExported, category: "Persistence", fields: [
             "result": "auto_export_skipped",
             "reason": reason,
             "workspace_id": workspace.id.uuidString
@@ -568,9 +1165,20 @@ enum WorkspaceConfigManager {
         }
     }
 
+    private static func prepareMirrorParentIfNeeded(workspace: Workspace, url: URL) throws {
+        let mirrorURL = URL(fileURLWithPath: WorkspaceFileLayout.workspaceConfigFile(for: workspace.primaryPath))
+            .standardizedFileURL
+        guard url.standardizedFileURL.path == mirrorURL.path else { return }
+        try FileManager.default.createDirectory(
+            at: mirrorURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try WorkspaceGeneratedStateExcluder.ensureExcluded(workspacePath: workspace.primaryPath)
+    }
+
     // MARK: - Import
 
-    static func loadConfig(
+    public static func loadConfig(
         from url: URL,
         accessIntent: HostFileAccessIntent = .explicitUserSelection
     ) throws -> WorkspaceConfig {
@@ -578,7 +1186,7 @@ enum WorkspaceConfigManager {
         return try workspaceConfigDecoder().decode(WorkspaceConfig.self, from: data)
     }
 
-    static func loadConfigResult(
+    public static func loadConfigResult(
         from url: URL,
         accessIntent: HostFileAccessIntent = .explicitUserSelection
     ) -> WorkspaceConfigLoadResult {
@@ -608,12 +1216,26 @@ enum WorkspaceConfigManager {
     }
 
     /// Create a new Workspace + Skills + Connectors + Tools + Templates from a config.
-    static func importWorkspace(from config: WorkspaceConfig, modelContext: ModelContext) -> Workspace {
-        importWorkspaceResult(from: config, modelContext: modelContext).workspace
+    @MainActor
+    public static func importWorkspace(
+        from config: WorkspaceConfig,
+        modelContext: ModelContext,
+        scheduleTrustPolicy: ScheduleImportTrustPolicy = .quarantineEnabledSchedules
+    ) -> Workspace {
+        importWorkspaceResult(
+            from: config,
+            modelContext: modelContext,
+            scheduleTrustPolicy: scheduleTrustPolicy
+        ).workspace
     }
 
     /// Create a new Workspace + Skills + Connectors + Tools + Templates from a config.
-    static func importWorkspaceResult(from config: WorkspaceConfig, modelContext: ModelContext) -> WorkspaceConfigImportResult {
+    @MainActor
+    public static func importWorkspaceResult(
+        from config: WorkspaceConfig,
+        modelContext: ModelContext,
+        scheduleTrustPolicy: ScheduleImportTrustPolicy = .quarantineEnabledSchedules
+    ) -> WorkspaceConfigImportResult {
         let workspace = Workspace(
             name: config.name,
             primaryPath: config.primaryPath,
@@ -629,20 +1251,16 @@ enum WorkspaceConfigManager {
         workspace.enabledGlobalConnectorIDs = config.enabledGlobalConnectorIDs ?? []
         workspace.enabledGlobalToolIDs = config.enabledGlobalToolIDs ?? []
         workspace.enabledCapabilityIDs = config.enabledCapabilityIDs ?? []
+        workspace.enabledPackIDs = config.enabledPackIDs ?? []
+        workspace.shelfVisibilityOverrides = config.shelfVisibilityOverrides ?? [:]
         workspace.memories = config.memories ?? []
         workspace.isStarred = config.isStarred ?? false
         workspace.activeExecutionEnvironmentJSON = sanitizedExecutionEnvironmentJSON(config.activeExecutionEnvironmentJSON)
-        // Only restore the worktree focus when the worktree actually exists on
-        // this machine; otherwise reset to root so new chats don't pin to a
-        // path that isn't here.
-        if let active = config.activeWorkingPath,
-           !active.isEmpty,
-           active != config.primaryPath,
-           FileManager.default.fileExists(atPath: active) {
-            workspace.activeWorkingPath = active
-        } else {
-            workspace.activeWorkingPath = nil
-        }
+        workspace.activeWorkingPath = importedActiveWorkingPath(
+            config.activeWorkingPath,
+            primaryPath: config.primaryPath,
+            additionalPaths: config.additionalPaths
+        )
         if let refs = config.installedPlugins {
             workspace.installedPluginIDs = refs.map(\.id)
             workspace.installedPluginVersions = refs.map(\.version)
@@ -734,8 +1352,9 @@ enum WorkspaceConfigManager {
             SSHConnectionManager.save(config.sshConnections, workspacePath: config.primaryPath)
         }
 
+        let quarantinedScheduleCount = scheduleTrustPolicy.quarantinedScheduleCount(in: config.schedules)
         for sc in config.schedules ?? [] {
-            let schedule = makeSchedule(from: sc, workspace: workspace)
+            let schedule = makeImportedSchedule(from: sc, workspace: workspace, trustPolicy: scheduleTrustPolicy)
             modelContext.insert(schedule)
         }
 
@@ -754,6 +1373,20 @@ enum WorkspaceConfigManager {
                 )
             }
         }
+        replaceWorkspaceAppMirrorRows(for: workspace.id, modelContext: modelContext)
+        // Re-tag every imported row to the workspace actually being created
+        // here, not whatever workspaceID its exported config snapshot froze
+        // in — those only match when config.id was reused verbatim (a true
+        // replace/recovery re-import); a duplicate import intentionally gets
+        // a fresh workspace.id (see TaskLifecycleCoordinator.importFromConfig),
+        // and without this the freshly-imported rows would silently end up
+        // scoped to the ORIGINAL workspace instead of the new one.
+        importWorkspaceApps(config.workspaceApps ?? [], workspaceID: workspace.id, modelContext: modelContext)
+        importWorkspaceAppRuns(config.workspaceAppRuns ?? [], workspaceID: workspace.id, modelContext: modelContext)
+        importWorkspaceAppRunEvents(config.workspaceAppRunEvents ?? [], workspaceID: workspace.id, modelContext: modelContext)
+        importWorkspaceAppDependencyBindings(config.workspaceAppDependencyBindings ?? [], workspaceID: workspace.id, modelContext: modelContext)
+        importWorkspaceAppAutomationStates(config.workspaceAppAutomationStates ?? [], workspaceID: workspace.id, modelContext: modelContext)
+        importGoogleOAuthProfiles(config.googleOAuthAccountProfiles ?? [], modelContext: modelContext)
 
         let result = WorkspaceConfigImportResult(
             status: .imported,
@@ -763,10 +1396,11 @@ enum WorkspaceConfigManager {
             connectorCount: workspace.connectors.count,
             localToolCount: workspace.localTools.count,
             taskCount: workspace.tasks.count,
+            quarantinedScheduleCount: quarantinedScheduleCount,
             skippedConnectorCount: skippedConnectorCount,
             skippedLocalToolCount: skippedLocalToolCount
         )
-        AppLogger.audit(.workspaceImported, category: "Persistence", fields: result.auditFields, level: .info)
+        AuditLoggingSeam.required.audit(.workspaceImported, category: "Persistence", fields: result.auditFields, level: .info)
         return result
     }
 
@@ -811,6 +1445,125 @@ enum WorkspaceConfigManager {
     private static func fetchGlobalTools(modelContext: ModelContext) -> [LocalTool] {
         let descriptor = FetchDescriptor<LocalTool>(predicate: #Predicate { $0.isGlobal })
         return (try? modelContext.fetch(descriptor)) ?? []
+    }
+
+    private static func workspaceAppsForExport(workspace: Workspace) -> [WorkspaceApp] {
+        guard let modelContext = workspace.modelContext else { return [] }
+        let workspaceID = workspace.id
+        let descriptor = FetchDescriptor<WorkspaceApp>(predicate: #Predicate { $0.workspaceID == workspaceID })
+        return (try? modelContext.fetch(descriptor)) ?? []
+    }
+
+    private static func workspaceAppRunMirrorSnapshotForExport(workspace: Workspace) -> WorkspaceAppRunMirrorSnapshot {
+        guard let modelContext = workspace.modelContext else {
+            return WorkspaceAppRunMirrorSnapshot(runs: [], events: [])
+        }
+        let workspaceID = workspace.id
+        let runDescriptor = FetchDescriptor<WorkspaceAppRun>(predicate: #Predicate { $0.workspaceID == workspaceID })
+        let runs = (try? modelContext.fetch(runDescriptor)) ?? []
+        let mirroredRuns = Array(runs
+            .sorted(by: workspaceAppRunMirrorOrder)
+            .suffix(MirrorLimits.maxWorkspaceAppRuns))
+        let mirroredRunIDs = Set(mirroredRuns.map(\.id))
+
+        let eventDescriptor = FetchDescriptor<WorkspaceAppRunEvent>(predicate: #Predicate { $0.workspaceID == workspaceID })
+        let events = ((try? modelContext.fetch(eventDescriptor)) ?? [])
+            .filter { mirroredRunIDs.contains($0.runID) }
+        let mirroredEvents = workspaceAppRunEventsForMirror(events, mirroredRuns: mirroredRuns)
+
+        return WorkspaceAppRunMirrorSnapshot(runs: mirroredRuns, events: mirroredEvents)
+    }
+
+    private static func workspaceAppRunMirrorOrder(_ lhs: WorkspaceAppRun, _ rhs: WorkspaceAppRun) -> Bool {
+        if lhs.startedAt == rhs.startedAt {
+            return lhs.id.uuidString < rhs.id.uuidString
+        }
+        return lhs.startedAt < rhs.startedAt
+    }
+
+    private static func workspaceAppRunEventsForMirror(
+        _ events: [WorkspaceAppRunEvent],
+        mirroredRuns: [WorkspaceAppRun]
+    ) -> [WorkspaceAppRunEvent] {
+        let approvalWaitingRunIDs = Set(mirroredRuns.compactMap { run -> UUID? in
+            guard run.pendingApprovalActionID?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .isEmpty == false else {
+                return nil
+            }
+            return run.id
+        })
+        let approvalResumeEvents = latestApprovalResumeEvents(
+            in: events,
+            approvalWaitingRunIDs: approvalWaitingRunIDs
+        )
+        let approvalResumeEventIDs = Set(approvalResumeEvents.map(\.id))
+        let remainingLimit = max(0, MirrorLimits.maxWorkspaceAppRunEvents - approvalResumeEvents.count)
+        let recentEvents = Array(events
+            .filter { !approvalResumeEventIDs.contains($0.id) }
+            .sorted(by: workspaceAppRunEventMirrorOrder)
+            .suffix(remainingLimit))
+        return (approvalResumeEvents + recentEvents)
+            .sorted(by: workspaceAppRunEventMirrorOrder)
+    }
+
+    private static func latestApprovalResumeEvents(
+        in events: [WorkspaceAppRunEvent],
+        approvalWaitingRunIDs: Set<UUID>
+    ) -> [WorkspaceAppRunEvent] {
+        guard !approvalWaitingRunIDs.isEmpty else { return [] }
+        var latestByRunID: [UUID: WorkspaceAppRunEvent] = [:]
+        for event in events
+            where approvalWaitingRunIDs.contains(event.runID)
+                && event.type == "workspaceApp.run.awaitingApproval" {
+            guard let existing = latestByRunID[event.runID] else {
+                latestByRunID[event.runID] = event
+                continue
+            }
+            if workspaceAppRunEventMirrorOrder(existing, event) {
+                latestByRunID[event.runID] = event
+            }
+        }
+        return latestByRunID.values.sorted(by: workspaceAppRunEventMirrorOrder)
+    }
+
+    private static func workspaceAppRunEventMirrorOrder(
+        _ lhs: WorkspaceAppRunEvent,
+        _ rhs: WorkspaceAppRunEvent
+    ) -> Bool {
+        if lhs.timestamp == rhs.timestamp {
+            return lhs.id.uuidString < rhs.id.uuidString
+        }
+        return lhs.timestamp < rhs.timestamp
+    }
+
+    private static func workspaceAppDependencyBindingsForExport(workspace: Workspace) -> [WorkspaceAppDependencyBinding] {
+        guard let modelContext = workspace.modelContext else { return [] }
+        let workspaceID = workspace.id
+        let descriptor = FetchDescriptor<WorkspaceAppDependencyBinding>(predicate: #Predicate { $0.workspaceID == workspaceID })
+        return (try? modelContext.fetch(descriptor)) ?? []
+    }
+
+    private static func workspaceAppAutomationStatesForExport(workspace: Workspace) -> [WorkspaceAppAutomationState] {
+        guard let modelContext = workspace.modelContext else { return [] }
+        let workspaceID = workspace.id
+        let descriptor = FetchDescriptor<WorkspaceAppAutomationState>(predicate: #Predicate { $0.workspaceID == workspaceID })
+        return (try? modelContext.fetch(descriptor)) ?? []
+    }
+
+    private static func googleOAuthProfilesForExport(workspace: Workspace) -> [GoogleOAuthAccountProfile] {
+        // Google account profiles are GLOBAL account state (subject / email /
+        // granted scopes), not workspace-scoped — the model has no workspace
+        // link. The workspace mirror is written as a dotfile inside the user's
+        // repository, so fetching every profile here mirrored a user's personal
+        // Google account metadata into *every* workspace's
+        // `.astra-workspace.json`, including unrelated non-Google projects, and
+        // into anything the workspace file is later shared with. Account
+        // profiles are re-established from Google auth (their tokens live in the
+        // keychain, which survives a store reset), so they are deliberately
+        // excluded from the per-workspace mirror. Existing mirrors that already
+        // contain profiles still import (see importGoogleOAuthProfiles).
+        []
     }
 
     private static func skillsForExport(workspace: Workspace, globalSkills: [Skill]) -> [Skill] {
@@ -982,14 +1735,153 @@ enum WorkspaceConfigManager {
         )
     }
 
+    private static func workspaceAppConfig(_ app: WorkspaceApp) -> WorkspaceAppConfig {
+        WorkspaceAppConfig(
+            id: app.id.uuidString,
+            workspaceID: app.workspaceID.uuidString,
+            logicalID: app.logicalID,
+            name: app.name,
+            icon: app.icon,
+            description: app.appDescription,
+            lifecycleStatus: app.lifecycleStatusRaw,
+            permissionMode: app.permissionModeRaw,
+            dependencyStatus: app.dependencyStatusRaw,
+            manifestRelativePath: app.manifestRelativePath,
+            appDirectoryRelativePath: app.appDirectoryRelativePath,
+            manifestDigest: app.manifestDigest,
+            publishedManifestDigest: app.publishedManifestDigest,
+            lastKnownGoodManifestDigest: app.lastKnownGoodManifestDigest,
+            latestVersionNumber: app.latestVersionNumber,
+            sourcePackageID: app.sourcePackageID,
+            sourcePackageVersion: app.sourcePackageVersion,
+            sourcePackageDigest: app.sourcePackageDigest,
+            lastOpenedAt: app.lastOpenedAt,
+            lastRefreshedAt: app.lastRefreshedAt,
+            lastRunAt: app.lastRunAt,
+            createdAt: app.createdAt,
+            updatedAt: app.updatedAt
+        )
+    }
+
+    private static func workspaceAppRunConfig(_ run: WorkspaceAppRun) -> WorkspaceAppRunConfig {
+        WorkspaceAppRunConfig(
+            id: run.id.uuidString,
+            workspaceID: run.workspaceID.uuidString,
+            appID: run.appID.uuidString,
+            appLogicalID: run.appLogicalID,
+            actionID: run.actionID,
+            trigger: run.triggerRaw,
+            status: run.statusRaw,
+            startedAt: run.startedAt,
+            completedAt: run.completedAt,
+            inputSummary: run.inputSummary,
+            outputSummary: boundedMirrorString(
+                run.outputSummary,
+                limit: MirrorLimits.maxWorkspaceAppRunOutputCharacters
+            ),
+            errorMessage: run.errorMessage,
+            linkedTaskID: run.linkedTaskID?.uuidString,
+            linkedArtifactPath: run.linkedArtifactPath,
+            pendingActionID: run.pendingActionID,
+            pendingStepIndex: run.pendingStepIndex,
+            consumedTokens: run.consumedTokens,
+            awaitedTaskIDsJSON: run.awaitedTaskIDsJSON,
+            pendingApprovalActionID: run.pendingApprovalActionID
+        )
+    }
+
+    private static func workspaceAppRunEventConfig(_ event: WorkspaceAppRunEvent) -> WorkspaceAppRunEventConfig {
+        WorkspaceAppRunEventConfig(
+            id: event.id.uuidString,
+            runID: event.runID.uuidString,
+            workspaceID: event.workspaceID.uuidString,
+            appID: event.appID.uuidString,
+            actionID: event.actionID,
+            type: event.type,
+            payload: boundedMirrorString(
+                event.payload,
+                limit: MirrorLimits.maxWorkspaceAppRunEventPayloadCharacters
+            ),
+            timestamp: event.timestamp
+        )
+    }
+
+    private static func workspaceAppDependencyBindingConfig(
+        _ binding: WorkspaceAppDependencyBinding
+    ) -> WorkspaceAppDependencyBindingConfig {
+        WorkspaceAppDependencyBindingConfig(
+            id: binding.id.uuidString,
+            workspaceID: binding.workspaceID.uuidString,
+            appID: binding.appID.uuidString,
+            appLogicalID: binding.appLogicalID,
+            requirementID: binding.requirementID,
+            contract: binding.contract,
+            operationsSummary: binding.operationsSummary,
+            optional: binding.optional,
+            status: binding.statusRaw,
+            implementationID: binding.implementationID,
+            provider: binding.provider,
+            transport: binding.transportRaw,
+            createdAt: binding.createdAt,
+            updatedAt: binding.updatedAt
+        )
+    }
+
+    private static func workspaceAppAutomationStateConfig(
+        _ state: WorkspaceAppAutomationState
+    ) -> WorkspaceAppAutomationStateConfig {
+        WorkspaceAppAutomationStateConfig(
+            id: state.id.uuidString,
+            workspaceID: state.workspaceID.uuidString,
+            appID: state.appID.uuidString,
+            appLogicalID: state.appLogicalID,
+            automationID: state.automationID,
+            automationType: state.automationType,
+            actionID: state.actionID,
+            isEnabled: state.isEnabled,
+            status: state.statusRaw,
+            lastRunAt: state.lastRunAt,
+            nextRunAt: state.nextRunAt,
+            createdAt: state.createdAt,
+            updatedAt: state.updatedAt
+        )
+    }
+
+    private static func googleOAuthAccountProfileConfig(
+        _ profile: GoogleOAuthAccountProfile
+    ) -> GoogleOAuthAccountProfileConfig {
+        GoogleOAuthAccountProfileConfig(
+            id: profile.id.uuidString,
+            subject: profile.subject,
+            email: profile.email,
+            displayName: profile.displayName,
+            avatarURLString: profile.avatarURLString,
+            hostedDomain: profile.hostedDomain,
+            grantedScopes: profile.grantedScopes,
+            requestedScopes: profile.requestedScopes,
+            authState: profile.authStateRaw,
+            authStateReason: profile.authStateReason,
+            createdAt: profile.createdAt,
+            updatedAt: profile.updatedAt,
+            lastAuthenticatedAt: profile.lastAuthenticatedAt,
+            revokedAt: profile.revokedAt
+        )
+    }
+
     private static func taskConfig(_ task: AgentTask) -> TaskConfig {
-        let sortedRuns = task.runs.sorted { $0.startedAt < $1.startedAt }
+        let sortedRuns = task.runs.sorted {
+            if $0.startedAt == $1.startedAt {
+                return $0.id.uuidString < $1.id.uuidString
+            }
+            return $0.startedAt < $1.startedAt
+        }
+        let mirroredRuns = Array(sortedRuns.suffix(MirrorLimits.maxRunsPerTask))
         let runIDToIndex = Dictionary(
-            sortedRuns.enumerated().map { ($1.id, $0) },
+            mirroredRuns.enumerated().map { ($1.id, $0) },
             uniquingKeysWith: { first, _ in first }
         )
 
-        let runConfigs = sortedRuns.map { run in
+        let runConfigs = mirroredRuns.map { run in
             RunConfig(
                 id: run.id.uuidString,
                 status: run.status.rawValue,
@@ -1002,19 +1894,28 @@ enum WorkspaceConfigManager {
                 providerSessionId: run.providerSessionId,
                 providerVersion: run.providerVersion,
                 executionEnvironmentSnapshotJSON: run.executionEnvironmentSnapshotJSON,
+                providerLaunchSignatureJSON: run.providerLaunchSignatureJSON,
                 exitCode: run.exitCode,
-                output: run.output,
+                output: boundedMirrorString(run.output, limit: MirrorLimits.maxRunOutputCharacters),
                 costUSD: run.costUSD,
                 stopReason: run.stopReason,
                 fileChangesJSON: run.fileChangesJSON
             )
         }
 
-        let eventConfigs = task.events.sorted(by: { $0.timestamp < $1.timestamp }).map { event in
+        let mirroredEvents = Array(task.events
+            .sorted {
+                if $0.timestamp == $1.timestamp {
+                    return $0.id.uuidString < $1.id.uuidString
+                }
+                return $0.timestamp < $1.timestamp
+            }
+            .suffix(MirrorLimits.maxEventsPerTask))
+        let eventConfigs = mirroredEvents.map { event in
             EventConfig(
                 id: event.id.uuidString,
                 type: event.type,
-                payload: event.payload,
+                payload: boundedMirrorString(event.payload, limit: MirrorLimits.maxEventPayloadCharacters),
                 timestamp: event.timestamp,
                 category: event.category,
                 agentName: event.agentName,
@@ -1060,14 +1961,28 @@ enum WorkspaceConfigManager {
             teamInstructions: task.teamInstructions,
             templateID: task.templateID?.uuidString,
             templateHooksJSON: task.templateHooksJSON,
+            queuePosition: task.queuePosition,
+            forkedFromID: task.forkedFromID?.uuidString,
+            forkedAtRunIndex: task.forkedAtRunIndex,
+            originScheduleID: task.originScheduleID?.uuidString,
+            executionRootPath: task.executionRootPath,
             runs: runConfigs,
             events: eventConfigs,
             artifacts: task.artifacts.map(ArtifactConfig.init(artifact:)),
             skillIDs: task.skills.map { $0.id.uuidString },
             skillNames: task.skills.map(\.name),
             skillSnapshots: snapshots,
-            executionEnvironmentSnapshotJSON: sanitizedExecutionEnvironmentJSON(task.executionEnvironmentSnapshotJSON, preservingHost: true)
+            executionEnvironmentSnapshotJSON: sanitizedExecutionEnvironmentJSON(task.executionEnvironmentSnapshotJSON, preservingHost: true),
+            runtimePermissionOpenRequestsJSON: task.runtimePermissionOpenRequestsJSON == "[]" ? nil : task.runtimePermissionOpenRequestsJSON,
+            runtimePermissionGrantsJSON: task.runtimePermissionGrantsJSON == "[]" ? nil : task.runtimePermissionGrantsJSON
         )
+    }
+
+    private static func boundedMirrorString(_ value: String, limit: Int) -> String {
+        guard value.count > limit else { return value }
+        let marker = "\n[ASTRA mirror truncated: original \(value.count) characters; limit \(limit) characters]"
+        let retainedCount = max(0, limit - marker.count)
+        return String(value.prefix(retainedCount)) + marker
     }
 
     private static func uniqueByID<T>(_ values: [T], id: (T) -> UUID) -> [T] {
@@ -1319,7 +2234,11 @@ enum WorkspaceConfigManager {
         )
     }
 
-    private static func makeSchedule(from config: ScheduleConfig, workspace: Workspace) -> TaskSchedule {
+    private static func makeImportedSchedule(
+        from config: ScheduleConfig,
+        workspace: Workspace,
+        trustPolicy: ScheduleImportTrustPolicy
+    ) -> TaskSchedule {
         let schedule = TaskSchedule(
             name: config.name,
             goal: config.goal,
@@ -1333,7 +2252,7 @@ enum WorkspaceConfigManager {
         if let id = config.id.flatMap(UUID.init(uuidString:)) {
             schedule.id = id
         }
-        schedule.isEnabled = config.isEnabled
+        schedule.isEnabled = trustPolicy.enabledState(for: config)
         schedule.templateID = config.templateID.flatMap(UUID.init(uuidString:))
         schedule.templateVariablesJSON = config.templateVariablesJSON
         schedule.routineDescription = config.routineDescription ?? schedule.routineDescription
@@ -1468,6 +2387,7 @@ enum WorkspaceConfigManager {
         }
     }
 
+    @MainActor
     private static func importTask(
         _ config: TaskConfig,
         workspace: Workspace,
@@ -1491,7 +2411,15 @@ enum WorkspaceConfigManager {
         if let id = config.id.flatMap(UUID.init(uuidString:)) {
             task.id = id
         }
-        task.status = TaskStatus(rawValue: config.status) ?? .completed
+        let targetStatus = TaskStatus(rawValue: config.status) ?? .completed
+        let restorationResult = TaskSessionStateApplyingSeam.required.restoreImportedStatus(
+            taskID: task.id,
+            currentStatusRawValue: task.status.rawValue,
+            targetStatusRawValue: targetStatus.rawValue,
+            at: Date()
+        )
+        task.status = targetStatus
+        task.updatedAt = restorationResult.updatedAt
         task.isPinned = config.isPinned ?? false
         task.isDone = config.isDone ?? false
         task.inputs = config.inputs
@@ -1509,15 +2437,23 @@ enum WorkspaceConfigManager {
         if let value = config.isolationStrategy {
             task.isolationStrategy = IsolationStrategy(rawValue: value) ?? .sameDirectory
         }
-        if let value = config.validationStrategy {
-            task.validationStrategy = ValidationStrategy(rawValue: value) ?? .manual
-        }
-        task.testCommand = config.testCommand ?? ""
+        let validation = importedValidationConfiguration(
+            strategy: config.validationStrategy,
+            testCommand: config.testCommand,
+            workspacePath: workspace.primaryPath
+        )
+        task.validationStrategy = validation.strategy
+        task.testCommand = validation.testCommand
         task.draftMessages = config.draftMessages ?? ""
         task.chainedGoal = config.chainedGoal ?? ""
         if let id = config.chainedFromID {
             task.chainedFromID = UUID(uuidString: id)
         }
+        task.queuePosition = config.queuePosition ?? 0
+        task.forkedFromID = config.forkedFromID.flatMap(UUID.init(uuidString:))
+        task.forkedAtRunIndex = config.forkedAtRunIndex ?? 0
+        task.originScheduleID = config.originScheduleID.flatMap(UUID.init(uuidString:))
+        task.executionRootPath = config.executionRootPath
         task.useAgentTeam = config.useAgentTeam ?? false
         task.teamSize = config.teamSize ?? 3
         task.teamInstructions = config.teamInstructions ?? ""
@@ -1530,6 +2466,8 @@ enum WorkspaceConfigManager {
             config.executionEnvironmentSnapshotJSON,
             preservingHost: true
         )
+        task.runtimePermissionOpenRequestsJSON = config.runtimePermissionOpenRequestsJSON ?? "[]"
+        task.runtimePermissionGrantsJSON = config.runtimePermissionGrantsJSON ?? "[]"
         modelContext.insert(task)
 
         linkSkills(
@@ -1547,7 +2485,7 @@ enum WorkspaceConfigManager {
             toolsByName: &toolsByName
         )
         if task.skillSnapshots.isEmpty {
-            TaskCapabilitySnapshotter.capture(for: task)
+            TaskCapabilitySnapshotCapture.capture(for: task)
         }
 
         var importedRuns: [TaskRun] = []
@@ -1569,6 +2507,7 @@ enum WorkspaceConfigManager {
                 rc.executionEnvironmentSnapshotJSON,
                 preservingHost: true
             )
+            run.providerLaunchSignatureJSON = rc.providerLaunchSignatureJSON
             run.exitCode = rc.exitCode
             run.output = rc.output
             run.costUSD = rc.costUSD
@@ -1598,6 +2537,7 @@ enum WorkspaceConfigManager {
             event.category = ec.category
             modelContext.insert(event)
         }
+        task.updatedAt = config.updatedAt
 
         for ac in config.artifacts ?? [] {
             let artifact = Artifact(
@@ -1613,6 +2553,263 @@ enum WorkspaceConfigManager {
             artifact.createdAt = ac.createdAt
             modelContext.insert(artifact)
         }
+    }
+
+    /// Generates fresh ids for every WorkspaceApp/Run/RunEvent/DependencyBinding/
+    /// AutomationState in `config` and rewrites every `appID`/`runID`
+    /// cross-reference to match. A duplicated workspace must not share these
+    /// primary keys with the workspace it was exported from — code such as
+    /// `WorkspaceAppService.deleteApp` operates by `appID` alone across runs,
+    /// bindings, automation, and events, so a shared id lets an operation on
+    /// one copy affect the other.
+    public static func remappingWorkspaceAppIdentities(in config: WorkspaceConfig) -> WorkspaceConfig {
+        var config = config
+        var appIDRemap: [String: String] = [:]
+        var runIDRemap: [String: String] = [:]
+
+        config.workspaceApps = config.workspaceApps?.map { app in
+            var app = app
+            if let oldID = app.id {
+                let newID = UUID().uuidString
+                appIDRemap[oldID] = newID
+                app.id = newID
+            }
+            return app
+        }
+
+        config.workspaceAppRuns = config.workspaceAppRuns?.map { run in
+            var run = run
+            if let oldID = run.id {
+                let newID = UUID().uuidString
+                runIDRemap[oldID] = newID
+                run.id = newID
+            }
+            run.appID = appIDRemap[run.appID] ?? run.appID
+            return run
+        }
+
+        config.workspaceAppRunEvents = config.workspaceAppRunEvents?.map { event in
+            var event = event
+            if event.id != nil {
+                event.id = UUID().uuidString
+            }
+            event.runID = runIDRemap[event.runID] ?? event.runID
+            event.appID = appIDRemap[event.appID] ?? event.appID
+            return event
+        }
+
+        config.workspaceAppDependencyBindings = config.workspaceAppDependencyBindings?.map { binding in
+            var binding = binding
+            if binding.id != nil {
+                binding.id = UUID().uuidString
+            }
+            binding.appID = appIDRemap[binding.appID] ?? binding.appID
+            return binding
+        }
+
+        config.workspaceAppAutomationStates = config.workspaceAppAutomationStates?.map { state in
+            var state = state
+            if state.id != nil {
+                state.id = UUID().uuidString
+            }
+            state.appID = appIDRemap[state.appID] ?? state.appID
+            return state
+        }
+
+        return config
+    }
+
+    private static func importWorkspaceApps(_ configs: [WorkspaceAppConfig], workspaceID: UUID, modelContext: ModelContext) {
+        for config in configs {
+            let app = WorkspaceApp(
+                id: config.id.flatMap(UUID.init(uuidString:)) ?? UUID(),
+                workspaceID: workspaceID,
+                logicalID: config.logicalID,
+                name: config.name,
+                icon: config.icon,
+                appDescription: config.description,
+                lifecycleStatus: WorkspaceAppLifecycleStatus(rawValue: config.lifecycleStatus) ?? .draft,
+                permissionMode: WorkspaceAppPermissionMode(rawValue: config.permissionMode) ?? .readOnly,
+                dependencyStatus: WorkspaceAppDependencyStatus(rawValue: config.dependencyStatus) ?? .unresolved,
+                manifestRelativePath: config.manifestRelativePath,
+                appDirectoryRelativePath: config.appDirectoryRelativePath,
+                manifestDigest: config.manifestDigest,
+                publishedManifestDigest: config.publishedManifestDigest ?? "",
+                lastKnownGoodManifestDigest: config.lastKnownGoodManifestDigest ?? "",
+                latestVersionNumber: config.latestVersionNumber ?? 0,
+                sourcePackageID: config.sourcePackageID,
+                sourcePackageVersion: config.sourcePackageVersion,
+                sourcePackageDigest: config.sourcePackageDigest,
+                createdAt: config.createdAt ?? Date(),
+                updatedAt: config.updatedAt ?? config.createdAt ?? Date()
+            )
+            app.lastOpenedAt = config.lastOpenedAt
+            app.lastRefreshedAt = config.lastRefreshedAt
+            app.lastRunAt = config.lastRunAt
+            modelContext.insert(app)
+        }
+    }
+
+    private static func importWorkspaceAppRuns(_ configs: [WorkspaceAppRunConfig], workspaceID: UUID, modelContext: ModelContext) {
+        for config in configs {
+            let run = WorkspaceAppRun(
+                id: config.id.flatMap(UUID.init(uuidString:)) ?? UUID(),
+                workspaceID: workspaceID,
+                appID: UUID(uuidString: config.appID) ?? UUID(),
+                appLogicalID: config.appLogicalID,
+                actionID: config.actionID,
+                trigger: WorkspaceAppRunTrigger(rawValue: config.trigger) ?? .user,
+                status: WorkspaceAppRunStatus(rawValue: config.status) ?? .failed,
+                startedAt: config.startedAt,
+                inputSummary: config.inputSummary,
+                outputSummary: config.outputSummary,
+                errorMessage: config.errorMessage
+            )
+            run.completedAt = config.completedAt
+            run.linkedTaskID = config.linkedTaskID.flatMap(UUID.init(uuidString:))
+            run.linkedArtifactPath = config.linkedArtifactPath
+            run.pendingActionID = config.pendingActionID
+            run.pendingStepIndex = config.pendingStepIndex ?? 0
+            run.consumedTokens = config.consumedTokens ?? 0
+            run.awaitedTaskIDsJSON = config.awaitedTaskIDsJSON ?? "[]"
+            run.pendingApprovalActionID = config.pendingApprovalActionID
+            modelContext.insert(run)
+        }
+    }
+
+    private static func importWorkspaceAppRunEvents(
+        _ configs: [WorkspaceAppRunEventConfig],
+        workspaceID: UUID,
+        modelContext: ModelContext
+    ) {
+        for config in configs {
+            let event = WorkspaceAppRunEvent(
+                id: config.id.flatMap(UUID.init(uuidString:)) ?? UUID(),
+                runID: UUID(uuidString: config.runID) ?? UUID(),
+                workspaceID: workspaceID,
+                appID: UUID(uuidString: config.appID) ?? UUID(),
+                actionID: config.actionID,
+                type: config.type,
+                payload: config.payload,
+                timestamp: config.timestamp
+            )
+            modelContext.insert(event)
+        }
+    }
+
+    private static func importWorkspaceAppDependencyBindings(
+        _ configs: [WorkspaceAppDependencyBindingConfig],
+        workspaceID: UUID,
+        modelContext: ModelContext
+    ) {
+        for config in configs {
+            let binding = WorkspaceAppDependencyBinding(
+                id: config.id.flatMap(UUID.init(uuidString:)) ?? UUID(),
+                workspaceID: workspaceID,
+                appID: UUID(uuidString: config.appID) ?? UUID(),
+                appLogicalID: config.appLogicalID,
+                requirementID: config.requirementID,
+                contract: config.contract,
+                operations: config.operationsSummary
+                    .split(separator: ",")
+                    .map(String.init)
+                    .filter { !$0.isEmpty },
+                optional: config.optional,
+                status: WorkspaceAppDependencyBindingStatus(rawValue: config.status) ?? .missingRequired,
+                implementationID: config.implementationID,
+                provider: config.provider,
+                transport: config.transport.flatMap(WorkspaceAppContractTransport.init(rawValue:)),
+                createdAt: config.createdAt ?? Date(),
+                updatedAt: config.updatedAt ?? config.createdAt ?? Date()
+            )
+            modelContext.insert(binding)
+        }
+    }
+
+    private static func importWorkspaceAppAutomationStates(
+        _ configs: [WorkspaceAppAutomationStateConfig],
+        workspaceID: UUID,
+        modelContext: ModelContext
+    ) {
+        for config in configs {
+            let state = WorkspaceAppAutomationState(
+                id: config.id.flatMap(UUID.init(uuidString:)) ?? UUID(),
+                workspaceID: workspaceID,
+                appID: UUID(uuidString: config.appID) ?? UUID(),
+                appLogicalID: config.appLogicalID,
+                automationID: config.automationID,
+                automationType: config.automationType,
+                actionID: config.actionID,
+                isEnabled: config.isEnabled,
+                status: WorkspaceAppAutomationStateStatus(rawValue: config.status) ?? .disabled,
+                lastRunAt: config.lastRunAt,
+                nextRunAt: config.nextRunAt,
+                createdAt: config.createdAt ?? Date(),
+                updatedAt: config.updatedAt ?? config.createdAt ?? Date()
+            )
+            modelContext.insert(state)
+        }
+    }
+
+    private static func importGoogleOAuthProfiles(
+        _ configs: [GoogleOAuthAccountProfileConfig],
+        modelContext: ModelContext
+    ) {
+        for config in configs {
+            guard existingGoogleOAuthProfile(for: config, modelContext: modelContext) == nil else {
+                continue
+            }
+            let profile = GoogleOAuthAccountProfile(
+                id: config.id.flatMap(UUID.init(uuidString:)) ?? UUID(),
+                subject: config.subject,
+                email: config.email,
+                displayName: config.displayName,
+                avatarURLString: config.avatarURLString,
+                hostedDomain: config.hostedDomain,
+                grantedScopes: config.grantedScopes,
+                requestedScopes: config.requestedScopes,
+                authState: GoogleOAuthAccountAuthState(rawValue: config.authState) ?? .active,
+                authStateReason: config.authStateReason,
+                createdAt: config.createdAt,
+                updatedAt: config.updatedAt,
+                lastAuthenticatedAt: config.lastAuthenticatedAt,
+                revokedAt: config.revokedAt
+            )
+            modelContext.insert(profile)
+        }
+    }
+
+    private static func existingGoogleOAuthProfile(
+        for config: GoogleOAuthAccountProfileConfig,
+        modelContext: ModelContext
+    ) -> GoogleOAuthAccountProfile? {
+        if let id = config.id.flatMap(UUID.init(uuidString:)) {
+            let descriptor = FetchDescriptor<GoogleOAuthAccountProfile>(predicate: #Predicate { $0.id == id })
+            if let profile = (try? modelContext.fetch(descriptor))?.first {
+                return profile
+            }
+        }
+
+        let email = config.email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let descriptor = FetchDescriptor<GoogleOAuthAccountProfile>(predicate: #Predicate { $0.email == email })
+        return (try? modelContext.fetch(descriptor))?.first
+    }
+
+    private static func importedValidationConfiguration(
+        strategy rawStrategy: String?,
+        testCommand rawCommand: String?,
+        workspacePath: String?
+    ) -> (strategy: ValidationStrategy, testCommand: String) {
+        let strategy = rawStrategy.flatMap(ValidationStrategy.init(rawValue:)) ?? .manual
+        let command = rawCommand?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+        guard strategy == .runTests else {
+            return (strategy, command)
+        }
+        guard ValidationCommandPolicy.isRunTestsCommandAllowed(command, workspacePath: workspacePath) else {
+            return (.runTests, "")
+        }
+        return (.runTests, command)
     }
 
     private static func linkSkills(
@@ -1722,6 +2919,184 @@ enum WorkspaceConfigManager {
         guard !values.contains(value) else { return }
         values.append(value)
     }
+
+    private static func importedActiveWorkingPath(
+        _ activeWorkingPath: String?,
+        primaryPath: String,
+        additionalPaths: [String],
+        fileManager: FileManager = .default
+    ) -> String? {
+        guard let active = activeWorkingPath,
+              !active.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return nil
+        }
+
+        let activePath = WorkspacePathPresentation.standardizedPath(active)
+        guard !activePath.isEmpty,
+              isExistingDirectory(activePath, fileManager: fileManager),
+              let canonicalActive = canonicalPath(activePath) else {
+            return nil
+        }
+
+        let primary = WorkspacePathPresentation.standardizedPath(primaryPath)
+        guard canonicalActive != canonicalPath(primary) else {
+            return nil
+        }
+
+        let workspaceRootPaths = ([primaryPath] + additionalPaths)
+            .map(WorkspacePathPresentation.standardizedPath)
+            .filter { !$0.isEmpty }
+        let canonicalWorkspaceRoots = workspaceRootPaths.compactMap(canonicalPath)
+
+        if canonicalWorkspaceRoots.contains(where: { isPath(canonicalActive, insideOrEqualTo: $0) }) {
+            return activePath
+        }
+        if isRegisteredWorktree(activePath, attachedTo: workspaceRootPaths, fileManager: fileManager) {
+            return activePath
+        }
+
+        return nil
+    }
+
+    private static func isExistingDirectory(_ path: String, fileManager: FileManager) -> Bool {
+        var isDirectory = ObjCBool(false)
+        return fileManager.fileExists(atPath: path, isDirectory: &isDirectory) && isDirectory.boolValue
+    }
+
+    private static func canonicalPath(_ path: String) -> String? {
+        ExecutionPathSafety.required.canonicalize(path)
+    }
+
+    private struct GitDirectoryLayout {
+        public let gitDirectory: String
+        public let commonDirectory: String
+    }
+
+    private static func isRegisteredWorktree(
+        _ activePath: String,
+        attachedTo workspaceRootPaths: [String],
+        fileManager: FileManager
+    ) -> Bool {
+        guard let activeLayout = gitDirectoryLayout(for: activePath, fileManager: fileManager),
+              worktreeAdminDirectory(activeLayout.gitDirectory, pointsBackTo: activePath, fileManager: fileManager) else {
+            return false
+        }
+
+        return workspaceRootPaths.contains { rootPath in
+            guard let rootLayout = gitDirectoryLayout(for: rootPath, fileManager: fileManager),
+                  activeLayout.commonDirectory == rootLayout.commonDirectory else {
+                return false
+            }
+            let worktreesDirectory = URL(fileURLWithPath: rootLayout.commonDirectory, isDirectory: true)
+                .appendingPathComponent("worktrees", isDirectory: true)
+                .path
+            return activeLayout.gitDirectory != activeLayout.commonDirectory
+                && isPath(activeLayout.gitDirectory, insideOrEqualTo: worktreesDirectory)
+        }
+    }
+
+    private static func gitDirectoryLayout(for path: String, fileManager: FileManager) -> GitDirectoryLayout? {
+        guard let gitDirectory = gitDirectoryReference(for: path, fileManager: fileManager),
+              isExistingDirectory(gitDirectory, fileManager: fileManager) else {
+            return nil
+        }
+        let commonDirectory = commonGitDirectory(for: gitDirectory, fileManager: fileManager) ?? gitDirectory
+        guard isExistingDirectory(commonDirectory, fileManager: fileManager) else {
+            return nil
+        }
+        return GitDirectoryLayout(gitDirectory: gitDirectory, commonDirectory: commonDirectory)
+    }
+
+    private static func commonGitDirectory(for gitDirectory: String, fileManager: FileManager) -> String? {
+        let commonDirPath = URL(fileURLWithPath: gitDirectory, isDirectory: true)
+            .appendingPathComponent("commondir")
+            .path
+        guard let data = fileManager.contents(atPath: commonDirPath),
+              let raw = String(data: data, encoding: .utf8) else {
+            return nil
+        }
+        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty else { return nil }
+        let resolved = value.hasPrefix("/")
+            ? value
+            : URL(fileURLWithPath: gitDirectory, isDirectory: true)
+                .appendingPathComponent(value)
+                .standardizedFileURL
+                .path
+        return canonicalPath(resolved)
+    }
+
+    private static func worktreeAdminDirectory(
+        _ gitDirectory: String,
+        pointsBackTo activePath: String,
+        fileManager: FileManager
+    ) -> Bool {
+        let pointerPath = URL(fileURLWithPath: gitDirectory, isDirectory: true)
+            .appendingPathComponent("gitdir")
+            .path
+        guard let data = fileManager.contents(atPath: pointerPath),
+              let raw = String(data: data, encoding: .utf8) else {
+            return false
+        }
+        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty else { return false }
+        let resolved = value.hasPrefix("/")
+            ? value
+            : URL(fileURLWithPath: gitDirectory, isDirectory: true)
+                .appendingPathComponent(value)
+                .standardizedFileURL
+                .path
+        guard let canonicalGitFile = canonicalPath(resolved),
+              let canonicalActive = canonicalPath(activePath) else {
+            return false
+        }
+        let pointedWorktree = (canonicalGitFile as NSString).lastPathComponent == ".git"
+            ? (canonicalGitFile as NSString).deletingLastPathComponent
+            : canonicalGitFile
+        return pointedWorktree == canonicalActive
+    }
+
+    private static func gitDirectoryReference(for path: String, fileManager: FileManager) -> String? {
+        let gitPath = URL(fileURLWithPath: path, isDirectory: true)
+            .appendingPathComponent(".git")
+            .path
+        var isDirectory = ObjCBool(false)
+        guard fileManager.fileExists(atPath: gitPath, isDirectory: &isDirectory) else {
+            return nil
+        }
+        if isDirectory.boolValue {
+            return canonicalPath(gitPath)
+        }
+        guard let data = fileManager.contents(atPath: gitPath),
+              let text = String(data: data, encoding: .utf8) else {
+            return nil
+        }
+        let prefix = "gitdir:"
+        guard let line = text.split(whereSeparator: \.isNewline).first,
+              line.lowercased().hasPrefix(prefix) else {
+            return nil
+        }
+        let rawReference = line.dropFirst(prefix.count).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !rawReference.isEmpty else { return nil }
+        let referencePath: String
+        if rawReference.hasPrefix("/") {
+            referencePath = rawReference
+        } else {
+            referencePath = URL(fileURLWithPath: path, isDirectory: true)
+                .appendingPathComponent(rawReference)
+                .standardizedFileURL
+                .path
+        }
+        return canonicalPath(referencePath)
+    }
+
+    private static func isPath(_ path: String, insideOrEqualTo root: String) -> Bool {
+        guard !path.isEmpty, !root.isEmpty else { return false }
+        if root == "/" {
+            return path.hasPrefix("/")
+        }
+        return path == root || path.hasPrefix(root + "/")
+    }
 }
 
 /// Serializes workspace auto-export JSON encode + file writes off the main actor.
@@ -1751,7 +3126,7 @@ actor WorkspaceAutoExportWriter {
             try data.write(to: url, options: .atomic)
         } catch {
             let nsError = error as NSError
-            AppLogger.audit(.workspaceExported, category: "Persistence", fields: [
+            AuditLoggingSeam.required.audit(.workspaceExported, category: "Persistence", fields: [
                 "result": "auto_export_failed",
                 "diagnostic_result": "writeFailed",
                 "workspace_id": workspaceID,

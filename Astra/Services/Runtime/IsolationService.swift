@@ -1,4 +1,7 @@
 import Foundation
+import ASTRAModels
+import ASTRAPersistence
+import ASTRACore
 
 enum IsolationError: Error, LocalizedError {
     case gitNotFound

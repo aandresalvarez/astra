@@ -1,6 +1,8 @@
 import Testing
 @testable import ASTRA
 import ASTRACore
+import AppKit
+import SwiftUI
 
 @Suite("Composer Presentation")
 struct ComposerPresentationTests {
@@ -44,6 +46,107 @@ struct ComposerPresentationTests {
         #expect(ComposerToolbarPresentation.permissionModeUsesFlatChrome == true)
     }
 
+    @Test("chat transcript bubbles are shared across chat surfaces")
+    func chatTranscriptBubblesAreSharedAcrossChatSurfaces() throws {
+        let chatPanel = try sourceFile("Astra/Views/ChatPanelView.swift")
+        let taskMain = try sourceFile("Astra/Views/TaskMainView.swift")
+        let appStudio = try sourceFile("Astra/Views/WorkspaceAppStudioChatView.swift")
+
+        #expect(chatPanel.contains("ChatTranscriptUserBubble("))
+        #expect(taskMain.contains("ChatTranscriptUserBubble("))
+        #expect(appStudio.contains("ChatTranscriptCompactBubble("))
+        #expect(chatPanel.contains("ComposerPasteIntake.intake("))
+        #expect(taskMain.contains("ComposerPasteIntake.intake("))
+    }
+
+    @Test("composer paste intake classifies native text and file attachments")
+    func composerPasteIntakeClassifiesNativeTextAndFileAttachments() {
+        let multilineText = Array(repeating: "review this line", count: 11).joined(separator: "\n")
+        let longPlainText = String(repeating: "plain", count: 101)
+        let longJSONText = "  {\n" + String(repeating: "\"key\": true,\n", count: 45) + "\"done\": true\n}"
+        let longArrayText = "\n[\n" + String(repeating: "\"item\",\n", count: 80) + "\"done\"\n]"
+
+        #expect(!ComposerPasteIntake.shouldAttachText("short inline paste"))
+        #expect(ComposerPasteIntake.shouldAttachText(multilineText))
+        #expect(ComposerPasteIntake.shouldAttachText(longPlainText))
+        #expect(ComposerPasteIntake.textAttachmentExtension(for: multilineText) == "txt")
+        #expect(ComposerPasteIntake.textAttachmentExtension(for: longPlainText) == "txt")
+        #expect(ComposerPasteIntake.textAttachmentExtension(for: longJSONText) == "json")
+        #expect(ComposerPasteIntake.textAttachmentExtension(for: longArrayText) == "json")
+    }
+
+    @Test("composer paste intake attaches long text without taking over short native text")
+    func composerPasteIntakeAttachesLongTextWithoutTakingOverShortNativeText() throws {
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("astra.composer-paste-intake.\(UUID().uuidString)"))
+        pasteboard.clearContents()
+        pasteboard.setString("short inline text", forType: .string)
+
+        let shortResult = ComposerPasteIntake.intake(pasteboard: pasteboard, existingAttachments: [])
+        #expect(!shortResult.handled)
+        #expect(shortResult.attachmentPaths.isEmpty)
+
+        let longJSONText = "  {\n" + String(repeating: "\"key\": true,\n", count: 45) + "\"done\": true\n}"
+        pasteboard.clearContents()
+        pasteboard.setString(longJSONText, forType: .string)
+
+        let longResult = ComposerPasteIntake.intake(pasteboard: pasteboard, existingAttachments: [])
+        #expect(longResult.handled)
+        let attachmentPath = try #require(longResult.attachmentPaths.first)
+        defer { try? FileManager.default.removeItem(atPath: attachmentPath) }
+        #expect(attachmentPath.hasSuffix(".json"))
+        #expect(try String(contentsOfFile: attachmentPath, encoding: .utf8) == longJSONText)
+    }
+
+    @Test("slash menu follows compact command list presentation")
+    func slashMenuFollowsCompactCommandListPresentation() {
+        #expect(SlashCommandMenuPresentation.rowHeight == 46)
+        #expect(SlashCommandMenuPresentation.iconFrame == 28)
+        #expect(SlashCommandMenuPresentation.iconSize == 15)
+        #expect(SlashCommandMenuPresentation.horizontalPadding == 12)
+        #expect(SlashCommandMenuPresentation.verticalPadding == 6)
+        #expect(SlashCommandMenuPresentation.commandFontSize == 14)
+        #expect(SlashCommandMenuPresentation.titleFontSize == 12)
+        #expect(SlashCommandMenuPresentation.descriptionFontSize == 11)
+        #expect(SlashCommandMenuPresentation.descriptionLineLimit == 1)
+        #expect(SlashCommandMenuPresentation.maxWidth == 380)
+        #expect(SlashCommandMenuPresentation.usesIconColumnDividers == true)
+        #expect(SlashCommandMenuPresentation.usesFullWidthDividers == false)
+        #expect(SlashCommandMenuPresentation.shadowRadius == 8)
+        #expect(SlashCommandMenuPresentation.shadowOpacity == 0.08)
+    }
+
+    @Test("disabled budgets are omitted from composer runtime status")
+    func disabledBudgetsAreOmittedFromComposerRuntimeStatus() {
+        #expect(!RuntimeBudgetPresentation.isEnabled(0))
+        #expect(RuntimeBudgetPresentation.isEnabled(25_000))
+        #expect(RuntimeBudgetPresentation.settingsLabel(for: 0) == "Disabled")
+        #expect(RuntimeBudgetPresentation.settingsLabel(for: 25_000) == "25k tokens")
+        #expect(RuntimeBudgetPresentation.compactLabel(for: 25_000) == "25k")
+
+        let disabledStatus = RuntimeBudgetPresentation.runtimeStatusText(
+            runtimeName: "Antigravity",
+            modelName: "Gemini 3.5 Flash",
+            budget: 0,
+            includeRuntime: true
+        )
+        let enabledStatus = RuntimeBudgetPresentation.runtimeStatusText(
+            runtimeName: "Antigravity",
+            modelName: "Gemini 3.5 Flash",
+            budget: 25_000,
+            includeRuntime: true
+        )
+        let disabledHelp = RuntimeBudgetPresentation.runtimeStatusHelp(
+            runtimeName: "Antigravity",
+            modelName: "Gemini 3.5 Flash",
+            budget: 0,
+            enforcementLabel: "Warning Only"
+        )
+
+        #expect(disabledStatus == "Antigravity · Gemini 3.5 Flash")
+        #expect(enabledStatus == "Antigravity · Gemini 3.5 Flash · 25k")
+        #expect(disabledHelp == "Antigravity · Gemini 3.5 Flash")
+    }
+
     @Test("task composer slash options are centralized")
     func taskComposerSlashOptionsAreCentralized() {
         #expect(TaskComposerCoordinator.shouldShowSlashMenu(messageText: "/rem"))
@@ -57,7 +160,74 @@ struct ComposerPresentationTests {
         #expect(TaskComposerCoordinator.visibleSlashOptions(messageText: "/sch") == [
             TaskComposerSlashOption(id: .routine, command: "/routine ")
         ])
+        #expect(TaskComposerCoordinator.visibleSlashOptions(messageText: "/m") == [
+            TaskComposerSlashOption(id: .mcp, command: "/mcp ")
+        ])
         #expect(TaskComposerSlashOption(id: .recap, command: "/recap").executesImmediately)
+    }
+
+    @Test("chat panel slash catalog exposes MCP review command")
+    func chatPanelSlashCatalogExposesMCPReviewCommand() {
+        let mcpOptions = ChatPanelSlashOption.matching("/m")
+
+        #expect(mcpOptions.map(\.command) == ["/mcp"])
+        #expect(mcpOptions.first?.title == "Install MCP")
+        #expect(mcpOptions.first?.description.contains("server JSON") == true)
+        #expect(mcpOptions.first?.executesImmediately == false)
+    }
+
+    @Test("chat panel slash catalog lists every workspace command in menu order")
+    func chatPanelSlashCatalogListsEveryWorkspaceCommandInMenuOrder() {
+        #expect(ChatPanelSlashOption.all.map(\.command) == [
+            "/skill",
+            "/tool",
+            "/connector",
+            "/template",
+            "/app",
+            "/mcp",
+            "/routine",
+            "/remember",
+            "/recap"
+        ])
+        #expect(Set(ChatPanelSlashOption.all.map(\.id)).count == ChatPanelSlashOption.all.count)
+        #expect(ChatPanelSlashOption.matching("/").map(\.command) == ChatPanelSlashOption.all.map(\.command))
+        #expect(ChatPanelSlashOption.matching("/r").map(\.command) == ["/routine", "/remember", "/recap"])
+    }
+
+    @Test("chat panel slash routing recognizes every command and rejects lookalikes")
+    func chatPanelSlashRoutingRecognizesEveryCommandAndRejectsLookalikes() {
+        for command in ["/skill", "/tool", "/connector", "/template", "/app", "/mcp", "/routine", "/schedule", "/remember", "/recap"] {
+            #expect(ChatPanelSlashCommandRouting.isSlashCommandInput(command))
+            #expect(ChatPanelSlashCommandRouting.isSlashCommandInput("\(command) with details"))
+        }
+
+        #expect(!ChatPanelSlashCommandRouting.isSlashCommandInput("/application build"))
+        #expect(!ChatPanelSlashCommandRouting.isSlashCommandInput("/remembered fact"))
+        #expect(!ChatPanelSlashCommandRouting.isSlashCommandInput("please /recap this"))
+    }
+
+    @Test("chat panel slash routing separates provider assisted commands from direct commands")
+    func chatPanelSlashRoutingSeparatesProviderAssistedCommandsFromDirectCommands() {
+        #expect(ChatPanelSlashCommandRouting.providerContextCommand(for: "/skill") == "/skill")
+        #expect(ChatPanelSlashCommandRouting.providerContextCommand(for: "/tool add jq") == "/tool")
+        #expect(ChatPanelSlashCommandRouting.providerContextCommand(for: "/connector") == "/connector")
+        #expect(ChatPanelSlashCommandRouting.providerContextCommand(for: "/template") == "/template")
+        #expect(ChatPanelSlashCommandRouting.providerContextCommand(for: "/routine daily cleanup") == "/routine")
+        #expect(ChatPanelSlashCommandRouting.providerContextCommand(for: "/schedule daily cleanup") == "/schedule")
+
+        #expect(ChatPanelSlashCommandRouting.providerContextCommand(for: "/remember facts") == nil)
+        #expect(ChatPanelSlashCommandRouting.providerContextCommand(for: "/app build tracker") == nil)
+        #expect(ChatPanelSlashCommandRouting.providerContextCommand(for: "/mcp npx -y @acme/mcp") == nil)
+        #expect(ChatPanelSlashCommandRouting.providerContextCommand(for: "/recap") == nil)
+    }
+
+    @Test("chat panel slash selection keeps commands that need arguments editable")
+    func chatPanelSlashSelectionKeepsCommandsThatNeedArgumentsEditable() {
+        let mcp = ChatPanelSlashOption.all.first { $0.command == "/mcp" }
+        let skill = ChatPanelSlashOption.all.first { $0.command == "/skill" }
+
+        #expect(mcp.map { ChatPanelSlashCommandRouting.selectionText(for: $0) } == "/mcp ")
+        #expect(skill.map { ChatPanelSlashCommandRouting.selectionText(for: $0) } == "/skill")
     }
 
     @Test("task composer send action classifies commands and attachments")
@@ -67,6 +237,31 @@ struct ComposerPresentationTests {
         #expect(TaskComposerCoordinator.sendAction(messageText: "/recap please", attachedFiles: []) == .recap)
         #expect(TaskComposerCoordinator.sendAction(messageText: "/routine every morning", attachedFiles: []) == .routine(instructions: "every morning"))
         #expect(TaskComposerCoordinator.sendAction(messageText: "/schedule", attachedFiles: []) == .routine(instructions: nil))
+        guard case .mcpInstall(let request) = TaskComposerCoordinator.sendAction(
+            messageText: "/mcp npx -y @acme/mcp@1.0.0",
+            attachedFiles: []
+        ) else {
+            Issue.record("Expected /mcp to route to MCP install review")
+            return
+        }
+        #expect(request.intent.installSource?.identifier == "@acme/mcp")
+        guard case .mcpInstallFailure(let missingWorkspaceMessage) = TaskComposerCoordinator.sendAction(
+            messageText: "/mcp npx -y @acme/mcp@1.0.0",
+            attachedFiles: [],
+            hasWorkspace: false
+        ) else {
+            Issue.record("Expected /mcp to require a workspace before review")
+            return
+        }
+        #expect(missingWorkspaceMessage == "Select a workspace first - MCP capabilities are workspace-scoped.")
+        guard case .mcpInstallFailure(let parseMessage) = TaskComposerCoordinator.sendAction(
+            messageText: "/mcp",
+            attachedFiles: []
+        ) else {
+            Issue.record("Expected invalid /mcp input to return the parser failure")
+            return
+        }
+        #expect(parseMessage.contains("Supported MCP install target formats"))
         #expect(TaskComposerCoordinator.sendAction(messageText: "Review this", attachedFiles: ["/tmp/a.txt", "/tmp/b.png"]) == .message("""
         Review this
 
@@ -93,5 +288,12 @@ struct ComposerPresentationTests {
         #expect(update.runtime == AgentRuntimeID.copilotCLI.rawValue)
         #expect(update.resolvedModel == "gpt-5.1")
         #expect(update.modelChanged)
+    }
+
+    private func sourceFile(_ relativePath: String) throws -> String {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        return try String(contentsOf: root.appendingPathComponent(relativePath), encoding: .utf8)
     }
 }

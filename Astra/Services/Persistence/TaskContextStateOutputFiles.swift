@@ -1,7 +1,8 @@
 import Foundation
+import ASTRACore
 
 extension TaskContextStateManager {
-    static func outputTurnFiles(in outputDirectory: String) -> [String] {
+    public static func outputTurnFiles(in outputDirectory: String) -> [String] {
         let outputURL = URL(fileURLWithPath: outputDirectory, isDirectory: true)
         let accessIntent = HostFileAccessIntent.astraManagedStorage(root: outputURL.deletingLastPathComponent())
         guard !outputDirectory.isEmpty,

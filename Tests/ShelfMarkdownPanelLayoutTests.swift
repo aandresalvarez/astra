@@ -8,10 +8,24 @@ struct ShelfMarkdownPanelLayoutTests {
         let presentation = ShelfFileNavigatorContentPresentation.resolve(
             hasFileRoots: true,
             hasVisibleFileRoots: false,
-            isSearchingFiles: false
+            isSearchingFiles: false,
+            isScanningFiles: false
         )
 
         #expect(presentation == .emptyScope)
+        #expect(presentation.usesListSurface)
+    }
+
+    @Test("scanning file scope does not present as empty before nodes load")
+    func scanningFileScopeDoesNotPresentAsEmptyBeforeNodesLoad() {
+        let presentation = ShelfFileNavigatorContentPresentation.resolve(
+            hasFileRoots: true,
+            hasVisibleFileRoots: false,
+            isSearchingFiles: false,
+            isScanningFiles: true
+        )
+
+        #expect(presentation == .scanning)
         #expect(presentation.usesListSurface)
     }
 
@@ -20,7 +34,8 @@ struct ShelfMarkdownPanelLayoutTests {
         let presentation = ShelfFileNavigatorContentPresentation.resolve(
             hasFileRoots: true,
             hasVisibleFileRoots: false,
-            isSearchingFiles: true
+            isSearchingFiles: true,
+            isScanningFiles: false
         )
 
         #expect(presentation == .populatedList)
@@ -32,7 +47,8 @@ struct ShelfMarkdownPanelLayoutTests {
         let presentation = ShelfFileNavigatorContentPresentation.resolve(
             hasFileRoots: false,
             hasVisibleFileRoots: false,
-            isSearchingFiles: false
+            isSearchingFiles: false,
+            isScanningFiles: false
         )
 
         #expect(presentation == .noWorkspacePaths)

@@ -1,6 +1,8 @@
 import Foundation
 import SwiftData
 import ASTRACore
+import ASTRAModels
+import ASTRAPersistence
 
 struct AgentRuntimeBudgetSnapshot: Equatable, Sendable {
     let effectiveTokenBudget: Int
@@ -20,7 +22,11 @@ struct AgentRuntimeBudgetSnapshot: Equatable, Sendable {
     }
 
     var hasReportedTokensAboveBudget: Bool {
-        effectiveTokenBudget != Int.max && tokensUsed > effectiveTokenBudget
+        hasEnabledBudget && tokensUsed > effectiveTokenBudget
+    }
+
+    var hasEnabledBudget: Bool {
+        effectiveTokenBudget != Int.max
     }
 }
 
@@ -31,7 +37,7 @@ enum AgentRuntimeBudgetPolicy {
         task: AgentTask,
         run: TaskRun,
         modelContext: ModelContext,
-        phase: String,
+        phase: RunPhase,
         runtime: AgentRuntimeID,
         budgetEnforcementMode: BudgetEnforcementMode
     ) -> Bool {
@@ -53,7 +59,7 @@ enum AgentRuntimeBudgetPolicy {
         let isLaunchOverheadFloor = tokenBudget <= launchOverhead && promptTokens <= tokenBudget
 
         let fields = [
-            "phase": phase,
+            "phase": phase.rawValue,
             "reason": "prompt_budget_estimate_exceeded",
             "estimated_input_tokens": String(estimatedInputTokens),
             "prompt_estimate_tokens": String(promptTokens),
@@ -85,9 +91,7 @@ enum AgentRuntimeBudgetPolicy {
         run.status = .budgetExceeded
         run.completedAt = Date()
         run.typedStopReason = .maxBudgetReached
-        task.status = .budgetExceeded
-        task.updatedAt = Date()
-        task.markUnreadForCurrentStatus(at: task.updatedAt)
+        TaskStateMachine.exceedBudgetFromRuntime(task, modelContext: modelContext, at: run.completedAt ?? Date())
         let message = "Launch estimate exceeds the task budget before launch (\(estimatedInputTokens)/\(tokenBudget)). Provider was not started."
         modelContext.insert(TaskEvent(
             task: task,
@@ -96,7 +100,12 @@ enum AgentRuntimeBudgetPolicy {
             run: run
         ))
         AppLogger.audit(.workerBudgetExceeded, category: "Worker", taskID: task.id, fields: fields, level: .error)
-        try? modelContext.save()
+        WorkspacePersistenceCoordinator.saveAndAutoExport(
+            workspace: task.workspace,
+            modelContext: modelContext,
+            taskID: task.id,
+            auditFields: ["operation": "prompt_budget_exceeded_stop"]
+        )
         return false
     }
 
@@ -105,7 +114,8 @@ enum AgentRuntimeBudgetPolicy {
         budget: AgentRuntimeBudgetSnapshot,
         budgetEnforcementMode: BudgetEnforcementMode
     ) -> Bool {
-        result.budgetExceeded ||
+        guard budget.hasEnabledBudget else { return false }
+        return result.budgetExceeded ||
             (budgetEnforcementMode == .hardStop && hasReportedTokensAboveBudget(budget: budget))
     }
 
@@ -128,9 +138,11 @@ enum AgentRuntimeBudgetPolicy {
         task: AgentTask,
         run: TaskRun,
         modelContext: ModelContext,
-        phase: String,
+        phase: RunPhase,
         budgetEnforcementMode: BudgetEnforcementMode
     ) {
+        guard AgentRuntimeBudgetSnapshot(task: task).hasEnabledBudget else { return }
+
         let reportedBudgetWarning = budgetEnforcementMode == .warning && hasReportedTokensAboveBudget(task: task)
         guard result.budgetWarning || result.finalReportedBudgetExceededAfterCompletion || reportedBudgetWarning else {
             return
@@ -151,7 +163,7 @@ enum AgentRuntimeBudgetPolicy {
             run: run
         ))
         AppLogger.audit(.workerBudgetExceeded, category: "Worker", taskID: task.id, fields: [
-            "phase": phase,
+            "phase": phase.rawValue,
             "reason": reason,
             "tokens_used": String(task.tokensUsed),
             "token_budget": String(task.tokenBudget)

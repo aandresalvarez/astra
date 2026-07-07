@@ -16,12 +16,12 @@ final class PluginCatalog {
 
     // MARK: - Built-in Package Definitions (Curated)
 
-    nonisolated(unsafe) static let builtInPackages: [PluginPackage] = {
+    nonisolated static let builtInPackages: [PluginPackage] = {
         let bundledPackages = ApprovedCapabilityBundle.packages()
         return bundledPackages.isEmpty ? fallbackBuiltInPackages : bundledPackages
     }()
 
-    private nonisolated(unsafe) static let fallbackBuiltInPackages: [PluginPackage] = [
+    private nonisolated static let fallbackBuiltInPackages: [PluginPackage] = [
 
         // NOTE: `test-runner` and `read-only-explorer` used to live here as
         // zero-config packages. Both duplicated skills that every workspace
@@ -120,20 +120,21 @@ final class PluginCatalog {
             name: "Jira Workflow",
             icon: "list.bullet.clipboard",
             iconDescriptor: .brand("jira", fallbackSystemName: "list.bullet.clipboard"),
-            description: "Query, create, and update Jira tickets",
+            description: "Docker host-control searches and reads Jira; non-Docker credential runs can still mutate tickets",
             author: "ASTRA",
             category: "Integrations",
             tags: ["jira", "atlassian", "tickets", "project-management"],
-            version: "2.0.3",
+            version: "2.0.7",
             setupGuide: """
             Connect your workspace to Jira. The agent uses the REST API \
-            to interact with your Jira instance directly.
+            to read ticket metadata from your Jira instance. Docker host-control \
+            runs are typed and read-only; non-Docker runs can still receive \
+            Jira credentials alongside Bash, so governance reports ticket \
+            mutation risk until that path is enforced.
 
             What you can do:
             • Search tickets by project, sprint, status, or assignee
-            • Read ticket details, comments, and history
-            • Create new tickets with proper fields
-            • Update status, assignee, and add comments
+            • Read ticket summaries, status, assignee, priority, project, and issue type
             • Summarize sprint progress and blockers
 
             Setup:
@@ -145,27 +146,32 @@ final class PluginCatalog {
             skills: [PluginSkill(
                 name: "Jira Agent",
                 icon: "list.bullet.clipboard",
-                description: "Query, create, and update Jira tickets via REST API",
+                description: "Search and read Jira tickets via typed read-only operations",
                 allowedTools: ["Read", "Bash", "Glob", "Grep"],
                 disallowedTools: ["Write", "Edit"],
                 customTools: [],
                 behaviorInstructions: """
-                You are a Jira integration agent. Use curl via Bash to interact with the Jira REST API.
+                You are a Jira integration agent. Match Jira access to the execution mode ASTRA gives you, and use the runtime example shown under the selected Jira connector when one is present.
 
                 AUTHENTICATION
                 Use Basic auth with the email, API token, and base URL env vars shown for the selected Jira connector in Available Connectors / ASTRA_CONNECTORS. The prompt may include a connector-specific runtime example; follow those projected env names instead of assuming bare legacy names.
-                First verify auth with /rest/api/3/mypermissions?permissions=BROWSE_PROJECTS. For configured projects, check /rest/api/3/mypermissions?projectKey=KEY&permissions=BROWSE_PROJECTS,CREATE_ISSUES. If permissions authenticate but project checks fail, report project visibility or CREATE_ISSUES problems instead of saying the token is invalid.
-                Use /rest/api/3/myself only as a fallback identity check when permission probes are rejected. Do not treat /myself returning 401/403 as proof of an invalid token if a permission endpoint succeeds.
-                Do not call /rest/api/3/permissions to check access. That endpoint only lists permission metadata; it does not prove the current account has project access.
-                Only recommend generating a new API token when both permission and fallback auth probes return 401/403. If permissions authenticate but searches return zero projects or issues, first check the selected connector's configured projects, Browse Projects, Create Issues, and site/project membership.
 
-                COMMON OPERATIONS
-                • Search: GET /rest/api/3/search/jql?jql=project=KEY+AND+status!=Done&maxResults=20
-                • Get issue: GET /rest/api/3/issue/{KEY-123}
-                • Create issue: POST /rest/api/3/issue with {"fields":{"project":{"key":"..."},"summary":"...","issuetype":{"name":"Task"}}}
-                • Update fields: PUT /rest/api/3/issue/{KEY-123}
-                • Add comment: POST /rest/api/3/issue/{KEY-123}/comment with {"body":{"type":"doc","version":1,"content":[...]}}
-                • Transition: POST /rest/api/3/issue/{KEY-123}/transitions
+                DOCKER HOST-CONTROL RUNS
+                In Docker workspace runs, use `mcp__astra_host__jira` or Copilot's `astra_host-jira`; do not use workspace shell or native host Bash for Jira. First verify auth with operation status. It reports whether the selected connector has a base URL, email, and API token projected without revealing secret values.
+                For configured projects, use operation search_jql with a narrow project JQL and max_results 1. If status is ready but project checks fail or return no issues, report project visibility, Browse Projects, selected connector projects, or site membership problems instead of saying the token is invalid.
+                Do not call raw Jira permission or identity endpoints through the bridge. Only recommend generating a new API token when operation status reports missing or rejected credentials, or typed Jira operations return 401/403.
+
+                DOCKER READ-ONLY OPERATIONS
+                • Status: operation status
+                • Search: operation search_jql with jql, optional max_results, and optional next_page_token for Jira pagination
+                • Get issue: operation get_issue with issue_key
+                • The bridge owns Jira paths and returns a vetted field set. Do not request raw method, path, or body inputs.
+
+                NON-DOCKER REST RUNS
+                When no Jira host-control bridge is available, use curl via Bash with the selected connector's env vars. First verify auth with /rest/api/3/mypermissions?permissions=BROWSE_PROJECTS. For configured projects, check /rest/api/3/mypermissions?projectKey=KEY&permissions=BROWSE_PROJECTS.
+                • Search: GET /rest/api/3/search/jql?jql=project=KEY&maxResults=20&fields=summary,status,assignee,priority,issuetype,project,created,updated
+                • Get issue: GET /rest/api/3/issue/{KEY-123}?fields=summary,status,assignee,priority,issuetype,project,created,updated
+                Do not call /rest/api/3/permissions to check access. That endpoint only lists permission metadata; it does not prove the current account has project access. Only recommend generating a new API token when permission probes return 401/403.
 
                 FORMATTING
                 • Always show: ticket key, summary, status, assignee, priority
@@ -173,10 +179,10 @@ final class PluginCatalog {
                 • When summarizing a sprint, group by status (To Do / In Progress / Done)
 
                 RULES
-                • Always confirm with the user before creating or modifying tickets
+                • Do not create, update, comment on, transition, delete, or otherwise mutate Jira tickets with this capability
                 • Default searches to the selected connector's configured project keys unless told otherwise
                 • Use JQL for complex queries
-                • Handle pagination for large result sets
+                • Handle pagination for large result sets by passing returned nextPageToken values as next_page_token
                 """,
                 environmentKeys: ["JIRA_BASE_URL"], environmentValues: [""]
             )],
@@ -201,7 +207,7 @@ final class PluginCatalog {
                 riskLevel: .high,
                 dataAccess: [.connectorCredentials, .externalService, .network],
                 externalEffects: [.readOnly, .externalAPIWrite, .ticketMutation],
-                policyNotes: "Jira API access uses Keychain-backed connector credentials. Ticket creation, comments, transitions, and updates require explicit user confirmation at task time."
+                policyNotes: "Jira API access uses Keychain-backed connector credentials. Docker host-control routes are typed and read-only, but non-Docker runs can still access Jira credentials from Bash; governance must report ticket mutation effects until that path is also enforced."
             )
         ),
 
@@ -315,28 +321,27 @@ final class PluginCatalog {
         ),
 
         // ────────────────────────────────────────────
-        // 4. GitHub Workflow — requires gh CLI
+        // 4. GitHub Workflow — requires host-control mediated gh CLI
         // ────────────────────────────────────────────
         PluginPackage(
             id: "github-workflow",
             name: "GitHub Workflow",
             icon: "chevron.left.forwardslash.chevron.right",
             iconDescriptor: .brand("github", fallbackSystemName: "chevron.left.forwardslash.chevron.right"),
-            description: "Manage issues, PRs, and CI from your workspace",
+            description: "Inspect issues, PRs, and CI from your workspace",
             author: "ASTRA",
             category: "Integrations",
             tags: ["github", "git", "pull-requests", "issues", "ci"],
-            version: "2.1.2",
+            version: "2.1.4",
             setupGuide: """
-            Connect your workspace to GitHub using the GitHub CLI. This \
-            capability does not use a stored GitHub connector or token; it \
-            runs `gh` against the current repository or an explicit owner/repo.
+            Connect your workspace to GitHub using ASTRA's host-control \
+            GitHub tool. This capability does not use a stored GitHub \
+            connector or token; ASTRA brokers read-only `gh` operations \
+            against the current repository or an explicit owner/repo.
 
             What you can do:
             • List and search issues and pull requests
             • Read PR diffs, review comments, and CI status
-            • Create issues with labels and assignees
-            • Post comments on issues and PRs
             • Check workflow runs and deployment status
 
             Setup:
@@ -347,30 +352,29 @@ final class PluginCatalog {
             skills: [PluginSkill(
                 name: "GitHub Agent",
                 icon: "chevron.left.forwardslash.chevron.right",
-                description: "Manage issues, PRs, and CI via GitHub CLI",
-                allowedTools: ["Read", "Bash", "Glob", "Grep"],
-                disallowedTools: ["Write", "Edit"],
+                description: "Inspect issues, PRs, and CI via ASTRA host-control GitHub",
+                allowedTools: ["Read", "Glob", "Grep"],
+                disallowedTools: ["Write", "Edit", "Bash"],
                 customTools: [],
                 behaviorInstructions: """
-                You are a GitHub integration agent. Use the GitHub CLI (`gh`) via Bash for GitHub work. Do not rely on stored connector credentials.
+                You are a GitHub integration agent. Use ASTRA's host-control GitHub MCP tool for GitHub work: `mcp__astra_host__github` (GitHub Copilot CLI may display it as `astra_host-github`). Do not use Bash, shell, workspace shell, direct `gh`, browser clicks, or raw GitHub API calls to bypass this broker.
 
                 AUTHENTICATION
-                • Require `gh` to be installed and authenticated locally
+                • Require `gh` to be installed and authenticated locally on the host
                 • If authentication fails, tell the user to run `gh auth login`
                 • Prefer the current git repository context; use `--repo owner/repo` when the user specifies a repository outside the current checkout
 
                 COMMON OPERATIONS
-                • List issues: gh issue list --state open --limit 30
-                • View issue: gh issue view ISSUE_NUMBER --comments
-                • Create issue: gh issue create --title "..." --body "..." --label "bug"
-                • List recent PRs across repositories: gh search prs --author "@me" --state all --limit 30 --sort updated --order desc --json number,title,state,author,repository,url,createdAt,updatedAt
-                • List PRs in current repo: gh pr list --state open --limit 30
-                • View PR: gh pr view PR_NUMBER --comments --json title,author,state,labels,files,reviews,statusCheckRollup,url
-                • PR diff: gh pr diff PR_NUMBER
-                • Review checks: gh pr checks PR_NUMBER
-                • Workflow runs: gh run list --limit 10
-                • View workflow run: gh run view RUN_ID --log
-                • Comment on issue or PR: gh issue comment NUMBER --body "..." or gh pr comment NUMBER --body "..."
+                • List issues: call `mcp__astra_host__github` with arguments `["issue", "list", "--state", "open", "--limit", "30"]`
+                • Search issues: call `mcp__astra_host__github` with arguments `["search", "issues", "query terms", "--state", "open", "--limit", "30", "--json", "number,title,state,author,repository,url,createdAt,updatedAt"]`
+                • View issue: call `mcp__astra_host__github` with arguments `["issue", "view", "ISSUE_NUMBER", "--comments"]`
+                • List recent PRs across repositories: call `mcp__astra_host__github` with arguments `["search", "prs", "--author", "@me", "--state", "all", "--limit", "30", "--sort", "updated", "--order", "desc", "--json", "number,title,state,author,repository,url,createdAt,updatedAt"]`
+                • List PRs in current repo: call `mcp__astra_host__github` with arguments `["pr", "list", "--state", "open", "--limit", "30"]`
+                • View PR: call `mcp__astra_host__github` with arguments `["pr", "view", "PR_NUMBER", "--comments", "--json", "title,author,state,labels,files,reviews,statusCheckRollup,url"]`
+                • PR diff: call `mcp__astra_host__github` with arguments `["pr", "diff", "PR_NUMBER"]`
+                • Review checks: call `mcp__astra_host__github` with arguments `["pr", "checks", "PR_NUMBER"]`
+                • Workflow runs: call `mcp__astra_host__github` with arguments `["run", "list", "--limit", "10"]`
+                • View workflow run: call `mcp__astra_host__github` with arguments `["run", "view", "RUN_ID", "--log"]`
 
                 FORMATTING
                 • Issues/PRs: show number, title, state, author, labels, and URL
@@ -378,37 +382,29 @@ final class PluginCatalog {
                 • CI: show workflow name, status, conclusion, and failing job details
 
                 RULES
-                • Always confirm with the user before creating issues, posting comments, merging PRs, or triggering workflows
-                • Prefer `--json` with `--jq` for structured parsing when available
+                • This capability is read-only. Do not create issues, post comments, merge PRs, trigger workflows, or call raw mutating GitHub APIs.
+                • If the user requests a GitHub write, explain that ASTRA's built-in GitHub host-control capability is read-only and that writes require opening GitHub outside ASTRA or a future confirmed-write integration.
+                • Use `--json` for structured output; do not use `--jq` or `-q` because ASTRA's host-control GitHub broker rejects jq filters.
                 • Do not pipe JSON into `python3 - <<'PY'`; the heredoc consumes stdin, so Python will not receive the command output. If Python parsing is required, write JSON to a temp file first or pass it as an argument.
-                • Prefer `gh search prs` for cross-repository PR searches. If REST search is required, call `gh api /search/issues` with a leading slash.
+                • Prefer the brokered `search issues` and `search prs` operations for cross-repository searches; raw GitHub API calls are outside this read-only capability.
                 • Include links to issues/PRs in your responses
                 • Never ask the user to paste GitHub credentials when `gh auth login` is the right fix
                 """,
                 environmentKeys: [], environmentValues: []
             )],
             connectors: [],
-            localTools: [
-                PluginLocalTool(
-                    name: "gh — GitHub CLI",
-                    description: "Run GitHub CLI commands (issues, PRs, repos, actions)",
-                    icon: "terminal",
-                    toolType: "cli",
-                    command: "gh",
-                    arguments: ""
-                )
-            ],
+            localTools: [],
             templates: [],
-            browserAdapters: [BrowserSiteAdapterID.github],
+            browserAdapters: [],
             prerequisites: [
                 CommonCLIPrerequisites.githubCLI,
                 CommonCLIPrerequisites.githubAuth
             ],
             governance: .builtInApproved(
                 riskLevel: .high,
-                dataAccess: [.workspaceFiles, .externalService, .network, .authenticatedBrowserContent],
-                externalEffects: [.readOnly, .externalAPIWrite, .ticketMutation, .browserNavigation],
-                policyNotes: "GitHub work uses the local gh CLI and may read repository state, issues, pull requests, Actions, and authenticated GitHub browser pages. External writes require user confirmation."
+                dataAccess: [.workspaceFiles, .externalService, .network],
+                externalEffects: [.readOnly],
+                policyNotes: "GitHub work uses ASTRA host-control mediated gh commands for read-only repository, issue, pull request, and Actions inspection. Native Bash/direct gh and GitHub browser mutation bypasses are not part of this built-in capability."
             )
         ),
 

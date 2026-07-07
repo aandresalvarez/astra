@@ -1,9 +1,11 @@
 import Foundation
 import Testing
+import ASTRAPersistence
+import ASTRAModels
 @testable import ASTRA
 import ASTRACore
 
-@Suite("Agent Utility Runtime")
+@Suite("Agent Utility Runtime", .serialized)
 struct AgentUtilityRuntimeTests {
     private static let longRunningHelperSleepSeconds = 30
     private static let fullSuiteUtilityDeadlineSeconds: TimeInterval = 20
@@ -134,6 +136,60 @@ struct AgentUtilityRuntimeTests {
         #expect(result.output == "Planning via Copilot")
     }
 
+    @Test("Copilot utility prompt obeys strict sandbox write boundary")
+    func copilotUtilityPromptObeysStrictSandboxWriteBoundary() async throws {
+        let fm = FileManager.default
+        guard fm.isExecutableFile(atPath: ExecutionSandbox.sandboxExecPath) else { return }
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-utility-copilot-sandbox-\(UUID().uuidString)", isDirectory: true)
+        let fakeCopilot = root.appendingPathComponent("copilot")
+        let copilotHome = root.appendingPathComponent("copilot-home", isDirectory: true)
+        let leakRoot = fm.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library", isDirectory: true)
+            .appendingPathComponent("Application Support", isDirectory: true)
+            .appendingPathComponent("AstraUtilitySandboxDeny-\(UUID().uuidString)", isDirectory: true)
+        let marker = leakRoot.appendingPathComponent("marker.txt")
+        try fm.createDirectory(at: root, withIntermediateDirectories: true)
+        defer {
+            try? fm.removeItem(at: root)
+            try? fm.removeItem(at: leakRoot)
+        }
+
+        let script = """
+        #!/bin/sh
+        if [ "$1" = "help" ]; then
+          cat <<'HELP'
+        \(modernCopilotHelpText())
+        HELP
+          exit 0
+        fi
+        set -e
+        mkdir -p \(shellSingleQuoted(leakRoot.path))
+        printf leak > \(shellSingleQuoted(marker.path))
+        printf '%s\\n' '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Sandbox escaped"}}'
+        exit 0
+        """
+        try writeExecutableScript(at: fakeCopilot, contents: script)
+
+        await withStrictSandbox {
+            let result = await AgentRuntimeAdapterRegistry.adapter(for: .copilotCLI).runUtilityPrompt(
+                "Summarize diff",
+                workspacePath: root.path,
+                configuration: AgentUtilityRuntimeConfiguration(
+                    runtime: .copilotCLI,
+                    model: "gpt-5",
+                    copilotPath: fakeCopilot.path,
+                    copilotHome: copilotHome.path,
+                    timeoutSeconds: 3
+                ),
+                toolMode: .readOnly
+            )
+
+            #expect(result.exitCode != 0)
+            #expect(!fm.fileExists(atPath: marker.path))
+        }
+    }
+
     @Test("Codex utility runtime creates provider home and extracts text from JSON stream")
     func codexUtilityRuntimeCreatesProviderHomeAndExtractsText() async throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
@@ -259,6 +315,26 @@ struct AgentUtilityRuntimeTests {
         --output-format=FORMAT --stream=MODE --no-ask-user --secret-env-vars=VAR
         --no-custom-instructions --allow-all-tools required for non-interactive mode
         """
+    }
+
+    private func shellSingleQuoted(_ value: String) -> String {
+        "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
+    }
+
+    private func withStrictSandbox(_ body: () async -> Void) async {
+        let enforcementKey = AppStorageKeys.sandboxEnforcement
+        let readScopeKey = AppStorageKeys.sandboxReadScope
+        let originalEnforcement = UserDefaults.standard.string(forKey: enforcementKey)
+        let originalReadScope = UserDefaults.standard.string(forKey: readScopeKey)
+        UserDefaults.standard.set(ExecutionSandboxEnforcement.strict.rawValue, forKey: enforcementKey)
+        UserDefaults.standard.set(ExecutionSandboxReadScope.enforce.rawValue, forKey: readScopeKey)
+        defer {
+            if let originalEnforcement { UserDefaults.standard.set(originalEnforcement, forKey: enforcementKey) }
+            else { UserDefaults.standard.removeObject(forKey: enforcementKey) }
+            if let originalReadScope { UserDefaults.standard.set(originalReadScope, forKey: readScopeKey) }
+            else { UserDefaults.standard.removeObject(forKey: readScopeKey) }
+        }
+        await body()
     }
 
     @Test("Claude utility uses closed stdin")
@@ -501,5 +577,86 @@ struct AgentUtilityRuntimeTests {
         #expect(elapsed < Self.fullSuiteUtilityDeadlineSeconds, "Completed Copilot utility stream waited for wrapper exit: \(elapsed)s")
         #expect(result.exitCode == 0)
         #expect(result.output == "Goal plan ready")
+    }
+
+    @Test("Copilot utility prefers final message when stream repeats delta text")
+    func copilotUtilityPrefersFinalMessageWhenStreamRepeatsDeltaText() async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-utility-copilot-stream-final-\(UUID().uuidString)", isDirectory: true)
+        let fakeCopilot = root.appendingPathComponent("copilot")
+        let copilotHome = root.appendingPathComponent("copilot-home", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let script = """
+        #!/bin/sh
+        if [ "$1" = "help" ]; then
+          cat <<'HELP'
+        \(modernCopilotHelpText())
+        HELP
+          exit 0
+        fi
+        printf '%s\\n' '{"type":"assistant.message_delta","data":{"deltaContent":"{\\"action\\":\\"create_skill\\",\\"name\\":\\"Slash Smoke Skill\\"}"}}'
+        printf '%s\\n' '{"type":"assistant.message","data":{"content":"{\\"action\\":\\"create_skill\\",\\"name\\":\\"Slash Smoke Skill\\"}"}}'
+        printf '%s\\n' '{"type":"assistant.turn_end"}'
+        exit 0
+        """
+        try writeExecutableScript(at: fakeCopilot, contents: script)
+
+        let result = await AgentRuntimeAdapterRegistry.adapter(for: .copilotCLI).runUtilityPrompt(
+            "Return a JSON action",
+            workspacePath: root.path,
+            configuration: AgentUtilityRuntimeConfiguration(
+                runtime: .copilotCLI,
+                model: "gpt-5",
+                copilotPath: fakeCopilot.path,
+                copilotHome: copilotHome.path,
+                timeoutSeconds: 3
+            ),
+            toolMode: .readOnly
+        )
+
+        #expect(result.exitCode == 0)
+        #expect(result.output == #"{"action":"create_skill","name":"Slash Smoke Skill"}"#)
+    }
+
+    @Test("Copilot utility keeps streamed text when result summary follows")
+    func copilotUtilityKeepsStreamedTextWhenResultSummaryFollows() async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-utility-copilot-result-summary-\(UUID().uuidString)", isDirectory: true)
+        let fakeCopilot = root.appendingPathComponent("copilot")
+        let copilotHome = root.appendingPathComponent("copilot-home", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let script = """
+        #!/bin/sh
+        if [ "$1" = "help" ]; then
+          cat <<'HELP'
+        \(modernCopilotHelpText())
+        HELP
+          exit 0
+        fi
+        printf '%s\\n' '{"type":"assistant.message_delta","data":{"deltaContent":"Actual provider response"}}'
+        printf '%s\\n' '{"type":"result","data":{"usage":{"input_tokens":1,"output_tokens":1},"summary":"done"}}'
+        exit 0
+        """
+        try writeExecutableScript(at: fakeCopilot, contents: script)
+
+        let result = await AgentRuntimeAdapterRegistry.adapter(for: .copilotCLI).runUtilityPrompt(
+            "Return the provider response",
+            workspacePath: root.path,
+            configuration: AgentUtilityRuntimeConfiguration(
+                runtime: .copilotCLI,
+                model: "gpt-5",
+                copilotPath: fakeCopilot.path,
+                copilotHome: copilotHome.path,
+                timeoutSeconds: 3
+            ),
+            toolMode: .readOnly
+        )
+
+        #expect(result.exitCode == 0)
+        #expect(result.output == "Actual provider response")
     }
 }

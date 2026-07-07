@@ -1,5 +1,7 @@
 import Foundation
 import SwiftData
+import ASTRAModels
+import ASTRAPersistence
 
 @MainActor
 enum TaskWorkerHandoffService {
@@ -32,8 +34,7 @@ enum TaskWorkerHandoffService {
     }
 
     static func decode(_ payload: String) -> TaskWorkerHandoffPayload? {
-        guard let data = payload.data(using: .utf8) else { return nil }
-        return try? JSONDecoder().decode(TaskWorkerHandoffPayload.self, from: data)
+        TaskWorkerHandoffCodec.decode(payload)
     }
 
     private static func makePayload(

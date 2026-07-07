@@ -1,33 +1,11 @@
 import Foundation
 import SwiftData
+import ASTRAModels
+import ASTRAPersistence
+
+typealias CorrectiveStepRecord = TaskCorrectiveWorkRecord
 
 enum TaskCorrectiveWorkService {
-    struct CorrectiveStepRecord {
-        var event: TaskEvent
-        var payload: TaskCorrectiveStepPayload
-    }
-
-    @MainActor
-    static func latestCorrectiveSteps(for task: AgentTask) -> [CorrectiveStepRecord] {
-        var latestByID: [String: CorrectiveStepRecord] = [:]
-        for event in task.events
-            .filter({ TaskCorrectiveWorkService.isCorrectiveStepEvent($0.type) })
-            .sorted(by: { $0.timestamp > $1.timestamp }) {
-            guard let payload = decode(event.payload) else { continue }
-            let stepID = normalizedCorrectiveStepID(payload)
-            guard latestByID[stepID] == nil else { continue }
-            latestByID[stepID] = CorrectiveStepRecord(event: event, payload: payload)
-        }
-        return latestByID.values.sorted { $0.event.timestamp > $1.event.timestamp }
-    }
-
-    @MainActor
-    static func openCorrectiveSteps(for task: AgentTask) -> [CorrectiveStepRecord] {
-        latestCorrectiveSteps(for: task).filter { record in
-            ["proposed", "approved", "task_created"].contains(record.payload.status)
-        }
-    }
-
     @MainActor
     static func recordProposedStep(
         planID: UUID,
@@ -39,9 +17,9 @@ enum TaskCorrectiveWorkService {
         run: TaskRun?,
         modelContext: ModelContext
     ) {
-        let stepID = correctiveStepID(planID: planID, failedAssertionID: failedAssertionID)
-        guard latestCorrectiveSteps(for: task).contains(where: {
-            normalizedCorrectiveStepID($0.payload) == stepID &&
+        let stepID = TaskCorrectiveWorkQueries.correctiveStepID(planID: planID, failedAssertionID: failedAssertionID)
+        guard TaskCorrectiveWorkQueries.latestCorrectiveSteps(for: task).contains(where: {
+            TaskCorrectiveWorkQueries.normalizedCorrectiveStepID($0.payload) == stepID &&
                 $0.payload.status != "dismissed"
         }) == false else {
             return
@@ -84,12 +62,12 @@ enum TaskCorrectiveWorkService {
         correctiveStepID: String,
         modelContext: ModelContext
     ) -> TaskCorrectiveStepPayload? {
-        guard var payload = latestCorrectiveSteps(for: task)
-            .first(where: { normalizedCorrectiveStepID($0.payload) == correctiveStepID })?
+        guard var payload = TaskCorrectiveWorkQueries.latestCorrectiveSteps(for: task)
+            .first(where: { TaskCorrectiveWorkQueries.normalizedCorrectiveStepID($0.payload) == correctiveStepID })?
             .payload else {
             return nil
         }
-        payload.correctiveStepID = normalizedCorrectiveStepID(payload)
+        payload.correctiveStepID = TaskCorrectiveWorkQueries.normalizedCorrectiveStepID(payload)
         payload.status = "approved"
         payload.updatedAt = isoTimestamp(Date())
         let event = TaskEvent(task: task, type: TaskCorrectiveEventTypes.stepApproved, payload: encode(payload))
@@ -112,12 +90,12 @@ enum TaskCorrectiveWorkService {
         reason: String,
         modelContext: ModelContext
     ) -> TaskCorrectiveStepPayload? {
-        guard var payload = latestCorrectiveSteps(for: task)
-            .first(where: { normalizedCorrectiveStepID($0.payload) == correctiveStepID })?
+        guard var payload = TaskCorrectiveWorkQueries.latestCorrectiveSteps(for: task)
+            .first(where: { TaskCorrectiveWorkQueries.normalizedCorrectiveStepID($0.payload) == correctiveStepID })?
             .payload else {
             return nil
         }
-        payload.correctiveStepID = normalizedCorrectiveStepID(payload)
+        payload.correctiveStepID = TaskCorrectiveWorkQueries.normalizedCorrectiveStepID(payload)
         payload.status = "dismissed"
         payload.dismissedReason = reason.trimmingCharacters(in: .whitespacesAndNewlines)
         payload.updatedAt = isoTimestamp(Date())
@@ -140,8 +118,8 @@ enum TaskCorrectiveWorkService {
         correctiveStepID: String,
         modelContext: ModelContext
     ) -> AgentTask? {
-        guard var payload = latestCorrectiveSteps(for: sourceTask)
-            .first(where: { normalizedCorrectiveStepID($0.payload) == correctiveStepID })?
+        guard var payload = TaskCorrectiveWorkQueries.latestCorrectiveSteps(for: sourceTask)
+            .first(where: { TaskCorrectiveWorkQueries.normalizedCorrectiveStepID($0.payload) == correctiveStepID })?
             .payload else {
             return nil
         }
@@ -179,7 +157,7 @@ enum TaskCorrectiveWorkService {
         child.queuePosition = (sourceTask.workspace?.tasks.map(\.queuePosition).max() ?? sourceTask.queuePosition) + 1
         modelContext.insert(child)
 
-        payload.correctiveStepID = normalizedCorrectiveStepID(payload)
+        payload.correctiveStepID = TaskCorrectiveWorkQueries.normalizedCorrectiveStepID(payload)
         payload.status = "task_created"
         payload.correctiveTaskID = child.id
         payload.updatedAt = isoTimestamp(Date())
@@ -193,26 +171,6 @@ enum TaskCorrectiveWorkService {
         ])
         TaskContextStateManager.refresh(task: sourceTask)
         return child
-    }
-
-    static func decode(_ payload: String) -> TaskCorrectiveStepPayload? {
-        guard let data = payload.data(using: .utf8) else { return nil }
-        return try? JSONDecoder().decode(TaskCorrectiveStepPayload.self, from: data)
-    }
-
-    static func correctiveStepID(planID: UUID, failedAssertionID: String) -> String {
-        "corrective-\(planID.uuidString.prefix(8))-\(failedAssertionID)"
-    }
-
-    static func normalizedCorrectiveStepID(_ payload: TaskCorrectiveStepPayload) -> String {
-        payload.correctiveStepID ?? correctiveStepID(planID: payload.planID, failedAssertionID: payload.failedAssertionID)
-    }
-
-    private static func isCorrectiveStepEvent(_ type: String) -> Bool {
-        type == TaskCorrectiveEventTypes.stepCreated ||
-            type == TaskCorrectiveEventTypes.stepApproved ||
-            type == TaskCorrectiveEventTypes.stepDismissed ||
-            type == TaskCorrectiveEventTypes.taskCreated
     }
 
     private static func isoTimestamp(_ date: Date) -> String {

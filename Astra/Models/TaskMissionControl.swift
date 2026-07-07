@@ -1,21 +1,30 @@
 import Foundation
 
-enum TaskMissionActionEventTypes {
-    static let approved = TaskEventTypes.Mission.actionApproved.rawValue
-    static let dismissed = TaskEventTypes.Mission.actionDismissed.rawValue
-    static let retryRequested = TaskEventTypes.Mission.actionRetryRequested.rawValue
-    static let correctionCreated = TaskEventTypes.Mission.actionCorrectionCreated.rawValue
+public enum TaskMissionActionEventTypes {
+    public static let approved = TaskEventTypes.Mission.actionApproved.rawValue
+    public static let dismissed = TaskEventTypes.Mission.actionDismissed.rawValue
+    public static let retryRequested = TaskEventTypes.Mission.actionRetryRequested.rawValue
+    public static let correctionCreated = TaskEventTypes.Mission.actionCorrectionCreated.rawValue
 }
 
-struct TaskMissionActionPayload: Codable, Sendable, Equatable {
-    var version: Int
-    var action: String
-    var correctiveStepID: String?
-    var correctiveTaskID: UUID?
-    var reason: String?
-    var createdAt: String
+public struct TaskMissionActionPayload: Codable, Sendable, Equatable {
+    public init(version: Int, action: String, correctiveStepID: String? = nil, correctiveTaskID: UUID? = nil, reason: String? = nil, createdAt: String) {
+        self.version = version
+        self.action = action
+        self.correctiveStepID = correctiveStepID
+        self.correctiveTaskID = correctiveTaskID
+        self.reason = reason
+        self.createdAt = createdAt
+    }
 
-    enum CodingKeys: String, CodingKey {
+    public var version: Int
+    public var action: String
+    public var correctiveStepID: String?
+    public var correctiveTaskID: UUID?
+    public var reason: String?
+    public var createdAt: String
+
+    public enum CodingKeys: String, CodingKey {
         case version = "v"
         case action
         case correctiveStepID

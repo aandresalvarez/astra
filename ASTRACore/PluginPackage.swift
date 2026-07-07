@@ -297,7 +297,7 @@ public struct CapabilityIconDescriptor: Codable, Sendable, Equatable {
     }
 }
 
-public struct PluginPackage: Codable, Identifiable {
+public struct PluginPackage: Codable, Identifiable, Sendable {
     public var formatVersion: Int
     public var id: String
     public var name: String
@@ -314,6 +314,10 @@ public struct PluginPackage: Codable, Identifiable {
     public var localTools: [PluginLocalTool]
     public var mcpServers: [PluginMCPServer]
     public var templates: [PluginTemplate]
+    /// Non-connector setup steps this package needs before it can run safely.
+    /// Connector credentials remain declared on `connectors`; account-level
+    /// setup such as governed OAuth account linking belongs here.
+    public var setupRequirements: [PluginSetupRequirement]
     /// Site-specific browser automation adapters this capability enables.
     /// Keep generic browser controls outside this list; these IDs are for
     /// web-app behaviors that are not portable across arbitrary websites.
@@ -348,6 +352,7 @@ public struct PluginPackage: Codable, Identifiable {
         localTools: [PluginLocalTool],
         mcpServers: [PluginMCPServer] = [],
         templates: [PluginTemplate],
+        setupRequirements: [PluginSetupRequirement] = [],
         browserAdapters: [String] = [],
         prerequisites: [CLIPrerequisite] = [],
         sourceMetadata: CapabilitySourceMetadata? = nil,
@@ -369,6 +374,7 @@ public struct PluginPackage: Codable, Identifiable {
         self.localTools = localTools
         self.mcpServers = mcpServers
         self.templates = templates
+        self.setupRequirements = setupRequirements
         self.browserAdapters = browserAdapters
         self.prerequisites = prerequisites
         self.sourceMetadata = sourceMetadata
@@ -394,6 +400,7 @@ public struct PluginPackage: Codable, Identifiable {
         localTools = try c.decode([PluginLocalTool].self, forKey: .localTools)
         mcpServers = try c.decodeIfPresent([PluginMCPServer].self, forKey: .mcpServers) ?? []
         templates = try c.decode([PluginTemplate].self, forKey: .templates)
+        setupRequirements = try c.decodeIfPresent([PluginSetupRequirement].self, forKey: .setupRequirements) ?? []
         browserAdapters = try c.decodeIfPresent([String].self, forKey: .browserAdapters) ?? []
         minAppVersion = try c.decodeIfPresent(String.self, forKey: .minAppVersion)
         requires = try c.decodeIfPresent([String].self, forKey: .requires)
@@ -410,6 +417,7 @@ public struct PluginPackage: Codable, Identifiable {
 
     public var requiresSetup: Bool {
         connectors.contains { !$0.credentialHints.isEmpty || !$0.configHints.isEmpty }
+            || setupRequirements.contains { $0.required }
     }
 
     public var contentSummary: String {
@@ -452,12 +460,42 @@ public struct PluginPackage: Codable, Identifiable {
         if !localTools.isEmpty { parts.append("\(localTools.count) tool\(localTools.count == 1 ? "" : "s")") }
         if !mcpServers.isEmpty { parts.append("\(mcpServers.count) MCP server\(mcpServers.count == 1 ? "" : "s")") }
         if !templates.isEmpty { parts.append("\(templates.count) template\(templates.count == 1 ? "" : "s")") }
+        if !setupRequirements.isEmpty { parts.append("\(setupRequirements.count) setup requirement\(setupRequirements.count == 1 ? "" : "s")") }
         if !browserAdapters.isEmpty { parts.append("\(browserAdapters.count) browser adapter\(browserAdapters.count == 1 ? "" : "s")") }
         return parts
     }
 }
 
-public struct PluginSkill: Codable {
+public struct PluginSetupRequirement: Codable, Equatable, Sendable, Identifiable {
+    public enum Kind: String, Codable, Equatable, Sendable, CaseIterable {
+        case oauthAccount
+    }
+
+    public var id: String
+    public var kind: Kind
+    public var displayName: String
+    public var provider: String?
+    public var required: Bool
+    public var notes: String
+
+    public init(
+        id: String,
+        kind: Kind,
+        displayName: String,
+        provider: String? = nil,
+        required: Bool = true,
+        notes: String = ""
+    ) {
+        self.id = id
+        self.kind = kind
+        self.displayName = displayName
+        self.provider = provider
+        self.required = required
+        self.notes = notes
+    }
+}
+
+public struct PluginSkill: Codable, Sendable {
     public var name: String
     public var icon: String
     public var description: String
@@ -483,7 +521,7 @@ public struct PluginSkill: Codable {
     }
 }
 
-public struct PluginConnector: Codable {
+public struct PluginConnector: Codable, Sendable {
     public var name: String
     public var serviceType: String
     public var icon: String
@@ -494,7 +532,7 @@ public struct PluginConnector: Codable {
     public var configHints: [ConfigHint]
     public var notes: String
 
-    public struct CredentialHint: Codable {
+    public struct CredentialHint: Codable, Sendable {
         public var key: String
         public var hint: String
 
@@ -504,7 +542,7 @@ public struct PluginConnector: Codable {
         }
     }
 
-    public struct ConfigHint: Codable {
+    public struct ConfigHint: Codable, Sendable {
         public var key: String
         public var hint: String
         public var isList: Bool
@@ -531,7 +569,7 @@ public struct PluginConnector: Codable {
     }
 }
 
-public struct PluginLocalTool: Codable {
+public struct PluginLocalTool: Codable, Sendable {
     public var name: String
     public var description: String
     public var icon: String
@@ -547,6 +585,65 @@ public struct PluginLocalTool: Codable {
         self.toolType = toolType
         self.command = command
         self.arguments = arguments
+    }
+}
+
+public struct PluginMCPInstallSource: Codable, Equatable, Sendable {
+    public enum Kind: String, Codable, Sendable, Equatable, CaseIterable {
+        case npm
+        case pypi
+        case nuget
+        case oci
+        case dockerImage
+        case mcpb
+        case remoteHTTP
+        case localBinary
+        case unknown
+    }
+
+    public enum InstallMode: String, Codable, Sendable, Equatable, CaseIterable {
+        case npx
+        case uvx
+        case pipx
+        case dotnetTool
+        case dockerGateway
+        case dockerRun
+        case globalBinary
+        case localBinary
+        case remote
+        case manual
+    }
+
+    public var kind: Kind
+    public var identifier: String
+    public var version: String?
+    public var digest: String?
+    public var installMode: InstallMode
+    public var registryURL: URL?
+    public var documentationURL: URL?
+    public var packageManagerArguments: [String]
+    public var riskNotes: [String]
+
+    public init(
+        kind: Kind,
+        identifier: String,
+        version: String? = nil,
+        digest: String? = nil,
+        installMode: InstallMode,
+        registryURL: URL? = nil,
+        documentationURL: URL? = nil,
+        packageManagerArguments: [String] = [],
+        riskNotes: [String] = []
+    ) {
+        self.kind = kind
+        self.identifier = identifier
+        self.version = version
+        self.digest = digest
+        self.installMode = installMode
+        self.registryURL = registryURL
+        self.documentationURL = documentationURL
+        self.packageManagerArguments = packageManagerArguments
+        self.riskNotes = riskNotes
     }
 }
 
@@ -577,6 +674,9 @@ public struct PluginMCPServer: Codable, Equatable, Sendable, Identifiable {
     public var resourcesEnabled: Bool
     public var promptsEnabled: Bool
     public var trustLevel: TrustLevel
+    public var installSource: PluginMCPInstallSource?
+    public var remoteRegistry: RemoteMCPServerRegistryMetadata?
+    public var controlPlane: MCPControlPlaneMetadata?
 
     public init(
         id: String,
@@ -591,7 +691,10 @@ public struct PluginMCPServer: Codable, Equatable, Sendable, Identifiable {
         excludedTools: [String] = [],
         resourcesEnabled: Bool = false,
         promptsEnabled: Bool = false,
-        trustLevel: TrustLevel = .medium
+        trustLevel: TrustLevel = .medium,
+        installSource: PluginMCPInstallSource? = nil,
+        remoteRegistry: RemoteMCPServerRegistryMetadata? = nil,
+        controlPlane: MCPControlPlaneMetadata? = nil
     ) {
         self.id = id
         self.displayName = displayName
@@ -606,10 +709,13 @@ public struct PluginMCPServer: Codable, Equatable, Sendable, Identifiable {
         self.resourcesEnabled = resourcesEnabled
         self.promptsEnabled = promptsEnabled
         self.trustLevel = trustLevel
+        self.installSource = installSource
+        self.remoteRegistry = remoteRegistry
+        self.controlPlane = controlPlane
     }
 }
 
-public struct PluginTemplate: Codable {
+public struct PluginTemplate: Codable, Sendable {
     public var name: String
     public var icon: String
     public var description: String

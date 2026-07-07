@@ -1,4 +1,5 @@
 import Foundation
+import ASTRAModels
 
 enum PromptContextSectionProviderID: String, Sendable, CaseIterable {
     case agentTeam = "agent-team"
@@ -73,19 +74,22 @@ struct PromptContextSectionProviderContext {
     let followUpMessage: String
     let capabilityScope: TaskCapabilityPromptScope
     let ioSnapshot: PromptContextIOSnapshot
+    let connectorCredentialExposurePolicy: ConnectorRuntimeProjection.CredentialExposurePolicy?
 
     init(
         mode: PromptAssemblyMode,
         task: AgentTask,
         followUpMessage: String,
         capabilityScope: TaskCapabilityPromptScope,
-        ioSnapshot: PromptContextIOSnapshot = .empty
+        ioSnapshot: PromptContextIOSnapshot = .empty,
+        connectorCredentialExposurePolicy: ConnectorRuntimeProjection.CredentialExposurePolicy? = nil
     ) {
         self.mode = mode
         self.task = task
         self.followUpMessage = followUpMessage
         self.capabilityScope = capabilityScope
         self.ioSnapshot = ioSnapshot
+        self.connectorCredentialExposurePolicy = connectorCredentialExposurePolicy
     }
 }
 

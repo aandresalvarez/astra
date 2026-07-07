@@ -1,6 +1,8 @@
 import Foundation
 import SwiftData
 import ASTRACore
+import ASTRAModels
+import ASTRAPersistence
 
 @Observable @MainActor
 final class TaskLifecycleCoordinator {
@@ -39,6 +41,9 @@ final class TaskLifecycleCoordinator {
         }
         Task {
             await taskQueue.processQueue(modelContext: modelContext)
+            // B2-live: resume any Workspace App workflow run whose awaited agent
+            // task just finished in the queue.
+            await WorkspaceAppRunResumptionService().resumeCompletedRuns(modelContext: modelContext)
         }
     }
 
@@ -56,6 +61,8 @@ final class TaskLifecycleCoordinator {
             AppLogger.audit(.taskCompleted, category: "UI", taskID: task.id, fields: [
                 "status": task.status.rawValue
             ])
+            // B2-live: resume any Workspace App workflow awaiting this agent task.
+            await WorkspaceAppRunResumptionService().resumeCompletedRuns(modelContext: modelContext)
         }
     }
 
@@ -89,12 +96,9 @@ final class TaskLifecycleCoordinator {
             modelContext: modelContext,
             source: .supersededByNewRun
         )
-        task.status = .queued
+        TaskStateMachine.enqueueFromRetry(task, modelContext: modelContext)
         task.tokensUsed = 0
         task.costUSD = 0
-        task.updatedAt = Date()
-        task.completedAt = nil
-        task.markRead()
         let event = TaskEvent(
             task: task,
             eventType: TaskEventTypes.Task.retried,
@@ -141,11 +145,7 @@ final class TaskLifecycleCoordinator {
             return nil
         }
         AppLogger.audit(.taskResumed, category: "UI", taskID: task.id)
-        let previousStatus = task.status
-        let previousCompletedAt = task.completedAt
-        task.status = .running
         task.updatedAt = Date()
-        task.completedAt = nil
         task.markRead()
         let event = TaskEvent(task: task, eventType: TaskEventTypes.Task.resumed, payload: "Resuming previous session — continuing where the agent left off.")
         modelContext.insert(event)
@@ -156,65 +156,12 @@ final class TaskLifecycleCoordinator {
                 message: Self.resumeContinuationMessage(for: task),
                 modelContext: modelContext
             )
-            finishContinuationLaunch(
-                task,
-                didStart: didStart,
-                revertingTo: previousStatus,
-                previousCompletedAt: previousCompletedAt,
-                source: "resume"
-            )
-        }
-    }
-
-    /// Reverts an optimistic `.running` transition when the queue could not admit
-    /// the continuation. `continueSession` returns `false` before any worker runs
-    /// (no available worker, resource-lock wait cancelled, or task-folder prep
-    /// failure); without restoring status the task is stranded in `.running` with
-    /// no worker, so it appears active forever and the user can't act on it.
-    private func finishContinuationLaunch(
-        _ task: AgentTask,
-        didStart: Bool,
-        revertingTo previousStatus: TaskStatus,
-        previousCompletedAt: Date?,
-        source: String
-    ) {
-        guard !didStart else {
+            guard didStart else { return }
             AppLogger.audit(.taskCompleted, category: "UI", taskID: task.id, fields: [
                 "status": task.status.rawValue,
-                "source": source
+                "source": "resume"
             ])
-            return
         }
-        // continueSession can return false *after* already moving the task to a
-        // terminal state — prepareTaskFolder sets `.failed`, records its own error
-        // event, and marks unread. Only roll back the optimistic transition if it
-        // is still in place; otherwise respect the failure the queue recorded
-        // rather than overwriting it (and double-recording an error).
-        guard task.status == .running else {
-            AppLogger.audit(.workerBlocked, category: "UI", taskID: task.id, fields: [
-                "reason": "continuation_not_admitted",
-                "preserved_status": task.status.rawValue,
-                "source": source
-            ], level: .debug)
-            return
-        }
-        task.status = previousStatus
-        task.completedAt = previousCompletedAt
-        task.updatedAt = Date()
-        // Surface the failure: keep the task unread for its restored status so the
-        // user notices the inserted error rather than silently clearing it.
-        task.markUnreadForCurrentStatus()
-        modelContext.insert(TaskEvent(
-            task: task,
-            eventType: TaskEventTypes.System.error,
-            payload: "Couldn't continue this task — it couldn't be started right now. Try again in a moment."
-        ))
-        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
-        AppLogger.audit(.workerBlocked, category: "UI", taskID: task.id, fields: [
-            "reason": "continuation_not_admitted",
-            "restored_status": previousStatus.rawValue,
-            "source": source
-        ], level: .warning)
     }
 
     @discardableResult
@@ -233,10 +180,7 @@ final class TaskLifecycleCoordinator {
         AppLogger.audit(.taskApproved, category: "UI", taskID: task.id, fields: [
             "approval_type": recordedValidationOverride ? "validation_override" : "completion"
         ])
-        task.status = .completed
-        task.updatedAt = Date()
-        task.completedAt = Date()
-        task.markRead()
+        TaskStateMachine.completeFromUserApproval(task, modelContext: modelContext)
         let event = TaskEvent(
             task: task,
             eventType: TaskEventTypes.Task.approved,
@@ -325,6 +269,7 @@ final class TaskLifecycleCoordinator {
 
         let runtime = task.resolvedRuntimeID
         let latestGrants = Self.latestRuntimePermissionGrants(for: task)
+        let latestRequestedTool = Self.latestRequestedPermissionTool(for: task)
         let taskScopedGrants = TaskRuntimePermissionGrants.record(
             grants: latestGrants,
             providerID: runtime,
@@ -342,11 +287,8 @@ final class TaskLifecycleCoordinator {
             "runtime": runtime.rawValue,
             "grant_count": String(taskScopedGrants.count)
         ])
-        let previousStatus = task.status
-        let previousCompletedAt = task.completedAt
-        task.status = .running
+        TaskRuntimePermissionOpenRequestStore.closeAllOpenRequests(for: task)
         task.updatedAt = Date()
-        task.completedAt = nil
         task.markRead()
         let event = TaskEvent(
             task: task,
@@ -366,7 +308,7 @@ final class TaskLifecycleCoordinator {
         let resumeMessage = PermissionBroker.resumeMessage(
             providerID: runtime,
             grants: taskScopedGrants,
-            fallback: Self.latestRequestedPermissionTool(for: task)
+            fallback: latestRequestedTool
                 .flatMap { PermissionBroker.permissionGrant(fromProviderString: $0)?.displayName },
             scopeDescription: "task-scoped runtime permission for similar requests in this task"
         )
@@ -377,26 +319,24 @@ final class TaskLifecycleCoordinator {
                 modelContext: modelContext,
                 executionPolicy: .default
             )
-            finishContinuationLaunch(
-                task,
-                didStart: didStart,
-                revertingTo: previousStatus,
-                previousCompletedAt: previousCompletedAt,
-                source: "runtime_permission_task_approval"
-            )
+            guard didStart else { return }
+            AppLogger.audit(.taskCompleted, category: "UI", taskID: task.id, fields: [
+                "status": task.status.rawValue,
+                "source": "runtime_permission_task_approval"
+            ])
         }
     }
 
     private func approveRuntimePermissionAndContinue(_ task: AgentTask) -> Task<Void, Never> {
+        let runtime = task.resolvedRuntimeID
+        let approvedGrants = Self.approvedRuntimePermissionGrants(for: task)
+        let resumeMessage = Self.runtimePermissionApprovalResumeMessage(for: task, grants: approvedGrants)
         AppLogger.audit(.taskApproved, category: "UI", taskID: task.id, fields: [
             "approval_type": "runtime_permission",
-            "runtime": task.resolvedRuntimeID.rawValue
+            "runtime": runtime.rawValue
         ])
-        let previousStatus = task.status
-        let previousCompletedAt = task.completedAt
-        task.status = .running
+        TaskRuntimePermissionOpenRequestStore.closeAllOpenRequests(for: task)
         task.updatedAt = Date()
-        task.completedAt = nil
         task.markRead()
         let event = TaskEvent(
             task: task,
@@ -416,10 +356,7 @@ final class TaskLifecycleCoordinator {
             return Task {}
         }
 
-        let runtime = task.resolvedRuntimeID
-        let approvedGrants = Self.approvedRuntimePermissionGrants(for: task)
         let executionPolicy = PermissionBroker.executionPolicy(forRuntime: runtime, grants: approvedGrants)
-        let resumeMessage = Self.runtimePermissionApprovalResumeMessage(for: task, grants: approvedGrants)
         return Task {
             let didStart = await taskQueue.continueSession(
                 task: task,
@@ -427,13 +364,11 @@ final class TaskLifecycleCoordinator {
                 modelContext: modelContext,
                 executionPolicy: executionPolicy
             )
-            finishContinuationLaunch(
-                task,
-                didStart: didStart,
-                revertingTo: previousStatus,
-                previousCompletedAt: previousCompletedAt,
-                source: "runtime_permission_approval"
-            )
+            guard didStart else { return }
+            AppLogger.audit(.taskCompleted, category: "UI", taskID: task.id, fields: [
+                "status": task.status.rawValue,
+                "source": "runtime_permission_approval"
+            ])
         }
     }
 
@@ -460,32 +395,15 @@ final class TaskLifecycleCoordinator {
     }
 
     private static func approvedRuntimePermissionGrants(for task: AgentTask) -> [PermissionGrant] {
-        latestRuntimePermissionGrants(for: task)
+        TaskRuntimePermissionOpenRequestStore.latestApprovalGrants(for: task)
     }
 
     private static func latestRuntimePermissionGrants(for task: AgentTask) -> [PermissionGrant] {
-        let events = permissionRequestEvents(for: task)
-            .sorted { $0.timestamp < $1.timestamp }
-            .reversed()
-        for event in events {
-            let structured = PermissionBroker.structuredApprovalGrants(from: event.payload)
-            if !structured.isEmpty { return structured }
-            let legacy = PermissionBroker.legacyApprovalGrants(from: event.payload)
-            if !legacy.isEmpty { return legacy }
-        }
-        if let requestedTool = latestRequestedPermissionTool(for: task),
-           let grant = PermissionBroker.permissionGrant(fromProviderString: requestedTool) {
-            return [grant]
-        }
-        return []
+        TaskRuntimePermissionOpenRequestStore.latestApprovalGrants(for: task)
     }
 
     private static func latestRequestedPermissionTool(for task: AgentTask) -> String? {
-        permissionRequestEvents(for: task)
-            .sorted { $0.timestamp < $1.timestamp }
-            .reversed()
-            .compactMap { permissionToolName(from: $0.payload) }
-            .first
+        TaskRuntimePermissionOpenRequestStore.latestRequestedToolName(for: task)
     }
 
     private static func permissionRequestEvents(for task: AgentTask) -> [TaskEvent] {
@@ -532,48 +450,8 @@ final class TaskLifecycleCoordinator {
             normalized.hasPrefix("astra approved task-scoped runtime permission")
     }
 
-    private static func permissionToolName(from payload: String) -> String? {
-        if let decoded = PermissionApprovalEventPayload.decoded(from: payload) {
-            switch decoded.request {
-            case .tool(let name, _), .providerNativePrompt(let name, _):
-                return name
-            case .shell(_, let toolName):
-                return toolName ?? "Bash"
-            case .fileWrite(_, let toolName):
-                return toolName ?? "Write"
-            case .network(_, let toolName):
-                return toolName ?? "WebFetch"
-            case .credential(let label):
-                return label
-            }
-        }
-        let patterns = [
-            #"Permission (?:denied|requested) for tool: ([^.\n]+)"#,
-            #""tool"\s*:\s*"([^"]+)""#,
-            #""toolName"\s*:\s*"([^"]+)""#
-        ]
-        for pattern in patterns {
-            guard let regex = try? NSRegularExpression(pattern: pattern),
-                  let match = regex.firstMatch(in: payload, range: NSRange(payload.startIndex..., in: payload)),
-                  let range = Range(match.range(at: 1), in: payload) else {
-                continue
-            }
-            let value = String(payload[range]).trimmingCharacters(in: .whitespacesAndNewlines)
-            if !value.isEmpty {
-                return value
-            }
-        }
-        return nil
-    }
-
     private func hasOpenRuntimePermissionApprovalRequest(_ task: AgentTask) -> Bool {
-        // Correlate live asks by requestID (out-of-order resolutions can't hide
-        // a still-pending ask); legacy requests fall back to task.approved.
-        RuntimePermissionOpenState.hasOpenRequest(
-            events: task.events.map {
-                RuntimePermissionOpenState.Event(type: $0.type, payload: $0.payload, timestamp: $0.timestamp)
-            }
-        )
+        TaskRuntimePermissionOpenRequestStore.hasOpenRequest(for: task)
     }
 
     func deleteTask(_ task: AgentTask) -> Workspace? {
@@ -588,14 +466,12 @@ final class TaskLifecycleCoordinator {
         task.isDone = isDone
         task.updatedAt = Date()
         task.markRead()
-        do {
-            try modelContext.save()
-        } catch {
-            AppLogger.audit(.taskFailed, category: "UI", taskID: task.id, fields: [
-                "operation": "apply_done_state",
-                "error_type": String(describing: type(of: error))
-            ], level: .error)
-        }
+        WorkspacePersistenceCoordinator.saveAndAutoExport(
+            workspace: task.workspace,
+            modelContext: modelContext,
+            taskID: task.id,
+            auditFields: ["operation": "apply_done_state"]
+        )
     }
 
     func activeSameThreadSchedules(for task: AgentTask) -> [TaskSchedule] {
@@ -643,8 +519,7 @@ final class TaskLifecycleCoordinator {
     }
 
     func deleteWorkspace(_ ws: Workspace, existingWorkspaces: [Workspace]) -> Workspace? {
-        let configPath = WorkspaceFileLayout.workspaceConfigFile(for: ws.primaryPath)
-        try? FileManager.default.removeItem(atPath: configPath)
+        removeGeneratedWorkspaceMirrors(for: ws.primaryPath)
 
         for connector in ws.connectors {
             connector.cleanupKeychain()
@@ -662,11 +537,21 @@ final class TaskLifecycleCoordinator {
         return next
     }
 
+    private func removeGeneratedWorkspaceMirrors(for workspacePath: String) {
+        let mirrorPaths = Set([
+            WorkspaceFileLayout.workspaceConfigFile(for: workspacePath),
+            WorkspaceFileLayout.legacyWorkspaceConfigFile(for: workspacePath)
+        ])
+        for path in mirrorPaths {
+            try? FileManager.default.removeItem(atPath: path)
+        }
+    }
+
     func importFromConfig(at url: URL, existingWorkspaces: [Workspace],
                           askDuplicateAction: (String, Int) -> DuplicateAction) -> Workspace? {
         do {
             var config = try WorkspaceConfigManager.loadConfig(from: url)
-            config.primaryPath = url.deletingLastPathComponent().standardizedFileURL.path
+            config.primaryPath = WorkspaceFileLayout.workspaceRoot(forConfigFile: url).path
             let configID = config.id
             if let existing = existingWorkspaces.first(where: { workspace in
                 (configID != nil && workspace.id.uuidString == configID) || workspace.primaryPath == config.primaryPath
@@ -681,11 +566,29 @@ final class TaskLifecycleCoordinator {
                             config.tasks = freshExport.tasks
                         }
                     }
+                    let scheduleTrustPolicy = scheduleTrustPolicyForConfigReplace(existing: existing, configURL: url)
                     modelContext.delete(existing)
-                    return WorkspaceConfigManager.importWorkspace(from: config, modelContext: modelContext)
+                    return WorkspaceConfigManager.importWorkspace(
+                        from: config,
+                        modelContext: modelContext,
+                        scheduleTrustPolicy: scheduleTrustPolicy
+                    )
                 case .duplicate:
                     var dupConfig = config
                     dupConfig.name = config.name + " (Imported)"
+                    // A duplicate is a new, independent workspace, not the
+                    // existing one — clear the carried-over id (importWorkspace
+                    // reuses config.id for the new Workspace's id when present)
+                    // so it doesn't collide with `existing`'s id. Reusing it
+                    // made replaceWorkspaceAppMirrorRows(for: workspace.id...)
+                    // delete and re-tag `existing`'s own Workspace App rows.
+                    dupConfig.id = nil
+                    // Same reasoning, one level down: the exported
+                    // WorkspaceApp/Run/RunEvent/DependencyBinding/AutomationState
+                    // rows still carry their original appID/runID, which would
+                    // let e.g. WorkspaceAppService.deleteApp on the duplicate's
+                    // copy affect the original's rows too.
+                    dupConfig = WorkspaceConfigManager.remappingWorkspaceAppIdentities(in: dupConfig)
                     if (dupConfig.tasks ?? []).isEmpty && !existing.tasks.isEmpty {
                         if let freshExport = WorkspaceConfigManager.export(workspace: existing, modelContext: modelContext) {
                             dupConfig.tasks = freshExport.tasks
@@ -704,6 +607,15 @@ final class TaskLifecycleCoordinator {
         }
     }
 
+    private func scheduleTrustPolicyForConfigReplace(
+        existing: Workspace,
+        configURL: URL
+    ) -> WorkspaceConfigManager.ScheduleImportTrustPolicy {
+        let configFolderPath = WorkspaceFileLayout.workspaceRoot(forConfigFile: configURL).path
+        let existingPath = URL(fileURLWithPath: existing.primaryPath).standardizedFileURL.path
+        return configFolderPath == existingPath ? .preserveEnabledState : .quarantineEnabledSchedules
+    }
+
     func createWorkspaceFromFolder(_ url: URL, existingWorkspaces: [Workspace],
                                    askDuplicateAction: (String, Int) -> DuplicateAction) -> Workspace? {
         let name = url.lastPathComponent
@@ -720,7 +632,11 @@ final class TaskLifecycleCoordinator {
                     exportedConfig.name = name
                     exportedConfig.primaryPath = url.path
                     modelContext.delete(existing)
-                    return WorkspaceConfigManager.importWorkspace(from: exportedConfig, modelContext: modelContext)
+                    return WorkspaceConfigManager.importWorkspace(
+                        from: exportedConfig,
+                        modelContext: modelContext,
+                        scheduleTrustPolicy: .preserveEnabledState
+                    )
                 }
                 modelContext.delete(existing)
                 return insertWorkspaceFromFolder(name: name, path: url.path)
@@ -960,14 +876,11 @@ final class TaskLifecycleCoordinator {
         for skill in [readOnly, testRunner, safeBash] {
             modelContext.insert(skill)
         }
-        do {
-            try modelContext.save()
-        } catch {
-            AppLogger.audit(.skillToolPermissionChanged, category: "UI", fields: [
-                "operation": "seed_skills",
-                "error_type": String(describing: type(of: error))
-            ], level: .error)
-        }
+        WorkspacePersistenceCoordinator.saveAndAutoExport(
+            workspace: workspace,
+            modelContext: modelContext,
+            auditFields: ["operation": "seed_skills"]
+        )
     }
 
     enum DuplicateAction {
