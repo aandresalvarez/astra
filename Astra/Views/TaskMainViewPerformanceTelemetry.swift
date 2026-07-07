@@ -4,7 +4,7 @@ import ASTRAModels
 enum TaskMainViewPerformanceTelemetry {
     static func chatOpenFields(task: AgentTask, source: String) -> [String: String] {
         let latestRun = task.runs.max { $0.startedAt < $1.startedAt }
-        let latestOutputChars = latestRun?.output.utf8.count ?? 0
+        let latestOutputBytes = latestRun?.output.utf8.count ?? 0
         return [
             "source": source,
             "task_id": PerformanceTelemetryFields.abbreviatedID(task.id),
@@ -12,8 +12,8 @@ enum TaskMainViewPerformanceTelemetry {
             "status": task.status.rawValue,
             "event_count": PerformanceTelemetryFields.count(task.events.count),
             "run_count": PerformanceTelemetryFields.count(task.runs.count),
-            "latest_run_output_chars": PerformanceTelemetryFields.count(latestOutputChars),
-            "latest_run_output_bucket": PerformanceTelemetryFields.byteBucket(latestOutputChars)
+            "latest_run_output_bytes": PerformanceTelemetryFields.count(latestOutputBytes),
+            "latest_run_output_bucket": PerformanceTelemetryFields.byteBucket(latestOutputBytes)
         ]
     }
 
