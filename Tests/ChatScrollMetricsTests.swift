@@ -93,7 +93,26 @@ struct ChatScrollMetricsTests {
 @Suite("ChatScrollRecoveryWatchdog")
 struct ChatScrollRecoveryWatchdogTests {
     private static let settleNanoseconds: UInt64 = 25_000_000
-    private static let waitPastSettle: Duration = .milliseconds(80)
+
+    /// Polls instead of sleeping a single fixed duration then checking once: a
+    /// fixed wait just past the settle delay flaked under CI's full-suite
+    /// parallel load (4500+ tests contending for scheduling), where Task
+    /// resumption latency is far less predictable than on an idle machine.
+    /// Polling tolerates that jitter without needing to guess a safe margin,
+    /// and returns as soon as the condition is met rather than always paying
+    /// the worst-case wait — including for the "never fires" tests below,
+    /// where exhausting every attempt without the condition becoming true is
+    /// the expected, passing outcome.
+    private static func waitUntil(
+        attempts: Int = 100,
+        interval: Duration = .milliseconds(5),
+        _ condition: () -> Bool
+    ) async {
+        for _ in 0..<attempts {
+            if condition() { return }
+            try? await Task.sleep(for: interval)
+        }
+    }
 
     @Test("Fires recovery when a parked reading persists past the settle delay, passing the value it fired on")
     func firesAfterSettleDelayWhenStillParked() async {
@@ -102,7 +121,7 @@ struct ChatScrollRecoveryWatchdogTests {
 
         watchdog.sentinelDidUpdate(bottomMinY: -200) { value in recoveredValue = value }
 
-        try? await Task.sleep(for: Self.waitPastSettle)
+        await Self.waitUntil { recoveredValue != nil }
         #expect(recoveredValue == -200)
     }
 
@@ -113,7 +132,7 @@ struct ChatScrollRecoveryWatchdogTests {
 
         watchdog.sentinelDidUpdate(bottomMinY: 600) { _ in recoverCount += 1 }
 
-        try? await Task.sleep(for: Self.waitPastSettle)
+        await Self.waitUntil { recoverCount > 0 }
         #expect(recoverCount == 0)
     }
 
@@ -128,7 +147,7 @@ struct ChatScrollRecoveryWatchdogTests {
         watchdog.sentinelDidUpdate(bottomMinY: -200) { _ in recoverCount += 1 }
         watchdog.sentinelDidUpdate(bottomMinY: 600) { _ in recoverCount += 1 }
 
-        try? await Task.sleep(for: Self.waitPastSettle)
+        await Self.waitUntil { recoverCount > 0 }
         #expect(recoverCount == 0)
     }
 
@@ -150,7 +169,7 @@ struct ChatScrollRecoveryWatchdogTests {
             recoveredValue = value
         }
 
-        try? await Task.sleep(for: Self.waitPastSettle)
+        await Self.waitUntil { recoverCount > 0 }
         #expect(recoverCount == 1)
         #expect(recoveredValue == -300)
     }
