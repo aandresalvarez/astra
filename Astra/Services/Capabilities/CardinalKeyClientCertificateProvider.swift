@@ -48,11 +48,16 @@ enum CardinalKeyClientCertificateProvider {
         let identities: [SecIdentity]
         guard let result else { return nil }
 
+        // The compiler rejects a direct `result as? SecIdentity` (CF
+        // conditional casts always succeed), so the single-identity case
+        // reuses the array-cast shape of the CFArray branch; the
+        // CFGetTypeID comparison is the real type check for both.
         if CFGetTypeID(result) == CFArrayGetTypeID(),
            let identityList = result as? [SecIdentity] {
             identities = identityList
-        } else if CFGetTypeID(result) == SecIdentityGetTypeID() {
-            identities = [result as! SecIdentity]
+        } else if CFGetTypeID(result) == SecIdentityGetTypeID(),
+                  let identityList = [result] as? [SecIdentity] {
+            identities = identityList
         } else {
             return nil
         }
