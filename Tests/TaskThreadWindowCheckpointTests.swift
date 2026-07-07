@@ -9,6 +9,12 @@ import ASTRACore
 
 @Suite("TaskThreadViewModel")
 struct TaskThreadViewModelTests {
+    // vm.reset(for:) below calls TaskThreadViewModel.refreshGeneratedFiles, which reads
+    // through TaskWorkspaceAccess/TaskGeneratedFiles — currently a no-op for these
+    // workspace-less test fixtures, but that's incidental to how the fixtures are built
+    // today, not a guarantee. Guard defensively so a future fixture with a workspace
+    // doesn't crash depending on what else has run in the same test process.
+    private let _registerRuntimeSeams: Void = RuntimeSeamRegistration.registerAll()
 
     @MainActor
     private func awaitSnapshot(
