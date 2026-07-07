@@ -1,44 +1,32 @@
 import SwiftUI
 import WebKit
 
-enum ShelfBrowserToolbarLayout: Equatable {
-    case regular
-    case compact
-    case stacked
-
-    static let regularMinimumWidth: CGFloat = 560
-    static let compactMinimumWidth: CGFloat = 280
-    static let regularAddressMinimumWidth: CGFloat = 170
-    static let compactAddressMinimumWidth: CGFloat = 108
-
-    var height: CGFloat {
-        switch self {
-        case .regular, .compact:
-            46
-        case .stacked:
-            84
+/// Turns a raw URL into what the address bar shows at rest: a host for web
+/// pages, a filename for local files (agent-generated artifacts are almost
+/// always `file://…/.astra/tasks/<id>/report.html`, which is noise until
+/// shortened), and the raw string for anything else. Pulled out as a pure
+/// function so it's unit-testable without standing up the view.
+enum ShelfBrowserAddressFormatter {
+    static func displayText(for urlString: String) -> String {
+        let trimmed = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed.lowercased() != "about:blank" else { return "" }
+        guard let components = URLComponents(string: trimmed) else { return trimmed }
+        switch components.scheme?.lowercased() {
+        case "file":
+            let name = (components.path as NSString).lastPathComponent
+            return name.isEmpty ? trimmed : name
+        case "http", "https":
+            var host = components.host ?? trimmed
+            if host.hasPrefix("www.") { host.removeFirst(4) }
+            let path = components.path
+            return (path.isEmpty || path == "/") ? host : host + path
+        default:
+            return trimmed
         }
     }
-
-    static func resolve(width: CGFloat) -> ShelfBrowserToolbarLayout {
-        if width >= regularMinimumWidth { return .regular }
-        if width >= compactMinimumWidth { return .compact }
-        return .stacked
-    }
 }
 
-private enum ShelfBrowserToolbarNavigationStyle {
-    case full
-    case primaryOnly
-}
-
-private struct ShelfBrowserToolbarWidthPreferenceKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
-
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
-    }
-}
+private let shelfBrowserAddressMinimumWidth: CGFloat = 140
 
 struct ShelfBrowserPanelView: View {
     @ObservedObject var session: ShelfBrowserSession
@@ -50,7 +38,6 @@ struct ShelfBrowserPanelView: View {
     @FocusState private var isAddressFocused: Bool
     @State private var isAddressHovered = false
     @State private var isControlledTechnicalDetailsExpanded = false
-    @State private var toolbarLayout = ShelfBrowserToolbarLayout.compact
     // Tracks whether the user has seen the Embedded vs Controlled explanation
     // on the empty browser screen. Persists across sessions so the hint only
     // teaches once per install, not every time the shelf is empty.
@@ -67,7 +54,7 @@ struct ShelfBrowserPanelView: View {
         .id(ObjectIdentifier(session))
         // No background — parent paints .bar material that extends behind toolbar.
         .onAppear {
-            addressText = session.currentURL
+            addressText = ShelfBrowserAddressFormatter.displayText(for: session.currentURL)
             session.setPresented(true)
         }
         .onDisappear {
@@ -75,13 +62,24 @@ struct ShelfBrowserPanelView: View {
         }
         .onChange(of: session.currentURL) { _, newValue in
             if !isAddressFocused {
-                addressText = newValue
+                addressText = ShelfBrowserAddressFormatter.displayText(for: newValue)
             }
             // First successful navigation retires the engine-modes hint —
-            // by now the user is past the empty-state and the Emb/Ctrl
-            // labels in the toolbar have context.
+            // by now the user is past the empty-state and has seen the
+            // engine chip in the toolbar have context.
             if !newValue.isEmpty {
                 engineHintDismissed = true
+            }
+        }
+        // Safari-style address field: shows the full, editable URL while
+        // focused, and a friendlier identity (host, or filename for local
+        // files) at rest. Swap on focus change rather than on every
+        // keystroke so typing isn't fighting a live reformat.
+        .onChange(of: isAddressFocused) { _, focused in
+            if focused {
+                addressText = session.currentURL
+            } else {
+                addressText = ShelfBrowserAddressFormatter.displayText(for: session.currentURL)
             }
         }
     }
@@ -150,135 +148,56 @@ struct ShelfBrowserPanelView: View {
         )
     }
 
+    // ViewThatFits is the mechanism, not GeometryReader+PreferenceKey: it lets
+    // SwiftUI's own layout pass pick the row that fits, synchronously, in one
+    // frame. The previous approach measured its own width via a background
+    // GeometryReader and pushed it through a PreferenceKey, which needs an
+    // extra pass to propagate — in this panel that pass never landed, so the
+    // toolbar was permanently stuck on its `@State` initial value regardless
+    // of actual width. ViewThatFits has no such second pass to miss.
     private var toolbar: some View {
-        toolbarContent(layout: toolbarLayout)
+        ViewThatFits(in: .horizontal) {
+            toolbarRow
+            stackedToolbarRow
+        }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
-        .frame(height: toolbarLayout.height)
         .frame(maxWidth: .infinity)
         .background(.bar)
-        .background {
-            GeometryReader { proxy in
-                Color.clear.preference(
-                    key: ShelfBrowserToolbarWidthPreferenceKey.self,
-                    value: proxy.size.width
-                )
-            }
-        }
-        .onPreferenceChange(ShelfBrowserToolbarWidthPreferenceKey.self) { width in
-            guard width.isFinite && width > 0 else { return }
-            let nextLayout = ShelfBrowserToolbarLayout.resolve(width: width)
-            guard toolbarLayout != nextLayout else { return }
-            toolbarLayout = nextLayout
-        }
     }
 
-    @ViewBuilder
-    private func toolbarContent(layout: ShelfBrowserToolbarLayout) -> some View {
-        switch layout {
-        case .regular:
-            toolbarRow(
-                navigationStyle: .full,
-                showsFullEngineSwitcher: true,
-                showsModeBadgeInAddress: true,
-                usesCompactGoButton: false,
-                addressMinWidth: ShelfBrowserToolbarLayout.regularAddressMinimumWidth
-            )
-        case .compact:
-            toolbarRow(
-                navigationStyle: .primaryOnly,
-                showsFullEngineSwitcher: false,
-                showsModeBadgeInAddress: false,
-                usesCompactGoButton: true,
-                addressMinWidth: ShelfBrowserToolbarLayout.compactAddressMinimumWidth
-            )
-        case .stacked:
-            VStack(spacing: 6) {
-                HStack(spacing: 6) {
-                    primaryNavigationButton
-                    compactEngineMenu
-                    Spacer(minLength: 0)
-                    goButton(isCompact: true)
-                    overflowMenu
-                }
-
-                HStack(spacing: 6) {
-                    addressField(showsModeBadge: false)
-                        .frame(minWidth: 0, maxWidth: .infinity)
-                        .layoutPriority(1)
-                }
-            }
-            .frame(maxWidth: .infinity)
-        }
-    }
-
-    private func toolbarRow(
-        navigationStyle: ShelfBrowserToolbarNavigationStyle,
-        showsFullEngineSwitcher: Bool,
-        showsModeBadgeInAddress: Bool,
-        usesCompactGoButton: Bool,
-        addressMinWidth: CGFloat
-    ) -> some View {
+    private var toolbarRow: some View {
         HStack(spacing: 6) {
-            navigationControls(style: navigationStyle)
-            if showsFullEngineSwitcher {
-                engineSwitcher
-            } else {
-                compactEngineMenu
-            }
-            addressField(showsModeBadge: showsModeBadgeInAddress)
-                .frame(minWidth: addressMinWidth, maxWidth: .infinity)
+            navigationButtonGroup
+            engineAgentChip
+            addressField
+                .frame(minWidth: shelfBrowserAddressMinimumWidth, maxWidth: .infinity)
                 .layoutPriority(1)
-            goButton(isCompact: usesCompactGoButton)
+            goButton
             overflowMenu
         }
         .frame(maxWidth: .infinity)
     }
 
-    @ViewBuilder
-    private func navigationControls(style: ShelfBrowserToolbarNavigationStyle) -> some View {
-        switch style {
-        case .full:
-            navigationButtonGroup
-        case .primaryOnly:
-            primaryNavigationButton
-        }
-    }
-
-    private var engineSwitcher: some View {
-        ViewThatFits(in: .horizontal) {
-            engineSegmentedControl(compact: false)
-            engineSegmentedControl(compact: true)
-        }
-        .help("Choose whether this shelf uses embedded WebKit or a controlled Chromium profile")
-    }
-
-    private func engineSegmentedControl(compact: Bool) -> some View {
-        HStack(spacing: compact ? 4 : 7) {
-            if !compact {
-                Text("Engine")
-                    .font(Stanford.caption(10).weight(.semibold))
-                    .foregroundStyle(.secondary)
+    private var stackedToolbarRow: some View {
+        VStack(spacing: 6) {
+            HStack(spacing: 6) {
+                navigationButtonGroup
+                engineAgentChip
+                Spacer(minLength: 0)
+                goButton
+                overflowMenu
             }
-
-            Picker("Browser engine", selection: $session.engine) {
-                ForEach(ShelfBrowserEngine.allCases) { engine in
-                    Label(
-                        compact ? compactEngineLabel(for: engine) : engine.label,
-                        systemImage: engineIcon(for: engine)
-                    )
-                    .tag(engine)
-                }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .tint(Stanford.lagunita)
-            .frame(width: compact ? 86 : 178)
+            addressField
+                .frame(maxWidth: .infinity)
         }
-        .fixedSize()
+        .frame(maxWidth: .infinity)
     }
 
-    private var compactEngineMenu: some View {
+    /// One control for engine choice and agent-bridge status, replacing what
+    /// used to be a segmented switcher outside the field plus a separate
+    /// badge and status dot inside it — three indicators for two facts.
+    private var engineAgentChip: some View {
         Menu {
             Picker("Browser engine", selection: $session.engine) {
                 ForEach(ShelfBrowserEngine.allCases) { engine in
@@ -287,61 +206,51 @@ struct ShelfBrowserPanelView: View {
                 }
             }
         } label: {
-            Label(compactEngineLabel(for: session.engine), systemImage: engineIcon(for: session.engine))
-                .labelStyle(.titleAndIcon)
-                .font(Stanford.caption(11).weight(.semibold))
-                .foregroundStyle(engineModeTint)
+            HStack(spacing: 5) {
+                Image(systemName: engineIcon(for: session.engine))
+                    .font(Stanford.ui(11, weight: .semibold))
+                Text(session.engine.label)
+                    .font(Stanford.caption(11).weight(.semibold))
+                    .lineLimit(1)
+                if session.isAgentBridgeEnabled {
+                    BridgeStatusDot(isReady: session.bridgeEndpoint != nil)
+                }
+            }
+            .foregroundStyle(engineModeTint)
         }
         .menuStyle(.button)
+        .menuIndicator(.hidden)
         .buttonStyle(BrowserEngineMenuButtonStyle(tint: engineModeTint))
         .fixedSize()
-        .help("Browser engine: \(session.engine.label)")
+        .help(engineChipHelp)
         .accessibilityLabel("Browser engine: \(session.engine.label)")
     }
 
+    private var engineChipHelp: String {
+        guard session.isAgentBridgeEnabled else { return engineModeHelp }
+        return engineModeHelp + (session.bridgeEndpoint != nil ? " Agent control is ready." : " Agent control is starting.")
+    }
+
+    // Back leads (most-used control in any browser), forward only takes
+    // space when there's somewhere to go, reload/stop always trails.
     private var navigationButtonGroup: some View {
         HStack(spacing: 1) {
             browserButton("chevron.left", help: session.canGoBack ? "Back" : "No previous page", disabled: !session.canGoBack) {
                 session.goBack()
             }
-            browserButton("chevron.right", help: session.canGoForward ? "Forward" : "No next page", disabled: !session.canGoForward) {
-                session.goForward()
+            if session.canGoForward {
+                browserButton("chevron.right", help: "Forward", disabled: false) {
+                    session.goForward()
+                }
             }
-            browserButton(
-                navigationControlIcon,
-                help: navigationControlHelp,
-                disabled: navigationControlDisabled,
-                accent: session.isLoading ? Stanford.statusError : nil
-            ) {
+            browserButton(navigationControlIcon, help: navigationControlHelp, disabled: navigationControlDisabled) {
                 performNavigationControl()
             }
         }
         .fixedSize()
     }
 
-    private var primaryNavigationButton: some View {
-        browserButton(
-            navigationControlIcon,
-            help: navigationControlHelp,
-            disabled: navigationControlDisabled,
-            accent: session.isLoading ? Stanford.statusError : nil
-        ) {
-            performNavigationControl()
-        }
-        .fixedSize()
-    }
-
-    private var externalBrowserButton: some View {
-        browserButton(
-            "arrow.up.forward.square",
-            help: session.isUsingControlledBrowser ? "Show controlled browser window" : "Open in default browser",
-            disabled: !hasDisplayablePage && !session.isUsingControlledBrowser
-        ) {
-            session.openExternal()
-        }
-    }
-
-    private func addressField(showsModeBadge: Bool) -> some View {
+    private var addressField: some View {
         let shape = RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
         return HStack(spacing: 8) {
             Image(systemName: addressFieldIcon)
@@ -349,10 +258,6 @@ struct ShelfBrowserPanelView: View {
                 .foregroundStyle(addressFieldIconTint)
                 .frame(width: 14)
                 .animation(.easeOut(duration: 0.18), value: addressFieldIcon)
-
-            if showsModeBadge {
-                engineModeBadge
-            }
 
             TextField("Search or enter website", text: $addressText)
                 .textFieldStyle(.plain)
@@ -372,10 +277,34 @@ struct ShelfBrowserPanelView: View {
                 .help("Clear address")
             }
 
-            // Trailing agent indicator — only when Agent control is on. Replaces the
-            // separate status row that used to live below the toolbar.
-            if session.isAgentBridgeEnabled {
-                BridgeStatusDot(isReady: session.bridgeEndpoint != nil)
+            // Quiet reminder that Return submits, now that there's no
+            // always-visible Go button doing that job visually.
+            if isAddressFocused && addressText != session.currentURL && !addressText.isEmpty {
+                Text("return")
+                    .font(Stanford.caption(9).weight(.semibold))
+                    .foregroundStyle(.tertiary)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 2)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 4, style: .continuous)
+                            .stroke(Color.primary.opacity(0.15), lineWidth: 1)
+                    )
+            }
+
+            // Copying the page URL had no path in the toolbar at all before
+            // (only "Copy bridge URL" buried in the overflow menu). Surface
+            // it on hover, at rest, when there's actually a URL to copy.
+            if !isAddressFocused && isAddressHovered && hasDisplayablePage {
+                Button {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(session.currentURL, forType: .string)
+                } label: {
+                    Image(systemName: "doc.on.doc")
+                        .font(Stanford.ui(11, weight: .semibold))
+                        .foregroundStyle(.secondary.opacity(0.7))
+                }
+                .buttonStyle(.plain)
+                .help("Copy link")
             }
         }
         .padding(.horizontal, 10)
@@ -389,24 +318,6 @@ struct ShelfBrowserPanelView: View {
         .animation(.easeOut(duration: 0.16), value: isAddressFocused)
         .animation(.easeOut(duration: 0.14), value: isAddressHovered)
         .animation(.easeOut(duration: 0.14), value: addressText.isEmpty)
-    }
-
-    private var engineModeBadge: some View {
-        Label(session.engine.label, systemImage: engineIcon(for: session.engine))
-            .labelStyle(.titleAndIcon)
-            .font(Stanford.caption(10).weight(.semibold))
-            .foregroundStyle(engineModeTint)
-            .lineLimit(1)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 3)
-            .background(engineModeTint.opacity(0.10))
-            .clipShape(Capsule())
-            .overlay(
-                Capsule()
-                    .stroke(engineModeTint.opacity(0.16), lineWidth: 1)
-            )
-            .help("\(session.engine.label) mode: \(engineModeHelp)")
-            .accessibilityLabel("Browser engine: \(session.engine.label)")
     }
 
     private var engineModeTint: Color {
@@ -423,13 +334,6 @@ struct ShelfBrowserPanelView: View {
         switch engine {
         case .embedded: "safari"
         case .controlled: "globe.badge.chevron.backward"
-        }
-    }
-
-    private func compactEngineLabel(for engine: ShelfBrowserEngine) -> String {
-        switch engine {
-        case .embedded: "Emb"
-        case .controlled: "Ctrl"
         }
     }
 
@@ -459,28 +363,18 @@ struct ShelfBrowserPanelView: View {
         return Color.primary.opacity(Stanford.strokeRest)
     }
 
-    private func goButton(isCompact: Bool) -> some View {
-        Button(action: go) {
-            HStack(spacing: 6) {
-                if session.isLoading {
-                    ProgressView()
-                        .controlSize(.mini)
-                        .tint(.white)
-                } else {
-                    Image(systemName: "arrow.right")
-                        .font(Stanford.ui(11, weight: .bold))
-                }
-                if !isCompact {
-                    Text(session.isLoading ? "Opening" : "Open")
-                        .font(Stanford.ui(12, weight: .semibold))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.85)
-                }
-            }
+    // A quiet icon button, not a filled accent one — Return already submits
+    // (see the inline "return" hint in the field), so this exists for mouse
+    // and accessibility users rather than to announce itself as the primary
+    // action. A solid red button was the loudest thing in the whole window.
+    private var goButton: some View {
+        browserButton(
+            "arrow.right",
+            help: "Go to address",
+            disabled: addressText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || session.controlledBrowser.isLaunching
+        ) {
+            go()
         }
-        .buttonStyle(BrowserGoButtonStyle())
-        .disabled(addressText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || session.controlledBrowser.isLaunching)
-        .help(session.isLoading ? "Opening…" : "Open address")
     }
 
     private var browserBody: some View {
@@ -1672,17 +1566,12 @@ struct ShelfBrowserPanelView: View {
         _ systemImage: String,
         help: String,
         disabled: Bool = false,
-        accent: Color? = nil,
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
             Image(systemName: systemImage)
                 .font(Stanford.ui(13, weight: .semibold))
-                .foregroundStyle(
-                    disabled
-                        ? Color.secondary.opacity(0.45)
-                        : (accent ?? Color.primary.opacity(0.82))
-                )
+                .foregroundStyle(disabled ? Color.secondary.opacity(0.45) : Color.primary.opacity(0.82))
         }
         .buttonStyle(BrowserBarButtonStyle())
         .disabled(disabled)
@@ -1847,30 +1736,6 @@ private struct BrowserEngineMenuButtonStyle: ButtonStyle {
     private func backgroundFill(isPressed: Bool) -> Color {
         if isPressed { return tint.opacity(0.16) }
         return tint.opacity(0.10)
-    }
-}
-
-// Compact primary button for the address bar's Go action. Tighter than StanfordButtonStyle,
-// tuned to sit alongside a 30pt-tall address field without overpowering it.
-private struct BrowserGoButtonStyle: ButtonStyle {
-    @Environment(\.isEnabled) private var isEnabled
-
-    func makeBody(configuration: Configuration) -> some View {
-        let shape = RoundedRectangle(cornerRadius: Stanford.radiusSmall, style: .continuous)
-        configuration.label
-            .padding(.horizontal, 12)
-            .frame(minHeight: 30)
-            .foregroundStyle(.white)
-            .background(shape.fill(backgroundFill(isPressed: configuration.isPressed)))
-            .contentShape(shape)
-            .scaleEffect(configuration.isPressed && isEnabled ? 0.97 : 1.0)
-            .animation(.easeOut(duration: 0.10), value: configuration.isPressed)
-    }
-
-    private func backgroundFill(isPressed: Bool) -> Color {
-        if !isEnabled { return Stanford.cardinalRed.opacity(0.42) }
-        if isPressed { return Stanford.cardinalRed.opacity(0.85) }
-        return Stanford.cardinalRed
     }
 }
 

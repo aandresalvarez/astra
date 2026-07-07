@@ -4,28 +4,29 @@ import Foundation
 
 @Suite("Shelf Browser Panel Layout")
 struct ShelfBrowserPanelLayoutTests {
-    @Test("browser toolbar switches layouts before controls get smushed")
-    func browserToolbarSwitchesLayoutsBeforeControlsGetSmushed() {
-        #expect(ShelfBrowserToolbarLayout.resolve(width: 640) == .regular)
-        #expect(ShelfBrowserToolbarLayout.resolve(width: ShelfBrowserToolbarLayout.regularMinimumWidth) == .regular)
-        #expect(ShelfBrowserToolbarLayout.resolve(width: ShelfBrowserToolbarLayout.regularMinimumWidth - 1) == .compact)
-        #expect(ShelfBrowserToolbarLayout.resolve(width: 420) == .compact)
-        #expect(ShelfBrowserToolbarLayout.resolve(width: PanelLayoutGeometry.browserShelfMinWidth) == .compact)
-        #expect(ShelfBrowserToolbarLayout.resolve(width: ShelfBrowserToolbarLayout.compactMinimumWidth) == .compact)
-        #expect(ShelfBrowserToolbarLayout.resolve(width: ShelfBrowserToolbarLayout.compactMinimumWidth - 1) == .stacked)
+    // The toolbar's row-vs-stacked choice is now made by ViewThatFits, which
+    // is a SwiftUI layout primitive rather than a value our own code
+    // computes — there's nothing left to unit test there. What we do own is
+    // how a raw URL becomes the address bar's at-rest display text, so that's
+    // what's covered below.
+    @Test("address formatter shows a host for web pages")
+    func addressFormatterShowsHostForWebPages() {
+        #expect(ShelfBrowserAddressFormatter.displayText(for: "https://www.github.com/anthropics") == "github.com/anthropics")
+        #expect(ShelfBrowserAddressFormatter.displayText(for: "https://example.com") == "example.com")
+        #expect(ShelfBrowserAddressFormatter.displayText(for: "https://example.com/") == "example.com")
     }
 
-    @Test("compact browser toolbar is the browser shelf minimum layout")
-    func compactBrowserToolbarIsBrowserShelfMinimumLayout() {
-        #expect(ShelfBrowserToolbarLayout.compactMinimumWidth < PanelLayoutGeometry.browserShelfMinWidth)
-        #expect(ShelfBrowserToolbarLayout.compactAddressMinimumWidth <= 108)
-        #expect(ShelfBrowserToolbarLayout.regularAddressMinimumWidth > ShelfBrowserToolbarLayout.compactAddressMinimumWidth)
+    @Test("address formatter shows a filename for local files")
+    func addressFormatterShowsFilenameForLocalFiles() {
+        let url = "file:///Users/alvaro/Documents/Astra%20Dev/Workspaces/test/.astra/tasks/D4E9A905/report.html"
+        #expect(ShelfBrowserAddressFormatter.displayText(for: url) == "report.html")
     }
 
-    @Test("stacked browser toolbar has enough height for two rows")
-    func stackedBrowserToolbarHasEnoughHeightForTwoRows() {
-        #expect(ShelfBrowserToolbarLayout.stacked.height > ShelfBrowserToolbarLayout.regular.height)
-        #expect(ShelfBrowserToolbarLayout.compact.height == ShelfBrowserToolbarLayout.regular.height)
+    @Test("address formatter treats empty and blank as no address")
+    func addressFormatterTreatsEmptyAndBlankAsNoAddress() {
+        #expect(ShelfBrowserAddressFormatter.displayText(for: "") == "")
+        #expect(ShelfBrowserAddressFormatter.displayText(for: "about:blank") == "")
+        #expect(ShelfBrowserAddressFormatter.displayText(for: "  ") == "")
     }
 
     @MainActor
