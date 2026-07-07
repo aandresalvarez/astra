@@ -11,10 +11,6 @@ private let realProviderSmokeEnabled = ProcessInfo.processInfo.environment["RUN_
 @Suite("Real Provider Smoke Tests", .serialized)
 @MainActor
 struct RealProviderSmokeTests {
-    // Constructs ExecutionEnvironmentCredentialProjection.gcpADC below, which
-    // reads the ExecutionPathSafety seam — see RuntimeSeamRegistration.swift.
-    private let _registerRuntimeSeams: Void = RuntimeSeamRegistration.registerAll()
-
     private static var liveConfig: LiveProviderTestConfiguration {
         LiveProviderTestConfiguration()
     }

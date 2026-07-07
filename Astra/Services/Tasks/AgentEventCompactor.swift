@@ -8,7 +8,17 @@ enum AgentEventCompactor {
     private static let maxPreservedFinalResponseChunks = 24
 
     private enum FilePathPattern {
-        static let regex = try! NSRegularExpression(pattern: #"(?:~|/)[A-Za-z0-9._~+@%=\-/:]+"#)
+        /// Failable so a bad pattern degrades to "no paths in the compaction
+        /// summary" instead of crashing at first use; the positive match is
+        /// covered by `CompactionTests`, so a pattern typo fails CI.
+        static let regex: NSRegularExpression? = {
+            do {
+                return try NSRegularExpression(pattern: #"(?:~|/)[A-Za-z0-9._~+@%=\-/:]+"#)
+            } catch {
+                AppLogger.error("File-path pattern failed to compile; compaction summaries omit paths: \(error)", category: "Worker")
+                return nil
+            }
+        }()
     }
     private static let semanticLineLimit = 12
 
@@ -418,10 +428,9 @@ enum AgentEventCompactor {
     }
 
     private static func filePaths(in text: String) -> [String] {
-        guard !text.isEmpty else {
+        guard !text.isEmpty, let regex = FilePathPattern.regex else {
             return []
         }
-        let regex = FilePathPattern.regex
         let nsRange = NSRange(text.startIndex..<text.endIndex, in: text)
         return regex.matches(in: text, range: nsRange).compactMap { match -> String? in
             guard let range = Range(match.range, in: text) else { return nil }

@@ -279,7 +279,7 @@ enum ExecutionSandboxDecision: Equatable {
 ///   read scope so provider probes cannot trigger macOS TCC prompts under
 ///   ASTRA's name. A path inside those roots is re-allowed only when it is also
 ///   an explicit workspace/input/task root for the run.
-enum ExecutionSandbox {
+enum ExecutionSandbox: Sendable {
     static let sandboxExecPath = "/usr/bin/sandbox-exec"
 
     /// System and toolchain roots providers commonly need to execute CLIs,

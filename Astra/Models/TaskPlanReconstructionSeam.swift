@@ -24,7 +24,7 @@ import os
 // protocol + an `OSAllocatedUnfairLock`-backed static registry with
 // `.register(_:)` and a fail-fast `.required` accessor, wired up from
 // `RuntimeSeamRegistration.registerAll()`.
-public protocol TaskPlanReconstructing {
+public protocol TaskPlanReconstructing: Sendable {
     static func reconstruct(for task: AgentTask) -> TaskPlanState
     static func nextExecutableStep(in plan: TaskPlanPayload) -> TaskPlanPayloadStep?
 }
@@ -43,7 +43,7 @@ public enum TaskPlanReconstructionSeam {
         guard let reconstructor = storage.withLock({ $0 }) else {
             preconditionFailure(
                 "TaskPlanReconstructionSeam read before RuntimeSeamRegistration.registerAll() ran. " +
-                "Call it in ASTRAApp.init() (already done) or at the top of the test that hit this path."
+                "Production registers it in ASTRAApp.init(); tests register it via the load-time bootstrap in Tests/AstraTestSeamBootstrap - a trap here in a test means that bootstrap wiring broke."
             )
         }
         return reconstructor

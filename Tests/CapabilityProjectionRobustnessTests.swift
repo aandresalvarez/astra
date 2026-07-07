@@ -18,8 +18,6 @@ private func makeRobustnessContainer() throws -> ModelContainer {
 @Suite("Connector Credential Presence")
 @MainActor
 struct ConnectorCredentialPresenceTests {
-    private let _registerRuntimeSeams: Void = RuntimeSeamRegistration.registerAll() // connector.credentials(store:) needs ConnectorSecretSeam
-
     @Test("Connectors with unloadable declared credentials are reported by key name")
     func missingCredentialsReported() throws {
         let container = try makeRobustnessContainer()
@@ -168,8 +166,6 @@ struct ConnectorCredentialPresenceTests {
 @Suite("Legacy Env Fallback Boundaries")
 @MainActor
 struct LegacyEnvFallbackTests {
-    private let _registerRuntimeSeams: Void = RuntimeSeamRegistration.registerAll() // connector.credentials(store:) needs ConnectorSecretSeam
-
     @Test("Single connector per service omits bare legacy names unless explicitly requested")
     func bareNamesRequireExplicitLegacyOptIn() throws {
         let container = try makeRobustnessContainer()

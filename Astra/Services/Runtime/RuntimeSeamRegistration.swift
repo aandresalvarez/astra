@@ -11,17 +11,22 @@ import ASTRAPersistence
 /// linked in — verified before choosing this design), so this must be called
 /// explicitly, once, before either seam is read:
 ///  - Production: `ASTRAApp.init()` calls it.
-///  - Tests: any test that constructs a `WorkspaceExecutionEnvironment` with a
-///    non-empty `credentialProjections` list, or reads
-///    `TaskRoleProfile.runtime`, calls it at the top of the test (or suite
-///    `init`). Both seam accessors trap with a clear message if read before
-///    registration, so a future test that hits either path without calling
-///    this fails loudly instead of silently misbehaving.
+///  - Tests: the test-only `AstraTestSeamBootstrap` C target gives the
+///    ASTRATests bundle the load-time hook Swift lacks — its
+///    `__attribute__((constructor))` calls this (through the `@_cdecl` entry
+///    point in `Tests/RuntimeSeamTestBootstrap.swift`) when dyld loads the
+///    bundle, before any suite is scheduled. Individual suites must NOT call
+///    this themselves (fitness-enforced): per-suite registration was a
+///    scheduling roulette under Swift Testing's parallel execution, crashing
+///    whenever an unguarded seam-reading suite happened to run first.
 ///
-/// Idempotent and thread-safe — safe to call more than once (e.g. once per
-/// test file) and safe to call concurrently from multiple threads (Swift
-/// Testing runs suite initializers in parallel by default; both seams are
-/// backed by an `OSAllocatedUnfairLock`, not a bare static var).
+/// The seam accessors trap with a clear message if read before registration,
+/// so a production path that runs before `ASTRAApp.init()` — or a broken
+/// test-bootstrap wiring — fails loudly instead of silently misbehaving.
+///
+/// Idempotent and thread-safe — safe to call more than once and safe to call
+/// concurrently from multiple threads (both seams are backed by an
+/// `OSAllocatedUnfairLock`, not a bare static var).
 enum RuntimeSeamRegistration {
     static func registerAll() {
         ExecutionPathSafety.register(ExecutionSandbox.self)
