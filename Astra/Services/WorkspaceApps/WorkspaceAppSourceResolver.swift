@@ -1,5 +1,6 @@
 import Foundation
 import ASTRAModels
+import ASTRAPersistence
 
 enum WorkspaceAppSourceResolutionError: LocalizedError, Equatable {
     case missingSource(String)

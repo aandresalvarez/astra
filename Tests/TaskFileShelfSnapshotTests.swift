@@ -3,6 +3,7 @@ import AppKit
 import SwiftUI
 import Darwin
 import ASTRAModels
+import ASTRAPersistence
 @testable import ASTRA
 import ASTRACore
 

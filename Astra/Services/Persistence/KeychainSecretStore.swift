@@ -6,13 +6,15 @@ import ASTRAModels
 /// `AstraSecureKeychainStore`), keeping connector/skill secrets out of the
 /// user's `login.keychain-db`. The protocol surface is unchanged — only the
 /// backing store moved.
-struct KeychainSecretStore: SecretStore {
-    func load(key: String, entityID: String) -> String? {
+public struct KeychainSecretStore: SecretStore {
+    public init() {}
+
+    public func load(key: String, entityID: String) -> String? {
         AstraSecureKeychainStore.load(service: entityID, account: key)
     }
 
     @discardableResult
-    func save(key: String, value: String, entityID: String, label: String?) -> Bool {
+    public func save(key: String, value: String, entityID: String, label: String?) -> Bool {
         AstraSecureKeychainStore.save(
             service: entityID,
             account: key,
@@ -22,23 +24,23 @@ struct KeychainSecretStore: SecretStore {
     }
 
     @discardableResult
-    func delete(key: String, entityID: String) -> Bool {
+    public func delete(key: String, entityID: String) -> Bool {
         AstraSecureKeychainStore.delete(service: entityID, account: key)
     }
 
-    func deleteAll(entityID: String) {
+    public func deleteAll(entityID: String) {
         AstraSecureKeychainStore.deleteAll(service: entityID)
     }
 
-    func exists(key: String, entityID: String) -> Bool {
+    public func exists(key: String, entityID: String) -> Bool {
         AstraSecureKeychainStore.exists(service: entityID, account: key)
     }
 
-    static func connectorEntityID(for connectorID: UUID) -> String {
+    public static func connectorEntityID(for connectorID: UUID) -> String {
         "\(AppChannel.current.keychainConnectorPrefix)-\(connectorID.uuidString)"
     }
 
-    static func connectorEntityIDs(for connector: Connector) -> [String] {
+    public static func connectorEntityIDs(for connector: Connector) -> [String] {
         connectorEntityIDs(
             id: connector.id,
             serviceType: connector.serviceType,
@@ -51,7 +53,7 @@ struct KeychainSecretStore: SecretStore {
     /// Primitive twin of `connectorEntityIDs(for:)`, usable from
     /// `ASTRACore.ConnectorSecretFacts` call sites that no longer have a live
     /// `Connector` (Track A2.5's `Connector.swift` seam boundary).
-    static func connectorEntityIDs(
+    public static func connectorEntityIDs(
         id: UUID,
         serviceType: String,
         baseURL: String,
@@ -70,7 +72,7 @@ struct KeychainSecretStore: SecretStore {
         return unique(entityIDs)
     }
 
-    static func stableConnectorEntityID(for connector: Connector) -> String? {
+    public static func stableConnectorEntityID(for connector: Connector) -> String? {
         stableConnectorEntityID(
             serviceType: connector.serviceType,
             baseURL: connector.baseURL,
@@ -79,7 +81,7 @@ struct KeychainSecretStore: SecretStore {
         )
     }
 
-    static func stableConnectorEntityID(
+    public static func stableConnectorEntityID(
         serviceType: String,
         baseURL: String,
         originPackageID: String? = nil,
@@ -103,11 +105,11 @@ struct KeychainSecretStore: SecretStore {
         return "\(AppChannel.current.keychainConnectorPrefix)-connector-\(String(identity.prefix(160)))"
     }
 
-    static func skillEntityID(for skillID: UUID) -> String {
+    public static func skillEntityID(for skillID: UUID) -> String {
         "\(AppChannel.current.keychainSkillPrefix)-\(skillID.uuidString)"
     }
 
-    static func googleOAuthEntityID(for accountID: UUID) -> String {
+    public static func googleOAuthEntityID(for accountID: UUID) -> String {
         "\(AppChannel.current.keychainConnectorPrefix)-google-oauth-\(accountID.uuidString)"
     }
 

@@ -8,7 +8,7 @@ public enum TaskHandoffEventTypes {
 
 public struct TaskWorkerHandoffPayload: Codable, Sendable, Equatable {
     public struct Command: Codable, Sendable, Equatable, Hashable {
-        public init(summary: String, exitCode: Int?) {
+        public init(summary: String, exitCode: Int? = nil) {
             self.summary = summary
             self.exitCode = exitCode
         }
@@ -45,7 +45,7 @@ public struct TaskWorkerHandoffPayload: Codable, Sendable, Equatable {
         validationEvidence: [String],
         blockers: [String],
         risks: [String],
-        suggestedNextAction: String?,
+        suggestedNextAction: String? = nil,
         createdAt: String
     ) {
         self.version = version

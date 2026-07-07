@@ -2,6 +2,7 @@ import CryptoKit
 import Foundation
 import SwiftData
 import ASTRAModels
+import ASTRAPersistence
 
 enum WorkspaceAppServiceError: LocalizedError, Equatable {
     case invalidManifest([WorkspaceAppManifestValidationReport.Issue])

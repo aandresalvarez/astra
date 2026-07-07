@@ -1,5 +1,7 @@
 import Foundation
 import ASTRAModels
+import ASTRAPersistence
+import ASTRACore
 
 enum PromptContextIOSnapshotLoader {
     private static let maximumSnapshotReadBytes = 1_048_576

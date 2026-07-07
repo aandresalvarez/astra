@@ -1,6 +1,8 @@
 import AppKit
 import SwiftUI
 import ASTRACore
+import ASTRAPersistence
+import ASTRAModels
 
 struct SettingsRuntimeTab: View {
     @Environment(\.preflightCache) private var preflightCache

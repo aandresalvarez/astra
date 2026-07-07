@@ -1,15 +1,15 @@
 import Foundation
 
-struct TaskRunAnswerPresentation: Hashable, Sendable {
-    let answerText: String
-    let progressMessages: [String]
-    let rawText: String
+public struct TaskRunAnswerPresentation: Hashable, Sendable {
+    public let answerText: String
+    public let progressMessages: [String]
+    public let rawText: String
 }
 
-enum TaskRunAnswerPresentationPolicy {
+public enum TaskRunAnswerPresentationPolicy {
     private static let longRawOutputThreshold = 1_200
 
-    static func presentation(rawText: String) -> TaskRunAnswerPresentation {
+    public static func presentation(rawText: String) -> TaskRunAnswerPresentation {
         let raw = rawText
         let visible = normalizedVisibleText(raw)
         guard !visible.isEmpty else {
@@ -41,13 +41,13 @@ enum TaskRunAnswerPresentationPolicy {
         )
     }
 
-    static func joinedResponsePayloads(_ payloads: [String]) -> String {
+    public static func joinedResponsePayloads(_ payloads: [String]) -> String {
         let visiblePayloads = payloads.map(strippingProtocolMarkerLines)
         let joined = MarkdownRenderPreparation.joinChunks(visiblePayloads, prepareForDisplay: false)
         return normalizedVisibleText(joined)
     }
 
-    static func dedupedProgressTexts(_ texts: [String]) -> [String] {
+    public static func dedupedProgressTexts(_ texts: [String]) -> [String] {
         var output: [String] = []
         var previousKey: String?
         for text in texts {
@@ -61,14 +61,14 @@ enum TaskRunAnswerPresentationPolicy {
         return output
     }
 
-    static func normalizedProgressText(_ text: String) -> (text: String, comparisonKey: String)? {
+    public static func normalizedProgressText(_ text: String) -> (text: String, comparisonKey: String)? {
         let normalized = normalizedVisibleText(text)
         let key = comparisonKey(normalized)
         guard !normalized.isEmpty, !key.isEmpty else { return nil }
         return (normalized, key)
     }
 
-    static func summaryText(rawText: String, fallback: String = "", maxLength: Int) -> String {
+    public static func summaryText(rawText: String, fallback: String = "", maxLength: Int) -> String {
         let presentation = presentation(rawText: rawText)
         let source = presentation.answerText.isEmpty ? normalizedVisibleText(fallback) : presentation.answerText
         guard !source.isEmpty else { return "" }

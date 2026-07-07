@@ -1,11 +1,12 @@
 import Foundation
 import ASTRAModels
+import ASTRACore
 
-enum TaskOutputWorkspaceDiscovery {
-    static let scanEntryLimit = 800
-    static let scanDepthLimit = 4
+public enum TaskOutputWorkspaceDiscovery {
+    public static let scanEntryLimit = 800
+    public static let scanDepthLimit = 4
 
-    static func filesChangedDuringRun(
+    public static func filesChangedDuringRun(
         workspacePath: String,
         taskFolder: String,
         run: TaskRun,
@@ -100,10 +101,10 @@ enum TaskOutputWorkspaceDiscovery {
 }
 
 private struct PathItem {
-    var standardPath: String
-    var resolvedPath: String
+    public var standardPath: String
+    public var resolvedPath: String
 
-    init(_ url: URL) {
+    public init(_ url: URL) {
         standardPath = Self.normalized(url.standardizedFileURL)
         resolvedPath = Self.normalized(url.resolvingSymlinksInPath().standardizedFileURL)
     }
@@ -115,20 +116,20 @@ private struct PathItem {
 }
 
 private struct PathBoundary {
-    var standardPath: String
-    var resolvedPath: String
+    public var standardPath: String
+    public var resolvedPath: String
 
-    init(_ url: URL) {
+    public init(_ url: URL) {
         standardPath = PathBoundary.normalized(url.standardizedFileURL)
         resolvedPath = PathBoundary.normalized(url.resolvingSymlinksInPath().standardizedFileURL)
     }
 
-    func contains(_ item: PathItem) -> Bool {
+    public func contains(_ item: PathItem) -> Bool {
         Self.isPath(item.standardPath, inside: standardPath)
             || Self.isPath(item.resolvedPath, inside: resolvedPath)
     }
 
-    func relativePath(for item: PathItem) -> String? {
+    public func relativePath(for item: PathItem) -> String? {
         if let relative = Self.relativePath(item.standardPath, inside: standardPath) {
             return relative
         }

@@ -2,6 +2,7 @@ import Foundation
 import SwiftData
 import ASTRACore
 import ASTRAModels
+import ASTRAPersistence
 
 struct WorkspaceCreationResult {
     let workspace: Workspace
@@ -146,14 +147,10 @@ struct WorkspaceImportOrchestrator {
             coordinator.importSessionsIfNeeded(for: workspace)
         }
 
-        do {
-            try modelContext.save()
-        } catch {
-            AppLogger.audit(.workspaceExported, category: "UI", fields: [
-                "operation": "save_imported_workspaces",
-                "error_type": String(describing: type(of: error))
-            ], level: .error)
-        }
+        WorkspacePersistenceCoordinator.saveWithoutAutoExport(
+            modelContext: modelContext,
+            auditFields: ["operation": "save_imported_workspaces"]
+        )
 
         for workspace in imported {
             WorkspaceConfigManager.autoExport(workspace: workspace, modelContext: modelContext)

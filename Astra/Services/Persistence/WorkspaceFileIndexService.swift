@@ -2,24 +2,24 @@ import Foundation
 import ASTRACore
 import ASTRAModels
 
-struct WorkspaceFileRoot: Identifiable, Hashable {
-    enum Kind: String, Hashable {
+public struct WorkspaceFileRoot: Identifiable, Hashable {
+    public enum Kind: String, Hashable {
         case primary
         case additional
         case taskFolder
         case input
     }
 
-    let id: String
-    let kind: Kind
-    let title: String
-    let path: String
-    let isDirectory: Bool
-    let subtitle: String
-    let roleLabel: String
-    let isGitRepository: Bool
+    public let id: String
+    public let kind: Kind
+    public let title: String
+    public let path: String
+    public let isDirectory: Bool
+    public let subtitle: String
+    public let roleLabel: String
+    public let isGitRepository: Bool
 
-    init(
+    public init(
         id: String,
         kind: Kind,
         title: String,
@@ -40,38 +40,62 @@ struct WorkspaceFileRoot: Identifiable, Hashable {
     }
 }
 
-struct WorkspaceFileNode: Identifiable, Hashable {
-    let id: String
-    let rootID: String
-    let path: String
-    let relativePath: String
-    let name: String
-    let isDirectory: Bool
-    let depth: Int
-    let size: Int64
-    let modifiedAt: Date?
-    let destination: TaskGeneratedFileShelfDestination?
+public struct WorkspaceFileNode: Identifiable, Hashable {
+    public let id: String
+    public let rootID: String
+    public let path: String
+    public let relativePath: String
+    public let name: String
+    public let isDirectory: Bool
+    public let depth: Int
+    public let size: Int64
+    public let modifiedAt: Date?
+    public let destination: TaskGeneratedFileShelfDestination?
 
-    var parentRelativePath: String {
+    public init(
+        id: String,
+        rootID: String,
+        path: String,
+        relativePath: String,
+        name: String,
+        isDirectory: Bool,
+        depth: Int,
+        size: Int64,
+        modifiedAt: Date?,
+        destination: TaskGeneratedFileShelfDestination?
+    ) {
+        self.id = id
+        self.rootID = rootID
+        self.path = path
+        self.relativePath = relativePath
+        self.name = name
+        self.isDirectory = isDirectory
+        self.depth = depth
+        self.size = size
+        self.modifiedAt = modifiedAt
+        self.destination = destination
+    }
+
+    public var parentRelativePath: String {
         let parent = (relativePath as NSString).deletingLastPathComponent
         return parent == "." ? "" : parent
     }
 }
 
-struct WorkspaceFileIndexError: Hashable {
-    let rootID: String
-    let path: String
-    let message: String
+public struct WorkspaceFileIndexError: Hashable {
+    public let rootID: String
+    public let path: String
+    public let message: String
 }
 
-struct WorkspaceFileIndexSnapshot {
-    let roots: [WorkspaceFileRoot]
-    let nodes: [WorkspaceFileNode]
-    let errors: [WorkspaceFileIndexError]
-    let isTruncated: Bool
+public struct WorkspaceFileIndexSnapshot {
+    public let roots: [WorkspaceFileRoot]
+    public let nodes: [WorkspaceFileNode]
+    public let errors: [WorkspaceFileIndexError]
+    public let isTruncated: Bool
 }
 
-enum WorkspaceFileIndexService {
+public enum WorkspaceFileIndexService {
     private static let resourceKeys: Set<URLResourceKey> = [
         .isDirectoryKey,
         .isSymbolicLinkKey,
@@ -90,7 +114,7 @@ enum WorkspaceFileIndexService {
         "node_modules"
     ]
 
-    static func roots(workspace: Workspace?, task: AgentTask?, fileManager: FileManager = .default) -> [WorkspaceFileRoot] {
+    public static func roots(workspace: Workspace?, task: AgentTask?, fileManager: FileManager = .default) -> [WorkspaceFileRoot] {
         var roots: [WorkspaceFileRoot] = []
         var seen: Set<String> = []
 
@@ -143,18 +167,15 @@ enum WorkspaceFileIndexService {
         if let task {
             let access = TaskWorkspaceAccess(task: task)
             append(kind: .taskFolder, title: "Task Folder", rawPath: access.taskFolder)
-            if let forkManifest = TaskForkManifestService.load(for: task, fileManager: fileManager) {
-                let checkpointFiles = (forkManifest.sourceOutputFiles + forkManifest.sourceArtifacts)
-                    .map { $0.localCopyPath ?? $0.sourcePath }
-                for path in checkpointFiles {
-                    append(
-                        kind: .input,
-                        title: "Fork Checkpoint File",
-                        rawPath: path,
-                        subtitle: "Source task checkpoint",
-                        roleLabel: "Checkpoint"
-                    )
-                }
+            let checkpointFiles = TaskForkSourcePointerSeam.required.checkpointFilePaths(for: task, fileManager: fileManager)
+            for path in checkpointFiles {
+                append(
+                    kind: .input,
+                    title: "Fork Checkpoint File",
+                    rawPath: path,
+                    subtitle: "Source task checkpoint",
+                    roleLabel: "Checkpoint"
+                )
             }
             for path in TaskRelatedOutputFolders.legacyOutputFolders(for: task, workspace: task.workspace ?? workspace, fileManager: fileManager) {
                 let name = URL(fileURLWithPath: path).lastPathComponent
@@ -171,7 +192,7 @@ enum WorkspaceFileIndexService {
         return roots
     }
 
-    static func scan(
+    public static func scan(
         roots: [WorkspaceFileRoot],
         maxDepth: Int = 8,
         maxNodes: Int = 5_000,
@@ -200,7 +221,7 @@ enum WorkspaceFileIndexService {
         }
     }
 
-    static func scanSync(
+    public static func scanSync(
         roots: [WorkspaceFileRoot],
         maxDepth: Int = 8,
         maxNodes: Int = 5_000,
@@ -247,7 +268,7 @@ enum WorkspaceFileIndexService {
         )
     }
 
-    static func isPath(_ path: String, inside root: WorkspaceFileRoot) -> Bool {
+    public static func isPath(_ path: String, inside root: WorkspaceFileRoot) -> Bool {
         let resolvedPath = resolvingSymlinks(standardizedPath(path))
         let resolvedRoot = resolvingSymlinks(root.path)
         guard root.isDirectory else {
@@ -338,7 +359,7 @@ enum WorkspaceFileIndexService {
                 depth: max(0, depth),
                 size: isDirectory ? 0 : Int64(values?.fileSize ?? 0),
                 modifiedAt: values?.contentModificationDate,
-                destination: isDirectory ? nil : TaskGeneratedFiles.shelfDestination(for: url.path)
+                destination: isDirectory ? nil : TaskGeneratedFileQuerySeam.required.shelfDestination(for: url.path)
             ))
 
             if nodes.count >= maxNodes {
@@ -368,7 +389,7 @@ enum WorkspaceFileIndexService {
             depth: 0,
             size: Int64(values?.fileSize ?? 0),
             modifiedAt: values?.contentModificationDate,
-            destination: TaskGeneratedFiles.shelfDestination(for: root.path)
+            destination: TaskGeneratedFileQuerySeam.required.shelfDestination(for: root.path)
         ))
 
         if nodes.count >= maxNodes {
@@ -388,7 +409,7 @@ enum WorkspaceFileIndexService {
             return true
         }
         if rootKind == .taskFolder,
-           !TaskGeneratedFiles.shouldDisplayTaskFolderFile(relativePath: normalized) {
+           !TaskGeneratedFileQuerySeam.required.shouldDisplayTaskFolderFile(relativePath: normalized) {
             return true
         }
         if !includeHidden && hasHiddenPathComponent(normalized) {
@@ -404,7 +425,7 @@ enum WorkspaceFileIndexService {
     ) -> Bool {
         if rootKind != .taskFolder,
            let runtimeRelativePath = legacyTaskRuntimeRelativePath(relativePath),
-           !TaskGeneratedFiles.shouldDisplayTaskFolderFile(relativePath: runtimeRelativePath) {
+           !TaskGeneratedFileQuerySeam.required.shouldDisplayTaskFolderFile(relativePath: runtimeRelativePath) {
             return true
         }
         if relativePath == ".astra/tasks" || relativePath.hasPrefix(".astra/tasks/") {

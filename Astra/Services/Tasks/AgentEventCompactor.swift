@@ -247,8 +247,8 @@ enum AgentEventCompactor {
             return "contract:\(planID):\(event.type)"
         }
         if event.type.hasPrefix("corrective."),
-           let payload = TaskCorrectiveWorkService.decode(event.payload) {
-            return "corrective:\(TaskCorrectiveWorkService.normalizedCorrectiveStepID(payload))"
+           let payload = TaskCorrectiveWorkQueries.decode(event.payload) {
+            return "corrective:\(TaskCorrectiveWorkQueries.normalizedCorrectiveStepID(payload))"
         }
         return event.type
     }

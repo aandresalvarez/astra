@@ -1,6 +1,7 @@
 import Foundation
 import SwiftData
 import ASTRAModels
+import ASTRAPersistence
 
 enum TaskRunInterruptionSource {
     case userAction

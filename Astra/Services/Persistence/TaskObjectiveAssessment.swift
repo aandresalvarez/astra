@@ -1,4 +1,5 @@
 import Foundation
+import ASTRACore
 
 extension TaskContextState {
     /// Result of a Tier 2 (model-backed) re-assessment of whether the task's
@@ -9,18 +10,25 @@ extension TaskContextState {
     /// fail safe to `original_active` on any uncertainty, timeout, or parse
     /// failure, and the original goal is never deleted when a verdict of
     /// `superseded` is recorded -- only demoted to background framing.
-    struct ObjectiveAssessment: Codable, Sendable, Equatable {
+    public struct ObjectiveAssessment: Codable, Sendable, Equatable {
+        public init(verdict: String, currentObjective: String? = nil, assessedAtTurn: Int, inputHash: String) {
+            self.verdict = verdict
+            self.currentObjective = currentObjective
+            self.assessedAtTurn = assessedAtTurn
+            self.inputHash = inputHash
+        }
+
         /// One of "original_active", "original_satisfied", "superseded".
-        var verdict: String
+        public var verdict: String
         /// Only populated when `verdict == "superseded"`.
-        var currentObjective: String?
-        var assessedAtTurn: Int
-        var inputHash: String
+        public var currentObjective: String?
+        public var assessedAtTurn: Int
+        public var inputHash: String
     }
 }
 
 extension TaskContextStateManager {
-    static func appendObjectiveAssessment(
+    public static func appendObjectiveAssessment(
         _ assessment: TaskContextState.ObjectiveAssessment?,
         to lines: inout [String]
     ) {
@@ -31,7 +39,7 @@ extension TaskContextStateManager {
         }
     }
 
-    static func appendMarkdownObjectiveAssessment(
+    public static func appendMarkdownObjectiveAssessment(
         _ assessment: TaskContextState.ObjectiveAssessment?,
         to parts: inout [String]
     ) {

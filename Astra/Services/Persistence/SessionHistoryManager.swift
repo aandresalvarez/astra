@@ -6,10 +6,10 @@ import ASTRAModels
 /// After each turn (initial run or follow-up), appends a structured summary
 /// to `session_history.md` in the task folder and saves full output to numbered files.
 /// This allows the agent to recover context even when the conversation window compresses older turns.
-enum SessionHistoryManager {
+public enum SessionHistoryManager {
 
     /// Append a turn entry to the session history file after a run completes.
-    static func recordTurn(
+    public static func recordTurn(
         taskFolder: String,
         taskTitle: String,
         turnMessage: String,
@@ -84,7 +84,7 @@ enum SessionHistoryManager {
     }
 
     /// Path to the session history file for a task folder.
-    static func historyPath(taskFolder: String) -> String {
+    public static func historyPath(taskFolder: String) -> String {
         (taskFolder as NSString).appendingPathComponent("session_history.md")
     }
 

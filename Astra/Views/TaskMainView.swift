@@ -3,6 +3,7 @@ import SwiftData
 import UniformTypeIdentifiers
 import ASTRACore
 import ASTRAModels
+import ASTRAPersistence
 
 enum TaskComposerPresentation {
     static let usesCompactInputSpacing = true

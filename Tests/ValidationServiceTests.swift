@@ -2,6 +2,7 @@ import Foundation
 import SwiftData
 import Testing
 import ASTRAModels
+import ASTRAPersistence
 @testable import ASTRA
 import ASTRACore
 
@@ -1414,8 +1415,8 @@ struct ValidationServiceTests {
 
         let proposedEvents = task.events.filter { $0.type == TaskCorrectiveEventTypes.stepCreated }
         #expect(proposedEvents.count == 1)
-        let record = try #require(TaskCorrectiveWorkService.openCorrectiveSteps(for: task).first)
-        let correctiveStepID = TaskCorrectiveWorkService.normalizedCorrectiveStepID(record.payload)
+        let record = try #require(TaskCorrectiveWorkQueries.openCorrectiveSteps(for: task).first)
+        let correctiveStepID = TaskCorrectiveWorkQueries.normalizedCorrectiveStepID(record.payload)
 
         var state = try #require(TaskContextStateManager.load(taskFolder: TaskWorkspaceAccess(task: task).taskFolder))
         let corrective = try #require(state.correctiveWork?.first)

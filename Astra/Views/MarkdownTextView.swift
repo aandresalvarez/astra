@@ -1,5 +1,8 @@
 import SwiftUI
 import AppKit
+import ASTRAPersistence
+import ASTRACore
+import ASTRAModels
 
 private extension View {
     @ViewBuilder

@@ -1,4 +1,7 @@
 import Foundation
+import ASTRAPersistence
+import ASTRACore
+import ASTRAModels
 
 struct AstraPackSource: Equatable, Sendable {
     enum Kind: String, Equatable, Sendable {

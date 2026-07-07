@@ -1,12 +1,13 @@
 import Foundation
+import ASTRACore
 
-enum WorkspaceGeneratedStateExcluder {
+public enum WorkspaceGeneratedStateExcluder {
     private struct GitRepository {
-        var root: URL
-        var gitDirectory: URL
+        public var root: URL
+        public var gitDirectory: URL
     }
 
-    static func ensureExcluded(workspacePath: String, fileManager: FileManager = .default) throws {
+    public static func ensureExcluded(workspacePath: String, fileManager: FileManager = .default) throws {
         let workspaceURL = URL(fileURLWithPath: workspacePath, isDirectory: true).standardizedFileURL
         guard let repository = gitRepository(containing: workspaceURL, fileManager: fileManager) else { return }
 

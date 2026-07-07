@@ -1,13 +1,14 @@
 import Foundation
 import SwiftData
 import ASTRAModels
+import ASTRACore
 
 @MainActor
-enum WorkspacePersistenceCoordinator {
+public enum WorkspacePersistenceCoordinator {
     private static var pendingExports: [UUID: Task<Void, Never>] = [:]
 
     @discardableResult
-    static func saveAndAutoExport(
+    public static func saveAndAutoExport(
         workspace: Workspace?,
         modelContext: ModelContext,
         taskID: UUID? = nil,
@@ -21,15 +22,15 @@ enum WorkspacePersistenceCoordinator {
                 var fields = auditFields
                 fields["result"] = "swiftdata_save_succeeded"
                 fields["workspace_id"] = workspace?.id.uuidString ?? "none"
-                AppLogger.audit(.runtimePersistenceSummary, category: "Persistence", taskID: taskID, fields: fields, level: .debug)
+                AuditLoggingSeam.required.audit(.runtimePersistenceSummary, category: "Persistence", taskID: taskID, fields: fields, level: .debug)
             }
         } catch {
             var fields = auditFields
             fields["result"] = "swiftdata_save_failed"
             fields["workspace_id"] = workspace?.id.uuidString ?? "none"
             fields["error_type"] = String(describing: type(of: error))
-            AppLogger.audit(.runtimePersistenceSummary, category: "Persistence", taskID: taskID, fields: fields, level: .error)
-            AppLogger.audit(.workspaceExported, category: "Persistence", fields: [
+            AuditLoggingSeam.required.audit(.runtimePersistenceSummary, category: "Persistence", taskID: taskID, fields: fields, level: .error)
+            AuditLoggingSeam.required.audit(.workspaceExported, category: "Persistence", fields: [
                 "result": "swiftdata_save_failed",
                 "error_type": String(describing: type(of: error))
             ], level: .error)
@@ -38,7 +39,7 @@ enum WorkspacePersistenceCoordinator {
         guard didSave else { return didSave }
         guard let workspace else { return didSave }
         guard !shouldSkipAutoExport() else {
-            AppLogger.audit(.workspaceExported, category: "Persistence", fields: [
+            AuditLoggingSeam.required.audit(.workspaceExported, category: "Persistence", fields: [
                 "result": "skipped",
                 "reason": "launch_flag"
             ], level: .debug)
@@ -57,7 +58,7 @@ enum WorkspacePersistenceCoordinator {
     /// save-and-export call (e.g. pre-admission lock events), so the mirror
     /// is never snapshotted mid-transition.
     @discardableResult
-    static func saveWithoutAutoExport(
+    public static func saveWithoutAutoExport(
         modelContext: ModelContext,
         taskID: UUID? = nil,
         auditFields: [String: String] = [:]
@@ -68,7 +69,7 @@ enum WorkspacePersistenceCoordinator {
                 var fields = auditFields
                 fields["result"] = "swiftdata_save_succeeded"
                 fields["auto_export"] = "skipped"
-                AppLogger.audit(.runtimePersistenceSummary, category: "Persistence", taskID: taskID, fields: fields, level: .debug)
+                AuditLoggingSeam.required.audit(.runtimePersistenceSummary, category: "Persistence", taskID: taskID, fields: fields, level: .debug)
             }
             return true
         } catch {
@@ -76,12 +77,12 @@ enum WorkspacePersistenceCoordinator {
             fields["result"] = "swiftdata_save_failed"
             fields["auto_export"] = "skipped"
             fields["error_type"] = String(describing: type(of: error))
-            AppLogger.audit(.runtimePersistenceSummary, category: "Persistence", taskID: taskID, fields: fields, level: .error)
+            AuditLoggingSeam.required.audit(.runtimePersistenceSummary, category: "Persistence", taskID: taskID, fields: fields, level: .error)
             return false
         }
     }
 
-    static func saveAndAutoExportOrThrow(
+    public static func saveAndAutoExportOrThrow(
         workspace: Workspace?,
         modelContext: ModelContext,
         taskID: UUID? = nil,
@@ -93,15 +94,15 @@ enum WorkspacePersistenceCoordinator {
                 var fields = auditFields
                 fields["result"] = "swiftdata_save_succeeded"
                 fields["workspace_id"] = workspace?.id.uuidString ?? "none"
-                AppLogger.audit(.runtimePersistenceSummary, category: "Persistence", taskID: taskID, fields: fields, level: .debug)
+                AuditLoggingSeam.required.audit(.runtimePersistenceSummary, category: "Persistence", taskID: taskID, fields: fields, level: .debug)
             }
         } catch {
             var fields = auditFields
             fields["result"] = "swiftdata_save_failed"
             fields["workspace_id"] = workspace?.id.uuidString ?? "none"
             fields["error_type"] = String(describing: type(of: error))
-            AppLogger.audit(.runtimePersistenceSummary, category: "Persistence", taskID: taskID, fields: fields, level: .error)
-            AppLogger.audit(.workspaceExported, category: "Persistence", fields: [
+            AuditLoggingSeam.required.audit(.runtimePersistenceSummary, category: "Persistence", taskID: taskID, fields: fields, level: .error)
+            AuditLoggingSeam.required.audit(.workspaceExported, category: "Persistence", fields: [
                 "result": "swiftdata_save_failed",
                 "error_type": String(describing: type(of: error))
             ], level: .error)
@@ -110,7 +111,7 @@ enum WorkspacePersistenceCoordinator {
 
         guard let workspace else { return }
         guard !shouldSkipAutoExport() else {
-            AppLogger.audit(.workspaceExported, category: "Persistence", fields: [
+            AuditLoggingSeam.required.audit(.workspaceExported, category: "Persistence", fields: [
                 "result": "skipped",
                 "reason": "launch_flag"
             ], level: .debug)
@@ -119,7 +120,7 @@ enum WorkspacePersistenceCoordinator {
         WorkspaceConfigManager.autoExport(workspace: workspace, modelContext: modelContext)
     }
 
-    static func saveWithoutAutoExportOrThrow(
+    public static func saveWithoutAutoExportOrThrow(
         workspace: Workspace?,
         modelContext: ModelContext,
         taskID: UUID? = nil,
@@ -132,7 +133,7 @@ enum WorkspacePersistenceCoordinator {
                 fields["result"] = "swiftdata_save_succeeded"
                 fields["workspace_id"] = workspace?.id.uuidString ?? "none"
                 fields["auto_export"] = "deferred"
-                AppLogger.audit(.runtimePersistenceSummary, category: "Persistence", taskID: taskID, fields: fields, level: .debug)
+                AuditLoggingSeam.required.audit(.runtimePersistenceSummary, category: "Persistence", taskID: taskID, fields: fields, level: .debug)
             }
         } catch {
             var fields = auditFields
@@ -140,8 +141,8 @@ enum WorkspacePersistenceCoordinator {
             fields["workspace_id"] = workspace?.id.uuidString ?? "none"
             fields["auto_export"] = "deferred"
             fields["error_type"] = String(describing: type(of: error))
-            AppLogger.audit(.runtimePersistenceSummary, category: "Persistence", taskID: taskID, fields: fields, level: .error)
-            AppLogger.audit(.workspaceExported, category: "Persistence", fields: [
+            AuditLoggingSeam.required.audit(.runtimePersistenceSummary, category: "Persistence", taskID: taskID, fields: fields, level: .error)
+            AuditLoggingSeam.required.audit(.workspaceExported, category: "Persistence", fields: [
                 "result": "swiftdata_save_failed",
                 "error_type": String(describing: type(of: error))
             ], level: .error)
@@ -149,7 +150,7 @@ enum WorkspacePersistenceCoordinator {
         }
     }
 
-    static func scheduleAutoExport(
+    public static func scheduleAutoExport(
         workspace: Workspace?,
         modelContext: ModelContext,
         delayNanoseconds: UInt64 = 600_000_000
@@ -173,7 +174,7 @@ enum WorkspacePersistenceCoordinator {
         }
     }
 
-    static func flushPendingExport(workspace: Workspace?, modelContext: ModelContext) {
+    public static func flushPendingExport(workspace: Workspace?, modelContext: ModelContext) {
         if let id = workspace?.id {
             pendingExports[id]?.cancel()
             pendingExports[id] = nil
@@ -181,7 +182,7 @@ enum WorkspacePersistenceCoordinator {
         saveAndAutoExport(workspace: workspace, modelContext: modelContext)
     }
 
-    nonisolated static func shouldSkipAutoExport(
+    public nonisolated static func shouldSkipAutoExport(
         arguments: [String] = ProcessInfo.processInfo.arguments,
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> Bool {

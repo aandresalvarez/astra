@@ -8,7 +8,7 @@ public enum TaskCorrectiveEventTypes {
 }
 
 public struct TaskCorrectiveStepPayload: Codable, Sendable, Equatable {
-    public init(version: Int, planID: UUID, sourceRunID: UUID?, correctiveStepID: String?, failedAssertionID: String, failureSummary: String, suggestedRepair: String, status: String, correctiveTaskID: UUID?, dismissedReason: String?, createdAt: String, updatedAt: String?) {
+    public init(version: Int, planID: UUID, sourceRunID: UUID? = nil, correctiveStepID: String? = nil, failedAssertionID: String, failureSummary: String, suggestedRepair: String, status: String, correctiveTaskID: UUID? = nil, dismissedReason: String? = nil, createdAt: String, updatedAt: String? = nil) {
         self.version = version
         self.planID = planID
         self.sourceRunID = sourceRunID

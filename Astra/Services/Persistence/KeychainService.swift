@@ -3,7 +3,7 @@ import ASTRACore
 import ASTRAModels
 
 extension ConnectorSecretFacts {
-    init(connector: Connector) {
+    public init(connector: Connector) {
         self.init(
             id: connector.id,
             name: connector.name,
@@ -26,7 +26,7 @@ extension ConnectorSecretFacts {
 /// (the only keychain the sandboxed agent can read, for the gh GitHub token).
 /// This type's public API is unchanged from when secrets lived in the login
 /// keychain — only the backing store moved.
-enum KeychainService {
+public enum KeychainService {
 
     private static func connectorService(for connectorID: UUID) -> String {
         "\(AppChannel.current.keychainConnectorPrefix)-\(connectorID.uuidString)"
@@ -59,7 +59,7 @@ enum KeychainService {
 
     /// Save or update a credential value for a connector.
     @discardableResult
-    static func save(key: String, value: String, connectorID: UUID, label: String? = nil) -> Bool {
+    public static func save(key: String, value: String, connectorID: UUID, label: String? = nil) -> Bool {
         let saved = AstraSecureKeychainStore.save(
             service: connectorService(for: connectorID),
             account: key,
@@ -67,7 +67,7 @@ enum KeychainService {
             label: label ?? "Astra connector credential"
         )
         if !saved {
-            AppLogger.audit(.keychainSaveFailed, category: "Keychain", fields: [
+            AuditLoggingSeam.required.audit(.keychainSaveFailed, category: "Keychain", fields: [
                 "scope": "connector"
             ], level: .warning)
         }
@@ -79,14 +79,14 @@ enum KeychainService {
     /// existing rows; the stable namespace lets equivalent recreated connectors
     /// reuse user-entered secrets without another prompt.
     @discardableResult
-    static func save(key: String, value: String, connector: Connector, label: String? = nil) -> Bool {
+    public static func save(key: String, value: String, connector: Connector, label: String? = nil) -> Bool {
         save(key: key, value: value, facts: ConnectorSecretFacts(connector: connector), label: label)
     }
 
     /// Facts-based twin of `save(key:value:connector:label:)` — see
     /// `connectorServices(facts:)`.
     @discardableResult
-    static func save(key: String, value: String, facts: ConnectorSecretFacts, label: String? = nil) -> Bool {
+    public static func save(key: String, value: String, facts: ConnectorSecretFacts, label: String? = nil) -> Bool {
         let services = connectorServices(facts: facts)
         let saved = services.map { service in
             AstraSecureKeychainStore.save(
@@ -98,7 +98,7 @@ enum KeychainService {
         }
         let ok = saved.allSatisfy { $0 }
         if !ok {
-            AppLogger.audit(.keychainSaveFailed, category: "Keychain", fields: [
+            AuditLoggingSeam.required.audit(.keychainSaveFailed, category: "Keychain", fields: [
                 "scope": "connector",
                 "namespace_count": String(services.count)
             ], level: .warning)
@@ -108,7 +108,7 @@ enum KeychainService {
 
     /// Save or update a credential value for a skill-owned secret.
     @discardableResult
-    static func save(key: String, value: String, skillID: UUID, label: String? = nil) -> Bool {
+    public static func save(key: String, value: String, skillID: UUID, label: String? = nil) -> Bool {
         let saved = AstraSecureKeychainStore.save(
             service: skillService(for: skillID),
             account: key,
@@ -116,7 +116,7 @@ enum KeychainService {
             label: label ?? "Astra skill secret"
         )
         if !saved {
-            AppLogger.audit(.keychainSaveFailed, category: "Keychain", fields: [
+            AuditLoggingSeam.required.audit(.keychainSaveFailed, category: "Keychain", fields: [
                 "scope": "skill"
             ], level: .warning)
         }
@@ -126,19 +126,19 @@ enum KeychainService {
     // MARK: - Load
 
     /// Load a credential value for a connector.
-    static func load(key: String, connectorID: UUID) -> String? {
+    public static func load(key: String, connectorID: UUID) -> String? {
         AstraSecureKeychainStore.load(service: connectorService(for: connectorID), account: key)
     }
 
     /// Load a credential value for a connector from the first namespace that
     /// contains it. UUID wins over stable so user edits to a specific connector
     /// can override shared stable defaults.
-    static func load(key: String, connector: Connector) -> String? {
+    public static func load(key: String, connector: Connector) -> String? {
         load(key: key, facts: ConnectorSecretFacts(connector: connector))
     }
 
     /// Facts-based twin of `load(key:connector:)` — see `connectorServices(facts:)`.
-    static func load(key: String, facts: ConnectorSecretFacts) -> String? {
+    public static func load(key: String, facts: ConnectorSecretFacts) -> String? {
         for service in connectorServices(facts: facts) {
             if let value = AstraSecureKeychainStore.load(service: service, account: key) {
                 return value
@@ -148,12 +148,12 @@ enum KeychainService {
     }
 
     /// Load a credential value for a skill-owned secret.
-    static func load(key: String, skillID: UUID) -> String? {
+    public static func load(key: String, skillID: UUID) -> String? {
         AstraSecureKeychainStore.load(service: skillService(for: skillID), account: key)
     }
 
     /// Load all credential values for a connector, given the key names.
-    static func loadAll(keys: [String], connectorID: UUID) -> [String: String] {
+    public static func loadAll(keys: [String], connectorID: UUID) -> [String: String] {
         var result: [String: String] = [:]
         for key in keys {
             if let value = load(key: key, connectorID: connectorID) {
@@ -164,7 +164,7 @@ enum KeychainService {
     }
 
     /// Load all credential values for a connector, given the key names.
-    static func loadAll(keys: [String], connector: Connector) -> [String: String] {
+    public static func loadAll(keys: [String], connector: Connector) -> [String: String] {
         var result: [String: String] = [:]
         for key in keys {
             if let value = load(key: key, connector: connector) {
@@ -178,10 +178,10 @@ enum KeychainService {
 
     /// Delete a single credential for a connector.
     @discardableResult
-    static func delete(key: String, connectorID: UUID) -> Bool {
+    public static func delete(key: String, connectorID: UUID) -> Bool {
         let ok = AstraSecureKeychainStore.delete(service: connectorService(for: connectorID), account: key)
         if !ok {
-            AppLogger.audit(.keychainDeleteFailed, category: "Keychain", fields: [
+            AuditLoggingSeam.required.audit(.keychainDeleteFailed, category: "Keychain", fields: [
                 "scope": "connector"
             ], level: .warning)
         }
@@ -190,20 +190,20 @@ enum KeychainService {
 
     /// Delete a single credential from every namespace owned by a connector.
     @discardableResult
-    static func delete(key: String, connector: Connector) -> Bool {
+    public static func delete(key: String, connector: Connector) -> Bool {
         delete(key: key, facts: ConnectorSecretFacts(connector: connector))
     }
 
     /// Facts-based twin of `delete(key:connector:)` — see `connectorServices(facts:)`.
     @discardableResult
-    static func delete(key: String, facts: ConnectorSecretFacts) -> Bool {
+    public static func delete(key: String, facts: ConnectorSecretFacts) -> Bool {
         let services = connectorServices(facts: facts)
         let deleted = services.map { service in
             AstraSecureKeychainStore.delete(service: service, account: key)
         }
         let ok = deleted.contains(true)
         if !ok {
-            AppLogger.audit(.keychainDeleteFailed, category: "Keychain", fields: [
+            AuditLoggingSeam.required.audit(.keychainDeleteFailed, category: "Keychain", fields: [
                 "scope": "connector",
                 "namespace_count": String(services.count)
             ], level: .warning)
@@ -213,10 +213,10 @@ enum KeychainService {
 
     /// Delete a single credential for a skill-owned secret.
     @discardableResult
-    static func delete(key: String, skillID: UUID) -> Bool {
+    public static func delete(key: String, skillID: UUID) -> Bool {
         let ok = AstraSecureKeychainStore.delete(service: skillService(for: skillID), account: key)
         if !ok {
-            AppLogger.audit(.keychainDeleteFailed, category: "Keychain", fields: [
+            AuditLoggingSeam.required.audit(.keychainDeleteFailed, category: "Keychain", fields: [
                 "scope": "skill"
             ], level: .warning)
         }
@@ -224,26 +224,26 @@ enum KeychainService {
     }
 
     /// Delete all credentials for a connector.
-    static func deleteAll(connectorID: UUID) {
+    public static func deleteAll(connectorID: UUID) {
         let ok = AstraSecureKeychainStore.deleteAll(service: connectorService(for: connectorID))
         if !ok {
-            AppLogger.audit(.keychainDeleteFailed, category: "Keychain", fields: [
+            AuditLoggingSeam.required.audit(.keychainDeleteFailed, category: "Keychain", fields: [
                 "scope": "connector_all"
             ], level: .warning)
         }
     }
 
     /// Delete all credentials for a connector from every supported namespace.
-    static func deleteAll(connector: Connector) {
+    public static func deleteAll(connector: Connector) {
         deleteAll(facts: ConnectorSecretFacts(connector: connector))
     }
 
     /// Facts-based twin of `deleteAll(connector:)` — see `connectorServices(facts:)`.
-    static func deleteAll(facts: ConnectorSecretFacts) {
+    public static func deleteAll(facts: ConnectorSecretFacts) {
         let services = connectorServices(facts: facts)
         let deleted = services.map { AstraSecureKeychainStore.deleteAll(service: $0) }
         if !deleted.contains(true) {
-            AppLogger.audit(.keychainDeleteFailed, category: "Keychain", fields: [
+            AuditLoggingSeam.required.audit(.keychainDeleteFailed, category: "Keychain", fields: [
                 "scope": "connector_all",
                 "namespace_count": String(services.count)
             ], level: .warning)
@@ -251,10 +251,10 @@ enum KeychainService {
     }
 
     /// Delete all credentials for a skill.
-    static func deleteAll(skillID: UUID) {
+    public static func deleteAll(skillID: UUID) {
         let ok = AstraSecureKeychainStore.deleteAll(service: skillService(for: skillID))
         if !ok {
-            AppLogger.audit(.keychainDeleteFailed, category: "Keychain", fields: [
+            AuditLoggingSeam.required.audit(.keychainDeleteFailed, category: "Keychain", fields: [
                 "scope": "skill_all"
             ], level: .warning)
         }
@@ -263,7 +263,7 @@ enum KeychainService {
     // MARK: - Bulk Save
 
     /// Save multiple credential key-value pairs for a connector.
-    static func saveAll(credentials: [String: String], connectorID: UUID, connectorName: String = "") {
+    public static func saveAll(credentials: [String: String], connectorID: UUID, connectorName: String = "") {
         let label = connectorName.isEmpty ? nil : "Astra: \(connectorName)"
         for (key, value) in credentials {
             save(key: key, value: value, connectorID: connectorID, label: label)
@@ -272,7 +272,7 @@ enum KeychainService {
 
     /// Save multiple credential key-value pairs for a connector in every
     /// supported namespace.
-    static func saveAll(credentials: [String: String], connector: Connector, connectorName: String = "") {
+    public static func saveAll(credentials: [String: String], connector: Connector, connectorName: String = "") {
         let label = connectorName.isEmpty ? nil : "Astra: \(connectorName)"
         for (key, value) in credentials {
             save(key: key, value: value, connector: connector, label: label)
@@ -282,24 +282,24 @@ enum KeychainService {
     // MARK: - Check
 
     /// Check if a credential exists in the keychain (without reading the value).
-    static func exists(key: String, connectorID: UUID) -> Bool {
+    public static func exists(key: String, connectorID: UUID) -> Bool {
         AstraSecureKeychainStore.exists(service: connectorService(for: connectorID), account: key)
     }
 
     /// Check if a connector credential exists in any supported namespace.
-    static func exists(key: String, connector: Connector) -> Bool {
+    public static func exists(key: String, connector: Connector) -> Bool {
         exists(key: key, facts: ConnectorSecretFacts(connector: connector))
     }
 
     /// Facts-based twin of `exists(key:connector:)` — see `connectorServices(facts:)`.
-    static func exists(key: String, facts: ConnectorSecretFacts) -> Bool {
+    public static func exists(key: String, facts: ConnectorSecretFacts) -> Bool {
         connectorServices(facts: facts).contains { service in
             AstraSecureKeychainStore.exists(service: service, account: key)
         }
     }
 
     /// Check if a skill-owned secret exists in the keychain (without reading the value).
-    static func exists(key: String, skillID: UUID) -> Bool {
+    public static func exists(key: String, skillID: UUID) -> Bool {
         AstraSecureKeychainStore.exists(service: skillService(for: skillID), account: key)
     }
 
@@ -308,13 +308,13 @@ enum KeychainService {
     /// Move any of this connector's secrets that still live in the user's login
     /// keychain (from app versions that stored them there) into ASTRA's dedicated
     /// keychain. Idempotent; safe to call on every launch.
-    static func migrateConnectorFromLoginKeychain(connectorID: UUID) {
+    public static func migrateConnectorFromLoginKeychain(connectorID: UUID) {
         migrate(service: connectorService(for: connectorID), scope: "connector")
     }
 
     /// Move legacy login-keychain items for every namespace this connector can
     /// use, then copy any found declared credentials across all namespaces.
-    static func migrateConnectorFromLoginKeychain(connector: Connector) {
+    public static func migrateConnectorFromLoginKeychain(connector: Connector) {
         for service in connectorServices(for: connector) {
             migrate(service: service, scope: "connector")
         }
@@ -322,14 +322,14 @@ enum KeychainService {
     }
 
     /// Move any of this skill's secrets out of the login keychain. Idempotent.
-    static func migrateSkillFromLoginKeychain(skillID: UUID) {
+    public static func migrateSkillFromLoginKeychain(skillID: UUID) {
         migrate(service: skillService(for: skillID), scope: "skill")
     }
 
     /// If a declared connector credential exists in one namespace, backfill it
     /// into every namespace so future connector re-imports do not need the
     /// user to re-enter the same secret.
-    static func synchronizeConnectorCredentialNamespaces(connector: Connector) {
+    public static func synchronizeConnectorCredentialNamespaces(connector: Connector) {
         synchronizeConnectorCredentialNamespaces(keys: connector.credentialKeys, facts: ConnectorSecretFacts(connector: connector))
     }
 
@@ -337,7 +337,7 @@ enum KeychainService {
     /// — see `connectorServices(facts:)`. `keys` stands in for the connector's
     /// `credentialKeys`, resolved by the caller before crossing the seam
     /// boundary.
-    static func synchronizeConnectorCredentialNamespaces(keys: [String], facts: ConnectorSecretFacts) {
+    public static func synchronizeConnectorCredentialNamespaces(keys: [String], facts: ConnectorSecretFacts) {
         let label = facts.name.isEmpty ? nil : "Astra: \(facts.name)"
         for key in keys {
             guard let value = load(key: key, facts: facts),
@@ -351,13 +351,13 @@ enum KeychainService {
     private static func migrate(service: String, scope: String) {
         let moved = AstraSecureKeychainStore.migrateServiceFromLoginKeychain(service: service)
         if moved > 0 {
-            AppLogger.audit(.keychainSecretsMigrated, category: "Keychain", fields: [
+            AuditLoggingSeam.required.audit(.keychainSecretsMigrated, category: "Keychain", fields: [
                 "scope": scope,
                 "result": "moved",
                 "count": String(moved)
             ], level: .info)
         } else if moved < 0 {
-            AppLogger.audit(.keychainSecretsMigrated, category: "Keychain", fields: [
+            AuditLoggingSeam.required.audit(.keychainSecretsMigrated, category: "Keychain", fields: [
                 "scope": scope,
                 "result": "failed"
             ], level: .warning)

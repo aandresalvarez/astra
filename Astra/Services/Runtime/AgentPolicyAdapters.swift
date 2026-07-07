@@ -2,6 +2,7 @@ import Foundation
 import SwiftData
 import ASTRACore
 import ASTRAModels
+import ASTRAPersistence
 
 protocol ProviderPolicyAdapter {
     var providerID: AgentRuntimeID { get }

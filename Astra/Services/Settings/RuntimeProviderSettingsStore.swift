@@ -1,5 +1,7 @@
 import Foundation
 import ASTRACore
+import ASTRAPersistence
+import ASTRAModels
 
 enum RuntimeProviderSettingsStore {
     static func executablePathKey(for runtime: AgentRuntimeID) -> String {

@@ -1,4 +1,7 @@
 import Foundation
+import ASTRAPersistence
+import ASTRACore
+import ASTRAModels
 
 enum BundledToolInstaller {
     static func installBundledTools(bundle: Bundle = AstraResourceBundle.current) {

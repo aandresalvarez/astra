@@ -304,7 +304,14 @@ struct ArchitectureFitnessTests {
             // already-decided value crossed here. `AgentTaskForkService`
             // moved into `ASTRAModels` in A3 (it needs a live `AgentTask`,
             // which the seam boundary can't carry).
-            "Astra/Models/AgentTaskForkService.swift"
+            "Astra/Models/AgentTaskForkService.swift",
+            // Track A4's `TaskSessionStateApplyingSeam` (extending the same
+            // pattern to `completeFromSessionRecovery`/`restoreImportedStatus`):
+            // same reasoning - the decision + audit live in `TaskStateMachine`'s
+            // conformance; only the mechanical apply crossed into
+            // `ASTRAPersistence`, which can't carry a live `AgentTask` either.
+            "Astra/Services/Persistence/SessionScanner.swift",
+            "Astra/Services/Persistence/WorkspaceConfigManager.swift"
         ]
 
         let matches = try swiftFiles(under: root.appendingPathComponent("Astra"))
@@ -1487,6 +1494,7 @@ struct ArchitectureFitnessTests {
         [
             "Astra/AppIntents/AstraAppEntities.swift": ["self"],
             "Astra/Models/TaskCorrectiveWork.swift": ["self"],
+            "Astra/Models/TaskDeliverableVerification.swift": ["self"],
             "Astra/Models/TaskMissionHardening.swift": ["self"],
             "Astra/Models/TaskPlan.swift": ["self"],
             "Astra/Models/TaskResourceLock.swift": ["self"],
@@ -1547,13 +1555,20 @@ struct ArchitectureFitnessTests {
             "Astra/Services/Runtime/AgentRuntimeAdapter.swift": .init(2_900, .owner("Runtime adapter registry")),
             "Astra/Views/PluginCatalogView.swift": .init(2_900, .owner("Capability catalog UI")),
             "Astra/Views/ShelfMarkdownPanelView.swift": .init(2_850, .owner("Shelf markdown panel")),
-            "Astra/Services/Persistence/WorkspaceConfigManager.swift": .init(2_800, .owner("Workspace mirror persistence")),
+            // Budget raised for Track A4 (ASTRAPersistence extraction): every
+            // public struct now needs an explicit `public init` (Swift's
+            // synthesized memberwise init is always internal, even for an
+            // all-public struct) to stay constructible from outside this new
+            // target - a hard language requirement, not scope creep.
+            "Astra/Services/Persistence/WorkspaceConfigManager.swift": .init(3_200, .owner("Workspace mirror persistence")),
             "Astra/Views/ConfigureView.swift": .init(2_600, .owner("Legacy configure surface")),
             "Astra/Services/Diagnostics/LogDiagnosticsService.swift": .init(2_600, .owner("Log diagnostics")),
             "Astra/Views/TaskSidebarView.swift": .init(2_500, .owner("Task sidebar")),
             "Astra/Services/WorkspaceApps/WorkspaceAppActionExecutor.swift": .init(2_450, .owner("Workspace App action execution")),
             "Astra/Views/WorkspaceRightRailView.swift": .init(2_400, .owner("Workspace right rail")),
-            "Astra/Services/Persistence/TaskContextStateManager.swift": .init(2_300, .owner("Task context state")),
+            // Budget raised for Track A4 (ASTRAPersistence extraction) - see
+            // WorkspaceConfigManager.swift's entry above for why.
+            "Astra/Services/Persistence/TaskContextStateManager.swift": .init(2_450, .owner("Task context state")),
             "Astra/Views/ShelfQueryPanelView.swift": .init(2_300, .owner("Shelf query panel")),
             "Astra/Services/Runtime/AgentPromptBuilder.swift": .init(2_300, .owner("Provider prompt assembly")),
             "Astra/Services/Browser/BrowserAnalysis.swift": .init(2_150, .owner("Browser analysis")),

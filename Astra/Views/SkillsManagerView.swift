@@ -1,6 +1,7 @@
 import SwiftUI
 import SwiftData
 import ASTRAModels
+import ASTRAPersistence
 
 struct SkillsManagerView: View {
     var workspace: Workspace

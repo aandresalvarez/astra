@@ -1,5 +1,6 @@
 import Foundation
 import ASTRACore
+import ASTRAPersistence
 
 struct MCPControlPlaneAuthProfileHandle: Codable, Equatable, Sendable, Identifiable {
     var id: String { refID }

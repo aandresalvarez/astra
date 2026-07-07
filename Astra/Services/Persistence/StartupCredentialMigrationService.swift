@@ -1,10 +1,11 @@
 import Foundation
 import SwiftData
 import ASTRAModels
+import ASTRACore
 
-enum StartupCredentialMigrationService {
+public enum StartupCredentialMigrationService {
     @MainActor
-    static func schedule(modelContainer: ModelContainer) {
+    public static func schedule(modelContainer: ModelContainer) {
         guard !ProcessInfo.processInfo.arguments.contains(where: { $0.hasPrefix("--uitesting") }) else {
             return
         }
@@ -15,7 +16,7 @@ enum StartupCredentialMigrationService {
     }
 
     @MainActor
-    static func migrate(modelContext: ModelContext) {
+    public static func migrate(modelContext: ModelContext) {
         let workspaces: [Workspace]
         do {
             workspaces = try modelContext.fetch(FetchDescriptor<Workspace>())
@@ -44,7 +45,7 @@ enum StartupCredentialMigrationService {
 
         migrateConnectorCredentials(workspaces: workspaces, globalConnectors: globalConnectors)
         migrateSkillSecrets(skills: skills)
-        AppLogger.audit(.keychainSecretsMigrated, category: "Keychain", fields: [
+        AuditLoggingSeam.required.audit(.keychainSecretsMigrated, category: "Keychain", fields: [
             "scope": "startup",
             "result": "checked",
             "workspace_count": String(workspaces.count),
@@ -54,7 +55,7 @@ enum StartupCredentialMigrationService {
         ], level: .debug)
     }
 
-    static func migrateConnectorCredentials(workspaces: [Workspace], globalConnectors: [Connector] = []) {
+    public static func migrateConnectorCredentials(workspaces: [Workspace], globalConnectors: [Connector] = []) {
         var seen = Set<UUID>()
         let connectors = workspaces.flatMap(\.connectors) + globalConnectors
         for connector in connectors where seen.insert(connector.id).inserted {
@@ -67,7 +68,7 @@ enum StartupCredentialMigrationService {
         }
     }
 
-    static func migrateSkillSecrets(skills: [Skill]) {
+    public static func migrateSkillSecrets(skills: [Skill]) {
         for skill in skills {
             skill.migrateSecretsToKeychain()
             // See migrateConnectorCredentials: relocate legacy login-keychain
@@ -79,7 +80,7 @@ enum StartupCredentialMigrationService {
     }
 
     private static func logFetchFailure(scope: String, error: Error) {
-        AppLogger.audit(.keychainSecretsMigrated, category: "Keychain", fields: [
+        AuditLoggingSeam.required.audit(.keychainSecretsMigrated, category: "Keychain", fields: [
             "scope": scope,
             "result": "fetch_failed",
             "reason": error.localizedDescription,

@@ -5,25 +5,43 @@ import ASTRAModels
 
 /// Scans Claude Code's session history (~/.claude/projects/) to discover
 /// previous threads for a workspace path and import them as tasks.
-enum SessionScanner {
+public enum SessionScanner {
 
     /// Marker payload written on the start event of every imported session, used
     /// to recognise (and de-duplicate) imports later. Kept as a shared constant
     /// so `TaskStoreMaintenance` and the import code agree on the exact string.
-    static let importedSessionMarker = "Imported from Claude Code session"
+    public static let importedSessionMarker = "Imported from Claude Code session"
 
-    struct DiscoveredSession {
-        let sessionId: String
-        let goal: String
-        let userMessages: [String]
-        let totalTokens: Int
-        let startedAt: Date
-        let lastActivity: Date
-        let model: String?
+    public struct DiscoveredSession {
+        public let sessionId: String
+        public let goal: String
+        public let userMessages: [String]
+        public let totalTokens: Int
+        public let startedAt: Date
+        public let lastActivity: Date
+        public let model: String?
+
+        public init(
+            sessionId: String,
+            goal: String,
+            userMessages: [String],
+            totalTokens: Int,
+            startedAt: Date,
+            lastActivity: Date,
+            model: String?
+        ) {
+            self.sessionId = sessionId
+            self.goal = goal
+            self.userMessages = userMessages
+            self.totalTokens = totalTokens
+            self.startedAt = startedAt
+            self.lastActivity = lastActivity
+            self.model = model
+        }
     }
 
     /// Scan ~/.claude/projects/ for sessions that match this workspace path.
-    static func discoverSessions(workspacePath: String) -> [DiscoveredSession] {
+    public static func discoverSessions(workspacePath: String) -> [DiscoveredSession] {
         let claudeDir = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".claude", isDirectory: true)
             .appendingPathComponent("projects", isDirectory: true)
@@ -68,7 +86,7 @@ enum SessionScanner {
     /// already imported (idempotency, keyed by `sessionId`) and ones that carry
     /// real task intent (drop bare greeting/identity-probe sessions). Pure so it
     /// can be unit-tested without a model context.
-    static func sessionsToImport(
+    public static func sessionsToImport(
         _ sessions: [DiscoveredSession],
         existingSessionIds: Set<String>
     ) -> [DiscoveredSession] {
@@ -88,7 +106,7 @@ enum SessionScanner {
     /// greeting/probe sessions are filtered out entirely.
     @discardableResult
     @MainActor
-    static func importSessions(
+    public static func importSessions(
         _ sessions: [DiscoveredSession],
         into workspace: Workspace,
         modelContext: ModelContext
@@ -110,7 +128,15 @@ enum SessionScanner {
                 model: session.model ?? TaskExecutionDefaults.model,
                 runtime: .claudeCode
             )
-            TaskStateMachine.completeFromSessionRecovery(task, modelContext: modelContext, at: session.lastActivity)
+            let recoveryResult = TaskSessionStateApplyingSeam.required.completeFromSessionRecovery(
+                taskID: task.id,
+                currentStatusRawValue: task.status.rawValue,
+                existingCompletedAt: task.completedAt,
+                at: session.lastActivity
+            )
+            task.status = .completed
+            task.completedAt = recoveryResult.completedAt
+            task.updatedAt = recoveryResult.updatedAt
             task.isDone = true
             task.tokensUsed = session.totalTokens
             task.sessionId = session.sessionId

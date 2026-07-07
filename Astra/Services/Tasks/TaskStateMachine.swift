@@ -2,6 +2,7 @@ import Foundation
 import SwiftData
 import ASTRACore
 import ASTRAModels
+import ASTRAPersistence
 
 @MainActor
 enum TaskStateMachine {
@@ -810,5 +811,42 @@ extension TaskStateMachine: TaskForkStateInitializing {
             "result": "applied"
         ], level: .debug)
         return TaskForkStateInitializationResult(statusRawValue: TaskStatus.completed.rawValue, updatedAt: date, applied: true)
+    }
+}
+
+extension TaskStateMachine: TaskSessionStateApplying {
+    static func completeFromSessionRecovery(
+        taskID: UUID,
+        currentStatusRawValue: String,
+        existingCompletedAt: Date?,
+        at date: Date
+    ) -> TaskSessionRecoveryCompletionResult {
+        let previousStatus = TaskStatus(rawValue: currentStatusRawValue) ?? .draft
+        AppLogger.audit(.taskStatusChanged, category: "TaskState", taskID: taskID, fields: [
+            "intent": "session_recovery_completed",
+            "from": previousStatus.rawValue,
+            "to": TaskStatus.completed.rawValue,
+            "changed": String(previousStatus != .completed),
+            "result": "applied"
+        ], level: .debug)
+        return TaskSessionRecoveryCompletionResult(completedAt: existingCompletedAt ?? date, updatedAt: date)
+    }
+
+    static func restoreImportedStatus(
+        taskID: UUID,
+        currentStatusRawValue: String,
+        targetStatusRawValue: String,
+        at date: Date
+    ) -> TaskImportedStatusRestorationResult {
+        let previousStatus = TaskStatus(rawValue: currentStatusRawValue) ?? .draft
+        let targetStatus = TaskStatus(rawValue: targetStatusRawValue) ?? .completed
+        AppLogger.audit(.taskStatusChanged, category: "TaskState", taskID: taskID, fields: [
+            "intent": "imported_status_restored",
+            "from": previousStatus.rawValue,
+            "to": targetStatus.rawValue,
+            "changed": String(previousStatus != targetStatus),
+            "result": "applied"
+        ], level: .debug)
+        return TaskImportedStatusRestorationResult(updatedAt: date)
     }
 }

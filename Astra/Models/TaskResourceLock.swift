@@ -20,7 +20,7 @@ public enum TaskResourceLockEventTypes {
 }
 
 public struct TaskResourceLockPayload: Codable, Sendable, Equatable {
-    public init(version: Int, resourceKey: String, accessMode: TaskResourceAccessMode, runMode: String, status: String, holderTaskID: UUID?, reason: String?) {
+    public init(version: Int, resourceKey: String, accessMode: TaskResourceAccessMode, runMode: String, status: String, holderTaskID: UUID? = nil, reason: String? = nil) {
         self.version = version
         self.resourceKey = resourceKey
         self.accessMode = accessMode

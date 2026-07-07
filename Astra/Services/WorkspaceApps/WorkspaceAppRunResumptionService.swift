@@ -1,6 +1,7 @@
 import Foundation
 import SwiftData
 import ASTRAModels
+import ASTRAPersistence
 
 // B2: bridges async agent-task completion back to a suspended workflow run.
 // Given a completed task, it finds the waiting `WorkspaceAppRun`s linked to that

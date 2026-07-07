@@ -1089,7 +1089,7 @@ public struct RunPermissionManifest: Codable, Equatable, Sendable, Identifiable 
     public var observedDeniedCount: Int
     public var observedFileChangeCount: Int
 
-    enum CodingKeys: String, CodingKey {
+    public enum CodingKeys: String, CodingKey {
         case id
         case createdAt
         case taskID

@@ -1,4 +1,6 @@
 import ASTRACore
+import ASTRAModels
+import ASTRAPersistence
 
 /// Wires the `ExecutionPathSafety`/`AgentRuntimeRegistrySeam` seams declared
 /// in `ASTRACore/RuntimeSeams.swift` to their real, Runtime-owned
@@ -30,9 +32,13 @@ enum RuntimeSeamRegistration {
         OutlookMailConnectionSeam.register(OutlookMailConnectionAdapter.self)
         ConnectorEnvironmentProjectionSeam.register(ConnectorEnvironmentProjectionAdapter.self)
         TaskForkStateInitializingSeam.register(TaskStateMachine.self)
+        TaskSessionStateApplyingSeam.register(TaskStateMachine.self)
         TaskFolderResolvingSeam.register(TaskFolderResolvingAdapter.self)
         TaskForkManifestWritingSeam.register(TaskForkManifestWritingAdapter.self)
         SecretStoreSeam.register { KeychainSecretStore() }
+        TaskPlanReconstructionSeam.register(TaskPlanService.self)
+        TaskForkSourcePointerSeam.register(TaskForkManifestService.self)
+        TaskGeneratedFileQuerySeam.register(TaskGeneratedFiles.self)
     }
 }
 
@@ -41,3 +47,9 @@ extension ExecutionSandbox: ExecutionPathSafetyChecking {}
 extension AgentRuntimeAdapterRegistry: AgentRuntimeRegistryLookup {}
 
 extension AppLogger: AuditLogging {}
+
+extension TaskPlanService: TaskPlanReconstructing {}
+
+extension TaskForkManifestService: TaskForkSourcePointerProviding {}
+
+extension TaskGeneratedFiles: TaskGeneratedFileQuerying {}

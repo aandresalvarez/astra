@@ -120,9 +120,9 @@ public struct StoredFileChange: Codable, Identifiable, Hashable, Sendable {
         id: UUID = UUID(),
         path: String,
         changeType: String,
-        content: String?,
-        oldString: String?,
-        newString: String?,
+        content: String? = nil,
+        oldString: String? = nil,
+        newString: String? = nil,
         timestamp: Date = Date()
     ) {
         self.id = id

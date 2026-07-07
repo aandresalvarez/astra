@@ -9,10 +9,10 @@ import ASTRAModels
 /// Kanban card and the sidebar row) used to paper over this at render time;
 /// sanitising at the *source* means the stored value is clean and every
 /// surface benefits without its own dedup pass.
-enum TaskTitleSanitizer {
+public enum TaskTitleSanitizer {
     /// Trim, strip wrapping quotes, and collapse a string that is exactly
     /// itself repeated twice. Returns the cleaned title.
-    static func sanitizeGeneratedTitle(_ raw: String) -> String {
+    public static func sanitizeGeneratedTitle(_ raw: String) -> String {
         let trimmed = raw
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .replacingOccurrences(of: "\"", with: "")
@@ -25,7 +25,7 @@ enum TaskTitleSanitizer {
     /// *multi-word* half (the generator's doubling artifact is always a
     /// multi-word title), so single-token reduplications like "ParserParser" or
     /// "bonbon" are left intact.
-    static func collapseDoubled(_ text: String) -> String {
+    public static func collapseDoubled(_ text: String) -> String {
         let characters = Array(text)
         guard !characters.isEmpty, characters.count.isMultiple(of: 2) else { return text }
 
@@ -46,13 +46,13 @@ enum TaskTitleSanitizer {
 /// Classifies how much *signal* a conversation carries. A conversation that is
 /// just a greeting or an "are you there?" probe carries no task intent and is
 /// not worth surfacing as supervisable work.
-enum TaskConversationSignal {
+public enum TaskConversationSignal {
     /// A single-message conversation shorter than this (after normalisation) is
     /// low-signal even if it matches no known phrase. Deliberately tiny — it
     /// catches "hi", "yo", "ok", "test" without sweeping up terse-but-real tasks
     /// like "Add tests" or "Fix CI". Anything longer must match a greeting word
     /// or probe phrase to be considered noise.
-    static let lowSignalMaxCharacters = 5
+    public static let lowSignalMaxCharacters = 5
 
     private static let greetingFirstWords: Set<String> = [
         "hi", "hii", "hiii", "hey", "heya", "hello", "helo", "yo", "sup",
@@ -77,10 +77,10 @@ enum TaskConversationSignal {
 
     /// Decode the user-authored turns from a draft's JSON message blob.
     /// Returns an empty array when the blob is missing or malformed.
-    static func draftUserMessages(fromDraftMessagesJSON json: String) -> [String] {
+    public static func draftUserMessages(fromDraftMessagesJSON json: String) -> [String] {
         struct StoredMessage: Decodable {
-            let role: String
-            let content: String
+            public let role: String
+            public let content: String
         }
         guard !json.isEmpty,
               let data = json.data(using: .utf8),
@@ -95,7 +95,7 @@ enum TaskConversationSignal {
     /// True when the conversation carries no real task intent — a lone greeting
     /// or identity/capability probe. A back-and-forth with two or more
     /// user-authored turns is always treated as substantive.
-    static func isLowSignalConversation(goal: String, draftMessagesJSON: String) -> Bool {
+    public static func isLowSignalConversation(goal: String, draftMessagesJSON: String) -> Bool {
         isLowSignalConversation(
             goal: goal,
             userMessages: draftUserMessages(fromDraftMessagesJSON: draftMessagesJSON)
@@ -104,7 +104,7 @@ enum TaskConversationSignal {
 
     /// Variant for callers that already hold the decoded user turns (e.g. the
     /// Claude Code session importer).
-    static func isLowSignalConversation(goal: String, userMessages: [String]) -> Bool {
+    public static func isLowSignalConversation(goal: String, userMessages: [String]) -> Bool {
         // Two or more user turns means the person engaged with the thread —
         // that's exploration worth keeping regardless of how each turn reads.
         if userMessages.count >= 2 { return false }
@@ -173,12 +173,12 @@ enum TaskConversationSignal {
 /// it never appears on the board. These predicates are the single source of
 /// truth shared by the board's view filter (hide) and the startup maintenance
 /// pass (prune), so the two can never drift apart.
-enum TaskHygiene {
+public enum TaskHygiene {
     /// The board shows delegated work only. A draft is in-composition state — the
     /// task is born on the board the moment it's queued/run — so every draft is
     /// hidden. (`TaskConversationSignal` still gates which *imported sessions*
     /// are worth surfacing; that's a separate, content-based question.)
-    static func isHiddenFromBoard(_ task: AgentTask) -> Bool {
+    public static func isHiddenFromBoard(_ task: AgentTask) -> Bool {
         task.status == .draft
     }
 
@@ -189,7 +189,7 @@ enum TaskHygiene {
     /// "Address PR comments" / app-intent draft must never be pruned. Only empty
     /// husks (e.g. legacy greeting chats whose conversation was never persisted)
     /// qualify.
-    static func isPrunableAbandonedDraft(
+    public static func isPrunableAbandonedDraft(
         _ task: AgentTask,
         olderThan staleInterval: TimeInterval = 24 * 3600,
         now: Date = Date()
@@ -205,7 +205,7 @@ enum TaskHygiene {
     /// conversation, attached inputs, plan activity, or recorded acceptance
     /// criteria. Programmatic intent drafts ("Address PR comments", app-intent
     /// routes, approved-but-unrun plans) all carry at least one of these.
-    static func hasRecoverableContent(_ task: AgentTask) -> Bool {
+    public static func hasRecoverableContent(_ task: AgentTask) -> Bool {
         // Authored content: conversation, attachments, plan acceptance.
         if !task.draftMessages.isEmpty { return true }
         if !task.inputs.isEmpty { return true }

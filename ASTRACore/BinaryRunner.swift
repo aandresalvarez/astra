@@ -138,13 +138,13 @@ public protocol BinaryRunner: Sendable {
 
 public extension BinaryRunner {
     /// Convenience: run with inherited environment.
-    func run(path: String, args: [String], timeout: TimeInterval = 3) async -> RunResult {
+    public func run(path: String, args: [String], timeout: TimeInterval = 3) async -> RunResult {
         await run(path: path, args: args, timeout: timeout, environment: nil)
     }
 
     /// Default for runners that don't support stdin: the input is dropped.
     /// `ProcessBinaryRunner` overrides this with a real pipe.
-    func run(
+    public func run(
         path: String,
         args: [String],
         timeout: TimeInterval,
@@ -612,7 +612,7 @@ private final class PipeCollector: @unchecked Sendable {
     private let lock = NSLock()
     private let maximumBytes: Int?
 
-    init(maximumBytes: Int? = nil) {
+    public init(maximumBytes: Int? = nil) {
         if let maximumBytes, maximumBytes >= 0 {
             self.maximumBytes = maximumBytes
         } else {
@@ -620,7 +620,7 @@ private final class PipeCollector: @unchecked Sendable {
         }
     }
 
-    func append(_ data: Data) {
+    public func append(_ data: Data) {
         guard !data.isEmpty else { return }
         lock.lock()
         if let maximumBytes {
@@ -637,7 +637,7 @@ private final class PipeCollector: @unchecked Sendable {
         lock.unlock()
     }
 
-    var string: String {
+    public var string: String {
         lock.lock()
         let snapshot = buffer
         lock.unlock()
@@ -649,7 +649,7 @@ private final class PipeCollector: @unchecked Sendable {
         return String(decoding: snapshot, as: UTF8.self)
     }
 
-    var wasTruncated: Bool {
+    public var wasTruncated: Bool {
         lock.lock()
         let value = truncated
         lock.unlock()
@@ -667,7 +667,7 @@ private final class ProcessRunState: @unchecked Sendable {
     private var timeoutTask: Task<Void, Never>?
     private var didFinish = false
 
-    func setContinuation(_ continuation: CheckedContinuation<RunResult, Never>) -> Bool {
+    public func setContinuation(_ continuation: CheckedContinuation<RunResult, Never>) -> Bool {
         lock.lock()
         self.continuation = continuation
         let alreadyFinished = didFinish
@@ -678,7 +678,7 @@ private final class ProcessRunState: @unchecked Sendable {
         return alreadyFinished
     }
 
-    func setProcess(_ process: Process) {
+    public func setProcess(_ process: Process) {
         lock.lock()
         self.process = process
         let shouldTerminate = didFinish
@@ -688,7 +688,7 @@ private final class ProcessRunState: @unchecked Sendable {
         }
     }
 
-    func setTimeoutTask(_ task: Task<Void, Never>) {
+    public func setTimeoutTask(_ task: Task<Void, Never>) {
         lock.lock()
         let shouldCancel = didFinish
         if shouldCancel {
@@ -700,11 +700,11 @@ private final class ProcessRunState: @unchecked Sendable {
         }
     }
 
-    func terminateRunningProcess(_ process: Process) {
+    public func terminateRunningProcess(_ process: Process) {
         terminate(process)
     }
 
-    func stopIfFinished(_ process: Process) -> Bool {
+    public func stopIfFinished(_ process: Process) -> Bool {
         lock.lock()
         let shouldTerminate = didFinish
         lock.unlock()
@@ -714,14 +714,14 @@ private final class ProcessRunState: @unchecked Sendable {
         return shouldTerminate
     }
 
-    var isFinished: Bool {
+    public var isFinished: Bool {
         lock.lock()
         let value = didFinish
         lock.unlock()
         return value
     }
 
-    func cancel() {
+    public func cancel() {
         let processToTerminate: Process?
         lock.lock()
         processToTerminate = process
@@ -732,7 +732,7 @@ private final class ProcessRunState: @unchecked Sendable {
         }
     }
 
-    func finish(
+    public func finish(
         outcome: RunResult.Outcome,
         stdout: String,
         stderr: String,
@@ -779,7 +779,7 @@ private final class SpawnedProcessGroupRunState: @unchecked Sendable {
     private var timeoutTask: Task<Void, Never>?
     private var didFinish = false
 
-    func setContinuation(_ continuation: CheckedContinuation<RunResult, Never>) -> Bool {
+    public func setContinuation(_ continuation: CheckedContinuation<RunResult, Never>) -> Bool {
         lock.lock()
         self.continuation = continuation
         let alreadyFinished = didFinish
@@ -790,7 +790,7 @@ private final class SpawnedProcessGroupRunState: @unchecked Sendable {
         return alreadyFinished
     }
 
-    func setProcessGroupID(_ processGroupID: pid_t) {
+    public func setProcessGroupID(_ processGroupID: pid_t) {
         lock.lock()
         self.processGroupID = processGroupID
         let shouldTerminate = didFinish
@@ -800,7 +800,7 @@ private final class SpawnedProcessGroupRunState: @unchecked Sendable {
         }
     }
 
-    func setTimeoutTask(_ task: Task<Void, Never>) {
+    public func setTimeoutTask(_ task: Task<Void, Never>) {
         lock.lock()
         let shouldCancel = didFinish
         if shouldCancel {
@@ -812,7 +812,7 @@ private final class SpawnedProcessGroupRunState: @unchecked Sendable {
         }
     }
 
-    func stopIfFinished() -> Bool {
+    public func stopIfFinished() -> Bool {
         lock.lock()
         let shouldTerminate = didFinish
         let processGroupID = self.processGroupID
@@ -823,7 +823,7 @@ private final class SpawnedProcessGroupRunState: @unchecked Sendable {
         return shouldTerminate
     }
 
-    func cancel() {
+    public func cancel() {
         let processGroupID: pid_t?
         lock.lock()
         processGroupID = self.processGroupID
@@ -834,7 +834,7 @@ private final class SpawnedProcessGroupRunState: @unchecked Sendable {
         }
     }
 
-    func terminateProcessGroup() {
+    public func terminateProcessGroup() {
         let processGroupID: pid_t?
         lock.lock()
         processGroupID = self.processGroupID
@@ -844,7 +844,7 @@ private final class SpawnedProcessGroupRunState: @unchecked Sendable {
         }
     }
 
-    func finish(
+    public func finish(
         outcome: RunResult.Outcome,
         stdout: String,
         stderr: String,
@@ -882,7 +882,7 @@ private final class SpawnedProcessGroupRunState: @unchecked Sendable {
 private final class CStringArray {
     private var storage: [UnsafeMutablePointer<CChar>?]
 
-    init(_ strings: [String]) {
+    public init(_ strings: [String]) {
         storage = strings.map { strdup($0) }
         storage.append(nil)
     }
@@ -895,7 +895,7 @@ private final class CStringArray {
         }
     }
 
-    func withUnsafeMutableBufferPointer<Result>(
+    public func withUnsafeMutableBufferPointer<Result>(
         _ body: (inout UnsafeMutableBufferPointer<UnsafeMutablePointer<CChar>?>) throws -> Result
     ) rethrows -> Result {
         try storage.withUnsafeMutableBufferPointer(body)

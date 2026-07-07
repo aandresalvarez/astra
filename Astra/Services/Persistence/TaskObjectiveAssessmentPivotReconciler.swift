@@ -1,5 +1,6 @@
 import Foundation
 import ASTRAModels
+import ASTRACore
 
 /// Reconciles a persisted Tier 2 (utility-model) objective assessment against
 /// Tier 1's deterministic resolver on every `refresh()`, in three ways:
@@ -56,7 +57,7 @@ import ASTRAModels
 /// func` (internal), matching `TaskActiveObjectiveResolver.swift`'s own usage.
 extension TaskContextStateManager {
     @MainActor
-    static func reconcileActiveObjectiveWithAssessmentPivot(
+    public static func reconcileActiveObjectiveWithAssessmentPivot(
         _ state: inout TaskContextState,
         task: AgentTask,
         followUpMessage: String = ""
@@ -70,7 +71,7 @@ extension TaskContextStateManager {
 
         let resolution = activeObjectiveResolution(
             for: task,
-            planState: TaskPlanService.reconstruct(for: task),
+            planState: TaskPlanReconstructionSeam.required.reconstruct(for: task),
             startingRequest: state.startingRequest,
             approvedGoal: state.approvedGoal
         )
@@ -112,7 +113,7 @@ extension TaskContextStateManager {
     /// there (adversarial finding: only the live provider prompt must avoid
     /// asserting a demoted goal as still "current").
     @MainActor
-    static func shouldSuppressRedundantCurrentObjectiveLine(state: TaskContextState, task: AgentTask) -> Bool {
+    public static func shouldSuppressRedundantCurrentObjectiveLine(state: TaskContextState, task: AgentTask) -> Bool {
         shouldSuppressGoalRestatementLine(state.objective.currentObjective, state: state, task: task)
     }
 
@@ -123,7 +124,7 @@ extension TaskContextStateManager {
     /// `FollowUpIntroSectionProvider` demotes that same text to background
     /// framing (adversarial finding).
     @MainActor
-    static func shouldSuppressRedundantApprovedGoalLine(state: TaskContextState, task: AgentTask) -> Bool {
+    public static func shouldSuppressRedundantApprovedGoalLine(state: TaskContextState, task: AgentTask) -> Bool {
         guard let approvedGoal = state.objective.approvedGoal else { return false }
         return shouldSuppressGoalRestatementLine(approvedGoal, state: state, task: task)
     }
@@ -149,7 +150,7 @@ extension TaskContextStateManager {
     /// Mission Control / markdown export, which read it directly) keep the
     /// full historical record.
     @MainActor
-    static func decisionFactsExcludingRedundantApprovedGoal(
+    public static func decisionFactsExcludingRedundantApprovedGoal(
         _ facts: [TaskContextState.ContextFact],
         state: TaskContextState,
         task: AgentTask

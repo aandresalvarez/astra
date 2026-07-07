@@ -1,12 +1,13 @@
 import Foundation
 import CryptoKit
+import ASTRACore
 
 /// Deterministic, pure-function gate for whether a Tier 2 (model-backed) objective
 /// re-assessment should fire. This intentionally takes only primitives -- no
 /// TaskContextState or AgentTask dependency -- so it can be evaluated cheaply and
 /// tested in isolation. It never calls a model itself; callers are responsible for
 /// running the actual Tier 2 assessment asynchronously if this returns true.
-enum ObjectiveAssessmentTrigger {
+public enum ObjectiveAssessmentTrigger {
     /// Returns true only when every deterministic gate agrees a Tier 2 assessment
     /// is warranted:
     ///   1. Enough turns have elapsed (`turnCount >= turnThreshold`).
@@ -17,7 +18,7 @@ enum ObjectiveAssessmentTrigger {
     ///      case; Tier 2 is only for the ambiguous remainder).
     ///   4. The input has changed since the last assessment, OR no assessment has
     ///      ever run, OR the last assessment is stale (debounce window elapsed).
-    static func shouldAssess(
+    public static func shouldAssess(
         turnCount: Int,
         hasSubstantiveLaterUserMessage: Bool,
         hasExplicitObjectiveMarker: Bool,
@@ -43,7 +44,7 @@ enum ObjectiveAssessmentTrigger {
     /// deciding whether the objective assessment's conclusion could have changed.
     /// Must never incorporate Date()/random/UUID -- identical inputs must always
     /// yield an identical hash, across process runs.
-    static func objectiveInputHash(
+    public static func objectiveInputHash(
         originalGoal: String,
         recentUserMessages: [String],
         verificationStatus: String

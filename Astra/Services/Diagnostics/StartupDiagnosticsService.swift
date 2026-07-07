@@ -1,4 +1,7 @@
 import Foundation
+import ASTRAPersistence
+import ASTRACore
+import ASTRAModels
 
 enum StartupDiagnosticsService {
     static func record(

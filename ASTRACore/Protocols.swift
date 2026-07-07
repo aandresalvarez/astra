@@ -11,7 +11,7 @@ public protocol SecretStore {
 }
 
 public extension SecretStore {
-    func loadAll(keys: [String], entityID: String) -> [String: String] {
+    public func loadAll(keys: [String], entityID: String) -> [String: String] {
         var result: [String: String] = [:]
         for key in keys {
             if let value = load(key: key, entityID: entityID) {
@@ -21,7 +21,7 @@ public extension SecretStore {
         return result
     }
 
-    func saveAll(credentials: [String: String], entityID: String, label: String? = nil) {
+    public func saveAll(credentials: [String: String], entityID: String, label: String? = nil) {
         for (key, value) in credentials {
             save(key: key, value: value, entityID: entityID, label: label)
         }
@@ -36,12 +36,12 @@ public protocol FileSystem {
 }
 
 public extension FileSystem {
-    func fileExists(atPath path: String, isDirectory: inout Bool) -> Bool {
+    public func fileExists(atPath path: String, isDirectory: inout Bool) -> Bool {
         isDirectory = false
         return fileExists(atPath: path)
     }
 
-    func directoryExists(atPath path: String) -> Bool {
+    public func directoryExists(atPath path: String) -> Bool {
         var isDirectory = false
         return fileExists(atPath: path, isDirectory: &isDirectory) && isDirectory
     }

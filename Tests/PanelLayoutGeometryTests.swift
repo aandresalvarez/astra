@@ -1,6 +1,9 @@
 import Testing
 import CoreGraphics
 import Foundation
+import ASTRAPersistence
+import ASTRACore
+import ASTRAModels
 @testable import ASTRA
 
 /// Regression tests for the panel layout math that drives the

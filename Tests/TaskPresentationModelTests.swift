@@ -2,6 +2,7 @@ import Testing
 import AppKit
 import SwiftUI
 import ASTRAModels
+import ASTRAPersistence
 @testable import ASTRA
 import ASTRACore
 

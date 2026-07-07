@@ -1,7 +1,7 @@
 import Foundation
 
 public extension MCPControlPlaneInvariantViolation {
-    var shortDescription: String {
+    public var shortDescription: String {
         switch self {
         case .authProfileProviderIDRequired(let id):
             return "auth profile \(Self.displayID(id)) is missing a provider ID"
@@ -35,7 +35,7 @@ public extension MCPControlPlaneInvariantViolation {
 }
 
 private extension MCPProviderCapabilityInvariantViolation {
-    var shortDescription: String {
+    public var shortDescription: String {
         switch self {
         case .contractIDRequired:
             return "contract ID is required"
@@ -52,7 +52,7 @@ private extension MCPProviderCapabilityInvariantViolation {
 }
 
 private extension MCPRuntimeBindingInvariantViolation {
-    var shortDescription: String {
+    public var shortDescription: String {
         switch self {
         case .destinationNameRequired:
             return "destination name is required"

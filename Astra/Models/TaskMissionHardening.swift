@@ -9,7 +9,7 @@ public enum TaskMissionEventTypes {
 }
 
 public struct TaskMissionCheckpointPayload: Codable, Equatable, Sendable {
-    public init(version: Int = 1, checkpointID: UUID, runID: UUID?, taskStatus: String, runStatus: String?, elapsedSeconds: Int, tokensUsed: Int, costUSD: Double, contractStatus: String?, openBlockers: [String], eventCount: Int, sourcePointers: [TaskContextSourcePointer]) {
+    public init(version: Int = 1, checkpointID: UUID, runID: UUID? = nil, taskStatus: String, runStatus: String? = nil, elapsedSeconds: Int, tokensUsed: Int, costUSD: Double, contractStatus: String? = nil, openBlockers: [String], eventCount: Int, sourcePointers: [TaskContextSourcePointer]) {
         self.version = version
         self.checkpointID = checkpointID
         self.runID = runID
@@ -61,7 +61,7 @@ public struct TaskMissionAuditBundlePayload: Codable, Equatable, Sendable {
 }
 
 public struct TaskMissionMilestonePayload: Codable, Equatable, Sendable {
-    public init(version: Int = 1, milestoneID: String, title: String, status: String, planID: UUID?, stepID: String?) {
+    public init(version: Int = 1, milestoneID: String, title: String, status: String, planID: UUID? = nil, stepID: String? = nil) {
         self.version = version
         self.milestoneID = milestoneID
         self.title = title

@@ -1,11 +1,11 @@
 import Foundation
 
-enum AppChannel: String {
+public enum AppChannel: String {
     case production = "prod"
     case development = "dev"
     case beta = "beta"
 
-    static var current: AppChannel {
+    public static var current: AppChannel {
         if let env = ProcessInfo.processInfo.environment["ASTRA_CHANNEL"],
            let channel = AppChannel(rawValue: env.lowercased()) {
             return channel
@@ -17,7 +17,7 @@ enum AppChannel: String {
         return .production
     }
 
-    var displayName: String {
+    public var displayName: String {
         switch self {
         case .production: "ASTRA"
         case .development: "ASTRA Dev"
@@ -25,7 +25,7 @@ enum AppChannel: String {
         }
     }
 
-    var appSupportDirectoryName: String {
+    public var appSupportDirectoryName: String {
         switch self {
         case .production: "Astra"
         case .development: "AstraDev"
@@ -33,14 +33,14 @@ enum AppChannel: String {
         }
     }
 
-    var logsDirectoryName: String {
+    public var logsDirectoryName: String {
         appSupportDirectoryName
     }
 
     /// The per-channel folder under `~/Documents` that holds this channel's
     /// user-facing data (Workspaces, Worktrees, …). Keeping a single source of
     /// truth keeps every channel-scoped directory consistent.
-    var documentsFolderName: String {
+    public var documentsFolderName: String {
         switch self {
         case .production: "Astra"
         case .development: "Astra Dev"
@@ -48,11 +48,11 @@ enum AppChannel: String {
         }
     }
 
-    var defaultWorkspacesRoot: String {
+    public var defaultWorkspacesRoot: String {
         defaultWorkspacesRoot(fileManager: .default)
     }
 
-    func defaultWorkspacesRoot(fileManager: FileManager) -> String {
+    public func defaultWorkspacesRoot(fileManager: FileManager) -> String {
         channelDocumentsDirectory(fileManager: fileManager)
             .appendingPathComponent("Workspaces", isDirectory: true)
             .path
@@ -61,11 +61,11 @@ enum AppChannel: String {
     /// Root directory that holds app-managed git worktrees, kept beside the
     /// channel's Workspaces folder so worktrees are predictable, never nested
     /// inside a repository, and easy for ASTRA to enumerate and clean up.
-    var defaultWorktreesRoot: String {
+    public var defaultWorktreesRoot: String {
         defaultWorktreesRoot(fileManager: .default)
     }
 
-    func defaultWorktreesRoot(fileManager: FileManager) -> String {
+    public func defaultWorktreesRoot(fileManager: FileManager) -> String {
         channelDocumentsDirectory(fileManager: fileManager)
             .appendingPathComponent("Worktrees", isDirectory: true)
             .path
@@ -77,7 +77,7 @@ enum AppChannel: String {
             .appendingPathComponent(documentsFolderName, isDirectory: true)
     }
 
-    var keychainConnectorPrefix: String {
+    public var keychainConnectorPrefix: String {
         switch self {
         case .production: "astra"
         case .development: "astra-dev"
@@ -85,7 +85,7 @@ enum AppChannel: String {
         }
     }
 
-    var keychainSkillPrefix: String {
+    public var keychainSkillPrefix: String {
         switch self {
         case .production: "astra-skill"
         case .development: "astra-dev-skill"
@@ -100,11 +100,11 @@ enum AppChannel: String {
     /// gh/Copilot GitHub token). Conventionally placed in `~/Library/Keychains`
     /// (visible/manageable in Keychain Access) but never granted to the agent's
     /// Seatbelt read scope. See `AstraSecureKeychain` and `AstraSecureKeychainStore`.
-    var astraKeychainPath: String {
+    public var astraKeychainPath: String {
         astraKeychainPath(fileManager: .default)
     }
 
-    func astraKeychainPath(fileManager: FileManager) -> String {
+    public func astraKeychainPath(fileManager: FileManager) -> String {
         fileManager.homeDirectoryForCurrentUser
             .appendingPathComponent("Library", isDirectory: true)
             .appendingPathComponent("Keychains", isDirectory: true)
@@ -116,11 +116,11 @@ enum AppChannel: String {
     /// is stored as a single item in the login keychain. This is the only ASTRA
     /// item that remains in `login.keychain-db`; on its own it is useless to the
     /// agent, which cannot read the dedicated keychain file it unlocks.
-    var astraKeychainBootstrapService: String {
+    public var astraKeychainBootstrapService: String {
         "\(keychainConnectorPrefix)-keychain-bootstrap"
     }
 
-    var loggingSubsystem: String {
+    public var loggingSubsystem: String {
         switch self {
         case .production: "com.astra.mac"
         case .development: "com.astra.mac.dev"
@@ -128,7 +128,7 @@ enum AppChannel: String {
         }
     }
 
-    var isProduction: Bool {
+    public var isProduction: Bool {
         self == .production
     }
 }

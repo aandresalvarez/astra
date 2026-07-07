@@ -1,13 +1,11 @@
 import Foundation
-import ASTRACore
-import ASTRAModels
 
-enum LocalToolSecurityPolicy {
-    static func isSafe(command: String, arguments: String = "") -> Bool {
+public enum LocalToolSecurityPolicy {
+    public static func isSafe(command: String, arguments: String = "") -> Bool {
         unsafeInvocationReason(command: command, arguments: arguments) == nil
     }
 
-    static func unsafeInvocationReason(command: String, arguments: String = "") -> String? {
+    public static func unsafeInvocationReason(command: String, arguments: String = "") -> String? {
         if let reason = unsafeCommandReason(command) {
             return reason
         }
@@ -20,7 +18,7 @@ enum LocalToolSecurityPolicy {
         return nil
     }
 
-    static func unsafeCommandReason(_ command: String) -> String? {
+    public static func unsafeCommandReason(_ command: String) -> String? {
         let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty {
             return "missing command"
@@ -38,7 +36,7 @@ enum LocalToolSecurityPolicy {
         return nil
     }
 
-    static func unsafeArgumentsReason(_ arguments: String) -> String? {
+    public static func unsafeArgumentsReason(_ arguments: String) -> String? {
         let trimmed = arguments.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
         let shellMetacharacters = CharacterSet(charactersIn: ";|&`$<>()\n\r")
@@ -85,15 +83,7 @@ enum LocalToolSecurityPolicy {
 
 // `credentialTransportViolation` moved to ASTRACore/ConnectorSecurityPolicy.swift
 // (pure, string-only — part of Track A2's Models<->Runtime cycle break, since
-// Astra/Models/Connector.swift calls it directly). `isRuntimeSafe(_:)` stays
-// here as an extension: it takes the `Connector` `@Model` type, which cannot
-// appear in ASTRACore.
-extension ConnectorSecurityPolicy {
-    static func isRuntimeSafe(_ connector: Connector) -> Bool {
-        credentialTransportViolation(
-            baseURL: connector.baseURL,
-            authMethod: connector.authMethod,
-            credentialKeys: connector.credentialKeys
-        ) == nil
-    }
-}
+// Astra/Models/Connector.swift calls it directly). `isRuntimeSafe(_:)` moved
+// to Astra/Models/ConnectorSecurityPolicy+RuntimeSafety.swift in Track A4
+// (ASTRAPersistence): it takes the `Connector` `@Model` type, which cannot
+// appear in ASTRACore, but needs to be visible from ASTRAPersistence too.

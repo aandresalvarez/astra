@@ -1,6 +1,7 @@
 import Foundation
 import Security
+import ASTRACore
 
-enum KeychainCredentialPolicy {
-    static let accessibility = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+public enum KeychainCredentialPolicy {
+    public static let accessibility = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
 }

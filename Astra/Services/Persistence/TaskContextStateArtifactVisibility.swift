@@ -1,9 +1,10 @@
 import Foundation
 import ASTRAModels
+import ASTRACore
 
 extension TaskContextStateManager {
     @MainActor
-    static func isUserFacingOutputPath(
+    public static func isUserFacingOutputPath(
         _ path: String,
         task: AgentTask,
         access: TaskWorkspaceAccess

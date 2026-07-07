@@ -1,6 +1,7 @@
 import SwiftUI
 import ASTRACore
 import ASTRAModels
+import ASTRAPersistence
 
 struct ComposerTaskStatusPresentation {
     let label: String

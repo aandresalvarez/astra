@@ -1,5 +1,8 @@
 import Foundation
 import Testing
+import ASTRAPersistence
+import ASTRACore
+import ASTRAModels
 @testable import ASTRA
 
 @Suite("Browser Failure Debug Capture", .serialized)
