@@ -334,6 +334,7 @@ struct TaskMainView: View {
     @State private var hasUnseenChatActivity = false
     @State private var shouldScrollAfterUserMessage = false
     @State private var pendingInitialChatScrollTaskID: UUID?
+    @State private var scrollRecoveryWatchdog = ChatScrollRecoveryWatchdog()
     @State private var isExpandingWindow = false
     @State private var expansionAnchorItemID: String?
     @State private var runtimeHealthNow = Date()
@@ -1633,6 +1634,13 @@ struct TaskMainView: View {
                     deferTaskViewMutation {
                         updateChatBottomState(bottomMinY: bottomMinY, viewportHeight: viewport.size.height)
                     }
+                    // Not wrapped in deferTaskViewMutation: this only feeds the watchdog's
+                    // internal (non-@State) bookkeeping, so it carries none of the
+                    // AttributeGraph-cycle risk that motivates deferring the @State
+                    // mutation above.
+                    scrollRecoveryWatchdog.sentinelDidUpdate(bottomMinY: bottomMinY) { liveBottomMinY in
+                        recoverFromParkedScroll(proxy: proxy, bottomMinY: liveBottomMinY)
+                    }
                 }
                 .onPreferenceChange(ChatTopPositionPreferenceKey.self) { topMinY in
                     deferTaskViewMutation {
@@ -2132,6 +2140,18 @@ struct TaskMainView: View {
         if isChatAtBottom && !wasAtBottom { hasUnseenChatActivity = false }
     }
 
+    /// `ChatScrollRecoveryWatchdog` calls this once a parked bottom-sentinel reading
+    /// (see `ChatScrollMetrics.isParkedPastContent`) has persisted past its settle
+    /// delay. Logged as a warning so a real-world occurrence — the transcript having
+    /// been visibly blank until this fired — is visible in `astra.log` rather than
+    /// silently self-healing.
+    private func recoverFromParkedScroll(proxy: ScrollViewProxy, bottomMinY: CGFloat) {
+        AppLogger.audit(.chatScrollRecovered, category: "UI", taskID: task.id, fields: [
+            "bottom_min_y": String(format: "%.1f", bottomMinY)
+        ], level: .warning)
+        scrollChatToBottom(proxy, animated: false)
+    }
+
     private func handleThreadScrollChange(
         oldSignature: String,
         newSignature: String,
@@ -2162,7 +2182,17 @@ struct TaskMainView: View {
         }
 
         if isChatAtBottom {
-            scrollChatToBottom(proxy, animated: false)
+            // Double-scroll, not single: this branch also fires on the *last*
+            // signature change of a turn, exactly when a streaming bubble collapses
+            // into its shorter, completed presentation. A single scrollTo here can
+            // be computed against the taller pre-collapse layout and land past the
+            // new, shorter content once it settles — the parked-blank state
+            // `scrollRecoveryWatchdog` exists to catch. Re-issuing after a layout
+            // beat targets that exact race, but unlike the initial-open path below
+            // (where the reader hasn't had a chance to scroll away yet), this fires
+            // mid-read: use the gesture-safe variant so a reader who scrolls up in
+            // that window isn't snapped back to the bottom by the delayed follow-up.
+            scrollChatToBottomAfterLayoutIfStillAtBottom(proxy, animated: false)
             return
         }
 
@@ -2177,6 +2207,19 @@ struct TaskMainView: View {
     private func scrollChatToBottomAfterLayout(_ proxy: ScrollViewProxy, animated: Bool) {
         scrollChatToBottom(proxy, animated: animated)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            scrollChatToBottom(proxy, animated: animated)
+        }
+    }
+
+    /// Same double-scroll as `scrollChatToBottomAfterLayout`, but re-checks
+    /// `isChatAtBottom` before the delayed follow-up fires, so a reader who
+    /// scrolls up in that 50ms window isn't yanked back down. The initial-open
+    /// call site doesn't need this — the reader hasn't had a chance to scroll yet
+    /// — but this one fires on every live tail-follow update mid-read.
+    private func scrollChatToBottomAfterLayoutIfStillAtBottom(_ proxy: ScrollViewProxy, animated: Bool) {
+        scrollChatToBottom(proxy, animated: animated)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            guard isChatAtBottom else { return }
             scrollChatToBottom(proxy, animated: animated)
         }
     }
