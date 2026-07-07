@@ -155,6 +155,138 @@ struct ValidationServiceTests {
         #expect(FileManager.default.fileExists(atPath: outputPath))
     }
 
+    // MARK: - Per-tool cache grant dispatch
+
+    @Test("pytest/python get no package-manager cache grants")
+    func toolCacheGrantsExcludePythonFromPackageManagerCaches() {
+        for root in ["pytest", "python", "python3"] {
+            #expect(ShellValidationCommandRunner.toolCacheHomeRelativePaths(forRoot: root, makefileMentions: []).isEmpty)
+        }
+    }
+
+    @Test("npm/yarn/pnpm each get only their own cache paths, not a blanket list")
+    func toolCacheGrantsAreScopedToTheInvokedTool() {
+        #expect(ShellValidationCommandRunner.toolCacheHomeRelativePaths(forRoot: "npm", makefileMentions: []) == [".npm"])
+        #expect(ShellValidationCommandRunner.toolCacheHomeRelativePaths(forRoot: "yarn", makefileMentions: []) == ["Library/Caches/Yarn", ".yarn/berry"])
+        // pnpm is deliberately narrowed to the store, NOT the whole `Library/pnpm`
+        // tree (which also holds pnpm's own executable/tooling — see doc comment).
+        #expect(ShellValidationCommandRunner.toolCacheHomeRelativePaths(forRoot: "pnpm", makefileMentions: []) == ["Library/pnpm/store"])
+    }
+
+    @Test("make grants only the caches for package managers its Makefile actually mentions")
+    func makeToolCacheGrantsMatchMakefileMentions() {
+        #expect(ShellValidationCommandRunner.toolCacheHomeRelativePaths(forRoot: "make", makefileMentions: []).isEmpty)
+        #expect(ShellValidationCommandRunner.toolCacheHomeRelativePaths(forRoot: "make", makefileMentions: ["npm"]) == [".npm"])
+        #expect(ShellValidationCommandRunner.toolCacheHomeRelativePaths(forRoot: "make", makefileMentions: ["npm", "yarn"]).sorted() ==
+            [".npm", ".yarn/berry", "Library/Caches/Yarn"].sorted())
+    }
+
+    // MARK: - Makefile self-sandboxing exclusion (comment-stripping)
+
+    @Test("A Makefile that mentions swift only in a comment does not trigger the self-sandboxing exclusion")
+    func makefileCommentMentionDoesNotTriggerExclusion() throws {
+        let root = try makefileFixture(contents: """
+        # this project also builds a swift companion tool on other platforms
+        test:
+        \tpytest
+        """)
+        defer { try? FileManager.default.removeItem(atPath: root) }
+
+        let mentions = ShellValidationCommandRunner.makefileMentionedTools(workingDirectory: root)
+        #expect(!mentions.contains("swift"))
+        #expect(!ShellValidationCommandRunner.isSelfSandboxingCommand(root: "make", makefileMentions: mentions))
+    }
+
+    @Test("A Makefile that actually invokes swift in a recipe triggers the self-sandboxing exclusion")
+    func makefileRecipeMentionTriggersExclusion() throws {
+        let root = try makefileFixture(contents: """
+        test:
+        \tswift test
+        """)
+        defer { try? FileManager.default.removeItem(atPath: root) }
+
+        let mentions = ShellValidationCommandRunner.makefileMentionedTools(workingDirectory: root)
+        #expect(mentions.contains("swift"))
+        #expect(ShellValidationCommandRunner.isSelfSandboxingCommand(root: "make", makefileMentions: mentions))
+    }
+
+    @Test("A Makefile that invokes npm in a recipe is detected for the cache-grant dispatch")
+    func makefileRecipeMentionIsDetectedForCacheDispatch() throws {
+        let root = try makefileFixture(contents: """
+        test:
+        \tnpm test
+        """)
+        defer { try? FileManager.default.removeItem(atPath: root) }
+
+        let mentions = ShellValidationCommandRunner.makefileMentionedTools(workingDirectory: root)
+        #expect(mentions == ["npm"])
+    }
+
+    @Test("stripMakefileComments removes text after an unescaped # but keeps an escaped \\# literal")
+    func stripMakefileCommentsHonorsEscapedHash() {
+        let stripped = ShellValidationCommandRunner.stripMakefileComments("""
+        test: # runs swift here (comment, should be stripped)
+        \techo not-a-comment-\\#swift
+        """)
+        #expect(!stripped.contains("(comment"))
+        #expect(stripped.contains("not-a-comment-\\#swift"))
+    }
+
+    @Test("A Makefile that invokes go in a recipe grants the Go cache paths, not npm/yarn/pnpm")
+    func makefileGoMentionGrantsGoCachesOnly() throws {
+        let root = try makefileFixture(contents: """
+        test:
+        \tgo test ./...
+        """)
+        defer { try? FileManager.default.removeItem(atPath: root) }
+
+        let mentions = ShellValidationCommandRunner.makefileMentionedTools(workingDirectory: root)
+        #expect(mentions == ["go"])
+        #expect(ShellValidationCommandRunner.toolCacheHomeRelativePaths(forRoot: "make", makefileMentions: mentions).sorted() ==
+            ["Library/Caches/go-build", "go/pkg/mod"].sorted())
+    }
+
+    @Test("An oversized Makefile is not scanned — treated as mentioning nothing, never wrapped-with-extra-grants")
+    func oversizedMakefileIsNotScanned() throws {
+        // Deliberately mentions "swift" in a real (non-comment) recipe line —
+        // if the size bound didn't short-circuit the scan, this would match.
+        let hugeContents = String(repeating: "# padding\n", count: 200_000) + "test:\n\tswift test\n"
+        let root = try makefileFixture(contents: hugeContents)
+        defer { try? FileManager.default.removeItem(atPath: root) }
+
+        let mentions = ShellValidationCommandRunner.makefileMentionedTools(workingDirectory: root)
+        #expect(mentions.isEmpty)
+    }
+
+    @Test("A Makefile that is a symlink to an oversized file is not scanned (fileSize resolves symlinks first)")
+    func symlinkedOversizedMakefileIsNotScanned() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-makefile-symlink-fixture-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        // The symlink's OWN size (the length of the path it stores) is tiny —
+        // proving the size check must resolve the symlink to see the REAL
+        // (huge) target size, not just check the link itself.
+        let hugeTarget = root.appendingPathComponent("big.txt")
+        try String(repeating: "swift test\n", count: 500_000).write(to: hugeTarget, atomically: true, encoding: .utf8)
+        try FileManager.default.createSymbolicLink(
+            at: root.appendingPathComponent("Makefile"),
+            withDestinationURL: hugeTarget
+        )
+
+        let mentions = ShellValidationCommandRunner.makefileMentionedTools(workingDirectory: root.path)
+        #expect(mentions.isEmpty)
+    }
+
+    private func makefileFixture(contents: String) throws -> String {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-makefile-fixture-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try contents.write(to: root.appendingPathComponent("Makefile"), atomically: true, encoding: .utf8)
+        return root.path
+    }
+
     @Test("runTests uses injected command runner")
     func runTestsUsesInjectedCommandRunner() async throws {
         let root = "/tmp/astra-validation-runner-\(UUID().uuidString.prefix(8))"

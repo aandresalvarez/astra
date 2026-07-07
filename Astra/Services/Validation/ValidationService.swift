@@ -31,25 +31,6 @@ protocol ValidationCommandRunning: Sendable {
 }
 
 struct ShellValidationCommandRunner: ValidationCommandRunning {
-    /// Home-relative tool-cache paths the `ValidationCommandPolicy` allowlist's
-    /// wrapped tools (`pytest`/`npm`/`yarn`/`pnpm`/`make`/`python -m pytest`)
-    /// write to outside the workspace, granted so wrapping this runner in a
-    /// Seatbelt write-jail doesn't break a real validation command. `~/.npm`
-    /// and `~/Library/pnpm` were confirmed to exist on a real machine (pnpm is
-    /// installed there); the Yarn cache path is NOT verified (Yarn isn't
-    /// installed on the machine used to check this) and is a best-effort
-    /// default — validation runs against an arbitrary task workspace, which
-    /// can be a JS/Python/other project this repo has none of to test against.
-    ///
-    /// `swift`/`xcodebuild` are deliberately excluded from wrapping entirely —
-    /// see `isSelfSandboxingCommand` — so no Swift/Xcode tool-cache paths
-    /// (`.swiftpm`, DerivedData, etc.) are needed here.
-    private static let toolCacheHomeRelativePaths: [String] = [
-        ".npm",
-        "Library/Caches/Yarn",
-        "Library/pnpm"
-    ]
-
     /// `swift build`/`swift test` cannot be reliably wrapped in an OUTER
     /// Seatbelt profile: SwiftPM runs a separate `swift-package` helper that
     /// applies its OWN hardcoded internal Seatbelt profile, and nested
@@ -74,45 +55,155 @@ struct ShellValidationCommandRunner: ValidationCommandRunning {
     /// `ValidationCommandPolicy` only, no OS-level confinement — this is a
     /// documented limitation, not a silent gap.
     ///
-    /// Root-token extraction goes through `ValidationCommandPolicy.rootToken`
-    /// (the SAME quote-aware, case-normalizing tokenizer the allowlist check
-    /// itself uses) rather than a raw whitespace split, so a quoted or
-    /// differently-cased root the policy already allows (e.g. `'swift' test`,
-    /// `SWIFT BUILD`) can't slip past this exclusion and hit the nested-
-    /// sandbox failure the exclusion exists to prevent.
-    private static func isSelfSandboxingCommand(_ command: String, workingDirectory: String) -> Bool {
-        guard let root = ValidationCommandPolicy.rootToken(of: command) else { return false }
+    /// KNOWN RESIDUAL GAP (xcodebuild specifically): unlike `swift`, this
+    /// exclusion for `xcodebuild` is a precaution against an UNCONFIRMED
+    /// nesting conflict, not a proven one — and excluding it has a real cost:
+    /// an Xcode project's Run Script build phases execute arbitrary shell
+    /// commands during `xcodebuild build`/`test` (see Apple's build-phase
+    /// docs), so an unwrapped `xcodebuild` validation leaves that path
+    /// completely unconfined, same as before this floor existed. This is a
+    /// real, known limitation — not silently accepted, but not fixed either,
+    /// because verifying `xcodebuild` CAN be safely wrapped requires an actual
+    /// Xcode project + Seatbelt reproduction this repo (pure SwiftPM) cannot
+    /// provide, and shipping an unverified wrap risks the same class of
+    /// breakage discovered for `swift`. Revisit if/when a real Xcode-project
+    /// test environment is available.
+    static func isSelfSandboxingCommand(root: String, makefileMentions: Set<String>) -> Bool {
         if root == "swift" || root == "xcodebuild" { return true }
-        if root == "make" { return makefileDelegatesToSelfSandboxingToolchain(workingDirectory: workingDirectory) }
+        if root == "make" { return makefileMentions.contains("swift") || makefileMentions.contains("xcodebuild") }
         return false
     }
 
-    /// Best-effort heuristic: does a Makefile in `workingDirectory` mention
-    /// `swift`/`xcodebuild` at all? This is NOT a real Make parser — it does
-    /// not resolve variables, includes, or conditional logic, just a raw
-    /// word-boundary text scan. That's deliberate: a false positive here only
-    /// means an eligible `make test` skips ASTRA's wrap too, falling back to
-    /// today's already-shipped, policy-gated-only behavior — never a
-    /// regression below what existed before this floor. A false negative
-    /// (a Makefile that delegates in a way this scan misses, e.g. through an
-    /// `include`d file) would wrap a command that then hits the nested-
-    /// sandbox conflict; that's the known residual gap, not silently ignored.
-    private static func makefileDelegatesToSelfSandboxingToolchain(workingDirectory: String) -> Bool {
+    /// Home-relative tool-cache paths for the SPECIFIC tool that was actually
+    /// invoked — never a blanket list applied to every command. Granting every
+    /// wrapped tool's caches to every command would let e.g. a compromised
+    /// `conftest.py` (running under `pytest`) persistently poison npm/yarn/pnpm
+    /// state it has no business touching, while the audit still reports the
+    /// run as write-confined. `pytest`/`python`/`python3` need none of these
+    /// (they get `[]`, the `default` case). For `make`, the underlying tool
+    /// isn't visible from the command string alone, so this greps the same
+    /// (comment-stripped) Makefile content `isSelfSandboxingCommand` already
+    /// read and grants only the caches for package managers it actually
+    /// mentions — still a heuristic (false negatives possible for delegation
+    /// this scan misses), but far narrower than granting all three
+    /// unconditionally.
+    ///
+    /// `pnpm`'s grant is deliberately `Library/pnpm/store` (the package
+    /// store/cache), NOT the whole `Library/pnpm` tree: `pnpm setup` also
+    /// installs the pnpm executable itself and other tooling under that home
+    /// (confirmed on a real machine — the tree has a `.tools` directory
+    /// alongside `store`), so granting the whole tree would let an untrusted
+    /// validation script persistently overwrite pnpm's own binary. `yarn`
+    /// grants both the classic Yarn 1.x cache (`Library/Caches/Yarn`) and the
+    /// modern Yarn 2+ (Berry) global folder default (`.yarn/berry`, per
+    /// Yarn's own `enableGlobalCache`/`globalFolder` documentation) since
+    /// which major version a workspace uses isn't known ahead of time. `go`
+    /// grants the documented macOS default `GOCACHE`
+    /// (`Library/Caches/go-build`) and default `GOPATH` module cache
+    /// (`go/pkg/mod`) — long-stable, documented Go defaults, but NOT verified
+    /// on a real machine (no Go toolchain available where this was written).
+    static func toolCacheHomeRelativePaths(forRoot root: String, makefileMentions: Set<String>) -> [String] {
+        switch root {
+        case "npm":
+            return [".npm"]
+        case "yarn":
+            return ["Library/Caches/Yarn", ".yarn/berry"]
+        case "pnpm":
+            return ["Library/pnpm/store"]
+        case "make":
+            var paths: [String] = []
+            if makefileMentions.contains("npm") { paths.append(".npm") }
+            if makefileMentions.contains("yarn") { paths.append(contentsOf: ["Library/Caches/Yarn", ".yarn/berry"]) }
+            if makefileMentions.contains("pnpm") { paths.append("Library/pnpm/store") }
+            if makefileMentions.contains("go") { paths.append(contentsOf: ["Library/Caches/go-build", "go/pkg/mod"]) }
+            return paths
+        default:
+            return []
+        }
+    }
+
+    /// A Makefile larger than this is not scanned at all — `make` is treated
+    /// as NOT mentioning any tool, which only ever narrows what gets wrapped/
+    /// granted (never widens it; see the callers' fail-toward-more-confinement
+    /// framing). The workspace (and therefore its Makefile) is agent/project
+    /// controlled, so reading an unbounded file into memory here — including
+    /// through a symlink to something large — before validation can even run
+    /// would let a workspace force ASTRA to buffer an arbitrarily large
+    /// string on every `make` validation. 1 MiB comfortably covers any real
+    /// Makefile.
+    private static let maxMakefileScanBytes = 1 * 1024 * 1024
+
+    /// Best-effort scan: which of `swift`/`xcodebuild`/`npm`/`yarn`/`pnpm`/`go`
+    /// does a Makefile in `workingDirectory` mention? This is NOT a real Make
+    /// parser — it does not resolve variables, includes, or conditional logic.
+    /// Comments ARE stripped first (Make's `#`-to-end-of-line, honoring `\#`
+    /// as an escaped literal `#`) so a workspace can't force an unconfined
+    /// `make test` (or force a broader cache grant) merely by adding a
+    /// harmless-looking comment mentioning a tool name — the Makefile is
+    /// untrusted validation-workspace content. This still isn't a full parser
+    /// (an actual unused target/variable name containing the word would still
+    /// match), but it closes the specific "add a comment" bypass. A false
+    /// positive/negative here only ever moves a `make` command between "wrap
+    /// with X caches" and "don't wrap" / "wrap with fewer caches" — never
+    /// below today's pre-floor, policy-gated-only baseline.
+    static func makefileMentionedTools(workingDirectory: String) -> Set<String> {
         let workspaceRoot = URL(fileURLWithPath: workingDirectory, isDirectory: true)
         let hostFileAccess = HostFileAccessBroker()
         let intent = HostFileAccessIntent.implicitScan(root: workspaceRoot)
         for name in ["Makefile", "makefile", "GNUmakefile"] {
-            let url = workspaceRoot.appendingPathComponent(name, isDirectory: false)
+            // Resolve symlinks BEFORE sizing: `URL.resourceValues(.fileSizeKey)`
+            // (what `fileSize(at:)` reads) reports a SYMLINK's own size — the
+            // length of the path string it stores, typically under 200 bytes —
+            // not its target's size. A "Makefile" that's actually a symlink to
+            // a multi-GB file would otherwise sail through the size check and
+            // still get fully read below. `resolvingSymlinksInPath()` is a
+            // path-string/stat-level resolution, not a content read, so it
+            // doesn't need its own broker call; using the resolved URL for the
+            // read too makes the privacy-boundary check evaluate the REAL
+            // target location rather than the symlink's apparent one.
+            let url = workspaceRoot.appendingPathComponent(name, isDirectory: false).resolvingSymlinksInPath()
+            guard let size = hostFileAccess.fileSize(at: url, intent: intent), size <= maxMakefileScanBytes else { continue }
             guard let contents = try? hostFileAccess.readString(at: url, intent: intent) else { continue }
-            guard let regex = try? NSRegularExpression(pattern: #"\b(swift|xcodebuild)\b"#) else { return false }
-            let range = NSRange(contents.startIndex..<contents.endIndex, in: contents)
-            if regex.firstMatch(in: contents, range: range) != nil { return true }
+            let stripped = stripMakefileComments(contents)
+            var mentioned: Set<String> = []
+            for tool in ["swift", "xcodebuild", "npm", "yarn", "pnpm", "go"] {
+                guard let regex = try? NSRegularExpression(pattern: "\\b\(tool)\\b") else { continue }
+                let range = NSRange(stripped.startIndex..<stripped.endIndex, in: stripped)
+                if regex.firstMatch(in: stripped, range: range) != nil { mentioned.insert(tool) }
+            }
+            return mentioned
         }
-        return false
+        return []
+    }
+
+    /// Strips Make's `#`-to-end-of-line comments from each line, honoring `\#`
+    /// as an escaped literal `#` (not a comment start). Not a full Make
+    /// tokenizer — just enough to keep an obvious comment from being read as
+    /// a real tool invocation.
+    static func stripMakefileComments(_ contents: String) -> String {
+        contents.split(separator: "\n", omittingEmptySubsequences: false).map { line -> Substring in
+            var previousWasBackslash = false
+            for index in line.indices {
+                let character = line[index]
+                if character == "#", !previousWasBackslash {
+                    return line[line.startIndex..<index]
+                }
+                previousWasBackslash = character == "\\"
+            }
+            return line
+        }.joined(separator: "\n")
     }
 
     func run(command: String, workingDirectory: String, environment: [String: String], additionalWritablePaths: [String]) async -> ValidationCommandResult {
-        guard !Self.isSelfSandboxingCommand(command, workingDirectory: workingDirectory) else {
+        // `rootToken` should always resolve here: ValidationCommandPolicy
+        // already parsed and allowed this exact command upstream (`runTests`/
+        // `evaluateCommand`'s guard clauses). Fail toward MORE confinement
+        // (wrap, no extra tool caches) rather than treat an unparseable
+        // command as safe to exclude from wrapping.
+        let root = ValidationCommandPolicy.rootToken(of: command) ?? ""
+        let makefileMentions = root == "make" ? Self.makefileMentionedTools(workingDirectory: workingDirectory) : []
+
+        guard !Self.isSelfSandboxingCommand(root: root, makefileMentions: makefileMentions) else {
             AppLogger.audit(.sandboxSkipped, category: "Validation", fields: [
                 "reason": "self_sandboxing_toolchain"
             ], level: .debug)
@@ -130,7 +221,7 @@ struct ShellValidationCommandRunner: ValidationCommandRunning {
             currentDirectory: workingDirectory,
             environment: environment,
             additionalWritablePaths: additionalWritablePaths,
-            homeWritableRelativePaths: Self.toolCacheHomeRelativePaths,
+            homeWritableRelativePaths: Self.toolCacheHomeRelativePaths(forRoot: root, makefileMentions: makefileMentions),
             settings: settings
         )
 
