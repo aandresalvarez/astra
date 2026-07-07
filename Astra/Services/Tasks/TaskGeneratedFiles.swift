@@ -51,7 +51,7 @@ extension TaskGeneratedFileShelfDestination {
     }
 }
 
-enum TaskGeneratedFiles {
+enum TaskGeneratedFiles: Sendable {
     static func files(in folder: String, fileManager: FileManager = .default) -> [String] {
         guard !folder.isEmpty else { return [] }
         let rootURL = URL(fileURLWithPath: folder)

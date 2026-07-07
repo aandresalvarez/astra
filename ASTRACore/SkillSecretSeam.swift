@@ -34,14 +34,14 @@ public enum SkillSecretSeam {
         guard let persistence = storage.withLock({ $0 }) else {
             preconditionFailure(
                 "SkillSecretSeam read before RuntimeSeamRegistration.registerAll() ran. " +
-                "Call it in ASTRAApp.init() (already done) or at the top of the test that hit this path."
+                "Production registers it in ASTRAApp.init(); tests register it via the load-time bootstrap in Tests/AstraTestSeamBootstrap - a trap here in a test means that bootstrap wiring broke."
             )
         }
         return persistence
     }
 }
 
-public protocol SkillSecretPersisting {
+public protocol SkillSecretPersisting: Sendable {
     /// Matches `SecretStore.load(key:entityID:)`'s optional-return
     /// semantics; the caller falls back to the stored placeholder value.
     static func loadSecretValue(key: String, skillID: UUID, store: SecretStore) -> String?

@@ -13,8 +13,6 @@ private func makeAgentPolicyGitHubRoutingContainer() throws -> ModelContainer {
 
 @Suite("Agent policy GitHub routing")
 struct AgentPolicyGitHubRoutingTests {
-    private let _registerRuntimeSeams: Void = RuntimeSeamRegistration.registerAll()
-
     @MainActor
     @Test("Preflight manifest routes GitHub metadata through host control without Git credential projection")
     func preflightManifestRoutesGitHubMetadataThroughHostControlWithoutGitCredentialProjection() throws {

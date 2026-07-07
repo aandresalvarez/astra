@@ -24,7 +24,7 @@ import ASTRACore
 // protocol + an `OSAllocatedUnfairLock`-backed static registry with
 // `.register(_:)` and a fail-fast `.required` accessor, wired up from
 // `RuntimeSeamRegistration.registerAll()`.
-public protocol TaskForkSourcePointerProviding {
+public protocol TaskForkSourcePointerProviding: Sendable {
     static func sourcePointers(for task: AgentTask) -> [TaskContextSourcePointer]
     // Protocol requirements can't declare default parameter values (unlike
     // `TaskForkManifestService.sourceAvailabilityWarning(for:fileManager:)`'s
@@ -48,7 +48,7 @@ public enum TaskForkSourcePointerSeam {
         guard let provider = storage.withLock({ $0 }) else {
             preconditionFailure(
                 "TaskForkSourcePointerSeam read before RuntimeSeamRegistration.registerAll() ran. " +
-                "Call it in ASTRAApp.init() (already done) or at the top of the test that hit this path."
+                "Production registers it in ASTRAApp.init(); tests register it via the load-time bootstrap in Tests/AstraTestSeamBootstrap - a trap here in a test means that bootstrap wiring broke."
             )
         }
         return provider
