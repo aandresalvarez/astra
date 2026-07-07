@@ -268,7 +268,7 @@ if [[ -n "$SPARKLE_FEED_URL" ]]; then
   <key>SUEnableAutomaticChecks</key>
   <true/>
   <key>SUAllowsAutomaticUpdates</key>
-  <false/>
+  <true/>
 PLIST
 fi
 
