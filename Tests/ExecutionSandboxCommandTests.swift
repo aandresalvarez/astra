@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import Testing
 @testable import ASTRA
 import ASTRACore
@@ -135,6 +136,38 @@ struct ExecutionSandboxCommandTests {
         #expect(writableRoots.contains { $0 == "/tmp" || $0 == "/private/tmp" })
         #expect(writableRoots.contains { $0.hasSuffix("/home/.swiftpm") })
         #expect(writableRoots.contains { $0.hasSuffix("/home/Library/Developer/Xcode/DerivedData") })
+    }
+
+    @Test("The Darwin per-user cache grant is narrowed to clang/, not the whole shared cache root")
+    func darwinCacheGrantIsNarrowedToClangSubdirectory() throws {
+        let (root, workspace) = try makeWorkspace()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let decision = ExecutionSandbox.decideForCommand(
+            executablePath: "/bin/zsh",
+            arguments: ["-c", "true"],
+            currentDirectory: workspace.path,
+            environment: [:],
+            homeWritableRelativePaths: [],
+            settings: ExecutionSandboxSettings(enforcement: .bestEffort)
+        )
+        guard case .applied(_, _, let writableRoots) = decision else {
+            Issue.record("Expected .applied, got \(decision)")
+            return
+        }
+        // The clang module-cache subdirectory must be granted (this is the
+        // actual, proven need)...
+        #expect(writableRoots.contains { $0.hasSuffix("/clang") })
+        // ...but the RAW cache root itself (a namespace shared by every app's
+        // per-user cache on the machine) must NOT be granted as its own entry.
+        var length = confstr(_CS_DARWIN_USER_CACHE_DIR, nil, 0)
+        guard length > 0 else { return }
+        var buffer = [Int8](repeating: 0, count: length)
+        length = confstr(_CS_DARWIN_USER_CACHE_DIR, &buffer, buffer.count)
+        guard length > 0, length <= buffer.count else { return }
+        let rawCacheDir = String(cString: buffer)
+        guard let canonicalCacheDir = ExecutionSandbox.canonicalize(rawCacheDir) else { return }
+        #expect(!writableRoots.contains(canonicalCacheDir))
     }
 
     @Test("Applied profile keeps the privacy-root deny active despite the open read scope")

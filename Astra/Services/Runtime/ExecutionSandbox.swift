@@ -672,12 +672,19 @@ enum ExecutionSandbox: Sendable {
         // The Darwin per-user CACHE directory (e.g. `/var/folders/<xx>/<hash>/C/`)
         // is a SIBLING of $TMPDIR (`.../T/`), not a subpath of it — granting
         // TMPDIR alone does not cover it. clang/swiftc write module-cache and
-        // other build-tool scratch state here; without this grant a wrapped
-        // `swift build`/`swift test` fails with "unable to open output file ...
-        // ModuleCache/...: Operation not permitted" even with $TMPDIR granted.
-        // Confirmed by direct reproduction, not inferred.
+        // other build-tool scratch state to a `clang/` subdirectory there;
+        // without granting it, a wrapped `swift build`/`swift test` fails with
+        // "unable to open output file ... ModuleCache/...: Operation not
+        // permitted" even with $TMPDIR granted. Confirmed by direct
+        // reproduction, not inferred. Deliberately narrowed to the `clang`
+        // subdirectory rather than the whole cache root: that root is a SHARED
+        // namespace for every app's per-user cache on the machine (confirmed —
+        // it contains dozens of unrelated apps' cache dirs, e.g. password
+        // managers, browsers, editors), so granting all of it would let a
+        // wrapped validation command read/write other applications' cached
+        // state; only the compiler's own subdirectory is actually needed.
         if let cacheDir = darwinUserCacheDirectory() {
-            raw.append(cacheDir)
+            raw.append((cacheDir as NSString).appendingPathComponent("clang"))
         }
 
         var seen: Set<String> = []
