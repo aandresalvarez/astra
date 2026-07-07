@@ -187,7 +187,9 @@ public final class Skill {
                     "skill_id": id.uuidString,
                     "result": saved ? "stored" : "failed"
                 ], level: saved ? .info : .warning)
-                environmentValues[index] = saved ? "" : value
+                // Never persist the raw secret to SwiftData, even on failure —
+                // the placeholder stays blank; the keychain is the only copy.
+                environmentValues[index] = ""
             } else {
                 environmentValues[index] = ""
             }

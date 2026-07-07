@@ -180,10 +180,11 @@ public final class Connector {
             let value = credentialValues[index]
             guard !value.isEmpty else { continue }
 
-            if !ConnectorSecretSeam.required.credentialExists(key: key, facts: facts) {
-                ConnectorSecretSeam.required.saveCredential(value, key: key, facts: facts, allowUserInteraction: false)
+            let migrated = ConnectorSecretSeam.required.credentialExists(key: key, facts: facts)
+                || ConnectorSecretSeam.required.saveCredential(value, key: key, facts: facts, allowUserInteraction: false)
+            if migrated {
+                credentialValues[index] = ""
             }
-            credentialValues[index] = ""
         }
         ConnectorSecretSeam.required.synchronizeCredentialNamespaces(keys: credentialKeys, facts: facts)
     }

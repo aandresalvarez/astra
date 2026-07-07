@@ -505,6 +505,39 @@ struct PromptWithSkillsTests {
 
 @Suite("Environment Variables")
 struct EnvironmentVariableTests {
+    /// Runs `body` with a temp dedicated-keychain override installed so real
+    /// Keychain writes actually succeed in this test process — by default,
+    /// `AstraSecureKeychainStore.shouldBlockUnscopedTestKeychainAccess` blocks
+    /// unscoped access, which would otherwise make every secret save a no-op.
+    /// Falls back to running `body` unmodified when the real keychain isn't
+    /// available in this environment (e.g. headless CI).
+    private func withTemporarySkillKeychain(for skill: Skill, _ body: () -> Void) {
+        let canAssertRealKeychain = AstraSecureKeychainTestSupport.isAvailable
+        let tempKeychainPath = AstraSecureKeychainTestSupport.tempKeychainPath()
+        let tempBootstrap = "astra-test-bootstrap-\(UUID().uuidString)"
+        if canAssertRealKeychain {
+            AstraSecureKeychainTestSupport.installTestBootstrapPassword(service: tempBootstrap)
+        }
+        defer {
+            if canAssertRealKeychain {
+                AstraSecureKeychainTestSupport.cleanup(
+                    keychainPath: tempKeychainPath,
+                    bootstrapService: tempBootstrap,
+                    services: [KeychainSecretStore.skillEntityID(for: skill.id)]
+                )
+            }
+        }
+        guard canAssertRealKeychain else {
+            body()
+            return
+        }
+        AstraSecureKeychainStore.$keychainPathOverride.withValue(tempKeychainPath) {
+            AstraSecureKeychainStore.$bootstrapServiceOverride.withValue(tempBootstrap) {
+                body()
+            }
+        }
+    }
+
     @Test("Connector env vars projected through the seam match ConnectorRuntimeProjection directly")
     func resolvedAllEnvironmentVariablesMatchesDirectProjection() {
         let connector = Connector(name: "REDCap", serviceType: "redcap", baseURL: "https://redcap.example.invalid/api/")
@@ -586,53 +619,45 @@ struct EnvironmentVariableTests {
     @Test("Setting env vars via computed property updates arrays")
     func setViaComputed() {
         let skill = Skill(name: "Test")
-        skill.environmentVariables = ["TOKEN": "abc123"]
-        #expect(skill.environmentKeys == ["TOKEN"])
-        #expect(skill.exportableEnvironmentValues == [""])
-        #expect(skill.environmentVariables["TOKEN"] == "abc123")
+        withTemporarySkillKeychain(for: skill) {
+            skill.environmentVariables = ["TOKEN": "abc123"]
+            #expect(skill.environmentKeys == ["TOKEN"])
+            #expect(skill.exportableEnvironmentValues == [""])
+            if AstraSecureKeychainTestSupport.isAvailable {
+                #expect(skill.environmentVariables["TOKEN"] == "abc123")
+            }
+        }
     }
 
     @Test("Bulk env var update deletes secrets dropped from the new value")
     func bulkUpdateDeletesRemovedSecret() {
         let skill = Skill(name: "Test")
-        let canAssertRealKeychain = AstraSecureKeychainTestSupport.isAvailable
-        let tempKeychainPath = AstraSecureKeychainTestSupport.tempKeychainPath()
-        let tempBootstrap = "astra-test-bootstrap-\(UUID().uuidString)"
-        if canAssertRealKeychain {
-            AstraSecureKeychainTestSupport.installTestBootstrapPassword(service: tempBootstrap)
-        }
-        defer {
-            if canAssertRealKeychain {
-                AstraSecureKeychainTestSupport.cleanup(
-                    keychainPath: tempKeychainPath,
-                    bootstrapService: tempBootstrap,
-                    services: [KeychainSecretStore.skillEntityID(for: skill.id)]
-                )
-            }
-        }
-
-        func withTemporaryKeychain<T>(_ body: () -> T) -> T {
-            guard canAssertRealKeychain else { return body() }
-            return AstraSecureKeychainStore.$keychainPathOverride.withValue(tempKeychainPath) {
-                AstraSecureKeychainStore.$bootstrapServiceOverride.withValue(tempBootstrap) {
-                    body()
-                }
-            }
-        }
-
-        withTemporaryKeychain {
+        withTemporarySkillKeychain(for: skill) {
             skill.environmentVariables = ["TOKEN": "abc123"]
-            if canAssertRealKeychain {
+            if AstraSecureKeychainTestSupport.isAvailable {
                 #expect(SkillSecretSeam.required.secretExists(key: "TOKEN", skillID: skill.id))
             }
 
             // Replacing the whole dict without TOKEN should delete its Keychain
             // entry (previously silent - no audit event - see this fix's PR review).
             skill.environmentVariables = ["OTHER": "value"]
-            if canAssertRealKeychain {
+            if AstraSecureKeychainTestSupport.isAvailable {
                 #expect(!SkillSecretSeam.required.secretExists(key: "TOKEN", skillID: skill.id))
             }
         }
+    }
+
+    @Test("Failed secret save never leaves the raw value in SwiftData-backed storage")
+    func failedSecretSaveNeverPersistsPlaintext() {
+        let skill = Skill(name: "Test")
+
+        // No temp-keychain override is installed, so the real dedicated-keychain
+        // path is blocked in this test process (see
+        // AstraSecureKeychainStore.shouldBlockUnscopedTestKeychainAccess) —
+        // deterministically simulating a Keychain write failure.
+        skill.environmentVariables = ["TOKEN": "super-secret"]
+
+        #expect(skill.environmentValues == [""])
     }
 
     @Test("Empty env var skill doesn't affect resolution")

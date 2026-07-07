@@ -122,6 +122,20 @@ struct CredentialKeyCaseTests {
         #expect(connector.credentialKeys == ["API_TOKEN"])
         #expect(connector.credentialValues == [""])
     }
+
+    @Test("Failed Keychain migration preserves the legacy plaintext value")
+    func failedMigrationPreservesLegacyValue() {
+        let connector = Connector(name: "Test")
+        connector.credentialKeys = ["API_TOKEN"]
+        connector.credentialValues = ["legacy-secret"]
+
+        // No temp-keychain override is installed, so the real dedicated-keychain
+        // path is blocked in this test process — deterministically simulating a
+        // Keychain write failure during migration.
+        connector.migrateToKeychain()
+
+        #expect(connector.credentialValues == ["legacy-secret"])
+    }
 }
 
 // MARK: - Phase 4B: AgentTask default status
