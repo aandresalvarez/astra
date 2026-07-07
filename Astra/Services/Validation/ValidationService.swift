@@ -25,10 +25,99 @@ protocol ValidationCommandRunning: Sendable {
 }
 
 struct ShellValidationCommandRunner: ValidationCommandRunning {
+    /// Home-relative tool-cache paths the `ValidationCommandPolicy` allowlist's
+    /// wrapped tools (`pytest`/`npm`/`yarn`/`pnpm`/`make`/`python -m pytest`)
+    /// write to outside the workspace, granted so wrapping this runner in a
+    /// Seatbelt write-jail doesn't break a real validation command. `~/.npm`
+    /// and `~/Library/pnpm` were confirmed to exist on a real machine (pnpm is
+    /// installed there); the Yarn cache path is NOT verified (Yarn isn't
+    /// installed on the machine used to check this) and is a best-effort
+    /// default — validation runs against an arbitrary task workspace, which
+    /// can be a JS/Python/other project this repo has none of to test against.
+    ///
+    /// `swift`/`xcodebuild` are deliberately excluded from wrapping entirely —
+    /// see `isSelfSandboxingCommand` — so no Swift/Xcode tool-cache paths
+    /// (`.swiftpm`, DerivedData, etc.) are needed here.
+    private static let toolCacheHomeRelativePaths: [String] = [
+        ".npm",
+        "Library/Caches/Yarn",
+        "Library/pnpm"
+    ]
+
+    /// `swift build`/`swift test` cannot be reliably wrapped in an OUTER
+    /// Seatbelt profile: SwiftPM runs a separate `swift-package` helper that
+    /// applies its OWN hardcoded internal Seatbelt profile, and nested
+    /// sandboxes can only narrow permissions, never widen them. Confirmed by
+    /// direct reproduction — `--disable-sandbox` (SwiftPM's own flag for
+    /// exactly this "caller is already sandboxed" scenario) fixes the
+    /// manifest-compilation nesting conflict, but a SECOND, distinct internal
+    /// restriction remains: `swift-package` hard-blocks `file-write-create`
+    /// for any NEW file/directory under `.build` (proved by pre-creating each
+    /// denied path one at a time — `repositories`, then `checkouts`, then the
+    /// next one — an entire denied operation class, not an enumerable list of
+    /// paths that could be pre-seeded). There is no known fix on ASTRA's side.
+    /// `xcodebuild` is excluded on the same precautionary basis — it doesn't
+    /// execute untrusted manifest code the way SwiftPM does, so it likely
+    /// doesn't share this specific mechanism, but this repo has no Xcode
+    /// project to verify against, so it is unconfirmed rather than assumed
+    /// safe. Both fall through to today's behavior: gated by
+    /// `ValidationCommandPolicy` only, no OS-level confinement — this is a
+    /// documented limitation, not a silent gap.
+    private static func isSelfSandboxingCommand(_ command: String) -> Bool {
+        guard let root = command.split(whereSeparator: \.isWhitespace).first else { return false }
+        return root == "swift" || root == "xcodebuild"
+    }
+
     func run(command: String, workingDirectory: String, environment: [String: String]) async -> ValidationCommandResult {
+        guard !Self.isSelfSandboxingCommand(command) else {
+            AppLogger.audit(.sandboxSkipped, category: "Validation", fields: [
+                "reason": "self_sandboxing_toolchain"
+            ], level: .debug)
+            return await runShell(executablePath: "/bin/zsh", arguments: ["-c", command], environment: environment, workingDirectory: workingDirectory)
+        }
+
+        // `.restricted` here only satisfies `current(...)`'s signature — a
+        // validation command has no analog to the autonomous-escalates-to-strict
+        // case, and `decideForCommand` floors enforcement on its own regardless
+        // of what's passed.
+        let settings = ExecutionSandboxSettings.current(permissionPolicy: .restricted)
+        let decision = ExecutionSandbox.decideForCommand(
+            executablePath: "/bin/zsh",
+            arguments: ["-c", command],
+            currentDirectory: workingDirectory,
+            environment: environment,
+            homeWritableRelativePaths: Self.toolCacheHomeRelativePaths,
+            settings: settings
+        )
+
+        switch decision {
+        case .applied(let executablePath, let arguments, let writableRoots):
+            AppLogger.audit(.sandboxApplied, category: "Validation", fields: [
+                "writable_root_count": String(writableRoots.count)
+            ], level: .debug)
+            return await runShell(executablePath: executablePath, arguments: arguments, environment: environment, workingDirectory: workingDirectory)
+        case .skipped(let reason):
+            AppLogger.audit(.sandboxSkipped, category: "Validation", fields: ["reason": reason], level: .debug)
+            return await runShell(executablePath: "/bin/zsh", arguments: ["-c", command], environment: environment, workingDirectory: workingDirectory)
+        case .fallback(let reason):
+            AppLogger.audit(.sandboxFallback, category: "Validation", fields: ["reason": reason], level: .warning)
+            return await runShell(executablePath: "/bin/zsh", arguments: ["-c", command], environment: environment, workingDirectory: workingDirectory)
+        case .failClosed(let reason):
+            let message = "ASTRA could not apply the execution sandbox required for validation confinement (\(reason)); the run was blocked."
+            AppLogger.audit(.sandboxFailed, category: "Validation", fields: ["reason": reason], level: .error)
+            return ValidationCommandResult(exitCode: -1, stdout: "", stderr: message, launchError: message)
+        }
+    }
+
+    private func runShell(
+        executablePath: String,
+        arguments: [String],
+        environment: [String: String],
+        workingDirectory: String
+    ) async -> ValidationCommandResult {
         let result = await ProcessBinaryRunner().run(
-            path: "/bin/zsh",
-            args: ["-c", command],
+            path: executablePath,
+            args: arguments,
             timeout: 300,
             environment: environment,
             currentDirectory: workingDirectory
