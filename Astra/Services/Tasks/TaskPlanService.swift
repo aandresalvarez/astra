@@ -10,7 +10,7 @@ enum TaskPlanFallbackBuilder {
     }
 }
 
-enum TaskPlanService {
+enum TaskPlanService: Sendable {
     static func stateMutationCode(for eventType: String) -> Int? {
         switch eventType {
         case TaskPlanEventTypes.created: 0

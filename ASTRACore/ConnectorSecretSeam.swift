@@ -56,14 +56,14 @@ public enum ConnectorSecretSeam {
         guard let persistence = storage.withLock({ $0 }) else {
             preconditionFailure(
                 "ConnectorSecretSeam read before RuntimeSeamRegistration.registerAll() ran. " +
-                "Call it in ASTRAApp.init() (already done) or at the top of the test that hit this path."
+                "Production registers it in ASTRAApp.init(); tests register it via the load-time bootstrap in Tests/AstraTestSeamBootstrap - a trap here in a test means that bootstrap wiring broke."
             )
         }
         return persistence
     }
 }
 
-public protocol ConnectorSecretPersisting {
+public protocol ConnectorSecretPersisting: Sendable {
     /// Matches `ConnectorSecretPersistence.credentials(for:store:)`: tries
     /// every namespace `facts` resolves to, first match per key wins.
     static func loadAllCredentials(keys: [String], facts: ConnectorSecretFacts, store: SecretStore) -> [String: String]

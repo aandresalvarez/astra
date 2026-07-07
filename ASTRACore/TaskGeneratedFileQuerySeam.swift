@@ -16,7 +16,7 @@ import os
 // protocol + an `OSAllocatedUnfairLock`-backed static registry with
 // `.register(_:)` and a fail-fast `.required` accessor, wired up from
 // `RuntimeSeamRegistration.registerAll()`.
-public protocol TaskGeneratedFileQuerying {
+public protocol TaskGeneratedFileQuerying: Sendable {
     static func files(in folder: String, fileManager: FileManager) -> [String]
     static func shelfDestination(for path: String) -> TaskGeneratedFileShelfDestination?
     static func shouldDisplayTaskFolderFile(relativePath: String) -> Bool
@@ -36,7 +36,7 @@ public enum TaskGeneratedFileQuerySeam {
         guard let provider = storage.withLock({ $0 }) else {
             preconditionFailure(
                 "TaskGeneratedFileQuerySeam read before RuntimeSeamRegistration.registerAll() ran. " +
-                "Call it in ASTRAApp.init() (already done) or at the top of the test that hit this path."
+                "Production registers it in ASTRAApp.init(); tests register it via the load-time bootstrap in Tests/AstraTestSeamBootstrap - a trap here in a test means that bootstrap wiring broke."
             )
         }
         return provider
