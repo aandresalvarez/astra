@@ -1404,10 +1404,10 @@ struct TaskContextStateTests {
         let fields = TaskContextStateManager.promptDiagnosticsFields(task: task, prompt: prompt, phase: "resume")
         #expect(fields["has_context_capsule"] == "true")
         #expect(fields["has_thread_intent"] == "true")
-        #expect(Int(fields["state_json_chars"] ?? "0", radix: 10) ?? 0 > 0)
-        #expect(Int(fields["session_history_chars"] ?? "0", radix: 10) ?? 0 > 0)
+        #expect(Int(fields["state_json_bytes"] ?? "0", radix: 10) ?? 0 > 0)
+        #expect(Int(fields["session_history_bytes"] ?? "0", radix: 10) ?? 0 > 0)
         #expect(fields["output_file_count"] == "1")
-        #expect(Int(fields["output_latest_chars"] ?? "0", radix: 10) ?? 0 > 0)
+        #expect(Int(fields["output_latest_bytes"] ?? "0", radix: 10) ?? 0 > 0)
     }
 
     @Test("oversized capsule truncates the body but preserves the recovery pointer")
