@@ -102,7 +102,7 @@ enum ExecutionSandboxReadScope: String, Codable, Sendable, CaseIterable, Identif
         case .open:
             "Sandboxed agents keep broad filesystem reads except privacy-sensitive media and app roots; writes remain workspace-scoped."
         case .audit:
-            "Sandboxed agents keep broad reads and log strict-scope misses, while hard-blocking privacy-sensitive media and app roots unless explicitly granted."
+            "Sandboxed agents keep broad reads and only report strict-scope misses to the macOS system log — ASTRA does not capture them — while hard-blocking privacy-sensitive media and app roots unless explicitly granted."
         case .enforce:
             "Sandboxed agents can read only explicit workspace/input paths, provider state, ASTRA task folders, temporary paths, and system/toolchain roots."
         }
@@ -281,7 +281,11 @@ enum ExecutionSandboxDecision: Equatable {
 ///   re-allows. In Strict, the profile also denies `file-read*` and re-allows
 ///   only explicit workspace/input paths, provider state, temporary paths, and
 ///   system/toolchain roots. In Audit, a `debug deny file-read*` rule reports
-///   would-deny reads without disabling the write boundary.
+///   would-deny reads without disabling the write boundary. Those reports land
+///   only in the macOS unified system log (Console.app / `log stream`) — ASTRA
+///   has no logging entitlement to read another process's sandbox denials and
+///   does not capture or surface them; a developer must watch the system log
+///   directly during dogfooding to see a strict-scope miss.
 /// - Privacy-sensitive home/media/app roots are hard-denied even in Open/Audit
 ///   read scope so provider probes cannot trigger macOS TCC prompts under
 ///   ASTRA's name. A path inside those roots is re-allowed only when it is also
