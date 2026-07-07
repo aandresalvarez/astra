@@ -8,6 +8,7 @@ struct CapabilityInstaller {
     enum InstallationError: Error, Equatable, LocalizedError {
         case blocked([String])
         case persistenceFailed(packageID: String)
+        case credentialSaveFailed(packageID: String, key: String)
 
         var errorDescription: String? {
             switch self {
@@ -15,6 +16,8 @@ struct CapabilityInstaller {
                 return messages.joined(separator: "\n")
             case .persistenceFailed(let id):
                 return "Enabling \(id) could not be saved. Try again."
+            case .credentialSaveFailed(let id, let key):
+                return "Enabling \(id) could not save the \(key) credential. Try again."
             }
         }
     }
@@ -182,7 +185,7 @@ struct CapabilityInstaller {
                 configInputs: configInputs,
                 baseURLOverridden: baseURLOverrides[pluginConnector.name] != nil
             ) {
-                connector = upsertWorkspaceConnector(
+                connector = try upsertWorkspaceConnector(
                     pluginConnector,
                     package: package,
                     workspace: workspace,
@@ -412,11 +415,13 @@ struct CapabilityInstaller {
         }
         for hint in pluginConnector.credentialHints {
             if let value = credentialInputs[hint.key], !value.isEmpty {
-                connector.saveCredential(
+                guard connector.saveCredential(
                     key: hint.key,
                     value: value,
                     allowUserInteraction: allowCredentialUserInteraction
-                )
+                ) else {
+                    throw InstallationError.credentialSaveFailed(packageID: package.id, key: hint.key)
+                }
             }
         }
         return connector
@@ -432,7 +437,7 @@ struct CapabilityInstaller {
         extraConfigKeys: [String],
         baseURL: String,
         allowCredentialUserInteraction: Bool
-    ) -> Connector {
+    ) throws -> Connector {
         let connector = existingWorkspaceConnector(
             name: pluginConnector.name,
             serviceType: pluginConnector.serviceType,
@@ -477,11 +482,13 @@ struct CapabilityInstaller {
         }
         for hint in pluginConnector.credentialHints {
             if let value = credentialInputs[hint.key], !value.isEmpty {
-                connector.saveCredential(
+                guard connector.saveCredential(
                     key: hint.key,
                     value: value,
                     allowUserInteraction: allowCredentialUserInteraction
-                )
+                ) else {
+                    throw InstallationError.credentialSaveFailed(packageID: package.id, key: hint.key)
+                }
             }
         }
         return connector

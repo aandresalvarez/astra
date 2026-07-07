@@ -3,6 +3,7 @@ import Foundation
 import SwiftData
 import ASTRAModels
 @testable import ASTRA
+@testable import ASTRAPersistence
 import ASTRACore
 
 // The two CRITICAL coverage gaps from the ship review: when the SwiftData
@@ -25,6 +26,31 @@ private func saveFailureContainer() throws -> ModelContainer {
 
 @MainActor
 private let failingPersist: @MainActor (Workspace?, ModelContext) -> Bool = { _, _ in false }
+
+/// Runs `body` with a temp dedicated-keychain override installed so the
+/// credential save in setup actually succeeds in this test process — by
+/// default, `AstraSecureKeychainStore.shouldBlockUnscopedTestKeychainAccess`
+/// blocks unscoped access, which would otherwise make `CapabilityInstaller`
+/// throw `.credentialSaveFailed` before these tests reach their real subject
+/// (persistence-failure rollback). Unlike `AstraSecureKeychainTestSupport
+/// .isAvailable`-gated tests, the save here is setup plumbing rather than the
+/// thing under test, so this installs the override unconditionally instead of
+/// requiring the `ASTRA_ENABLE_REAL_KEYCHAIN_TESTS` opt-in — the override
+/// alone (task-locals only) is enough to satisfy
+/// `isUsingExplicitTestKeychain` and unblock access.
+private func withTemporaryCredentialKeychain<T>(_ body: () throws -> T) rethrows -> T {
+    let tempKeychainPath = AstraSecureKeychainTestSupport.tempKeychainPath()
+    let tempBootstrap = "astra-test-bootstrap-\(UUID().uuidString)"
+    AstraSecureKeychainTestSupport.installTestBootstrapPassword(service: tempBootstrap)
+    defer {
+        AstraSecureKeychainTestSupport.cleanup(keychainPath: tempKeychainPath, bootstrapService: tempBootstrap, services: [])
+    }
+    return try AstraSecureKeychainStore.$keychainPathOverride.withValue(tempKeychainPath) {
+        try AstraSecureKeychainStore.$bootstrapServiceOverride.withValue(tempBootstrap) {
+            try body()
+        }
+    }
+}
 
 private func connectorPackage(id: String) -> PluginPackage {
     var package = PluginPackage(
@@ -63,12 +89,14 @@ struct CapabilityUninstallSaveFailureTests {
 
         let package = connectorPackage(id: "uninstall-pkg")
         let installer = CapabilityInstaller(library: library, appVersion: SemanticVersion(1, 0, 0))
-        _ = try installer.install(
-            package,
-            into: workspace,
-            modelContext: context,
-            credentialInputs: ["SVC_TOKEN": "secret-value"]
-        )
+        _ = try withTemporaryCredentialKeychain {
+            try installer.install(
+                package,
+                into: workspace,
+                modelContext: context,
+                credentialInputs: ["SVC_TOKEN": "secret-value"]
+            )
+        }
         #expect(FileManager.default.fileExists(atPath: library.packageURL(for: package.id).path))
         let skillsBefore = try context.fetch(FetchDescriptor<Skill>()).count
         let connectorsBefore = try context.fetch(FetchDescriptor<Connector>()).count
@@ -106,12 +134,14 @@ struct CapabilityDisableSaveFailureTests {
         let installer = CapabilityInstaller(library: library, appVersion: SemanticVersion(1, 0, 0))
         // Scope the connector to the workspace so disable stages a delete +
         // keychain cleanup (the path guarded by the save).
-        _ = try installer.install(
-            package,
-            into: workspace,
-            modelContext: context,
-            credentialInputs: ["SVC_TOKEN": "secret-value"]
-        )
+        _ = try withTemporaryCredentialKeychain {
+            try installer.install(
+                package,
+                into: workspace,
+                modelContext: context,
+                credentialInputs: ["SVC_TOKEN": "secret-value"]
+            )
+        }
         let connectorsBefore = try context.fetch(FetchDescriptor<Connector>()).count
 
         let capabilities = WorkspaceCapabilities(

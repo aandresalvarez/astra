@@ -494,6 +494,11 @@ static NSString *const kAstraSecretAccessLabel = @"ASTRA secure credential";
    bootstrapService:(NSString *)bootstrapService
 allowUserInteraction:(BOOL)allowUserInteraction
 recoverUnreadableKeychain:(BOOL)recoverUnreadableKeychain {
+    // The whole toggle/write/restore span is serialized so an interleaved
+    // background (disable) and user-prompted (allow) call on another thread
+    // can never race on the process-wide SecKeychainSetUserInteractionAllowed
+    // flag and restore the wrong value.
+    @synchronized (self) {
     Boolean previousInteraction = true;
     if (allowUserInteraction) {
         [self allowKeychainUserInteractionSavingPrevious:&previousInteraction];
@@ -545,12 +550,14 @@ recoverUnreadableKeychain:(BOOL)recoverUnreadableKeychain {
     } @finally {
         [self restoreKeychainUserInteraction:previousInteraction];
     }
+    }
 }
 
 + (nullable NSString *)secretForAccount:(NSString *)account
                                 service:(NSString *)service
                            keychainPath:(NSString *)keychainPath
                        bootstrapService:(NSString *)bootstrapService {
+    @synchronized (self) {
     Boolean previousInteraction = true;
     [self disableKeychainUserInteractionSavingPrevious:&previousInteraction];
     @try {
@@ -567,12 +574,14 @@ recoverUnreadableKeychain:(BOOL)recoverUnreadableKeychain {
     } @finally {
         [self restoreKeychainUserInteraction:previousInteraction];
     }
+    }
 }
 
 + (BOOL)deleteSecretForAccount:(NSString *)account
                        service:(NSString *)service
                   keychainPath:(NSString *)keychainPath
               bootstrapService:(NSString *)bootstrapService {
+    @synchronized (self) {
     Boolean previousInteraction = true;
     [self disableKeychainUserInteractionSavingPrevious:&previousInteraction];
     @try {
@@ -590,11 +599,13 @@ recoverUnreadableKeychain:(BOOL)recoverUnreadableKeychain {
     } @finally {
         [self restoreKeychainUserInteraction:previousInteraction];
     }
+    }
 }
 
 + (BOOL)deleteAllSecretsForService:(NSString *)service
                       keychainPath:(NSString *)keychainPath
                   bootstrapService:(NSString *)bootstrapService {
+    @synchronized (self) {
     Boolean previousInteraction = true;
     [self disableKeychainUserInteractionSavingPrevious:&previousInteraction];
     @try {
@@ -611,12 +622,14 @@ recoverUnreadableKeychain:(BOOL)recoverUnreadableKeychain {
     } @finally {
         [self restoreKeychainUserInteraction:previousInteraction];
     }
+    }
 }
 
 + (BOOL)hasSecretForAccount:(NSString *)account
                     service:(NSString *)service
                keychainPath:(NSString *)keychainPath
            bootstrapService:(NSString *)bootstrapService {
+    @synchronized (self) {
     Boolean previousInteraction = true;
     [self disableKeychainUserInteractionSavingPrevious:&previousInteraction];
     @try {
@@ -634,6 +647,7 @@ recoverUnreadableKeychain:(BOOL)recoverUnreadableKeychain {
     return data.length > 0;
     } @finally {
         [self restoreKeychainUserInteraction:previousInteraction];
+    }
     }
 }
 
@@ -717,6 +731,7 @@ recoverUnreadableKeychain:(BOOL)recoverUnreadableKeychain {
 
 + (BOOL)loginKeychainContainsService:(NSString *)service
                              account:(nullable NSString *)account {
+    @synchronized (self) {
     Boolean previousInteraction = true;
     [self disableKeychainUserInteractionSavingPrevious:&previousInteraction];
     @try {
@@ -741,6 +756,7 @@ recoverUnreadableKeychain:(BOOL)recoverUnreadableKeychain {
     return status == errSecSuccess;
     } @finally {
         [self restoreKeychainUserInteraction:previousInteraction];
+    }
     }
 }
 

@@ -151,29 +151,35 @@ public final class Skill {
         return SkillSecretSeam.required.loadSecretValue(key: key, skillID: id, store: store) ?? storedValue
     }
 
+    @discardableResult
     public func upsertEnvironmentEntry(
         key rawKey: String,
         value: String,
         allowUserInteraction: Bool = false
-    ) {
+    ) -> Bool {
         let key = rawKey.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
-        guard !key.isEmpty else { return }
+        guard !key.isEmpty else { return false }
 
         if let index = environmentKeys.firstIndex(where: { $0.caseInsensitiveCompare(key) == .orderedSame }) {
             environmentKeys[index] = key
-            setEnvironmentValue(value, at: index, allowUserInteraction: allowUserInteraction)
+            return setEnvironmentValue(value, at: index, allowUserInteraction: allowUserInteraction)
         } else {
             environmentKeys.append(key)
             environmentValues.append("")
-            setEnvironmentValue(value, at: environmentKeys.count - 1, allowUserInteraction: allowUserInteraction)
+            return setEnvironmentValue(value, at: environmentKeys.count - 1, allowUserInteraction: allowUserInteraction)
         }
     }
 
-    public func setEnvironmentValue(_ value: String, at index: Int, allowUserInteraction: Bool = false) {
-        guard index < environmentKeys.count else { return }
+    /// Returns whether the value was fully persisted — always `true` for
+    /// non-secret keys, and `true` for secret keys only once the Keychain
+    /// write actually succeeds.
+    @discardableResult
+    public func setEnvironmentValue(_ value: String, at index: Int, allowUserInteraction: Bool = false) -> Bool {
+        guard index < environmentKeys.count else { return false }
         ensureEnvironmentValueCapacity()
 
         let key = environmentKeys[index]
+        var succeeded = true
         if Self.isSecretEnvironmentKey(key) {
             if !value.isEmpty {
                 let saved = SkillSecretSeam.required.saveSecretValue(
@@ -190,6 +196,7 @@ public final class Skill {
                 // Never persist the raw secret to SwiftData, even on failure —
                 // the placeholder stays blank; the keychain is the only copy.
                 environmentValues[index] = ""
+                succeeded = saved
             } else {
                 environmentValues[index] = ""
             }
@@ -197,6 +204,7 @@ public final class Skill {
             environmentValues[index] = value
         }
         updatedAt = Date()
+        return succeeded
     }
 
     public func removeEnvironmentEntry(at index: Int) {

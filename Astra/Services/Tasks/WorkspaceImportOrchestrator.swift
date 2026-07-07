@@ -89,6 +89,7 @@ struct ContentWorkspaceActionCoordinator {
                     credentialInputs: inputs.credentialInputs,
                     configInputs: inputs.configInputs,
                     baseURLOverrides: inputs.baseURLOverrides,
+                    allowCredentialUserInteraction: inputs.credentialInputs.values.contains { !$0.isEmpty },
                     policyContext: policyContext,
                     traceID: traceID
                 )
