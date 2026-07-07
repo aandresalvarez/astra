@@ -97,6 +97,27 @@ struct AppBundlePackagingTests {
         #expect(resourceToolFiles == [".gitkeep"])
     }
 
+    @Test("developer-id builds sign nested tools and Sparkle helpers before the outer app, without --deep")
+    func developerIdBuildsSignInsideOutWithoutDeepEntitlementSmear() throws {
+        let script = try String(contentsOf: repoRoot.appendingPathComponent("script/build_and_run.sh"), encoding: .utf8)
+
+        let signTools = #"sign_bundled_tools_for_notarization"#
+        let signSparkle = #"sign_sparkle_framework_for_notarization"#
+        let outerSign = #"/usr/bin/codesign --force --timestamp --options runtime --entitlements "$ENTITLEMENTS" --sign "$SIGN_IDENTITY" "$APP_BUNDLE""#
+
+        #expect(script.contains(signTools))
+        #expect(script.contains(signSparkle))
+        #expect(script.contains(outerSign))
+        #expect(try index(of: signTools, in: script) < index(of: outerSign, in: script))
+        #expect(try index(of: signSparkle, in: script) < index(of: outerSign, in: script))
+
+        // `--deep` on the distributed-channel branch would stamp this app's
+        // own entitlements onto every nested Mach-O, including Sparkle's XPC
+        // services and helper app, invalidating their own signatures.
+        let deepDistributedSign = #"/usr/bin/codesign --force --deep --timestamp --options runtime"#
+        #expect(!script.contains(deepDistributedSign))
+    }
+
     private var repoRoot: URL {
         URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()

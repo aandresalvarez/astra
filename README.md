@@ -315,7 +315,10 @@ If the project later needs the smoother Gatekeeper experience, use:
 ASTRA_RELEASE_MODE=developer-id ./script/release_update.sh
 ```
 
-That future path requires Apple Developer ID signing and notarization.
+That future path requires Apple Developer ID signing and notarization. The
+adoption sequencing for that (signing pipeline, Sparkle transition testing,
+CI automation) is tracked in
+[docs/specs/2026-07-07-apple-developer-program-adoption-plan.md](docs/specs/2026-07-07-apple-developer-program-adoption-plan.md).
 
 For the full code-signing setup — including a stable self-signed identity for
 local development (which avoids the Keychain re-prompts that ad-hoc signing
