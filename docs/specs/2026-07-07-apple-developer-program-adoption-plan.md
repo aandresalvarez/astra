@@ -107,7 +107,7 @@ Also still not wired: automatic `push: tags: v*` triggering. **Keep this deferre
 - **The temp-keychain cert-import sequence** (`security create-keychain` → `set-keychain-settings` → `unlock-keychain` → `import` → `set-key-partition-list` → `list-keychains -s`) was replicated exactly, line for line, against a throwaway self-signed test certificate (generated purely locally via `openssl`, never touching the real Developer ID `.p12`). All mechanical steps succeeded. `security find-identity -p codesigning` then reported the test identity as **not valid for signing**, and `codesign` correctly refused to use it — but this is an expected, well-understood artifact of the self-signed cert lacking a trust chain, *not* a bug in the script: a real Developer ID cert chains to Apple's Root CA, which is already trusted system-wide. Test keychain deleted and search list restored afterward.
 - **The version/build-derivation bash logic** (tag-name regex match, `workflow_dispatch` input overrides, error path for missing/malformed input) was unit-tested in isolation against 5 scenarios: real tag push, manual override, no-tag/no-input (fails safely, no silent misfire), malformed tag shape (fails safely), and a pre-release-suffixed tag like `v0.1.22-beta1` (currently unsupported by the strict `^v[0-9]+\.[0-9]+\.[0-9]+$` regex).
 
-**Exact secret names the workflow reads** — all 8 (7 secrets + 1 variable) have since been entered and are confirmed working by the live run above:
+**Exact secret names the workflow reads** — all 8 (7 secrets + 1 variable) have since been entered. The signing-path values (`ASTRA_SIGN_IDENTITY`, the cert `.p12` + password, both Sparkle key values) are confirmed working by the live run above. The 3 notary secrets (`ASTRA_NOTARY_API_KEY_P8`, `ASTRA_NOTARY_KEY_ID`, `ASTRA_NOTARY_ISSUER_ID`) are entered but **not yet validated** — that run used `skip_notarization=true`, so preflight never checked them and `Store notarization credentials` never ran; they remain unexercised until the dry run in "Remaining scope" below:
 
 | Secret name | Source |
 |---|---|
@@ -124,10 +124,11 @@ Also still not wired: automatic `push: tags: v*` triggering. **Keep this deferre
 
 Remaining scope:
 
-1. **Real notarization + publish dry run**: a `workflow_dispatch` run with `skip_notarization=false` to exercise `notarytool submit` and `gh release create` live — not yet done, and it publishes a real public GitHub Release, so it needs separate explicit go-ahead each time.
-2. **`push: tags: v*` trigger**: add only after (1) is validated.
-3. **dSYM retention**: the build already emits dSYMs (`build_and_run.sh:195–216`); confirm they're attached to the GitHub release for crash symbolication once (1) runs for real.
-4. Keep the local manual path working — CI is an automation of the same script, not a fork of it.
+1. **Release test gate — ✅ added (2026-07-08).** `release.yml` now runs `script/prepush.sh` (the same minimum gate used locally before every push) right after resolving Swift package dependencies, before any signing starts. Without this, `workflow_dispatch` (or a future tag trigger) could sign, notarize, and publish from a commit that never passed tests — this workflow runs independently of the separate CI workflow that gates PRs, so nothing else enforced that.
+2. **Real notarization + publish dry run**: a `workflow_dispatch` run with `skip_notarization=false` to exercise `notarytool submit` and `gh release create` live — not yet done, and it publishes a real public GitHub Release, so it needs separate explicit go-ahead each time. **Must use a version/build that has never been released before** (e.g. the next unused number, not a repeat of a prior dry run's inputs): the publish step is `gh release create "$TAG" ... || gh release upload "$TAG" ... --clobber` — if a release already exists for that tag, the fallback **overwrites its assets** (`--clobber`; see the `gh release upload` docs). Re-running against an already-tagged version is not a safe no-op.
+3. **`push: tags: v*` trigger**: add only after (2) is validated.
+4. **dSYM retention**: the build already emits dSYMs (`build_and_run.sh:195–216`); confirm they're attached to the GitHub release for crash symbolication once (2) runs for real.
+5. Keep the local manual path working — CI is an automation of the same script, not a fork of it.
 
 ## Phase 5 — Newly unlocked platform capabilities (adopt selectively)
 
