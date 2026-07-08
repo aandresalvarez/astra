@@ -320,27 +320,38 @@ jobs:
           ASSETS=(dist/release/ASTRA-${{ steps.version.outputs.version }}.zip dist/release/appcast.xml)
           [[ -f "dist/release/ASTRA-${{ steps.version.outputs.version }}.dSYM.zip" ]] && \
             ASSETS+=("dist/release/ASTRA-${{ steps.version.outputs.version }}.dSYM.zip")
-          # --verify-tag (push-triggered runs only): without it, `gh release
-          # create` auto-creates a missing tag rather than failing. The
-          # job-level created/deleted guard only checks the state of the
-          # push event that started this run -- a race window still exists
-          # between then and here (signing + notarization take 10-25+
-          # minutes): if an operator deletes the tag mid-run to retract an
-          # accidental release, this would otherwise still publish.
-          # --verify-tag closes that window by aborting if the tag is gone
-          # from the remote by publish time. Scoped to push events only:
-          # workflow_dispatch legitimately releases a version with no
-          # pre-existing tag (an explicit version/build override, auto-
-          # creating the tag here), which --verify-tag would break.
-          VERIFY_TAG_FLAG=()
           if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
-            VERIFY_TAG_FLAG=(--verify-tag)
+            # The job-level created/deleted guard only checks the push
+            # event that started this run -- signing + notarization take
+            # 10-25+ minutes, and a re-run of a failed/canceled job reuses
+            # the *original* GITHUB_SHA/GITHUB_REF even if the tag has
+            # since moved. `gh release create --verify-tag` alone isn't
+            # enough either: its failure falls through to `gh release
+            # upload --clobber`, which doesn't check the tag at all and
+            # would happily publish against a release object left over
+            # from an earlier run. So check explicitly, once, as late as
+            # possible: the remote tag must still exist AND still resolve
+            # to the exact commit this run built. Handles both lightweight
+            # tags (the plain ref IS the commit) and annotated tags (need
+            # the ^{} peel to reach the commit the tag object points at).
+            REMOTE_TAG_SHA="$(git ls-remote origin "refs/tags/$TAG^{}" | cut -f1)"
+            if [[ -z "$REMOTE_TAG_SHA" ]]; then
+              REMOTE_TAG_SHA="$(git ls-remote origin "refs/tags/$TAG" | cut -f1)"
+            fi
+            if [[ -z "$REMOTE_TAG_SHA" ]]; then
+              echo "Refusing to publish $TAG: the tag no longer exists on the remote (deleted after this run started)." >&2
+              exit 2
+            fi
+            if [[ "$REMOTE_TAG_SHA" != "$GITHUB_SHA" ]]; then
+              echo "Refusing to publish $TAG: the remote tag now points at $REMOTE_TAG_SHA, not the commit this run built ($GITHUB_SHA) -- it was likely force-moved after this run started." >&2
+              exit 2
+            fi
           fi
+
           gh release create "$TAG" "${ASSETS[@]}" \
             --title "ASTRA $TAG" \
             --generate-notes \
             --target "$GITHUB_SHA" \
-            "${VERIFY_TAG_FLAG[@]}" \
             --latest || gh release upload "$TAG" "${ASSETS[@]}" --clobber
 
       - name: Clean up temporary keychain
