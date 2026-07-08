@@ -225,6 +225,12 @@ final class ASTRAAppDelegate: NSObject, NSApplicationDelegate {
             NSApp.applicationIconImage = icon
         }
         NSApp.activate(ignoringOtherApps: true)
+        // Runs before the rest of this function's bookkeeping: if the user
+        // accepts, this process relaunches from /Applications and quits
+        // shortly after, making the log/shortcuts calls below moot for it.
+        // Placed after activation (not before) so the alert -- if shown --
+        // is correctly foregrounded with the app's real icon already set.
+        ApplicationsFolderMover.promptAndMoveIfNeeded()
         AppLogger.audit(.appActivated, category: "App")
         AstraAppShortcuts.updateAppShortcutParameters()
     }

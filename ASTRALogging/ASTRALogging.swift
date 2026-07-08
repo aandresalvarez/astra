@@ -62,6 +62,8 @@ public enum LogLevel: String, Comparable, CaseIterable, Sendable {
 public enum AuditEvent: String, CaseIterable, Sendable {
     case appStarted = "app.started"
     case appActivated = "app.activated"
+    case appMovedToApplications = "app.moved_to_applications"
+    case appMoveToApplicationsFailed = "app.move_to_applications_failed"
     case startupDiagnostics = "startup.diagnostics"
     case userAction = "user.action"
     case dataStoreSelected = "data.store.selected"
