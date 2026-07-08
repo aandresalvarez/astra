@@ -1,9 +1,13 @@
 name: Release
 
-# Manual only for now. `push: tags: v*` is a deliberate follow-up once the
-# secrets/variables below are configured — this repo already tags every
-# build sequentially (v0.1.17, v0.1.18, ...), so wiring a tag-push trigger
-# before they exist would turn every routine tag red in Actions.
+# Pushing a vX.Y.Z tag triggers a real release: sign, notarize, and publish,
+# with the version/build derived from the tag name (see "Determine release
+# version and build" below). Live-validated end-to-end against
+# aandresalvarez/astra, the confirmed distribution repo (2026-07-08 --
+# ASTRA v0.1.25 proved the signing/notarize/publish mechanics, v0.1.26
+# confirmed the appcast points at the right repo). skip_notarization only
+# applies to manual workflow_dispatch runs -- a tag push always does the
+# real thing, since a pushed release tag is never meant to be a dry run.
 #
 # 7 values go in Settings -> Secrets and variables -> Actions -> Secrets:
 #   ASTRA_SIGN_IDENTITY, ASTRA_DEVELOPER_ID_CERTIFICATE_P12,
@@ -16,6 +20,13 @@ name: Release
 # See docs/code-signing.md and
 # docs/specs/2026-07-07-apple-developer-program-adoption-plan.md (Phase 4).
 on:
+  push:
+    tags:
+      # Broad on purpose: the "Determine release version and build" step
+      # below does the real vX.Y.Z validation and fails loudly on a
+      # mismatch, rather than relying on exact regex support in this glob
+      # dialect (which doesn't reliably support quantifiers like [0-9]+).
+      - "v*.*.*"
   workflow_dispatch:
     inputs:
       version:
@@ -27,7 +38,7 @@ on:
         required: false
         type: string
       skip_notarization:
-        description: "Skip notarization (dry run of signing only)"
+        description: "Skip notarization (dry run of signing only, workflow_dispatch only -- ignored on tag push)"
         required: false
         type: boolean
         default: false
@@ -37,12 +48,28 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  release:
-    name: Build, sign, notarize, publish
-    runs-on: macos-26
-    timeout-minutes: 60
+  validate:
+    name: Validate release tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Only run push-triggered jobs for a tag's initial creation.
+    # github.event.created is false for both tag deletions and forced
+    # updates (re-pointing an existing tag at a different commit) -- the
+    # latter matters as much as the former: without this, force-pushing an
+    # existing vX.Y.Z tag to a new commit would still sign/notarize it and
+    # the publish step's `gh release upload --clobber` fallback would
+    # replace the already-public assets for that version number, silently
+    # swapping out signed bits users may have already downloaded. No-op
+    # for workflow_dispatch: github.event.created is unset there, so the
+    # first clause short-circuits the check to true. The `release` job
+    # below has no `if:` of its own -- a skipped `needs:` dependency
+    # cascades to skip it automatically.
+    if: github.event_name != 'push' || github.event.created == true
     permissions:
-      contents: write
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      build: ${{ steps.version.outputs.build }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -51,6 +78,184 @@ jobs:
           # fetch-depth: 0 alone doesn't guarantee tags come along on every
           # actions/checkout version/config -- confirmed live (run 28912601840):
           # the version-derivation step saw zero tags without this.
+          fetch-tags: true
+
+      - name: Verify release commit is on protected main
+        # A tag push (or a workflow_dispatch run) can target any branch.
+        # Without this check, a vX.Y.Z tag pushed at an unmerged commit
+        # would still get signed with the real Developer ID cert and
+        # published as a real release -- bypassing the review/CI gate that
+        # protected main is supposed to enforce. This whole job runs on a
+        # plain ubuntu-latest runner with no `environment:` and no secrets
+        # -- a malformed or unmerged tag fails here, before the `release`
+        # job below ever reaches its environment gate or touches the
+        # Developer ID cert, notary credentials, or Sparkle key. Splitting
+        # it out this way (rather than doing this check inside the
+        # secrets-holding job) means a bad tag can't consume a required-
+        # reviewer approval or expose secrets to a doomed run.
+        run: |
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "Refusing to release $GITHUB_SHA: it is not an ancestor of origin/main." >&2
+            echo "Only release from commits that have been merged to the protected main branch." >&2
+            exit 2
+          fi
+
+      - name: Determine release version and build
+        id: version
+        env:
+          # Passed as data, not interpolated into the script text: a
+          # workflow_dispatch caller controls these inputs, so template
+          # expansion straight into `run:` would be a shell-injection hole.
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_BUILD: ${{ inputs.build }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [[ -n "$INPUT_VERSION" ]]; then
+            if [[ ! "$INPUT_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "Invalid version input '$INPUT_VERSION': expected X.Y.Z." >&2
+              exit 2
+            fi
+            VERSION="$INPUT_VERSION"
+          elif [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          elif [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
+            # A pushed ref that reached this job (on.push.tags matched it)
+            # but doesn't fit vX.Y.Z exactly -- fail loudly instead of
+            # falling through to "latest tag", which would silently publish
+            # a different version than what was actually pushed.
+            echo "Pushed tag '$GITHUB_REF_NAME' doesn't match vX.Y.Z exactly; refusing to guess a version." >&2
+            exit 2
+          else
+            LATEST_TAG="$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=v:refname | tail -n 1)"
+            if [[ -z "$LATEST_TAG" ]]; then
+              echo "Could not derive ASTRA_VERSION: no vX.Y.Z tags exist and no version input given." >&2
+              exit 2
+            fi
+            VERSION="${LATEST_TAG#v}"
+          fi
+
+          TAG="v$VERSION"
+
+          if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
+            # GitHub only suppresses push-triggered workflow runs when more
+            # than 3 tags are pushed in one `git push --tags` -- pushing 2
+            # or 3 release tags together starts multiple runs of this
+            # workflow, which the shared concurrency group below serializes
+            # but does not reorder by version. If a newer release tag
+            # already exists by the time this run gets here, this run is
+            # stale (queued before/after a sibling run for a different tag
+            # in the same batch); publishing it would risk `--latest`
+            # ending up on the wrong version. Refuse rather than guess --
+            # push release tags one at a time.
+            # `git tag --list` uses shell globs, not the strict regex used
+            # for VERSION above -- 'v[0-9]*.[0-9]*.[0-9]*' also matches a
+            # stray tag like v0.1.28-beta1 (the trailing * swallows the
+            # suffix), which --sort=v:refname can then rank ahead of a
+            # genuine v0.1.28. Filter to the exact vX.Y.Z shape before
+            # picking the highest, so a leftover non-release tag can't
+            # block a real release.
+            HIGHEST_TAG="$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | tail -n 1)"
+            if [[ "$TAG" != "$HIGHEST_TAG" ]]; then
+              echo "Refusing to release $TAG: a newer release tag ($HIGHEST_TAG) already exists." >&2
+              echo "This can happen when multiple release tags are pushed together in one 'git push --tags'." >&2
+              echo "Push release tags one at a time." >&2
+              exit 2
+            fi
+
+            # github.event.created is true whenever a push creates a ref
+            # that didn't exist as of THAT push -- including a delete-then-
+            # recreate of a previously-published tag. Deleting a git tag
+            # does not delete its GitHub Release object, so a recreated
+            # v0.1.27 tag pointing at a different commit would sail past
+            # the job-level created guard, get signed, and hit `gh release
+            # create` failing (release already exists) -> falling through
+            # to `gh release upload --clobber`, silently replacing the
+            # already-published assets for that version under a different
+            # commit. A push-triggered release must always be for a
+            # version that has never been published before -- refuse if a
+            # release already exists for this exact tag, regardless of how
+            # that came to be.
+            if gh release view "$TAG" >/dev/null 2>&1; then
+              echo "Refusing to release $TAG: a GitHub Release already exists for this tag." >&2
+              echo "This can happen if the tag was deleted and recreated, or was already published." >&2
+              echo "Push a new version number instead of reusing $TAG." >&2
+              exit 2
+            fi
+          fi
+
+          EXISTING_TAG_COUNT="$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' | wc -l | tr -d ' ')"
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            # Releasing an already-tagged version: match the count-based
+            # build number build_and_run.sh would compute locally for it.
+            DEFAULT_BUILD="$EXISTING_TAG_COUNT"
+          else
+            # Releasing a version that has no tag yet: the count-based
+            # default would collide with the previous release's build
+            # number (Sparkle compares CFBundleVersion, not just the
+            # display version), so advance it by one.
+            DEFAULT_BUILD="$((EXISTING_TAG_COUNT + 1))"
+          fi
+
+          if [[ -n "$INPUT_BUILD" ]]; then
+            if [[ ! "$INPUT_BUILD" =~ ^[0-9]+$ ]]; then
+              echo "Invalid build input '$INPUT_BUILD': expected a positive integer." >&2
+              exit 2
+            fi
+            BUILD="$INPUT_BUILD"
+          else
+            BUILD="$DEFAULT_BUILD"
+          fi
+
+          echo "version=$VERSION" >>"$GITHUB_OUTPUT"
+          echo "build=$BUILD" >>"$GITHUB_OUTPUT"
+
+  release:
+    name: Build, sign, notarize, publish
+    needs: validate
+    runs-on: macos-26
+    timeout-minutes: 60
+    # IMPORTANT -- this reference alone does NOT enforce anything, and
+    # simply adding it does NOT gate secret access. GitHub runs a
+    # push-triggered workflow using the copy of THIS FILE that exists at
+    # the pushed commit, not the copy on protected main. Someone who can
+    # push a vX.Y.Z tag to an unmerged commit could edit that commit's copy
+    # of this workflow to delete the `environment: release` line entirely
+    # -- and it would still work, because ASTRA_SIGN_IDENTITY and the rest
+    # are currently *repository* secrets, visible to any job in any
+    # workflow run regardless of environment. The environment reference
+    # only gates *this job's own progress* (required reviewers, deployment
+    # branch/tag policy); it does not gate the secrets themselves unless
+    # those secrets are defined at the ENVIRONMENT level instead of the
+    # repository level. Two manual repo-settings steps close this, neither
+    # of which I'll do myself (modifying access controls, and I have never
+    # had and will never request the actual credential values):
+    #   1. Settings -> Environments -> "release" -> add all 7 release
+    #      secrets (ASTRA_SIGN_IDENTITY, ASTRA_DEVELOPER_ID_CERTIFICATE_P12,
+    #      ASTRA_DEVELOPER_ID_CERTIFICATE_PASSWORD, ASTRA_NOTARY_API_KEY_P8,
+    #      ASTRA_NOTARY_KEY_ID, ASTRA_NOTARY_ISSUER_ID,
+    #      ASTRA_SPARKLE_PRIVATE_KEY_B64) as ENVIRONMENT secrets, with the
+    #      same values as today's repository secrets.
+    #   2. Once a real release confirms the environment-scoped copies work,
+    #      delete the repository-level copies of those same 7 secrets --
+    #      leaving them in place at the repo level means they stay visible
+    #      to a job that dropped the `environment:` line, defeating the
+    #      whole point.
+    # Also still needed: a deployment policy allowing the v* TAG pattern
+    # (not just the main BRANCH -- a tag-push run's ref is
+    # refs/tags/vX.Y.Z, which a main-only branch policy would reject
+    # outright) plus required reviewers on this environment, and a
+    # repository ruleset (Settings -> Rules -> Rulesets; the older
+    # "Settings -> Tags -> New rule" tag-protection UI was sunset in 2024)
+    # restricting who can create/update/delete matching v* tags at all.
+    # See the adoption plan doc (Phase 4) for the full checklist.
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
           fetch-tags: true
 
       - name: Preflight required secrets and variables
@@ -160,60 +365,6 @@ jobs:
           printf '%s' "$SPARKLE_PRIVATE_KEY" | /usr/bin/base64 -D -o "$KEY_PATH"
           echo "SPARKLE_ED_KEY_FILE=$KEY_PATH" >>"$GITHUB_ENV"
 
-      - name: Determine release version and build
-        id: version
-        env:
-          # Passed as data, not interpolated into the script text: a
-          # workflow_dispatch caller controls these inputs, and this job
-          # holds the Developer ID cert + Sparkle private key, so template
-          # expansion straight into `run:` would be a shell-injection hole.
-          INPUT_VERSION: ${{ inputs.version }}
-          INPUT_BUILD: ${{ inputs.build }}
-        run: |
-          if [[ -n "$INPUT_VERSION" ]]; then
-            if [[ ! "$INPUT_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-              echo "Invalid version input '$INPUT_VERSION': expected X.Y.Z." >&2
-              exit 2
-            fi
-            VERSION="$INPUT_VERSION"
-          elif [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            VERSION="${GITHUB_REF_NAME#v}"
-          else
-            LATEST_TAG="$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=v:refname | tail -n 1)"
-            if [[ -z "$LATEST_TAG" ]]; then
-              echo "Could not derive ASTRA_VERSION: no vX.Y.Z tags exist and no version input given." >&2
-              exit 2
-            fi
-            VERSION="${LATEST_TAG#v}"
-          fi
-
-          TAG="v$VERSION"
-          EXISTING_TAG_COUNT="$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' | wc -l | tr -d ' ')"
-          if git rev-parse "$TAG" >/dev/null 2>&1; then
-            # Releasing an already-tagged version: match the count-based
-            # build number build_and_run.sh would compute locally for it.
-            DEFAULT_BUILD="$EXISTING_TAG_COUNT"
-          else
-            # Releasing a version that has no tag yet: the count-based
-            # default would collide with the previous release's build
-            # number (Sparkle compares CFBundleVersion, not just the
-            # display version), so advance it by one.
-            DEFAULT_BUILD="$((EXISTING_TAG_COUNT + 1))"
-          fi
-
-          if [[ -n "$INPUT_BUILD" ]]; then
-            if [[ ! "$INPUT_BUILD" =~ ^[0-9]+$ ]]; then
-              echo "Invalid build input '$INPUT_BUILD': expected a positive integer." >&2
-              exit 2
-            fi
-            BUILD="$INPUT_BUILD"
-          else
-            BUILD="$DEFAULT_BUILD"
-          fi
-
-          echo "version=$VERSION" >>"$GITHUB_OUTPUT"
-          echo "build=$BUILD" >>"$GITHUB_OUTPUT"
-
       - name: Build, sign, and notarize
         env:
           ASTRA_RELEASE_MODE: developer-id
@@ -225,8 +376,8 @@ jobs:
           # `notarytool store-credentials` above.
           ASTRA_NOTARY_PROFILE: astra-release-ci
           ASTRA_SKIP_NOTARIZATION: ${{ inputs.skip_notarization && '1' || '0' }}
-          ASTRA_VERSION: ${{ steps.version.outputs.version }}
-          ASTRA_BUILD: ${{ steps.version.outputs.build }}
+          ASTRA_VERSION: ${{ needs.validate.outputs.version }}
+          ASTRA_BUILD: ${{ needs.validate.outputs.build }}
           ASTRA_SPARKLE_PUBLIC_ED_KEY: ${{ vars.ASTRA_SPARKLE_PUBLIC_ED_KEY }}
           SPARKLE_GENERATE_APPCAST: ${{ github.workspace }}/.build/artifacts/sparkle/Sparkle/bin/generate_appcast
         run: script/release_update.sh
@@ -235,7 +386,7 @@ jobs:
         run: |
           DSYM_PATH="dist/ASTRA.app.dSYM"
           if [[ -d "$DSYM_PATH" ]]; then
-            ditto -c -k --keepParent "$DSYM_PATH" "dist/release/ASTRA-${{ steps.version.outputs.version }}.dSYM.zip"
+            ditto -c -k --keepParent "$DSYM_PATH" "dist/release/ASTRA-${{ needs.validate.outputs.version }}.dSYM.zip"
           fi
 
       - name: Publish GitHub Release
@@ -245,15 +396,79 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          TAG="v${{ steps.version.outputs.version }}"
-          ASSETS=(dist/release/ASTRA-${{ steps.version.outputs.version }}.zip dist/release/appcast.xml)
-          [[ -f "dist/release/ASTRA-${{ steps.version.outputs.version }}.dSYM.zip" ]] && \
-            ASSETS+=("dist/release/ASTRA-${{ steps.version.outputs.version }}.dSYM.zip")
-          gh release create "$TAG" "${ASSETS[@]}" \
+          TAG="v${{ needs.validate.outputs.version }}"
+          ASSETS=(dist/release/ASTRA-${{ needs.validate.outputs.version }}.zip dist/release/appcast.xml)
+          [[ -f "dist/release/ASTRA-${{ needs.validate.outputs.version }}.dSYM.zip" ]] && \
+            ASSETS+=("dist/release/ASTRA-${{ needs.validate.outputs.version }}.dSYM.zip")
+          if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
+            # The job-level created/deleted guard only checks the push
+            # event that started this run -- signing + notarization take
+            # 10-25+ minutes, and a re-run of a failed/canceled job reuses
+            # the *original* GITHUB_SHA/GITHUB_REF even if the tag has
+            # since moved. `gh release create --verify-tag` alone isn't
+            # enough either: its failure falls through to `gh release
+            # upload --clobber`, which doesn't check the tag at all and
+            # would happily publish against a release object left over
+            # from an earlier run. So check explicitly, once, as late as
+            # possible: the remote tag must still exist AND still resolve
+            # to the exact commit this run built. Handles both lightweight
+            # tags (the plain ref IS the commit) and annotated tags (need
+            # the ^{} peel to reach the commit the tag object points at).
+            REMOTE_TAG_SHA="$(git ls-remote origin "refs/tags/$TAG^{}" | cut -f1)"
+            if [[ -z "$REMOTE_TAG_SHA" ]]; then
+              REMOTE_TAG_SHA="$(git ls-remote origin "refs/tags/$TAG" | cut -f1)"
+            fi
+            if [[ -z "$REMOTE_TAG_SHA" ]]; then
+              echo "Refusing to publish $TAG: the tag no longer exists on the remote (deleted after this run started)." >&2
+              exit 2
+            fi
+            if [[ "$REMOTE_TAG_SHA" != "$GITHUB_SHA" ]]; then
+              echo "Refusing to publish $TAG: the remote tag now points at $REMOTE_TAG_SHA, not the commit this run built ($GITHUB_SHA) -- it was likely force-moved after this run started." >&2
+              exit 2
+            fi
+
+            # The `validate` job's highest-tag check only ran once, before
+            # this run's ~10-25 minute build/sign/notarize. A GitHub
+            # Actions rerun of just this failed/canceled `release` job
+            # reuses that original needs.validate.outputs without
+            # re-running `validate` -- so if a genuinely newer vX.Y.Z tag
+            # was pushed and published in the meantime, this rerun would
+            # still pass the checks above (its own tag is unmoved and
+            # exists) and then move --latest backwards onto the older
+            # version. Repeat the freshness check right here, as close to
+            # the actual --latest call as possible -- and re-fetch tags
+            # first, since the local checkout is a snapshot from whenever
+            # this job's Checkout step ran and won't see anything pushed
+            # to the remote since then.
+            git fetch origin --tags --force --quiet
+            HIGHEST_TAG="$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | tail -n 1)"
+            if [[ "$TAG" != "$HIGHEST_TAG" ]]; then
+              echo "Refusing to publish $TAG as latest: a newer release tag ($HIGHEST_TAG) already exists." >&2
+              echo "This run is stale, likely a rerun of a job that started before $HIGHEST_TAG was published." >&2
+              exit 2
+            fi
+          fi
+
+          if ! gh release create "$TAG" "${ASSETS[@]}" \
             --title "ASTRA $TAG" \
             --generate-notes \
             --target "$GITHUB_SHA" \
-            --latest || gh release upload "$TAG" "${ASSETS[@]}" --clobber
+            --latest; then
+            if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
+              # `validate`'s `gh release view` check ran once, before the
+              # ~10-25 minute build/sign/notarize -- a release for this
+              # exact tag could have been created by some other means in
+              # that window (a manual gh release create, a parallel run,
+              # etc). Falling back to `gh release upload --clobber` here
+              # would silently overwrite whatever that other release
+              # published. Refuse instead: the clobber fallback is for
+              # deliberate manual repairs via workflow_dispatch, not
+              # something an automatic tag-push run should ever do.
+              echo "Refusing to fall back to 'gh release upload --clobber' for a push-triggered release: gh release create failed, most likely because a release for $TAG already exists. Fix manually via workflow_dispatch if this needs repairing." >&2
+              exit 2
+            fi
+            gh release upload "$TAG" "${ASSETS[@]}" --clobber
+          fi
 
       - name: Clean up temporary keychain
         if: always()
