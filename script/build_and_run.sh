@@ -345,6 +345,26 @@ sign_sparkle_framework_for_notarization() {
 }
 
 if [[ -n "$SIGN_IDENTITY" && "$ASTRA_CHANNEL" != "dev" ]]; then
+  # A prior CI run signed successfully right after cert import, then failed
+  # with "no identity found" ~14 minutes later at this exact point with no
+  # code change in between. Defensively re-unlock the CI temp keychain right
+  # before it's actually needed, in case whatever caused that (auto-lock,
+  # runner session change) recurs -- cheap and harmless when it's already
+  # unlocked. This keychain's password is a fixed, non-secret literal (see
+  # release.yml's import step for why); must match it exactly.
+  if [[ -n "${ASTRA_RELEASE_KEYCHAIN:-}" ]]; then
+    security unlock-keychain -p "astra-release-ci-ephemeral-keychain" "$ASTRA_RELEASE_KEYCHAIN" 2>&1 || true
+  fi
+  # Diagnostic only -- not a functional dependency. Makes the live keychain
+  # state at sign-time visible in the log instead of guessing blind if the
+  # failure above recurs despite the re-unlock.
+  if [[ -n "${ASTRA_RELEASE_KEYCHAIN:-}" ]]; then
+    echo "  [diagnostic] identities visible in \$ASTRA_RELEASE_KEYCHAIN at sign-time:"
+    security find-identity -v -p codesigning "$ASTRA_RELEASE_KEYCHAIN" 2>&1 | sed 's/^/    /' || true
+    echo "  [diagnostic] keychain-list membership check:"
+    security show-keychain-info "$ASTRA_RELEASE_KEYCHAIN" 2>&1 | sed 's/^/    /' || true
+    security list-keychains -d user 2>&1 | sed 's/^/    /' || true
+  fi
   # Distributed channels (prod/beta): sign inside-out with hardened runtime +
   # secure timestamp so the bundle can be notarized. Deliberately NOT --deep
   # here: --deep stamps this app's own entitlements onto every nested Mach-O,

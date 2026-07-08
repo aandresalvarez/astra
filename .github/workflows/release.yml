@@ -103,7 +103,16 @@ jobs:
           CERT_PASSWORD: ${{ secrets.ASTRA_DEVELOPER_ID_CERTIFICATE_PASSWORD }}
         run: |
           KEYCHAIN_PATH="$RUNNER_TEMP/astra-release.keychain-db"
-          KEYCHAIN_PASSWORD="$(/usr/bin/openssl rand -base64 24)"
+          # A fixed, non-secret unlock password, not a random one: this
+          # keychain protects nothing on its own (the actual secret is the
+          # Developer ID .p12 passphrase, handled separately and only used
+          # transiently for import) -- it's a disposable container scoped to
+          # this single ephemeral job and deleted at the end regardless.
+          # Using a random password meant it could only ever be unlocked
+          # once, in this step; a fixed one lets a later step re-unlock it
+          # defensively without plumbing a runtime secret through
+          # $GITHUB_ENV, where debug env dumps would print it unredacted.
+          KEYCHAIN_PASSWORD="astra-release-ci-ephemeral-keychain"
           CERT_PATH="$RUNNER_TEMP/astra-developer-id.p12"
 
           printf '%s' "$CERT_P12" | /usr/bin/base64 -D -o "$CERT_PATH"
