@@ -94,7 +94,7 @@ case "$ASTRA_CHANNEL" in
     APP_NAME="ASTRA"
     BUNDLE_ID="com.coral.ASTRA"
     URL_SCHEME="astra"
-    DEFAULT_SPARKLE_FEED_URL="https://github.com/susom/astra/releases/latest/download/appcast.xml"
+    DEFAULT_SPARKLE_FEED_URL="https://github.com/aandresalvarez/astra/releases/latest/download/appcast.xml"
     ;;
   dev|development)
     ASTRA_CHANNEL="dev"
@@ -107,7 +107,7 @@ case "$ASTRA_CHANNEL" in
     APP_NAME="ASTRA Beta"
     BUNDLE_ID="com.coral.ASTRA.beta"
     URL_SCHEME="astra-beta"
-    DEFAULT_SPARKLE_FEED_URL="https://github.com/susom/astra/releases/latest/download/appcast-beta.xml"
+    DEFAULT_SPARKLE_FEED_URL="https://github.com/aandresalvarez/astra/releases/latest/download/appcast-beta.xml"
     ;;
   *)
     echo "Unknown ASTRA_CHANNEL '$ASTRA_CHANNEL'. Use dev, beta, or prod." >&2

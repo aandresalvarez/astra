@@ -182,7 +182,7 @@ dist/release/appcast.xml
 Sparkle checks:
 
 ```text
-https://github.com/susom/astra/releases/latest/download/appcast.xml
+https://github.com/aandresalvarez/astra/releases/latest/download/appcast.xml
 ```
 
 To see the update button, the installed production app must have a lower

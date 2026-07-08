@@ -303,7 +303,7 @@ dist/release/appcast.xml
 Sparkle reads the appcast from:
 
 ```text
-https://github.com/susom/astra/releases/latest/download/appcast.xml
+https://github.com/aandresalvarez/astra/releases/latest/download/appcast.xml
 ```
 
 The private Sparkle key stays in Keychain. Do not commit or paste the private

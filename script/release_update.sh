@@ -6,7 +6,7 @@ DIST_DIR="$ROOT_DIR/dist"
 RELEASE_DIR="$DIST_DIR/release"
 APP_NAME="ASTRA"
 APP_BUNDLE="$DIST_DIR/$APP_NAME.app"
-DOWNLOAD_URL_PREFIX="${ASTRA_DOWNLOAD_URL_PREFIX:-https://github.com/susom/astra/releases/latest/download/}"
+DOWNLOAD_URL_PREFIX="${ASTRA_DOWNLOAD_URL_PREFIX:-https://github.com/aandresalvarez/astra/releases/latest/download/}"
 RELEASE_MODE="${ASTRA_RELEASE_MODE:-internal}"
 
 require_env() {

@@ -4,7 +4,7 @@ import Foundation
 enum AstraAboutInfo {
     static let fullName = "Agent Routines for Tasks, Runs, and Automation"
     static let tagline = "A macOS command center for supervising delegated AI work."
-    static let repositoryURLString = "https://github.com/susom/astra"
+    static let repositoryURLString = "https://github.com/aandresalvarez/astra"
 
     static let summary = "ASTRA helps you create durable workspaces, assign AI-powered tasks, review what changed, and decide when an agent should keep going, pause, or ask for help."
 
