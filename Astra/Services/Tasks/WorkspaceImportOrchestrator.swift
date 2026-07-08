@@ -41,8 +41,16 @@ struct ContentWorkspaceActionCoordinator {
         // capability enable calls modelContext.rollback(), which reverts
         // every uncommitted change in the context back to the last save —
         // without this save, that would also discard the instructions set
-        // above since they were never committed.
-        WorkspacePersistenceCoordinator.saveWithoutAutoExport(
+        // above since they were never committed. Auto-exports rather than
+        // using saveWithoutAutoExport: unlike that helper's documented
+        // "superseded by a later save-and-export" contract, there is no
+        // guaranteed later export here — no capabilities may be selected,
+        // or every selected one may fail, in which case this is the only
+        // save that ever runs, and the workspace's JSON mirror must not be
+        // left with the pre-instructions snapshot TaskLifecycleCoordinator
+        // .createWorkspace already exported.
+        WorkspacePersistenceCoordinator.saveAndAutoExport(
+            workspace: workspace,
             modelContext: modelContext,
             auditFields: ["operation": "save_workspace_instructions"]
         )

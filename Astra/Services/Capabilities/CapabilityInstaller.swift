@@ -501,12 +501,18 @@ struct CapabilityInstaller {
     }
 
     /// Saves each hinted credential in order, and on a mid-batch failure
-    /// deletes the Keychain entries this call itself just saved before
-    /// throwing. Without this, an earlier hint's successful Keychain write
-    /// survives a later hint's failure: `enable()`'s catch only calls
-    /// `modelContext.rollback()`, which reverts the connector's
-    /// `credentialKeys` array but never touches Keychain, orphaning that
-    /// secret under a connector the user can no longer see or manage.
+    /// undoes only what this call itself changed: `enable()`'s catch only
+    /// calls `modelContext.rollback()`, which reverts the connector's
+    /// `credentialKeys` array but never touches Keychain, so without this,
+    /// an earlier hint's successful Keychain write survives a later hint's
+    /// failure. A hint that had no saved value before this call gets its
+    /// Keychain entry deleted (it would otherwise be orphaned under a
+    /// connector the user can no longer see or manage). A hint that
+    /// already had a value — e.g. re-enabling an existing connector — gets
+    /// that prior value restored instead of deleted, since rollback leaves
+    /// the connector's `credentialKeys` still listing it as configured;
+    /// deleting it there would silently break an unrelated, previously
+    /// working credential.
     private func saveConnectorCredentials(
         _ connector: Connector,
         hints: [PluginConnector.CredentialHint],
@@ -514,7 +520,8 @@ struct CapabilityInstaller {
         allowCredentialUserInteraction: Bool,
         packageID: String
     ) throws {
-        var savedKeysThisCall: [String] = []
+        let previousCredentials = connector.credentials
+        var savedThisCall: [(key: String, previousValue: String?)] = []
         for hint in hints {
             guard let value = credentialInputs[hint.key], !value.isEmpty else { continue }
             guard connector.saveCredential(
@@ -522,12 +529,21 @@ struct CapabilityInstaller {
                 value: value,
                 allowUserInteraction: allowCredentialUserInteraction
             ) else {
-                for savedKey in savedKeysThisCall {
-                    connector.removeCredential(forKey: savedKey)
+                for saved in savedThisCall {
+                    if let previousValue = saved.previousValue {
+                        connector.saveCredential(
+                            key: saved.key,
+                            value: previousValue,
+                            allowUserInteraction: allowCredentialUserInteraction
+                        )
+                    } else {
+                        connector.removeCredential(forKey: saved.key)
+                    }
                 }
                 throw InstallationError.credentialSaveFailed(packageID: packageID, key: hint.key)
             }
-            savedKeysThisCall.append(hint.key)
+            let previousValue = previousCredentials[hint.key.uppercased()]
+            savedThisCall.append((key: hint.key, previousValue: (previousValue?.isEmpty == false) ? previousValue : nil))
         }
     }
 
