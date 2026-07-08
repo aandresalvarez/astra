@@ -26,18 +26,60 @@ struct ReleaseUpdateScriptTests {
         #expect(try index(of: generateAppcastCall, in: script) < index(of: moveDmgIntoReleaseDir, in: script))
     }
 
-    @Test("the DMG container is signed with a real Developer ID identity when one is provided")
+    @Test("the DMG container is signed with a real Developer ID identity when one is provided, using the same hardened identity resolution as app signing")
     func dmgIsSignedWhenIdentityProvided() throws {
         let script = try String(contentsOf: repoRoot.appendingPathComponent("script/release_update.sh"), encoding: .utf8)
 
+        // This repo already spent three PRs (#234-#236) root-causing "no
+        // identity found" in CI to (a) codesign relying on the ambient
+        // keychain search list instead of an explicit --keychain pointer,
+        // and (b) stray whitespace in the raw ASTRA_SIGN_IDENTITY secret
+        // defeating codesign's literal substring match. Both fixes have to
+        // be reapplied for the DMG's own codesign call, which is a
+        // separate invocation from build_and_run.sh's (already-hardened)
+        // app-signing path.
         let signCheck = #"if [[ -n "$SIGN_IDENTITY" ]]; then"#
-        let signCommand = #"codesign --force --timestamp --sign "$SIGN_IDENTITY" "$DMG_BUILD_PATH""#
+        let trimIdentity = #"DMG_SIGN_IDENTITY="${SIGN_IDENTITY#"${SIGN_IDENTITY%%[![:space:]]*}"}""#
+        let keychainArgs = #"DMG_SIGN_KEYCHAIN_ARGS=(--keychain "$ASTRA_RELEASE_KEYCHAIN")"#
+        let signCommand = #"codesign --force --timestamp "${DMG_SIGN_KEYCHAIN_ARGS[@]+"${DMG_SIGN_KEYCHAIN_ARGS[@]}"}" --sign "$DMG_SIGN_IDENTITY" "$DMG_BUILD_PATH""#
         let verifyCommand = #"codesign --verify --verbose=2 "$DMG_BUILD_PATH""#
 
         #expect(script.contains(signCheck))
+        #expect(script.contains(trimIdentity))
+        #expect(script.contains(keychainArgs))
         #expect(script.contains(signCommand))
         #expect(script.contains(verifyCommand))
         #expect(try index(of: signCheck, in: script) < index(of: signCommand, in: script))
+    }
+
+    @Test("the DMG is notarized and stapled, not just signed, when notarization isn't skipped")
+    func dmgIsNotarizedAndStapled() throws {
+        let script = try String(contentsOf: repoRoot.appendingPathComponent("script/release_update.sh"), encoding: .utf8)
+
+        // Apple's own DTS guidance for DMG distribution: sign the app, put
+        // it in the disk image, sign the disk image, and notarize that
+        // outermost container too -- the inner .app being separately
+        // notarized+stapled isn't enough, since the DMG itself is the
+        // first thing Gatekeeper evaluates when a user downloads and opens
+        // it.
+        let notarizeCall = #"xcrun notarytool submit "$DMG_BUILD_PATH" --keychain-profile "$ASTRA_NOTARY_PROFILE" --wait"#
+        let stapleCall = #"xcrun stapler staple "$DMG_BUILD_PATH""#
+        let validateCall = #"xcrun stapler validate "$DMG_BUILD_PATH""#
+        let skipCheck = #"if [[ "$SKIP_NOTARIZATION" != "1" ]]; then"#
+
+        #expect(script.contains(notarizeCall))
+        #expect(script.contains(stapleCall))
+        #expect(script.contains(validateCall))
+        #expect(try index(of: notarizeCall, in: script) < index(of: stapleCall, in: script))
+
+        // The notarize/staple block for the DMG must itself be gated on
+        // SKIP_NOTARIZATION, not run unconditionally whenever a sign
+        // identity exists (a skip_notarization=true dry run must never
+        // attempt a real Apple notarization submission).
+        let dmgSignBlockStart = try index(of: #"if [[ -n "$SIGN_IDENTITY" ]]; then"#, in: script)
+        let notarizeCallIndex = try index(of: notarizeCall, in: script)
+        let nestedSkipCheckRange = script.range(of: skipCheck, range: dmgSignBlockStart..<notarizeCallIndex)
+        #expect(nestedSkipCheckRange != nil)
     }
 
     @Test("the DMG is listed as a release asset")

@@ -154,8 +154,47 @@ rm -f "$DMG_BUILD_PATH"
 hdiutil create -volname "$APP_NAME" -srcfolder "$DMG_STAGING" -format UDZO -ov "$DMG_BUILD_PATH" >/dev/null
 
 if [[ -n "$SIGN_IDENTITY" ]]; then
-  codesign --force --timestamp --sign "$SIGN_IDENTITY" "$DMG_BUILD_PATH"
+  # Reuse the exact hardened identity resolution build_and_run.sh uses for
+  # app signing, not a naive `--sign "$SIGN_IDENTITY"`: this repo already
+  # spent three PRs (#234-#236) tracking down "no identity found" in CI to
+  # two separate root causes -- codesign relying on the ambient keychain
+  # search list instead of an explicit --keychain pointer, fragile across
+  # the ~10-25 minute CI job, and stray whitespace in the raw
+  # ASTRA_SIGN_IDENTITY secret defeating codesign's literal substring
+  # match. $SIGN_IDENTITY here is deliberately the RAW, untrimmed value
+  # (build_and_run.sh does its own trimming internally, invisible to this
+  # script, which just sets env vars for that separate subprocess) -- both
+  # fixes have to be reapplied here or this new DMG-signing call would
+  # regress exactly the bugs already fixed for the app.
+  DMG_SIGN_IDENTITY="${SIGN_IDENTITY#"${SIGN_IDENTITY%%[![:space:]]*}"}"
+  DMG_SIGN_IDENTITY="${DMG_SIGN_IDENTITY%"${DMG_SIGN_IDENTITY##*[![:space:]]}"}"
+  DMG_SIGN_KEYCHAIN_ARGS=()
+  if [[ -n "${ASTRA_RELEASE_KEYCHAIN:-}" ]]; then
+    DMG_SIGN_KEYCHAIN_ARGS=(--keychain "$ASTRA_RELEASE_KEYCHAIN")
+  fi
+  codesign --force --timestamp "${DMG_SIGN_KEYCHAIN_ARGS[@]+"${DMG_SIGN_KEYCHAIN_ARGS[@]}"}" --sign "$DMG_SIGN_IDENTITY" "$DMG_BUILD_PATH"
   codesign --verify --verbose=2 "$DMG_BUILD_PATH"
+
+  if [[ "$SKIP_NOTARIZATION" != "1" ]]; then
+    # Apple's own DTS guidance for DMG distribution: sign the app, put it
+    # in the disk image, sign the disk image, and notarize that outermost
+    # container too (https://developer.apple.com/forums/thread/125145).
+    # The inner .app being separately notarized+stapled isn't enough --
+    # the DMG itself is the first thing Gatekeeper evaluates when a user
+    # downloads and opens it, and an unnotarized signed container can
+    # still fail or warn even though the app inside is fine.
+    xcrun notarytool submit "$DMG_BUILD_PATH" --keychain-profile "$ASTRA_NOTARY_PROFILE" --wait
+    xcrun stapler staple "$DMG_BUILD_PATH"
+    xcrun stapler validate "$DMG_BUILD_PATH"
+    # spctl, not syspolicy_check, for this specific check: syspolicy_check
+    # distribution is documented in terms of an application bundle, not a
+    # disk image, and --type open is the Apple-documented spctl invocation
+    # for assessing a DMG container specifically (distinct from --type
+    # execute, used above for the .app -- the spurious "bundle format
+    # unrecognized" spctl failure seen on this project was specifically
+    # from --type execute against a signed .app, not this).
+    spctl --assess --type open --context context:primary-signature --verbose "$DMG_BUILD_PATH"
+  fi
 fi
 
 GENERATE_APPCAST_ARGS=(--download-url-prefix "$DOWNLOAD_URL_PREFIX")
