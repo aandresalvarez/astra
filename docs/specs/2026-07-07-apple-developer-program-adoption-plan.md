@@ -93,46 +93,40 @@ Test capability, connector, and keychain item deleted afterward. Net conclusion:
 
 This run used `skip_notarization=true` (signing-only dry run); `Store notarization credentials` and `Publish GitHub Release` both showed `skipped`, since that flag gates both. **Not yet exercised live:** the real `notarytool submit` round-trip from a CI runner, and the actual `gh release create` publish step. The workflow has no notarize-without-publish input — dropping `skip_notarization` does both together, and publishing a real GitHub Release is a public action that needs separate explicit go-ahead each time, per this plan's standing rule on public/irreversible actions.
 
-Also still not wired: automatic `push: tags: v*` triggering (deliberately deferred — this repo already tags every build sequentially, and enabling the trigger before the pipeline was proven would have turned every routine tag red in Actions). Add as a follow-up now that a signing run has succeeded.
+Also still not wired: automatic `push: tags: v*` triggering. **Keep this deferred** — not just until a signing run succeeds, but until a real *non-skipped* run (`skip_notarization` defaulting to `false`, exercising `notarytool submit` and `gh release create`) has been validated live. `skip_notarization` defaults to `false` in the workflow, so enabling the tag trigger before that run is proven would make every routine build tag silently attempt the unproven notarize-and-publish path and update the public latest release. Add the trigger only after that dry run below is done, or add a notarize-without-publish input to the workflow first.
 
-`.github/workflows/release.yml` exists (`workflow_dispatch`-only for now — this repo already tags every build sequentially, e.g. `v0.1.17`...`v0.1.21`, so an automatic `push: tags: v*` trigger before secrets exist would turn every routine tag red in Actions). Still needed before it can run for real: add the secrets it expects, then a real `workflow_dispatch` run to prove the CI keychain-import + notarization path against the actual GitHub-hosted runner. Once that passes, add the `push: tags: v*` trigger as a deliberate follow-up.
+---
 
-**Everything about Phase 4 that doesn't require real credentials has now been mechanically de-risked (2026-07-07):**
+**Historical — Phase 4 setup, before secrets existed (2026-07-07).** Kept for reference only; the steps below are already done and must **not** be re-run. In particular, do **not** regenerate the Sparkle EdDSA key pair — Phase 3 above is explicit that rotating it strands existing installs, and the key referenced below is now the live production key used by the successful CI run.
 
-- **The temp-keychain cert-import sequence** (`security create-keychain` → `set-keychain-settings` → `unlock-keychain` → `import` → `set-key-partition-list` → `list-keychains -s`) was replicated exactly, line for line, against a throwaway self-signed test certificate (generated purely locally via `openssl`, never touching the real Developer ID `.p12`). All mechanical steps succeeded. `security find-identity -p codesigning` then reported the test identity as **not valid for signing**, and `codesign` correctly refused to use it — but this is an expected, well-understood artifact of the self-signed cert lacking a trust chain, *not* a bug in the script: a real Developer ID cert chains to Apple's Root CA, which is already trusted system-wide (confirmed separately — the real cert has been showing up fine via this exact `find-identity` mechanism all day in Phases 0–3). Verified the "0 valid identities" wasn't a keychain-search-list scoping issue either (checked the temp keychain was genuinely in the search list, and that the cert+key pair were genuinely present via `security find-certificate`) before attributing it to the trust-chain difference. Test keychain deleted and search list restored afterward.
-- **The version/build-derivation bash logic** (tag-name regex match, `workflow_dispatch` input overrides, error path for missing/malformed input) was unit-tested in isolation against 5 scenarios: real tag push, manual override, no-tag/no-input (fails safely, no silent misfire), malformed tag shape (fails safely), and a pre-release-suffixed tag like `v0.1.22-beta1` (currently unsupported by the strict `^v[0-9]+\.[0-9]+\.[0-9]+$` regex — not a bug, just worth knowing if the tagging convention ever grows pre-release suffixes, since it isn't used today).
+<details>
+<summary>Original pre-secrets setup notes (done, do not repeat)</summary>
 
-What remains is exactly the piece that requires a human: pasting the 8 real secret values into GitHub's UI, then a live `workflow_dispatch` run against an actual GitHub-hosted macOS runner (which the temp-keychain dry run above can't fully substitute for — runner environment specifics like `sudo`/SIP posture could still differ from this machine).
+**Everything about Phase 4 that doesn't require real credentials was mechanically de-risked (2026-07-07):**
 
-**Exact secret names the workflow reads** (verified against `release.yml` directly — this list is authoritative; an earlier draft of this doc used a shorthand that didn't match the actual names for the notary key ID/issuer, corrected here):
+- **The temp-keychain cert-import sequence** (`security create-keychain` → `set-keychain-settings` → `unlock-keychain` → `import` → `set-key-partition-list` → `list-keychains -s`) was replicated exactly, line for line, against a throwaway self-signed test certificate (generated purely locally via `openssl`, never touching the real Developer ID `.p12`). All mechanical steps succeeded. `security find-identity -p codesigning` then reported the test identity as **not valid for signing**, and `codesign` correctly refused to use it — but this is an expected, well-understood artifact of the self-signed cert lacking a trust chain, *not* a bug in the script: a real Developer ID cert chains to Apple's Root CA, which is already trusted system-wide. Test keychain deleted and search list restored afterward.
+- **The version/build-derivation bash logic** (tag-name regex match, `workflow_dispatch` input overrides, error path for missing/malformed input) was unit-tested in isolation against 5 scenarios: real tag push, manual override, no-tag/no-input (fails safely, no silent misfire), malformed tag shape (fails safely), and a pre-release-suffixed tag like `v0.1.22-beta1` (currently unsupported by the strict `^v[0-9]+\.[0-9]+\.[0-9]+$` regex).
 
-**7 real secrets** — Settings → Secrets and variables → Actions → **Secrets** tab → New repository secret:
+**Exact secret names the workflow reads** — all 8 (7 secrets + 1 variable) have since been entered and are confirmed working by the live run above:
 
 | Secret name | Source |
 |---|---|
 | `ASTRA_SIGN_IDENTITY` | `security find-identity -v -p codesigning` → the `Developer ID Application: ...` string |
 | `ASTRA_DEVELOPER_ID_CERTIFICATE_P12` | `base64 -i Certificates.p12 \| pbcopy` — the Developer ID cert's exported `.p12`, base64-encoded |
-| `ASTRA_DEVELOPER_ID_CERTIFICATE_PASSWORD` | The passphrase you set when exporting that `.p12` |
+| `ASTRA_DEVELOPER_ID_CERTIFICATE_PASSWORD` | The passphrase set when exporting that `.p12` |
 | `ASTRA_NOTARY_API_KEY_P8` | `base64 -i AuthKey_XXXX.p8 \| pbcopy` — the App Store Connect API key, base64-encoded |
 | `ASTRA_NOTARY_KEY_ID` | The Key ID shown next to that API key on the Team Keys page (**not** prefixed with `API_`) |
 | `ASTRA_NOTARY_ISSUER_ID` | The Issuer ID (UUID) shown on the Team Keys page (**not** prefixed with `API_`) |
-| `ASTRA_SPARKLE_PRIVATE_KEY_B64` | `generate_keys -x /tmp/key && base64 -i /tmp/key \| pbcopy` (the **real** Sparkle key, not the throwaway `astra-sparkle-transition-test` one used for local testing — see prerequisite note below) |
+| `ASTRA_SPARKLE_PRIVATE_KEY_B64` | The production Sparkle EdDSA private key — **do not regenerate**; this is the live key |
+| `ASTRA_SPARKLE_PUBLIC_ED_KEY` (repo **variable**, not a secret — it's the public half, already embedded unencrypted in every shipped `Info.plist`) | `generate_keys -p` for the same key pair as above |
 
-**1 public value, not a secret** — `release.yml` was refactored (2026-07-07) to read this via the `vars` context instead, since it's the *public* half of a keypair, already embedded unencrypted in every shipped `Info.plist`, not sensitive by any reasonable definition:
+</details>
 
-| Repo variable name | Source |
-|---|---|
-| `ASTRA_SPARKLE_PUBLIC_ED_KEY` | `generate_keys -p` — Settings → Secrets and variables → Actions → **Variables** tab → New repository variable |
+Remaining scope:
 
-**Prerequisite gap found while checking this:** no real production Sparkle EdDSA key pair exists on this machine yet (`generate_keys -p` with no `--account` override returns "No existing signing key found!" — only the throwaway `astra-sparkle-transition-test` one from the Phase 3 test exists, and that was deleted). Run `.build/artifacts/sparkle/Sparkle/bin/generate_keys` once (no arguments, uses the default account) before the private/public values above can be sourced — this is a one-time step separate from adding GitHub secrets.
-
-Entering the 7 secrets is yours to do — that's credential entry, which isn't something I'll do on your behalf even with authorization. The 1 public variable is a judgment call: tell me to go ahead and I can add it myself via `gh variable set` once the real key pair exists (it's not sensitive), or add it yourself alongside the secrets for simplicity — either is fine.
-
-Original scope, for what's left:
-
-1. **Secrets:** base64-encoded Developer ID `.p12` + passphrase; App Store Connect API key (`.p8` + key id + issuer id); Sparkle EdDSA private key. Import the cert into a temporary keychain (`security create-keychain` … `security import` … partition-list), configure notarytool with the API key directly (no keychain profile needed in CI).
-2. **Pipeline:** run the existing test gate (`script/prepush.sh` at minimum; full `swift test --no-parallel` if runtime budget allows — note the one known flaky pipe-timing test before making it blocking) → `release_update.sh` in developer-id mode → upload zip + appcast + `.dSYM` as release assets.
-3. **dSYM retention:** the build already emits dSYMs (`build_and_run.sh:195–216`); attach them to the GitHub release for crash symbolication.
+1. **Real notarization + publish dry run**: a `workflow_dispatch` run with `skip_notarization=false` to exercise `notarytool submit` and `gh release create` live — not yet done, and it publishes a real public GitHub Release, so it needs separate explicit go-ahead each time.
+2. **`push: tags: v*` trigger**: add only after (1) is validated.
+3. **dSYM retention**: the build already emits dSYMs (`build_and_run.sh:195–216`); confirm they're attached to the GitHub release for crash symbolication once (1) runs for real.
 4. Keep the local manual path working — CI is an automation of the same script, not a fork of it.
 
 ## Phase 5 — Newly unlocked platform capabilities (adopt selectively)
