@@ -302,9 +302,23 @@ if [[ -z "$SIGN_IDENTITY" && "$ASTRA_CHANNEL" == "dev" ]]; then
   fi
 fi
 
+# In CI the identity lives in a non-default temporary keychain
+# ($ASTRA_RELEASE_KEYCHAIN, set by release.yml's cert-import step via
+# $GITHUB_ENV). Relying on the ambient keychain search list to find it is
+# fragile across a long-running job -- confirmed live in CI (run
+# 28913131937): the identity was importable and verifiable right after
+# import, but codesign reported "no identity found" for it ~14 minutes
+# later once the actual signing step ran, well past the keychain's normal
+# lock timeout window. Passing --keychain explicitly removes the ambiguity
+# entirely instead of debugging search-list persistence across steps.
+SIGN_KEYCHAIN_ARGS=()
+if [[ -n "${ASTRA_RELEASE_KEYCHAIN:-}" ]]; then
+  SIGN_KEYCHAIN_ARGS=(--keychain "$ASTRA_RELEASE_KEYCHAIN")
+fi
+
 sign_developer_id() {
   local target="$1"
-  /usr/bin/codesign --force --timestamp --options runtime --sign "$SIGN_IDENTITY" "$target"
+  /usr/bin/codesign --force --timestamp --options runtime "${SIGN_KEYCHAIN_ARGS[@]}" --sign "$SIGN_IDENTITY" "$target"
 }
 
 sign_bundled_tools_for_notarization() {
@@ -338,7 +352,7 @@ if [[ -n "$SIGN_IDENTITY" && "$ASTRA_CHANNEL" != "dev" ]]; then
   # own signatures. Nested code must be signed first, then the outer bundle.
   sign_bundled_tools_for_notarization
   sign_sparkle_framework_for_notarization
-  /usr/bin/codesign --force --timestamp --options runtime --entitlements "$ENTITLEMENTS" --sign "$SIGN_IDENTITY" "$APP_BUNDLE"
+  /usr/bin/codesign --force --timestamp --options runtime "${SIGN_KEYCHAIN_ARGS[@]}" --entitlements "$ENTITLEMENTS" --sign "$SIGN_IDENTITY" "$APP_BUNDLE"
 elif [[ -n "$SIGN_IDENTITY" ]]; then
   # Dev: stable identity but NO hardened runtime/timestamp. Those are only needed
   # for notarization and would change local runtime behavior vs the ad-hoc build
