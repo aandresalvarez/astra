@@ -103,7 +103,7 @@ struct AppBundlePackagingTests {
 
         let signTools = #"sign_bundled_tools_for_notarization"#
         let signSparkle = #"sign_sparkle_framework_for_notarization"#
-        let outerSign = #"/usr/bin/codesign --force --timestamp --options runtime --entitlements "$ENTITLEMENTS" --sign "$SIGN_IDENTITY" "$APP_BUNDLE""#
+        let outerSign = #"/usr/bin/codesign --force --timestamp --options runtime "${SIGN_KEYCHAIN_ARGS[@]}" --entitlements "$ENTITLEMENTS" --sign "$SIGN_IDENTITY" "$APP_BUNDLE""#
 
         #expect(script.contains(signTools))
         #expect(script.contains(signSparkle))
