@@ -21,7 +21,20 @@ fi
 REQUIRE_ARM64="${ASTRA_REQUIRE_ARM64:-1}"
 SPARKLE_PUBLIC_ED_KEY="${ASTRA_SPARKLE_PUBLIC_ED_KEY:-${SPARKLE_PUBLIC_ED_KEY:-}}"
 GOOGLE_MANAGED_OAUTH_CLIENT_ID="${ASTRA_GOOGLE_MANAGED_OAUTH_CLIENT_ID:-}"
-SIGN_IDENTITY="${ASTRA_SIGN_IDENTITY:-}"
+SIGN_IDENTITY_RAW="${ASTRA_SIGN_IDENTITY:-}"
+# Trim leading/trailing whitespace (including a leading/trailing newline from
+# copy-pasting into the GitHub secret field). codesign matches -s against the
+# certificate's common name as a literal substring, so stray whitespace turns
+# an otherwise-correct identity into a silent "no identity found" -- live CI
+# run 28916225382 proved the identity was present, valid, and unlocked in the
+# keychain (security find-identity found it cleanly) while codesign's own
+# lookup using the raw secret still failed. Trimmed as one whole string via
+# bash pattern matching, not line-by-line: sed processes input line by line,
+# so a leading blank line (e.g. a secret starting with "\n...") would keep
+# that embedded newline in the result even after trimming each line's own
+# whitespace.
+SIGN_IDENTITY="${SIGN_IDENTITY_RAW#"${SIGN_IDENTITY_RAW%%[![:space:]]*}"}"
+SIGN_IDENTITY="${SIGN_IDENTITY%"${SIGN_IDENTITY##*[![:space:]]}"}"
 
 latest_release_tag() {
   git -C "$ROOT_DIR" tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=v:refname 2>/dev/null | tail -n 1 || true
@@ -363,6 +376,7 @@ if [[ -n "$SIGN_IDENTITY" && "$ASTRA_CHANNEL" != "dev" ]]; then
   # the CI job log where it's needed (caught by review before it shipped).
   if [[ -n "${ASTRA_RELEASE_KEYCHAIN:-}" ]]; then
     {
+      echo "  [diagnostic] ASTRA_SIGN_IDENTITY length: raw=${#SIGN_IDENTITY_RAW} trimmed=${#SIGN_IDENTITY} (lengths only, never the value)"
       echo "  [diagnostic] identities visible in \$ASTRA_RELEASE_KEYCHAIN at sign-time:"
       security find-identity -v -p codesigning "$ASTRA_RELEASE_KEYCHAIN" 2>&1 | sed 's/^/    /'
       echo "  [diagnostic] keychain-list membership check:"
