@@ -357,13 +357,18 @@ if [[ -n "$SIGN_IDENTITY" && "$ASTRA_CHANNEL" != "dev" ]]; then
   fi
   # Diagnostic only -- not a functional dependency. Makes the live keychain
   # state at sign-time visible in the log instead of guessing blind if the
-  # failure above recurs despite the re-unlock.
+  # failure above recurs despite the re-unlock. Written to stderr, not
+  # stdout: release_update.sh invokes this script with stdout redirected to
+  # /dev/null, so a stdout-only diagnostic here would never actually reach
+  # the CI job log where it's needed (caught by review before it shipped).
   if [[ -n "${ASTRA_RELEASE_KEYCHAIN:-}" ]]; then
-    echo "  [diagnostic] identities visible in \$ASTRA_RELEASE_KEYCHAIN at sign-time:"
-    security find-identity -v -p codesigning "$ASTRA_RELEASE_KEYCHAIN" 2>&1 | sed 's/^/    /' || true
-    echo "  [diagnostic] keychain-list membership check:"
-    security show-keychain-info "$ASTRA_RELEASE_KEYCHAIN" 2>&1 | sed 's/^/    /' || true
-    security list-keychains -d user 2>&1 | sed 's/^/    /' || true
+    {
+      echo "  [diagnostic] identities visible in \$ASTRA_RELEASE_KEYCHAIN at sign-time:"
+      security find-identity -v -p codesigning "$ASTRA_RELEASE_KEYCHAIN" 2>&1 | sed 's/^/    /'
+      echo "  [diagnostic] keychain-list membership check:"
+      security show-keychain-info "$ASTRA_RELEASE_KEYCHAIN" 2>&1 | sed 's/^/    /'
+      security list-keychains -d user 2>&1 | sed 's/^/    /'
+    } >&2 || true
   fi
   # Distributed channels (prod/beta): sign inside-out with hardened runtime +
   # secure timestamp so the bundle can be notarized. Deliberately NOT --deep
