@@ -108,6 +108,7 @@ jobs:
           # expansion straight into `run:` would be a shell-injection hole.
           INPUT_VERSION: ${{ inputs.version }}
           INPUT_BUILD: ${{ inputs.build }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           if [[ -n "$INPUT_VERSION" ]]; then
             if [[ ! "$INPUT_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
@@ -158,6 +159,26 @@ jobs:
               echo "Refusing to release $TAG: a newer release tag ($HIGHEST_TAG) already exists." >&2
               echo "This can happen when multiple release tags are pushed together in one 'git push --tags'." >&2
               echo "Push release tags one at a time." >&2
+              exit 2
+            fi
+
+            # github.event.created is true whenever a push creates a ref
+            # that didn't exist as of THAT push -- including a delete-then-
+            # recreate of a previously-published tag. Deleting a git tag
+            # does not delete its GitHub Release object, so a recreated
+            # v0.1.27 tag pointing at a different commit would sail past
+            # the job-level created guard, get signed, and hit `gh release
+            # create` failing (release already exists) -> falling through
+            # to `gh release upload --clobber`, silently replacing the
+            # already-published assets for that version under a different
+            # commit. A push-triggered release must always be for a
+            # version that has never been published before -- refuse if a
+            # release already exists for this exact tag, regardless of how
+            # that came to be.
+            if gh release view "$TAG" >/dev/null 2>&1; then
+              echo "Refusing to release $TAG: a GitHub Release already exists for this tag." >&2
+              echo "This can happen if the tag was deleted and recreated, or was already published." >&2
+              echo "Push a new version number instead of reusing $TAG." >&2
               exit 2
             fi
           fi
@@ -389,6 +410,27 @@ jobs:
             fi
             if [[ "$REMOTE_TAG_SHA" != "$GITHUB_SHA" ]]; then
               echo "Refusing to publish $TAG: the remote tag now points at $REMOTE_TAG_SHA, not the commit this run built ($GITHUB_SHA) -- it was likely force-moved after this run started." >&2
+              exit 2
+            fi
+
+            # The `validate` job's highest-tag check only ran once, before
+            # this run's ~10-25 minute build/sign/notarize. A GitHub
+            # Actions rerun of just this failed/canceled `release` job
+            # reuses that original needs.validate.outputs without
+            # re-running `validate` -- so if a genuinely newer vX.Y.Z tag
+            # was pushed and published in the meantime, this rerun would
+            # still pass the checks above (its own tag is unmoved and
+            # exists) and then move --latest backwards onto the older
+            # version. Repeat the freshness check right here, as close to
+            # the actual --latest call as possible -- and re-fetch tags
+            # first, since the local checkout is a snapshot from whenever
+            # this job's Checkout step ran and won't see anything pushed
+            # to the remote since then.
+            git fetch origin --tags --force --quiet
+            HIGHEST_TAG="$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | tail -n 1)"
+            if [[ "$TAG" != "$HIGHEST_TAG" ]]; then
+              echo "Refusing to publish $TAG as latest: a newer release tag ($HIGHEST_TAG) already exists." >&2
+              echo "This run is stale, likely a rerun of a job that started before $HIGHEST_TAG was published." >&2
               exit 2
             fi
           fi
