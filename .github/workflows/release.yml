@@ -48,6 +48,10 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          # fetch-depth: 0 alone doesn't guarantee tags come along on every
+          # actions/checkout version/config -- confirmed live (run 28912601840):
+          # the version-derivation step saw zero tags without this.
+          fetch-tags: true
 
       - name: Preflight required secrets and variables
         env:
