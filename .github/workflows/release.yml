@@ -97,6 +97,15 @@ jobs:
       - name: Resolve Swift package dependencies
         run: swift package resolve
 
+      - name: Run release test gate
+        # This workflow doesn't depend on the separate CI workflow passing --
+        # GitHub Actions workflows run independently by default. Without this
+        # step, a workflow_dispatch (or a future push: tags: v*) run could
+        # sign, notarize, and publish a release from a commit that never
+        # passed tests. script/prepush.sh is the same minimum gate used
+        # locally before every push (focused Swift tests + whitespace).
+        run: script/prepush.sh
+
       - name: Import Developer ID certificate into a temporary keychain
         env:
           CERT_P12: ${{ secrets.ASTRA_DEVELOPER_ID_CERTIFICATE_P12 }}
