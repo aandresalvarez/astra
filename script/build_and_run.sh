@@ -331,7 +331,13 @@ fi
 
 sign_developer_id() {
   local target="$1"
-  /usr/bin/codesign --force --timestamp --options runtime "${SIGN_KEYCHAIN_ARGS[@]}" --sign "$SIGN_IDENTITY" "$target"
+  # ${arr[@]+"${arr[@]}"}, not "${arr[@]}" directly: under `set -u`, macOS's
+  # default /bin/bash (3.2, frozen at GPLv2) treats an *empty* array's [@]
+  # expansion as an unbound-variable error -- a bug fixed in bash 4.4+, but
+  # GitHub Actions runners have a modern bash first in PATH so this never
+  # surfaced in CI. Confirmed live: this exact line broke a local
+  # developer-id test run on stock /bin/bash before this fix.
+  /usr/bin/codesign --force --timestamp --options runtime "${SIGN_KEYCHAIN_ARGS[@]+"${SIGN_KEYCHAIN_ARGS[@]}"}" --sign "$SIGN_IDENTITY" "$target"
 }
 
 sign_bundled_tools_for_notarization() {
@@ -391,7 +397,7 @@ if [[ -n "$SIGN_IDENTITY" && "$ASTRA_CHANNEL" != "dev" ]]; then
   # own signatures. Nested code must be signed first, then the outer bundle.
   sign_bundled_tools_for_notarization
   sign_sparkle_framework_for_notarization
-  /usr/bin/codesign --force --timestamp --options runtime "${SIGN_KEYCHAIN_ARGS[@]}" --entitlements "$ENTITLEMENTS" --sign "$SIGN_IDENTITY" "$APP_BUNDLE"
+  /usr/bin/codesign --force --timestamp --options runtime "${SIGN_KEYCHAIN_ARGS[@]+"${SIGN_KEYCHAIN_ARGS[@]}"}" --entitlements "$ENTITLEMENTS" --sign "$SIGN_IDENTITY" "$APP_BUNDLE"
 elif [[ -n "$SIGN_IDENTITY" ]]; then
   # Dev: stable identity but NO hardened runtime/timestamp. Those are only needed
   # for notarization and would change local runtime behavior vs the ad-hoc build
