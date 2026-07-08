@@ -513,6 +513,15 @@ struct CapabilityInstaller {
     /// the connector's `credentialKeys` still listing it as configured;
     /// deleting it there would silently break an unrelated, previously
     /// working credential.
+    ///
+    /// Looks up each hint's prior value with `currentCredentialValue(forKey:)`
+    /// right before overwriting it, rather than snapshotting `connector
+    /// .credentials` once up front: the caller resets `credentialKeys` to
+    /// the package's declared hint spelling just before this runs, which
+    /// isn't necessarily uppercase, while every saved credential is stored
+    /// under its uppercased key — a bulk snapshot keyed off that
+    /// just-reset array would silently miss existing secrets for
+    /// non-uppercase hint keys.
     private func saveConnectorCredentials(
         _ connector: Connector,
         hints: [PluginConnector.CredentialHint],
@@ -520,10 +529,10 @@ struct CapabilityInstaller {
         allowCredentialUserInteraction: Bool,
         packageID: String
     ) throws {
-        let previousCredentials = connector.credentials
         var savedThisCall: [(key: String, previousValue: String?)] = []
         for hint in hints {
             guard let value = credentialInputs[hint.key], !value.isEmpty else { continue }
+            let previousValue = connector.currentCredentialValue(forKey: hint.key)
             guard connector.saveCredential(
                 key: hint.key,
                 value: value,
@@ -542,8 +551,7 @@ struct CapabilityInstaller {
                 }
                 throw InstallationError.credentialSaveFailed(packageID: packageID, key: hint.key)
             }
-            let previousValue = previousCredentials[hint.key.uppercased()]
-            savedThisCall.append((key: hint.key, previousValue: (previousValue?.isEmpty == false) ? previousValue : nil))
+            savedThisCall.append((key: hint.key, previousValue: previousValue))
         }
     }
 

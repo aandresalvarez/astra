@@ -185,6 +185,18 @@ public final class Connector {
         }
     }
 
+    /// Look up a single credential's current Keychain value directly by
+    /// key, normalizing case the same way `saveCredential`/
+    /// `removeCredential(forKey:)` do — bypassing `credentialKeys`
+    /// entirely. Callers that reset `credentialKeys` to a package's
+    /// declared hint spelling (not necessarily uppercase) right before
+    /// checking "does this key already have a value" cannot trust that
+    /// array's current casing to find an already-uppercased Keychain entry.
+    public func currentCredentialValue(forKey key: String) -> String? {
+        let value = ConnectorSecretSeam.required.loadCredential(key: key.uppercased(), facts: secretFacts)
+        return (value?.isEmpty == false) ? value : nil
+    }
+
     /// Migrate any legacy plaintext credentials to Keychain.
     public func migrateToKeychain() {
         let facts = secretFacts
