@@ -1,9 +1,13 @@
 name: Release
 
-# Manual only for now. `push: tags: v*` is a deliberate follow-up once the
-# secrets/variables below are configured — this repo already tags every
-# build sequentially (v0.1.17, v0.1.18, ...), so wiring a tag-push trigger
-# before they exist would turn every routine tag red in Actions.
+# Pushing a vX.Y.Z tag triggers a real release: sign, notarize, and publish,
+# with the version/build derived from the tag name (see "Determine release
+# version and build" below). Live-validated end-to-end against
+# aandresalvarez/astra, the confirmed distribution repo (2026-07-08 --
+# ASTRA v0.1.25 proved the signing/notarize/publish mechanics, v0.1.26
+# confirmed the appcast points at the right repo). skip_notarization only
+# applies to manual workflow_dispatch runs -- a tag push always does the
+# real thing, since a pushed release tag is never meant to be a dry run.
 #
 # 7 values go in Settings -> Secrets and variables -> Actions -> Secrets:
 #   ASTRA_SIGN_IDENTITY, ASTRA_DEVELOPER_ID_CERTIFICATE_P12,
@@ -16,6 +20,13 @@ name: Release
 # See docs/code-signing.md and
 # docs/specs/2026-07-07-apple-developer-program-adoption-plan.md (Phase 4).
 on:
+  push:
+    tags:
+      # Broad on purpose: the "Determine release version and build" step
+      # below does the real vX.Y.Z validation and fails loudly on a
+      # mismatch, rather than relying on exact regex support in this glob
+      # dialect (which doesn't reliably support quantifiers like [0-9]+).
+      - "v*.*.*"
   workflow_dispatch:
     inputs:
       version:
@@ -27,7 +38,7 @@ on:
         required: false
         type: string
       skip_notarization:
-        description: "Skip notarization (dry run of signing only)"
+        description: "Skip notarization (dry run of signing only, workflow_dispatch only -- ignored on tag push)"
         required: false
         type: boolean
         default: false
@@ -178,6 +189,13 @@ jobs:
             VERSION="$INPUT_VERSION"
           elif [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             VERSION="${GITHUB_REF_NAME#v}"
+          elif [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
+            # A pushed ref that reached this job (on.push.tags matched it)
+            # but doesn't fit vX.Y.Z exactly -- fail loudly instead of
+            # falling through to "latest tag", which would silently publish
+            # a different version than what was actually pushed.
+            echo "Pushed tag '$GITHUB_REF_NAME' doesn't match vX.Y.Z exactly; refusing to guess a version." >&2
+            exit 2
           else
             LATEST_TAG="$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=v:refname | tail -n 1)"
             if [[ -z "$LATEST_TAG" ]]; then
