@@ -52,7 +52,38 @@ require_tool ditto
 require_tool codesign
 if [[ "$SKIP_NOTARIZATION" != "1" ]]; then
   require_tool xcrun
+  require_tool syspolicy_check
+  require_tool xattr
+  require_tool uuidgen
 fi
+
+# Simulates what Gatekeeper actually evaluates on a user's Mac: extracts the
+# exact zip we're about to ship into a clean directory and stamps a quarantine
+# xattr on every file inside it, recursively -- exactly what Archive Utility
+# does to a browser download, confirmed live against a real Chrome extraction.
+# codesign --verify at build time (above) only proves the signature is well
+# formed; it says nothing about whether a freshly quarantined copy will
+# actually be allowed to launch. syspolicy_check distribution is Apple's
+# current recommended tool for this (see `syspolicy_check --help`) -- spctl is
+# deprecated and has produced spurious "bundle format unrecognized" failures
+# on notarized, correctly-signed apps on at least one real Mac.
+verify_first_launch_experience() {
+  local zip_path="$1"
+  local verify_dir
+  verify_dir="$(mktemp -d)"
+  trap 'rm -rf "$verify_dir"' RETURN
+
+  ditto -x -k "$zip_path" "$verify_dir"
+  local extracted_app="$verify_dir/$APP_NAME.app"
+
+  local quarantine_value
+  quarantine_value="0083;$(printf '%08x' "$(date +%s)");Chrome;$(uuidgen)"
+  find "$extracted_app" -exec xattr -w com.apple.quarantine "$quarantine_value" {} +
+
+  echo "Verifying first-launch experience against a quarantined copy of the shipped zip..."
+  codesign --verify --deep --strict --verbose=2 "$extracted_app"
+  syspolicy_check distribution "$extracted_app" --verbose
+}
 
 GENERATE_APPCAST="${SPARKLE_GENERATE_APPCAST:-generate_appcast}"
 if ! command -v "$GENERATE_APPCAST" >/dev/null 2>&1; then
@@ -86,6 +117,10 @@ fi
 
 FINAL_ZIP="$RELEASE_DIR/${APP_NAME}-${ASTRA_VERSION}.zip"
 ditto -c -k --keepParent "$APP_BUNDLE" "$FINAL_ZIP"
+
+if [[ "$SKIP_NOTARIZATION" != "1" ]]; then
+  verify_first_launch_experience "$FINAL_ZIP"
+fi
 
 GENERATE_APPCAST_ARGS=(--download-url-prefix "$DOWNLOAD_URL_PREFIX")
 if [[ -n "${SPARKLE_ED_KEY_FILE:-}" ]]; then
