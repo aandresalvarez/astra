@@ -270,8 +270,16 @@ This produces:
 
 ```text
 dist/release/ASTRA-0.1.0.zip
+dist/release/ASTRA-0.1.0.dmg
 dist/release/appcast.xml
 ```
+
+The `.zip` is Sparkle's update payload (what the appcast points at and what
+installed apps download for in-place updates); the `.dmg` is the
+human-facing download — a double-click-to-mount disk image with the app and
+an Applications-folder shortcut side by side, the install convention Mac
+users expect. Point download links/buttons at the `.dmg`; leave the `.zip`
+for Sparkle alone.
 
 The internal release path uses ad-hoc macOS code signing plus Sparkle EdDSA
 update signatures. It does not require the Mac App Store, Apple Developer
@@ -293,10 +301,11 @@ SPARKLE_GENERATE_APPCAST="$SPARKLE_BIN/generate_appcast" \
 ./script/release_update.sh
 ```
 
-Then upload both generated files to the GitHub Release:
+Then upload all three generated files to the GitHub Release:
 
 ```text
 dist/release/ASTRA-<version>.zip
+dist/release/ASTRA-<version>.dmg
 dist/release/appcast.xml
 ```
 

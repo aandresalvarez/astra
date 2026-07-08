@@ -398,6 +398,8 @@ jobs:
         run: |
           TAG="v${{ needs.validate.outputs.version }}"
           ASSETS=(dist/release/ASTRA-${{ needs.validate.outputs.version }}.zip dist/release/appcast.xml)
+          [[ -f "dist/release/ASTRA-${{ needs.validate.outputs.version }}.dmg" ]] && \
+            ASSETS+=("dist/release/ASTRA-${{ needs.validate.outputs.version }}.dmg")
           [[ -f "dist/release/ASTRA-${{ needs.validate.outputs.version }}.dSYM.zip" ]] && \
             ASSETS+=("dist/release/ASTRA-${{ needs.validate.outputs.version }}.dSYM.zip")
           if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
