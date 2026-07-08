@@ -52,6 +52,13 @@ jobs:
     name: Build, sign, notarize, publish
     runs-on: macos-26
     timeout-minutes: 60
+    # Tag deletions also fire the push webhook (github.event.deleted ==
+    # true), not just tag creation/update. Skip those so a delete-or-retag
+    # cleanup of a release tag can never sign/notarize/publish against a
+    # ref that no longer identifies a real release commit. No-op for
+    # workflow_dispatch: github.event.deleted is unset there, so this
+    # check is trivially true.
+    if: github.event.deleted != true
     permissions:
       contents: write
     steps:
@@ -63,6 +70,20 @@ jobs:
           # actions/checkout version/config -- confirmed live (run 28912601840):
           # the version-derivation step saw zero tags without this.
           fetch-tags: true
+
+      - name: Verify release commit is on protected main
+        # A tag push (or a workflow_dispatch run) can target any branch.
+        # Without this check, a vX.Y.Z tag pushed at an unmerged commit
+        # would still get signed with the real Developer ID cert and
+        # published as a real release -- bypassing the review/CI gate that
+        # protected main is supposed to enforce. Runs before any secret is
+        # touched.
+        run: |
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "Refusing to release $GITHUB_SHA: it is not an ancestor of origin/main." >&2
+            echo "Only release from commits that have been merged to the protected main branch." >&2
+            exit 2
+          fi
 
       - name: Preflight required secrets and variables
         env:
@@ -206,6 +227,27 @@ jobs:
           fi
 
           TAG="v$VERSION"
+
+          if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
+            # GitHub only suppresses push-triggered workflow runs when more
+            # than 3 tags are pushed in one `git push --tags` -- pushing 2
+            # or 3 release tags together starts multiple runs of this
+            # workflow, which the shared concurrency group below serializes
+            # but does not reorder by version. If a newer release tag
+            # already exists by the time this run gets here, this run is
+            # stale (queued before/after a sibling run for a different tag
+            # in the same batch); publishing it would risk `--latest`
+            # ending up on the wrong version. Refuse rather than guess --
+            # push release tags one at a time.
+            HIGHEST_TAG="$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=v:refname | tail -n 1)"
+            if [[ "$TAG" != "$HIGHEST_TAG" ]]; then
+              echo "Refusing to release $TAG: a newer release tag ($HIGHEST_TAG) already exists." >&2
+              echo "This can happen when multiple release tags are pushed together in one 'git push --tags'." >&2
+              echo "Push release tags one at a time." >&2
+              exit 2
+            fi
+          fi
+
           EXISTING_TAG_COUNT="$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' | wc -l | tr -d ' ')"
           if git rev-parse "$TAG" >/dev/null 2>&1; then
             # Releasing an already-tagged version: match the count-based
