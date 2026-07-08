@@ -350,10 +350,18 @@ struct StanfordOutlookMailAuthService {
             label: "Astra Mail: \(connector.name)",
             allowUserInteraction: allowUserInteraction
         ) && savedAll
+        // A partial save (e.g. a denied Keychain prompt partway through)
+        // must not register this connector as a working mail account: a
+        // caller who ignores this discardable result (refreshAccessToken)
+        // would otherwise leave a connector stamped "just updated" and
+        // registry-visible with incomplete/missing OAuth tokens, so a task
+        // discovers a broken mail connection instead of a clean
+        // not-signed-in state.
+        guard savedAll else { return false }
         connector.setConfigValue(StanfordOutlookMail.tokenUpdatedAtKey, value: ISO8601DateFormatter().string(from: Date()))
         connector.setConfigValue(StanfordOutlookMail.scopesKey, value: token.scope ?? StanfordOutlookMail.scopeString)
         StanfordOutlookMailRegistry.upsert(connector: connector)
-        return savedAll
+        return true
     }
 }
 

@@ -427,17 +427,13 @@ struct CapabilityInstaller {
         if connector.isStanfordOutlookMail {
             connector.applyStanfordOutlookDefaults()
         }
-        for hint in pluginConnector.credentialHints {
-            if let value = credentialInputs[hint.key], !value.isEmpty {
-                guard connector.saveCredential(
-                    key: hint.key,
-                    value: value,
-                    allowUserInteraction: allowCredentialUserInteraction
-                ) else {
-                    throw InstallationError.credentialSaveFailed(packageID: package.id, key: hint.key)
-                }
-            }
-        }
+        try saveConnectorCredentials(
+            connector,
+            hints: pluginConnector.credentialHints,
+            credentialInputs: credentialInputs,
+            allowCredentialUserInteraction: allowCredentialUserInteraction,
+            packageID: package.id
+        )
         return connector
     }
 
@@ -494,18 +490,69 @@ struct CapabilityInstaller {
         if connector.isStanfordOutlookMail {
             connector.applyStanfordOutlookDefaults()
         }
-        for hint in pluginConnector.credentialHints {
-            if let value = credentialInputs[hint.key], !value.isEmpty {
-                guard connector.saveCredential(
-                    key: hint.key,
-                    value: value,
-                    allowUserInteraction: allowCredentialUserInteraction
-                ) else {
-                    throw InstallationError.credentialSaveFailed(packageID: package.id, key: hint.key)
-                }
-            }
-        }
+        try saveConnectorCredentials(
+            connector,
+            hints: pluginConnector.credentialHints,
+            credentialInputs: credentialInputs,
+            allowCredentialUserInteraction: allowCredentialUserInteraction,
+            packageID: package.id
+        )
         return connector
+    }
+
+    /// Saves each hinted credential in order, and on a mid-batch failure
+    /// undoes only what this call itself changed: `enable()`'s catch only
+    /// calls `modelContext.rollback()`, which reverts the connector's
+    /// `credentialKeys` array but never touches Keychain, so without this,
+    /// an earlier hint's successful Keychain write survives a later hint's
+    /// failure. A hint that had no saved value before this call gets its
+    /// Keychain entry deleted (it would otherwise be orphaned under a
+    /// connector the user can no longer see or manage). A hint that
+    /// already had a value — e.g. re-enabling an existing connector — gets
+    /// that prior value restored instead of deleted, since rollback leaves
+    /// the connector's `credentialKeys` still listing it as configured;
+    /// deleting it there would silently break an unrelated, previously
+    /// working credential.
+    ///
+    /// Looks up each hint's prior value with `currentCredentialValue(forKey:)`
+    /// right before overwriting it, rather than snapshotting `connector
+    /// .credentials` once up front: the caller resets `credentialKeys` to
+    /// the package's declared hint spelling just before this runs, which
+    /// isn't necessarily uppercase, while every saved credential is stored
+    /// under its uppercased key — a bulk snapshot keyed off that
+    /// just-reset array would silently miss existing secrets for
+    /// non-uppercase hint keys.
+    private func saveConnectorCredentials(
+        _ connector: Connector,
+        hints: [PluginConnector.CredentialHint],
+        credentialInputs: [String: String],
+        allowCredentialUserInteraction: Bool,
+        packageID: String
+    ) throws {
+        var savedThisCall: [(key: String, previousValue: String?)] = []
+        for hint in hints {
+            guard let value = credentialInputs[hint.key], !value.isEmpty else { continue }
+            let previousValue = connector.currentCredentialValue(forKey: hint.key)
+            guard connector.saveCredential(
+                key: hint.key,
+                value: value,
+                allowUserInteraction: allowCredentialUserInteraction
+            ) else {
+                for saved in savedThisCall {
+                    if let previousValue = saved.previousValue {
+                        connector.saveCredential(
+                            key: saved.key,
+                            value: previousValue,
+                            allowUserInteraction: allowCredentialUserInteraction
+                        )
+                    } else {
+                        connector.removeCredential(forKey: saved.key)
+                    }
+                }
+                throw InstallationError.credentialSaveFailed(packageID: packageID, key: hint.key)
+            }
+            savedThisCall.append((key: hint.key, previousValue: previousValue))
+        }
     }
 
     private func connectorConfigKeys(
