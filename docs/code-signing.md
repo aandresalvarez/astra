@@ -50,10 +50,25 @@ byte-identical — anchored to Team ID `2BKAYYACN9`, no cdhash term at all. For
 contrast, the ad-hoc dev build's DR is `# designated => cdhash H"ce29b1d9..."`
 — literally just the cdhash, which is exactly what changes every rebuild.
 This confirms the mechanism directly: any Keychain ACL trusting this DR
-survives a Developer ID rebuild. Not yet done: an end-to-end pass through the
-real running app (write a secret in build 1, read it in build 2, confirm no
-re-prompt) — the DR-level proof above is what actually determines that
-outcome, so this is a lower-priority formality, not an open question.
+survives a Developer ID rebuild.
+
+**Confirmed through the real app, same day.** Saved a secret via ASTRA's own
+capability/connector UI on a Developer-ID-signed build, rebuilt (new CDHash,
+same identity), relaunched, and read the secret back — byte-for-byte exact
+match, no re-prompt, no error. Verified independently with
+`security dump-keychain ~/Library/Keychains/astra-beta.keychain-db` that the
+item lives in ASTRA's dedicated keychain file as expected.
+
+**Migration case also tested: an *existing ad-hoc install* upgrading to
+Developer ID.** Wrote a secret via an ad-hoc-signed build, rebuilt
+Developer-ID-signed (simulating the update), relaunched. The read fails
+cleanly — no native macOS re-authorization dialog, just ASTRA's own
+`Missing Keychain value: <KEY>` state with a working `Set Value` control
+(from the PR #229 promptable-save work) that immediately fixes it on
+re-entry. No crash, no corrupted data, no one-shot migration code needed.
+One unrelated minor gap found: the capability list's status badge can say
+"Ready" while a credential underneath is actually unreadable — worth a
+follow-up ticket, not a signing issue.
 
 ## Signing modes (`script/build_and_run.sh`)
 
