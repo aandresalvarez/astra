@@ -52,6 +52,24 @@ jobs:
     name: Build, sign, notarize, publish
     runs-on: macos-26
     timeout-minutes: 60
+    # IMPORTANT -- this reference alone does NOT enforce anything. GitHub
+    # runs a push-triggered workflow using the copy of THIS FILE that
+    # exists at the pushed commit, not the copy on protected main. That
+    # means the in-file "Verify release commit is on protected main" step
+    # below is not a real security boundary on its own: someone who can
+    # push a vX.Y.Z tag to an unmerged commit could edit that commit's copy
+    # of this workflow to remove the check, and it would still run with
+    # full secret access. The only enforcement GitHub can't bypass this way
+    # lives in repo settings, not workflow content: configure this
+    # "release" environment (Settings -> Environments) with a deployment
+    # branch/tag policy restricted to main, plus required reviewers, and
+    # configure a tag protection rule for v* (Settings -> Tags) restricting
+    # who can create matching tags at all. Until that's done, this
+    # environment reference is a hook, not a guarantee -- flagged in the
+    # adoption plan doc as a required manual step, since modifying repo
+    # access controls isn't something to do without the repo owner's
+    # explicit action.
+    environment: release
     # Only run push-triggered jobs for a tag's initial creation.
     # github.event.created is false for both tag deletions and forced
     # updates (re-pointing an existing tag at a different commit) -- the
