@@ -427,17 +427,13 @@ struct CapabilityInstaller {
         if connector.isStanfordOutlookMail {
             connector.applyStanfordOutlookDefaults()
         }
-        for hint in pluginConnector.credentialHints {
-            if let value = credentialInputs[hint.key], !value.isEmpty {
-                guard connector.saveCredential(
-                    key: hint.key,
-                    value: value,
-                    allowUserInteraction: allowCredentialUserInteraction
-                ) else {
-                    throw InstallationError.credentialSaveFailed(packageID: package.id, key: hint.key)
-                }
-            }
-        }
+        try saveConnectorCredentials(
+            connector,
+            hints: pluginConnector.credentialHints,
+            credentialInputs: credentialInputs,
+            allowCredentialUserInteraction: allowCredentialUserInteraction,
+            packageID: package.id
+        )
         return connector
     }
 
@@ -494,18 +490,45 @@ struct CapabilityInstaller {
         if connector.isStanfordOutlookMail {
             connector.applyStanfordOutlookDefaults()
         }
-        for hint in pluginConnector.credentialHints {
-            if let value = credentialInputs[hint.key], !value.isEmpty {
-                guard connector.saveCredential(
-                    key: hint.key,
-                    value: value,
-                    allowUserInteraction: allowCredentialUserInteraction
-                ) else {
-                    throw InstallationError.credentialSaveFailed(packageID: package.id, key: hint.key)
-                }
-            }
-        }
+        try saveConnectorCredentials(
+            connector,
+            hints: pluginConnector.credentialHints,
+            credentialInputs: credentialInputs,
+            allowCredentialUserInteraction: allowCredentialUserInteraction,
+            packageID: package.id
+        )
         return connector
+    }
+
+    /// Saves each hinted credential in order, and on a mid-batch failure
+    /// deletes the Keychain entries this call itself just saved before
+    /// throwing. Without this, an earlier hint's successful Keychain write
+    /// survives a later hint's failure: `enable()`'s catch only calls
+    /// `modelContext.rollback()`, which reverts the connector's
+    /// `credentialKeys` array but never touches Keychain, orphaning that
+    /// secret under a connector the user can no longer see or manage.
+    private func saveConnectorCredentials(
+        _ connector: Connector,
+        hints: [PluginConnector.CredentialHint],
+        credentialInputs: [String: String],
+        allowCredentialUserInteraction: Bool,
+        packageID: String
+    ) throws {
+        var savedKeysThisCall: [String] = []
+        for hint in hints {
+            guard let value = credentialInputs[hint.key], !value.isEmpty else { continue }
+            guard connector.saveCredential(
+                key: hint.key,
+                value: value,
+                allowUserInteraction: allowCredentialUserInteraction
+            ) else {
+                for savedKey in savedKeysThisCall {
+                    connector.removeCredential(forKey: savedKey)
+                }
+                throw InstallationError.credentialSaveFailed(packageID: packageID, key: hint.key)
+            }
+            savedKeysThisCall.append(hint.key)
+        }
     }
 
     private func connectorConfigKeys(

@@ -14,6 +14,26 @@ private extension View {
     func shelfBoundaryOverlay() -> some View {
         modifier(ShelfBoundaryOverlayModifier())
     }
+
+    // Kept as its own ViewModifier (rather than an inline `.alert` in
+    // ContentView.body) so the alert's closures type-check in this small
+    // function's own context instead of adding to body's already-at-budget
+    // expression graph — see ContentView.body's line-budget note.
+    func workspaceCapabilityEnableFailureAlert(isPresented: Binding<Bool>) -> some View {
+        modifier(WorkspaceCapabilityEnableFailureAlertModifier(isPresented: isPresented))
+    }
+}
+
+private struct WorkspaceCapabilityEnableFailureAlertModifier: ViewModifier {
+    @Binding var isPresented: Bool
+
+    func body(content: Content) -> some View {
+        content.alert("Some credentials couldn't be saved", isPresented: $isPresented) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text("Your workspace was created, but one or more capability credentials could not be saved to Keychain. Add them later in Configure > Connectors.")
+        }
+    }
 }
 
 struct NewWorkspaceDraft: Equatable {
@@ -70,6 +90,7 @@ struct ContentView: View {
     @State private var editingSSHConnection: SSHConnection?
     @State private var sshReloadTrigger = 0
     @State private var newWorkspaceDraft = NewWorkspaceDraft()
+    @State private var isShowingWorkspaceCapabilityEnableFailure = false
     @StateObject private var browserSessionStore = ShelfBrowserSessionStore()
     @StateObject private var markdownSessionStore = ShelfMarkdownSessionStore()
     @StateObject private var querySession = ShelfQuerySession()
@@ -1057,6 +1078,7 @@ struct ContentView: View {
                 onCreate: finalizeNewWorkspace
             )
         }
+        .workspaceCapabilityEnableFailureAlert(isPresented: $isShowingWorkspaceCapabilityEnableFailure)
         .alert(item: $linkedScheduleWarning) { warning in
             Alert(
                 title: Text(warning.action.alertTitle),
@@ -2226,7 +2248,11 @@ struct ContentView: View {
     }
 
     private func finalizeNewWorkspace() {
-        guard createWorkspace(from: newWorkspaceDraft, source: "workspace_creation") != .notCreated else { return }
+        let outcome = createWorkspace(from: newWorkspaceDraft, source: "workspace_creation")
+        guard outcome != .notCreated else { return }
+        if outcome == .createdWithCapabilityIssues {
+            isShowingWorkspaceCapabilityEnableFailure = true
+        }
         showingNewWorkspace = false
         resetNewWorkspaceDraft()
     }

@@ -172,6 +172,19 @@ public final class Connector {
         updatedAt = Date()
     }
 
+    /// Remove a single credential from Keychain (and SwiftData) by key
+    /// rather than index — used to compensate a partially-saved multi-
+    /// credential batch (e.g. one hint saved, a later one failed) without
+    /// needing the key's current position in `credentialKeys`.
+    public func removeCredential(forKey key: String) {
+        let upperKey = key.uppercased()
+        if let index = credentialKeys.firstIndex(where: { $0.caseInsensitiveCompare(upperKey) == .orderedSame }) {
+            removeCredential(at: index)
+        } else {
+            ConnectorSecretSeam.required.deleteCredential(key: upperKey, facts: secretFacts)
+        }
+    }
+
     /// Migrate any legacy plaintext credentials to Keychain.
     public func migrateToKeychain() {
         let facts = secretFacts

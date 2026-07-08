@@ -37,6 +37,15 @@ struct ContentWorkspaceActionCoordinator {
         let coordinator = TaskLifecycleCoordinator(modelContext: modelContext, taskQueue: taskQueue)
         let workspace = coordinator.createWorkspace(name: draft.trimmedName, rootPath: resolvedRoot)
         workspace.instructions = draft.trimmedInstructions
+        // Checkpoint the instructions before applying capabilities: a failed
+        // capability enable calls modelContext.rollback(), which reverts
+        // every uncommitted change in the context back to the last save —
+        // without this save, that would also discard the instructions set
+        // above since they were never committed.
+        WorkspacePersistenceCoordinator.saveWithoutAutoExport(
+            modelContext: modelContext,
+            auditFields: ["operation": "save_workspace_instructions"]
+        )
         let hasCapabilityEnableFailures = applyNewWorkspaceCapabilities(to: workspace, from: draft, source: source)
         return WorkspaceCreationResult(workspace: workspace, hasCapabilityEnableFailures: hasCapabilityEnableFailures)
     }
