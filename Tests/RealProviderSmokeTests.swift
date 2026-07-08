@@ -28,7 +28,7 @@ struct RealProviderSmokeTests {
         #expect(result.exitCode == 0)
         #expect(result.output.localizedCaseInsensitiveContains("Logged in"))
 
-        let repo = ProcessInfo.processInfo.environment["REAL_GITHUB_REPO"] ?? "susom/astra"
+        let repo = ProcessInfo.processInfo.environment["REAL_GITHUB_REPO"] ?? "aandresalvarez/astra"
         let repoResult = try Self.run([
             "gh", "repo", "view", repo,
             "--json", "nameWithOwner,isPrivate,defaultBranchRef",

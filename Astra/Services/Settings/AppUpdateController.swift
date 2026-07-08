@@ -17,7 +17,7 @@ final class AppUpdateController: NSObject, ObservableObject, SPUUpdaterDelegate 
         case failed(String)
     }
 
-    static let defaultFeedURL = "https://github.com/susom/astra/releases/latest/download/appcast.xml"
+    static let defaultFeedURL = "https://github.com/aandresalvarez/astra/releases/latest/download/appcast.xml"
 
     @Published private(set) var status: Status
     @Published private(set) var canCheckForUpdates = false

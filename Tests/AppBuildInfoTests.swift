@@ -89,6 +89,6 @@ struct AppBuildInfoTests {
         #expect(text.contains("Agent Routines for Tasks, Runs, and Automation"))
         #expect(text.contains("supervising delegated AI work"))
         #expect(text.contains("durable workspaces"))
-        #expect(text.contains("https://github.com/susom/astra"))
+        #expect(text.contains("https://github.com/aandresalvarez/astra"))
     }
 }
