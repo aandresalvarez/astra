@@ -1,0 +1,241 @@
+name: Release
+
+# Manual only for now. `push: tags: v*` is a deliberate follow-up once the
+# secrets/variables below are configured — this repo already tags every
+# build sequentially (v0.1.17, v0.1.18, ...), so wiring a tag-push trigger
+# before they exist would turn every routine tag red in Actions.
+#
+# 7 values go in Settings -> Secrets and variables -> Actions -> Secrets:
+#   ASTRA_SIGN_IDENTITY, ASTRA_DEVELOPER_ID_CERTIFICATE_P12,
+#   ASTRA_DEVELOPER_ID_CERTIFICATE_PASSWORD, ASTRA_NOTARY_API_KEY_P8,
+#   ASTRA_NOTARY_KEY_ID, ASTRA_NOTARY_ISSUER_ID, ASTRA_SPARKLE_PRIVATE_KEY_B64
+# 1 value goes in the neighboring Variables tab, not Secrets, since it's the
+# *public* half of a keypair (already embedded in every shipped Info.plist,
+# not sensitive): ASTRA_SPARKLE_PUBLIC_ED_KEY
+#
+# See docs/code-signing.md and
+# docs/specs/2026-07-07-apple-developer-program-adoption-plan.md (Phase 4).
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "ASTRA_VERSION override (defaults to the latest vX.Y.Z tag)"
+        required: false
+        type: string
+      build:
+        description: "ASTRA_BUILD override (defaults to the count of vX.Y.Z tags)"
+        required: false
+        type: string
+      skip_notarization:
+        description: "Skip notarization (dry run of signing only)"
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: release-${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build, sign, notarize, publish
+    runs-on: macos-26
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Preflight required secrets and variables
+        env:
+          SIGN_IDENTITY: ${{ secrets.ASTRA_SIGN_IDENTITY }}
+          CERT_P12: ${{ secrets.ASTRA_DEVELOPER_ID_CERTIFICATE_P12 }}
+          CERT_PASSWORD: ${{ secrets.ASTRA_DEVELOPER_ID_CERTIFICATE_PASSWORD }}
+          NOTARY_KEY_P8: ${{ secrets.ASTRA_NOTARY_API_KEY_P8 }}
+          NOTARY_KEY_ID: ${{ secrets.ASTRA_NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.ASTRA_NOTARY_ISSUER_ID }}
+          SPARKLE_PRIVATE_KEY: ${{ secrets.ASTRA_SPARKLE_PRIVATE_KEY_B64 }}
+          SPARKLE_PUBLIC_KEY: ${{ vars.ASTRA_SPARKLE_PUBLIC_ED_KEY }}
+          SKIP_NOTARIZATION: ${{ inputs.skip_notarization }}
+        run: |
+          missing=()
+          [[ -z "$SIGN_IDENTITY" ]] && missing+=(ASTRA_SIGN_IDENTITY)
+          [[ -z "$CERT_P12" ]] && missing+=(ASTRA_DEVELOPER_ID_CERTIFICATE_P12)
+          [[ -z "$CERT_PASSWORD" ]] && missing+=(ASTRA_DEVELOPER_ID_CERTIFICATE_PASSWORD)
+          [[ -z "$SPARKLE_PRIVATE_KEY" ]] && missing+=(ASTRA_SPARKLE_PRIVATE_KEY_B64)
+          [[ -z "$SPARKLE_PUBLIC_KEY" ]] && missing+=(ASTRA_SPARKLE_PUBLIC_ED_KEY)
+          if [[ "$SKIP_NOTARIZATION" != "true" ]]; then
+            [[ -z "$NOTARY_KEY_P8" ]] && missing+=(ASTRA_NOTARY_API_KEY_P8)
+            [[ -z "$NOTARY_KEY_ID" ]] && missing+=(ASTRA_NOTARY_KEY_ID)
+            [[ -z "$NOTARY_ISSUER_ID" ]] && missing+=(ASTRA_NOTARY_ISSUER_ID)
+          fi
+          if [[ ${#missing[@]} -gt 0 ]]; then
+            echo "Missing required secret(s)/variable(s): ${missing[*]}" >&2
+            echo "All but ASTRA_SPARKLE_PUBLIC_ED_KEY go under Secrets;" >&2
+            echo "that one is public and goes under the Variables tab." >&2
+            echo "See the Phase 0 checklist in docs/code-signing.md." >&2
+            exit 2
+          fi
+
+      - name: Cache SwiftPM
+        uses: actions/cache@v4
+        with:
+          path: |
+            .build
+            ~/.swiftpm
+          key: ${{ runner.os }}-swiftpm-${{ hashFiles('Package.swift', 'Package.resolved') }}
+          restore-keys: |
+            ${{ runner.os }}-swiftpm-
+
+      - name: Resolve Swift package dependencies
+        run: swift package resolve
+
+      - name: Import Developer ID certificate into a temporary keychain
+        env:
+          CERT_P12: ${{ secrets.ASTRA_DEVELOPER_ID_CERTIFICATE_P12 }}
+          CERT_PASSWORD: ${{ secrets.ASTRA_DEVELOPER_ID_CERTIFICATE_PASSWORD }}
+        run: |
+          KEYCHAIN_PATH="$RUNNER_TEMP/astra-release.keychain-db"
+          KEYCHAIN_PASSWORD="$(/usr/bin/openssl rand -base64 24)"
+          CERT_PATH="$RUNNER_TEMP/astra-developer-id.p12"
+
+          printf '%s' "$CERT_P12" | /usr/bin/base64 -D -o "$CERT_PATH"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -k "$KEYCHAIN_PATH" -P "$CERT_PASSWORD" \
+            -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | sed 's/"//g')
+
+          rm -f "$CERT_PATH"
+          echo "ASTRA_RELEASE_KEYCHAIN=$KEYCHAIN_PATH" >>"$GITHUB_ENV"
+
+      - name: Store notarization credentials
+        if: ${{ !inputs.skip_notarization }}
+        env:
+          NOTARY_KEY_P8: ${{ secrets.ASTRA_NOTARY_API_KEY_P8 }}
+          NOTARY_KEY_ID: ${{ secrets.ASTRA_NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.ASTRA_NOTARY_ISSUER_ID }}
+        run: |
+          KEY_PATH="$RUNNER_TEMP/astra-notary-key.p8"
+          printf '%s' "$NOTARY_KEY_P8" | /usr/bin/base64 -D -o "$KEY_PATH"
+          xcrun notarytool store-credentials "astra-release-ci" \
+            --key "$KEY_PATH" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER_ID"
+          rm -f "$KEY_PATH"
+          echo "ASTRA_NOTARY_PROFILE=astra-release-ci" >>"$GITHUB_ENV"
+
+      - name: Write Sparkle EdDSA private key
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.ASTRA_SPARKLE_PRIVATE_KEY_B64 }}
+        run: |
+          KEY_PATH="$RUNNER_TEMP/astra-sparkle-private-key"
+          printf '%s' "$SPARKLE_PRIVATE_KEY" | /usr/bin/base64 -D -o "$KEY_PATH"
+          echo "SPARKLE_ED_KEY_FILE=$KEY_PATH" >>"$GITHUB_ENV"
+
+      - name: Determine release version and build
+        id: version
+        env:
+          # Passed as data, not interpolated into the script text: a
+          # workflow_dispatch caller controls these inputs, and this job
+          # holds the Developer ID cert + Sparkle private key, so template
+          # expansion straight into `run:` would be a shell-injection hole.
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_BUILD: ${{ inputs.build }}
+        run: |
+          if [[ -n "$INPUT_VERSION" ]]; then
+            if [[ ! "$INPUT_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "Invalid version input '$INPUT_VERSION': expected X.Y.Z." >&2
+              exit 2
+            fi
+            VERSION="$INPUT_VERSION"
+          elif [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            LATEST_TAG="$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=v:refname | tail -n 1)"
+            if [[ -z "$LATEST_TAG" ]]; then
+              echo "Could not derive ASTRA_VERSION: no vX.Y.Z tags exist and no version input given." >&2
+              exit 2
+            fi
+            VERSION="${LATEST_TAG#v}"
+          fi
+
+          TAG="v$VERSION"
+          EXISTING_TAG_COUNT="$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' | wc -l | tr -d ' ')"
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            # Releasing an already-tagged version: match the count-based
+            # build number build_and_run.sh would compute locally for it.
+            DEFAULT_BUILD="$EXISTING_TAG_COUNT"
+          else
+            # Releasing a version that has no tag yet: the count-based
+            # default would collide with the previous release's build
+            # number (Sparkle compares CFBundleVersion, not just the
+            # display version), so advance it by one.
+            DEFAULT_BUILD="$((EXISTING_TAG_COUNT + 1))"
+          fi
+
+          if [[ -n "$INPUT_BUILD" ]]; then
+            if [[ ! "$INPUT_BUILD" =~ ^[0-9]+$ ]]; then
+              echo "Invalid build input '$INPUT_BUILD': expected a positive integer." >&2
+              exit 2
+            fi
+            BUILD="$INPUT_BUILD"
+          else
+            BUILD="$DEFAULT_BUILD"
+          fi
+
+          echo "version=$VERSION" >>"$GITHUB_OUTPUT"
+          echo "build=$BUILD" >>"$GITHUB_OUTPUT"
+
+      - name: Build, sign, and notarize
+        env:
+          ASTRA_RELEASE_MODE: developer-id
+          ASTRA_SIGN_IDENTITY: ${{ secrets.ASTRA_SIGN_IDENTITY }}
+          # Literal, not `${{ env.ASTRA_NOTARY_PROFILE }}` read back from the
+          # prior step's $GITHUB_ENV write: it's already a fixed literal, so
+          # round-tripping it through the env context adds a failure mode
+          # for no benefit. Must match the literal passed to
+          # `notarytool store-credentials` above.
+          ASTRA_NOTARY_PROFILE: astra-release-ci
+          ASTRA_SKIP_NOTARIZATION: ${{ inputs.skip_notarization && '1' || '0' }}
+          ASTRA_VERSION: ${{ steps.version.outputs.version }}
+          ASTRA_BUILD: ${{ steps.version.outputs.build }}
+          ASTRA_SPARKLE_PUBLIC_ED_KEY: ${{ vars.ASTRA_SPARKLE_PUBLIC_ED_KEY }}
+          SPARKLE_GENERATE_APPCAST: ${{ github.workspace }}/.build/artifacts/sparkle/Sparkle/bin/generate_appcast
+        run: script/release_update.sh
+
+      - name: Package dSYM
+        run: |
+          DSYM_PATH="dist/ASTRA.app.dSYM"
+          if [[ -d "$DSYM_PATH" ]]; then
+            ditto -c -k --keepParent "$DSYM_PATH" "dist/release/ASTRA-${{ steps.version.outputs.version }}.dSYM.zip"
+          fi
+
+      - name: Publish GitHub Release
+        # A skip_notarization run is a signing-only dry run; it must never
+        # become the downloadable "latest" release.
+        if: ${{ !inputs.skip_notarization }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="v${{ steps.version.outputs.version }}"
+          ASSETS=(dist/release/ASTRA-${{ steps.version.outputs.version }}.zip dist/release/appcast.xml)
+          [[ -f "dist/release/ASTRA-${{ steps.version.outputs.version }}.dSYM.zip" ]] && \
+            ASSETS+=("dist/release/ASTRA-${{ steps.version.outputs.version }}.dSYM.zip")
+          gh release create "$TAG" "${ASSETS[@]}" \
+            --title "ASTRA $TAG" \
+            --generate-notes \
+            --target "$GITHUB_SHA" \
+            --latest || gh release upload "$TAG" "${ASSETS[@]}" --clobber
+
+      - name: Clean up temporary keychain
+        if: always()
+        run: |
+          if [[ -n "${ASTRA_RELEASE_KEYCHAIN:-}" ]]; then
+            security delete-keychain "$ASTRA_RELEASE_KEYCHAIN" || true
+          fi

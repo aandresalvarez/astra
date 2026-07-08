@@ -309,13 +309,20 @@ https://github.com/susom/astra/releases/latest/download/appcast.xml
 The private Sparkle key stays in Keychain. Do not commit or paste the private
 key into GitHub. The public key is safe to embed in `Info.plist`.
 
-If the project later needs the smoother Gatekeeper experience, use:
+For the smoother Gatekeeper experience (no unidentified-developer warning), use:
 
 ```bash
 ASTRA_RELEASE_MODE=developer-id ./script/release_update.sh
 ```
 
-That future path requires Apple Developer ID signing and notarization.
+This requires a paid Apple Developer Program membership; the project has one
+and this path is validated live — notarization, stapling, Gatekeeper
+acceptance, and the ad-hoc→Developer-ID Sparkle update transition have all
+been tested end to end. It isn't the default yet because it needs a real
+Developer ID identity and notary credentials on the machine (or in CI
+secrets — see Phase 4). Full details, live-validation results, and adoption
+sequencing are tracked in
+[docs/specs/2026-07-07-apple-developer-program-adoption-plan.md](docs/specs/2026-07-07-apple-developer-program-adoption-plan.md).
 
 For the full code-signing setup — including a stable self-signed identity for
 local development (which avoids the Keychain re-prompts that ad-hoc signing
