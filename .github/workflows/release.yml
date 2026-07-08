@@ -214,26 +214,40 @@ jobs:
     needs: validate
     runs-on: macos-26
     timeout-minutes: 60
-    # IMPORTANT -- this reference alone does NOT enforce anything. GitHub
-    # runs a push-triggered workflow using the copy of THIS FILE that
-    # exists at the pushed commit, not the copy on protected main. That
-    # means splitting version/ancestry validation into the `validate` job
-    # above is not itself a security boundary either -- someone who can
+    # IMPORTANT -- this reference alone does NOT enforce anything, and
+    # simply adding it does NOT gate secret access. GitHub runs a
+    # push-triggered workflow using the copy of THIS FILE that exists at
+    # the pushed commit, not the copy on protected main. Someone who can
     # push a vX.Y.Z tag to an unmerged commit could edit that commit's copy
-    # of this workflow to remove any check, in either job, and it would
-    # still run with full secret access. The only enforcement GitHub can't
-    # bypass this way lives in repo settings, not workflow content:
-    # configure this "release" environment (Settings -> Environments) with
-    # a deployment policy that allows the v* TAG pattern (not just the
-    # main BRANCH -- a tag-push run's ref is refs/tags/vX.Y.Z, which a
-    # main-only branch policy would reject outright) plus required
-    # reviewers, and configure a repository ruleset (Settings -> Rules ->
-    # Rulesets; the older "Settings -> Tags -> New rule" tag-protection UI
-    # was sunset in 2024) restricting who can create/update/delete
-    # matching v* tags at all. Until that's done, this environment
-    # reference is a hook, not a guarantee -- flagged in the adoption plan
-    # doc as a required manual step, since modifying repo access controls
-    # isn't something to do without the repo owner's explicit action.
+    # of this workflow to delete the `environment: release` line entirely
+    # -- and it would still work, because ASTRA_SIGN_IDENTITY and the rest
+    # are currently *repository* secrets, visible to any job in any
+    # workflow run regardless of environment. The environment reference
+    # only gates *this job's own progress* (required reviewers, deployment
+    # branch/tag policy); it does not gate the secrets themselves unless
+    # those secrets are defined at the ENVIRONMENT level instead of the
+    # repository level. Two manual repo-settings steps close this, neither
+    # of which I'll do myself (modifying access controls, and I have never
+    # had and will never request the actual credential values):
+    #   1. Settings -> Environments -> "release" -> add all 7 release
+    #      secrets (ASTRA_SIGN_IDENTITY, ASTRA_DEVELOPER_ID_CERTIFICATE_P12,
+    #      ASTRA_DEVELOPER_ID_CERTIFICATE_PASSWORD, ASTRA_NOTARY_API_KEY_P8,
+    #      ASTRA_NOTARY_KEY_ID, ASTRA_NOTARY_ISSUER_ID,
+    #      ASTRA_SPARKLE_PRIVATE_KEY_B64) as ENVIRONMENT secrets, with the
+    #      same values as today's repository secrets.
+    #   2. Once a real release confirms the environment-scoped copies work,
+    #      delete the repository-level copies of those same 7 secrets --
+    #      leaving them in place at the repo level means they stay visible
+    #      to a job that dropped the `environment:` line, defeating the
+    #      whole point.
+    # Also still needed: a deployment policy allowing the v* TAG pattern
+    # (not just the main BRANCH -- a tag-push run's ref is
+    # refs/tags/vX.Y.Z, which a main-only branch policy would reject
+    # outright) plus required reviewers on this environment, and a
+    # repository ruleset (Settings -> Rules -> Rulesets; the older
+    # "Settings -> Tags -> New rule" tag-protection UI was sunset in 2024)
+    # restricting who can create/update/delete matching v* tags at all.
+    # See the adoption plan doc (Phase 4) for the full checklist.
     environment: release
     permissions:
       contents: write
@@ -435,11 +449,26 @@ jobs:
             fi
           fi
 
-          gh release create "$TAG" "${ASSETS[@]}" \
+          if ! gh release create "$TAG" "${ASSETS[@]}" \
             --title "ASTRA $TAG" \
             --generate-notes \
             --target "$GITHUB_SHA" \
-            --latest || gh release upload "$TAG" "${ASSETS[@]}" --clobber
+            --latest; then
+            if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
+              # `validate`'s `gh release view` check ran once, before the
+              # ~10-25 minute build/sign/notarize -- a release for this
+              # exact tag could have been created by some other means in
+              # that window (a manual gh release create, a parallel run,
+              # etc). Falling back to `gh release upload --clobber` here
+              # would silently overwrite whatever that other release
+              # published. Refuse instead: the clobber fallback is for
+              # deliberate manual repairs via workflow_dispatch, not
+              # something an automatic tag-push run should ever do.
+              echo "Refusing to fall back to 'gh release upload --clobber' for a push-triggered release: gh release create failed, most likely because a release for $TAG already exists. Fix manually via workflow_dispatch if this needs repairing." >&2
+              exit 2
+            fi
+            gh release upload "$TAG" "${ASSETS[@]}" --clobber
+          fi
 
       - name: Clean up temporary keychain
         if: always()
