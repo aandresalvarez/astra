@@ -29,7 +29,7 @@ Deliverable: nothing in-repo; a short "assets checklist" appended to `docs/code-
 
 Goal: `ASTRA_RELEASE_MODE=developer-id ./script/release_update.sh` produces a stapled, Gatekeeper-clean app. Two known frictions must be addressed first; both live in `script/build_and_run.sh`.
 
-**Result:** validated live against a real `beta`-channel build signed with `Developer ID Application: Alvaro Andres Alvarez Peralta (2BKAYYACN9)`. `notarytool submit --wait` → `Accepted`, `"issues": null`. `stapler staple`/`validate` succeeded. `spctl --assess` went from `rejected, source=Unnotarized Developer ID` (pre-notarization) to `accepted, source=Notarized Developer ID`. Full details and the resolved 1a/1b questions are in `docs/code-signing.md` ("Why the prod/beta path doesn't use `--deep`"). Not yet done from this phase: the clean-machine download test (1c) and Phase 3's live Sparkle transition-update test.
+**Result:** validated live against a real `beta`-channel build signed with `Developer ID Application: Alvaro Andres Alvarez Peralta (2BKAYYACN9)`. `notarytool submit --wait` → `Accepted`, `"issues": null`. `stapler staple`/`validate` succeeded. `spctl --assess` went from `rejected, source=Unnotarized Developer ID` (pre-notarization) to `accepted, source=Notarized Developer ID`. Full details and the resolved 1a/1b questions are in `docs/code-signing.md` ("Why the prod/beta path doesn't use `--deep`"). The clean-machine download test (1c, via quarantine simulation) and Phase 3's live Sparkle transition-update test are both also done — see their respective sections below.
 
 ### 1a. Replace `--deep` with explicit inside-out signing (developer-id path)
 
