@@ -320,10 +320,27 @@ jobs:
           ASSETS=(dist/release/ASTRA-${{ steps.version.outputs.version }}.zip dist/release/appcast.xml)
           [[ -f "dist/release/ASTRA-${{ steps.version.outputs.version }}.dSYM.zip" ]] && \
             ASSETS+=("dist/release/ASTRA-${{ steps.version.outputs.version }}.dSYM.zip")
+          # --verify-tag (push-triggered runs only): without it, `gh release
+          # create` auto-creates a missing tag rather than failing. The
+          # job-level created/deleted guard only checks the state of the
+          # push event that started this run -- a race window still exists
+          # between then and here (signing + notarization take 10-25+
+          # minutes): if an operator deletes the tag mid-run to retract an
+          # accidental release, this would otherwise still publish.
+          # --verify-tag closes that window by aborting if the tag is gone
+          # from the remote by publish time. Scoped to push events only:
+          # workflow_dispatch legitimately releases a version with no
+          # pre-existing tag (an explicit version/build override, auto-
+          # creating the tag here), which --verify-tag would break.
+          VERIFY_TAG_FLAG=()
+          if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
+            VERIFY_TAG_FLAG=(--verify-tag)
+          fi
           gh release create "$TAG" "${ASSETS[@]}" \
             --title "ASTRA $TAG" \
             --generate-notes \
             --target "$GITHUB_SHA" \
+            "${VERIFY_TAG_FLAG[@]}" \
             --latest || gh release upload "$TAG" "${ASSETS[@]}" --clobber
 
       - name: Clean up temporary keychain
