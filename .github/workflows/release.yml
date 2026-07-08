@@ -52,13 +52,17 @@ jobs:
     name: Build, sign, notarize, publish
     runs-on: macos-26
     timeout-minutes: 60
-    # Tag deletions also fire the push webhook (github.event.deleted ==
-    # true), not just tag creation/update. Skip those so a delete-or-retag
-    # cleanup of a release tag can never sign/notarize/publish against a
-    # ref that no longer identifies a real release commit. No-op for
-    # workflow_dispatch: github.event.deleted is unset there, so this
-    # check is trivially true.
-    if: github.event.deleted != true
+    # Only run push-triggered jobs for a tag's initial creation.
+    # github.event.created is false for both tag deletions and forced
+    # updates (re-pointing an existing tag at a different commit) -- the
+    # latter matters as much as the former: without this, force-pushing an
+    # existing vX.Y.Z tag to a new commit would still sign/notarize it and
+    # the publish step's `gh release upload --clobber` fallback would
+    # replace the already-public assets for that version number, silently
+    # swapping out signed bits users may have already downloaded. No-op
+    # for workflow_dispatch: github.event.created is unset there, so the
+    # first clause short-circuits the check to true.
+    if: github.event_name != 'push' || github.event.created == true
     permissions:
       contents: write
     steps:
@@ -239,7 +243,14 @@ jobs:
             # in the same batch); publishing it would risk `--latest`
             # ending up on the wrong version. Refuse rather than guess --
             # push release tags one at a time.
-            HIGHEST_TAG="$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=v:refname | tail -n 1)"
+            # `git tag --list` uses shell globs, not the strict regex used
+            # for VERSION above -- 'v[0-9]*.[0-9]*.[0-9]*' also matches a
+            # stray tag like v0.1.28-beta1 (the trailing * swallows the
+            # suffix), which --sort=v:refname can then rank ahead of a
+            # genuine v0.1.28. Filter to the exact vX.Y.Z shape before
+            # picking the highest, so a leftover non-release tag can't
+            # block a real release.
+            HIGHEST_TAG="$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | tail -n 1)"
             if [[ "$TAG" != "$HIGHEST_TAG" ]]; then
               echo "Refusing to release $TAG: a newer release tag ($HIGHEST_TAG) already exists." >&2
               echo "This can happen when multiple release tags are pushed together in one 'git push --tags'." >&2
