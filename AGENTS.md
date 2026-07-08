@@ -172,12 +172,16 @@ SPARKLE_GENERATE_APPCAST="$SPARKLE_BIN/generate_appcast" \
 ./script/release_update.sh
 ```
 
-Upload both release assets:
+Upload the human installer, Sparkle update payload, and appcast:
 
 ```text
+dist/release/ASTRA-<version>.dmg
 dist/release/ASTRA-<version>.zip
 dist/release/appcast.xml
 ```
+
+Use the DMG for first-time/manual installs. Keep the zip for Sparkle updates;
+`appcast.xml` should reference the zip, not the DMG.
 
 Sparkle checks:
 

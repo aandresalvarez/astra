@@ -269,6 +269,7 @@ SPARKLE_GENERATE_APPCAST=/path/to/Sparkle/bin/generate_appcast \
 This produces:
 
 ```text
+dist/release/ASTRA-0.1.0.dmg
 dist/release/ASTRA-0.1.0.zip
 dist/release/appcast.xml
 ```
@@ -293,12 +294,17 @@ SPARKLE_GENERATE_APPCAST="$SPARKLE_BIN/generate_appcast" \
 ./script/release_update.sh
 ```
 
-Then upload both generated files to the GitHub Release:
+Then upload the generated installer, update payload, and appcast to the GitHub
+Release:
 
 ```text
+dist/release/ASTRA-<version>.dmg
 dist/release/ASTRA-<version>.zip
 dist/release/appcast.xml
 ```
+
+Use the DMG for first-time/manual installs. Sparkle uses the zip referenced by
+`appcast.xml`.
 
 Sparkle reads the appcast from:
 

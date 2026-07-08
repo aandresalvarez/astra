@@ -197,7 +197,7 @@ manual, no code):
    ```
 
 4. **Release** (signs with hardened runtime + timestamp, notarizes, staples,
-   generates the Sparkle appcast):
+   generates the Sparkle appcast, and creates a manual-install DMG):
 
    ```bash
    ASTRA_RELEASE_MODE=developer-id \
@@ -207,6 +207,11 @@ manual, no code):
    ASTRA_SPARKLE_PUBLIC_ED_KEY="<public key>" \
    ./script/release_update.sh
    ```
+
+   The release produces both `ASTRA-<version>.zip` and
+   `ASTRA-<version>.dmg`. The zip is the Sparkle update payload referenced by
+   `appcast.xml`; use the DMG for human downloads/first installs so Finder and
+   Gatekeeper assess a signed disk image instead of a raw archive extraction.
 
 The same Developer ID cert can also be used for dev builds (`export
 ASTRA_SIGN_IDENTITY="Developer ID Application: …"`) to get a stable Keychain.

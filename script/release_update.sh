@@ -29,6 +29,9 @@ require_env ASTRA_VERSION
 require_env ASTRA_BUILD
 require_env ASTRA_SPARKLE_PUBLIC_ED_KEY
 
+FINAL_ZIP="$RELEASE_DIR/${APP_NAME}-${ASTRA_VERSION}.zip"
+FINAL_DMG="$RELEASE_DIR/${APP_NAME}-${ASTRA_VERSION}.dmg"
+
 case "$RELEASE_MODE" in
   internal)
     SIGN_IDENTITY=""
@@ -48,8 +51,14 @@ case "$RELEASE_MODE" in
     ;;
 esac
 
+SIGN_KEYCHAIN_ARGS=()
+if [[ -n "${ASTRA_RELEASE_KEYCHAIN:-}" ]]; then
+  SIGN_KEYCHAIN_ARGS=(--keychain "$ASTRA_RELEASE_KEYCHAIN")
+fi
+
 require_tool ditto
 require_tool codesign
+require_tool hdiutil
 if [[ "$SKIP_NOTARIZATION" != "1" ]]; then
   require_tool xcrun
 fi
@@ -84,7 +93,6 @@ else
   echo "Skipping Apple Developer ID notarization for ASTRA_RELEASE_MODE=$RELEASE_MODE."
 fi
 
-FINAL_ZIP="$RELEASE_DIR/${APP_NAME}-${ASTRA_VERSION}.zip"
 ditto -c -k --keepParent "$APP_BUNDLE" "$FINAL_ZIP"
 
 GENERATE_APPCAST_ARGS=(--download-url-prefix "$DOWNLOAD_URL_PREFIX")
@@ -92,14 +100,42 @@ if [[ -n "${SPARKLE_ED_KEY_FILE:-}" ]]; then
   GENERATE_APPCAST_ARGS+=(--ed-key-file "$SPARKLE_ED_KEY_FILE")
 fi
 
+# Keep the DMG out of Sparkle's appcast. Sparkle updates use the zip; humans
+# should install from the signed/notarized disk image to avoid raw-zip
+# quarantine propagation on first launch.
 "$GENERATE_APPCAST" "${GENERATE_APPCAST_ARGS[@]}" "$RELEASE_DIR"
+
+DMG_STAGING="$RELEASE_DIR/dmg-root"
+rm -rf "$DMG_STAGING"
+mkdir -p "$DMG_STAGING"
+ditto "$APP_BUNDLE" "$DMG_STAGING/$APP_NAME.app"
+ln -s /Applications "$DMG_STAGING/Applications"
+hdiutil create \
+  -quiet \
+  -volname "$APP_NAME $ASTRA_VERSION" \
+  -srcfolder "$DMG_STAGING" \
+  -ov \
+  -format UDZO \
+  "$FINAL_DMG"
+rm -rf "$DMG_STAGING"
+
+if [[ -n "$SIGN_IDENTITY" ]]; then
+  codesign --force --timestamp "${SIGN_KEYCHAIN_ARGS[@]}" --sign "$SIGN_IDENTITY" "$FINAL_DMG"
+fi
+
+if [[ "$SKIP_NOTARIZATION" != "1" ]]; then
+  xcrun notarytool submit "$FINAL_DMG" --keychain-profile "$ASTRA_NOTARY_PROFILE" --wait
+  xcrun stapler staple "$FINAL_DMG"
+  xcrun stapler validate "$FINAL_DMG"
+fi
 
 echo "Release assets:"
 echo "  $FINAL_ZIP"
+echo "  $FINAL_DMG"
 echo "  $RELEASE_DIR/appcast.xml"
 if [[ "$RELEASE_MODE" == "internal" ]]; then
   echo
   echo "Internal release note:"
-  echo "  This build is ad-hoc signed and Sparkle-signed, but not Apple notarized."
+  echo "  This build is ad-hoc signed and Sparkle-signed, but the app/DMG are not Apple notarized."
   echo "  First install may require a manual Gatekeeper approval on each Mac."
 fi

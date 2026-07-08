@@ -118,6 +118,47 @@ struct AppBundlePackagingTests {
         #expect(!script.contains(deepDistributedSign))
     }
 
+    @Test("release script publishes a human DMG without adding it to the Sparkle appcast")
+    func releaseScriptKeepsManualDMGOutOfSparkleAppcast() throws {
+        let script = try String(contentsOf: repoRoot.appendingPathComponent("script/release_update.sh"), encoding: .utf8)
+
+        let finalZip = #"FINAL_ZIP="$RELEASE_DIR/${APP_NAME}-${ASTRA_VERSION}.zip""#
+        let finalDMG = #"FINAL_DMG="$RELEASE_DIR/${APP_NAME}-${ASTRA_VERSION}.dmg""#
+        let appcastGeneration = #""$GENERATE_APPCAST" "${GENERATE_APPCAST_ARGS[@]}" "$RELEASE_DIR""#
+        let dmgCreation = #"hdiutil create \"#
+        let dmgSigning = #"codesign --force --timestamp "${SIGN_KEYCHAIN_ARGS[@]}" --sign "$SIGN_IDENTITY" "$FINAL_DMG""#
+        let releaseKeychain = #"SIGN_KEYCHAIN_ARGS=(--keychain "$ASTRA_RELEASE_KEYCHAIN")"#
+        let dmgNotarization = #"xcrun notarytool submit "$FINAL_DMG" --keychain-profile "$ASTRA_NOTARY_PROFILE" --wait"#
+        let dmgStapling = #"xcrun stapler staple "$FINAL_DMG""#
+
+        #expect(script.contains(finalZip))
+        #expect(script.contains(finalDMG))
+        #expect(script.contains(dmgCreation))
+        #expect(script.contains(releaseKeychain))
+        #expect(script.contains(dmgSigning))
+        #expect(script.contains(dmgNotarization))
+        #expect(script.contains(dmgStapling))
+        #expect(try index(of: finalZip, in: script) < index(of: appcastGeneration, in: script))
+        #expect(try index(of: appcastGeneration, in: script) < index(of: dmgCreation, in: script))
+    }
+
+    @Test("release workflow uploads the manual DMG alongside the Sparkle zip and appcast")
+    func releaseWorkflowUploadsManualDMG() throws {
+        let workflow = try String(
+            contentsOf: repoRoot.appendingPathComponent(".github/workflows/release.yml"),
+            encoding: .utf8
+        )
+        let dmgAsset = #"dist/release/ASTRA-${{ steps.version.outputs.version }}.dmg"#
+        let zipAsset = #"dist/release/ASTRA-${{ steps.version.outputs.version }}.zip"#
+        let appcastAsset = #"dist/release/appcast.xml"#
+
+        #expect(workflow.contains(dmgAsset))
+        #expect(workflow.contains(zipAsset))
+        #expect(workflow.contains(appcastAsset))
+        #expect(try index(of: dmgAsset, in: workflow) < index(of: zipAsset, in: workflow))
+        #expect(try index(of: zipAsset, in: workflow) < index(of: appcastAsset, in: workflow))
+    }
+
     private var repoRoot: URL {
         URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()

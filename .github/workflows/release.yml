@@ -246,7 +246,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG="v${{ steps.version.outputs.version }}"
-          ASSETS=(dist/release/ASTRA-${{ steps.version.outputs.version }}.zip dist/release/appcast.xml)
+          ASSETS=(
+            dist/release/ASTRA-${{ steps.version.outputs.version }}.dmg
+            dist/release/ASTRA-${{ steps.version.outputs.version }}.zip
+            dist/release/appcast.xml
+          )
           [[ -f "dist/release/ASTRA-${{ steps.version.outputs.version }}.dSYM.zip" ]] && \
             ASSETS+=("dist/release/ASTRA-${{ steps.version.outputs.version }}.dSYM.zip")
           gh release create "$TAG" "${ASSETS[@]}" \
