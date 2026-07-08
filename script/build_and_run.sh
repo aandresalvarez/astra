@@ -268,7 +268,7 @@ if [[ -n "$SPARKLE_FEED_URL" ]]; then
   <key>SUEnableAutomaticChecks</key>
   <true/>
   <key>SUAllowsAutomaticUpdates</key>
-  <false/>
+  <true/>
 PLIST
 fi
 
@@ -302,10 +302,43 @@ if [[ -z "$SIGN_IDENTITY" && "$ASTRA_CHANNEL" == "dev" ]]; then
   fi
 fi
 
+sign_developer_id() {
+  local target="$1"
+  /usr/bin/codesign --force --timestamp --options runtime --sign "$SIGN_IDENTITY" "$target"
+}
+
+sign_bundled_tools_for_notarization() {
+  local tool_product
+  for tool_product in "${TOOL_PRODUCTS[@]}"; do
+    sign_developer_id "$BUNDLED_TOOLS_DIR/$tool_product"
+  done
+}
+
+sign_sparkle_framework_for_notarization() {
+  local framework="$APP_FRAMEWORKS/Sparkle.framework"
+  [[ -d "$framework" ]] || return 0
+  # Sign inside-out: Sparkle's own XPC services / helper app / Autoupdate tool
+  # first, then the framework. Notarization requires every Mach-O in the
+  # bundle to carry hardened runtime + a secure timestamp.
+  local nested
+  while IFS= read -r -d '' nested; do
+    sign_developer_id "$nested"
+  done < <(find "$framework" \( -name "*.xpc" -o -name "*.app" \) -print0 2>/dev/null)
+  local autoupdate
+  autoupdate="$(find "$framework" -type f -name "Autoupdate" -print 2>/dev/null | head -n 1 || true)"
+  [[ -n "$autoupdate" ]] && sign_developer_id "$autoupdate"
+  sign_developer_id "$framework"
+}
+
 if [[ -n "$SIGN_IDENTITY" && "$ASTRA_CHANNEL" != "dev" ]]; then
-  # Distributed channels (prod/beta): hardened runtime + secure timestamp so the
-  # bundle can be notarized.
-  /usr/bin/codesign --force --deep --timestamp --options runtime --entitlements "$ENTITLEMENTS" --sign "$SIGN_IDENTITY" "$APP_BUNDLE"
+  # Distributed channels (prod/beta): sign inside-out with hardened runtime +
+  # secure timestamp so the bundle can be notarized. Deliberately NOT --deep
+  # here: --deep stamps this app's own entitlements onto every nested Mach-O,
+  # including Sparkle's XPC services and helper app, which invalidates their
+  # own signatures. Nested code must be signed first, then the outer bundle.
+  sign_bundled_tools_for_notarization
+  sign_sparkle_framework_for_notarization
+  /usr/bin/codesign --force --timestamp --options runtime --entitlements "$ENTITLEMENTS" --sign "$SIGN_IDENTITY" "$APP_BUNDLE"
 elif [[ -n "$SIGN_IDENTITY" ]]; then
   # Dev: stable identity but NO hardened runtime/timestamp. Those are only needed
   # for notarization and would change local runtime behavior vs the ad-hoc build
@@ -358,6 +391,21 @@ verify_app_bundle() {
       errors=$((errors + 1))
     fi
   done
+
+  if [[ -n "$SIGN_IDENTITY" && "$ASTRA_CHANNEL" != "dev" ]]; then
+    # Distribution builds: catch a broken inside-out signature locally,
+    # before it surfaces as an opaque notarytool rejection.
+    for tool_product in "${TOOL_PRODUCTS[@]}"; do
+      if ! /usr/bin/codesign --verify --strict "$BUNDLED_TOOLS_DIR/$tool_product" 2>/dev/null; then
+        echo "FAIL: signature verification failed for bundled tool $tool_product" >&2
+        errors=$((errors + 1))
+      fi
+    done
+    if ! /usr/bin/codesign --verify --deep --strict "$APP_FRAMEWORKS/Sparkle.framework" 2>/dev/null; then
+      echo "FAIL: signature verification failed for Sparkle.framework" >&2
+      errors=$((errors + 1))
+    fi
+  fi
 
   if [[ "$errors" -gt 0 ]]; then
     echo "App bundle verification failed with $errors error(s)." >&2
