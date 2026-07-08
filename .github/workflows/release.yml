@@ -41,6 +41,8 @@ jobs:
     name: Build, sign, notarize, publish
     runs-on: macos-26
     timeout-minutes: 60
+    permissions:
+      contents: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -138,20 +140,55 @@ jobs:
 
       - name: Determine release version and build
         id: version
+        env:
+          # Passed as data, not interpolated into the script text: a
+          # workflow_dispatch caller controls these inputs, and this job
+          # holds the Developer ID cert + Sparkle private key, so template
+          # expansion straight into `run:` would be a shell-injection hole.
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_BUILD: ${{ inputs.build }}
         run: |
-          if [[ -n "${{ inputs.version }}" ]]; then
-            VERSION="${{ inputs.version }}"
+          if [[ -n "$INPUT_VERSION" ]]; then
+            if [[ ! "$INPUT_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "Invalid version input '$INPUT_VERSION': expected X.Y.Z." >&2
+              exit 2
+            fi
+            VERSION="$INPUT_VERSION"
           elif [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             VERSION="${GITHUB_REF_NAME#v}"
           else
-            echo "Could not derive ASTRA_VERSION: not run from a vX.Y.Z tag and no version input given." >&2
-            exit 2
+            LATEST_TAG="$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=v:refname | tail -n 1)"
+            if [[ -z "$LATEST_TAG" ]]; then
+              echo "Could not derive ASTRA_VERSION: no vX.Y.Z tags exist and no version input given." >&2
+              exit 2
+            fi
+            VERSION="${LATEST_TAG#v}"
           fi
-          if [[ -n "${{ inputs.build }}" ]]; then
-            BUILD="${{ inputs.build }}"
+
+          TAG="v$VERSION"
+          EXISTING_TAG_COUNT="$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' | wc -l | tr -d ' ')"
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            # Releasing an already-tagged version: match the count-based
+            # build number build_and_run.sh would compute locally for it.
+            DEFAULT_BUILD="$EXISTING_TAG_COUNT"
           else
-            BUILD="$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' | wc -l | tr -d ' ')"
+            # Releasing a version that has no tag yet: the count-based
+            # default would collide with the previous release's build
+            # number (Sparkle compares CFBundleVersion, not just the
+            # display version), so advance it by one.
+            DEFAULT_BUILD="$((EXISTING_TAG_COUNT + 1))"
           fi
+
+          if [[ -n "$INPUT_BUILD" ]]; then
+            if [[ ! "$INPUT_BUILD" =~ ^[0-9]+$ ]]; then
+              echo "Invalid build input '$INPUT_BUILD': expected a positive integer." >&2
+              exit 2
+            fi
+            BUILD="$INPUT_BUILD"
+          else
+            BUILD="$DEFAULT_BUILD"
+          fi
+
           echo "version=$VERSION" >>"$GITHUB_OUTPUT"
           echo "build=$BUILD" >>"$GITHUB_OUTPUT"
 
@@ -159,7 +196,12 @@ jobs:
         env:
           ASTRA_RELEASE_MODE: developer-id
           ASTRA_SIGN_IDENTITY: ${{ secrets.ASTRA_SIGN_IDENTITY }}
-          ASTRA_NOTARY_PROFILE: ${{ env.ASTRA_NOTARY_PROFILE }}
+          # Literal, not `${{ env.ASTRA_NOTARY_PROFILE }}` read back from the
+          # prior step's $GITHUB_ENV write: it's already a fixed literal, so
+          # round-tripping it through the env context adds a failure mode
+          # for no benefit. Must match the literal passed to
+          # `notarytool store-credentials` above.
+          ASTRA_NOTARY_PROFILE: astra-release-ci
           ASTRA_SKIP_NOTARIZATION: ${{ inputs.skip_notarization && '1' || '0' }}
           ASTRA_VERSION: ${{ steps.version.outputs.version }}
           ASTRA_BUILD: ${{ steps.version.outputs.build }}
@@ -175,6 +217,9 @@ jobs:
           fi
 
       - name: Publish GitHub Release
+        # A skip_notarization run is a signing-only dry run; it must never
+        # become the downloadable "latest" release.
+        if: ${{ !inputs.skip_notarization }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -185,6 +230,7 @@ jobs:
           gh release create "$TAG" "${ASSETS[@]}" \
             --title "ASTRA $TAG" \
             --generate-notes \
+            --target "$GITHUB_SHA" \
             --latest || gh release upload "$TAG" "${ASSETS[@]}" --clobber
 
       - name: Clean up temporary keychain
