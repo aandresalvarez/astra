@@ -1415,6 +1415,14 @@ struct ArchitectureFitnessTests {
         let branchProtectionScript = try fileText("script/configure_branch_protection.sh", root: root)
         let ciWorkflow = try fileText(".github/workflows/ci.yml", root: root)
         let codeowners = try fileText(".github/CODEOWNERS", root: root)
+        let branchProtectionPayload = try branchProtectionJSONPayload(from: branchProtectionScript)
+        let branchProtection = try #require(
+            JSONSerialization.jsonObject(with: Data(branchProtectionPayload.utf8)) as? [String: Any]
+        )
+        let requiredStatusChecks = try #require(
+            branchProtection["required_status_checks"] as? [String: Any]
+        )
+        let requiredContexts = try #require(requiredStatusChecks["contexts"] as? [String])
 
         #expect(preCommitHook.contains("script/precommit.sh"))
         #expect(prePushHook.contains("script/prepush.sh"))
@@ -1425,6 +1433,13 @@ struct ArchitectureFitnessTests {
         #expect(preCommitScript.contains(#"${#changed_files[@]} > 0"#))
         #expect(preCommitScript.contains("git diff --cached --check"))
         #expect(branchProtectionScript.contains(#""enforce_admins": false"#))
+        #expect(requiredStatusChecks["strict"] as? Bool == true)
+        #expect(requiredContexts == [
+            "Focused Swift tests",
+            "Full Swift test suite",
+            "Whitespace"
+        ])
+        #expect(branchProtection["allow_fork_syncing"] as? Bool == false)
         #expect(focusedTargetScript.contains("Tools/MCPGatewaySupport"))
         #expect(focusedTargetScript.contains("MCPGatewaySupportTests"))
         #expect(focusedTargetScript.contains("Tools/MailToolSupport"))
@@ -1698,6 +1713,16 @@ struct ArchitectureFitnessTests {
             contentsOf: root.appendingPathComponent(relativePath),
             encoding: .utf8
         )
+    }
+
+    private func branchProtectionJSONPayload(from script: String) throws -> String {
+        guard let start = script.range(of: "<<'JSON'\n") else {
+            throw ArchitectureFitnessError.sourceSnippetNotFound("branch protection JSON start")
+        }
+        guard let end = script[start.upperBound...].range(of: "\nJSON") else {
+            throw ArchitectureFitnessError.sourceSnippetNotFound("branch protection JSON end")
+        }
+        return String(script[start.upperBound..<end.lowerBound])
     }
 
     private func regexCaptures(_ pattern: String, in text: String, captureGroup: Int = 1) throws -> [String] {

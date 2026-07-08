@@ -135,7 +135,7 @@ explicitly directs it.
 
 ## Sparkle Release Cycle
 
-Internal testing uses zero Apple cost:
+Internal testing (`ASTRA_RELEASE_MODE=internal`, the default) uses zero Apple cost:
 
 - ad-hoc macOS code signing
 - Sparkle EdDSA signatures
@@ -143,6 +143,14 @@ Internal testing uses zero Apple cost:
 - no App Store
 - no Apple Developer ID
 - no notarization
+
+A Developer ID + notarization path also exists (`ASTRA_RELEASE_MODE=developer-id`)
+and is validated live end to end, including the ad-hoc→Developer-ID Sparkle
+update transition for existing installs — see
+[docs/code-signing.md](docs/code-signing.md) and
+[docs/specs/2026-07-07-apple-developer-program-adoption-plan.md](docs/specs/2026-07-07-apple-developer-program-adoption-plan.md).
+It requires a Developer ID identity + notary credentials, so `internal` stays
+the zero-cost default for day-to-day testing.
 
 The Sparkle private key lives in the user's login Keychain. The public key can
 be printed with:
