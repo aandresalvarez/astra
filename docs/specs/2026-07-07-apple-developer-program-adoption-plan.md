@@ -97,6 +97,8 @@ What remains is exactly the piece that requires a human: pasting the 8 real secr
 
 **Exact secret names the workflow reads** (verified against `release.yml` directly — this list is authoritative; an earlier draft of this doc used a shorthand that didn't match the actual names for the notary key ID/issuer, corrected here):
 
+**7 real secrets** — Settings → Secrets and variables → Actions → **Secrets** tab → New repository secret:
+
 | Secret name | Source |
 |---|---|
 | `ASTRA_SIGN_IDENTITY` | `security find-identity -v -p codesigning` → the `Developer ID Application: ...` string |
@@ -105,10 +107,17 @@ What remains is exactly the piece that requires a human: pasting the 8 real secr
 | `ASTRA_NOTARY_API_KEY_P8` | `base64 -i AuthKey_XXXX.p8 \| pbcopy` — the App Store Connect API key, base64-encoded |
 | `ASTRA_NOTARY_KEY_ID` | The Key ID shown next to that API key on the Team Keys page (**not** prefixed with `API_`) |
 | `ASTRA_NOTARY_ISSUER_ID` | The Issuer ID (UUID) shown on the Team Keys page (**not** prefixed with `API_`) |
-| `ASTRA_SPARKLE_PRIVATE_KEY_B64` | `generate_keys -x /tmp/key && base64 -i /tmp/key \| pbcopy` (the **real** Sparkle key, not the throwaway `astra-sparkle-transition-test` one used for local testing) |
-| `ASTRA_SPARKLE_PUBLIC_ED_KEY` | `generate_keys -p` — safe to store as a plain repo variable too, it's public |
+| `ASTRA_SPARKLE_PRIVATE_KEY_B64` | `generate_keys -x /tmp/key && base64 -i /tmp/key \| pbcopy` (the **real** Sparkle key, not the throwaway `astra-sparkle-transition-test` one used for local testing — see prerequisite note below) |
 
-Add each via **GitHub repo → Settings → Secrets and variables → Actions → New repository secret**. This step is yours to do — entering credentials into any field, including a secrets manager, isn't something I'll do on your behalf even with authorization.
+**1 public value, not a secret** — `release.yml` was refactored (2026-07-07) to read this via the `vars` context instead, since it's the *public* half of a keypair, already embedded unencrypted in every shipped `Info.plist`, not sensitive by any reasonable definition:
+
+| Repo variable name | Source |
+|---|---|
+| `ASTRA_SPARKLE_PUBLIC_ED_KEY` | `generate_keys -p` — Settings → Secrets and variables → Actions → **Variables** tab → New repository variable |
+
+**Prerequisite gap found while checking this:** no real production Sparkle EdDSA key pair exists on this machine yet (`generate_keys -p` with no `--account` override returns "No existing signing key found!" — only the throwaway `astra-sparkle-transition-test` one from the Phase 3 test exists, and that was deleted). Run `.build/artifacts/sparkle/Sparkle/bin/generate_keys` once (no arguments, uses the default account) before the private/public values above can be sourced — this is a one-time step separate from adding GitHub secrets.
+
+Entering the 7 secrets is yours to do — that's credential entry, which isn't something I'll do on your behalf even with authorization. The 1 public variable is a judgment call: tell me to go ahead and I can add it myself via `gh variable set` once the real key pair exists (it's not sensitive), or add it yourself alongside the secrets for simplicity — either is fine.
 
 Original scope, for what's left:
 

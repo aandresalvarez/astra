@@ -1,9 +1,18 @@
 name: Release
 
 # Manual only for now. `push: tags: v*` is a deliberate follow-up once the
-# secrets below are configured — this repo already tags every build
-# sequentially (v0.1.17, v0.1.18, ...), so wiring a tag-push trigger before
-# secrets exist would turn every routine tag red in Actions.
+# secrets/variables below are configured — this repo already tags every
+# build sequentially (v0.1.17, v0.1.18, ...), so wiring a tag-push trigger
+# before they exist would turn every routine tag red in Actions.
+#
+# 7 values go in Settings -> Secrets and variables -> Actions -> Secrets:
+#   ASTRA_SIGN_IDENTITY, ASTRA_DEVELOPER_ID_CERTIFICATE_P12,
+#   ASTRA_DEVELOPER_ID_CERTIFICATE_PASSWORD, ASTRA_NOTARY_API_KEY_P8,
+#   ASTRA_NOTARY_KEY_ID, ASTRA_NOTARY_ISSUER_ID, ASTRA_SPARKLE_PRIVATE_KEY_B64
+# 1 value goes in the neighboring Variables tab, not Secrets, since it's the
+# *public* half of a keypair (already embedded in every shipped Info.plist,
+# not sensitive): ASTRA_SPARKLE_PUBLIC_ED_KEY
+#
 # See docs/code-signing.md and
 # docs/specs/2026-07-07-apple-developer-program-adoption-plan.md (Phase 4).
 on:
@@ -38,7 +47,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Preflight required secrets
+      - name: Preflight required secrets and variables
         env:
           SIGN_IDENTITY: ${{ secrets.ASTRA_SIGN_IDENTITY }}
           CERT_P12: ${{ secrets.ASTRA_DEVELOPER_ID_CERTIFICATE_P12 }}
@@ -47,7 +56,7 @@ jobs:
           NOTARY_KEY_ID: ${{ secrets.ASTRA_NOTARY_KEY_ID }}
           NOTARY_ISSUER_ID: ${{ secrets.ASTRA_NOTARY_ISSUER_ID }}
           SPARKLE_PRIVATE_KEY: ${{ secrets.ASTRA_SPARKLE_PRIVATE_KEY_B64 }}
-          SPARKLE_PUBLIC_KEY: ${{ secrets.ASTRA_SPARKLE_PUBLIC_ED_KEY }}
+          SPARKLE_PUBLIC_KEY: ${{ vars.ASTRA_SPARKLE_PUBLIC_ED_KEY }}
           SKIP_NOTARIZATION: ${{ inputs.skip_notarization }}
         run: |
           missing=()
@@ -62,7 +71,9 @@ jobs:
             [[ -z "$NOTARY_ISSUER_ID" ]] && missing+=(ASTRA_NOTARY_ISSUER_ID)
           fi
           if [[ ${#missing[@]} -gt 0 ]]; then
-            echo "Missing required secret(s): ${missing[*]}" >&2
+            echo "Missing required secret(s)/variable(s): ${missing[*]}" >&2
+            echo "All but ASTRA_SPARKLE_PUBLIC_ED_KEY go under Secrets;" >&2
+            echo "that one is public and goes under the Variables tab." >&2
             echo "See the Phase 0 checklist in docs/code-signing.md." >&2
             exit 2
           fi
@@ -152,7 +163,7 @@ jobs:
           ASTRA_SKIP_NOTARIZATION: ${{ inputs.skip_notarization && '1' || '0' }}
           ASTRA_VERSION: ${{ steps.version.outputs.version }}
           ASTRA_BUILD: ${{ steps.version.outputs.build }}
-          ASTRA_SPARKLE_PUBLIC_ED_KEY: ${{ secrets.ASTRA_SPARKLE_PUBLIC_ED_KEY }}
+          ASTRA_SPARKLE_PUBLIC_ED_KEY: ${{ vars.ASTRA_SPARKLE_PUBLIC_ED_KEY }}
           SPARKLE_GENERATE_APPCAST: ${{ github.workspace }}/.build/artifacts/sparkle/Sparkle/bin/generate_appcast
         run: script/release_update.sh
 
