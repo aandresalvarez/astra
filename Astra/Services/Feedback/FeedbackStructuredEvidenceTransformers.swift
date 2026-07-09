@@ -1,5 +1,7 @@
 import Foundation
 import ASTRACore
+import ImageIO
+import UniformTypeIdentifiers
 
 struct FeedbackTransformedArtifact: Equatable, Sendable {
     let data: Data
@@ -49,7 +51,7 @@ private struct FeedbackCrashEvidenceRecord: Codable, Equatable {
 enum FeedbackBrowserEvidenceTransformer {
     static func transform(_ records: [FeedbackBrowserEvidenceRecord]) throws -> FeedbackTransformedArtifact? {
         guard !records.isEmpty else { return nil }
-        let selected = Array(records.sorted(by: ordered).prefix(FeedbackEvidencePolicy.maximumBrowserRecords))
+        let selected = Array(records.sorted(by: ordered).suffix(FeedbackEvidencePolicy.maximumBrowserRecords))
         var redaction = FeedbackRedactionAccumulator()
         var droppedFreeformValues = 0
         let sanitized = selected.map { record -> FeedbackBrowserArtifactRecord in
@@ -97,7 +99,17 @@ enum FeedbackBrowserEvidenceTransformer {
         if lhs.sequence != rhs.sequence { return lhs.sequence < rhs.sequence }
         if lhs.createdAt != rhs.createdAt { return lhs.createdAt < rhs.createdAt }
         if lhs.method != rhs.method { return lhs.method < rhs.method }
-        return lhs.path < rhs.path
+        if lhs.path != rhs.path { return lhs.path < rhs.path }
+        if lhs.statusCode != rhs.statusCode { return lhs.statusCode < rhs.statusCode }
+        if lhs.durationMilliseconds != rhs.durationMilliseconds {
+            return lhs.durationMilliseconds < rhs.durationMilliseconds
+        }
+        if lhs.beforeHost != rhs.beforeHost { return lhs.beforeHost < rhs.beforeHost }
+        if lhs.afterHost != rhs.afterHost { return lhs.afterHost < rhs.afterHost }
+        if lhs.urlChanged != rhs.urlChanged { return lhs.urlChanged == false }
+        if lhs.succeeded != rhs.succeeded { return lhs.succeeded == false }
+        if lhs.errorCode != rhs.errorCode { return (lhs.errorCode ?? "") < (rhs.errorCode ?? "") }
+        return (lhs.observedOutcome ?? "") < (rhs.observedOutcome ?? "")
     }
 
     private static func safeMethod(_ value: String) -> String {
@@ -109,7 +121,9 @@ enum FeedbackBrowserEvidenceTransformer {
 
     private static func safeCode(_ value: String?) -> String? {
         guard let value else { return nil }
-        let candidate = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let sanitized = FeedbackEvidenceSanitizer.sanitize(value, maximumBytes: 80)
+        guard sanitized.redaction.replacements == 0, !sanitized.wasTruncated else { return nil }
+        let candidate = sanitized.text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !candidate.isEmpty,
               candidate.utf8.count <= 80,
               candidate.unicodeScalars.allSatisfy({
@@ -121,6 +135,104 @@ enum FeedbackBrowserEvidenceTransformer {
 
     private static func pathWithoutQueryOrFragment(_ value: String) -> String {
         String(value.prefix { $0 != "?" && $0 != "#" })
+    }
+}
+
+enum FeedbackScreenshotEvidenceTransformer {
+    static func transform(_ candidate: FeedbackScreenshotCandidate) -> FeedbackTransformedArtifact? {
+        let sourceData = candidate.jpegData
+        guard !sourceData.isEmpty,
+              sourceData.count <= FeedbackContractLimitsV1.maximumArtifactBytes,
+              hasSingleCompleteJPEGStream(sourceData),
+              let source = CGImageSourceCreateWithData(sourceData as CFData, nil),
+              CGImageSourceGetCount(source) == 1,
+              CGImageSourceGetStatus(source) == .statusComplete,
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let width = (properties[kCGImagePropertyPixelWidth] as? NSNumber)?.intValue,
+              let height = (properties[kCGImagePropertyPixelHeight] as? NSNumber)?.intValue,
+              width > 0,
+              height > 0,
+              width <= FeedbackEvidencePolicy.maximumScreenshotDimension,
+              height <= FeedbackEvidencePolicy.maximumScreenshotDimension,
+              width <= FeedbackEvidencePolicy.maximumScreenshotPixels / height,
+              let image = CGImageSourceCreateImageAtIndex(
+                  source,
+                  0,
+                  [kCGImageSourceShouldCache: false] as CFDictionary
+              )
+        else { return nil }
+
+        let output = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(
+            output,
+            UTType.jpeg.identifier as CFString,
+            1,
+            nil
+        ) else { return nil }
+        CGImageDestinationAddImage(
+            destination,
+            image,
+            [kCGImageDestinationLossyCompressionQuality: 0.85] as CFDictionary
+        )
+        guard CGImageDestinationFinalize(destination) else { return nil }
+
+        let encoded = output as Data
+        guard encoded.count <= FeedbackContractLimitsV1.maximumArtifactBytes,
+              hasSingleCompleteJPEGStream(encoded) else { return nil }
+        return FeedbackTransformedArtifact(
+            data: encoded,
+            redaction: FeedbackRedactionSummaryV1(
+                replacements: 0,
+                secretPatterns: 0,
+                pathPatterns: 0,
+                contactPatterns: 0
+            ),
+            warnings: []
+        )
+    }
+
+    // ImageIO deliberately accepts trailing data. Parse the container first so
+    // an otherwise decodable JPEG cannot smuggle a second payload past EOI.
+    private static func hasSingleCompleteJPEGStream(_ data: Data) -> Bool {
+        data.withUnsafeBytes { rawBuffer in
+            let bytes = rawBuffer.bindMemory(to: UInt8.self)
+            guard bytes.count >= 4, bytes[0] == 0xff, bytes[1] == 0xd8 else { return false }
+            var offset = 2
+            var insideScan = false
+
+            while offset < bytes.count {
+                if bytes[offset] != 0xff {
+                    guard insideScan else { return false }
+                    offset += 1
+                    continue
+                }
+                while offset < bytes.count, bytes[offset] == 0xff { offset += 1 }
+                guard offset < bytes.count else { return false }
+                let marker = bytes[offset]
+                offset += 1
+
+                if marker == 0x00 {
+                    guard insideScan else { return false }
+                    continue
+                }
+                if (0xd0...0xd7).contains(marker) {
+                    guard insideScan else { return false }
+                    continue
+                }
+                if marker == 0xd9 {
+                    return offset == bytes.count
+                }
+                if marker == 0xd8 { return false }
+                if marker == 0x01 { continue }
+
+                guard offset + 2 <= bytes.count else { return false }
+                let length = Int(bytes[offset]) << 8 | Int(bytes[offset + 1])
+                guard length >= 2, offset + length <= bytes.count else { return false }
+                insideScan = marker == 0xda
+                offset += length
+            }
+            return false
+        }
     }
 }
 
@@ -138,7 +250,7 @@ enum FeedbackCrashEvidenceTransformer {
             if lhs.modifiedAt != rhs.modifiedAt { return lhs.modifiedAt < rhs.modifiedAt }
             return lhs.fileName < rhs.fileName
         }
-        let limited = Array(ordered.prefix(FeedbackEvidencePolicy.maximumCrashReports))
+        let limited = Array(ordered.suffix(FeedbackEvidencePolicy.maximumCrashReports))
         var omissions: [FeedbackEvidenceOmissionV1] = []
         var records: [FeedbackCrashEvidenceRecord] = []
         var redaction = FeedbackRedactionAccumulator()

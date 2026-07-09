@@ -2,6 +2,9 @@ import Foundation
 import Testing
 import ASTRACore
 import Darwin
+import CoreGraphics
+import ImageIO
+import UniformTypeIdentifiers
 @testable import ASTRA
 
 @Suite("Feedback Evidence Privacy")
@@ -26,6 +29,26 @@ struct FeedbackEvidencePrivacyTests {
         #expect(result.redaction.secretPatterns > 0)
         #expect(result.redaction.contactPatterns > 0)
         #expect(result.redaction.pathPatterns > 0)
+    }
+
+    @Test("Authorization redaction consumes complete Basic and Bearer credentials")
+    func authorizationCredentialsAreFullyRedacted() {
+        let credentials = ["x", "short", "abc123", String(repeating: "L", count: 256)]
+        let raw = """
+        Authorization: Bearer \(credentials[0])
+        authorization=basic \(credentials[1])
+        AUTHORIZATION: bEaReR \(credentials[2])
+        Authorization: Basic \(credentials[3])
+        standalone Bearer tiny
+        """
+
+        let result = FeedbackEvidenceSanitizer.sanitize(raw, maximumBytes: 4_000)
+
+        for credential in credentials {
+            #expect(!result.text.contains(credential), "Credential survived: \(credential)")
+        }
+        #expect(!result.text.contains("tiny"))
+        #expect(result.redaction.secretPatterns >= 5)
     }
 
     @Test("Browser, screenshot, and crash evidence are excluded by default")
@@ -96,7 +119,8 @@ struct FeedbackEvidencePrivacyTests {
         #expect(!browser.contains("observedOutcome"))
         #expect(package.manifest.warnings.contains { $0.code == "browser_freeform_values_omitted" })
         #expect(diagnostics.contains("exceptionType"))
-        #expect(screenshot == fixture.jpegScreenshot.jpegData)
+        #expect(CGImageSourceCreateWithData(screenshot as CFData, nil) != nil)
+        #expect(!screenshot.isEmpty)
         #expect(package.manifest.artifacts.first { $0.kind == .browserEvidence }?.disclosureClass == .explicitOptIn)
         #expect(package.manifest.artifacts.first { $0.kind == .screenshot }?.disclosureClass == .explicitOptIn)
         #expect(package.manifest.artifacts.first { $0.kind == .macOSDiagnostic }?.disclosureClass == .explicitOptIn)
@@ -116,8 +140,22 @@ struct FeedbackEvidencePrivacyTests {
             screenshots: [fixture.jpegScreenshot]
         )
 
-        let first = try FeedbackEvidenceBuilder().prepare(input: input, selections: selections, directory: firstOutput)
-        let second = try FeedbackEvidenceBuilder().prepare(input: input, selections: selections, directory: secondOutput)
+        var utcEnvironment = ProcessInfo.processInfo.environment
+        utcEnvironment["TZ"] = "UTC"
+        var pacificEnvironment = ProcessInfo.processInfo.environment
+        pacificEnvironment["TZ"] = "America/Los_Angeles"
+        let immutableUTCEnvironment = utcEnvironment
+        let immutablePacificEnvironment = pacificEnvironment
+        let first = try FeedbackEvidenceBuilder(processEnvironment: { immutableUTCEnvironment }).prepare(
+            input: input,
+            selections: selections,
+            directory: firstOutput
+        )
+        let second = try FeedbackEvidenceBuilder(processEnvironment: { immutablePacificEnvironment }).prepare(
+            input: input,
+            selections: selections,
+            directory: secondOutput
+        )
 
         #expect(first.manifest == second.manifest)
         #expect(first.manifestSHA256 == second.manifestSHA256)
@@ -125,10 +163,72 @@ struct FeedbackEvidencePrivacyTests {
         #expect(try Data(contentsOf: first.manifestURL) == Data(contentsOf: second.manifestURL))
         #expect(try Data(contentsOf: first.archiveURL) == Data(contentsOf: second.archiveURL))
         for artifact in first.manifest.artifacts {
+            let looseBytes = try Data(contentsOf: first.directoryURL.appendingPathComponent(artifact.relativePath))
             let bytes = try zipEntryData(artifact.relativePath, archive: first.archiveURL)
+            #expect(looseBytes == bytes)
             #expect(FeedbackCanonicalJSONV1.sha256Hex(bytes) == artifact.sha256)
             #expect(Int64(bytes.count) == artifact.byteCount)
         }
+    }
+
+    @Test("Browser truncation retains the newest 200 records in canonical order")
+    func browserTruncationRetainsNewestWindow() throws {
+        let createdAt = Date(timeIntervalSince1970: 1_700_000_000)
+        let records = (1...205).map { sequence in
+            FeedbackBrowserEvidenceRecord(
+                sequence: sequence,
+                createdAt: createdAt.addingTimeInterval(TimeInterval(sequence)),
+                method: "GET",
+                path: "/records/\(sequence)",
+                statusCode: 200,
+                durationMilliseconds: sequence,
+                beforeHost: "example.test",
+                afterHost: "example.test",
+                urlChanged: false,
+                succeeded: true,
+                errorCode: nil,
+                observedOutcome: "complete"
+            )
+        }
+
+        let transformedOrNil = try FeedbackBrowserEvidenceTransformer.transform(Array(records.reversed()))
+        let transformed = try #require(transformedOrNil)
+        let object = try #require(JSONSerialization.jsonObject(with: transformed.data) as? [String: Any])
+        let retained = try #require(object["records"] as? [[String: Any]])
+        let sequences = retained.compactMap { ($0["sequence"] as? NSNumber)?.intValue }
+
+        #expect(sequences == Array(6...205))
+        #expect(transformed.warnings.contains { warning in
+            warning.code == "browser_records_truncated" && warning.message.contains("newest 200")
+        })
+    }
+
+    @Test("Browser code fields drop secret-shaped values after sanitization")
+    func browserCodesRejectSecrets() throws {
+        let record = FeedbackBrowserEvidenceRecord(
+            sequence: 1,
+            createdAt: Date(timeIntervalSince1970: 1_700_000_000),
+            method: "GET",
+            path: "/",
+            statusCode: 200,
+            durationMilliseconds: 1,
+            beforeHost: "example.test",
+            afterHost: "example.test",
+            urlChanged: false,
+            succeeded: false,
+            errorCode: "sk-abcdefgh",
+            observedOutcome: "token=short-secret"
+        )
+
+        let transformedOrNil = try FeedbackBrowserEvidenceTransformer.transform([record])
+        let transformed = try #require(transformedOrNil)
+        let text = String(decoding: transformed.data, as: UTF8.self)
+
+        #expect(!text.contains("sk-abcdefgh"))
+        #expect(!text.contains("short-secret"))
+        #expect(!text.contains("errorCode"))
+        #expect(!text.contains("outcomeCode"))
+        #expect(transformed.warnings.contains { $0.code == "browser_freeform_values_omitted" })
     }
 
     @Test("Invalid screenshots and unsafe crash sources fail closed")
@@ -164,30 +264,78 @@ struct FeedbackEvidencePrivacyTests {
             sizeBytes: target.sizeBytes
         )
         let corrupt = try fixture.crashReport(contents: "not a supported crash document")
-        let corruptScreenshot = FeedbackScreenshotCandidate(
-            jpegData: Data("not-an-image".utf8),
-            source: "browser",
-            width: 10,
-            height: 10
-        )
+        let validJPEG = fixture.jpegScreenshot.jpegData
+        let corruptScreenshots = [
+            FeedbackScreenshotCandidate(
+                jpegData: Data([0xff, 0xd8, 0xff, 0xe0, 0x01, 0x02, 0xff, 0xd9]),
+                source: "marker-wrapped-garbage",
+                width: 10,
+                height: 10
+            ),
+            FeedbackScreenshotCandidate(
+                jpegData: Data(validJPEG.dropLast()),
+                source: "truncated",
+                width: 2,
+                height: 2
+            ),
+            FeedbackScreenshotCandidate(
+                jpegData: validJPEG + Data("POLYGLOT".utf8) + Data([0xff, 0xd9]),
+                source: "polyglot",
+                width: 2,
+                height: 2
+            )
+        ]
         var selections = FeedbackEvidenceSelections()
         selections.includeScreenshots = true
         selections.includeMacOSDiagnostics = true
 
         let package = try FeedbackEvidenceBuilder().prepare(
             input: fixture.input(
-                screenshots: [corruptScreenshot],
+                screenshots: corruptScreenshots,
                 crashReports: [symlink, oversized, hardlink, corrupt]
             ),
             selections: selections,
             directory: fixture.outputDirectory
         )
 
-        #expect(package.manifest.omissions.contains { $0.kind == .screenshot && $0.reason == .unsupported })
+        #expect(package.manifest.omissions.filter { $0.kind == .screenshot && $0.reason == .unsupported }.count == 3)
         #expect(package.manifest.omissions.contains { $0.kind == .macOSDiagnostic && $0.reason == .unsupported })
         #expect(package.manifest.omissions.contains { $0.kind == .macOSDiagnostic && $0.reason == .oversized })
         #expect(package.manifest.omissions.filter { $0.kind == .macOSDiagnostic && $0.reason == .unsupported }.count >= 3)
         #expect(!package.manifest.artifacts.contains { $0.kind == .screenshot || $0.kind == .macOSDiagnostic })
+    }
+
+    @Test("Decoded screenshots are re-encoded without source metadata")
+    func screenshotMetadataIsStripped() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let metadataValue = "private-reporter@example.com"
+        let screenshot = FeedbackScreenshotCandidate(
+            jpegData: try makeJPEGFixture(metadataValue: metadataValue),
+            source: "browser",
+            width: 2,
+            height: 2
+        )
+        var selections = FeedbackEvidenceSelections()
+        selections.includeScreenshots = true
+
+        let package = try FeedbackEvidenceBuilder().prepare(
+            input: fixture.input(screenshots: [screenshot]),
+            selections: selections,
+            directory: fixture.outputDirectory
+        )
+        let artifact = try #require(package.manifest.artifacts.first { $0.kind == .screenshot })
+        let bytes = try Data(contentsOf: package.directoryURL.appendingPathComponent(artifact.relativePath))
+        let source = try #require(CGImageSourceCreateWithData(bytes as CFData, nil))
+        let properties = try #require(
+            CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]
+        )
+        let tiff = properties[kCGImagePropertyTIFFDictionary] as? [CFString: Any]
+
+        #expect(!String(decoding: bytes, as: UTF8.self).contains(metadataValue))
+        #expect(tiff?[kCGImagePropertyTIFFArtist] == nil)
+        #expect(FeedbackCanonicalJSONV1.sha256Hex(bytes) == artifact.sha256)
+        #expect(bytes != screenshot.jpegData)
     }
 
     @Test("Unreadable crash content is omitted rather than copied")
@@ -218,6 +366,29 @@ struct FeedbackEvidencePrivacyTests {
         #expect(result.omissions.first?.reason == .unavailable)
     }
 
+    @Test("Crash truncation retains the newest bounded reports in canonical order")
+    func crashTruncationRetainsNewestWindow() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let reports = try (1...25).map { index in
+            try fixture.crashReport(
+                contents: "Process: ASTRA \(index)",
+                modifiedAt: fixture.createdAt.addingTimeInterval(TimeInterval(index))
+            )
+        }
+
+        let result = try FeedbackCrashEvidenceTransformer.transform(Array(reports.reversed()))
+        let artifact = try #require(result.artifact)
+        let object = try #require(JSONSerialization.jsonObject(with: artifact.data) as? [String: Any])
+        let retained = try #require(object["reports"] as? [[String: Any]])
+        let processes = retained.compactMap { report in
+            (report["metadata"] as? [String: String])?["process"]
+        }
+
+        #expect(processes == (6...25).map { "ASTRA \($0)" })
+        #expect(result.omissions.count == 5)
+    }
+
     @Test("Cancellation removes construction staging without publishing a package")
     func cancellationCleansStaging() throws {
         let fixture = try Fixture()
@@ -238,6 +409,59 @@ struct FeedbackEvidencePrivacyTests {
             includingPropertiesForKeys: nil
         )
         #expect(children.isEmpty)
+    }
+
+    @Test("Cancellation after the construction rename rolls back the unpublished package")
+    func lateCancellationCleansRenamedPackage() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let finalPackage = fixture.outputDirectory.appendingPathComponent(
+            "feedback-\(fixture.reportID.uuidString.lowercased())",
+            isDirectory: true
+        )
+        let builder = FeedbackEvidenceBuilder(cancellationCheck: {
+            if FileManager.default.fileExists(atPath: finalPackage.path) {
+                throw SyntheticCancellation.requested
+            }
+        })
+
+        #expect(throws: SyntheticCancellation.self) {
+            try builder.prepare(
+                input: fixture.input(),
+                selections: FeedbackEvidenceSelections(),
+                directory: fixture.outputDirectory
+            )
+        }
+
+        #expect(!FileManager.default.fileExists(atPath: finalPackage.path))
+        let children = try FileManager.default.contentsOfDirectory(
+            at: fixture.outputDirectory,
+            includingPropertiesForKeys: nil
+        )
+        #expect(children.isEmpty)
+    }
+
+    @Test("Construction cleanup never deletes a package it did not publish")
+    func existingPackageIsNotDeleted() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let finalPackage = fixture.outputDirectory.appendingPathComponent(
+            "feedback-\(fixture.reportID.uuidString.lowercased())",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: finalPackage, withIntermediateDirectories: true)
+        let sentinel = finalPackage.appendingPathComponent("retention-owner.txt")
+        try Data("owned".utf8).write(to: sentinel)
+
+        #expect(throws: FeedbackEvidenceBuildError.self) {
+            try FeedbackEvidenceBuilder().prepare(
+                input: fixture.input(),
+                selections: FeedbackEvidenceSelections(),
+                directory: fixture.outputDirectory
+            )
+        }
+
+        #expect(try Data(contentsOf: sentinel) == Data("owned".utf8))
     }
 
     @Test("Write failure removes construction staging without publishing a package")
@@ -308,7 +532,10 @@ struct FeedbackEvidencePrivacyTests {
                 with: makeEnvelopeData(reportID: reportID, createdAt: createdAt, manifest: manifest)
             ) as? [String: Any])
             object["futureAdditiveMember"] = ["retained": true]
-            return try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+            return try JSONSerialization.data(
+                withJSONObject: object,
+                options: [.sortedKeys, .withoutEscapingSlashes]
+            )
         })
 
         let package = try FeedbackEvidenceBuilder().prepare(
@@ -324,7 +551,7 @@ struct FeedbackEvidencePrivacyTests {
         let expectedBytes = try input.makeReportEnvelopeData(package.manifest)
         let envelope = try FeedbackCanonicalJSONV1.decode(FeedbackReportEnvelopeV1.self, from: reportBytes)
 
-        #expect(topLevel == ["evidence.zip", "feedback-report.json", "manifest.json"])
+        #expect(topLevel == ["evidence.zip", "feedback-report.json", "logs", "manifest.json"])
         #expect(reportBytes == expectedBytes)
         #expect(FeedbackCanonicalJSONV1.sha256Hex(reportBytes) == package.reportSHA256)
         #expect(envelope.payload.evidence == package.manifest)
@@ -333,20 +560,41 @@ struct FeedbackEvidencePrivacyTests {
             !artifact.relativePath.hasPrefix("/") &&
                 !artifact.relativePath.split(separator: "/").contains("..")
         })
+        try assertAdoptionCompatibleLayout(package)
     }
 
-    @Test("Reporter contact members are rejected before package publication")
-    func reporterContactMembersAreRejected() throws {
+    @Test("Raw canonical verifier rejects alternate spellings and accepts golden bytes")
+    func rawCanonicalVerifierEnforcesCompleteEnvelopeBytes() throws {
+        let fixtureRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("docs/contracts/feedback/v1/fixtures")
+        let golden = try Data(contentsOf: fixtureRoot.appendingPathComponent("request.json"))
+        let goldenText = String(decoding: golden, as: UTF8.self)
+        let withoutClosingBrace = String(goldenText.dropLast())
+        let nonCanonical = [
+            Data((" " + goldenText).utf8),
+            Data(("{\"zzFuture\":1," + String(goldenText.dropFirst())).utf8),
+            Data((withoutClosingBrace + ",\"zzFuture\":1.0}").utf8),
+            Data((withoutClosingBrace + ",\"zzFuture\":\"\\u0061\"}").utf8)
+        ]
+
+        #expect(FeedbackRawCanonicalJSONVerifier.isCanonicalObject(golden))
+        for bytes in nonCanonical {
+            #expect(!FeedbackRawCanonicalJSONVerifier.isCanonicalObject(bytes))
+            #expect((try? FeedbackCanonicalJSONV1.decode(FeedbackReportEnvelopeV1.self, from: bytes)) != nil)
+        }
+    }
+
+    @Test("Builder rejects noncanonical envelope bytes before publication")
+    func noncanonicalEnvelopeDoesNotPublish() throws {
         let fixture = try Fixture()
         defer { fixture.remove() }
         let reportID = fixture.reportID
         let createdAt = fixture.createdAt
         let input = fixture.input(makeReportEnvelopeData: { manifest in
-            var object = try #require(JSONSerialization.jsonObject(
-                with: makeEnvelopeData(reportID: reportID, createdAt: createdAt, manifest: manifest)
-            ) as? [String: Any])
-            object["reporterEmail"] = "reporter@example.com"
-            return try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+            let canonical = try makeEnvelopeData(reportID: reportID, createdAt: createdAt, manifest: manifest)
+            return Data(" ".utf8) + canonical
         })
 
         #expect(throws: FeedbackEvidenceBuildError.self) {
@@ -361,6 +609,83 @@ struct FeedbackEvidencePrivacyTests {
             includingPropertiesForKeys: nil
         )
         #expect(children.isEmpty)
+    }
+
+    @Test("All frozen contact aliases are rejected at any JSON depth")
+    func frozenContactAliasesAreRejected() throws {
+        let aliases = [
+            "contact", "contactAddress", "contact-email", "CONTACT.EMAIL.ADDRESS",
+            "contactInfo", "contact information", "contactName", "contactPhone",
+            "contact_phone_number", "email", "emailAddress", "fullName", "phone",
+            "phoneNumber", "reply_to", "reporter", "reporterContact",
+            "reporter-contact-address", "reporterEmail", "reporter.email.address",
+            "reporterName", "reporterPhone", "reporter_phone_number", "telephone"
+        ]
+
+        for alias in aliases {
+            let data = try JSONSerialization.data(
+                withJSONObject: ["outer": [["nested": [alias: "private"]]]],
+                options: [.sortedKeys]
+            )
+            #expect(FeedbackContactMemberPolicy.containsForbiddenMember(in: data), "Alias was allowed: \(alias)")
+        }
+    }
+
+    @Test("Contact aliases block publication while benign additive members remain compatible")
+    func contactAliasesBlockPublicationWithoutBroadPrefixMatching() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let reportID = fixture.reportID
+        let createdAt = fixture.createdAt
+        let rejectedInput = fixture.input(makeReportEnvelopeData: { manifest in
+            var object = try #require(JSONSerialization.jsonObject(
+                with: makeEnvelopeData(reportID: reportID, createdAt: createdAt, manifest: manifest)
+            ) as? [String: Any])
+            object["future"] = [["nested": ["RePlY_To": "reporter@example.com"]]]
+            return try JSONSerialization.data(
+                withJSONObject: object,
+                options: [.sortedKeys, .withoutEscapingSlashes]
+            )
+        })
+
+        #expect(throws: FeedbackEvidenceBuildError.self) {
+            try FeedbackEvidenceBuilder().prepare(
+                input: rejectedInput,
+                selections: FeedbackEvidenceSelections(),
+                directory: fixture.outputDirectory
+            )
+        }
+        let children = try FileManager.default.contentsOfDirectory(
+            at: fixture.outputDirectory,
+            includingPropertiesForKeys: nil
+        )
+        #expect(children.isEmpty)
+
+        let allowedOutput = fixture.root.appendingPathComponent("allowed", isDirectory: true)
+        let allowedInput = fixture.input(makeReportEnvelopeData: { manifest in
+            var object = try #require(JSONSerialization.jsonObject(
+                with: makeEnvelopeData(reportID: reportID, createdAt: createdAt, manifest: manifest)
+            ) as? [String: Any])
+            object["future"] = [[
+                "contactPatterns": 3,
+                "emailDeliveryFailed": true,
+                "reporterStatusNotification": "ready"
+            ]]
+            return try JSONSerialization.data(
+                withJSONObject: object,
+                options: [.sortedKeys, .withoutEscapingSlashes]
+            )
+        })
+        let allowedPackage = try FeedbackEvidenceBuilder().prepare(
+            input: allowedInput,
+            selections: FeedbackEvidenceSelections(),
+            directory: allowedOutput
+        )
+        let allowedBytes = String(decoding: try Data(contentsOf: allowedPackage.reportURL), as: UTF8.self)
+
+        #expect(allowedBytes.contains("contactPatterns"))
+        #expect(allowedBytes.contains("emailDeliveryFailed"))
+        #expect(allowedBytes.contains("reporterStatusNotification"))
     }
 }
 
@@ -425,7 +750,7 @@ private final class Fixture {
 
     var jpegScreenshot: FeedbackScreenshotCandidate {
         FeedbackScreenshotCandidate(
-            jpegData: Data([0xff, 0xd8, 0xff, 0xe0, 0x01, 0x02, 0xff, 0xd9]),
+            jpegData: try! makeJPEGFixture(),
             source: "browser",
             width: 2,
             height: 2
@@ -486,15 +811,16 @@ private final class Fixture {
         )
     }
 
-    func crashReport(contents: String) throws -> CrashReportSummary {
+    func crashReport(contents: String, modifiedAt: Date? = nil) throws -> CrashReportSummary {
         let url = root.appendingPathComponent("ASTRA-\(UUID().uuidString).ips")
         let data = Data(contents.utf8)
         try data.write(to: url)
-        try FileManager.default.setAttributes([.modificationDate: createdAt], ofItemAtPath: url.path)
+        let timestamp = modifiedAt ?? createdAt
+        try FileManager.default.setAttributes([.modificationDate: timestamp], ofItemAtPath: url.path)
         return CrashReportSummary(
             url: url,
             appName: "ASTRA Dev",
-            modifiedAt: createdAt,
+            modifiedAt: timestamp,
             sizeBytes: Int64(data.count)
         )
     }
@@ -523,6 +849,71 @@ private func zipEntryData(_ path: String, archive: URL) throws -> Data {
 private func permissions(_ url: URL) -> Int {
     let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
     return (attributes?[.posixPermissions] as? NSNumber)?.intValue ?? -1
+}
+
+private func assertAdoptionCompatibleLayout(_ package: FeedbackPreparedEvidencePackage) throws {
+    var allowedFiles: Set<String> = ["feedback-report.json", "manifest.json", "evidence.zip"]
+    allowedFiles.formUnion(package.manifest.artifacts.map(\.relativePath))
+    let allowedDirectories = Set(allowedFiles.flatMap { path -> [String] in
+        let components = path.split(separator: "/").dropLast()
+        return components.indices.map { index in
+            components.prefix(index + 1).joined(separator: "/")
+        }
+    })
+
+    for relativePath in try FileManager.default.subpathsOfDirectory(atPath: package.directoryURL.path) {
+        let url = package.directoryURL.appendingPathComponent(relativePath)
+        let values = try url.resourceValues(forKeys: [.isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey])
+        #expect(values.isSymbolicLink != true)
+        if values.isDirectory == true {
+            #expect(allowedDirectories.contains(relativePath), "Unexpected directory: \(relativePath)")
+        } else {
+            #expect(values.isRegularFile == true)
+            #expect(allowedFiles.contains(relativePath), "Unexpected file: \(relativePath)")
+        }
+    }
+
+    for artifact in package.manifest.artifacts {
+        let data = try Data(contentsOf: package.directoryURL.appendingPathComponent(artifact.relativePath))
+        #expect(Int64(data.count) == artifact.byteCount)
+        #expect(FeedbackCanonicalJSONV1.sha256Hex(data) == artifact.sha256)
+        #expect(permissions(package.directoryURL.appendingPathComponent(artifact.relativePath)) == 0o400)
+    }
+}
+
+private func makeJPEGFixture(metadataValue: String? = nil) throws -> Data {
+    let pixels = Data([
+        0xff, 0x00, 0x00, 0xff, 0x00, 0xff, 0x00, 0xff,
+        0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff
+    ])
+    let provider = try #require(CGDataProvider(data: pixels as CFData))
+    let image = try #require(CGImage(
+        width: 2,
+        height: 2,
+        bitsPerComponent: 8,
+        bitsPerPixel: 32,
+        bytesPerRow: 8,
+        space: CGColorSpaceCreateDeviceRGB(),
+        bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipLast.rawValue),
+        provider: provider,
+        decode: nil,
+        shouldInterpolate: false,
+        intent: .defaultIntent
+    ))
+    let output = NSMutableData()
+    let destination = try #require(CGImageDestinationCreateWithData(
+        output,
+        UTType.jpeg.identifier as CFString,
+        1,
+        nil
+    ))
+    var properties: [CFString: Any] = [kCGImageDestinationLossyCompressionQuality: 0.95]
+    if let metadataValue {
+        properties[kCGImagePropertyTIFFDictionary] = [kCGImagePropertyTIFFArtist: metadataValue]
+    }
+    CGImageDestinationAddImage(destination, image, properties as CFDictionary)
+    #expect(CGImageDestinationFinalize(destination))
+    return output as Data
 }
 
 private func makeEnvelopeData(
