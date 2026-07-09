@@ -59,9 +59,32 @@ default_app_version() {
 # exactly match that formula so a local/dev build of a given version number
 # lands on the same build number a real release would use for it.
 #   BUILD = MAJOR*1,000,000 + MINOR*10,000 + PATCH
-# Headroom before a digit group overflows into the next: MINOR up to 99,
-# PATCH up to 9999 -- current tags top out at v0.1.28, so both have enormous
-# headroom for this project's cadence.
+# This flat, non-dotted integer is intentionally kept as the CFBundleVersion
+# shape (not switched to a dotted MAJOR.MINOR.PATCH string): Apple's current
+# CFBundleVersion documentation describes the key as "one to three
+# period-separated integers" and explicitly treats a bare single integer as
+# shorthand for [N].0.0, so a flat integer is a legal, documented
+# CFBundleVersion value for this project's notarized-direct-download +
+# Sparkle distribution model (it does not go through App Store Connect,
+# whose stricter three-component/first-component-<=4-digit rule is a
+# separate, submission-specific constraint). This is also empirically
+# confirmed: the already-published v0.1.25-v0.1.28 releases shipped
+# flat-integer CFBundleVersion values (25, 26, 3, 4) and were signed,
+# notarized, and published without rejection. See release.yml's "Determine
+# release version and build" step and PR #253 review comment 3549454188 for
+# the full research.
+#
+# Headroom before a digit-group overflows into the next -- MINOR up to 99,
+# PATCH up to 9999 -- is enforced BELOW, before packing, not just documented:
+# without it, the packing is not one-to-one (two different version strings
+# can produce the same BUILD), e.g. "0.01.08" and "0.1.8" both pack to
+# 10008 (leading zero), "0.1.10000" and "0.2.0" both pack to 20000 (PATCH
+# overflowing into MINOR), and "0.100.0" and "1.0.0" both pack to 1000000
+# (MINOR overflowing into MAJOR). MAJOR is bounded to <=999 as a sanity
+# ceiling (nothing packs on top of it, so it can't collide, but an unbounded
+# MAJOR could still grow the build number past what's sane to
+# compare/represent). Current tags top out at v0.1.28, so these bounds leave
+# enormous headroom for this project's cadence.
 default_app_build() {
   local version="$1"
   if [[ ! "$version" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
@@ -71,9 +94,35 @@ default_app_build() {
   local major="${BASH_REMATCH[1]}"
   local minor="${BASH_REMATCH[2]}"
   local patch="${BASH_REMATCH[3]}"
+  local component_name component_value
+  # Canonical-form validation: reject leading zeros (e.g. "01", "08") so two
+  # textually different version strings can never parse to the same integer
+  # for a component.
+  for component_name in major minor patch; do
+    component_value="${!component_name}"
+    if [[ ! "$component_value" =~ ^(0|[1-9][0-9]*)$ ]]; then
+      echo "Cannot derive a default build number from version '$version': component '$component_name' ('$component_value') has a leading zero (use '1', not '01')." >&2
+      exit 2
+    fi
+  done
+  # Component-bound validation: reject values that would overflow into a
+  # neighboring digit-group of the packed build number.
+  if (( 10#$major > 999 )); then
+    echo "Cannot derive a default build number from version '$version': MAJOR ($major) must be <=999." >&2
+    exit 2
+  fi
+  if (( 10#$minor > 99 )); then
+    echo "Cannot derive a default build number from version '$version': MINOR ($minor) must be <=99 -- a larger value would overflow into the MAJOR digit-group and could collide with a different version." >&2
+    exit 2
+  fi
+  if (( 10#$patch > 9999 )); then
+    echo "Cannot derive a default build number from version '$version': PATCH ($patch) must be <=9999 -- a larger value would overflow into the MINOR digit-group and could collide with a different version." >&2
+    exit 2
+  fi
   # 10#$x forces base-10 interpretation in arithmetic context: a component
   # with a leading zero (e.g. "08") would otherwise be parsed as an invalid
-  # octal literal and abort the run.
+  # octal literal and abort the run. (The canonical-form check above already
+  # rejects genuine leading zeros; this stays as defense in depth.)
   printf '%s\n' "$((10#$major * 1000000 + 10#$minor * 10000 + 10#$patch))"
 }
 

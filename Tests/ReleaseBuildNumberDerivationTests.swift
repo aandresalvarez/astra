@@ -222,8 +222,7 @@ struct ReleaseBuildNumberDerivationTests {
             ("0.1.28", "10028"),
             ("0.1.30", "10030"),
             ("0.2.0", "20000"),
-            ("1.0.0", "1000000"),
-            ("0.01.08", "10008") // leading zeros must not be parsed as octal
+            ("1.0.0", "1000000")
         ]
         for (version, expected) in cases {
             let result = try runDefaultAppBuild(version: version)
@@ -236,6 +235,51 @@ struct ReleaseBuildNumberDerivationTests {
     func defaultAppBuildRejectsMalformedVersion() throws {
         let result = try runDefaultAppBuild(version: "not-a-version")
         #expect(result.exitCode != 0)
+    }
+
+    // MARK: - PR #253 review: injectivity (canonical-form + component-bound validation)
+    //
+    // chatgpt-codex-connector flagged that the MAJOR*1,000,000 +
+    // MINOR*10,000 + PATCH packing was not one-to-one because the validation
+    // in place at the time accepted arbitrary digit strings and leading
+    // zeros: "0.01.08"/"0.1.8" both packed to 10008, "0.1.10000"/"0.2.0"
+    // both packed to 20000, and "0.100.0"/"1.0.0" both packed to 1000000.
+    // If any accepted tag hit one of those colliding pairs, the workflow
+    // would sign and publish a build number that already belongs to a
+    // different, already-installed CFBundleVersion, silently breaking
+    // Sparkle's "is there an update" detection for whoever is on the
+    // earlier one. These tests assert that for each colliding pair, at
+    // least one member is now rejected outright -- so the pair can never
+    // both be released -- for BOTH default_app_build() (script/build_and_run.sh)
+    // and the release.yml version-derivation step.
+
+    @Test("default_app_build() rejects one member of every known colliding pair from PR #253 comment 3549454185")
+    func defaultAppBuildRejectsCollidingVersions() throws {
+        let collidingPairs: [(rejected: String, accepted: String, reason: String)] = [
+            ("0.01.08", "0.1.8", "leading zero (MINOR='01', PATCH='08') is not canonical"),
+            ("0.1.10000", "0.2.0", "PATCH=10000 overflows into the MINOR digit group"),
+            ("0.100.0", "1.0.0", "MINOR=100 overflows into the MAJOR digit group")
+        ]
+        for pair in collidingPairs {
+            let rejectedResult = try runDefaultAppBuild(version: pair.rejected)
+            #expect(rejectedResult.exitCode != 0, "default_app_build(\(pair.rejected)) should be REJECTED (\(pair.reason)) but succeeded with output: \(rejectedResult.output)")
+
+            let acceptedResult = try runDefaultAppBuild(version: pair.accepted)
+            #expect(acceptedResult.exitCode == 0, "default_app_build(\(pair.accepted)) should be ACCEPTED but failed: \(acceptedResult.output)")
+        }
+    }
+
+    @Test("default_app_build() rejects MINOR > 99, PATCH > 9999, and MAJOR > 999 individually")
+    func defaultAppBuildRejectsOutOfBoundComponents() throws {
+        for version in ["0.100.0", "0.1.10000", "1000.0.0"] {
+            let result = try runDefaultAppBuild(version: version)
+            #expect(result.exitCode != 0, "default_app_build(\(version)) should be rejected for exceeding its component bound, but succeeded with output: \(result.output)")
+        }
+        // The boundary values themselves must still be accepted.
+        for version in ["0.99.0", "0.1.9999", "999.0.0"] {
+            let result = try runDefaultAppBuild(version: version)
+            #expect(result.exitCode == 0, "default_app_build(\(version)) is exactly at the documented bound and should be accepted, but failed: \(result.output)")
+        }
     }
 
     @Test("build_and_run.sh passes the resolved APP_VERSION into default_app_build(), keeping the two coupled")
@@ -257,6 +301,75 @@ struct ReleaseBuildNumberDerivationTests {
         #expect(script.contains("VERSION_MINOR"))
         #expect(script.contains("VERSION_PATCH"))
         #expect(script.contains("1000000"))
+    }
+
+    /// Runs the real release.yml version-derivation step exactly like
+    /// `runVersionStep`, but for a version we EXPECT to be rejected --
+    /// asserts a nonzero exit instead of the success `runVersionStep` bakes
+    /// in.
+    private func runVersionStepExpectingFailure(version: String, in repoPath: String) throws -> (exitCode: Int32, output: String) {
+        let workflow = try String(contentsOf: repoRoot.appendingPathComponent(".github/workflows/release.yml"), encoding: .utf8)
+        let script = try extractVersionStepScript(from: workflow)
+        let scriptPath = URL(fileURLWithPath: repoPath).appendingPathComponent(".version-step-under-test-reject.sh").path
+        try script.write(toFile: scriptPath, atomically: true, encoding: .utf8)
+        let outputPath = URL(fileURLWithPath: repoPath).appendingPathComponent(".github-output-under-test-reject").path
+        FileManager.default.createFile(atPath: outputPath, contents: nil)
+
+        return runShell(
+            "bash \(scriptPath)",
+            in: repoPath,
+            extraEnvironment: [
+                "INPUT_VERSION": version,
+                "INPUT_BUILD": "",
+                "GH_TOKEN": "",
+                "GITHUB_EVENT_NAME": "workflow_dispatch",
+                "GITHUB_REF_NAME": "",
+                "GITHUB_OUTPUT": outputPath
+            ]
+        )
+    }
+
+    @Test("release.yml's version step rejects one member of every known colliding pair from PR #253 comment 3549454185")
+    func releaseWorkflowRejectsCollidingVersions() throws {
+        let repoPath = try makeTempDir("reject-collisions")
+        let collidingPairs: [(rejected: String, accepted: String, reason: String)] = [
+            ("0.01.08", "0.1.8", "leading zero (MINOR='01', PATCH='08') is not canonical"),
+            ("0.1.10000", "0.2.0", "PATCH=10000 overflows into the MINOR digit group"),
+            ("0.100.0", "1.0.0", "MINOR=100 overflows into the MAJOR digit group")
+        ]
+        for pair in collidingPairs {
+            let rejectedResult = try runVersionStepExpectingFailure(version: pair.rejected, in: repoPath)
+            #expect(rejectedResult.exitCode != 0, "release.yml version step for \(pair.rejected) should be REJECTED (\(pair.reason)) but succeeded: \(rejectedResult.output)")
+
+            let acceptedOutputs = try runVersionStep(version: pair.accepted, in: repoPath)
+            #expect(acceptedOutputs["build"] != nil, "release.yml version step for \(pair.accepted) should be ACCEPTED")
+        }
+    }
+
+    @Test("release.yml's version step rejects MINOR > 99, PATCH > 9999, and MAJOR > 999 individually")
+    func releaseWorkflowRejectsOutOfBoundComponents() throws {
+        let repoPath = try makeTempDir("reject-bounds")
+        for version in ["0.100.0", "0.1.10000", "1000.0.0"] {
+            let result = try runVersionStepExpectingFailure(version: version, in: repoPath)
+            #expect(result.exitCode != 0, "release.yml version step for \(version) should be rejected for exceeding its component bound, but succeeded: \(result.output)")
+        }
+    }
+
+    @Test("release.yml's bounds validation does not reject any already-tagged v0.1.x version in this repo")
+    func releaseWorkflowAcceptsAllHistoricallyTaggedVersions() throws {
+        // Sanity check required by PR #253's review response: the new
+        // canonical-form + component-bound validation must not reject any
+        // version that has ALREADY been tagged and published in this repo.
+        let repoPath = try makeTempDir("accept-historical")
+        let tagListResult = runShell("git -C \(repoRoot.path) tag -l 'v[0-9]*.[0-9]*.[0-9]*'", in: repoPath)
+        #expect(tagListResult.exitCode == 0, "failed to list existing tags: \(tagListResult.output)")
+        let tags = tagListResult.output.split(separator: "\n").map(String.init).filter { $0.hasPrefix("v") }
+        #expect(!tags.isEmpty, "expected at least one existing vX.Y.Z tag in this repo to sanity-check against")
+        for tag in tags {
+            let version = String(tag.dropFirst())
+            let outputs = try runVersionStep(version: version, in: repoPath)
+            #expect(outputs["build"] != nil, "already-tagged version \(version) (\(tag)) must still validate under the new bounds")
+        }
     }
 
     @Test("the same version always produces the same build number, regardless of tag history")
@@ -397,5 +510,89 @@ struct ReleaseBuildNumberDerivationTests {
             ]
         )
         #expect(result.exitCode != 0)
+    }
+
+    // MARK: - Anti-stuck-user check: next release must compare greater than the historical stuck CFBundleVersion=26
+
+    /// A minimal reimplementation of Sparkle's `SUStandardVersionComparator`
+    /// left-to-right, digit-run/letter-run comparison, used only to prove
+    /// (independently of "these are both plain integers so of course a > b
+    /// works") that the ACTUAL comparator semantics -- not a raw string or
+    /// whole-number comparison -- judge our next real CFBundleVersion as
+    /// newer than the historical stuck value. Splits each version string
+    /// into maximal runs of digits or non-digits and compares run-by-run:
+    /// numeric runs compare as integers, non-numeric runs compare as
+    /// strings; a version that runs out of components first is "older" (the
+    /// same rule Sparkle documents for its default comparator).
+    private func sparkleStandardCompare(_ lhs: String, _ rhs: String) -> Int {
+        func splitRuns(_ version: String) -> [String] {
+            var runs: [String] = []
+            var current = ""
+            var currentIsDigits: Bool?
+            for character in version {
+                let isDigit = character.isNumber
+                if currentIsDigits == nil || currentIsDigits == isDigit {
+                    current.append(character)
+                    currentIsDigits = isDigit
+                } else {
+                    runs.append(current)
+                    current = String(character)
+                    currentIsDigits = isDigit
+                }
+            }
+            if !current.isEmpty { runs.append(current) }
+            return runs
+        }
+        let lhsRuns = splitRuns(lhs)
+        let rhsRuns = splitRuns(rhs)
+        for index in 0..<max(lhsRuns.count, rhsRuns.count) {
+            guard index < lhsRuns.count else { return -1 } // lhs ran out first -> older
+            guard index < rhsRuns.count else { return 1 }  // rhs ran out first -> lhs newer
+            let lhsRun = lhsRuns[index]
+            let rhsRun = rhsRuns[index]
+            let lhsIsNumeric = lhsRun.allSatisfy(\.isNumber)
+            let rhsIsNumeric = rhsRun.allSatisfy(\.isNumber)
+            if lhsIsNumeric && rhsIsNumeric {
+                let lhsValue = Int(lhsRun) ?? 0
+                let rhsValue = Int(rhsRun) ?? 0
+                if lhsValue != rhsValue { return lhsValue < rhsValue ? -1 : 1 }
+            } else if lhsRun != rhsRun {
+                return lhsRun < rhsRun ? -1 : 1
+            }
+        }
+        return 0
+    }
+
+    @Test("sparkleStandardCompare sanity: reproduces the documented naive-fix trap (\"0.1.29\" would lose to \"26\")")
+    func sparkleStandardCompareReproducesNaiveFixTrap() throws {
+        // If a fix naively used the dotted display version directly as
+        // CFBundleVersion, its first run ("0") would compare against
+        // already-shipped "26"'s only run ("26") and lose (0 < 26) --
+        // exactly the trap this PR's chosen scheme must avoid.
+        #expect(sparkleStandardCompare("0.1.29", "26") < 0)
+    }
+
+    @Test("the next real release's CFBundleVersion (v0.1.29) compares GREATER than the historical stuck CFBundleVersion=26 under Sparkle's actual comparator semantics")
+    func nextReleaseBuildBeatsHistoricalStuckBuild26() throws {
+        // Users currently on the installed v0.1.26 build (CFBundleVersion=26)
+        // are stuck: Sparkle's comparator will never offer them an "update"
+        // whose CFBundleVersion doesn't compare as greater than 26. This
+        // proves the ACTUAL next release this PR's fix will produce clears
+        // that bar, using the real left-to-right digit/letter-run comparator
+        // semantics (not a raw string compare, not an assumption).
+        let nextVersionBuild = try runDefaultAppBuild(version: "0.1.29")
+        #expect(nextVersionBuild.exitCode == 0, "default_app_build(0.1.29) failed: \(nextVersionBuild.output)")
+        let nextBuildString = nextVersionBuild.output.trimmingCharacters(in: .whitespacesAndNewlines)
+        #expect(nextBuildString == "10029")
+
+        let comparison = sparkleStandardCompare(nextBuildString, "26")
+        #expect(comparison > 0, "next release CFBundleVersion '\(nextBuildString)' must compare GREATER than the historical stuck CFBundleVersion '26' under Sparkle's comparator, got comparison=\(comparison)")
+
+        // The flat-integer format keeps this trivially true for every
+        // future release too, since MAJOR/MINOR/PATCH are packed into ONE
+        // digit run and the packed value only grows: any version
+        // MAJOR.MINOR.PATCH >= 0.1.29 lexicographically greater in that
+        // ordering packs to a build number > 10029 > 26.
+        #expect(Int(nextBuildString)! > 26)
     }
 }
