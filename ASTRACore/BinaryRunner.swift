@@ -255,14 +255,16 @@ public struct ProcessBinaryRunner: BinaryRunner {
                 let stderrCollector = PipeCollector(maximumBytes: maximumOutputBytes)
                 let startedAt = Date()
                 stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
-                    let data = handle.availableData
-                    if data.isEmpty { return }
-                    stdoutCollector.append(data)
+                    stdoutCollector.synchronized {
+                        let data = handle.availableData
+                        stdoutCollector.appendLocked(data)
+                    }
                 }
                 stderrPipe.fileHandleForReading.readabilityHandler = { handle in
-                    let data = handle.availableData
-                    if data.isEmpty { return }
-                    stderrCollector.append(data)
+                    stderrCollector.synchronized {
+                        let data = handle.availableData
+                        stderrCollector.appendLocked(data)
+                    }
                 }
 
                 let cleanupPipes = {
@@ -272,16 +274,26 @@ public struct ProcessBinaryRunner: BinaryRunner {
 
                 process.terminationHandler = { proc in
                     cleanupPipes()
-                    // Drain whatever's left after the process exits.
-                    let tailOut = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-                    if !tailOut.isEmpty { stdoutCollector.append(tailOut) }
-                    let tailErr = stderrPipe.fileHandleForReading.readDataToEndOfFile()
-                    if !tailErr.isEmpty { stderrCollector.append(tailErr) }
-
+                    // Classify the outcome (and stamp elapsed time) from the
+                    // moment the process actually exited, before draining
+                    // what's left — the drain below can block on a lock a
+                    // concurrently in-flight readabilityHandler invocation
+                    // is holding, and that wait must not get misread as the
+                    // subprocess itself having run past the timeout.
                     let elapsed = Date().timeIntervalSince(startedAt)
                     let outcome: RunResult.Outcome = timeout > 0 && elapsed >= timeout
                         ? .timedOut
                         : .exited(code: proc.terminationStatus)
+                    // The read itself (not just the append) is inside the
+                    // collector's lock so it can't race a concurrently
+                    // in-flight readabilityHandler invocation — see
+                    // PipeCollector.
+                    stdoutCollector.synchronized {
+                        stdoutCollector.appendLocked(stdoutPipe.fileHandleForReading.readDataToEndOfFile())
+                    }
+                    stderrCollector.synchronized {
+                        stderrCollector.appendLocked(stderrPipe.fileHandleForReading.readDataToEndOfFile())
+                    }
                     state.finish(
                         outcome: outcome,
                         stdout: stdoutCollector.string,
@@ -364,14 +376,14 @@ public struct ProcessBinaryRunner: BinaryRunner {
                 let stderrCollector = PipeCollector(maximumBytes: maximumOutputBytes)
                 let startedAt = Date()
                 stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
-                    let data = handle.availableData
-                    if data.isEmpty { return }
-                    stdoutCollector.append(data)
+                    stdoutCollector.synchronized {
+                        stdoutCollector.appendLocked(handle.availableData)
+                    }
                 }
                 stderrPipe.fileHandleForReading.readabilityHandler = { handle in
-                    let data = handle.availableData
-                    if data.isEmpty { return }
-                    stderrCollector.append(data)
+                    stderrCollector.synchronized {
+                        stderrCollector.appendLocked(handle.availableData)
+                    }
                 }
                 let cleanupPipes = {
                     stdoutPipe.fileHandleForReading.readabilityHandler = nil
@@ -493,10 +505,12 @@ public struct ProcessBinaryRunner: BinaryRunner {
                         }
                     }
                     cleanupPipes()
-                    let tailOut = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-                    if !tailOut.isEmpty { stdoutCollector.append(tailOut) }
-                    let tailErr = stderrPipe.fileHandleForReading.readDataToEndOfFile()
-                    if !tailErr.isEmpty { stderrCollector.append(tailErr) }
+                    stdoutCollector.synchronized {
+                        stdoutCollector.appendLocked(stdoutPipe.fileHandleForReading.readDataToEndOfFile())
+                    }
+                    stderrCollector.synchronized {
+                        stderrCollector.appendLocked(stderrPipe.fileHandleForReading.readDataToEndOfFile())
+                    }
                     state.finish(
                         outcome: .exited(code: Self.exitCode(fromWaitStatus: status)),
                         stdout: stdoutCollector.string,
@@ -606,6 +620,20 @@ public struct ProcessBinaryRunner: BinaryRunner {
 
 /// Thread-safe byte collector. Pipe readability handlers fire on a
 /// background queue, so appends need synchronization.
+///
+/// `synchronized`/`appendLocked` let a caller fold a raw pipe read
+/// (`availableData`/`readDataToEndOfFile`) and the resulting append into one
+/// atomic step. `Process` delivers "stdout is readable" (via
+/// `readabilityHandler`, on a GCD-managed queue) and "the child exited" (via
+/// `terminationHandler`, which does its own final drain) as two independent,
+/// unordered signals. Locking only around the append (as this used to) still
+/// lets a reader that already consumed bytes via its own `read()` call lose
+/// the CPU before reaching the lock; a concurrently running drain then finds
+/// the fd AND the buffer both empty and finalizes the result before the
+/// first reader's bytes were ever folded in — silently dropping output that
+/// was read but not yet processed. Locking around the read itself closes
+/// that window: whichever side reaches the lock first fully reads-and-
+/// appends before the other side can even perform its own read.
 private final class PipeCollector: @unchecked Sendable {
     private var buffer = Data()
     private var truncated = false
@@ -621,8 +649,19 @@ private final class PipeCollector: @unchecked Sendable {
     }
 
     public func append(_ data: Data) {
-        guard !data.isEmpty else { return }
         lock.lock()
+        appendLocked(data)
+        lock.unlock()
+    }
+
+    public func synchronized<T>(_ body: () -> T) -> T {
+        lock.lock()
+        defer { lock.unlock() }
+        return body()
+    }
+
+    public func appendLocked(_ data: Data) {
+        guard !data.isEmpty else { return }
         if let maximumBytes {
             let remaining = max(0, maximumBytes - buffer.count)
             if remaining > 0 {
@@ -634,7 +673,6 @@ private final class PipeCollector: @unchecked Sendable {
         } else {
             buffer.append(data)
         }
-        lock.unlock()
     }
 
     public var string: String {

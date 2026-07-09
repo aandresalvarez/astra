@@ -808,15 +808,13 @@ extension ProcessBinaryRunner: StandardInputBinaryRunner {
             let stdoutCollector = QueryProcessPipeCollector()
             let stderrCollector = QueryProcessPipeCollector()
             stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
-                let data = handle.availableData
-                if !data.isEmpty {
-                    stdoutCollector.append(data)
+                stdoutCollector.synchronized {
+                    stdoutCollector.appendLocked(handle.availableData)
                 }
             }
             stderrPipe.fileHandleForReading.readabilityHandler = { handle in
-                let data = handle.availableData
-                if !data.isEmpty {
-                    stderrCollector.append(data)
+                stderrCollector.synchronized {
+                    stderrCollector.appendLocked(handle.availableData)
                 }
             }
 
@@ -824,13 +822,14 @@ extension ProcessBinaryRunner: StandardInputBinaryRunner {
                 stdoutPipe.fileHandleForReading.readabilityHandler = nil
                 stderrPipe.fileHandleForReading.readabilityHandler = nil
 
-                let tailOut = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-                if !tailOut.isEmpty {
-                    stdoutCollector.append(tailOut)
+                // The read itself (not just the append) runs inside the
+                // collector's lock so it can't race a concurrently in-flight
+                // readabilityHandler invocation — see QueryProcessPipeCollector.
+                stdoutCollector.synchronized {
+                    stdoutCollector.appendLocked(stdoutPipe.fileHandleForReading.readDataToEndOfFile())
                 }
-                let tailErr = stderrPipe.fileHandleForReading.readDataToEndOfFile()
-                if !tailErr.isEmpty {
-                    stderrCollector.append(tailErr)
+                stderrCollector.synchronized {
+                    stderrCollector.appendLocked(stderrPipe.fileHandleForReading.readDataToEndOfFile())
                 }
 
                 state.finish(
@@ -873,14 +872,32 @@ extension ProcessBinaryRunner: StandardInputBinaryRunner {
     }
 }
 
+/// `synchronized`/`appendLocked` let a caller fold a raw pipe read
+/// (`availableData`/`readDataToEndOfFile`) and the resulting append into one
+/// atomic step — see the readabilityHandler/terminationHandler wiring below,
+/// which both race to read the same fd. Locking only around the append (as
+/// this used to) still lets a reader that already consumed bytes via its own
+/// `read()` call lose the CPU before reaching the lock; a concurrently
+/// running drain then finds the fd AND the buffer both empty and finalizes
+/// the result before the first reader's bytes were ever folded in.
 private final class QueryProcessPipeCollector: @unchecked Sendable {
     private var buffer = Data()
     private let lock = NSLock()
 
     func append(_ data: Data) {
         lock.lock()
-        buffer.append(data)
+        appendLocked(data)
         lock.unlock()
+    }
+
+    func synchronized<T>(_ body: () -> T) -> T {
+        lock.lock()
+        defer { lock.unlock() }
+        return body()
+    }
+
+    func appendLocked(_ data: Data) {
+        buffer.append(data)
     }
 
     var string: String {
