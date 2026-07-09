@@ -273,8 +273,41 @@ jobs:
             fi
           done
 
+          # Length validation FIRST, using pure string-length comparison --
+          # BEFORE any arithmetic ever touches these values (PR #253 review
+          # comment 3549627096). The canonical-form regex above accepts a
+          # digit string of ANY length (e.g. a 50-digit VERSION_MAJOR from a
+          # crafted workflow_dispatch input), and bash's `((...))` arithmetic
+          # is bounded 64-bit signed: evaluating `10#$VERSION_MAJOR > 999` on
+          # a value that long overflows, and an overflowed comparison can't
+          # be trusted to reject it -- letting an absurdly long component
+          # sneak past the intended bound and then ALSO misbehave when
+          # DEFAULT_BUILD is packed below. `${#var}` is a string-length
+          # operation, not arithmetic on the numeric value, so it cannot
+          # overflow no matter how long the component is. Each bound's digit
+          # width is exactly the number of digits its own limit has (999 ->
+          # 3, 99 -> 2, 9999 -> 4); combined with the canonical-form check
+          # above (no leading zeros), a component within its digit-width
+          # limit is *guaranteed* within its numeric limit too, so only
+          # after this passes is it safe to also do the numeric bound check
+          # below.
+          if [[ ${#VERSION_MAJOR} -gt 3 ]]; then
+            echo "Invalid version component VERSION_MAJOR='$VERSION_MAJOR': too many digits (must be <=999, i.e. at most 3 digits)." >&2
+            exit 2
+          fi
+          if [[ ${#VERSION_MINOR} -gt 2 ]]; then
+            echo "Invalid version component VERSION_MINOR='$VERSION_MINOR': too many digits (must be <=99, i.e. at most 2 digits) -- a longer value would overflow into the MAJOR digit-group of the packed build number and could collide with a different version." >&2
+            exit 2
+          fi
+          if [[ ${#VERSION_PATCH} -gt 4 ]]; then
+            echo "Invalid version component VERSION_PATCH='$VERSION_PATCH': too many digits (must be <=9999, i.e. at most 4 digits) -- a longer value would overflow into the MINOR digit-group of the packed build number and could collide with a different version." >&2
+            exit 2
+          fi
+
           # Component-bound validation: reject values that would overflow
-          # into a neighboring digit-group of the packed build number.
+          # into a neighboring digit-group of the packed build number. Safe
+          # from arithmetic overflow now -- the length checks above already
+          # guarantee each component is at most a handful of digits.
           if (( 10#$VERSION_MAJOR > 999 )); then
             echo "Invalid version component VERSION_MAJOR='$VERSION_MAJOR': must be <=999." >&2
             exit 2

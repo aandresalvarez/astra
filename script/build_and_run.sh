@@ -37,7 +37,18 @@ SIGN_IDENTITY="${SIGN_IDENTITY_RAW#"${SIGN_IDENTITY_RAW%%[![:space:]]*}"}"
 SIGN_IDENTITY="${SIGN_IDENTITY%"${SIGN_IDENTITY##*[![:space:]]}"}"
 
 latest_release_tag() {
-  git -C "$ROOT_DIR" tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=v:refname 2>/dev/null | tail -n 1 || true
+  # `git tag --list` uses shell globs, not a strict regex -- the trailing
+  # `*` in each `[0-9]*` swallows any suffix, so this glob also matches a
+  # non-release tag like v0.1.29-alpha or v0.1.28-beta1 (PR #253 review
+  # comment 3549627103). Since the result feeds APP_VERSION into
+  # default_app_build() below, which only accepts exact digit-only
+  # components, a suffixed tag would make a normal local dev build abort
+  # instead of silently skipping it and picking the true latest exact
+  # release. Filter to the strict vX.Y.Z shape with the same glob-then-grep
+  # approach release.yml's "Determine release version and build" step
+  # already uses for its own HIGHEST_TAG guard, so a local build and the
+  # release workflow agree on what counts as "the latest release tag".
+  git -C "$ROOT_DIR" tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=v:refname 2>/dev/null | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | tail -n 1 || true
 }
 
 default_app_version() {
@@ -105,8 +116,39 @@ default_app_build() {
       exit 2
     fi
   done
+  # Length validation FIRST, using pure string-length comparison -- BEFORE
+  # any arithmetic ever touches these values (PR #253 review comment
+  # 3549627096, mirrored from release.yml's identical bounds checks, which
+  # this function must stay in sync with). The canonical-form regex above
+  # accepts a string of digits of any length (e.g. a component with 50
+  # digits), and bash's `((...))` arithmetic is bounded 64-bit signed:
+  # evaluating `10#$major > 999` on a value that long overflows, and an
+  # overflowed comparison can't be trusted to reject it -- letting an
+  # absurdly long component sneak past the intended bound and then ALSO
+  # misbehave when the build number is packed below. `${#var}` is a
+  # string-length operation, not arithmetic on the numeric value, so it
+  # cannot overflow no matter how long the component is. Each bound's
+  # digit-count limit is exactly the count of digits its own numeric limit
+  # has (999 -> 3, 99 -> 2, 9999 -> 4); combined with the canonical-form
+  # check above (no leading zeros), a component within its digit-count
+  # limit is *guaranteed* within its numeric limit too, so only after this
+  # passes is it safe to also do the numeric bound check below.
+  if [[ ${#major} -gt 3 ]]; then
+    echo "Cannot derive a default build number from version '$version': MAJOR ($major) has too many digits (must be <=999, i.e. at most 3 digits)." >&2
+    exit 2
+  fi
+  if [[ ${#minor} -gt 2 ]]; then
+    echo "Cannot derive a default build number from version '$version': MINOR ($minor) has too many digits (must be <=99, i.e. at most 2 digits) -- a longer value would overflow into the MAJOR digit-group and could collide with a different version." >&2
+    exit 2
+  fi
+  if [[ ${#patch} -gt 4 ]]; then
+    echo "Cannot derive a default build number from version '$version': PATCH ($patch) has too many digits (must be <=9999, i.e. at most 4 digits) -- a longer value would overflow into the MINOR digit-group and could collide with a different version." >&2
+    exit 2
+  fi
   # Component-bound validation: reject values that would overflow into a
-  # neighboring digit-group of the packed build number.
+  # neighboring digit-group of the packed build number. Safe from
+  # arithmetic overflow now -- the length checks above already guarantee
+  # each component is at most a handful of digits.
   if (( 10#$major > 999 )); then
     echo "Cannot derive a default build number from version '$version': MAJOR ($major) must be <=999." >&2
     exit 2

@@ -355,16 +355,81 @@ struct ReleaseBuildNumberDerivationTests {
         }
     }
 
-    @Test("release.yml's bounds validation does not reject any already-tagged v0.1.x version in this repo")
-    func releaseWorkflowAcceptsAllHistoricallyTaggedVersions() throws {
-        // Sanity check required by PR #253's review response: the new
-        // canonical-form + component-bound validation must not reject any
-        // version that has ALREADY been tagged and published in this repo.
+    /// Fixture, NOT the real checkout's tag state: every patch this project
+    /// has actually tagged and published under v0.1.x as of this fix
+    /// landing (v0.1.1 through v0.1.28), hardcoded here rather than read via
+    /// `git tag -l` against `repoRoot`. This is the PRIMARY correctness
+    /// assertion for "the new bounds accept real historical version
+    /// strings" -- it is self-contained and independent of whatever tags
+    /// happen to be fetched into the checkout running this suite. Mirrors
+    /// the convention `makeTempRepoWithTags` above uses for its own
+    /// hardcoded fixture ranges.
+    private static let representativeHistoricalV01Patches = Array(1...28)
+
+    @Test("release.yml's bounds validation does not reject a fixed fixture of representative v0.1.x versions")
+    func releaseWorkflowAcceptsRepresentativeHistoricalVersions() throws {
+        // PR #253 review comment 3549627099: the previous version of this
+        // test read `git tag -l 'v[0-9]*.[0-9]*.[0-9]*'` against THIS
+        // repo's own checkout to build its version list -- in a checkout
+        // that doesn't have release tags fetched (a shallow clone, or
+        // `fetch-tags: false`), that returns zero tags and the test fails
+        // before it ever exercises the build-number logic under test,
+        // making `swift test` depend on external clone/tag state rather
+        // than the code under test. This version uses a hardcoded fixture
+        // list instead, so the suite is fully self-contained regardless of
+        // checkout state.
+        let repoPath = try makeTempDir("accept-representative")
+        let versions = Self.representativeHistoricalV01Patches.map { "0.1.\($0)" }
+        for version in versions {
+            let outputs = try runVersionStep(version: version, in: repoPath)
+            #expect(outputs["build"] != nil, "representative historical version \(version) must still validate under the new bounds")
+        }
+    }
+
+    /// One-time probe (evaluated at most once per test run, not per test)
+    /// for whether THIS checkout actually has any `vX.Y.Z` release tags
+    /// fetched. Follows the same gating convention as
+    /// `AstraSecureKeychainTestSupport.isAvailable` in
+    /// AstraSecureKeychainTests.swift: probe once, gate the test that needs
+    /// it via `.enabled(if:)` so an environment that can't satisfy the
+    /// precondition SKIPS the test instead of failing it.
+    static let historicalTagsFetchedInThisCheckout: Bool = {
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/bash")
+        process.arguments = [
+            "--noprofile", "--norc", "-c",
+            "git -C \(repoRoot.path) tag -l 'v[0-9]*.[0-9]*.[0-9]*'"
+        ]
+        process.environment = GitLocalEnvironment.scrubbing(ProcessInfo.processInfo.environment)
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = Pipe()
+        try? process.run()
+        process.waitUntilExit()
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        let output = String(data: data, encoding: .utf8) ?? ""
+        return !output.split(separator: "\n").filter { !$0.isEmpty }.isEmpty
+    }()
+
+    @Test(
+        "release.yml's bounds validation does not reject any already-tagged v0.1.x version actually present in this checkout",
+        .enabled(if: ReleaseBuildNumberDerivationTests.historicalTagsFetchedInThisCheckout)
+    )
+    func releaseWorkflowAcceptsAllHistoricallyTaggedVersionsInThisCheckout() throws {
+        // ADDITIONAL sanity check against whatever real tag history happens
+        // to be present in this checkout -- not the primary correctness
+        // path (that's releaseWorkflowAcceptsRepresentativeHistoricalVersions
+        // above, which is fully self-contained). Gated by `.enabled(if:)`
+        // above so a checkout with no release tags fetched SKIPS this test
+        // instead of failing it (PR #253 review comment 3549627099).
         let repoPath = try makeTempDir("accept-historical")
         let tagListResult = runShell("git -C \(repoRoot.path) tag -l 'v[0-9]*.[0-9]*.[0-9]*'", in: repoPath)
         #expect(tagListResult.exitCode == 0, "failed to list existing tags: \(tagListResult.output)")
         let tags = tagListResult.output.split(separator: "\n").map(String.init).filter { $0.hasPrefix("v") }
-        #expect(!tags.isEmpty, "expected at least one existing vX.Y.Z tag in this repo to sanity-check against")
+        guard !tags.isEmpty else { return }
         for tag in tags {
             let version = String(tag.dropFirst())
             let outputs = try runVersionStep(version: version, in: repoPath)
