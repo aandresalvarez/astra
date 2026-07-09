@@ -14,6 +14,10 @@ if selected)
 
 **Program-plan draft PR:** [#255](https://github.com/aandresalvarez/astra/pull/255)
 
+**Backend design-only draft PR:**
+[#256](https://github.com/aandresalvarez/astra/pull/256) (ADR/API/threat model;
+explicitly not PR 7 or PR 8)
+
 **Backend repository/deployment:** To be selected before PR 7
 
 ## Goal
@@ -214,8 +218,8 @@ changes, or a blocker appears. Use only the listed status values:
 | 4. Durable outbox | blocked | Task `019f4890-c2e8-7543-8fcd-f149f4ba7c75` | TBD after PR 1 | — | 1 | 1 | Discovery active | Owns V12 migration and prepared-package adoption |
 | 5. Report UI | blocked | Task `019f4890-c2e8-7543-8fcd-f149f4ba7c75` | TBD | — | 2, 3, 4; live Send also 6 | 3 | Discovery active | Queue/preview only until transport is integrated |
 | 6. Native transport | blocked | Task `019f4890-c2e8-7543-8fcd-f149f4ba7c75` | TBD | — | 1, 2, 4, 7 | 2–3 | Discovery active | Fake server allowed; production needs intake authority |
-| 7. Intake service | blocked | Task `019f4890-bdd9-7560-bde7-b057ec395791` | Backend repo TBD | — | 1 plus backend authority | 1 | ADR/discovery active | Repository, hosting, auth, retention, cost, owner unresolved |
-| 8. GitHub projection | blocked | Task `019f4890-bdd9-7560-bde7-b057ec395791` | Backend repo TBD | — | 7 | 2 | ADR/discovery active | Private target repo and GitHub App required |
+| 7. Intake service | blocked | Task `019f4890-bdd9-7560-bde7-b057ec395791` | Backend repo TBD | — | 1 plus backend authority | 1 | Design-only PR #256; 61/61 + 500/500 pass | #256 is not PR 7; authority unresolved |
+| 8. GitHub projection | blocked | Task `019f4890-bdd9-7560-bde7-b057ec395791` | Backend repo TBD | — | 7 | 2 | Design-only PR #256; 61/61 + 500/500 pass | #256 is not PR 8; private repo/App required |
 | 9. Assessment/priority | blocked | Task `019f4890-bdc8-7872-8f2c-7af6798f3ed2` | Backend repo TBD | — | 1 for fixtures; 7–8 for integration | 1–2 | Baseline triage suites 20/20 pass | Production worker belongs with backend |
 | 10. Developer triage | blocked | Task `019f4890-bdc8-7872-8f2c-7af6798f3ed2` | TBD | — | 7, 8, 9 | 3 | Baseline triage suites 20/20 pass | Requires authenticated staff triage API |
 | 11A. Root-cause/validation gate | blocked | Task `019f4890-c38c-74c0-92d2-b00a97387278` | TBD | — | 10 | 4 | Baseline focused suites 43/43 pass | Wait for upstream contracts |
