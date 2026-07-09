@@ -50,6 +50,8 @@ struct TaskThreadViewModelTests {
         #expect(snapshot.sortedRuns.count == 50)
         #expect(snapshot.omittedRunCount == 50)
         #expect(snapshot.latestRun?.output == "run 99")
+        #expect(vm.appliedSnapshotRevision > 0)
+        #expect(vm.lastSnapshotCacheState == "not_applicable")
     }
 
     @MainActor
@@ -174,6 +176,7 @@ struct TaskThreadViewModelTests {
         #expect(firstStats.entryCount == 1)
         #expect(firstStats.missCount == 1)
         #expect(firstStats.hitCount == 0)
+        #expect(vm.lastSnapshotCacheState == "miss")
 
         vm.reset(for: task)
 
@@ -183,6 +186,7 @@ struct TaskThreadViewModelTests {
         #expect(secondStats.entryCount == 1)
         #expect(secondStats.hitCount == 1)
         #expect(secondStats.missCount == 1)
+        #expect(vm.lastSnapshotCacheState == "hit")
 
         TaskThreadViewModel.resetSnapshotCacheForTesting()
     }

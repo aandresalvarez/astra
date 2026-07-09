@@ -180,4 +180,40 @@ extension TaskThreadSnapshotTests {
         #expect(medium.totalRunCount == 200)
         #expect(medium.sortedRuns.count == 100)
     }
+
+    @Test("Large deterministic history keeps initial transcript input bounded")
+    func largeDeterministicHistoryKeepsInitialTranscriptInputBounded() {
+        let task = makeTask(goal: "Large history fixture")
+        task.createdAt = Date(timeIntervalSince1970: 0)
+
+        for runIndex in 0..<250 {
+            let run = TaskRun(task: task)
+            run.startedAt = Date(timeIntervalSince1970: Double(runIndex * 100))
+            run.completedAt = Date(timeIntervalSince1970: Double(runIndex * 100 + 90))
+            run.output = "completed run \(runIndex)"
+            task.runs.append(run)
+
+            for eventIndex in 0..<20 {
+                task.events.append(makeEvent(
+                    task: task,
+                    type: eventIndex.isMultiple(of: 2) ? "tool.result" : "agent.response",
+                    payload: "event \(runIndex)-\(eventIndex)",
+                    timestamp: Date(timeIntervalSince1970: Double(runIndex * 100 + eventIndex)),
+                    run: run
+                ))
+            }
+        }
+
+        let input = TaskThreadSnapshotInput(task: task)
+        let snapshot = TaskThreadSnapshot(input: input)
+
+        #expect(input.totalRunCount == 250)
+        #expect(input.totalEventCount == 5_000)
+        #expect(input.runs.count == 50)
+        #expect(input.events.count <= 1_200)
+        #expect(input.omittedRunCount == 200)
+        #expect(input.omittedEventCount >= 3_800)
+        #expect(snapshot.sortedRuns.count == 50)
+        #expect(snapshot.sortedEvents.count <= 1_200)
+    }
 }

@@ -615,11 +615,16 @@ struct TaskMainView: View {
             deferTaskViewMutation {
                 installPasteMonitor()
             }
+            Task { @MainActor in
+                await Task.yield()
+                TaskOpenResponsivenessTelemetry.shellBecameVisible(task: task)
+            }
         }
         .onDisappear {
             pendingPlanStateRefreshTask?.cancel()
             threadViewModel.cancelGeneratedFilesRefresh()
             removePasteMonitor()
+            TaskOpenResponsivenessTelemetry.cancel(task: task, reason: "task_view_disappeared")
         }
         .onChange(of: sshReloadTrigger) {
             deferTaskViewMutation {
@@ -708,26 +713,29 @@ struct TaskMainView: View {
     private func initializeDisplayedTaskState() async {
         guard await waitForViewUpdateBoundary() else { return }
 
-        PerformanceTelemetry.log("chat_open_selected_task", level: .info, fields: TaskMainViewPerformanceTelemetry.chatOpenFields(task: task, source: "task_lifecycle"))
-        isChatAtBottom = true
-        hasUnseenChatActivity = false
-        shouldScrollAfterUserMessage = true
-        pendingInitialChatScrollTaskID = task.id
-        isExpandingWindow = false
-        expansionAnchorItemID = nil
-        runtimeHealthNow = Date()
-        lastLoggedRuntimeHealthSignature = nil
-        alignTaskModelWithRuntime()
-        threadViewModel.reset(for: task)
-        loadSSHConnections()
-        alignTaskAfterRuntimeAvailabilityRefresh()
-        initializeTaskPolicySelection()
-        cachedVerificationRequest = nil
-        cachedVerificationPresentation = nil
-        refreshTaskContextState()
-        refreshForkSourceAvailabilityWarning()
-        refreshPlanStateCache()
-        logRuntimeHealthIfNeeded(reason: "task_lifecycle")
+        TaskOpenResponsivenessTelemetry.measurePhase("task_initialization", task: task) {
+            isChatAtBottom = true
+            hasUnseenChatActivity = false
+            shouldScrollAfterUserMessage = true
+            pendingInitialChatScrollTaskID = task.id
+            isExpandingWindow = false
+            expansionAnchorItemID = nil
+            runtimeHealthNow = Date()
+            lastLoggedRuntimeHealthSignature = nil
+            alignTaskModelWithRuntime()
+            TaskOpenResponsivenessTelemetry.measurePhase("thread_reset", task: task) {
+                threadViewModel.reset(for: task)
+            }
+            loadSSHConnections()
+            alignTaskAfterRuntimeAvailabilityRefresh()
+            initializeTaskPolicySelection()
+            cachedVerificationRequest = nil
+            cachedVerificationPresentation = nil
+            refreshTaskContextState()
+            refreshForkSourceAvailabilityWarning()
+            refreshPlanStateCache()
+            logRuntimeHealthIfNeeded(reason: "task_lifecycle")
+        }
     }
 
     private func deferTaskViewMutation(_ operation: @escaping @MainActor () -> Void) {
@@ -761,7 +769,9 @@ struct TaskMainView: View {
     }
 
     private func refreshTaskContextState() {
-        TaskContextStateManager.refresh(task: task)
+        TaskOpenResponsivenessTelemetry.measurePhase("context_state_refresh", task: task) {
+            TaskContextStateManager.refresh(task: task)
+        }
         refreshForkSourceAvailabilityWarning()
         scheduleVerificationPresentationRefresh()
     }
@@ -1634,6 +1644,12 @@ struct TaskMainView: View {
                     deferTaskViewMutation {
                         updateChatBottomState(bottomMinY: bottomMinY, viewportHeight: viewport.size.height)
                     }
+                    TaskOpenResponsivenessTelemetry.transcriptBecameReady(
+                        task: task,
+                        snapshot: currentThreadSnapshot,
+                        appliedSnapshotRevision: threadViewModel.appliedSnapshotRevision,
+                        cacheState: threadViewModel.lastSnapshotCacheState
+                    )
                     // Not wrapped in deferTaskViewMutation: this only feeds the watchdog's
                     // internal (non-@State) bookkeeping, so it carries none of the
                     // AttributeGraph-cycle risk that motivates deferring the @State

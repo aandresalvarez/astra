@@ -73,7 +73,8 @@ enum PerformanceTelemetry {
         _ event: String,
         durationMilliseconds: Double? = nil,
         level: LogLevel = .debug,
-        fields: [String: String] = [:]
+        fields: [String: String] = [:],
+        taskID: UUID? = nil
     ) {
         var parts = ["event=\(event)"]
         if let durationMilliseconds {
@@ -86,13 +87,13 @@ enum PerformanceTelemetry {
 
         switch level {
         case .debug:
-            AppLogger.debug(message, category: "Performance")
+            AppLogger.debug(message, category: "Performance", taskID: taskID)
         case .info:
-            AppLogger.info(message, category: "Performance")
+            AppLogger.info(message, category: "Performance", taskID: taskID)
         case .warning:
-            AppLogger.warning(message, category: "Performance")
+            AppLogger.warning(message, category: "Performance", taskID: taskID)
         case .error:
-            AppLogger.error(message, category: "Performance")
+            AppLogger.error(message, category: "Performance", taskID: taskID)
         }
     }
 }

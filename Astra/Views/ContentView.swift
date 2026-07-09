@@ -2288,6 +2288,9 @@ struct ContentView: View {
 
     private func applyWorkspaceSelectionUpdate(_ update: ContentWorkspaceSelectionUpdate) {
         let previousTaskID = selectedTask?.id
+        if previousTaskID != update.selectedTask?.id, let task = update.selectedTask {
+            TaskOpenResponsivenessTelemetry.begin(task: task, source: "workspace_selection")
+        }
         updateCanvasForTaskSelectionChange(previousTaskID: previousTaskID, nextTaskID: update.selectedTask?.id)
         let sceneUpdate = sceneSelection.apply(update)
         if previousTaskID != update.selectedTask?.id {
@@ -2309,6 +2312,9 @@ struct ContentView: View {
         let isComposingTaskForTransition = isComposingTask
         intent()
         guard previousTaskID != selectedTask?.id else { return }
+        if let selectedTask {
+            TaskOpenResponsivenessTelemetry.begin(task: selectedTask, source: "scene_selection")
+        }
         updateCanvasForTaskSelectionChange(
             previousTaskID: previousTaskID,
             nextTaskID: selectedTask?.id,
@@ -2322,6 +2328,9 @@ struct ContentView: View {
 
     private func setSelectedTask(_ task: AgentTask?) {
         let previousTaskID = selectedTask?.id
+        if previousTaskID != task?.id, let task {
+            TaskOpenResponsivenessTelemetry.begin(task: task, source: "task_selection")
+        }
         updateCanvasForTaskSelectionChange(previousTaskID: previousTaskID, nextTaskID: task?.id)
         let wasComposingWorkspaceApp = isComposingWorkspaceApp
         sceneSelection.openTask(task)
@@ -2371,17 +2380,19 @@ struct ContentView: View {
 
     private func markTaskRead(_ task: AgentTask?) {
         guard let task, task.unreadAt != nil else { return }
-        task.markRead()
-        do {
-            try WorkspacePersistenceCoordinator.saveAndAutoExportOrThrow(
-                workspace: task.workspace,
-                modelContext: modelContext
-            )
-        } catch {
-            AppLogger.audit(.taskFailed, category: "UI", taskID: task.id, fields: [
-                "operation": "mark_task_read",
-                "error_type": String(describing: type(of: error))
-            ], level: .error)
+        TaskOpenResponsivenessTelemetry.measurePhase("mark_task_read_persistence", task: task) {
+            task.markRead()
+            do {
+                try WorkspacePersistenceCoordinator.saveAndAutoExportOrThrow(
+                    workspace: task.workspace,
+                    modelContext: modelContext
+                )
+            } catch {
+                AppLogger.audit(.taskFailed, category: "UI", taskID: task.id, fields: [
+                    "operation": "mark_task_read",
+                    "error_type": String(describing: type(of: error))
+                ], level: .error)
+            }
         }
     }
 

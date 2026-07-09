@@ -6,6 +6,13 @@ import ASTRAPersistence
 final class TaskThreadViewModel {
     private(set) var snapshot: TaskThreadSnapshot?
     private(set) var generatedFilePaths: [String] = []
+    /// Advances only when a non-placeholder snapshot has been applied. Views use
+    /// this cheap revision to distinguish the initial shell from a transcript
+    /// that is ready to lay out.
+    private(set) var appliedSnapshotRevision = 0
+    /// Cache state for the most recently applied snapshot, exposed as a safe
+    /// diagnostic dimension for task-open responsiveness traces.
+    private(set) var lastSnapshotCacheState = "not_applicable"
 
     private var snapshotTrigger: TaskThreadSnapshotTrigger?
     private var snapshotTask: Task<Void, Never>?
@@ -49,6 +56,8 @@ final class TaskThreadViewModel {
         if let cacheKey,
            let cachedSnapshot = Self.terminalSnapshotCache.snapshot(for: cacheKey) {
             snapshot = cachedSnapshot
+            appliedSnapshotRevision += 1
+            lastSnapshotCacheState = "hit"
             lastSnapshotApplyAt = Date()
             fields.merge(Self.snapshotFields(cachedSnapshot), uniquingKeysWith: { _, new in new })
             PerformanceTelemetry.log("thread_snapshot_cache", level: .debug, fields: fields.merging([
@@ -64,6 +73,7 @@ final class TaskThreadViewModel {
         }
 
         let input = TaskThreadSnapshotInput(task: task, maxRuns: expansionRunCount)
+        lastSnapshotCacheState = cacheKey == nil ? "not_applicable" : "miss"
         fields.merge(Self.inputFields(input), uniquingKeysWith: { _, new in new })
 
         let isLive = trigger.status == .running
@@ -86,6 +96,7 @@ final class TaskThreadViewModel {
             await MainActor.run {
                 guard !Task.isCancelled, revision == self.snapshotRevision else { return }
                 self.snapshot = builtSnapshot
+                self.appliedSnapshotRevision += 1
                 if let cacheKey {
                     Self.terminalSnapshotCache.store(builtSnapshot, for: cacheKey)
                 }

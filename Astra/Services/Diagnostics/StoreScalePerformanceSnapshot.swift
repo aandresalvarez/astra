@@ -6,9 +6,15 @@ import ASTRAModels
 enum StoreScalePerformanceSnapshot {
     private static let detailedFetchLimit = 10_000
 
-    static func fields(modelContext: ModelContext) -> [String: String] {
+    static func fields(
+        modelContext: ModelContext,
+        includeDetailedFields: Bool = true
+    ) -> [String: String] {
         do {
-            return try buildFields(modelContext: modelContext)
+            return try buildFields(
+                modelContext: modelContext,
+                includeDetailedFields: includeDetailedFields
+            )
         } catch {
             return [
                 "error_type": String(describing: type(of: error))
@@ -23,7 +29,10 @@ enum StoreScalePerformanceSnapshot {
             level: .info,
             resultFields: { $0 }
         ) {
-            fields(modelContext: modelContext)
+            // This runs during app startup on the main actor. Detailed fields
+            // require fetching every run and event, which previously turned a
+            // diagnostic into a user-visible launch pause on large stores.
+            fields(modelContext: modelContext, includeDetailedFields: false)
         }
     }
 
@@ -31,7 +40,10 @@ enum StoreScalePerformanceSnapshot {
         eventCount < detailedFetchLimit && runCount < detailedFetchLimit
     }
 
-    private static func buildFields(modelContext: ModelContext) throws -> [String: String] {
+    private static func buildFields(
+        modelContext: ModelContext,
+        includeDetailedFields: Bool
+    ) throws -> [String: String] {
         let workspaceCount = try count(Workspace.self, modelContext: modelContext)
         let taskCount = try count(AgentTask.self, modelContext: modelContext)
         let runCount = try count(TaskRun.self, modelContext: modelContext)
@@ -47,6 +59,11 @@ enum StoreScalePerformanceSnapshot {
             "run_count_bucket": PerformanceTelemetryFields.countBucket(runCount),
             "task_count_bucket": PerformanceTelemetryFields.countBucket(taskCount)
         ]
+
+        guard includeDetailedFields else {
+            fields["details_skipped"] = "deferred_from_startup"
+            return fields
+        }
 
         guard shouldBuildDetailedFields(eventCount: eventCount, runCount: runCount) else {
             fields["details_skipped"] = "large_store"
