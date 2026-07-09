@@ -456,4 +456,18 @@ struct CodexCLIRuntimeTests {
         """
         #expect(CodexCLIRuntime.extractUtilityText(from: output) == "checking workspace trust...42")
     }
+
+    @Test("Codex utility text extraction does not treat a diagnostic banner as a false-positive duplicate")
+    func codexUtilityTextExtractionDoesNotFalsePositiveOnDiagnosticSuffixMatch() {
+        // A non-JSON diagnostic banner that happens to END with the same text as the
+        // real result ("Using model: gpt-5" ends in "gpt-5") must NOT be mistaken for
+        // an already-streamed echo of that result — the diagnostic text never went
+        // through the JSON stream, so it isn't a genuine streamed reply to dedupe
+        // against. The real result must still make it into the output.
+        let output = """
+        Using model: gpt-5
+        {"type":"item.completed","item":{"type":"agent_message","text":"gpt-5"}}
+        """
+        #expect(CodexCLIRuntime.extractUtilityText(from: output) == "Using model: gpt-5gpt-5")
+    }
 }
