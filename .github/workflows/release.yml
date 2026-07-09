@@ -397,11 +397,32 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG="v${{ needs.validate.outputs.version }}"
-          ASSETS=(dist/release/ASTRA-${{ needs.validate.outputs.version }}.zip dist/release/appcast.xml)
-          [[ -f "dist/release/ASTRA-${{ needs.validate.outputs.version }}.dmg" ]] && \
-            ASSETS+=("dist/release/ASTRA-${{ needs.validate.outputs.version }}.dmg")
-          [[ -f "dist/release/ASTRA-${{ needs.validate.outputs.version }}.dSYM.zip" ]] && \
-            ASSETS+=("dist/release/ASTRA-${{ needs.validate.outputs.version }}.dSYM.zip")
+          VERSION="${{ needs.validate.outputs.version }}"
+          VERSIONED_DMG="dist/release/ASTRA-${VERSION}.dmg"
+          HUMAN_DMG="dist/release/ASTRA.dmg"
+          SPARKLE_ZIP="dist/release/ASTRA-${VERSION}.zip"
+
+          if [[ ! -f "$VERSIONED_DMG" ]]; then
+            echo "Missing expected human-facing DMG: $VERSIONED_DMG" >&2
+            echo "The GitHub release must include a notarized DMG for first installs; the zip is Sparkle-only." >&2
+            exit 2
+          fi
+
+          cp "$VERSIONED_DMG" "$HUMAN_DMG"
+
+          RELEASE_DOWNLOAD_NOTES=$'## Download ASTRA\n\n'
+          RELEASE_DOWNLOAD_NOTES+="For a first install, download **ASTRA.dmg**, open it, and drag **ASTRA** to **Applications**."
+          RELEASE_DOWNLOAD_NOTES+=$'\n\n'
+          RELEASE_DOWNLOAD_NOTES+="Do not use \`ASTRA-${VERSION}.zip\` for a first install. That zip is Sparkle's updater payload for already-installed copies of ASTRA. The \`appcast.xml\` file is Sparkle metadata, and \`ASTRA-${VERSION}.dSYM.zip\` contains debug symbols."
+
+          ASSETS=(
+            "$HUMAN_DMG#Download this for first install"
+            "$VERSIONED_DMG#Versioned DMG for manual installs"
+            "$SPARKLE_ZIP#Sparkle updater payload"
+            "dist/release/appcast.xml#Sparkle appcast"
+          )
+          [[ -f "dist/release/ASTRA-${VERSION}.dSYM.zip" ]] && \
+            ASSETS+=("dist/release/ASTRA-${VERSION}.dSYM.zip#Debug symbols")
           if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
             # The job-level created/deleted guard only checks the push
             # event that started this run -- signing + notarization take
@@ -453,6 +474,7 @@ jobs:
 
           if ! gh release create "$TAG" "${ASSETS[@]}" \
             --title "ASTRA $TAG" \
+            --notes "$RELEASE_DOWNLOAD_NOTES" \
             --generate-notes \
             --target "$GITHUB_SHA" \
             --latest; then
