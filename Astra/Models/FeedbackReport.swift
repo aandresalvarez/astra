@@ -24,6 +24,10 @@ public struct FeedbackUploadAttemptRecord: Codable, Equatable, Sendable {
     }
 }
 
+public enum FeedbackReportStoredStateError: Error, Equatable, Sendable {
+    case invalidStoredState(field: String, value: String)
+}
+
 @Model
 public final class FeedbackReport {
     @Attribute(.unique) public var id: UUID
@@ -107,8 +111,18 @@ public final class FeedbackReport {
         self.updatedAt = createdAt
     }
 
-    public var localStatus: FeedbackLocalStatusV1 {
-        FeedbackLocalStatusV1(rawValue: localStatusRaw) ?? .draft
+    public var localStatus: FeedbackLocalStatusV1? {
+        FeedbackLocalStatusV1(rawValue: localStatusRaw)
+    }
+
+    public func requireLocalStatus() throws -> FeedbackLocalStatusV1 {
+        guard let localStatus else {
+            throw FeedbackReportStoredStateError.invalidStoredState(
+                field: "localStatusRaw",
+                value: localStatusRaw
+            )
+        }
+        return localStatus
     }
 
     public var failureDisposition: FeedbackFailureDispositionV1? {
@@ -133,22 +147,24 @@ public final class FeedbackReport {
     }
 
     public var localStatusDTO: FeedbackLocalStatusDTOv1 {
-        FeedbackLocalStatusDTOv1(
-            reportID: FeedbackReportIDV1(id),
-            status: localStatus,
-            updatedAt: updatedAt,
-            uploadAttemptCount: uploadAttemptCount,
-            nextRetryAt: nextRetryAt,
-            lastFailure: lastFailureCode.flatMap { code in
-                guard let disposition = failureDisposition,
-                      let message = lastFailureSafeMessage else { return nil }
-                return FeedbackStatusFailureV1(
-                    code: code,
-                    disposition: disposition,
-                    safeMessage: message
-                )
-            },
-            receipt: receipt
-        )
+        get throws {
+            FeedbackLocalStatusDTOv1(
+                reportID: FeedbackReportIDV1(id),
+                status: try requireLocalStatus(),
+                updatedAt: updatedAt,
+                uploadAttemptCount: uploadAttemptCount,
+                nextRetryAt: nextRetryAt,
+                lastFailure: lastFailureCode.flatMap { code in
+                    guard let disposition = failureDisposition,
+                          let message = lastFailureSafeMessage else { return nil }
+                    return FeedbackStatusFailureV1(
+                        code: code,
+                        disposition: disposition,
+                        safeMessage: message
+                    )
+                },
+                receipt: receipt
+            )
+        }
     }
 }

@@ -30,6 +30,99 @@ struct FeedbackOutboxStateMachineTests {
     }
 
     @MainActor
+    @Test("A non-empty loose package is byte-verified and retained after adoption")
+    func nonEmptyLoosePackageIsVerifiedAndRetained() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let package = try makeNonEmptyPackage(fixture: fixture)
+        let source = try writeFeedbackPreparedPackage(parent: fixture.root, envelope: package.envelope)
+        let evidenceURL = source.appendingPathComponent(package.artifact.relativePath)
+        try FileManager.default.createDirectory(
+            at: evidenceURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try package.evidence.write(to: evidenceURL, options: .atomic)
+
+        try fixture.service.adoptPreparedPackage(reportID: fixture.reportID, from: source)
+
+        let retained = fixture.root
+            .appendingPathComponent("packages", isDirectory: true)
+            .appendingPathComponent(fixture.reportID.uuidString.lowercased(), isDirectory: true)
+            .appendingPathComponent(package.artifact.relativePath)
+        #expect(try Data(contentsOf: retained) == package.evidence)
+    }
+
+    @MainActor
+    @Test("A loose package missing a declared artifact is rejected before adoption")
+    func missingDeclaredArtifactIsRejected() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let package = try makeNonEmptyPackage(fixture: fixture)
+        let source = try writeFeedbackPreparedPackage(parent: fixture.root, envelope: package.envelope)
+
+        #expect(throws: FeedbackPackageValidationError.missingFile(package.artifact.relativePath)) {
+            try fixture.service.adoptPreparedPackage(reportID: fixture.reportID, from: source)
+        }
+        #expect(FileManager.default.fileExists(atPath: source.path))
+    }
+
+    @MainActor
+    @Test("A loose package with changed declared artifact bytes is rejected")
+    func changedDeclaredArtifactIsRejected() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let package = try makeNonEmptyPackage(fixture: fixture)
+        let source = try writeFeedbackPreparedPackage(parent: fixture.root, envelope: package.envelope)
+        let evidenceURL = source.appendingPathComponent(package.artifact.relativePath)
+        try FileManager.default.createDirectory(
+            at: evidenceURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data(repeating: 0, count: package.evidence.count).write(to: evidenceURL)
+
+        #expect(throws: FeedbackPackageValidationError.hashMismatch(package.artifact.relativePath)) {
+            try fixture.service.adoptPreparedPackage(reportID: fixture.reportID, from: source)
+        }
+        #expect(FileManager.default.fileExists(atPath: source.path))
+    }
+
+    @MainActor
+    @Test("A package with changed archive bytes is rejected")
+    func changedArchiveIsRejected() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let evidence = feedbackArtifactData()
+        let artifact = makeFeedbackArtifact(data: evidence)
+        let archiveData = try makeFeedbackArchive(
+            parent: fixture.root,
+            relativePath: artifact.relativePath,
+            data: evidence
+        )
+        let package = try makeNonEmptyPackage(
+            fixture: fixture,
+            archiveSHA256: FeedbackCanonicalJSONV1.sha256Hex(archiveData)
+        )
+        let source = try writeFeedbackPreparedPackage(parent: fixture.root, envelope: package.envelope)
+        let evidenceURL = source.appendingPathComponent(package.artifact.relativePath)
+        try FileManager.default.createDirectory(
+            at: evidenceURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try package.evidence.write(to: evidenceURL)
+        var changedArchive = archiveData
+        changedArchive[changedArchive.startIndex] ^= 0xff
+        try changedArchive.write(
+            to: source.appendingPathComponent(FeedbackPackageLayout.archive),
+            options: .atomic
+        )
+
+        #expect(throws: FeedbackPackageValidationError.hashMismatch(FeedbackPackageLayout.archive)) {
+            try fixture.service.adoptPreparedPackage(reportID: fixture.reportID, from: source)
+        }
+        #expect(FileManager.default.fileExists(atPath: source.path))
+    }
+
+    @MainActor
     @Test("A crash after the ownership rename recovers the prepared transition")
     func interruptedPackageAdoptionRecovery() throws {
         let fixture = try makeFixture()
@@ -122,6 +215,53 @@ struct FeedbackOutboxStateMachineTests {
     }
 
     @MainActor
+    @Test("Unknown persisted local state fails every stateful entrypoint and cannot project as draft")
+    func unknownPersistedStateFailsClosed() throws {
+        let fixture = try makeFixture(retention: 0)
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let context = ModelContext(fixture.container)
+        let reportID = fixture.reportID
+        let descriptor = FetchDescriptor<FeedbackReport>(
+            predicate: #Predicate<FeedbackReport> { $0.id == reportID }
+        )
+        let corrupt = try #require(try context.fetch(descriptor).first)
+        corrupt.localStatusRaw = "future_state"
+        corrupt.artifactsExpireAt = fixture.clock.current
+        try context.save()
+        let source = try writeFeedbackPreparedPackage(parent: fixture.root, envelope: fixture.envelope)
+        let expected = FeedbackOutboxError.invalidStoredState(
+            field: "localStatusRaw",
+            value: "future_state"
+        )
+
+        #expect(throws: expected) {
+            try fixture.service.updateDraft(reportID: fixture.reportID, contents: fixture.contents)
+        }
+        #expect(throws: expected) {
+            try fixture.service.adoptPreparedPackage(reportID: fixture.reportID, from: source)
+        }
+        #expect(throws: expected) { try fixture.service.queue(reportID: fixture.reportID) }
+        #expect(throws: expected) { try fixture.service.queueRetry(reportID: fixture.reportID) }
+        #expect(throws: expected) { _ = try fixture.service.claimUpload(reportID: fixture.reportID) }
+        #expect(throws: expected) {
+            try fixture.service.cancel(reportID: fixture.reportID, deleteArtifacts: true)
+        }
+        #expect(throws: expected) { _ = try fixture.service.recoverInterruptedAdoptions() }
+        #expect(throws: expected) { _ = try fixture.service.recoverInterruptedUploads() }
+        #expect(throws: expected) { _ = try fixture.service.purgeExpiredArtifacts() }
+
+        let fetched = try fetchReport(fixture.container, id: fixture.reportID)
+        #expect(fetched.localStatus == nil)
+        #expect(throws: FeedbackReportStoredStateError.invalidStoredState(
+            field: "localStatusRaw",
+            value: "future_state"
+        )) {
+            _ = try fetched.localStatusDTO
+        }
+        #expect(FileManager.default.fileExists(atPath: source.path))
+    }
+
+    @MainActor
     @Test("Retry preserves identity and uses deterministic backoff")
     func retryPreservesIdempotencyAndBackoff() throws {
         let fixture = try makeQueuedFixture()
@@ -191,6 +331,62 @@ struct FeedbackOutboxStateMachineTests {
         let report = try fetchReport(fixture.container, id: fixture.reportID)
         #expect(report.activeClaimToken == first.token)
         #expect(report.uploadAttemptCount == 1)
+    }
+
+    @MainActor
+    @Test("Claim rejects absolute traversal mismatched and symlinked persisted package paths")
+    func claimRejectsUntrustedPersistedPackagePaths() throws {
+        let fixture = try makeQueuedFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let external = fixture.root.deletingLastPathComponent()
+            .appendingPathComponent("feedback-sentinel-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: external, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: external) }
+        let sentinel = external.appendingPathComponent("sentinel.txt")
+        try Data("untouched".utf8).write(to: sentinel)
+
+        for corruptPath in [
+            "../\(external.lastPathComponent)",
+            external.path,
+            "packages/\(UUID().uuidString.lowercased())"
+        ] {
+            try setPackagePath(corruptPath, reportID: fixture.reportID, container: fixture.container)
+            #expect(throws: FeedbackOutboxError.invalidStoredPackagePath(corruptPath)) {
+                _ = try fixture.service.claimUpload(reportID: fixture.reportID)
+            }
+            #expect(try Data(contentsOf: sentinel) == Data("untouched".utf8))
+        }
+
+        let expectedPath = "packages/\(fixture.reportID.uuidString.lowercased())"
+        try setPackagePath(expectedPath, reportID: fixture.reportID, container: fixture.container)
+        let ownedPackage = fixture.root.appendingPathComponent(expectedPath, isDirectory: true)
+        try FileManager.default.removeItem(at: ownedPackage)
+        try FileManager.default.createSymbolicLink(at: ownedPackage, withDestinationURL: external)
+        #expect(throws: FeedbackOutboxError.invalidStoredPackagePath(expectedPath)) {
+            _ = try fixture.service.claimUpload(reportID: fixture.reportID)
+        }
+        #expect(try Data(contentsOf: sentinel) == Data("untouched".utf8))
+    }
+
+    @MainActor
+    @Test("Retention rejects traversal without deleting an external sentinel")
+    func retentionRejectsUntrustedPersistedPackagePath() throws {
+        let fixture = try makeQueuedFixture(retention: 0)
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let external = fixture.root.deletingLastPathComponent()
+            .appendingPathComponent("feedback-retention-sentinel-\(UUID().uuidString)")
+        try Data("untouched".utf8).write(to: external)
+        defer { try? FileManager.default.removeItem(at: external) }
+        let corruptPath = "../\(external.lastPathComponent)"
+        try setPackagePath(corruptPath, reportID: fixture.reportID, container: fixture.container)
+
+        #expect(throws: FeedbackOutboxError.invalidStoredPackagePath(corruptPath)) {
+            _ = try fixture.service.purgeExpiredArtifacts()
+        }
+        #expect(try Data(contentsOf: external) == Data("untouched".utf8))
+        let report = try fetchReport(fixture.container, id: fixture.reportID)
+        #expect(report.packageRelativePath == corruptPath)
+        #expect(report.artifactsDeletedAt == nil)
     }
 
     @MainActor
@@ -351,6 +547,114 @@ private func addingFeedbackMember(_ key: String, value: Any, to data: Data) thro
     var object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
     object[key] = value
     return try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+}
+
+private func feedbackArtifactData() -> Data {
+    Data("sanitized application log".utf8)
+}
+
+@MainActor
+private func makeNonEmptyPackage(
+    fixture: FeedbackOutboxFixture,
+    archiveSHA256: String? = nil
+) throws -> (
+    evidence: Data,
+    artifact: FeedbackEvidenceArtifactV1,
+    envelope: FeedbackReportEnvelopeV1
+) {
+    let evidence = feedbackArtifactData()
+    let artifact = makeFeedbackArtifact(data: evidence)
+    let contents = feedbackContents(fixture.contents, including: artifact)
+    try fixture.service.updateDraft(reportID: fixture.reportID, contents: contents)
+    let manifest = FeedbackEvidenceManifestV1(
+        artifacts: [artifact],
+        redactionPolicyVersion: "redaction-v1",
+        totalByteCount: Int64(evidence.count),
+        archiveSHA256: archiveSHA256
+    )
+    let envelope = try makeFeedbackEnvelope(
+        reportID: fixture.reportID,
+        installationID: "installation-v1",
+        idempotencyKey: "stable-idempotency-key",
+        contents: contents,
+        createdAt: fixture.clock.current,
+        evidence: manifest
+    )
+    return (evidence, artifact, envelope)
+}
+
+private func makeFeedbackArtifact(data: Data) -> FeedbackEvidenceArtifactV1 {
+    FeedbackEvidenceArtifactV1(
+        artifactID: "application-log",
+        kind: .applicationLog,
+        disclosureClass: .standard,
+        relativePath: "logs/application.json",
+        mediaType: "application/json",
+        byteCount: Int64(data.count),
+        sha256: FeedbackCanonicalJSONV1.sha256Hex(data),
+        redaction: FeedbackRedactionSummaryV1(
+            replacements: 1,
+            secretPatterns: 1,
+            pathPatterns: 0,
+            contactPatterns: 0
+        )
+    )
+}
+
+private func feedbackContents(
+    _ contents: FeedbackDraftContents,
+    including artifact: FeedbackEvidenceArtifactV1
+) -> FeedbackDraftContents {
+    var copy = contents
+    copy.consent = FeedbackConsentV1(
+        version: contents.consent.version,
+        evidenceSelections: [FeedbackEvidenceSelectionV1(
+            artifactID: artifact.artifactID,
+            disclosureClass: artifact.disclosureClass,
+            included: true
+        )]
+    )
+    return copy
+}
+
+private func makeFeedbackArchive(parent: URL, relativePath: String, data: Data) throws -> Data {
+    let contents = parent.appendingPathComponent("archive-contents-\(UUID().uuidString)", isDirectory: true)
+    let artifactURL = contents.appendingPathComponent(relativePath)
+    try FileManager.default.createDirectory(
+        at: artifactURL.deletingLastPathComponent(),
+        withIntermediateDirectories: true
+    )
+    try data.write(to: artifactURL)
+    let archiveURL = parent.appendingPathComponent("archive-\(UUID().uuidString).zip")
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/zip")
+    process.currentDirectoryURL = contents
+    process.arguments = ["-X", "-q", archiveURL.path, relativePath]
+    try process.run()
+    process.waitUntilExit()
+    guard process.terminationStatus == 0 else {
+        throw CocoaError(.fileWriteUnknown)
+    }
+    defer {
+        try? FileManager.default.removeItem(at: contents)
+        try? FileManager.default.removeItem(at: archiveURL)
+    }
+    return try Data(contentsOf: archiveURL)
+}
+
+@MainActor
+private func setPackagePath(
+    _ path: String,
+    reportID: UUID,
+    container: ModelContainer
+) throws {
+    let context = ModelContext(container)
+    let descriptor = FetchDescriptor<FeedbackReport>(
+        predicate: #Predicate<FeedbackReport> { $0.id == reportID }
+    )
+    let report = try #require(try context.fetch(descriptor).first)
+    report.packageRelativePath = path
+    try context.save()
 }
 
 @MainActor

@@ -56,9 +56,10 @@ func makeFeedbackEnvelope(
     installationID: String,
     idempotencyKey: String,
     contents: FeedbackDraftContents,
-    createdAt: Date
+    createdAt: Date,
+    evidence: FeedbackEvidenceManifestV1? = nil
 ) throws -> FeedbackReportEnvelopeV1 {
-    let manifest = FeedbackEvidenceManifestV1(
+    let manifest = evidence ?? FeedbackEvidenceManifestV1(
         artifacts: [],
         redactionPolicyVersion: "redaction-v1",
         totalByteCount: 0
@@ -92,6 +93,7 @@ func makeFeedbackEnvelope(
         installationID: FeedbackInstallationIDV1(rawValue: installationID),
         idempotencyKey: idempotencyKey,
         payloadSHA256: payloadHash,
+        evidenceArchiveSHA256: manifest.archiveSHA256,
         canonicalDigestSHA256: String(repeating: "0", count: 64),
         payload: payload
     )
@@ -99,6 +101,7 @@ func makeFeedbackEnvelope(
         installationID: placeholder.installationID,
         idempotencyKey: idempotencyKey,
         payloadSHA256: payloadHash,
+        evidenceArchiveSHA256: manifest.archiveSHA256,
         canonicalDigestSHA256: try placeholder.computedCanonicalDigestSHA256(),
         payload: payload
     )
