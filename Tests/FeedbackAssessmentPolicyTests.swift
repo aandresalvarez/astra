@@ -11,7 +11,8 @@ struct FeedbackAssessmentPolicyTests {
 
         let validated = try FeedbackAssessmentValidator.decodeAndValidate(
             assessment.canonicalData(),
-            for: report
+            for: report,
+            trustedContext: trustedContext(for: report)
         )
 
         #expect(validated.classification == .runtimeFailure)
@@ -22,7 +23,14 @@ struct FeedbackAssessmentPolicyTests {
 
         var sameRevision = assessment
         sameRevision.currentMainRevision = assessment.sourceRevision
-        #expect(try FeedbackAssessmentValidator.validate(sameRevision, for: report).sourceDrift == .sameRevision)
+        #expect(try validate(
+            sameRevision,
+            for: report,
+            trustedContext: trustedContext(
+                for: report,
+                currentMainRevision: assessment.sourceRevision
+            )
+        ).sourceDrift == .sameRevision)
     }
 
     @Test("assessment must bind to the report and exact reported source revision")
@@ -32,7 +40,7 @@ struct FeedbackAssessmentPolicyTests {
         value.reportID = FeedbackReportIDV1(UUID())
 
         #expect(throws: FeedbackAssessmentSemanticValidationError.reportIDMismatch) {
-            try FeedbackAssessmentValidator.validate(value, for: report)
+            try validate(value, for: report)
         }
 
         value = assessment(for: report)
@@ -41,7 +49,76 @@ struct FeedbackAssessmentPolicyTests {
             reported: report.build.gitCommit,
             assessed: "deadbee"
         )) {
-            try FeedbackAssessmentValidator.validate(value, for: report)
+            try validate(value, for: report)
+        }
+
+        value = assessment(for: report)
+        value.revisionID = "assessment-forged"
+        #expect(throws: FeedbackAssessmentSemanticValidationError.assessmentRevisionMismatch(
+            expected: "assessment-1",
+            assessed: "assessment-forged"
+        )) {
+            try validate(value, for: report)
+        }
+
+        value = assessment(for: report)
+        value.currentMainRevision = "feedface"
+        #expect(throws: FeedbackAssessmentSemanticValidationError.currentMainRevisionMismatch(
+            trusted: "67beae00",
+            assessed: "feedface"
+        )) {
+            try validate(value, for: report)
+        }
+
+        let forgedReleaseContext = trustedContext(
+            for: report,
+            sourceRevision: "deadbee"
+        )
+        #expect(throws: FeedbackAssessmentSemanticValidationError.trustedContextSourceRevisionMismatch(
+            reported: report.build.gitCommit,
+            trusted: "deadbee"
+        )) {
+            try validate(
+                assessment(for: report),
+                for: report,
+                trustedContext: forgedReleaseContext
+            )
+        }
+    }
+
+    @Test("every evidence and counterevidence citation must be coordinator allowlisted")
+    func evidenceCitationsRequireTrustedAllowlist() throws {
+        let report = try fixtureReport()
+        let context = trustedContext(
+            for: report,
+            allowedEvidenceIDs: ["app-log", "known-counterevidence"]
+        )
+        var value = assessment(for: report)
+        value.counterevidence = [
+            FeedbackAssessmentEvidenceV1(
+                evidenceID: "known-counterevidence",
+                summary: "The sanitized trace contradicts one possible cause."
+            )
+        ]
+        #expect(try validate(value, for: report, trustedContext: context).assessment == value.canonicalized())
+
+        value = assessment(for: report)
+        value.evidence[0].evidenceID = "invented-evidence"
+        #expect(throws: FeedbackAssessmentSemanticValidationError.untrustedEvidenceID("invented-evidence")) {
+            try validate(value, for: report, trustedContext: context)
+        }
+
+        value = assessment(for: report)
+        value.counterevidence = [
+            FeedbackAssessmentEvidenceV1(
+                evidenceID: "invented-counterevidence",
+                summary: "A model-invented citation."
+            )
+        ]
+        #expect(throws: FeedbackAssessmentSemanticValidationError.untrustedEvidenceID(
+            "invented-counterevidence"
+        )) {
+            try validate(value, for: report, trustedContext: context)
         }
     }
 
@@ -54,24 +131,24 @@ struct FeedbackAssessmentPolicyTests {
         value.reproductionConfidence = FeedbackAssessmentValueV1(rawValue: "low")
         value.missingQuestions = ["Which operation first diverged?"]
 
-        let validated = try FeedbackAssessmentValidator.validate(value, for: report)
+        let validated = try validate(value, for: report)
         #expect(validated.triageDisposition == .needsInformation)
 
         value.missingQuestions = []
         #expect(throws: FeedbackAssessmentSemanticValidationError.unknownCauseRequiresQuestions) {
-            try FeedbackAssessmentValidator.validate(value, for: report)
+            try validate(value, for: report)
         }
 
         value.missingQuestions = ["Which operation first diverged?"]
         value.rootCauseHypothesis = "A confident claim without evidence."
         #expect(throws: FeedbackAssessmentSemanticValidationError.unknownCauseCannotClaimRootCause) {
-            try FeedbackAssessmentValidator.validate(value, for: report)
+            try validate(value, for: report)
         }
 
         value.rootCauseHypothesis = nil
         value.reproductionConfidence = FeedbackAssessmentValueV1(rawValue: "high")
         #expect(throws: FeedbackAssessmentSemanticValidationError.unknownCauseCannotClaimConfidence("high")) {
-            try FeedbackAssessmentValidator.validate(value, for: report)
+            try validate(value, for: report)
         }
     }
 
@@ -81,13 +158,13 @@ struct FeedbackAssessmentPolicyTests {
         var value = assessment(for: report)
         value.counterevidence = [value.evidence[0]]
         #expect(throws: FeedbackAssessmentSemanticValidationError.duplicateEvidenceID("app-log")) {
-            try FeedbackAssessmentValidator.validate(value, for: report)
+            try validate(value, for: report)
         }
 
         value = assessment(for: report)
         value.impact = FeedbackAssessmentValueV1(rawValue: "model-invented-impact")
         #expect(throws: FeedbackAssessmentSemanticValidationError.unsupportedImpact("model-invented-impact")) {
-            try FeedbackAssessmentValidator.validate(value, for: report)
+            try validate(value, for: report)
         }
     }
 
@@ -98,7 +175,8 @@ struct FeedbackAssessmentPolicyTests {
         let unavailable = FeedbackAssessmentProcessingState.failed(.analyzerUnavailable)
         let malformed = FeedbackAssessmentProcessingState.resolve(
             output: Data(#"{"formatVersion":1,"classification":"ignore schema"}"#.utf8),
-            for: report
+            for: report,
+            trustedContext: trustedContext(for: report)
         )
 
         #expect(pending.allowsHumanTriage)
@@ -111,10 +189,10 @@ struct FeedbackAssessmentPolicyTests {
     func deterministicPriorityAndP0Override() throws {
         var report = try fixtureReport()
         report.statement.workBlocked = false
-        let normal = try FeedbackAssessmentValidator.validate(assessment(for: report), for: report)
+        let normal = try validate(assessment(for: report), for: report)
 
-        let first = FeedbackPriorityPolicy.decide(report: report, assessment: normal)
-        let second = FeedbackPriorityPolicy.decide(report: report, assessment: normal)
+        let first = try FeedbackPriorityPolicy.decide(report: report, assessment: normal)
+        let second = try FeedbackPriorityPolicy.decide(report: report, assessment: normal)
         #expect(first == second)
         #expect(first.basePriority == .p1)
         #expect(first.reasons == [.blockedImpact])
@@ -122,30 +200,30 @@ struct FeedbackAssessmentPolicyTests {
         var differentWording = assessment(for: report)
         differentWording.evidence[0].summary = "Completely different model wording."
         differentWording.rootCauseHypothesis = "A differently worded hypothesis."
-        let reworded = try FeedbackAssessmentValidator.validate(differentWording, for: report)
-        #expect(FeedbackPriorityPolicy.decide(report: report, assessment: reworded) == first)
+        let reworded = try validate(differentWording, for: report)
+        #expect(try FeedbackPriorityPolicy.decide(report: report, assessment: reworded) == first)
 
         var securityValue = assessment(for: report)
         securityValue.classification = FeedbackAssessmentValueV1(rawValue: "security")
         securityValue.impact = FeedbackAssessmentValueV1(rawValue: "minor")
-        let security = try FeedbackAssessmentValidator.validate(securityValue, for: report)
-        #expect(FeedbackPriorityPolicy.decide(report: report, assessment: security).basePriority == .p0)
+        let security = try validate(securityValue, for: report)
+        #expect(try FeedbackPriorityPolicy.decide(report: report, assessment: security).basePriority == .p0)
 
         securityValue.classification = FeedbackAssessmentValueV1(rawValue: "data_loss")
-        let dataLoss = try FeedbackAssessmentValidator.validate(securityValue, for: report)
-        #expect(FeedbackPriorityPolicy.decide(report: report, assessment: dataLoss).basePriority == .p0)
+        let dataLoss = try validate(securityValue, for: report)
+        #expect(try FeedbackPriorityPolicy.decide(report: report, assessment: dataLoss).basePriority == .p0)
     }
 
     @Test("AI unavailable still produces deterministic human-triage priority")
     func unavailableAssessmentPriority() throws {
         var report = try fixtureReport()
         report.statement.workBlocked = true
-        let blocked = FeedbackPriorityPolicy.decide(report: report, assessment: nil)
+        let blocked = try FeedbackPriorityPolicy.decide(report: report, assessment: nil)
         #expect(blocked.basePriority == .p1)
         #expect(blocked.reasons == [.reportBlocksWork])
 
         report.statement.workBlocked = false
-        let availableForTriage = FeedbackPriorityPolicy.decide(report: report, assessment: nil)
+        let availableForTriage = try FeedbackPriorityPolicy.decide(report: report, assessment: nil)
         #expect(availableForTriage.basePriority == .p2)
         #expect(availableForTriage.reasons == [.assessmentUnavailable])
     }
@@ -153,8 +231,8 @@ struct FeedbackAssessmentPolicyTests {
     @Test("human priority override records reviewer reason and prior decision")
     func humanOverrideIsAudited() throws {
         let report = try fixtureReport()
-        let validated = try FeedbackAssessmentValidator.validate(assessment(for: report), for: report)
-        let base = FeedbackPriorityPolicy.decide(report: report, assessment: validated)
+        let validated = try validate(assessment(for: report), for: report)
+        let base = try FeedbackPriorityPolicy.decide(report: report, assessment: validated)
         let decidedAt = Date(timeIntervalSince1970: 1_700_000_000.123)
         let triage = FeedbackStaffTriageDecisionV1(
             reportID: report.reportID,
@@ -176,6 +254,68 @@ struct FeedbackAssessmentPolicyTests {
         #expect(overridden.overrideAudit?.decidedAt == decidedAt)
     }
 
+    @Test("priority revalidates a sealed assessment against the exact report")
+    func policyRejectsAssessmentValidatedForAnotherReport() throws {
+        let report = try fixtureReport()
+        var otherReport = report
+        otherReport.reportID = FeedbackReportIDV1(UUID())
+        let otherAssessment = try validate(
+            assessment(for: otherReport),
+            for: otherReport
+        )
+
+        #expect(throws: FeedbackAssessmentSemanticValidationError.trustedContextReportIDMismatch) {
+            try FeedbackPriorityPolicy.decide(report: report, assessment: otherAssessment)
+        }
+    }
+
+    @Test("priority overrides require exact optional assessment revision equality")
+    func overrideRevisionBindingIsExact() throws {
+        let report = try fixtureReport()
+        let validated = try validate(assessment(for: report), for: report)
+        let assessedDecision = try FeedbackPriorityPolicy.decide(report: report, assessment: validated)
+        let unassessedDecision = try FeedbackPriorityPolicy.decide(report: report, assessment: nil)
+
+        let missingRevision = triage(
+            reportID: report.reportID,
+            assessmentRevisionID: nil
+        )
+        #expect(throws: FeedbackPriorityPolicyError.assessmentRevisionMismatch) {
+            try FeedbackPriorityPolicy.applyingHumanOverride(missingRevision, to: assessedDecision)
+        }
+
+        let unexpectedRevision = triage(
+            reportID: report.reportID,
+            assessmentRevisionID: validated.assessment.revisionID
+        )
+        #expect(throws: FeedbackPriorityPolicyError.assessmentRevisionMismatch) {
+            try FeedbackPriorityPolicy.applyingHumanOverride(unexpectedRevision, to: unassessedDecision)
+        }
+
+        let staleRevision = triage(
+            reportID: report.reportID,
+            assessmentRevisionID: "assessment-stale"
+        )
+        #expect(throws: FeedbackPriorityPolicyError.assessmentRevisionMismatch) {
+            try FeedbackPriorityPolicy.applyingHumanOverride(staleRevision, to: assessedDecision)
+        }
+
+        let exactRevision = triage(
+            reportID: report.reportID,
+            assessmentRevisionID: validated.assessment.revisionID
+        )
+        #expect(try FeedbackPriorityPolicy.applyingHumanOverride(
+            exactRevision,
+            to: assessedDecision
+        ).effectivePriority == .p3)
+
+        let exactNil = triage(reportID: report.reportID, assessmentRevisionID: nil)
+        #expect(try FeedbackPriorityPolicy.applyingHumanOverride(
+            exactNil,
+            to: unassessedDecision
+        ).effectivePriority == .p3)
+    }
+
     @Test("hostile strings and additive reporter identity remain inert")
     func hostileInputRemainsDataAndIdentityIsNotInferred() throws {
         let hostileBytes = try fixture("request-hostile.json")
@@ -190,7 +330,8 @@ struct FeedbackAssessmentPolicyTests {
 
         let validated = try FeedbackAssessmentValidator.decodeAndValidate(
             value.canonicalData(),
-            for: hostileEnvelope.payload
+            for: hostileEnvelope.payload,
+            trustedContext: trustedContext(for: hostileEnvelope.payload)
         )
         #expect(validated.assessment.evidence[0].summary.contains("$(touch"))
         #expect(!FileManager.default.fileExists(atPath: marker))
@@ -206,7 +347,7 @@ struct FeedbackAssessmentPolicyTests {
         )
         #expect(additiveEnvelope.payload == hostileEnvelope.payload)
         #expect(
-            FeedbackPriorityPolicy.decide(report: additiveEnvelope.payload, assessment: validated)
+            try FeedbackPriorityPolicy.decide(report: additiveEnvelope.payload, assessment: validated)
                 == FeedbackPriorityPolicy.decide(report: hostileEnvelope.payload, assessment: validated)
         )
     }
@@ -232,6 +373,25 @@ struct FeedbackAssessmentPolicyTests {
             for token in forbidden {
                 #expect(!source.contains(token), "\(path) must not depend on \(token)")
             }
+        }
+
+        let validationSource = try String(
+            contentsOf: root.appendingPathComponent("ASTRACore/FeedbackAssessmentValidation.swift"),
+            encoding: .utf8
+        )
+        #expect(!validationSource.contains("public var assessment: FeedbackAssessmentV1"))
+        #expect(!validationSource.contains("public init(\n        assessment: FeedbackAssessmentV1"))
+        #expect(validationSource.contains("fileprivate init(\n        assessment: FeedbackAssessmentV1"))
+        for property in [
+            "assessment: FeedbackAssessmentV1",
+            "classification: FeedbackAssessmentClassificationPolicyValue",
+            "impact: FeedbackAssessmentImpactPolicyValue",
+            "confidence: FeedbackAssessmentConfidencePolicyValue",
+            "sourceDrift: FeedbackSourceRevisionDrift",
+            "triageDisposition: FeedbackAssessmentTriageDisposition"
+        ] {
+            #expect(validationSource.contains("public let \(property)"))
+            #expect(!validationSource.contains("public var \(property)"))
         }
     }
 
@@ -266,6 +426,50 @@ struct FeedbackAssessmentPolicyTests {
             FeedbackReportEnvelopeV1.self,
             from: fixture("request.json")
         ).payload
+    }
+
+    private func trustedContext(
+        for report: FeedbackReportPayloadV1,
+        assessmentRevisionID: String = "assessment-1",
+        sourceRevision: String? = nil,
+        currentMainRevision: String = "67beae00",
+        allowedEvidenceIDs: Set<String> = ["app-log"]
+    ) -> FeedbackAssessmentTrustedContext {
+        FeedbackAssessmentTrustedContext(
+            reportID: report.reportID,
+            assessmentRevisionID: assessmentRevisionID,
+            sourceRevision: sourceRevision ?? report.build.gitCommit,
+            currentMainRevision: currentMainRevision,
+            allowedEvidenceIDs: allowedEvidenceIDs
+        )
+    }
+
+    private func validate(
+        _ assessment: FeedbackAssessmentV1,
+        for report: FeedbackReportPayloadV1,
+        trustedContext: FeedbackAssessmentTrustedContext? = nil
+    ) throws -> ValidatedFeedbackAssessment {
+        try FeedbackAssessmentValidator.validate(
+            assessment,
+            for: report,
+            trustedContext: trustedContext ?? self.trustedContext(for: report)
+        )
+    }
+
+    private func triage(
+        reportID: FeedbackReportIDV1,
+        assessmentRevisionID: String?
+    ) -> FeedbackStaffTriageDecisionV1 {
+        FeedbackStaffTriageDecisionV1(
+            reportID: reportID,
+            assessmentRevisionID: assessmentRevisionID,
+            decision: .accepted,
+            reviewerID: "reviewer-1",
+            decidedAt: Date(timeIntervalSince1970: 1_700_000_000.123),
+            reason: "Audited priority adjustment.",
+            priorityOverride: FeedbackAssessmentValueV1(rawValue: "p3"),
+            draftTaskRequested: false
+        )
     }
 
     private func fixture(_ name: String) throws -> Data {

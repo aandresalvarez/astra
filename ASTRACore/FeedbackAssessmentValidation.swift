@@ -37,9 +37,15 @@ public enum FeedbackAssessmentTriageDisposition: String, Equatable, Sendable {
 }
 
 public enum FeedbackAssessmentSemanticValidationError: Error, Equatable, Sendable {
+    case trustedContextReportIDMismatch
+    case trustedContextSourceRevisionMismatch(reported: String, trusted: String)
     case reportIDMismatch
+    case assessmentRevisionMismatch(expected: String, assessed: String)
     case sourceRevisionMismatch(reported: String, assessed: String)
+    case currentMainRevisionMismatch(trusted: String, assessed: String)
     case invalidGitRevision(field: String, value: String)
+    case invalidTrustedEvidenceID(String)
+    case untrustedEvidenceID(String)
     case unsupportedClassification(String)
     case unsupportedImpact(String)
     case unsupportedConfidence(String)
@@ -49,21 +55,48 @@ public enum FeedbackAssessmentSemanticValidationError: Error, Equatable, Sendabl
     case unknownCauseCannotClaimConfidence(String)
 }
 
-public struct ValidatedFeedbackAssessment: Equatable, Sendable {
-    public var assessment: FeedbackAssessmentV1
-    public var classification: FeedbackAssessmentClassificationPolicyValue
-    public var impact: FeedbackAssessmentImpactPolicyValue
-    public var confidence: FeedbackAssessmentConfidencePolicyValue
-    public var sourceDrift: FeedbackSourceRevisionDrift
-    public var triageDisposition: FeedbackAssessmentTriageDisposition
+/// Coordinator-issued provenance that is never sourced from analyzer output.
+/// The coordinator obtains revision and citation identities before invoking a
+/// read-only analyzer and passes the same immutable context to validation.
+public struct FeedbackAssessmentTrustedContext: Equatable, Sendable {
+    public let reportID: FeedbackReportIDV1
+    public let assessmentRevisionID: String
+    public let sourceRevision: String
+    public let currentMainRevision: String
+    public let allowedEvidenceIDs: Set<String>
 
     public init(
+        reportID: FeedbackReportIDV1,
+        assessmentRevisionID: String,
+        sourceRevision: String,
+        currentMainRevision: String,
+        allowedEvidenceIDs: Set<String>
+    ) {
+        self.reportID = reportID
+        self.assessmentRevisionID = assessmentRevisionID
+        self.sourceRevision = sourceRevision
+        self.currentMainRevision = currentMainRevision
+        self.allowedEvidenceIDs = allowedEvidenceIDs
+    }
+}
+
+public struct ValidatedFeedbackAssessment: Equatable, Sendable {
+    public let assessment: FeedbackAssessmentV1
+    public let classification: FeedbackAssessmentClassificationPolicyValue
+    public let impact: FeedbackAssessmentImpactPolicyValue
+    public let confidence: FeedbackAssessmentConfidencePolicyValue
+    public let sourceDrift: FeedbackSourceRevisionDrift
+    public let triageDisposition: FeedbackAssessmentTriageDisposition
+    let trustedContext: FeedbackAssessmentTrustedContext
+
+    fileprivate init(
         assessment: FeedbackAssessmentV1,
         classification: FeedbackAssessmentClassificationPolicyValue,
         impact: FeedbackAssessmentImpactPolicyValue,
         confidence: FeedbackAssessmentConfidencePolicyValue,
         sourceDrift: FeedbackSourceRevisionDrift,
-        triageDisposition: FeedbackAssessmentTriageDisposition
+        triageDisposition: FeedbackAssessmentTriageDisposition,
+        trustedContext: FeedbackAssessmentTrustedContext
     ) {
         self.assessment = assessment
         self.classification = classification
@@ -71,6 +104,7 @@ public struct ValidatedFeedbackAssessment: Equatable, Sendable {
         self.confidence = confidence
         self.sourceDrift = sourceDrift
         self.triageDisposition = triageDisposition
+        self.trustedContext = trustedContext
     }
 }
 
@@ -80,30 +114,68 @@ public struct ValidatedFeedbackAssessment: Equatable, Sendable {
 public enum FeedbackAssessmentValidator {
     public static func decodeAndValidate(
         _ data: Data,
-        for report: FeedbackReportPayloadV1
+        for report: FeedbackReportPayloadV1,
+        trustedContext: FeedbackAssessmentTrustedContext
     ) throws -> ValidatedFeedbackAssessment {
         let assessment = try FeedbackCanonicalJSONV1.decode(FeedbackAssessmentV1.self, from: data)
-        return try validate(assessment, for: report)
+        return try validate(assessment, for: report, trustedContext: trustedContext)
     }
 
     public static func validate(
         _ assessment: FeedbackAssessmentV1,
-        for report: FeedbackReportPayloadV1
+        for report: FeedbackReportPayloadV1,
+        trustedContext: FeedbackAssessmentTrustedContext
     ) throws -> ValidatedFeedbackAssessment {
         try report.validate()
         try assessment.validate()
 
-        guard assessment.reportID == report.reportID else {
+        guard trustedContext.reportID == report.reportID else {
+            throw FeedbackAssessmentSemanticValidationError.trustedContextReportIDMismatch
+        }
+        guard trustedContext.sourceRevision == report.build.gitCommit else {
+            throw FeedbackAssessmentSemanticValidationError.trustedContextSourceRevisionMismatch(
+                reported: report.build.gitCommit,
+                trusted: trustedContext.sourceRevision
+            )
+        }
+        try validateGitRevision(trustedContext.sourceRevision, field: "trustedContext.sourceRevision")
+        try validateGitRevision(
+            trustedContext.currentMainRevision,
+            field: "trustedContext.currentMainRevision"
+        )
+        for evidenceID in trustedContext.allowedEvidenceIDs {
+            do {
+                try FeedbackContractValidationV1.required(
+                    evidenceID,
+                    path: "trustedContext.allowedEvidenceIDs[]",
+                    maximum: FeedbackContractLimitsV1.identifierLength
+                )
+            } catch {
+                throw FeedbackAssessmentSemanticValidationError.invalidTrustedEvidenceID(evidenceID)
+            }
+        }
+
+        guard assessment.reportID == trustedContext.reportID else {
             throw FeedbackAssessmentSemanticValidationError.reportIDMismatch
         }
-        guard assessment.sourceRevision == report.build.gitCommit else {
+        guard assessment.revisionID == trustedContext.assessmentRevisionID else {
+            throw FeedbackAssessmentSemanticValidationError.assessmentRevisionMismatch(
+                expected: trustedContext.assessmentRevisionID,
+                assessed: assessment.revisionID
+            )
+        }
+        guard assessment.sourceRevision == trustedContext.sourceRevision else {
             throw FeedbackAssessmentSemanticValidationError.sourceRevisionMismatch(
-                reported: report.build.gitCommit,
+                reported: trustedContext.sourceRevision,
                 assessed: assessment.sourceRevision
             )
         }
-        try validateGitRevision(assessment.sourceRevision, field: "sourceRevision")
-        try validateGitRevision(assessment.currentMainRevision, field: "currentMainRevision")
+        guard assessment.currentMainRevision == trustedContext.currentMainRevision else {
+            throw FeedbackAssessmentSemanticValidationError.currentMainRevisionMismatch(
+                trusted: trustedContext.currentMainRevision,
+                assessed: assessment.currentMainRevision
+            )
+        }
 
         guard let classification = FeedbackAssessmentClassificationPolicyValue(
             rawValue: assessment.classification.rawValue
@@ -125,6 +197,9 @@ public enum FeedbackAssessmentValidator {
 
         var evidenceIDs = Set<String>()
         for item in assessment.evidence + assessment.counterevidence {
+            guard trustedContext.allowedEvidenceIDs.contains(item.evidenceID) else {
+                throw FeedbackAssessmentSemanticValidationError.untrustedEvidenceID(item.evidenceID)
+            }
             guard evidenceIDs.insert(item.evidenceID).inserted else {
                 throw FeedbackAssessmentSemanticValidationError.duplicateEvidenceID(item.evidenceID)
             }
@@ -151,10 +226,11 @@ public enum FeedbackAssessmentValidator {
             classification: classification,
             impact: impact,
             confidence: confidence,
-            sourceDrift: assessment.sourceRevision == assessment.currentMainRevision
+            sourceDrift: trustedContext.sourceRevision == trustedContext.currentMainRevision
                 ? .sameRevision
                 : .currentMainDiffers,
-            triageDisposition: needsInformation ? .needsInformation : .assessed
+            triageDisposition: needsInformation ? .needsInformation : .assessed,
+            trustedContext: trustedContext
         )
     }
 
@@ -188,10 +264,15 @@ public enum FeedbackAssessmentProcessingState: Equatable, Sendable {
 
     public static func resolve(
         output: Data,
-        for report: FeedbackReportPayloadV1
+        for report: FeedbackReportPayloadV1,
+        trustedContext: FeedbackAssessmentTrustedContext
     ) -> Self {
         do {
-            return .validated(try FeedbackAssessmentValidator.decodeAndValidate(output, for: report))
+            return .validated(try FeedbackAssessmentValidator.decodeAndValidate(
+                output,
+                for: report,
+                trustedContext: trustedContext
+            ))
         } catch {
             return .failed(.malformedOrInvalidOutput)
         }

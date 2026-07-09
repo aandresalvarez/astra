@@ -97,7 +97,16 @@ public enum FeedbackPriorityPolicy {
     public static func decide(
         report: FeedbackReportPayloadV1,
         assessment: ValidatedFeedbackAssessment?
-    ) -> FeedbackPriorityDecision {
+    ) throws -> FeedbackPriorityDecision {
+        // The sealed value proves initial validation; revalidation here binds
+        // that value to the exact report supplied at the policy boundary.
+        let assessment = try assessment.map {
+            try FeedbackAssessmentValidator.validate(
+                $0.assessment,
+                for: report,
+                trustedContext: $0.trustedContext
+            )
+        }
         let priorityAndReasons: (FeedbackPriority, [FeedbackPriorityReason])
 
         if let assessment, assessment.classification == .security {
@@ -137,11 +146,10 @@ public enum FeedbackPriorityPolicy {
         guard triage.reportID == decision.reportID else {
             throw FeedbackPriorityPolicyError.reportIDMismatch
         }
-        if let triageRevision = triage.assessmentRevisionID,
-           triageRevision != decision.assessmentRevisionID {
+        guard let rawOverride = triage.priorityOverride?.rawValue else { return decision }
+        guard triage.assessmentRevisionID == decision.assessmentRevisionID else {
             throw FeedbackPriorityPolicyError.assessmentRevisionMismatch
         }
-        guard let rawOverride = triage.priorityOverride?.rawValue else { return decision }
         guard let priority = FeedbackPriority(rawValue: rawOverride) else {
             throw FeedbackPriorityPolicyError.invalidOverride(rawOverride)
         }
