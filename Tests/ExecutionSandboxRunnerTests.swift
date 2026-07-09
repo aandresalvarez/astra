@@ -8,9 +8,10 @@ import ASTRACore
 /// turns an `ExecutionSandbox` decision into a launch plan or a fail-closed block,
 /// audits each decision, and releases the shared-state gate even when blocked.
 ///
-/// Serialized because the runner reads `ExecutionSandboxSettings.current(...)`
-/// from `UserDefaults.standard` (which these tests mutate) and shares the global
-/// `AgentRuntimeSharedStateGate` — parallel execution would race both.
+/// Sandbox settings are injected per-test via isolated `UserDefaults(suiteName:)`
+/// instances (never `.standard`), so this suite no longer races other suites that
+/// also flip global sandbox keys. Still serialized because tests share the global
+/// `AgentRuntimeSharedStateGate` singleton — parallel execution would race that.
 @Suite(.serialized)
 @MainActor
 struct ExecutionSandboxRunnerTests {
@@ -102,20 +103,23 @@ struct ExecutionSandboxRunnerTests {
         )
     }
 
-    private func withStandardEnforcement(_ value: ExecutionSandboxEnforcement, _ body: () -> Void) {
-        let enforcementKey = AppStorageKeys.sandboxEnforcement
-        let readScopeKey = AppStorageKeys.sandboxReadScope
-        let originalEnforcement = UserDefaults.standard.string(forKey: enforcementKey)
-        let originalReadScope = UserDefaults.standard.string(forKey: readScopeKey)
-        UserDefaults.standard.set(value.rawValue, forKey: enforcementKey)
-        UserDefaults.standard.set(ExecutionSandboxReadScope.audit.rawValue, forKey: readScopeKey)
-        defer {
-            if let originalEnforcement { UserDefaults.standard.set(originalEnforcement, forKey: enforcementKey) }
-            else { UserDefaults.standard.removeObject(forKey: enforcementKey) }
-            if let originalReadScope { UserDefaults.standard.set(originalReadScope, forKey: readScopeKey) }
-            else { UserDefaults.standard.removeObject(forKey: readScopeKey) }
+    /// Builds sandbox settings from an isolated `UserDefaults` suite (never
+    /// `.standard`) so concurrently-running suites that also flip global sandbox
+    /// keys (`ExecutionSandboxTests`, `AgentUtilityRuntimeTests`) can't race this
+    /// one. Pass the yielded provider into `AgentRuntimeProcessRunner(sandboxSettingsProvider:)`.
+    @discardableResult
+    private func withStandardEnforcement<T>(
+        _ value: ExecutionSandboxEnforcement,
+        _ body: (@escaping AgentRuntimeProcessRunner.SandboxSettingsProvider) -> T
+    ) -> T {
+        let suiteName = "astra-sandbox-runner-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set(value.rawValue, forKey: AppStorageKeys.sandboxEnforcement)
+        defaults.set(ExecutionSandboxReadScope.audit.rawValue, forKey: AppStorageKeys.sandboxReadScope)
+        return body { permissionPolicy in
+            ExecutionSandboxSettings.current(permissionPolicy: permissionPolicy, defaults: defaults)
         }
-        body()
     }
 
     /// Acquire `key` within `seconds`, returning whether it succeeded. Implemented
@@ -146,8 +150,8 @@ struct ExecutionSandboxRunnerTests {
         try fm.createDirectory(at: ws, withIntermediateDirectories: true)
         defer { try? fm.removeItem(at: ws) }
 
-        withStandardEnforcement(.bestEffort) {
-            let runner = AgentRuntimeProcessRunner()
+        withStandardEnforcement(.bestEffort) { sandboxSettingsProvider in
+            let runner = AgentRuntimeProcessRunner(sandboxSettingsProvider: sandboxSettingsProvider)
             let outcome = runner.sandboxedPlan(
                 adapter: FakeLaunchAdapter(currentDirectory: ws.path),
                 context: makeContext(workspacePath: ws.path)
@@ -164,8 +168,8 @@ struct ExecutionSandboxRunnerTests {
 
     @Test("sandboxedPlan blocks (fail-closed) under strict when the sandbox can't apply")
     func sandboxedPlanBlockedFailClosed() {
-        withStandardEnforcement(.strict) {
-            let runner = AgentRuntimeProcessRunner()
+        withStandardEnforcement(.strict) { sandboxSettingsProvider in
+            let runner = AgentRuntimeProcessRunner(sandboxSettingsProvider: sandboxSettingsProvider)
             // Empty currentDirectory -> no_execution_path -> failClosed under strict.
             let outcome = runner.sandboxedPlan(
                 adapter: FakeLaunchAdapter(currentDirectory: ""),
@@ -182,8 +186,8 @@ struct ExecutionSandboxRunnerTests {
 
     @Test("sandboxedPlan runs the original plan unchanged when wrapping is skipped")
     func sandboxedPlanSkipped() {
-        withStandardEnforcement(.off) {
-            let runner = AgentRuntimeProcessRunner()
+        withStandardEnforcement(.off) { sandboxSettingsProvider in
+            let runner = AgentRuntimeProcessRunner(sandboxSettingsProvider: sandboxSettingsProvider)
             let outcome = runner.sandboxedPlan(
                 adapter: FakeLaunchAdapter(currentDirectory: "/tmp/whatever"),
                 context: makeContext(workspacePath: "/tmp/whatever")
@@ -225,8 +229,8 @@ struct ExecutionSandboxRunnerTests {
             runID: runID
         )
 
-        withStandardEnforcement(.off) {
-            let runner = AgentRuntimeProcessRunner()
+        withStandardEnforcement(.off) { sandboxSettingsProvider in
+            let runner = AgentRuntimeProcessRunner(sandboxSettingsProvider: sandboxSettingsProvider)
             let outcome = runner.sandboxedPlan(
                 adapter: FakeLaunchAdapter(runtime: .codexCLI, currentDirectory: ws.path),
                 context: context
@@ -253,8 +257,8 @@ struct ExecutionSandboxRunnerTests {
 
     @Test("sandboxedPlan attaches Git credential readable roots before sandboxing")
     func sandboxedPlanAddsGitCredentialContext() {
-        withStandardEnforcement(.off) {
-            let runner = AgentRuntimeProcessRunner(gitCredentialContextProvider: { _ in
+        withStandardEnforcement(.off) { sandboxSettingsProvider in
+            let runner = AgentRuntimeProcessRunner(sandboxSettingsProvider: sandboxSettingsProvider, gitCredentialContextProvider: { _ in
                 GitCredentialSandboxContext(
                     readablePaths: ["/tmp/astra-gitconfig", "/tmp/astra-known-hosts"],
                     writablePaths: ["/tmp/astra-external-gitdir"],
@@ -295,8 +299,8 @@ struct ExecutionSandboxRunnerTests {
         - \(attachment.path)
         """
 
-        withStandardEnforcement(.off) {
-            let runner = AgentRuntimeProcessRunner()
+        withStandardEnforcement(.off) { sandboxSettingsProvider in
+            let runner = AgentRuntimeProcessRunner(sandboxSettingsProvider: sandboxSettingsProvider)
             let outcome = runner.sandboxedPlan(
                 adapter: FakeLaunchAdapter(currentDirectory: ws.path),
                 context: makeContext(workspacePath: ws.path, contextText: contextText)
@@ -314,8 +318,8 @@ struct ExecutionSandboxRunnerTests {
 
     @Test("sandboxedPlan blocks restricted Codex when external Git credentials need native access")
     func sandboxedPlanBlocksRestrictedCodexExternalGitCredentialAccess() {
-        withStandardEnforcement(.off) {
-            let runner = AgentRuntimeProcessRunner(gitCredentialContextProvider: { _ in
+        withStandardEnforcement(.off) { sandboxSettingsProvider in
+            let runner = AgentRuntimeProcessRunner(sandboxSettingsProvider: sandboxSettingsProvider, gitCredentialContextProvider: { _ in
                 GitCredentialSandboxContext(
                     readablePaths: ["/tmp/astra-gitconfig"],
                     writablePaths: [],
@@ -356,8 +360,8 @@ struct ExecutionSandboxRunnerTests {
             )
         )
 
-        withStandardEnforcement(.off) {
-            let runner = AgentRuntimeProcessRunner(gitCredentialContextProvider: { _ in .empty })
+        withStandardEnforcement(.off) { sandboxSettingsProvider in
+            let runner = AgentRuntimeProcessRunner(sandboxSettingsProvider: sandboxSettingsProvider, gitCredentialContextProvider: { _ in .empty })
             let outcome = runner.sandboxedPlan(
                 adapter: FakeLaunchAdapter(runtime: .codexCLI, currentDirectory: "/tmp/whatever"),
                 context: makeContext(
@@ -405,8 +409,8 @@ struct ExecutionSandboxRunnerTests {
             )
         )
 
-        withStandardEnforcement(.off) {
-            let runner = AgentRuntimeProcessRunner(gitCredentialContextProvider: { _ in .empty })
+        withStandardEnforcement(.off) { sandboxSettingsProvider in
+            let runner = AgentRuntimeProcessRunner(sandboxSettingsProvider: sandboxSettingsProvider, gitCredentialContextProvider: { _ in .empty })
             let outcome = runner.sandboxedPlan(
                 adapter: FakeLaunchAdapter(runtime: .codexCLI, currentDirectory: "/tmp/whatever"),
                 context: makeContext(
@@ -459,8 +463,8 @@ struct ExecutionSandboxRunnerTests {
             gitCredential: nil
         )
 
-        withStandardEnforcement(.off) {
-            let runner = AgentRuntimeProcessRunner(gitCredentialContextProvider: { _ in .empty })
+        withStandardEnforcement(.off) { sandboxSettingsProvider in
+            let runner = AgentRuntimeProcessRunner(sandboxSettingsProvider: sandboxSettingsProvider, gitCredentialContextProvider: { _ in .empty })
             let outcome = runner.sandboxedPlan(
                 adapter: FakeLaunchAdapter(runtime: .codexCLI, currentDirectory: "/tmp/whatever"),
                 context: makeContext(
@@ -481,8 +485,8 @@ struct ExecutionSandboxRunnerTests {
 
     @Test("sandboxedPlan leaves autonomous Codex resume prompt unshifted for Git credential context")
     func sandboxedPlanLeavesAutonomousCodexResumePromptUnshiftedForGitCredentialContext() {
-        withStandardEnforcement(.off) {
-            let runner = AgentRuntimeProcessRunner(gitCredentialContextProvider: { _ in
+        withStandardEnforcement(.off) { sandboxSettingsProvider in
+            let runner = AgentRuntimeProcessRunner(sandboxSettingsProvider: sandboxSettingsProvider, gitCredentialContextProvider: { _ in
                 GitCredentialSandboxContext(
                     readablePaths: ["/tmp/astra-gitconfig"],
                     writablePaths: [],
@@ -512,8 +516,8 @@ struct ExecutionSandboxRunnerTests {
 
     @Test("sandboxedPlan does not append Copilot path access outside render evidence")
     func sandboxedPlanDoesNotAppendCopilotGitCredentialAccessOutsideRenderEvidence() {
-        withStandardEnforcement(.off) {
-            let runner = AgentRuntimeProcessRunner(gitCredentialContextProvider: { _ in
+        withStandardEnforcement(.off) { sandboxSettingsProvider in
+            let runner = AgentRuntimeProcessRunner(sandboxSettingsProvider: sandboxSettingsProvider, gitCredentialContextProvider: { _ in
                 GitCredentialSandboxContext(
                     readablePaths: ["/tmp/astra-gitconfig"],
                     writablePaths: [],
@@ -541,7 +545,7 @@ struct ExecutionSandboxRunnerTests {
 
     @Test("sandboxedPlan blocks runtimes without Docker workspace command support")
     func sandboxedPlanBlocksRuntimeWithoutDockerWorkspaceSupport() {
-        withStandardEnforcement(.off) {
+        withStandardEnforcement(.off) { sandboxSettingsProvider in
             let task = AgentTask(title: "Docker", goal: "Run commands", runtime: .cursorCLI)
             task.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encode(WorkspaceExecutionEnvironment(
                 id: "image:workspace",
@@ -561,7 +565,7 @@ struct ExecutionSandboxRunnerTests {
                 timeoutSeconds: 1
             )
 
-            let runner = AgentRuntimeProcessRunner()
+            let runner = AgentRuntimeProcessRunner(sandboxSettingsProvider: sandboxSettingsProvider)
             let outcome = runner.sandboxedPlan(
                 adapter: FakeLaunchAdapter(runtime: .cursorCLI, currentDirectory: "/tmp/whatever"),
                 context: context
@@ -579,7 +583,7 @@ struct ExecutionSandboxRunnerTests {
 
     @Test("sandboxedPlan allows Codex Docker workspace command support")
     func sandboxedPlanAllowsCodexDockerWorkspaceSupport() {
-        withStandardEnforcement(.off) {
+        withStandardEnforcement(.off) { sandboxSettingsProvider in
             let task = AgentTask(title: "Docker", goal: "Run commands", runtime: .codexCLI)
             task.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encode(WorkspaceExecutionEnvironment(
                 id: "image:workspace",
@@ -599,7 +603,7 @@ struct ExecutionSandboxRunnerTests {
                 timeoutSeconds: 1
             )
 
-            let runner = AgentRuntimeProcessRunner()
+            let runner = AgentRuntimeProcessRunner(sandboxSettingsProvider: sandboxSettingsProvider)
             let outcome = runner.sandboxedPlan(
                 adapter: FakeLaunchAdapter(runtime: .codexCLI, currentDirectory: "/tmp/whatever"),
                 context: context
@@ -616,7 +620,7 @@ struct ExecutionSandboxRunnerTests {
 
     @Test("sandboxedPlan composes Git credential context with Docker workspace execution")
     func sandboxedPlanComposesGitCredentialContextWithDockerWorkspaceExecution() {
-        withStandardEnforcement(.off) {
+        withStandardEnforcement(.off) { sandboxSettingsProvider in
             let task = AgentTask(title: "Docker Git", goal: "Pull latest changes", runtime: .codexCLI)
             task.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encode(WorkspaceExecutionEnvironment(
                 id: "image:workspace",
@@ -636,7 +640,7 @@ struct ExecutionSandboxRunnerTests {
                 timeoutSeconds: 1
             )
 
-            let runner = AgentRuntimeProcessRunner(gitCredentialContextProvider: { _ in
+            let runner = AgentRuntimeProcessRunner(sandboxSettingsProvider: sandboxSettingsProvider, gitCredentialContextProvider: { _ in
                 GitCredentialSandboxContext(
                     readablePaths: ["/tmp/astra-gitconfig"],
                     writablePaths: ["/tmp/astra-external-gitdir"],
@@ -708,8 +712,8 @@ struct ExecutionSandboxRunnerTests {
 
     @Test("sandboxedPlan honors the execution-policy permissionPolicy override (autonomous escalates to strict)")
     func sandboxedPlanHonorsPermissionPolicyOverride() {
-        withStandardEnforcement(.bestEffort) {
-            let runner = AgentRuntimeProcessRunner()
+        withStandardEnforcement(.bestEffort) { sandboxSettingsProvider in
+            let runner = AgentRuntimeProcessRunner(sandboxSettingsProvider: sandboxSettingsProvider)
 
             // Base policy .restricted + best-effort + an unsatisfiable plan (empty
             // currentDirectory) -> fall back and run unconfined.
@@ -752,14 +756,13 @@ struct ExecutionSandboxRunnerTests {
         try fm.createDirectory(at: ws, withIntermediateDirectories: true)
         defer { try? fm.removeItem(at: ws) }
 
-        let runner = AgentRuntimeProcessRunner()
-
         func messagesForDecision(
             enforcement: ExecutionSandboxEnforcement,
             currentDirectory: String
         ) -> [String] {
             var messages: [String] = []
-            withStandardEnforcement(enforcement) {
+            withStandardEnforcement(enforcement) { sandboxSettingsProvider in
+                let runner = AgentRuntimeProcessRunner(sandboxSettingsProvider: sandboxSettingsProvider)
                 let context = makeContext(workspacePath: currentDirectory)
                 let taskID = context.task.id
                 _ = runner.sandboxedPlan(
@@ -789,15 +792,14 @@ struct ExecutionSandboxRunnerTests {
     func releasesSharedStateGateOnBlocked() async {
         let key = AgentRuntimeSharedStateKey(runtime: .claudeCode, identifier: "sbx-gate-\(UUID().uuidString)")
 
-        let enforcementKey = AppStorageKeys.sandboxEnforcement
-        let original = UserDefaults.standard.string(forKey: enforcementKey)
-        UserDefaults.standard.set(ExecutionSandboxEnforcement.strict.rawValue, forKey: enforcementKey)
-        defer {
-            if let original { UserDefaults.standard.set(original, forKey: enforcementKey) }
-            else { UserDefaults.standard.removeObject(forKey: enforcementKey) }
-        }
+        let suiteName = "astra-sandbox-runner-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set(ExecutionSandboxEnforcement.strict.rawValue, forKey: AppStorageKeys.sandboxEnforcement)
 
-        let runner = AgentRuntimeProcessRunner()
+        let runner = AgentRuntimeProcessRunner(sandboxSettingsProvider: { permissionPolicy in
+            ExecutionSandboxSettings.current(permissionPolicy: permissionPolicy, defaults: defaults)
+        })
         let adapter = FakeLaunchAdapter(currentDirectory: "", sharedKey: key)
         let result = await runner.runRuntimeProcess(
             adapter: adapter,
