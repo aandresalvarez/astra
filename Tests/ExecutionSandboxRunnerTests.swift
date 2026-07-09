@@ -287,10 +287,15 @@ struct ExecutionSandboxRunnerTests {
     func sandboxedPlanAddsAttachmentReadablePaths() throws {
         let fm = FileManager.default
         let ws = fm.temporaryDirectory.appendingPathComponent("astra-runner-\(UUID().uuidString)", isDirectory: true)
+        let attachmentRoot = fm.temporaryDirectory.appendingPathComponent("astra-attachment-\(UUID().uuidString)", isDirectory: true)
         try fm.createDirectory(at: ws, withIntermediateDirectories: true)
-        defer { try? fm.removeItem(at: ws) }
+        try fm.createDirectory(at: attachmentRoot, withIntermediateDirectories: true)
+        defer {
+            try? fm.removeItem(at: ws)
+            try? fm.removeItem(at: attachmentRoot)
+        }
 
-        let attachment = ws.appendingPathComponent("DBT Unit Tests (1).md")
+        let attachment = attachmentRoot.appendingPathComponent("DBT Unit Tests (1).md")
         try "team dbt unit-test notes".write(to: attachment, atomically: true, encoding: .utf8)
         let contextText = """
         Please merge the attached testing document into the guidelines.
@@ -710,8 +715,8 @@ struct ExecutionSandboxRunnerTests {
         #expect(plan.commandPlannedFields["git_credential_context"] == "true")
     }
 
-    @Test("sandboxedPlan honors the execution-policy permissionPolicy override (autonomous escalates to strict)")
-    func sandboxedPlanHonorsPermissionPolicyOverride() {
+    @Test("sandboxedPlan keeps execution sandbox independent from Auto override")
+    func sandboxedPlanKeepsSandboxIndependentFromPermissionOverride() {
         withStandardEnforcement(.bestEffort) { sandboxSettingsProvider in
             let runner = AgentRuntimeProcessRunner(sandboxSettingsProvider: sandboxSettingsProvider)
 
@@ -726,23 +731,21 @@ struct ExecutionSandboxRunnerTests {
                 return
             }
 
-            // Same run, but an execution-policy override escalates to autonomous ->
-            // best-effort becomes strict -> the unsatisfiable plan is blocked.
-            // (If the runner ignored the override, this would also be .plan.)
+            // Auto changes provider prompt handling, not the explicit sandbox
+            // setting. The same best-effort failure therefore still falls back.
             let overridePolicy = AgentRuntimeExecutionPolicy(
                 permissionPolicyOverride: .autonomous,
                 allowedToolsOverride: nil,
                 permissionGrantsOverride: nil
             )
-            let escalated = runner.sandboxedPlan(
+            let overridden = runner.sandboxedPlan(
                 adapter: FakeLaunchAdapter(currentDirectory: ""),
                 context: makeContext(workspacePath: "", permissionPolicy: .restricted, executionPolicy: overridePolicy)
             )
-            guard case .blocked(let result) = escalated else {
-                Issue.record("The autonomous override should escalate best-effort to strict -> .blocked")
+            guard case .plan = overridden else {
+                Issue.record("Auto must not silently change best-effort sandbox enforcement")
                 return
             }
-            #expect(result.runtimeStopReason == "sandbox_unavailable")
         }
     }
 

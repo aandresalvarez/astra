@@ -19,6 +19,7 @@ enum TaskLaunchResourceSource: String, Codable, Sendable {
     case connector
     case browser
     case provider
+    case sandboxApproval = "sandbox_approval"
 }
 
 enum TaskLaunchResourceSensitivity: String, Codable, Sendable {

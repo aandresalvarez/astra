@@ -37,10 +37,15 @@ public struct TaskWorkspaceAccess {
         return effectiveWorkspacePath
     }
 
-    public var runtimeAdditionalPaths: [String] {
-        var paths = task.workspace?.additionalPaths ?? []
-        paths.append(contentsOf: inputDirectoryPaths)
+    public var runtimeWritablePaths: [String] {
+        normalizedUniquePaths(task.workspace?.additionalPaths ?? [])
+    }
 
+    public var runtimeReadOnlyInputPaths: [String] {
+        normalizedUniquePaths(inputDirectoryPaths)
+    }
+
+    private func normalizedUniquePaths(_ paths: [String]) -> [String] {
         var seen: Set<String> = []
         return paths.compactMap { rawPath in
             let path = (rawPath as NSString).expandingTildeInPath

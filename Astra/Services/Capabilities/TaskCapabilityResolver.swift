@@ -40,11 +40,13 @@ struct TaskCapabilityResolutionSnapshot {
     static func capture(
         for task: AgentTask,
         providerLaunchContextText: String,
-        additionalCredentialGrants: [PermissionGrant] = []
+        additionalCredentialGrants: [PermissionGrant] = [],
+        exposeAllConnectorCredentials: Bool = false
     ) -> TaskCapabilityResolutionSnapshot {
         let resolver = TaskCapabilityResolver(
             task: task,
-            additionalCredentialGrants: additionalCredentialGrants
+            additionalCredentialGrants: additionalCredentialGrants,
+            exposeAllConnectorCredentials: exposeAllConnectorCredentials
         )
         return TaskCapabilityResolutionSnapshot(
             fullInventory: resolver.resolvedScope(.fullInventory),
@@ -66,10 +68,16 @@ struct TaskCapabilityResolutionSnapshot {
 struct TaskCapabilityResolver {
     private let task: AgentTask
     private let additionalCredentialGrants: [PermissionGrant]
+    private let exposeAllConnectorCredentials: Bool
 
-    init(task: AgentTask, additionalCredentialGrants: [PermissionGrant] = []) {
+    init(
+        task: AgentTask,
+        additionalCredentialGrants: [PermissionGrant] = [],
+        exposeAllConnectorCredentials: Bool = false
+    ) {
         self.task = task
         self.additionalCredentialGrants = additionalCredentialGrants
+        self.exposeAllConnectorCredentials = exposeAllConnectorCredentials
     }
 
     var resolver: SkillResolver {
@@ -471,7 +479,10 @@ struct TaskCapabilityResolver {
     }
 
     private func credentialExposurePolicy() -> ConnectorRuntimeProjection.CredentialExposurePolicy {
-        ConnectorRuntimeProjection.CredentialExposurePolicy.approvedLabels(
+        if exposeAllConnectorCredentials {
+            return .allowAllCredentials
+        }
+        return ConnectorRuntimeProjection.CredentialExposurePolicy.approvedLabels(
             Set(TaskRuntimePermissionGrants.approvedCredentialLabels(
                 for: task,
                 additionalGrants: additionalCredentialGrants

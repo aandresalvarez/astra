@@ -112,7 +112,8 @@ struct AgentRuntimePolicyViolation: Equatable, Sendable {
 
 struct AgentRuntimePolicyGuard: Sendable {
     private let manifest: RunPermissionManifest
-    private let allowedPathRoots: [String]
+    private let readablePathRoots: [String]
+    private let writablePathRoots: [String]
     private let taskOutputPathRoots: [String]
     private let pathMapper: ExecutionEnvironmentPathMapper?
 
@@ -131,7 +132,12 @@ struct AgentRuntimePolicyGuard: Sendable {
         let baseRoots = roots
             .map(Self.standardizedAbsolutePath)
             .filter { !$0.isEmpty }
-        self.allowedPathRoots = baseRoots
+        self.writablePathRoots = baseRoots
+        self.readablePathRoots = Array(Set(
+            baseRoots + manifest.additionalReadOnlyPaths
+                .map(Self.standardizedAbsolutePath)
+                .filter { !$0.isEmpty }
+        )).sorted()
         let taskFolderName = String(manifest.taskID.uuidString.prefix(8)).uppercased()
         self.taskOutputPathRoots = baseRoots
             .map { (($0 as NSString).appendingPathComponent(".astra/tasks/\(taskFolderName)")) }
@@ -184,9 +190,11 @@ struct AgentRuntimePolicyGuard: Sendable {
 
     func violation(for parsed: ParsedEvent) -> AgentRuntimePolicyViolation? {
         let adapter = ProviderPolicyAdapterRegistry.adapter(for: manifest.providerID)
-        guard !manifest.providerRender.usesBroadProviderPermissions,
-              let observed = adapter.observedEvent(from: parsed) else {
+        guard let observed = adapter.observedEvent(from: parsed) else {
             return nil
+        }
+        if manifest.providerRender.usesBroadProviderPermissions {
+            return validateBroadPermissionInvariant(observed)
         }
         let request = adapter.permissionRequest(from: parsed)
             ?? PermissionBroker.permissionRequest(from: observed)
@@ -197,6 +205,18 @@ struct AgentRuntimePolicyGuard: Sendable {
         case .toolResult, .deniedAction:
             return nil
         }
+    }
+
+    private func validateBroadPermissionInvariant(
+        _ observed: PolicyObservedEvent
+    ) -> AgentRuntimePolicyViolation? {
+        guard let toolName = observed.toolName?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !toolName.isEmpty,
+              isMutationTool(toolName) else {
+            return nil
+        }
+        return validateTaskOutputMutationOwnership(observed, toolName: toolName)
+            ?? validateReadOnlyInputMutation(observed, toolName: toolName)
     }
 
     private func validateObservedAction(
@@ -237,6 +257,11 @@ struct AgentRuntimePolicyGuard: Sendable {
 
         if isMutationTool(toolName),
            let violation = validateTaskOutputMutationOwnership(observed, toolName: toolName) {
+            return violation
+        }
+
+        if isMutationTool(toolName),
+           let violation = validateReadOnlyInputMutation(observed, toolName: toolName) {
             return violation
         }
 
@@ -502,7 +527,10 @@ struct AgentRuntimePolicyGuard: Sendable {
                 detail: summary
             )
         }
-        guard isPathInScope(path) else {
+        let pathIsAllowed = isMutationTool(toolName)
+            ? isPathWritable(path)
+            : isPathReadable(path)
+        guard pathIsAllowed else {
             return AgentRuntimePolicyViolation(
                 reason: "The file path is outside the workspace paths allowed for this run",
                 toolName: toolName,
@@ -577,6 +605,24 @@ struct AgentRuntimePolicyGuard: Sendable {
         )
     }
 
+    private func validateReadOnlyInputMutation(
+        _ observed: PolicyObservedEvent,
+        toolName: String
+    ) -> AgentRuntimePolicyViolation? {
+        let paths = mutationPaths(from: observed, toolName: toolName)
+        guard let readOnlyPath = paths.first(where: { path in
+            isPathReadable(path) && !isPathWritable(path)
+        }) else {
+            return nil
+        }
+        return AgentRuntimePolicyViolation(
+            reason: "The file path is a read-only task input and cannot be modified by the provider",
+            toolName: toolName,
+            detail: readOnlyPath,
+            violationCategory: "read_only_input_mutation"
+        )
+    }
+
     private func mutationPaths(from observed: PolicyObservedEvent, toolName: String) -> [String] {
         if isPatchMutationTool(toolName) {
             return patchMutationPaths(from: observed)
@@ -599,7 +645,7 @@ struct AgentRuntimePolicyGuard: Sendable {
             )
         }
 
-        if let outsidePath = paths.first(where: { !isPathInScope($0) }) {
+        if let outsidePath = paths.first(where: { !isPathWritable($0) }) {
             return AgentRuntimePolicyViolation(
                 reason: "The patch file path is outside the workspace paths allowed for this run",
                 toolName: toolName,
@@ -675,10 +721,18 @@ struct AgentRuntimePolicyGuard: Sendable {
         return values.filter { seen.insert($0).inserted }
     }
 
-    private func isPathInScope(_ rawPath: String) -> Bool {
+    private func isPathReadable(_ rawPath: String) -> Bool {
+        isPath(rawPath, inside: readablePathRoots)
+    }
+
+    private func isPathWritable(_ rawPath: String) -> Bool {
+        isPath(rawPath, inside: writablePathRoots)
+    }
+
+    private func isPath(_ rawPath: String, inside roots: [String]) -> Bool {
         let candidate = standardizedRunPath(rawPath)
 
-        return allowedPathRoots.contains { root in
+        return roots.contains { root in
             candidate == root || candidate.hasPrefix(root + "/")
         }
     }
@@ -994,7 +1048,7 @@ struct AgentRuntimePolicyGuard: Sendable {
     }
 
     private func isFileTool(_ tool: String) -> Bool {
-        ["read", "write", "edit", "multiedit"].contains(Self.normalizedToolName(tool))
+        ["read", "grep", "glob", "ls", "write", "edit", "multiedit"].contains(Self.normalizedToolName(tool))
     }
 
     private func isNetworkTool(_ tool: String) -> Bool {

@@ -5,7 +5,7 @@ import ASTRAPersistence
 
 enum TaskLaunchResourceResolver {
     typealias GitCredentialContextProvider = (String, AgentTask, String, String) -> GitCredentialSandboxContext
-    typealias GCloudExecutablePathProvider = (FileManager) -> String?
+    typealias GCloudExecutablePathProvider = (String, FileManager) -> String?
 
     static func resolve(
         task: AgentTask,
@@ -17,6 +17,7 @@ enum TaskLaunchResourceResolver {
         workspacePath: String,
         executionEnvironment: WorkspaceExecutionEnvironment? = nil,
         capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot? = nil,
+        runtimePermissionGrants: [PermissionGrant] = [],
         homeDirectoryPath: String = FileManager.default.homeDirectoryForCurrentUser.path,
         fileManager: FileManager = .default,
         gcloudExecutablePathProvider: GCloudExecutablePathProvider = defaultGCloudExecutablePath,
@@ -47,6 +48,7 @@ enum TaskLaunchResourceResolver {
             grants: &hostPathGrants,
             diagnostics: &diagnostics
         )
+        appendRuntimePermissionGrants(runtimePermissionGrants, to: &hostPathGrants)
 
         let routesGitHubMetadataThroughHostControl = routesGitHubMetadataThroughHostControl(
             task: task,
@@ -131,6 +133,31 @@ enum TaskLaunchResourceResolver {
             diagnostics: diagnostics,
             gitCredential: gitResource
         )
+    }
+
+    private static func appendRuntimePermissionGrants(
+        _ grants: [PermissionGrant],
+        to hostPathGrants: inout [RuntimePathGrant]
+    ) {
+        for grant in grants {
+            guard case .sandboxPath(let path, let access) = grant,
+                  access == "read",
+                  case .eligible(let canonicalPath, _) = RuntimeSandboxPathGrantPolicy.evaluate(
+                    path: path,
+                    operation: .read
+                  ) else {
+                continue
+            }
+            hostPathGrants.append(RuntimePathGrant(
+                path: canonicalPath,
+                access: .read,
+                source: .sandboxApproval,
+                reason: "User approved this sandbox path for the current run retry.",
+                sensitivity: .normal,
+                lifetime: .run,
+                exists: FileManager.default.fileExists(atPath: canonicalPath)
+            ))
+        }
     }
 
     private static func routesGitHubMetadataThroughHostControl(
@@ -331,6 +358,14 @@ enum TaskLaunchResourceResolver {
                 diagnostics: &diagnostics,
                 missingCode: "ssh_config_missing"
             )
+            appendRemoteWorkspaceProxyCommandGrants(
+                aliases: aliasConnections.map(\.configAlias),
+                homeDirectoryPath: homeDirectoryPath,
+                fileManager: fileManager,
+                hostPathGrants: &hostPathGrants,
+                credentialGrants: &credentialGrants,
+                diagnostics: &diagnostics
+            )
         }
 
         let keyPaths = uniqueRawPaths(connections.map(\.keyPath).filter {
@@ -375,6 +410,494 @@ enum TaskLaunchResourceResolver {
             projectedAsEnvironment: false,
             projectedAsFile: true
         ))
+    }
+
+    private static func appendRemoteWorkspaceProxyCommandGrants(
+        aliases: [String],
+        homeDirectoryPath: String,
+        fileManager: FileManager,
+        hostPathGrants: inout [RuntimePathGrant],
+        credentialGrants: inout [RuntimeCredentialGrant],
+        diagnostics: inout [RuntimeResourceDiagnostic]
+    ) {
+        guard let sshConfigPath = existingPath("~/.ssh/config", homeDirectoryPath: homeDirectoryPath, fileManager: fileManager) else {
+            return
+        }
+        let expandedConfig = expandedSSHConfig(
+            at: sshConfigPath,
+            homeDirectoryPath: homeDirectoryPath,
+            fileManager: fileManager
+        )
+        for includedPath in expandedConfig.includedPaths {
+            hostPathGrants.append(RuntimePathGrant(
+                path: includedPath,
+                access: .read,
+                source: .remoteWorkspace,
+                reason: "Configured remote workspace SSH aliases include this SSH config file.",
+                sensitivity: .credential,
+                lifetime: .run,
+                exists: true
+            ))
+        }
+
+        let executableResolutions = sshProxyCommandExecutableResolutions(
+            in: expandedConfig.text,
+            aliases: aliases,
+            homeDirectoryPath: homeDirectoryPath,
+            fileManager: fileManager
+        )
+        for resolution in executableResolutions {
+            guard let executablePath = resolution.executablePath else {
+                diagnostics.append(RuntimeResourceDiagnostic(
+                    severity: .error,
+                    code: "ssh_proxy_command_executable_unresolved",
+                    message: "ASTRA could not resolve the SSH ProxyCommand executable: \(resolution.unresolvedToken ?? "missing executable").",
+                    repairAction: "Install the ProxyCommand dependency or update the matching Host block to use an existing absolute, home-relative, or supported PATH executable."
+                ))
+                continue
+            }
+            guard case .eligible = RuntimeSandboxPathGrantPolicy.evaluate(
+                path: executablePath,
+                operation: .read,
+                homeDirectory: URL(fileURLWithPath: homeDirectoryPath, isDirectory: true)
+            ) else {
+                diagnostics.append(RuntimeResourceDiagnostic(
+                    severity: .error,
+                    code: "ssh_proxy_command_executable_protected",
+                    message: "ASTRA will not implicitly project this SSH ProxyCommand executable because it is in a protected location.",
+                    repairAction: "Move the helper to a non-sensitive tool directory or select an explicit supported remote-access capability."
+                ))
+                continue
+            }
+            if isGCloudExecutablePath(executablePath) {
+                appendHostGCloudCredentialGrant(
+                    homeDirectoryPath: homeDirectoryPath,
+                    fileManager: fileManager,
+                    executablePath: executablePath,
+                    source: .remoteWorkspace,
+                    missingConfigMessage: "Remote workspace SSH ProxyCommand uses gcloud/IAP, but ASTRA could not find the local gcloud config directory.",
+                    configGrantReason: "Remote workspace SSH ProxyCommand uses local gcloud authentication and may refresh tokens during IAP tunnel calls.",
+                    executableGrantReason: "Remote workspace SSH ProxyCommand uses the local gcloud/IAP CLI installation.",
+                    hostPathGrants: &hostPathGrants,
+                    credentialGrants: &credentialGrants,
+                    diagnostics: &diagnostics
+                )
+            } else {
+                hostPathGrants.append(RuntimePathGrant(
+                    path: executablePath,
+                    access: .read,
+                    source: .remoteWorkspace,
+                    reason: "Remote workspace SSH ProxyCommand uses this local executable.",
+                    sensitivity: .normal,
+                    lifetime: .run,
+                    exists: true
+                ))
+            }
+        }
+    }
+
+    private struct ProxyCommandExecutableResolution {
+        var executablePath: String?
+        var unresolvedToken: String?
+    }
+
+    private struct ExpandedSSHConfig {
+        var text: String
+        var includedPaths: [String]
+    }
+
+    private static func expandedSSHConfig(
+        at path: String,
+        homeDirectoryPath: String,
+        fileManager: FileManager,
+        depth: Int = 0,
+        visited: Set<String> = []
+    ) -> ExpandedSSHConfig {
+        guard depth < 8,
+              !visited.contains(path),
+              let content = try? String(contentsOfFile: path, encoding: .utf8) else {
+            return ExpandedSSHConfig(text: "", includedPaths: [])
+        }
+        var visited = visited
+        visited.insert(path)
+        var lines: [String] = []
+        var includedPaths: [String] = []
+        for rawLine in content.components(separatedBy: .newlines) {
+            let line = uncommentedSSHConfigLine(rawLine)
+            let parts = line.split(maxSplits: 1, omittingEmptySubsequences: true) { $0.isWhitespace }
+            guard parts.first?.lowercased() == "include", parts.count > 1 else {
+                lines.append(rawLine)
+                continue
+            }
+            let patterns = shellTokens(in: String(parts[1])) ?? []
+            for pattern in patterns {
+                for includePath in sshIncludePaths(
+                    pattern,
+                    homeDirectoryPath: homeDirectoryPath,
+                    fileManager: fileManager
+                ) where !visited.contains(includePath) {
+                    let nested = expandedSSHConfig(
+                        at: includePath,
+                        homeDirectoryPath: homeDirectoryPath,
+                        fileManager: fileManager,
+                        depth: depth + 1,
+                        visited: visited
+                    )
+                    includedPaths.append(includePath)
+                    includedPaths.append(contentsOf: nested.includedPaths)
+                    lines.append(nested.text)
+                }
+            }
+        }
+        return ExpandedSSHConfig(
+            text: lines.joined(separator: "\n"),
+            includedPaths: uniquePaths(includedPaths)
+        )
+    }
+
+    private static func sshIncludePaths(
+        _ rawPattern: String,
+        homeDirectoryPath: String,
+        fileManager: FileManager
+    ) -> [String] {
+        var pattern = expandPath(
+            expandProxyCommandHomePath(rawPattern, homeDirectoryPath: homeDirectoryPath),
+            homeDirectoryPath: homeDirectoryPath
+        )
+        if !pattern.hasPrefix("/") {
+            pattern = (homeDirectoryPath as NSString)
+                .appendingPathComponent(".ssh/\(pattern)")
+        }
+        let directory = (pattern as NSString).deletingLastPathComponent
+        let filenamePattern = (pattern as NSString).lastPathComponent
+        guard !directory.contains("*"), !directory.contains("?"),
+              let entries = try? fileManager.contentsOfDirectory(atPath: directory) else {
+            return existingPath(pattern, fileManager: fileManager).map { [$0] } ?? []
+        }
+        let escaped = NSRegularExpression.escapedPattern(for: filenamePattern)
+            .replacingOccurrences(of: "\\*", with: ".*")
+            .replacingOccurrences(of: "\\?", with: ".")
+        guard let regex = try? NSRegularExpression(pattern: "^\(escaped)$") else { return [] }
+        return entries.sorted().compactMap { entry in
+            let range = NSRange(entry.startIndex..<entry.endIndex, in: entry)
+            guard regex.firstMatch(in: entry, range: range) != nil else { return nil }
+            return existingPath((directory as NSString).appendingPathComponent(entry), fileManager: fileManager)
+        }
+    }
+
+    private static func sshProxyCommandExecutableResolutions(
+        in sshConfig: String,
+        aliases: [String],
+        homeDirectoryPath: String,
+        fileManager: FileManager
+    ) -> [ProxyCommandExecutableResolution] {
+        let normalizedAliases = Set(aliases.map(normalizedSSHHostPatternComponent).filter { !$0.isEmpty })
+        guard !normalizedAliases.isEmpty else { return [] }
+
+        var matchingAliases = normalizedAliases
+        var assignedAliases: Set<String> = []
+        var resolutions: [ProxyCommandExecutableResolution] = []
+        for rawLine in sshConfig.components(separatedBy: .newlines) {
+            let line = uncommentedSSHConfigLine(rawLine)
+            guard !line.isEmpty else { continue }
+            let parts = line.split(maxSplits: 1, omittingEmptySubsequences: true) { $0.isWhitespace }
+            guard let directive = parts.first?.lowercased() else { continue }
+            let value = parts.count > 1 ? String(parts[1]) : ""
+
+            if directive == "host" {
+                matchingAliases = sshHostPatterns(value, matchingAliasesIn: normalizedAliases)
+                continue
+            }
+            if directive == "match" {
+                matchingAliases = []
+                continue
+            }
+            let unassignedMatches = matchingAliases.subtracting(assignedAliases)
+            guard !unassignedMatches.isEmpty, directive == "proxycommand" else { continue }
+            assignedAliases.formUnion(unassignedMatches)
+            guard value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() != "none" else {
+                continue
+            }
+            resolutions.append(resolveProxyCommandExecutable(
+                in: value,
+                homeDirectoryPath: homeDirectoryPath,
+                fileManager: fileManager
+            ))
+        }
+        var seen: Set<String> = []
+        return resolutions.filter { resolution in
+            let identity = resolution.executablePath ?? "unresolved:\(resolution.unresolvedToken ?? "")"
+            return seen.insert(identity).inserted
+        }
+    }
+
+    private static func uncommentedSSHConfigLine(_ rawLine: String) -> String {
+        var result = ""
+        var quote: Character?
+        var escaped = false
+        for char in rawLine {
+            if escaped {
+                result.append(char)
+                escaped = false
+                continue
+            }
+            if char == "\\" {
+                result.append(char)
+                escaped = true
+                continue
+            }
+            if let activeQuote = quote {
+                if char == activeQuote { quote = nil }
+                result.append(char)
+                continue
+            }
+            if char == "\"" || char == "'" {
+                quote = char
+                result.append(char)
+                continue
+            }
+            if char == "#" { break }
+            result.append(char)
+        }
+        return result.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func sshHostPatterns(
+        _ rawPatterns: String,
+        matchingAliasesIn aliases: Set<String>
+    ) -> Set<String> {
+        let patterns = rawPatterns.split(whereSeparator: \.isWhitespace).map(String.init)
+        return Set(aliases.filter { alias in
+            var matchedPositive = false
+            for rawPattern in patterns {
+                var pattern = rawPattern
+                let negated = pattern.hasPrefix("!")
+                if negated { pattern.removeFirst() }
+                guard !pattern.isEmpty, sshHostPattern(pattern, matches: alias) else { continue }
+                if negated { return false }
+                matchedPositive = true
+            }
+            return matchedPositive
+        })
+    }
+
+    private static func sshHostPattern(_ pattern: String, matches alias: String) -> Bool {
+        let normalizedPattern = normalizedSSHHostPatternComponent(pattern)
+        if normalizedPattern == "*" { return true }
+        if !normalizedPattern.contains("*"), !normalizedPattern.contains("?") {
+            return normalizedPattern == alias
+        }
+        let escaped = NSRegularExpression.escapedPattern(for: normalizedPattern)
+            .replacingOccurrences(of: "\\*", with: ".*")
+            .replacingOccurrences(of: "\\?", with: ".")
+        guard let regex = try? NSRegularExpression(pattern: "^\(escaped)$") else {
+            return false
+        }
+        let range = NSRange(alias.startIndex..<alias.endIndex, in: alias)
+        return regex.firstMatch(in: alias, range: range) != nil
+    }
+
+    private static func normalizedSSHHostPatternComponent(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    private static func shellTokens(in command: String) -> [String]? {
+        var tokens: [String] = []
+        var token = ""
+        var quote: Character?
+        var escaped = false
+        for char in command {
+            if escaped {
+                token.append(char)
+                escaped = false
+                continue
+            }
+            if char == "\\" {
+                escaped = true
+                continue
+            }
+            if let activeQuote = quote {
+                if char == activeQuote {
+                    quote = nil
+                } else {
+                    token.append(char)
+                }
+                continue
+            }
+            if char == "\"" || char == "'" {
+                quote = char
+                continue
+            }
+            if char.isWhitespace {
+                if !token.isEmpty {
+                    tokens.append(token)
+                    token = ""
+                }
+                continue
+            }
+            token.append(char)
+        }
+        guard quote == nil, !escaped else { return nil }
+        if !token.isEmpty { tokens.append(token) }
+        return tokens
+    }
+
+    private static func resolveProxyCommandExecutable(
+        in command: String,
+        homeDirectoryPath: String,
+        fileManager: FileManager,
+        recursionDepth: Int = 0
+    ) -> ProxyCommandExecutableResolution {
+        guard let tokens = shellTokens(in: command), !tokens.isEmpty else {
+            return ProxyCommandExecutableResolution(executablePath: nil, unresolvedToken: "invalid command syntax")
+        }
+
+        var index = 0
+        skipEnvironmentAssignments(in: tokens, index: &index)
+        while index < tokens.count {
+            let wrapper = (tokens[index] as NSString).lastPathComponent.lowercased()
+            switch wrapper {
+            case "exec":
+                index += 1
+                skipEnvironmentAssignments(in: tokens, index: &index)
+            case "command":
+                index += 1
+                guard skipCommandOptions(in: tokens, index: &index) else {
+                    let token = index < tokens.count ? tokens[index] : "command wrapper without executable"
+                    return ProxyCommandExecutableResolution(
+                        executablePath: nil,
+                        unresolvedToken: token
+                    )
+                }
+                skipEnvironmentAssignments(in: tokens, index: &index)
+            case "env":
+                index += 1
+                guard skipEnvironmentOptionsAndAssignments(in: tokens, index: &index) else {
+                    let token = index < tokens.count ? tokens[index] : "env wrapper without executable"
+                    return ProxyCommandExecutableResolution(executablePath: nil, unresolvedToken: token)
+                }
+            default:
+                let token = tokens[index]
+                if recursionDepth < 4,
+                   ["sh", "bash", "zsh", "dash"].contains(wrapper),
+                   let commandIndex = tokens[(index + 1)...].firstIndex(of: "-c"),
+                   commandIndex + 1 < tokens.count {
+                    return resolveProxyCommandExecutable(
+                        in: tokens[commandIndex + 1],
+                        homeDirectoryPath: homeDirectoryPath,
+                        fileManager: fileManager,
+                        recursionDepth: recursionDepth + 1
+                    )
+                }
+                let expandedToken = expandProxyCommandHomePath(token, homeDirectoryPath: homeDirectoryPath)
+                let executablePath = resolveProxyCommandExecutableToken(
+                    expandedToken,
+                    homeDirectoryPath: homeDirectoryPath,
+                    fileManager: fileManager
+                )
+                return ProxyCommandExecutableResolution(
+                    executablePath: executablePath,
+                    unresolvedToken: executablePath == nil ? token : nil
+                )
+            }
+        }
+        return ProxyCommandExecutableResolution(executablePath: nil, unresolvedToken: "wrapper without executable")
+    }
+
+    private static func skipEnvironmentAssignments(in tokens: [String], index: inout Int) {
+        while index < tokens.count, isEnvironmentAssignment(tokens[index]) {
+            index += 1
+        }
+    }
+
+    private static func isEnvironmentAssignment(_ token: String) -> Bool {
+        guard let equalsIndex = token.firstIndex(of: "=") else { return false }
+        let name = token[..<equalsIndex]
+        guard let first = name.first, first == "_" || first.isLetter else { return false }
+        return name.dropFirst().allSatisfy { $0 == "_" || $0.isLetter || $0.isNumber }
+    }
+
+    private static func skipCommandOptions(in tokens: [String], index: inout Int) -> Bool {
+        while index < tokens.count {
+            let token = tokens[index]
+            if token == "--" {
+                index += 1
+                return index < tokens.count
+            }
+            guard token == "-p" else { return !token.hasPrefix("-") }
+            index += 1
+        }
+        return false
+    }
+
+    private static func skipEnvironmentOptionsAndAssignments(
+        in tokens: [String],
+        index: inout Int
+    ) -> Bool {
+        while index < tokens.count {
+            let token = tokens[index]
+            if isEnvironmentAssignment(token) {
+                index += 1
+                continue
+            }
+            if token == "--" {
+                index += 1
+                return index < tokens.count
+            }
+            if ["-i", "--ignore-environment", "-0", "--null"].contains(token) {
+                index += 1
+                continue
+            }
+            if token == "-u" || token == "--unset" || token == "-C" || token == "--chdir" {
+                guard index + 1 < tokens.count else { return false }
+                index += 2
+                continue
+            }
+            if token.hasPrefix("--unset=") || token.hasPrefix("--chdir=") {
+                index += 1
+                continue
+            }
+            return !token.hasPrefix("-")
+        }
+        return false
+    }
+
+    private static func expandProxyCommandHomePath(
+        _ token: String,
+        homeDirectoryPath: String
+    ) -> String {
+        for prefix in ["$HOME", "${HOME}"] where token == prefix || token.hasPrefix("\(prefix)/") {
+            return homeDirectoryPath + String(token.dropFirst(prefix.count))
+        }
+        return token
+    }
+
+    private static func resolveProxyCommandExecutableToken(
+        _ token: String,
+        homeDirectoryPath: String,
+        fileManager: FileManager
+    ) -> String? {
+        if token.contains("/") || token.hasPrefix("~") {
+            return existingPath(token, homeDirectoryPath: homeDirectoryPath, fileManager: fileManager)
+        }
+        for directory in proxyCommandExecutableSearchDirectories(homeDirectoryPath: homeDirectoryPath) {
+            let candidate = (directory as NSString).appendingPathComponent(token)
+            if let executable = existingPath(candidate, fileManager: fileManager) {
+                return executable
+            }
+        }
+        return nil
+    }
+
+    private static func proxyCommandExecutableSearchDirectories(homeDirectoryPath: String) -> [String] {
+        uniquePaths([
+            (homeDirectoryPath as NSString).appendingPathComponent("google-cloud-sdk/bin"),
+            RuntimePathResolver.googleCloudSDKBin,
+            "/opt/homebrew/bin",
+            "/usr/local/bin",
+            "/usr/bin",
+            "/bin"
+        ])
     }
 
     private static func appendExecutionEnvironmentGrants(
@@ -585,7 +1108,7 @@ enum TaskLaunchResourceResolver {
             appendHostGCloudCredentialGrant(
                 homeDirectoryPath: homeDirectoryPath,
                 fileManager: fileManager,
-                executablePath: gcloudExecutablePathProvider(fileManager),
+                executablePath: gcloudExecutablePathProvider(homeDirectoryPath, fileManager),
                 hostPathGrants: &hostPathGrants,
                 credentialGrants: &credentialGrants,
                 diagnostics: &diagnostics
@@ -753,17 +1276,36 @@ enum TaskLaunchResourceResolver {
         homeDirectoryPath: String,
         fileManager: FileManager,
         executablePath: String?,
+        source: TaskLaunchResourceSource = .connector,
+        missingConfigMessage: String = "Google Cloud connector is enabled, but ASTRA could not find the local gcloud config directory.",
+        configGrantReason: String = "Google Cloud connector uses local gcloud authentication and may refresh tokens during CLI calls.",
+        executableGrantReason: String = "Google Cloud connector uses the local gcloud CLI installation.",
         hostPathGrants: inout [RuntimePathGrant],
         credentialGrants: inout [RuntimeCredentialGrant],
         diagnostics: inout [RuntimeResourceDiagnostic]
     ) {
         let gcloudDirectory = ExecutionEnvironmentCredentialProjection
             .defaultGCPADCHostPath(homeDirectory: homeDirectoryPath)
+        for supportPath in gcloudExecutableSupportPaths(
+            executablePath: executablePath,
+            fileManager: fileManager
+        ) {
+            hostPathGrants.append(RuntimePathGrant(
+                path: normalizedPath(supportPath),
+                access: .read,
+                source: source,
+                reason: executableGrantReason,
+                sensitivity: .normal,
+                lifetime: .run,
+                exists: true
+            ))
+        }
+
         guard existingPath(gcloudDirectory, homeDirectoryPath: homeDirectoryPath, fileManager: fileManager) != nil else {
             diagnostics.append(RuntimeResourceDiagnostic(
                 severity: .warning,
                 code: "gcloud_config_missing",
-                message: "Google Cloud connector is enabled, but ASTRA could not find the local gcloud config directory.",
+                message: missingConfigMessage,
                 repairAction: "Run `gcloud auth login` and retry the task."
             ))
             return
@@ -772,38 +1314,28 @@ enum TaskLaunchResourceResolver {
         hostPathGrants.append(RuntimePathGrant(
             path: normalizedPath(gcloudDirectory, homeDirectoryPath: homeDirectoryPath),
             access: .readWrite,
-            source: .connector,
-            reason: "Google Cloud connector uses local gcloud authentication and may refresh tokens during CLI calls.",
+            source: source,
+            reason: configGrantReason,
             sensitivity: .cloudAuth,
             lifetime: .run,
             exists: true
         ))
         credentialGrants.append(RuntimeCredentialGrant(
             label: "Google Cloud local gcloud config",
-            source: .connector,
+            source: source,
             reason: "Host-side gcloud commands require access to local gcloud authentication state.",
             projectedAsEnvironment: false,
             projectedAsFile: true
         ))
-
-        for supportPath in gcloudExecutableSupportPaths(
-            executablePath: executablePath,
-            fileManager: fileManager
-        ) {
-            hostPathGrants.append(RuntimePathGrant(
-                path: normalizedPath(supportPath),
-                access: .read,
-                source: .connector,
-                reason: "Google Cloud connector uses the local gcloud CLI installation.",
-                sensitivity: .normal,
-                lifetime: .run,
-                exists: true
-            ))
-        }
     }
 
-    private static func defaultGCloudExecutablePath(fileManager: FileManager) -> String? {
+    private static func defaultGCloudExecutablePath(
+        homeDirectoryPath: String,
+        fileManager: FileManager
+    ) -> String? {
         let candidates = [
+            (homeDirectoryPath as NSString).appendingPathComponent("google-cloud-sdk/bin/gcloud"),
+            "\(RuntimePathResolver.googleCloudSDKBin)/gcloud",
             "/usr/local/bin/gcloud",
             "/opt/homebrew/bin/gcloud",
             "/usr/bin/gcloud"
@@ -834,6 +1366,11 @@ enum TaskLaunchResourceResolver {
             paths.append(sdkRoot)
         }
         return uniquePaths(paths)
+    }
+
+    private static func isGCloudExecutablePath(_ path: String) -> Bool {
+        let executableName = (path as NSString).lastPathComponent.lowercased()
+        return executableName == "gcloud" || executableName == "gcloud.cmd"
     }
 
     private static func resolvedSymlinkTarget(for path: String, fileManager: FileManager) -> String? {

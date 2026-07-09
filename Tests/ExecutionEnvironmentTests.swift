@@ -8,6 +8,34 @@ import ASTRACore
 
 @Suite("Execution Environments")
 struct ExecutionEnvironmentTests {
+    @Test("Docker mount plan keeps input directories read-only")
+    func dockerMountPlanKeepsInputDirectoriesReadOnly() throws {
+        let root = try makeTempDir("docker-input-mount")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let workspace = (root as NSString).appendingPathComponent("workspace")
+        let additional = (root as NSString).appendingPathComponent("additional")
+        let input = (root as NSString).appendingPathComponent("input")
+        for path in [workspace, additional, input] {
+            try FileManager.default.createDirectory(atPath: path, withIntermediateDirectories: true)
+        }
+        let workspaceModel = Workspace(name: "Docker", primaryPath: workspace, additionalPaths: [additional])
+        let task = AgentTask(title: "Review input", goal: "Read files", workspace: workspaceModel)
+        task.inputs = [input]
+        task.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encode(WorkspaceExecutionEnvironment(
+            id: "image:test",
+            kind: .dockerImage,
+            displayName: "Test",
+            image: "astra/test:latest"
+        ))
+
+        let snapshot = DockerExecutionPlanner.snapshotForRun(task: task, currentDirectory: workspace)
+        let additionalMount = try #require(snapshot.mounts.first { $0.hostPath == additional })
+        let inputMount = try #require(snapshot.mounts.first { $0.hostPath == input })
+
+        #expect(additionalMount.access == .readWrite)
+        #expect(inputMount.access == .readOnly)
+    }
+
     @Test("Docker discovery is inert for Dockerfile, compose, and devcontainer markers")
     func dockerDiscoveryClassifiesMarkers() throws {
         let root = try makeTempDir("docker-discovery")

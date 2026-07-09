@@ -103,7 +103,8 @@ struct ProviderLaunchCapabilityScopeTests {
             let capabilityResolutionSnapshot = TaskCapabilityResolutionSnapshot.capture(
                 for: task,
                 providerLaunchContextText: providerLaunchContextText,
-                additionalCredentialGrants: executionPolicy.permissionGrantsOverride ?? []
+                additionalCredentialGrants: executionPolicy.permissionGrantsOverride ?? [],
+                exposeAllConnectorCredentials: launchPermissionPolicy == .autonomous
             )
             """
         ))

@@ -70,21 +70,26 @@ enum PermissionBroker {
         grants: [PermissionGrant],
         requestID: String? = nil
     ) -> PermissionApprovalEventPayload {
-        let grants = sanitizeGrants(grants)
+        let sanitizedGrants: [PermissionGrant]
+        if case .sandboxPath = request {
+            sanitizedGrants = approvalGrants(for: request)
+        } else {
+            sanitizedGrants = sanitizeGrants(grants)
+        }
         let message = approvalMessage(
             providerID: providerID,
             request: request,
             reason: reason,
             providerDetail: providerDetail,
-            grants: grants
+            grants: sanitizedGrants
         )
-        let decision = PermissionDecision.askUser(message: message, grants: grants)
+        let decision = PermissionDecision.askUser(message: message, grants: sanitizedGrants)
         return PermissionApprovalEventPayload(
             brokerVersion: brokerVersion,
             providerID: providerID,
             request: request,
             decision: decision,
-            grants: grants,
+            grants: sanitizedGrants,
             displayMessage: message,
             requestID: requestID
         )
@@ -97,6 +102,15 @@ enum PermissionBroker {
     static func structuredApprovalGrants(from payload: String) -> [PermissionGrant] {
         guard let decoded = PermissionApprovalEventPayload.decoded(from: payload) else {
             return []
+        }
+        if isCredentialRequest(decoded.request) {
+            let credentialGrants = sanitizeGrants(decoded.grants).filter { grant in
+                if case .credential = grant { return true }
+                return false
+            }
+            if !credentialGrants.isEmpty {
+                return credentialGrants
+            }
         }
         let requestGrants = approvalGrants(for: decoded.request)
         guard !requestGrants.isEmpty else { return [] }
@@ -144,13 +158,13 @@ enum PermissionBroker {
 
     static func providerGrantStrings(for grants: [PermissionGrant], runtime: AgentRuntimeID) -> [String] {
         let adapter = ProviderPolicyAdapterRegistry.adapter(for: runtime)
-        return uniqueProviderGrantStrings(adapter.providerGrantStrings(for: sanitizeGrants(grants)))
+        return uniqueProviderGrantStrings(adapter.providerGrantStrings(for: providerEligibleGrants(grants)))
             .filter(isSafeProviderGrantString)
     }
 
     static func providerRuntimeGrantStrings(for grants: [PermissionGrant], runtime: AgentRuntimeID) -> [String] {
         let adapter = ProviderPolicyAdapterRegistry.adapter(for: runtime)
-        return uniqueProviderGrantStrings(adapter.providerRuntimeGrantStrings(for: sanitizeGrants(grants)))
+        return uniqueProviderGrantStrings(adapter.providerRuntimeGrantStrings(for: providerEligibleGrants(grants)))
             .filter(isSafeProviderGrantString)
     }
 
@@ -211,6 +225,10 @@ enum PermissionBroker {
             return toolName.flatMap(safeProviderToolGrant).map { [$0] } ?? []
         case .credential(let label):
             return safeCredentialGrant(label).map { [$0] } ?? []
+        case .connectorCredentials(_, _, let labels):
+            return labels.compactMap(safeCredentialGrant)
+        case .sandboxPath(let path, let access, _):
+            return safeSandboxPathGrant(path: path, access: access).map { [$0] } ?? []
         case .providerNativePrompt(let toolName, let context):
             if isShellTool(toolName),
                let command = shellCommandHint(toolName: toolName, context: context) {
@@ -234,8 +252,8 @@ enum PermissionBroker {
             "Permission requested for tool: \(tool). ASTRA paused before allowing this run to continue.",
             "What ASTRA observed: \(observedActionDescription(toolName: tool, detail: detail))",
             "Why approval is needed: \(sentence(reason))",
-            "What allowing does: \(approvalEffectDescription(providerGrants: providerGrants))",
-            "What to check: \(decisionGuidance(toolName: tool, detail: detail))"
+            "What allowing does: \(approvalEffectDescription(request: request, grants: grants, providerGrants: providerGrants))",
+            "What to check: \(decisionGuidance(request: request, toolName: tool, detail: detail))"
         ]
         if let detail, !detail.isEmpty {
             lines.append("Detail: \(detail)")
@@ -259,8 +277,10 @@ enum PermissionBroker {
             toolName ?? "Write"
         case .network(_, let toolName):
             toolName ?? "WebFetch"
-        case .credential(let label):
-            label
+        case .credential, .connectorCredentials:
+            "Connector credentials"
+        case .sandboxPath(_, _, let toolName):
+            safeDisplayField(toolName, limit: 200) ?? "Local sandbox"
         case .providerNativePrompt(let toolName, _):
             toolName
         }
@@ -276,8 +296,10 @@ enum PermissionBroker {
             path
         case .network(let url, _):
             url
-        case .credential(let label):
-            label
+        case .credential, .connectorCredentials:
+            nil
+        case .sandboxPath(let path, _, _):
+            safeDisplayField(path, limit: 4_096)
         }
     }
 
@@ -299,14 +321,36 @@ enum PermissionBroker {
         return "\(toolName) request: \(trimmedDetail)"
     }
 
-    private static func approvalEffectDescription(providerGrants: [String]) -> String {
+    private static func approvalEffectDescription(
+        request: PermissionRequest,
+        grants: [PermissionGrant],
+        providerGrants: [String]
+    ) -> String {
+        if isCredentialRequest(request) {
+            let count = grants.filter {
+                if case .credential = $0 { return true }
+                return false
+            }.count
+            let noun = count == 1 ? "credential" : "credentials"
+            return "Allows ASTRA to expose the approved connector \(noun) to this run, then restarts the provider from the stopped point."
+        }
+        if case .sandboxPath(_, let access, _) = request {
+            let safeAccess = safeDisplayField(access, limit: 64) ?? "requested"
+            return "Allows \(safeAccess) access to this local path inside the sandbox one time for this run, then restarts the provider from the stopped point."
+        }
         guard let grant = providerGrants.first else {
             return "Grants this provider request one time for this run, then restarts the provider from the stopped point."
         }
         return "Grants \(grant) one time for this run, then restarts the provider from the stopped point."
     }
 
-    private static func decisionGuidance(toolName: String, detail: String?) -> String {
+    private static func decisionGuidance(request: PermissionRequest, toolName: String, detail: String?) -> String {
+        if isCredentialRequest(request) {
+            return "Allow only if this task should use this connector's configured credentials."
+        }
+        if case .sandboxPath = request {
+            return "Allow only if this local path and access level are required for the current operation."
+        }
         let normalizedTool = normalizedToolName(toolName)
         let root = shellCommandRoot(detail)?.lowercased()
         if normalizedTool == "bash" {
@@ -395,6 +439,13 @@ enum PermissionBroker {
         return result.sorted { $0.displayName < $1.displayName }
     }
 
+    private static func providerEligibleGrants(_ grants: [PermissionGrant]) -> [PermissionGrant] {
+        sanitizeGrants(grants).filter { grant in
+            if case .sandboxPath = grant { return false }
+            return true
+        }
+    }
+
     private static func isSafeGrant(_ grant: PermissionGrant) -> Bool {
         switch grant {
         case .tool(let name), .providerTool(let name):
@@ -418,6 +469,8 @@ enum PermissionBroker {
             return nonEmpty(pattern) != nil
         case .credential(let label):
             return isSafeCredentialLabel(label)
+        case .sandboxPath(let path, let access):
+            return isSafeSandboxPath(path) && isSafeSandboxAccess(access)
         }
     }
 
@@ -425,6 +478,8 @@ enum PermissionBroker {
         switch grant {
         case .shellCommand:
             return ShellCommandRiskClassifier.allowsTaskScopedReuse(grant)
+        case .sandboxPath:
+            return false
         default:
             return true
         }
@@ -451,6 +506,42 @@ enum PermissionBroker {
         let trimmed = label.trimmingCharacters(in: .whitespacesAndNewlines)
         guard isSafeCredentialLabel(trimmed) else { return nil }
         return .credential(label: trimmed)
+    }
+
+    private static func safeSandboxPathGrant(path: String, access: String) -> PermissionGrant? {
+        let path = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        let access = access.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard isSafeSandboxPath(path), isSafeSandboxAccess(access) else { return nil }
+        return .sandboxPath(path: path, access: access)
+    }
+
+    private static func isSafeSandboxPath(_ path: String) -> Bool {
+        isSafeBoundedField(path, limit: 4_096)
+    }
+
+    private static func isSafeSandboxAccess(_ access: String) -> Bool {
+        isSafeBoundedField(access, limit: 64)
+    }
+
+    private static func safeDisplayField(_ value: String?, limit: Int) -> String? {
+        guard let value else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return isSafeBoundedField(trimmed, limit: limit) ? trimmed : nil
+    }
+
+    private static func isSafeBoundedField(_ value: String, limit: Int) -> Bool {
+        !value.isEmpty
+            && value.count <= limit
+            && value.rangeOfCharacter(from: .controlCharacters) == nil
+    }
+
+    private static func isCredentialRequest(_ request: PermissionRequest) -> Bool {
+        switch request {
+        case .credential, .connectorCredentials:
+            true
+        default:
+            false
+        }
     }
 
     private static func isSafeCredentialLabel(_ label: String) -> Bool {

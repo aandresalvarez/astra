@@ -536,8 +536,8 @@ struct TaskFolderTests {
         #expect(TaskWorkspaceAccess(task: task, fileSystem: fileSystem).codeWorkingDirectory == pinned)
     }
 
-    @Test("runtimeAdditionalPaths keeps only injected input directories")
-    func runtimeAdditionalPathsUsesInjectedFileSystemDirectories() {
+    @Test("Runtime paths keep workspace roots writable and input directories read-only")
+    func runtimePathsSeparateWritableRootsFromInputDirectories() {
         let primary = "/tmp/astra-primary-\(UUID().uuidString.prefix(8))"
         let extra = "/tmp/astra-extra-\(UUID().uuidString.prefix(8))"
         let inputDirectory = "/tmp/astra-input-\(UUID().uuidString.prefix(8))"
@@ -551,10 +551,9 @@ struct TaskFolderTests {
         fileSystem.addExistingPath(inputDirectory, isDirectory: true)
         fileSystem.addExistingPath(inputFile, isDirectory: false)
 
-        #expect(TaskWorkspaceAccess(task: task, fileSystem: fileSystem).runtimeAdditionalPaths == [
-            extra,
-            inputDirectory
-        ])
+        let access = TaskWorkspaceAccess(task: task, fileSystem: fileSystem)
+        #expect(access.runtimeWritablePaths == [extra])
+        #expect(access.runtimeReadOnlyInputPaths == [inputDirectory])
     }
 }
 

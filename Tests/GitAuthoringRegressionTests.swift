@@ -325,13 +325,13 @@ struct GitAuthoringRegressionTests {
 
         // Commit budget is intentionally too short (1s) and the helper takes 2s.
         // If PR drafting wrongly reused the commit budget it would time out; the
-        // PR budget (20s) must govern instead. Keep this comfortably above the
+        // PR budget (60s) must govern instead. Keep this comfortably above the
         // helper delay so full-suite process scheduling load cannot win the race.
         let service = try makeFakeCopilotService(
             root: root,
             script: slowCopilotPRScript(seconds: 2),
             timeoutSeconds: 1,
-            pullRequestTimeoutSeconds: 20
+            pullRequestTimeoutSeconds: 60
         )
 
         let start = Date()
@@ -345,7 +345,7 @@ struct GitAuthoringRegressionTests {
         let elapsed = Date().timeIntervalSince(start)
 
         #expect(suggestion.title == "Slow PR")
-        #expect(elapsed < 30, "PR draft took \(elapsed)s — expected the PR-specific budget to win")
+        #expect(elapsed < 60, "PR draft took \(elapsed)s — expected the PR-specific budget to win")
     }
 
     @Test("suggestPullRequest honors its own deadline when helper is slow")

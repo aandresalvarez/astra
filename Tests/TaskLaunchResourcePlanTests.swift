@@ -18,9 +18,13 @@ struct TaskLaunchResourcePlanTests {
     func resolverRecordsAttachmentAndGitResources() throws {
         let fm = FileManager.default
         let workspaceRoot = try makeTempDir("resource-plan-workspace")
-        defer { try? fm.removeItem(atPath: workspaceRoot.path) }
+        let attachmentRoot = try makeTempDir("resource-plan-attachments")
+        defer {
+            try? fm.removeItem(atPath: workspaceRoot.path)
+            try? fm.removeItem(atPath: attachmentRoot.path)
+        }
 
-        let attachment = workspaceRoot.appendingPathComponent("DBT Unit Tests (1).md")
+        let attachment = attachmentRoot.appendingPathComponent("DBT Unit Tests (1).md")
         try "dbt unit test guidance".write(to: attachment, atomically: true, encoding: .utf8)
         let gitReadable = workspaceRoot.appendingPathComponent("gitconfig")
         let gitWritable = workspaceRoot.appendingPathComponent("external-gitdir", isDirectory: true)
@@ -55,6 +59,14 @@ struct TaskLaunchResourcePlanTests {
         )
 
         #expect(plan.hostReadablePaths.contains(attachment.standardizedFileURL.path))
+        #expect(!plan.hostWritablePaths.contains(attachment.standardizedFileURL.path))
+        #expect(plan.hostPathGrants.contains {
+            $0.path == attachment.standardizedFileURL.path
+                && $0.access == .read
+                && $0.source == .taskInput
+                && $0.lifetime == .run
+                && $0.exists
+        })
         #expect(plan.hostReadablePaths.contains(gitReadable.standardizedFileURL.path))
         #expect(plan.hostWritablePaths.contains(gitWritable.standardizedFileURL.path))
         #expect(plan.gitCredentialSandboxContext.transports == [.ssh])
@@ -359,7 +371,7 @@ struct TaskLaunchResourcePlanTests {
         Host deid-jsn-workbench
           HostName deid-as-service-jsn
           User alvaro1_stanford_edu
-          ProxyCommand gcloud compute start-iap-tunnel %h %p --listen-on-stdin
+          ProxyCommand /missing/proxy-helper %h %p
         """.write(to: sshConfig, atomically: true, encoding: .utf8)
         try "private-key-placeholder".write(to: identityFile, atomically: true, encoding: .utf8)
         try "deid-jsn-workbench ssh-ed25519 AAAA\n".write(to: knownHosts, atomically: true, encoding: .utf8)
@@ -428,7 +440,248 @@ struct TaskLaunchResourcePlanTests {
         #expect(plan.credentialGrants.contains {
             $0.source == .remoteWorkspace && $0.label == "Remote workspace SSH"
         })
+        #expect(plan.diagnostics.contains {
+            $0.code == "ssh_proxy_command_executable_unresolved" &&
+                $0.message.contains("/missing/proxy-helper")
+        })
         #expect(plan.commandPlannedFields["remote_workspace_readable_path_count"] == "3")
+    }
+
+    @Test("Resource resolver projects gcloud IAP ProxyCommand resources for remote workspace")
+    func resolverProjectsRemoteWorkspaceGCloudProxyCommandResources() throws {
+        let fm = FileManager.default
+        let root = try makeTempDir("resource-plan-remote-gcloud")
+        defer { try? fm.removeItem(atPath: root.path) }
+        let workspaceRoot = root.appendingPathComponent("workspace", isDirectory: true)
+        let home = root.appendingPathComponent("home", isDirectory: true)
+        let sshDir = home.appendingPathComponent(".ssh", isDirectory: true)
+        let gcloudConfig = home.appendingPathComponent(".config/gcloud", isDirectory: true)
+        let sdkRoot = home.appendingPathComponent("google-cloud-sdk", isDirectory: true)
+        let sdkBin = sdkRoot.appendingPathComponent("bin", isDirectory: true)
+        let sdkGCloud = sdkBin.appendingPathComponent("gcloud")
+        try fm.createDirectory(at: workspaceRoot, withIntermediateDirectories: true)
+        try fm.createDirectory(at: sshDir, withIntermediateDirectories: true)
+        try fm.createDirectory(at: gcloudConfig, withIntermediateDirectories: true)
+        try fm.createDirectory(at: sdkBin, withIntermediateDirectories: true)
+
+        let sshConfig = sshDir.appendingPathComponent("config")
+        let identityFile = sshDir.appendingPathComponent("google_compute_engine")
+        let redactedProductionCommand = "ProxyCommand exec /Users/example/google-cloud-sdk/bin/gcloud compute start-iap-tunnel %h %p --listen-on-stdin --project=<PROJECT> --zone=<ZONE>"
+        let localProductionCommand = redactedProductionCommand.replacingOccurrences(
+            of: "/Users/example",
+            with: home.path
+        )
+        try """
+        Host deid-jsn-workbench
+          HostName deid-as-service-jsn
+          User alvaro1_stanford_edu
+          \(localProductionCommand)
+        Host *
+          ProxyCommand /missing/must-not-override-first-value %h %p
+        """.write(to: sshConfig, atomically: true, encoding: .utf8)
+        try "private-key-placeholder".write(to: identityFile, atomically: true, encoding: .utf8)
+        try "{}".write(
+            to: gcloudConfig.appendingPathComponent("application_default_credentials.json"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try "#!/bin/sh\nexit 0\n".write(to: sdkGCloud, atomically: true, encoding: .utf8)
+
+        SSHConnectionManager.save([
+            SSHConnection(
+                name: "deid-jsn-workbench",
+                host: "deid-as-service-jsn",
+                user: "alvaro1_stanford_edu",
+                keyPath: "~/.ssh/google_compute_engine",
+                configAlias: "deid-jsn-workbench"
+            )
+        ], workspacePath: workspaceRoot.path)
+
+        let workspace = Workspace(name: "JSL", primaryPath: workspaceRoot.path)
+        let task = AgentTask(
+            title: "Validate BigQuery remotely",
+            goal: "ssh deid-jsn-workbench and run validation",
+            workspace: workspace,
+            runtime: .claudeCode
+        )
+
+        let plan = TaskLaunchResourceResolver.resolve(
+            task: task,
+            runID: UUID(),
+            runtime: .claudeCode,
+            phase: "run",
+            prompt: AgentPromptBuilder.buildPrompt(for: task),
+            contextText: task.goal,
+            workspacePath: workspaceRoot.path,
+            homeDirectoryPath: home.path,
+            gitCredentialContextProvider: { _, _, _, _ in .empty }
+        )
+
+        #expect(plan.hostPathGrants.contains {
+            $0.source == .remoteWorkspace &&
+                $0.sensitivity == .normal &&
+                $0.access == .read &&
+                $0.path == sdkBin.standardizedFileURL.path
+        })
+        #expect(plan.hostPathGrants.contains {
+            $0.source == .remoteWorkspace &&
+                $0.sensitivity == .normal &&
+                $0.access == .read &&
+                $0.path == sdkRoot.standardizedFileURL.path
+        })
+        #expect(plan.hostPathGrants.contains {
+            $0.source == .remoteWorkspace &&
+                $0.sensitivity == .cloudAuth &&
+                $0.access == .readWrite &&
+                $0.path == gcloudConfig.standardizedFileURL.path
+        })
+        #expect(plan.credentialGrants.contains {
+            $0.source == .remoteWorkspace && $0.label == "Google Cloud local gcloud config"
+        })
+        #expect(!plan.diagnostics.contains { $0.code == "gcloud_config_missing" })
+        #expect(!plan.diagnostics.contains { $0.code == "ssh_proxy_command_executable_unresolved" })
+    }
+
+    @Test("Resource resolver expands ProxyCommand tilde and HOME executable paths")
+    func resolverExpandsProxyCommandHomeExecutablePaths() throws {
+        let fm = FileManager.default
+        let root = try makeTempDir("resource-plan-proxy-home")
+        defer { try? fm.removeItem(atPath: root.path) }
+        let workspaceRoot = root.appendingPathComponent("workspace", isDirectory: true)
+        let home = root.appendingPathComponent("home", isDirectory: true)
+        let sshDir = home.appendingPathComponent(".ssh", isDirectory: true)
+        let sshConfigDirectory = sshDir.appendingPathComponent("config.d", isDirectory: true)
+        let proxyBin = home.appendingPathComponent("proxy-bin", isDirectory: true)
+        let helperNames = ["tilde-helper", "dollar-helper", "braced-helper", "shell-helper"]
+        try fm.createDirectory(at: workspaceRoot, withIntermediateDirectories: true)
+        try fm.createDirectory(at: sshDir, withIntermediateDirectories: true)
+        try fm.createDirectory(at: sshConfigDirectory, withIntermediateDirectories: true)
+        try fm.createDirectory(at: proxyBin, withIntermediateDirectories: true)
+        for helperName in helperNames {
+            try "#!/bin/sh\nexit 0\n".write(
+                to: proxyBin.appendingPathComponent(helperName),
+                atomically: true,
+                encoding: .utf8
+            )
+        }
+
+        let sshConfig = sshDir.appendingPathComponent("config")
+        let includedConfig = sshConfigDirectory.appendingPathComponent("remote.conf")
+        let identityFile = sshDir.appendingPathComponent("id_ed25519")
+        try """
+        Include config.d/*
+        Host tilde-host
+          ProxyCommand REGION=redacted exec ~/proxy-bin/tilde-helper %h %p
+        Host dollar-host
+          ProxyCommand command -- $HOME/proxy-bin/dollar-helper %h %p
+        Host shell-host
+          ProxyCommand sh -c 'exec ~/proxy-bin/shell-helper %h %p'
+        """.write(to: sshConfig, atomically: true, encoding: .utf8)
+        try """
+        Host braced-host
+          ProxyCommand ${HOME}/proxy-bin/braced-helper %h %p
+        """.write(to: includedConfig, atomically: true, encoding: .utf8)
+        try "private-key-placeholder".write(to: identityFile, atomically: true, encoding: .utf8)
+
+        SSHConnectionManager.save(helperNames.enumerated().map { index, _ in
+            SSHConnection(
+                name: ["tilde-host", "dollar-host", "braced-host", "shell-host"][index],
+                host: "example.internal",
+                user: "example",
+                keyPath: "~/.ssh/id_ed25519",
+                configAlias: ["tilde-host", "dollar-host", "braced-host", "shell-host"][index]
+            )
+        }, workspacePath: workspaceRoot.path)
+
+        let workspace = Workspace(name: "Proxy Home", primaryPath: workspaceRoot.path)
+        let task = AgentTask(
+            title: "Connect through home-relative proxies",
+            goal: "Use the configured remote workspaces",
+            workspace: workspace,
+            runtime: .claudeCode
+        )
+        let plan = TaskLaunchResourceResolver.resolve(
+            task: task,
+            runID: UUID(),
+            runtime: .claudeCode,
+            phase: "run",
+            prompt: AgentPromptBuilder.buildPrompt(for: task),
+            contextText: task.goal,
+            workspacePath: workspaceRoot.path,
+            homeDirectoryPath: home.path,
+            gitCredentialContextProvider: { _, _, _, _ in .empty }
+        )
+
+        for helperName in helperNames {
+            let expectedPath = proxyBin.appendingPathComponent(helperName).standardizedFileURL.path
+            #expect(plan.hostPathGrants.contains {
+                $0.source == .remoteWorkspace && $0.access == .read && $0.path == expectedPath
+            })
+        }
+        #expect(plan.hostPathGrants.contains {
+            $0.source == .remoteWorkspace && $0.access == .read && $0.path == includedConfig.standardizedFileURL.path
+        })
+        #expect(!plan.diagnostics.contains { $0.code == "ssh_proxy_command_executable_unresolved" })
+    }
+
+    @Test("Resource resolver parses env-wrapped ProxyCommand executable")
+    func resolverParsesEnvWrappedProxyCommandExecutable() throws {
+        let fm = FileManager.default
+        let root = try makeTempDir("resource-plan-proxy-env")
+        defer { try? fm.removeItem(atPath: root.path) }
+        let workspaceRoot = root.appendingPathComponent("workspace", isDirectory: true)
+        let home = root.appendingPathComponent("home", isDirectory: true)
+        let sshDir = home.appendingPathComponent(".ssh", isDirectory: true)
+        let proxyBin = home.appendingPathComponent("proxy-bin", isDirectory: true)
+        let helper = proxyBin.appendingPathComponent("proxy-helper")
+        try fm.createDirectory(at: workspaceRoot, withIntermediateDirectories: true)
+        try fm.createDirectory(at: sshDir, withIntermediateDirectories: true)
+        try fm.createDirectory(at: proxyBin, withIntermediateDirectories: true)
+        try "#!/bin/sh\nexit 0\n".write(to: helper, atomically: true, encoding: .utf8)
+
+        let sshConfig = sshDir.appendingPathComponent("config")
+        let identityFile = sshDir.appendingPathComponent("id_ed25519")
+        try """
+        Host env-host
+          ProxyCommand env -i -u OLD_TOKEN --unset=STALE_TOKEN PROJECT=redacted ${HOME}/proxy-bin/proxy-helper %h %p
+        """.write(to: sshConfig, atomically: true, encoding: .utf8)
+        try "private-key-placeholder".write(to: identityFile, atomically: true, encoding: .utf8)
+
+        SSHConnectionManager.save([
+            SSHConnection(
+                name: "env-host",
+                host: "example.internal",
+                user: "example",
+                keyPath: "~/.ssh/id_ed25519",
+                configAlias: "env-host"
+            )
+        ], workspacePath: workspaceRoot.path)
+
+        let workspace = Workspace(name: "Proxy Env", primaryPath: workspaceRoot.path)
+        let task = AgentTask(
+            title: "Connect through env proxy",
+            goal: "Use the configured remote workspace",
+            workspace: workspace,
+            runtime: .claudeCode
+        )
+        let plan = TaskLaunchResourceResolver.resolve(
+            task: task,
+            runID: UUID(),
+            runtime: .claudeCode,
+            phase: "run",
+            prompt: AgentPromptBuilder.buildPrompt(for: task),
+            contextText: task.goal,
+            workspacePath: workspaceRoot.path,
+            homeDirectoryPath: home.path,
+            gitCredentialContextProvider: { _, _, _, _ in .empty }
+        )
+
+        #expect(plan.hostPathGrants.contains {
+            $0.source == .remoteWorkspace &&
+                $0.access == .read &&
+                $0.path == helper.standardizedFileURL.path
+        })
+        #expect(!plan.diagnostics.contains { $0.code == "ssh_proxy_command_executable_unresolved" })
     }
 
     @Test("Resource resolver projects host gcloud config for Google Cloud connector")
@@ -502,7 +755,7 @@ struct TaskLaunchResourcePlanTests {
             contextText: task.goal,
             workspacePath: workspaceRoot.path,
             homeDirectoryPath: home.path,
-            gcloudExecutablePathProvider: { _ in gcloudShim.path },
+            gcloudExecutablePathProvider: { _, _ in gcloudShim.path },
             gitCredentialContextProvider: { _, _, _, _ in .empty }
         )
 
@@ -772,6 +1025,65 @@ struct TaskLaunchResourcePlanTests {
         #expect(plan.commandPlannedFields["workspace_command_placement"] == "docker")
         #expect(plan.commandPlannedFields["control_plane_tool_placement"] == "host_capabilities")
         #expect(plan.commandPlannedFields["shell_route"] == "astra_workspace_mcp")
+    }
+
+    @Test("One-run sandbox approval is projected as a run-scoped readable path")
+    func oneRunSandboxApprovalIsProjected() throws {
+        let workspaceRoot = try makeTempDir("resource-plan-sandbox-approval")
+        defer { try? FileManager.default.removeItem(at: workspaceRoot) }
+        let approvedFile = workspaceRoot.appendingPathComponent("approved.txt")
+        try "approved".write(to: approvedFile, atomically: true, encoding: .utf8)
+        let task = AgentTask(
+            title: "Read approved dependency",
+            goal: "Read the one-run path",
+            workspace: Workspace(name: "Approval", primaryPath: workspaceRoot.path)
+        )
+
+        let plan = TaskLaunchResourceResolver.resolve(
+            task: task,
+            runID: UUID(),
+            runtime: .claudeCode,
+            phase: "resume",
+            prompt: "continue",
+            contextText: "",
+            workspacePath: workspaceRoot.path,
+            runtimePermissionGrants: [
+                .sandboxPath(path: approvedFile.path, access: "read")
+            ]
+        )
+
+        let grant = try #require(plan.hostPathGrants.first { $0.source == .sandboxApproval })
+        let canonicalApprovedPath = try #require(ExecutionSandbox.canonicalize(approvedFile.path))
+        #expect(grant.path == canonicalApprovedPath)
+        #expect(grant.access == .read)
+        #expect(grant.lifetime == .run)
+        #expect(plan.hostReadablePaths.contains(canonicalApprovedPath))
+    }
+
+    @Test("Sandbox approval projection rejects security-owned paths")
+    func sandboxApprovalProjectionRejectsSecurityOwnedPaths() throws {
+        let workspaceRoot = try makeTempDir("resource-plan-sandbox-reject")
+        defer { try? FileManager.default.removeItem(at: workspaceRoot) }
+        let task = AgentTask(
+            title: "Do not project credentials",
+            goal: "Keep credentials broker-owned",
+            workspace: Workspace(name: "Reject", primaryPath: workspaceRoot.path)
+        )
+
+        let plan = TaskLaunchResourceResolver.resolve(
+            task: task,
+            runID: UUID(),
+            runtime: .claudeCode,
+            phase: "resume",
+            prompt: "continue",
+            contextText: "",
+            workspacePath: workspaceRoot.path,
+            runtimePermissionGrants: [
+                .sandboxPath(path: FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".ssh/id_rsa").path, access: "read")
+            ]
+        )
+
+        #expect(!plan.hostPathGrants.contains { $0.source == .sandboxApproval })
     }
 
     private func makeTempDir(_ name: String) throws -> URL {

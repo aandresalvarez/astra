@@ -273,6 +273,7 @@ struct RailCapabilityItem: Identifiable {
     let browserAdapterNames: [String]
     let templateNames: [String]
     let requirementNames: [String]
+    var runtimePermissionAttention: CapabilityRuntimePermissionAttention? = nil
 
     /// The recognizable brand the capability integrates with, if any, so its row
     /// can lead with the real mark instead of a stand-in SF Symbol.

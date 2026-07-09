@@ -39,13 +39,18 @@ enum TaskRuntimePermissionOpenRequestStore {
     }
 
     static func state(for task: AgentTask) -> TaskRuntimePermissionState {
-        if let latest = latestTypedEntry(for: task) {
-            return TaskRuntimePermissionState(
-                latestRequestPayload: latest.payload,
-                hasOpenApprovalRequest: true,
-                decision: RuntimePermissionDecisionPresentation(payload: latest.payload),
-                taskScopedGrants: PermissionBroker.taskScopedApprovalGrants(for: latest.grants)
-            )
+        switch typedState(for: task) {
+        case .available(let entries):
+            guard let latest = entries.last else { return .empty }
+            return state(from: latest)
+        case .invalid:
+            AppLogger.audit(.taskFailed, category: "RuntimePermissionState", taskID: task.id, fields: [
+                "reason": "runtime_permission_open_requests_decode_failed",
+                "result": "typed_state_treated_as_closed"
+            ], level: .error)
+            return .empty
+        case .missing:
+            break
         }
         guard let latestPayload = latestCompatibilityRequestEvent(for: task)?.payload else {
             return .empty
@@ -60,46 +65,110 @@ enum TaskRuntimePermissionOpenRequestStore {
     }
 
     static func hasOpenRequest(for task: AgentTask) -> Bool {
-        if !typedEntries(for: task).isEmpty {
-            return true
+        switch typedState(for: task) {
+        case .available(let entries):
+            return !entries.isEmpty
+        case .invalid:
+            return false
+        case .missing:
+            return RuntimePermissionOpenState.hasOpenRequest(events: compatibilityEvents(for: task))
         }
-        return RuntimePermissionOpenState.hasOpenRequest(events: compatibilityEvents(for: task))
     }
 
     static func latestRequestPayload(for task: AgentTask) -> String? {
-        if let typed = latestTypedEntry(for: task)?.payload {
-            return typed
+        switch typedState(for: task) {
+        case .available(let entries):
+            return entries.last?.payload
+        case .invalid:
+            return nil
+        case .missing:
+            return latestCompatibilityRequestEvent(for: task)?.payload
         }
-        return latestCompatibilityRequestEvent(for: task)?.payload
+    }
+
+    static func openRequestPayloads(for task: AgentTask) -> [String] {
+        switch typedState(for: task) {
+        case .available(let entries):
+            return entries.map(\.payload)
+        case .invalid:
+            return []
+        case .missing:
+            guard hasOpenRequest(for: task),
+                  let payload = latestCompatibilityRequestEvent(for: task)?.payload else {
+                return []
+            }
+            return [payload]
+        }
     }
 
     static func latestApprovalGrants(for task: AgentTask) -> [PermissionGrant] {
-        if let typed = latestTypedEntry(for: task) {
-            return typed.grants
+        switch typedState(for: task) {
+        case .available(let entries):
+            return entries.last?.grants ?? []
+        case .invalid:
+            return []
+        case .missing:
+            return latestCompatibilityRequestEvent(for: task)
+                .map { compatibilityApprovalGrants(from: $0.payload) } ?? []
         }
-        return latestCompatibilityRequestEvent(for: task)
-            .map { compatibilityApprovalGrants(from: $0.payload) } ?? []
     }
 
     static func latestRequestedToolName(for task: AgentTask) -> String? {
-        if let typed = latestTypedEntry(for: task) {
-            return permissionToolName(from: typed)
-        }
-        return latestCompatibilityRequestEvent(for: task).flatMap {
-            compatibilityPermissionToolName(from: $0.payload)
+        switch typedState(for: task) {
+        case .available(let entries):
+            return entries.last.flatMap { permissionToolName(from: $0) }
+        case .invalid:
+            return nil
+        case .missing:
+            return latestCompatibilityRequestEvent(for: task).flatMap {
+                compatibilityPermissionToolName(from: $0.payload)
+            }
         }
     }
 
-    private static func latestTypedEntry(for task: AgentTask) -> Entry? {
-        typedEntries(for: task).last
+    /// Auto authorizes provider-level requests, but it does not bypass the OS
+    /// sandbox. Clear only requests whose enforcement tier Auto actually owns.
+    @discardableResult
+    static func closeRequestsAuthorizedByAutonomousPolicy(for task: AgentTask) -> Int {
+        switch typedState(for: task) {
+        case .available(let entries):
+            let remaining = entries.filter(requiresExplicitSandboxApproval)
+            let closedCount = entries.count - remaining.count
+            guard closedCount > 0 else { return 0 }
+            task.runtimePermissionOpenRequestsJSON = encode(remaining)
+            return closedCount
+        case .invalid:
+            task.runtimePermissionOpenRequestsJSON = "[]"
+            return 0
+        case .missing:
+            guard hasOpenRequest(for: task),
+                  let latest = latestCompatibilityRequestEvent(for: task),
+                  !requiresExplicitSandboxApproval(entry(from: latest.payload, requestedAt: latest.timestamp)) else {
+                return 0
+            }
+            task.runtimePermissionOpenRequestsJSON = "[]"
+            return 1
+        }
+    }
+
+    private enum TypedState {
+        case missing
+        case invalid
+        case available([Entry])
     }
 
     private static func typedEntries(for task: AgentTask) -> [Entry] {
-        guard let data = (task.runtimePermissionOpenRequestsJSON ?? "[]").data(using: .utf8),
-              let entries = try? JSONDecoder().decode([Entry].self, from: data) else {
-            return []
+        switch typedState(for: task) {
+        case .available(let entries): entries
+        case .missing, .invalid: []
         }
-        return entries.sorted { $0.requestedAt < $1.requestedAt }
+    }
+
+    private static func typedState(for task: AgentTask) -> TypedState {
+        guard let raw = task.runtimePermissionOpenRequestsJSON else { return .missing }
+        guard let data = raw.data(using: .utf8),
+              let entries = try? JSONDecoder().decode([Entry].self, from: data) else { return .invalid }
+        return .available(entries.sorted { $0.requestedAt < $1.requestedAt })
     }
 
     private static func encode(_ entries: [Entry]) -> String {
@@ -111,8 +180,7 @@ enum TaskRuntimePermissionOpenRequestStore {
 
     private static func entry(from payload: String, requestedAt: Date) -> Entry {
         if let decoded = PermissionApprovalEventPayload.decoded(from: payload) {
-            let requestGrants = PermissionBroker.approvalGrants(for: decoded.request)
-            let grants = requestGrants.isEmpty ? decoded.grants : requestGrants
+            let grants = PermissionBroker.structuredApprovalGrants(from: payload)
             return Entry(
                 requestID: decoded.requestID,
                 providerID: decoded.providerID,
@@ -133,6 +201,21 @@ enum TaskRuntimePermissionOpenRequestStore {
             payload: payload,
             requestedAt: requestedAt
         )
+    }
+
+    private static func state(from entry: Entry) -> TaskRuntimePermissionState {
+        TaskRuntimePermissionState(
+            latestRequestPayload: entry.payload,
+            hasOpenApprovalRequest: true,
+            decision: RuntimePermissionDecisionPresentation(payload: entry.payload),
+            taskScopedGrants: PermissionBroker.taskScopedApprovalGrants(for: entry.grants)
+        )
+    }
+
+    private static func requiresExplicitSandboxApproval(_ entry: Entry) -> Bool {
+        guard let request = entry.request else { return false }
+        if case .sandboxPath = request { return true }
+        return false
     }
 
     private static func compatibilityApprovalGrants(from payload: String) -> [PermissionGrant] {
@@ -181,8 +264,10 @@ enum TaskRuntimePermissionOpenRequestStore {
             return toolName ?? "Write"
         case .network(_, let toolName):
             return toolName ?? "WebFetch"
-        case .credential(let label):
-            return label
+        case .credential, .connectorCredentials:
+            return "Connector credentials"
+        case .sandboxPath(_, _, let toolName):
+            return toolName?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty ?? "Local sandbox"
         }
     }
 

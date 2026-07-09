@@ -189,7 +189,7 @@ struct CursorCLIRuntimeAdapter: AgentRuntimeAdapter {
         let providerVersion = CursorCLIRuntime.versionSummary(executablePath: executable)
         let model = AgentRuntimeProcessRunner.model(context.taskSnapshot.model, for: id)
         let providerModel = CursorCLIRuntime.resolvedModelName(model)
-        let additionalPaths = AgentRuntimeProcessRunner.runtimeAdditionalPaths(for: context.task)
+        let additionalPaths = AgentRuntimeProcessRunner.runtimeWritablePaths(for: context.task)
         let executionEnvironment = DockerExecutionPlanner.resolveEnvironment(for: context.task)
         let hostControlTools = HostControlPlaneMCPProjection.enabledToolNames(
             task: context.task,

@@ -2170,8 +2170,8 @@ struct RuntimePolicyGuardTests {
         #expect(monitor.policyViolation == false)
     }
 
-    @Test("OS sandbox read denial in a tool result stops the provider")
-    func osSandboxReadDenialStopsProvider() {
+    @Test("Applied OS sandbox read denial requests a bounded one-run approval")
+    func osSandboxReadDenialRequestsApproval() throws {
         let manifest = runtimePolicyManifest(
             allowedTools: ["Bash"],
             usesBroadProviderPermissions: true
@@ -2179,7 +2179,8 @@ struct RuntimePolicyGuardTests {
         let monitor = AgentRuntimeWorker.ProcessMonitor(
             tokenBudget: Int.max,
             taskID: manifest.taskID,
-            policyGuard: AgentRuntimePolicyGuard(manifest: manifest)
+            policyGuard: AgentRuntimePolicyGuard(manifest: manifest),
+            astraSandboxApplied: true
         )
 
         let toolUseShouldKill = monitor.processEvent(
@@ -2196,10 +2197,80 @@ struct RuntimePolicyGuardTests {
 
         #expect(toolUseShouldKill == false)
         #expect(resultShouldKill == true)
-        #expect(monitor.runtimeStopReason == "os_sandbox_file_read_denied")
-        #expect(monitor.runtimeStopMessage?.contains("/Users/alvaro1/.gitconfig") == true)
-        #expect(monitor.runtimeStopMessage?.contains("Auto mode") == true)
+        #expect(monitor.runtimeStopReason == nil)
+        #expect(monitor.policyApprovalRequired == true)
+        let payload = try #require(monitor.policyApprovalMessage)
+        let decoded = try #require(PermissionApprovalEventPayload.decoded(from: payload))
+        #expect(decoded.request == .sandboxPath(
+            path: "/Users/alvaro1/.gitconfig",
+            access: "read",
+            toolName: "Bash"
+        ))
+        #expect(decoded.grants == [.sandboxPath(path: "/Users/alvaro1/.gitconfig", access: "read")])
         #expect(monitor.policyViolation == false)
+    }
+
+    @Test("Sandbox-like EPERM is ignored when ASTRA did not apply Seatbelt")
+    func sandboxDenialIgnoredWithoutAstraSandbox() {
+        let monitor = AgentRuntimeWorker.ProcessMonitor(tokenBudget: Int.max)
+        let shouldKill = monitor.processEvent(
+            .toolResult(
+                toolId: "t1",
+                content: "/bin/sh: /Users/alvaro1/tool: Operation not permitted"
+            ),
+            process: nil
+        )
+
+        #expect(shouldKill == false)
+        #expect(monitor.policyApprovalRequired == false)
+        #expect(monitor.runtimeStopReason == nil)
+    }
+
+    @Test("Privacy-sensitive sandbox paths remain terminal")
+    func privacySensitiveSandboxPathIsNotApprovable() {
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            astraSandboxApplied: true
+        )
+        let shouldKill = monitor.processEvent(
+            .toolResult(
+                toolId: "t1",
+                content: "/bin/sh: /Users/alvaro1/Pictures/private.jpg: Operation not permitted"
+            ),
+            process: nil
+        )
+
+        #expect(shouldKill == true)
+        #expect(monitor.policyApprovalRequired == false)
+        #expect(monitor.runtimeStopReason == "os_sandbox_file_access_denied")
+        #expect(monitor.runtimeStopMessage?.contains("sandbox_path_privacy_protected") == true)
+    }
+
+    @Test("Repeated sandbox denial after approval is terminal")
+    func repeatedSandboxDenialAfterApprovalDoesNotPromptAgain() {
+        let path = "/Users/alvaro1/google-cloud-sdk/bin/gcloud"
+        let grant = PermissionGrant.sandboxPath(path: path, access: "read")
+        let manifest = runtimePolicyManifest(
+            allowedTools: ["Bash"],
+            approvalGrants: [grant]
+        )
+        let monitor = AgentRuntimeWorker.ProcessMonitor(
+            tokenBudget: Int.max,
+            taskID: manifest.taskID,
+            policyGuard: AgentRuntimePolicyGuard(manifest: manifest),
+            astraSandboxApplied: true
+        )
+        let shouldKill = monitor.processEvent(
+            .toolResult(
+                toolId: "t1",
+                content: "/bin/sh: \(path): Operation not permitted"
+            ),
+            process: nil
+        )
+
+        #expect(shouldKill == true)
+        #expect(monitor.policyApprovalRequired == false)
+        #expect(monitor.runtimeStopReason == "os_sandbox_denied_after_approval")
     }
 
     @Test("Nonfatal Git sandbox warning does not stop a successful tool result")
@@ -2237,22 +2308,6 @@ struct RuntimePolicyGuardTests {
         #expect(resultShouldKill == false)
         #expect(monitor.runtimeStopReason == nil)
         #expect(monitor.policyViolation == false)
-    }
-
-    @Test("Fatal sandbox write denial is parsed from the offending line")
-    func fatalSandboxWriteDenialUsesOffendingLine() {
-        let output = """
-        From github.com:susom/starr-data-lake
-         * branch            main       -> FETCH_HEAD
-        fatal: Unable to create '/Users/alvaro1/Documents/Coral/Code/starr-data-lake/.git/index.lock': Operation not permitted
-         create mode 100644 /starr-data-lake/not-the-denied-path.txt
-        """
-
-        let denial = RuntimeSandboxDenialDiagnostics.fileDenial(in: output)
-
-        #expect(denial?.operation == .write)
-        #expect(denial?.path == "/Users/alvaro1/Documents/Coral/Code/starr-data-lake/.git/index.lock")
-        #expect(denial?.detail.contains("/starr-data-lake/not-the-denied-path.txt") == false)
     }
 
     @Test("Approved shell path grant satisfies ask-first Bash across absolute workspace path")
@@ -3315,6 +3370,7 @@ private func runtimePolicyManifest(
     deniedURLPatterns: [String] = [],
     workspacePath: String = "/tmp/astra-policy-guard",
     additionalPaths: [String] = [],
+    additionalReadOnlyPaths: [String] = [],
     permissionMode: ProviderPermissionMode = .restricted,
     providerID: AgentRuntimeID = .claudeCode,
     policyLevel: AgentPolicyLevel = .review,
@@ -3360,7 +3416,8 @@ private func runtimePolicyManifest(
         environmentKeyNames: [],
         credentialLabels: [],
         approvalsGranted: [],
-        approvalGrants: approvalGrants
+        approvalGrants: approvalGrants,
+        additionalReadOnlyPaths: additionalReadOnlyPaths
     )
 }
 

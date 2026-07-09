@@ -943,6 +943,8 @@ public enum PermissionRequest: Codable, Equatable, Sendable {
     case fileWrite(path: String, toolName: String?)
     case network(url: String, toolName: String?)
     case credential(label: String)
+    case connectorCredentials(connectorID: UUID, displayName: String, labels: [String])
+    case sandboxPath(path: String, access: String, toolName: String?)
     case providerNativePrompt(toolName: String, context: String?)
 }
 
@@ -953,6 +955,7 @@ public enum PermissionGrant: Codable, Equatable, Sendable, Hashable {
     case networkPattern(pattern: String)
     case providerTool(name: String)
     case credential(label: String)
+    case sandboxPath(path: String, access: String)
 
     public var displayName: String {
         switch self {
@@ -968,6 +971,8 @@ public enum PermissionGrant: Codable, Equatable, Sendable, Hashable {
             name
         case .credential(let label):
             "credential(\(label))"
+        case .sandboxPath(let path, let access):
+            "sandbox(\(access):\(path))"
         }
     }
 }
@@ -1033,6 +1038,25 @@ public struct PermissionApprovalEventPayload: Codable, Equatable, Sendable {
 }
 
 public struct RunPermissionManifest: Codable, Equatable, Sendable, Identifiable {
+    public struct SandboxEvidence: Codable, Equatable, Sendable {
+        public var storedEnforcement: String
+        public var effectiveEnforcement: String
+        public var effectiveReadScope: String
+        public var resolutionReason: String?
+
+        public init(
+            storedEnforcement: String,
+            effectiveEnforcement: String,
+            effectiveReadScope: String,
+            resolutionReason: String? = nil
+        ) {
+            self.storedEnforcement = storedEnforcement
+            self.effectiveEnforcement = effectiveEnforcement
+            self.effectiveReadScope = effectiveReadScope
+            self.resolutionReason = resolutionReason
+        }
+    }
+
     public struct MCPServer: Codable, Equatable, Sendable, Identifiable {
         public var id: String
         public var packageID: String
@@ -1080,11 +1104,13 @@ public struct RunPermissionManifest: Codable, Equatable, Sendable, Identifiable 
     public var providerRender: ProviderPolicyRender
     public var workspacePath: String
     public var additionalPaths: [String]
+    public var additionalReadOnlyPaths: [String]
     public var environmentKeyNames: [String]
     public var credentialLabels: [String]
     public var mcpServers: [MCPServer]
     public var approvalsGranted: [String]
     public var approvalGrants: [PermissionGrant]
+    public var sandboxEvidence: SandboxEvidence?
     public var observedToolUseCount: Int
     public var observedDeniedCount: Int
     public var observedFileChangeCount: Int
@@ -1103,11 +1129,13 @@ public struct RunPermissionManifest: Codable, Equatable, Sendable, Identifiable 
         case providerRender
         case workspacePath
         case additionalPaths
+        case additionalReadOnlyPaths
         case environmentKeyNames
         case credentialLabels
         case mcpServers
         case approvalsGranted
         case approvalGrants
+        case sandboxEvidence
         case observedToolUseCount
         case observedDeniedCount
         case observedFileChangeCount
@@ -1132,6 +1160,8 @@ public struct RunPermissionManifest: Codable, Equatable, Sendable, Identifiable 
         mcpServers: [MCPServer] = [],
         approvalsGranted: [String],
         approvalGrants: [PermissionGrant] = [],
+        additionalReadOnlyPaths: [String] = [],
+        sandboxEvidence: SandboxEvidence? = nil,
         observedToolUseCount: Int = 0,
         observedDeniedCount: Int = 0,
         observedFileChangeCount: Int = 0
@@ -1149,6 +1179,7 @@ public struct RunPermissionManifest: Codable, Equatable, Sendable, Identifiable 
         self.providerRender = providerRender
         self.workspacePath = workspacePath
         self.additionalPaths = Array(Set(additionalPaths)).sorted()
+        self.additionalReadOnlyPaths = Array(Set(additionalReadOnlyPaths)).sorted()
         self.environmentKeyNames = Array(Set(environmentKeyNames)).sorted()
         self.credentialLabels = Array(Set(credentialLabels)).sorted()
         self.mcpServers = mcpServers.sorted {
@@ -1157,6 +1188,7 @@ public struct RunPermissionManifest: Codable, Equatable, Sendable, Identifiable 
         }
         self.approvalsGranted = Array(Set(approvalsGranted)).sorted()
         self.approvalGrants = Array(Set(approvalGrants)).sorted { $0.displayName < $1.displayName }
+        self.sandboxEvidence = sandboxEvidence
         self.observedToolUseCount = observedToolUseCount
         self.observedDeniedCount = observedDeniedCount
         self.observedFileChangeCount = observedFileChangeCount
@@ -1177,11 +1209,13 @@ public struct RunPermissionManifest: Codable, Equatable, Sendable, Identifiable 
         self.providerRender = try container.decode(ProviderPolicyRender.self, forKey: .providerRender)
         self.workspacePath = try container.decode(String.self, forKey: .workspacePath)
         self.additionalPaths = try container.decode([String].self, forKey: .additionalPaths)
+        self.additionalReadOnlyPaths = try container.decodeIfPresent([String].self, forKey: .additionalReadOnlyPaths) ?? []
         self.environmentKeyNames = try container.decode([String].self, forKey: .environmentKeyNames)
         self.credentialLabels = try container.decode([String].self, forKey: .credentialLabels)
         self.mcpServers = try container.decodeIfPresent([MCPServer].self, forKey: .mcpServers) ?? []
         self.approvalsGranted = try container.decode([String].self, forKey: .approvalsGranted)
         self.approvalGrants = try container.decodeIfPresent([PermissionGrant].self, forKey: .approvalGrants) ?? []
+        self.sandboxEvidence = try container.decodeIfPresent(SandboxEvidence.self, forKey: .sandboxEvidence)
         self.observedToolUseCount = try container.decodeIfPresent(Int.self, forKey: .observedToolUseCount) ?? 0
         self.observedDeniedCount = try container.decodeIfPresent(Int.self, forKey: .observedDeniedCount) ?? 0
         self.observedFileChangeCount = try container.decodeIfPresent(Int.self, forKey: .observedFileChangeCount) ?? 0
