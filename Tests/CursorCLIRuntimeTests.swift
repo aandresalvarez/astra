@@ -332,4 +332,30 @@ struct CursorCLIRuntimeTests {
         """
         #expect(CursorCLIRuntime.extractUtilityText(from: output) == "PONG")
     }
+
+    @Test("Cursor utility text extraction preserves the result payload after a non-JSON diagnostic line")
+    func cursorUtilityTextExtractionPreservesResultAfterNonJSONDiagnosticLine() {
+        // A stray non-JSON stdout line (a diagnostic/banner, not valid JSON) falls back
+        // to a `.text` event via the plain-text parser — that must not be mistaken for
+        // a streamed assistant reply and used to suppress a DIFFERENT final result
+        // echo (the failure mode a "sawText: any .text seen" guard would introduce).
+        let output = """
+        warming up sandbox...
+        {"type":"result","subtype":"success","duration_ms":1,"is_error":false,"result":"42","session_id":"s1"}
+        """
+        #expect(CursorCLIRuntime.extractUtilityText(from: output) == "warming up sandbox...42")
+    }
+
+    @Test("Cursor utility text extraction still dedupes the echo when a diagnostic line precedes the real streamed text")
+    func cursorUtilityTextExtractionDedupesEchoAfterDiagnosticLine() {
+        // The diagnostic line plus the real streamed assistant text already contain the
+        // full result payload as a suffix — the terminal echo must still be recognized
+        // as a duplicate and not appended a second time.
+        let output = """
+        warming up sandbox...
+        {"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"PING"}]},"session_id":"s1"}
+        {"type":"result","subtype":"success","duration_ms":1,"is_error":false,"result":"PING","session_id":"s1"}
+        """
+        #expect(CursorCLIRuntime.extractUtilityText(from: output) == "warming up sandbox...PING")
+    }
 }

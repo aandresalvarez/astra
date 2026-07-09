@@ -183,20 +183,28 @@ enum OpenCodeCLIRuntime {
 
     static func extractUtilityText(from output: String) -> String {
         var pieces: [String] = []
-        var sawText = false
         for line in output.split(whereSeparator: \.isNewline).map(String.init) {
             for event in OpenCodeStreamEventParser.parseAgentEvents(line: line) {
                 switch event {
                 case .text(let text):
                     pieces.append(text)
-                    sawText = true
                 case .completed(let summary):
                     // Mirrors the cursor-agent fix: a terminal completed/result event
                     // can echo the full reply already delivered via streamed `.text`
-                    // events. Only use the echo when no `.text` arrived, so a provider
-                    // that streams deltas AND echoes the final text doesn't double up.
-                    if !sawText, let summary, !summary.isEmpty {
-                        pieces.append(summary)
+                    // events. But a `.text` event can ALSO come from the plain-text
+                    // fallback parser for a non-JSON diagnostic line, so "any `.text`
+                    // seen" is not proof the reply was already streamed. Only skip the
+                    // echo when it actually duplicates what's already been collected,
+                    // so a genuine result arriving after unrelated diagnostic text is
+                    // never dropped.
+                    if let summary, !summary.isEmpty {
+                        let trimmedSummary = summary.trimmingCharacters(in: .whitespacesAndNewlines)
+                        let alreadyCollected = pieces.joined().trimmingCharacters(in: .whitespacesAndNewlines)
+                        let isDuplicate = !trimmedSummary.isEmpty
+                            && (trimmedSummary == alreadyCollected || alreadyCollected.hasSuffix(trimmedSummary))
+                        if !isDuplicate {
+                            pieces.append(summary)
+                        }
                     }
                 case .failed(let message):
                     pieces.append(message)

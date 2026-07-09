@@ -205,21 +205,31 @@ enum CursorCLIRuntime {
 
     static func extractUtilityText(from output: String) -> String {
         var pieces: [String] = []
-        var sawText = false
         for line in output.split(whereSeparator: \.isNewline).map(String.init) {
             for event in CursorStreamEventParser.parseAgentEvents(line: line) {
                 switch event {
                 case .text(let text):
                     pieces.append(text)
-                    sawText = true
                 case .completed(let summary):
-                    // The terminal `result` event echoes the FULL final reply the
+                    // The terminal `result` event can echo the FULL final reply the
                     // streamed `.text` events already delivered (cursor-agent: an
                     // assistant `.text` "PING" is followed by a result event whose
-                    // `result` field is also "PING") — appending both doubles every
-                    // reply. Only use the echo when no `.text` arrived.
-                    if !sawText, let summary, !summary.isEmpty {
-                        pieces.append(summary)
+                    // `result` field is also "PING") — appending both doubles the
+                    // reply. But a `.text` event can ALSO come from the plain-text
+                    // fallback parser for a non-JSON diagnostic/warning line
+                    // (CursorStreamEventParser falls back to `.text` for any line it
+                    // can't parse as JSON) — so "any `.text` seen" is not proof the
+                    // reply was already streamed. Only skip the echo when it actually
+                    // duplicates what's already been collected, so a genuine result
+                    // arriving after unrelated diagnostic text is never dropped.
+                    if let summary, !summary.isEmpty {
+                        let trimmedSummary = summary.trimmingCharacters(in: .whitespacesAndNewlines)
+                        let alreadyCollected = pieces.joined().trimmingCharacters(in: .whitespacesAndNewlines)
+                        let isDuplicate = !trimmedSummary.isEmpty
+                            && (trimmedSummary == alreadyCollected || alreadyCollected.hasSuffix(trimmedSummary))
+                        if !isDuplicate {
+                            pieces.append(summary)
+                        }
                     }
                 case .failed(let message):
                     pieces.append(message)

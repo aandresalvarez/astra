@@ -443,4 +443,17 @@ struct CodexCLIRuntimeTests {
         """
         #expect(CodexCLIRuntime.extractUtilityText(from: output) == "PONG")
     }
+
+    @Test("Codex utility text extraction preserves item.completed after a non-JSON diagnostic line")
+    func codexUtilityTextExtractionPreservesItemCompletedAfterNonJSONDiagnosticLine() {
+        // A stray non-JSON stdout line (a diagnostic/banner, not valid JSON) falls back
+        // to a `.text` event via the plain-text parser — that must not be mistaken for
+        // a streamed assistant reply and used to suppress a DIFFERENT item.completed
+        // payload (the failure mode a "sawText: any .text seen" guard would introduce).
+        let output = """
+        checking workspace trust...
+        {"type":"item.completed","item":{"type":"agent_message","text":"42"}}
+        """
+        #expect(CodexCLIRuntime.extractUtilityText(from: output) == "checking workspace trust...42")
+    }
 }
