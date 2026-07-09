@@ -50,18 +50,35 @@ default_app_version() {
   fi
 }
 
+# Build number is derived PURELY from the version's own MAJOR.MINOR.PATCH
+# components -- never from counting or ranking existing git tags. See
+# .github/workflows/release.yml's "Determine release version and build" step
+# for the full rationale (tag-count/rank schemes aren't append-only: deleting
+# an old tag shifts the count for every later release, which can collide two
+# different versions onto the same Sparkle CFBundleVersion). This must
+# exactly match that formula so a local/dev build of a given version number
+# lands on the same build number a real release would use for it.
+#   BUILD = MAJOR*1,000,000 + MINOR*10,000 + PATCH
+# Headroom before a digit group overflows into the next: MINOR up to 99,
+# PATCH up to 9999 -- current tags top out at v0.1.28, so both have enormous
+# headroom for this project's cadence.
 default_app_build() {
-  local count
-  count="$(git -C "$ROOT_DIR" tag --list 'v[0-9]*.[0-9]*.[0-9]*' 2>/dev/null | wc -l | tr -d ' ')"
-  if [[ "$count" =~ ^[0-9]+$ && "$count" -gt 0 ]]; then
-    printf '%s\n' "$count"
-  else
-    printf '1\n'
+  local version="$1"
+  if [[ ! "$version" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+    echo "Cannot derive a default build number from version '$version': expected X.Y.Z." >&2
+    exit 2
   fi
+  local major="${BASH_REMATCH[1]}"
+  local minor="${BASH_REMATCH[2]}"
+  local patch="${BASH_REMATCH[3]}"
+  # 10#$x forces base-10 interpretation in arithmetic context: a component
+  # with a leading zero (e.g. "08") would otherwise be parsed as an invalid
+  # octal literal and abort the run.
+  printf '%s\n' "$((10#$major * 1000000 + 10#$minor * 10000 + 10#$patch))"
 }
 
 APP_VERSION="${ASTRA_VERSION:-$(default_app_version)}"
-APP_BUILD="${ASTRA_BUILD:-$(default_app_build)}"
+APP_BUILD="${ASTRA_BUILD:-$(default_app_build "$APP_VERSION")}"
 ASTRA_GIT_COMMIT="${ASTRA_GIT_COMMIT:-$(git -C "$ROOT_DIR" rev-parse --short=12 HEAD 2>/dev/null || printf unknown)}"
 ASTRA_BUILD_DATE="${ASTRA_BUILD_DATE:-$(/bin/date -u '+%Y-%m-%dT%H:%M:%SZ')}"
 

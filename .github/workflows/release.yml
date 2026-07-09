@@ -34,7 +34,7 @@ on:
         required: false
         type: string
       build:
-        description: "ASTRA_BUILD override (defaults to the count of vX.Y.Z tags)"
+        description: "ASTRA_BUILD override (defaults to a build number derived from the version's own MAJOR.MINOR.PATCH, not a git-tag count)"
         required: false
         type: string
       skip_notarization:
@@ -183,18 +183,49 @@ jobs:
             fi
           fi
 
-          EXISTING_TAG_COUNT="$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' | wc -l | tr -d ' ')"
-          if git rev-parse "$TAG" >/dev/null 2>&1; then
-            # Releasing an already-tagged version: match the count-based
-            # build number build_and_run.sh would compute locally for it.
-            DEFAULT_BUILD="$EXISTING_TAG_COUNT"
-          else
-            # Releasing a version that has no tag yet: the count-based
-            # default would collide with the previous release's build
-            # number (Sparkle compares CFBundleVersion, not just the
-            # display version), so advance it by one.
-            DEFAULT_BUILD="$((EXISTING_TAG_COUNT + 1))"
+          # Build number is derived PURELY from this version's own
+          # MAJOR.MINOR.PATCH components -- never from counting or ranking
+          # existing git tags. A tag-count/rank scheme is not append-only:
+          # deleting an old tag (e.g. someone removes v0.1.15 after it
+          # shipped) shifts the count down for every release after it, so
+          # the next ordinary release can recompute a build number that
+          # COLLIDES with an already-published, still-installed release's
+          # CFBundleVersion. Sparkle's update comparator is CFBundleVersion-
+          # based, not display-version-based, so two different
+          # CFBundleShortVersionStrings sharing one CFBundleVersion silently
+          # breaks "is there an update" detection for whoever is on the
+          # earlier one. A workflow_dispatch re-run targeting an older,
+          # already-tagged, non-latest version has the identical failure
+          # mode: it would recompute the CURRENT total tag count, not the
+          # count at that version's original publish time. Deriving the
+          # build straight from the version string sidesteps both cases --
+          # it doesn't look at tag history at all, so it can't be shifted by
+          # a deletion and can't drift between "first publish" and "repair
+          # re-run" of the same version.
+          #   BUILD = MAJOR*1,000,000 + MINOR*10,000 + PATCH
+          # Headroom before a digit group overflows into the next: MINOR up
+          # to 99, PATCH up to 9999. Current tags top out at v0.1.28 (`git
+          # tag -l | sort -V`), so both have enormous headroom for this
+          # project's cadence. This intentionally jumps to a much larger
+          # number than the old scheme's small counters (e.g. 0.1.28 ->
+          # 10028, not 28) -- that's fine, Sparkle only needs strict
+          # ordering, not numeric continuity with old builds.
+          # Must exactly match script/build_and_run.sh's default_app_build(),
+          # which computes the same formula from the same components for
+          # local/dev builds -- that parity is what lets a local dev build
+          # of a given version number reason about the same build number a
+          # real release would use.
+          if [[ ! "$VERSION" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            echo "Internal error: VERSION '$VERSION' is not X.Y.Z despite earlier validation." >&2
+            exit 2
           fi
+          VERSION_MAJOR="${BASH_REMATCH[1]}"
+          VERSION_MINOR="${BASH_REMATCH[2]}"
+          VERSION_PATCH="${BASH_REMATCH[3]}"
+          # 10#$x forces base-10 interpretation in arithmetic context: a
+          # component with a leading zero (e.g. "08") would otherwise be
+          # parsed as an invalid octal literal and abort the run.
+          DEFAULT_BUILD="$((10#$VERSION_MAJOR * 1000000 + 10#$VERSION_MINOR * 10000 + 10#$VERSION_PATCH))"
 
           if [[ -n "$INPUT_BUILD" ]]; then
             if [[ ! "$INPUT_BUILD" =~ ^[0-9]+$ ]]; then
