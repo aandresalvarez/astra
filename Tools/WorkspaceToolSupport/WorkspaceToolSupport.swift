@@ -3271,12 +3271,14 @@ private enum ProcessRunner {
         process.standardError = stderr
 
         stdout.fileHandleForReading.readabilityHandler = { handle in
-            let data = handle.availableData
-            if !data.isEmpty { stdoutBuffer.append(data) }
+            stdoutBuffer.synchronized {
+                stdoutBuffer.appendLocked(handle.availableData)
+            }
         }
         stderr.fileHandleForReading.readabilityHandler = { handle in
-            let data = handle.availableData
-            if !data.isEmpty { stderrBuffer.append(data) }
+            stderrBuffer.synchronized {
+                stderrBuffer.appendLocked(handle.availableData)
+            }
         }
 
         let semaphore = DispatchSemaphore(value: 0)
@@ -3306,8 +3308,16 @@ private enum ProcessRunner {
 
         stdout.fileHandleForReading.readabilityHandler = nil
         stderr.fileHandleForReading.readabilityHandler = nil
-        stdoutBuffer.append(stdout.fileHandleForReading.readDataToEndOfFile())
-        stderrBuffer.append(stderr.fileHandleForReading.readDataToEndOfFile())
+        // The read itself (not just the append) runs inside the buffer's
+        // lock so it can't race a concurrently in-flight readabilityHandler
+        // invocation that already claimed bytes off the same fd — see
+        // LockedData.
+        stdoutBuffer.synchronized {
+            stdoutBuffer.appendLocked(stdout.fileHandleForReading.readDataToEndOfFile())
+        }
+        stderrBuffer.synchronized {
+            stderrBuffer.appendLocked(stderr.fileHandleForReading.readDataToEndOfFile())
+        }
 
         return WorkspaceCommandResult(
             command: commandLabel,
@@ -3319,14 +3329,34 @@ private enum ProcessRunner {
     }
 }
 
+/// `synchronized`/`appendLocked` let a caller fold a raw pipe read
+/// (`availableData`/`readDataToEndOfFile`) and the resulting append into one
+/// atomic step — see the readabilityHandler/final-drain wiring in
+/// `ProcessRunner.run`, which both race to read the same fd. Locking only
+/// around the append (as this used to) still lets a reader that already
+/// consumed bytes via its own `read()` call lose the CPU before reaching the
+/// lock; a concurrently running drain then finds the fd AND the buffer both
+/// empty and finalizes the result before the first reader's bytes were ever
+/// folded in.
 private final class LockedData: @unchecked Sendable {
     private let lock = NSLock()
     private var data = Data()
 
     func append(_ chunk: Data) {
         lock.lock()
-        data.append(chunk)
+        appendLocked(chunk)
         lock.unlock()
+    }
+
+    func synchronized<T>(_ body: () -> T) -> T {
+        lock.lock()
+        defer { lock.unlock() }
+        return body()
+    }
+
+    func appendLocked(_ chunk: Data) {
+        guard !chunk.isEmpty else { return }
+        data.append(chunk)
     }
 
     var stringValue: String {
