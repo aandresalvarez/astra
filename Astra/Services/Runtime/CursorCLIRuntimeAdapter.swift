@@ -244,6 +244,7 @@ struct CursorCLIRuntimeAdapter: AgentRuntimeAdapter {
             providerVersion: providerVersion,
             parsesJSONLines: plan.parsesJSONLines,
             directoriesToCreate: [],
+            sandboxReadablePaths: CursorCLIRuntime.authReadablePaths(),
             providerDetectedFields: [
                 "runtime": id.rawValue,
                 "provider_version": providerVersion ?? "unknown",
@@ -338,7 +339,8 @@ struct CursorCLIRuntimeAdapter: AgentRuntimeAdapter {
             environment: plan.environment,
             browserShimDirectory: nil,
             providerVersion: nil,
-            parsesJSONLines: plan.parsesJSONLines
+            parsesJSONLines: plan.parsesJSONLines,
+            sandboxReadablePaths: CursorCLIRuntime.authReadablePaths()
         )
         return await AgentRuntimeProcessRunner().runUtilityProcess(
             AgentUtilityLaunchPlan(

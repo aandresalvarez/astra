@@ -657,6 +657,38 @@ struct AgentRuntimeFailureDiagnosticsTests {
         #expect((Int(fields["result_output_chars"] ?? "0") ?? 0) > 0)
     }
 
+    @Test("Sandboxed Keychain crash is classified separately from a generic process failure")
+    func classifiesSandboxBlockedKeychainCrash() {
+        let diagnostic = AgentRuntimeFailureDiagnostic.classify(
+            runtime: .cursorCLI,
+            model: "grok-4.5-medium",
+            exitCode: 139,
+            rawError: "ERROR: SecItemCopyMatching failed -25300",
+            providerVersion: "2026.07.01-41b2de7",
+            stream: nil
+        )
+
+        #expect(diagnostic.category == .sandboxCredentialAccessBlocked)
+        #expect(diagnostic.userMessage.contains("Keychain"))
+        #expect(diagnostic.userMessage.contains("Review"))
+        let fields = diagnostic.auditFields(phase: "run", stream: nil)
+        #expect(fields["failure_category"] == AgentRuntimeFailureCategory.sandboxCredentialAccessBlocked.rawValue)
+    }
+
+    @Test("Same Keychain OSStatus text with a normal exit code is not misclassified as a sandbox crash")
+    func keychainTextWithoutSignalExitStaysGenericFailure() {
+        let diagnostic = AgentRuntimeFailureDiagnostic.classify(
+            runtime: .cursorCLI,
+            model: "grok-4.5-medium",
+            exitCode: 1,
+            rawError: "ERROR: SecItemCopyMatching failed -25300",
+            providerVersion: "2026.07.01-41b2de7",
+            stream: nil
+        )
+
+        #expect(diagnostic.category != .sandboxCredentialAccessBlocked)
+    }
+
     @Test("Auth keyword is matched before the noVisibleOutput branch")
     func authKeywordWinsOverNoVisibleOutput() {
         let diagnostic = AgentRuntimeFailureDiagnostic.classify(

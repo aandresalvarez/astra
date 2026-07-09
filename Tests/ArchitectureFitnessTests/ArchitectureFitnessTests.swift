@@ -1653,7 +1653,10 @@ struct ArchitectureFitnessTests {
             "Tests/CopilotRuntimeTests.swift": .init(2_300, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
             "Tests/WorkspaceAppPackageTests.swift": .init(2_250, .companion(of: "Astra/Services/WorkspaceApps/WorkspaceAppActionExecutor.swift")),
             "Tests/WorkspaceToolSupportTests.swift": .init(2_150, .companion(of: "Tools/WorkspaceToolSupport/WorkspaceToolSupport.swift")),
-            "Tests/ExecutionSandboxTests.swift": .init(2_100, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
+            // Bumped 2_100 -> 2_150 for the Cursor/Antigravity autonomous-mode
+            // Keychain-read grant: one kernel-verified readable-roots test per
+            // runtime (mirrors the existing Claude Code auth-readable-roots test).
+            "Tests/ExecutionSandboxTests.swift": .init(2_150, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
             "Tests/HostControlToolSupportTests.swift": .init(2_100, .companion(of: "Tools/HostControlToolSupport/HostControlToolSupport.swift"))
         ]
     }
