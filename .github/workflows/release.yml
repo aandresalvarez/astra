@@ -494,9 +494,21 @@ jobs:
             gh release upload "$TAG" "${ASSETS[@]}" --clobber
           fi
 
-      - name: Clean up temporary keychain
+      - name: Clean up temporary keychain and signing key files
         if: always()
         run: |
           if [[ -n "${ASTRA_RELEASE_KEYCHAIN:-}" ]]; then
             security delete-keychain "$ASTRA_RELEASE_KEYCHAIN" || true
+          fi
+          # The Sparkle EdDSA private key is written to disk by "Write
+          # Sparkle EdDSA private key" and read back by "Build, sign, and
+          # notarize" (script/release_update.sh, for signing appcast.xml) --
+          # unlike the Developer ID cert and notary .p8 key, it can't be
+          # deleted in its own step because a later step still needs it.
+          # This step is the only one in the job guaranteed to run
+          # regardless of success, failure, or cancellation, so it's the
+          # right (and last possible) place to remove the plaintext key
+          # from the runner's disk.
+          if [[ -n "${SPARKLE_ED_KEY_FILE:-}" ]]; then
+            rm -f "$SPARKLE_ED_KEY_FILE"
           fi
