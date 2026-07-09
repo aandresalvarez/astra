@@ -633,32 +633,60 @@ final class AgentRuntimeProcessRunner {
             // instead: a split character becomes a single U+FFFD in the rare
             // case it straddles a chunk boundary, but every other byte
             // survives instead of the entire chunk being discarded.
+            //
+            // The raw `read()` (`availableData`/`readDataToEndOfFile`) and the
+            // resulting buffer mutation are both wrapped in the SAME
+            // `lineBuffer.synchronized` block, on both this handler and the
+            // termination handler below. `Process` delivers "stdout is
+            // readable" (via this handler, on a GCD-managed queue) and
+            // "the child exited" (via the termination handler, on the
+            // process's own reaper thread) as two independent, unordered
+            // signals. If only the buffer mutation were locked (as it used to
+            // be), a thread could win the `read()` race — pulling the child's
+            // last bytes out of the pipe — but lose the CPU before reaching
+            // the lock; a concurrently running termination handler would then
+            // find the fd AND the buffer both empty, conclude there is
+            // nothing left, and finalize the result before the first
+            // thread's read ever got processed. That data wasn't lost by the
+            // kernel — it was sitting in a local variable — but this code
+            // would never look at it again. Locking around the read closes
+            // that window: whichever side reaches the lock first fully
+            // drains-and-processes what it read before the other side can
+            // even perform its own read.
             process.stdoutFileHandle.readabilityHandler = { handle in
-                let data = handle.availableData
-                guard !data.isEmpty else { return }
-                let chunk = String(decoding: data, as: UTF8.self)
-                lineBuffer.appendAndProcessLines(chunk, handleLine)
+                lineBuffer.synchronized {
+                    let data = handle.availableData
+                    guard !data.isEmpty else { return }
+                    let chunk = String(decoding: data, as: UTF8.self)
+                    lineBuffer.appendAndProcessLinesLocked(chunk, handleLine)
+                }
             }
 
             process.stderrFileHandle.readabilityHandler = { handle in
-                let data = handle.availableData
-                guard !data.isEmpty else { return }
-                errorOutput.append(String(decoding: data, as: UTF8.self))
+                errorOutput.synchronized {
+                    let data = handle.availableData
+                    guard !data.isEmpty else { return }
+                    errorOutput.appendLocked(String(decoding: data, as: UTF8.self))
+                }
             }
 
             process.terminationHandler = { proc in
                 InFlightPermissionCenter.shared.failAll(taskID: taskID)
                 proc.stdoutFileHandle.readabilityHandler = nil
                 proc.stderrFileHandle.readabilityHandler = nil
-                let finalStdoutChunk = String(decoding: proc.stdoutFileHandle.readDataToEndOfFile(), as: UTF8.self)
-                if !finalStdoutChunk.isEmpty {
-                    lineBuffer.appendAndProcessLines(finalStdoutChunk, handleLine)
+                lineBuffer.synchronized {
+                    let finalStdoutChunk = String(decoding: proc.stdoutFileHandle.readDataToEndOfFile(), as: UTF8.self)
+                    if !finalStdoutChunk.isEmpty {
+                        lineBuffer.appendAndProcessLinesLocked(finalStdoutChunk, handleLine)
+                    }
+                    handleLine(lineBuffer.drainRemainingLocked())
                 }
-                let finalStderrChunk = String(decoding: proc.stderrFileHandle.readDataToEndOfFile(), as: UTF8.self)
-                if !finalStderrChunk.isEmpty {
-                    errorOutput.append(finalStderrChunk)
+                errorOutput.synchronized {
+                    let finalStderrChunk = String(decoding: proc.stderrFileHandle.readDataToEndOfFile(), as: UTF8.self)
+                    if !finalStderrChunk.isEmpty {
+                        errorOutput.appendLocked(finalStderrChunk)
+                    }
                 }
-                handleLine(lineBuffer.drainRemaining())
                 for filtered in eventPipeline.flushParsedEvents() {
                     _ = monitor.processEvent(filtered, process: process)
                 }
@@ -740,10 +768,15 @@ final class AgentRuntimeProcessRunner {
         let stdoutLineBuffer = AgentLockedBuffer()
         let runState = AgentUtilityScopedProcessRunState()
 
-        let handleStdout: @Sendable (String) -> AgentUtilityRunResult? = { chunk in
+        // Must only run from inside `stdoutLineBuffer.synchronized` — see the
+        // readabilityHandler/terminationHandler wiring below, which locks
+        // around the raw pipe read itself (not just this buffer mutation) so
+        // the two racing readers of the same fd can't both conclude "nothing
+        // left to process" while the other is still mid-flight.
+        let handleStdoutLocked: @Sendable (String) -> AgentUtilityRunResult? = { chunk in
             stdoutBuffer.append(chunk)
             guard let stdoutLineHandler else { return nil }
-            for line in stdoutLineBuffer.appendAndDrainLines(chunk) {
+            for line in stdoutLineBuffer.appendAndDrainLinesLocked(chunk) {
                 if let result = stdoutLineHandler(line) {
                     return result
                 }
@@ -751,9 +784,9 @@ final class AgentRuntimeProcessRunner {
             return nil
         }
 
-        let handleRemainingStdoutLine: @Sendable () -> AgentUtilityRunResult? = {
+        let handleRemainingStdoutLineLocked: @Sendable () -> AgentUtilityRunResult? = {
             guard let stdoutLineHandler else { return nil }
-            let remaining = stdoutLineBuffer.drainRemaining()
+            let remaining = stdoutLineBuffer.drainRemainingLocked()
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             guard !remaining.isEmpty else { return nil }
             return stdoutLineHandler(remaining)
@@ -778,39 +811,62 @@ final class AgentRuntimeProcessRunner {
                 // instead: a split character becomes a single U+FFFD in the
                 // rare case it straddles a chunk boundary, but every other
                 // byte survives instead of the entire chunk being discarded.
+                //
+                // The raw `read()` and the resulting buffer drain/dispatch to
+                // `stdoutLineHandler` are both wrapped in the SAME
+                // `stdoutLineBuffer.synchronized` block here and in the
+                // termination handler below, so the two independent signals
+                // Process delivers ("stdout is readable" vs. "the child
+                // exited") can't race each other into double-reading or, worse,
+                // both reading nothing: without this, a thread that already
+                // pulled the last bytes out of the pipe via `availableData`
+                // could still be short of the lock when a concurrently
+                // running termination handler finds the fd AND the buffer
+                // empty and finalizes the result — silently dropping output
+                // that was read but not yet processed. See the identical
+                // comment on the worker path's readabilityHandler above.
                 process.stdoutFileHandle.readabilityHandler = { handle in
-                    let data = handle.availableData
-                    guard !data.isEmpty else { return }
-                    let chunk = String(decoding: data, as: UTF8.self)
-                    if let result = handleStdout(chunk) {
+                    let result: AgentUtilityRunResult? = stdoutLineBuffer.synchronized {
+                        let data = handle.availableData
+                        guard !data.isEmpty else { return nil }
+                        let chunk = String(decoding: data, as: UTF8.self)
+                        return handleStdoutLocked(chunk)
+                    }
+                    if let result {
                         finish(result, true)
                     }
                 }
 
                 process.stderrFileHandle.readabilityHandler = { handle in
-                    let data = handle.availableData
-                    guard !data.isEmpty else { return }
-                    let chunk = String(decoding: data, as: UTF8.self)
-                    stderrBuffer.append(chunk)
-                    stderrChunkHandler?(chunk)
+                    stderrBuffer.synchronized {
+                        let data = handle.availableData
+                        guard !data.isEmpty else { return }
+                        let chunk = String(decoding: data, as: UTF8.self)
+                        stderrBuffer.appendLocked(chunk)
+                        stderrChunkHandler?(chunk)
+                    }
                 }
 
                 process.terminationHandler = { proc in
                     proc.stdoutFileHandle.readabilityHandler = nil
                     proc.stderrFileHandle.readabilityHandler = nil
-                    let finalStdoutChunk = String(decoding: proc.stdoutFileHandle.readDataToEndOfFile(), as: UTF8.self)
-                    if !finalStdoutChunk.isEmpty, let result = handleStdout(finalStdoutChunk) {
-                        finish(result, false)
+                    let stdoutResult: AgentUtilityRunResult? = stdoutLineBuffer.synchronized {
+                        let finalStdoutChunk = String(decoding: proc.stdoutFileHandle.readDataToEndOfFile(), as: UTF8.self)
+                        if !finalStdoutChunk.isEmpty, let result = handleStdoutLocked(finalStdoutChunk) {
+                            return result
+                        }
+                        return handleRemainingStdoutLineLocked()
+                    }
+                    if let stdoutResult {
+                        finish(stdoutResult, false)
                         return
                     }
-                    if let result = handleRemainingStdoutLine() {
-                        finish(result, false)
-                        return
-                    }
-                    let finalStderrChunk = String(decoding: proc.stderrFileHandle.readDataToEndOfFile(), as: UTF8.self)
-                    if !finalStderrChunk.isEmpty {
-                        stderrBuffer.append(finalStderrChunk)
-                        stderrChunkHandler?(finalStderrChunk)
+                    stderrBuffer.synchronized {
+                        let finalStderrChunk = String(decoding: proc.stderrFileHandle.readDataToEndOfFile(), as: UTF8.self)
+                        if !finalStderrChunk.isEmpty {
+                            stderrBuffer.appendLocked(finalStderrChunk)
+                            stderrChunkHandler?(finalStderrChunk)
+                        }
                     }
                     let result = completion(
                         Int(proc.terminationStatus),

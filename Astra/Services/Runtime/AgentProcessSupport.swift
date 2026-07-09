@@ -320,10 +320,33 @@ final class AgentLockedBuffer: @unchecked Sendable {
         lock.unlock()
     }
 
+    func appendLocked(_ string: String) {
+        _value += string
+    }
+
+    /// Runs `body` while holding the buffer's lock, so a caller can fold an
+    /// external read (draining a pipe's `readabilityHandler` vs. a process's
+    /// `terminationHandler`, both of which race to read the same fd) and the
+    /// resulting buffer mutation into one atomic step. Without this, a reader
+    /// that already consumed bytes via its own `read()`/`availableData()` call
+    /// but hasn't yet reached the buffer can lose a race against a concurrent
+    /// reader that finds the fd and buffer both empty and concludes there is
+    /// nothing left to process — see the `*Locked` methods below, which must
+    /// be called only from inside a `synchronized` block (they assume the
+    /// lock is already held and are not reentrant-safe on their own).
+    func synchronized<T>(_ body: () -> T) -> T {
+        lock.lock()
+        defer { lock.unlock() }
+        return body()
+    }
+
     func appendAndDrainLines(_ string: String) -> [String] {
         lock.lock()
         defer { lock.unlock() }
+        return appendAndDrainLinesLocked(string)
+    }
 
+    func appendAndDrainLinesLocked(_ string: String) -> [String] {
         _value += string
         var lines: [String] = []
         while let newlineIndex = _value.firstIndex(of: "\n") {
@@ -337,7 +360,10 @@ final class AgentLockedBuffer: @unchecked Sendable {
     func appendAndProcessLines(_ string: String, _ processLine: (String) -> Void) {
         lock.lock()
         defer { lock.unlock() }
+        appendAndProcessLinesLocked(string, processLine)
+    }
 
+    func appendAndProcessLinesLocked(_ string: String, _ processLine: (String) -> Void) {
         _value += string
         while let newlineIndex = _value.firstIndex(of: "\n") {
             let line = String(_value[_value.startIndex..<newlineIndex])
@@ -349,7 +375,10 @@ final class AgentLockedBuffer: @unchecked Sendable {
     func drainRemaining() -> String {
         lock.lock()
         defer { lock.unlock() }
+        return drainRemainingLocked()
+    }
 
+    func drainRemainingLocked() -> String {
         let remaining = _value
         _value = ""
         return remaining

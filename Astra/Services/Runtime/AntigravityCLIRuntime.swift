@@ -28,6 +28,25 @@ enum AntigravityCLIRuntime {
         RuntimePathResolver.detectAntigravityPath()
     }
 
+    static func authReadablePaths(userHome: String = FileManager.default.homeDirectoryForCurrentUser.path) -> [String] {
+        let trimmedHome = userHome.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedHome.isEmpty else { return [] }
+        // agy's own session decryption key is stored in the macOS login
+        // keychain DB (`Antigravity Safe Storage`) and is read via
+        // SecItemCopyMatching on every run — including when Autonomous mode
+        // drops agy's own `--sandbox` confinement and ASTRA wraps it in
+        // Seatbelt instead. Without this grant the strict read-scope profile
+        // denies that read and agy reports "authentication failed or timed
+        // out" instead of using the stored session. Mirrors
+        // ClaudeCodeRuntime.authReadablePaths / CopilotCLIRuntime.
+        // authReadablePaths / CursorCLIRuntime.authReadablePaths: only the
+        // login keychain DB file is granted, read-only; metadata.keychain-db
+        // is deliberately withheld.
+        return [
+            (trimmedHome as NSString).appendingPathComponent("Library/Keychains/login.keychain-db")
+        ]
+    }
+
     static func versionSummary(executablePath: String) -> String? {
         nil
     }

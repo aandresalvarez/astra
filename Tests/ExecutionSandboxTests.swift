@@ -402,6 +402,67 @@ struct ExecutionSandboxTests {
         #expect(!readableRoots.contains(keychains))
     }
 
+    @Test("Cursor auth readable roots grant login keychain without metadata")
+    func cursorAuthReadableRootsGrantLoginKeychainWithoutMetadata() {
+        let userHome = "/tmp/astra-cursor-user-\(UUID().uuidString)"
+        let plan = makePlan(
+            runtime: .cursorCLI,
+            currentDirectory: "/tmp/astra-workspace",
+            environment: ["HOME": userHome, "TMPDIR": "/tmp"],
+            sandboxReadablePaths: CursorCLIRuntime.authReadablePaths(userHome: userHome)
+        )
+        let workspace = ExecutionSandbox.canonicalize(plan.currentDirectory)!
+        let readableRoots = ExecutionSandbox.readableRoots(
+            plan: plan,
+            providerHomeDirectory: "",
+            canonicalWorkspace: workspace
+        )
+        let keychains = (userHome as NSString).appendingPathComponent("Library/Keychains")
+        let loginKeychain = (keychains as NSString).appendingPathComponent("login.keychain-db")
+        let metadataKeychain = (keychains as NSString).appendingPathComponent("metadata.keychain-db")
+        let writableRoots = ExecutionSandbox.writableRoots(
+            plan: plan,
+            providerHomeDirectory: "",
+            canonicalWorkspace: workspace
+        )
+
+        #expect(readableRoots.contains(loginKeychain))
+        #expect(!readableRoots.contains(metadataKeychain))
+        #expect(!readableRoots.contains(keychains))
+        // Read-only: the auth grant must never become writable.
+        #expect(!writableRoots.contains(loginKeychain))
+    }
+
+    @Test("Antigravity auth readable roots grant login keychain without metadata")
+    func antigravityAuthReadableRootsGrantLoginKeychainWithoutMetadata() {
+        let userHome = "/tmp/astra-antigravity-user-\(UUID().uuidString)"
+        let plan = makePlan(
+            runtime: .antigravityCLI,
+            currentDirectory: "/tmp/astra-workspace",
+            environment: ["HOME": userHome, "TMPDIR": "/tmp"],
+            sandboxReadablePaths: AntigravityCLIRuntime.authReadablePaths(userHome: userHome)
+        )
+        let workspace = ExecutionSandbox.canonicalize(plan.currentDirectory)!
+        let readableRoots = ExecutionSandbox.readableRoots(
+            plan: plan,
+            providerHomeDirectory: "",
+            canonicalWorkspace: workspace
+        )
+        let keychains = (userHome as NSString).appendingPathComponent("Library/Keychains")
+        let loginKeychain = (keychains as NSString).appendingPathComponent("login.keychain-db")
+        let metadataKeychain = (keychains as NSString).appendingPathComponent("metadata.keychain-db")
+        let writableRoots = ExecutionSandbox.writableRoots(
+            plan: plan,
+            providerHomeDirectory: "",
+            canonicalWorkspace: workspace
+        )
+
+        #expect(readableRoots.contains(loginKeychain))
+        #expect(!readableRoots.contains(metadataKeychain))
+        #expect(!readableRoots.contains(keychains))
+        #expect(!writableRoots.contains(loginKeychain))
+    }
+
     @Test("Claude Vertex ADC readable roots grant gcloud credentials without home")
     func claudeVertexADCReadableRootsGrantGcloudCredentialsWithoutHome() {
         let userHome = "/tmp/astra-claude-user-\(UUID().uuidString)"
