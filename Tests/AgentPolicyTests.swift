@@ -1266,26 +1266,15 @@ struct RunPermissionManifestTests {
 
     @Test("Preflight manifest declares the OS sandbox tier for wrapped runtimes")
     func preflightManifestDeclaresOSSandboxTier() throws {
-        // Pin the relevant sandbox defaults so the assertion is deterministic
-        // regardless of any developer's stored preference.
-        let enforcementKey = AppStorageKeys.sandboxEnforcement
-        let layerKey = AppStorageKeys.sandboxLayerNativeProviders
-        let previousEnforcement = UserDefaults.standard.string(forKey: enforcementKey)
-        let previousLayer = UserDefaults.standard.object(forKey: layerKey)
-        UserDefaults.standard.set(ExecutionSandboxEnforcement.bestEffort.rawValue, forKey: enforcementKey)
-        UserDefaults.standard.set(false, forKey: layerKey)
-        defer {
-            if let previousEnforcement {
-                UserDefaults.standard.set(previousEnforcement, forKey: enforcementKey)
-            } else {
-                UserDefaults.standard.removeObject(forKey: enforcementKey)
-            }
-            if let previousLayer {
-                UserDefaults.standard.set(previousLayer, forKey: layerKey)
-            } else {
-                UserDefaults.standard.removeObject(forKey: layerKey)
-            }
-        }
+        // Pin the relevant sandbox defaults in an isolated suite (not
+        // `.standard`) so this is deterministic regardless of any developer's
+        // stored preference AND immune to the other `@Test`s in this suite
+        // concurrently mutating `.standard` for their own scenarios.
+        let suiteName = "astra-agent-policy-sandbox-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set(ExecutionSandboxEnforcement.bestEffort.rawValue, forKey: AppStorageKeys.sandboxEnforcement)
+        defaults.set(false, forKey: AppStorageKeys.sandboxLayerNativeProviders)
 
         let container = try makeAgentPolicyContainer()
         let context = container.mainContext
@@ -1307,6 +1296,7 @@ struct RunPermissionManifestTests {
             permissionPolicy: .restricted,
             executionPolicy: .default,
             defaultPolicyLevelRaw: AgentPolicyLevel.review.rawValue,
+            sandboxSettingsDefaults: defaults,
             modelContext: context
         )
         #expect(claude.providerRender.enforcementTiers.contains(.osSandboxed))
@@ -1326,6 +1316,7 @@ struct RunPermissionManifestTests {
             permissionPolicy: .restricted,
             executionPolicy: .default,
             defaultPolicyLevelRaw: AgentPolicyLevel.review.rawValue,
+            sandboxSettingsDefaults: defaults,
             modelContext: context
         )
         #expect(!codex.providerRender.enforcementTiers.contains(.osSandboxed))
@@ -1333,24 +1324,13 @@ struct RunPermissionManifestTests {
 
     @Test("Preflight manifest layers the OS sandbox tier over a self-sandboxing provider when opted in")
     func preflightManifestLayersOSSandboxTierWhenOptedIn() throws {
-        let enforcementKey = AppStorageKeys.sandboxEnforcement
-        let layerKey = AppStorageKeys.sandboxLayerNativeProviders
-        let previousEnforcement = UserDefaults.standard.string(forKey: enforcementKey)
-        let previousLayer = UserDefaults.standard.object(forKey: layerKey)
-        UserDefaults.standard.set(ExecutionSandboxEnforcement.bestEffort.rawValue, forKey: enforcementKey)
-        UserDefaults.standard.set(true, forKey: layerKey) // opt in to layering
-        defer {
-            if let previousEnforcement {
-                UserDefaults.standard.set(previousEnforcement, forKey: enforcementKey)
-            } else {
-                UserDefaults.standard.removeObject(forKey: enforcementKey)
-            }
-            if let previousLayer {
-                UserDefaults.standard.set(previousLayer, forKey: layerKey)
-            } else {
-                UserDefaults.standard.removeObject(forKey: layerKey)
-            }
-        }
+        // Isolated suite — see `preflightManifestDeclaresOSSandboxTier` above
+        // for why this can't mutate `.standard`.
+        let suiteName = "astra-agent-policy-sandbox-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set(ExecutionSandboxEnforcement.bestEffort.rawValue, forKey: AppStorageKeys.sandboxEnforcement)
+        defaults.set(true, forKey: AppStorageKeys.sandboxLayerNativeProviders) // opt in to layering
 
         let container = try makeAgentPolicyContainer()
         let context = container.mainContext
@@ -1371,6 +1351,7 @@ struct RunPermissionManifestTests {
             permissionPolicy: .restricted,
             executionPolicy: .default,
             defaultPolicyLevelRaw: AgentPolicyLevel.review.rawValue,
+            sandboxSettingsDefaults: defaults,
             modelContext: context
         )
         // With layering on, Codex is now wrapped by ASTRA's Seatbelt too.
@@ -1379,16 +1360,12 @@ struct RunPermissionManifestTests {
 
     @Test("Preflight manifest omits the OS sandbox tier when the sandbox would not actually apply")
     func preflightManifestOmitsTierWhenSandboxWontApply() throws {
-        let enforcementKey = AppStorageKeys.sandboxEnforcement
-        let previousEnforcement = UserDefaults.standard.string(forKey: enforcementKey)
-        UserDefaults.standard.set(ExecutionSandboxEnforcement.bestEffort.rawValue, forKey: enforcementKey)
-        defer {
-            if let previousEnforcement {
-                UserDefaults.standard.set(previousEnforcement, forKey: enforcementKey)
-            } else {
-                UserDefaults.standard.removeObject(forKey: enforcementKey)
-            }
-        }
+        // Isolated suite — see `preflightManifestDeclaresOSSandboxTier` above
+        // for why this can't mutate `.standard`.
+        let suiteName = "astra-agent-policy-sandbox-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set(ExecutionSandboxEnforcement.bestEffort.rawValue, forKey: AppStorageKeys.sandboxEnforcement)
 
         let container = try makeAgentPolicyContainer()
         let context = container.mainContext
@@ -1411,6 +1388,7 @@ struct RunPermissionManifestTests {
             permissionPolicy: .restricted,
             executionPolicy: .default,
             defaultPolicyLevelRaw: AgentPolicyLevel.review.rawValue,
+            sandboxSettingsDefaults: defaults,
             modelContext: context
         )
         #expect(!manifest.providerRender.enforcementTiers.contains(.osSandboxed))
@@ -1426,16 +1404,13 @@ struct RunPermissionManifestTests {
         // (`manifestExecutionPolicy.permissionPolicyOverride ?? permissionPolicy`)
         // and pins that the broadest-permission mode is never left unconfined by a
         // user-set Off.
-        let enforcementKey = AppStorageKeys.sandboxEnforcement
-        let previousEnforcement = UserDefaults.standard.string(forKey: enforcementKey)
-        UserDefaults.standard.set(ExecutionSandboxEnforcement.off.rawValue, forKey: enforcementKey)
-        defer {
-            if let previousEnforcement {
-                UserDefaults.standard.set(previousEnforcement, forKey: enforcementKey)
-            } else {
-                UserDefaults.standard.removeObject(forKey: enforcementKey)
-            }
-        }
+        //
+        // Isolated suite — see `preflightManifestDeclaresOSSandboxTier` above
+        // for why this can't mutate `.standard`.
+        let suiteName = "astra-agent-policy-sandbox-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set(ExecutionSandboxEnforcement.off.rawValue, forKey: AppStorageKeys.sandboxEnforcement)
 
         let container = try makeAgentPolicyContainer()
         let context = container.mainContext
@@ -1461,6 +1436,7 @@ struct RunPermissionManifestTests {
             permissionPolicy: .restricted,
             executionPolicy: overridePolicy,
             defaultPolicyLevelRaw: AgentPolicyLevel.review.rawValue,
+            sandboxSettingsDefaults: defaults,
             modelContext: context
         )
         #expect(manifest.providerRender.enforcementTiers.contains(.osSandboxed))
