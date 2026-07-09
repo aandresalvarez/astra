@@ -577,6 +577,7 @@ public final class HostControlProcessRunner: HostControlProcessRunning {
     private let limits: HostControlProcessLimits
     private let outputLimitGraceSeconds: TimeInterval = 0.5
     private let timeoutGraceSeconds: TimeInterval = 0.5
+    private let drainNoDataGraceSeconds: TimeInterval = 2
 
     public init(limits: HostControlProcessLimits = .standard) {
         self.limits = limits
@@ -616,34 +617,24 @@ public final class HostControlProcessRunner: HostControlProcessRunning {
             }
         }
         stdoutReader.setReadabilityHandler { handle in
-            guard !stdoutBuffer.isTruncated else {
-                stdoutReader.stop()
-                return
-            }
+            guard !stdoutBuffer.isTruncated else { return true }
             let data = handle.availableData
-            guard !data.isEmpty else {
-                stdoutReader.stop()
-                return
-            }
+            guard !data.isEmpty else { return true }
             if stdoutBuffer.append(data) {
-                stdoutReader.stop()
                 terminateForOutputLimit()
+                return true
             }
+            return false
         }
         stderrReader.setReadabilityHandler { handle in
-            guard !stderrBuffer.isTruncated else {
-                stderrReader.stop()
-                return
-            }
+            guard !stderrBuffer.isTruncated else { return true }
             let data = handle.availableData
-            guard !data.isEmpty else {
-                stderrReader.stop()
-                return
-            }
+            guard !data.isEmpty else { return true }
             if stderrBuffer.append(data) {
-                stderrReader.stop()
                 terminateForOutputLimit()
+                return true
             }
+            return false
         }
 
         let semaphore = DispatchSemaphore(value: 0)
@@ -767,6 +758,7 @@ public final class HostControlProcessRunner: HostControlProcessRunning {
 
         var bytes = [UInt8](repeating: 0, count: 8192)
         defer { try? handle.close() }
+        let noDataDeadline = DispatchTime.now() + dispatchInterval(seconds: drainNoDataGraceSeconds)
         while true {
             let count = bytes.withUnsafeMutableBytes { rawBuffer in
                 read(descriptor, rawBuffer.baseAddress, rawBuffer.count)
@@ -776,6 +768,22 @@ public final class HostControlProcessRunner: HostControlProcessRunning {
             }
             if count < 0 {
                 if errno == EINTR { continue }
+                if errno == EAGAIN || errno == EWOULDBLOCK {
+                    // A sibling process spawned around the same time as this
+                    // one can briefly hold a fork-inherited duplicate of this
+                    // pipe's write end open, which keeps the kernel from
+                    // signaling real EOF even after our own child has
+                    // exited. That shows up here as EAGAIN, not as an actual
+                    // error - wait briefly for either more data or true EOF
+                    // instead of giving up and reporting a spurious limit.
+                    guard DispatchTime.now() < noDataDeadline else {
+                        buffer.markTruncated()
+                        return
+                    }
+                    var pollDescriptor = pollfd(fd: descriptor, events: Int16(POLLIN), revents: 0)
+                    _ = poll(&pollDescriptor, 1, 20)
+                    continue
+                }
                 buffer.markTruncated()
                 return
             }
@@ -2026,25 +2034,36 @@ private final class ProcessOutputReadHandle: @unchecked Sendable {
         self.handle = handle
     }
 
-    func setReadabilityHandler(_ handler: @escaping @Sendable (FileHandle) -> Void) {
-        handle.readabilityHandler = handler
+    /// `onReadable` runs entirely inside this handle's lock, atomically with
+    /// the stop decision it returns. Without that, `claimForDrain()` could
+    /// hand the fd to a manual drain loop (which reconfigures and then
+    /// closes it) while a readability event dispatched moments earlier is
+    /// still running this closure, unsynchronized — the stale invocation
+    /// would then touch an already-closed, possibly already-recycled
+    /// descriptor. Returning `true` stops future callbacks, same as the old
+    /// explicit `.stop()` call this replaces.
+    func setReadabilityHandler(_ onReadable: @escaping @Sendable (FileHandle) -> Bool) {
+        handle.readabilityHandler = { handle in
+            self.lock.lock()
+            defer { self.lock.unlock() }
+            guard !self.stopped else { return }
+            if onReadable(handle) {
+                self.stopped = true
+                handle.readabilityHandler = nil
+            }
+        }
     }
 
     func stop() {
-        guard let handle = stopAndTakeHandle() else { return }
+        guard let handle = claimLocked() else { return }
         try? handle.close()
     }
 
     func claimForDrain() -> FileHandle? {
-        lock.lock()
-        defer { lock.unlock() }
-        guard !stopped else { return nil }
-        stopped = true
-        handle.readabilityHandler = nil
-        return handle
+        claimLocked()
     }
 
-    private func stopAndTakeHandle() -> FileHandle? {
+    private func claimLocked() -> FileHandle? {
         lock.lock()
         defer { lock.unlock() }
         guard !stopped else { return nil }
