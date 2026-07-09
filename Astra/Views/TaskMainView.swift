@@ -293,6 +293,7 @@ struct TaskMainView: View {
     private static let viewUpdateDeferralNanoseconds: UInt64 = 1_000_000
 
     let task: AgentTask
+    let taskOpenResponsivenessScope: UUID
     var taskQueue: TaskQueue?
     var onRunTask: ((AgentTask) -> Void)?
     var onCancelTask: ((AgentTask) -> Void)?
@@ -615,16 +616,24 @@ struct TaskMainView: View {
             deferTaskViewMutation {
                 installPasteMonitor()
             }
-            Task { @MainActor in
-                await Task.yield()
-                TaskOpenResponsivenessTelemetry.shellBecameVisible(task: task)
-            }
+        }
+        .task(id: task.id) {
+            await Task.yield()
+            guard !Task.isCancelled else { return }
+            TaskOpenResponsivenessTelemetry.shellBecameVisible(
+                task: task,
+                scope: taskOpenResponsivenessScope
+            )
         }
         .onDisappear {
             pendingPlanStateRefreshTask?.cancel()
             threadViewModel.cancelGeneratedFilesRefresh()
             removePasteMonitor()
-            TaskOpenResponsivenessTelemetry.cancel(task: task, reason: "task_view_disappeared")
+            TaskOpenResponsivenessTelemetry.cancel(
+                task: task,
+                reason: "task_view_disappeared",
+                scope: taskOpenResponsivenessScope
+            )
         }
         .onChange(of: sshReloadTrigger) {
             deferTaskViewMutation {
@@ -713,7 +722,11 @@ struct TaskMainView: View {
     private func initializeDisplayedTaskState() async {
         guard await waitForViewUpdateBoundary() else { return }
 
-        TaskOpenResponsivenessTelemetry.measurePhase("task_initialization", task: task) {
+        TaskOpenResponsivenessTelemetry.measurePhase(
+            "task_initialization",
+            task: task,
+            scope: taskOpenResponsivenessScope
+        ) {
             isChatAtBottom = true
             hasUnseenChatActivity = false
             shouldScrollAfterUserMessage = true
@@ -723,7 +736,11 @@ struct TaskMainView: View {
             runtimeHealthNow = Date()
             lastLoggedRuntimeHealthSignature = nil
             alignTaskModelWithRuntime()
-            TaskOpenResponsivenessTelemetry.measurePhase("thread_reset", task: task) {
+            TaskOpenResponsivenessTelemetry.measurePhase(
+                "thread_reset",
+                task: task,
+                scope: taskOpenResponsivenessScope
+            ) {
                 threadViewModel.reset(for: task)
             }
             loadSSHConnections()
@@ -769,7 +786,11 @@ struct TaskMainView: View {
     }
 
     private func refreshTaskContextState() {
-        TaskOpenResponsivenessTelemetry.measurePhase("context_state_refresh", task: task) {
+        TaskOpenResponsivenessTelemetry.measurePhase(
+            "context_state_refresh",
+            task: task,
+            scope: taskOpenResponsivenessScope
+        ) {
             TaskContextStateManager.refresh(task: task)
         }
         refreshForkSourceAvailabilityWarning()
@@ -1644,12 +1665,15 @@ struct TaskMainView: View {
                     deferTaskViewMutation {
                         updateChatBottomState(bottomMinY: bottomMinY, viewportHeight: viewport.size.height)
                     }
-                    TaskOpenResponsivenessTelemetry.transcriptBecameReady(
-                        task: task,
-                        snapshot: currentThreadSnapshot,
-                        appliedSnapshotRevision: threadViewModel.appliedSnapshotRevision,
-                        cacheState: threadViewModel.lastSnapshotCacheState
-                    )
+                    if threadViewModel.appliedSnapshotTaskID == task.id {
+                        TaskOpenResponsivenessTelemetry.transcriptBecameReady(
+                            task: task,
+                            snapshot: currentThreadSnapshot,
+                            appliedSnapshotRevision: threadViewModel.appliedSnapshotRevision,
+                            cacheState: threadViewModel.lastSnapshotCacheState,
+                            scope: taskOpenResponsivenessScope
+                        )
+                    }
                     // Not wrapped in deferTaskViewMutation: this only feeds the watchdog's
                     // internal (non-@State) bookkeeping, so it carries none of the
                     // AttributeGraph-cycle risk that motivates deferring the @State

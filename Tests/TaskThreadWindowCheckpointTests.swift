@@ -51,7 +51,28 @@ struct TaskThreadViewModelTests {
         #expect(snapshot.omittedRunCount == 50)
         #expect(snapshot.latestRun?.output == "run 99")
         #expect(vm.appliedSnapshotRevision > 0)
+        #expect(vm.appliedSnapshotTaskID == task.id)
         #expect(vm.lastSnapshotCacheState == "not_applicable")
+    }
+
+    @MainActor
+    @Test("Reset clears the previous task readiness before applying the next snapshot")
+    func resetClearsPreviousTaskReadiness() async {
+        let vm = TaskThreadViewModel()
+        let firstTask = makeTask(goal: "First task")
+        let secondTask = makeTask(goal: "Second task")
+        firstTask.runs.append(TaskRun(task: firstTask))
+
+        vm.reset(for: firstTask)
+        _ = await awaitSnapshot(vm, where: { $0.sortedRuns.count == 1 })
+        #expect(vm.appliedSnapshotTaskID == firstTask.id)
+        #expect(vm.appliedSnapshotRevision > 0)
+
+        vm.reset(for: secondTask)
+
+        #expect(vm.appliedSnapshotTaskID == nil)
+        #expect(vm.appliedSnapshotRevision == 0)
+        #expect(vm.lastSnapshotCacheState == "pending")
     }
 
     @MainActor

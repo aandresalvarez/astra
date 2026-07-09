@@ -79,6 +79,7 @@ struct ContentView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Query(sort: \Workspace.name) private var workspaces: [Workspace]
     @StateObject private var sceneSelection = SceneSelectionModel()
+    @State private var taskOpenResponsivenessScope = UUID()
     @State private var showingConfigure = false
     @State private var configureInitialTab: ConfigureTab = .capabilities
     @State private var configureFocusItemID: UUID?
@@ -609,6 +610,7 @@ struct ContentView: View {
     private var taskAndHomeDetailArea: some View {
         ContentDetailAreaView(
             selectedTask: selectedTask,
+            taskOpenResponsivenessScope: taskOpenResponsivenessScope,
             effectiveWorkspace: effectiveWorkspace,
             isComposingTask: isComposingTask,
             taskQueue: runtime.taskQueue,
@@ -2288,8 +2290,12 @@ struct ContentView: View {
 
     private func applyWorkspaceSelectionUpdate(_ update: ContentWorkspaceSelectionUpdate) {
         let previousTaskID = selectedTask?.id
-        if previousTaskID != update.selectedTask?.id, let task = update.selectedTask {
-            TaskOpenResponsivenessTelemetry.begin(task: task, source: "workspace_selection")
+        if previousTaskID != update.selectedTask?.id {
+            TaskOpenResponsivenessTelemetry.beginForSelection(
+                task: update.selectedTask,
+                source: "workspace_selection",
+                scope: taskOpenResponsivenessScope
+            )
         }
         updateCanvasForTaskSelectionChange(previousTaskID: previousTaskID, nextTaskID: update.selectedTask?.id)
         let sceneUpdate = sceneSelection.apply(update)
@@ -2312,9 +2318,11 @@ struct ContentView: View {
         let isComposingTaskForTransition = isComposingTask
         intent()
         guard previousTaskID != selectedTask?.id else { return }
-        if let selectedTask {
-            TaskOpenResponsivenessTelemetry.begin(task: selectedTask, source: "scene_selection")
-        }
+        TaskOpenResponsivenessTelemetry.beginForSelection(
+            task: selectedTask,
+            source: "scene_selection",
+            scope: taskOpenResponsivenessScope
+        )
         updateCanvasForTaskSelectionChange(
             previousTaskID: previousTaskID,
             nextTaskID: selectedTask?.id,
@@ -2328,8 +2336,12 @@ struct ContentView: View {
 
     private func setSelectedTask(_ task: AgentTask?) {
         let previousTaskID = selectedTask?.id
-        if previousTaskID != task?.id, let task {
-            TaskOpenResponsivenessTelemetry.begin(task: task, source: "task_selection")
+        if previousTaskID != task?.id {
+            TaskOpenResponsivenessTelemetry.beginForSelection(
+                task: task,
+                source: "task_selection",
+                scope: taskOpenResponsivenessScope
+            )
         }
         updateCanvasForTaskSelectionChange(previousTaskID: previousTaskID, nextTaskID: task?.id)
         let wasComposingWorkspaceApp = isComposingWorkspaceApp
@@ -2380,7 +2392,11 @@ struct ContentView: View {
 
     private func markTaskRead(_ task: AgentTask?) {
         guard let task, task.unreadAt != nil else { return }
-        TaskOpenResponsivenessTelemetry.measurePhase("mark_task_read_persistence", task: task) {
+        TaskOpenResponsivenessTelemetry.measurePhase(
+            "mark_task_read_persistence",
+            task: task,
+            scope: taskOpenResponsivenessScope
+        ) {
             task.markRead()
             do {
                 try WorkspacePersistenceCoordinator.saveAndAutoExportOrThrow(
@@ -2760,6 +2776,7 @@ private struct ContentToolbar: ToolbarContent {
 
 private struct ContentDetailAreaView: View {
     let selectedTask: AgentTask?
+    let taskOpenResponsivenessScope: UUID
     let effectiveWorkspace: Workspace?
     let isComposingTask: Bool
     let taskQueue: TaskQueue
@@ -3164,6 +3181,7 @@ private struct ContentDetailAreaView: View {
     private var detailContent: some View {
         ContentDetailContentView(
             selectedTask: selectedTask,
+            taskOpenResponsivenessScope: taskOpenResponsivenessScope,
             effectiveWorkspace: effectiveWorkspace,
             isComposingTask: isComposingTask,
             taskQueue: taskQueue,
@@ -3262,6 +3280,7 @@ private struct ContentDetailAreaView: View {
 
 private struct ContentDetailContentView: View {
     let selectedTask: AgentTask?
+    let taskOpenResponsivenessScope: UUID
     let effectiveWorkspace: Workspace?
     let isComposingTask: Bool
     let taskQueue: TaskQueue
@@ -3331,6 +3350,7 @@ private struct ContentDetailContentView: View {
             if let task = selectedTask {
                 TaskMainView(
                     task: task,
+                    taskOpenResponsivenessScope: taskOpenResponsivenessScope,
                     taskQueue: taskQueue,
                     onRunTask: onRunTask,
                     onCancelTask: onCancelTask,

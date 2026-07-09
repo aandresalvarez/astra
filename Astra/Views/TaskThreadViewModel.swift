@@ -10,6 +10,10 @@ final class TaskThreadViewModel {
     /// this cheap revision to distinguish the initial shell from a transcript
     /// that is ready to lay out.
     private(set) var appliedSnapshotRevision = 0
+    /// The task that produced the most recently applied non-placeholder
+    /// snapshot. This prevents a previous task's ready state from being used
+    /// while a newly selected task is still displaying its placeholder.
+    private(set) var appliedSnapshotTaskID: UUID?
     /// Cache state for the most recently applied snapshot, exposed as a safe
     /// diagnostic dimension for task-open responsiveness traces.
     private(set) var lastSnapshotCacheState = "not_applicable"
@@ -34,6 +38,9 @@ final class TaskThreadViewModel {
             snapshotTrigger = nil
             snapshotTask?.cancel()
             lastSnapshotApplyAt = .distantPast
+            appliedSnapshotRevision = 0
+            appliedSnapshotTaskID = nil
+            lastSnapshotCacheState = "pending"
             snapshot = TaskThreadSnapshot.placeholder(goal: task.goal, createdAt: task.createdAt)
             refreshSnapshot(for: task)
             refreshGeneratedFiles(folder: TaskWorkspaceAccess(task: task).taskFolder)
@@ -57,6 +64,7 @@ final class TaskThreadViewModel {
            let cachedSnapshot = Self.terminalSnapshotCache.snapshot(for: cacheKey) {
             snapshot = cachedSnapshot
             appliedSnapshotRevision += 1
+            appliedSnapshotTaskID = task.id
             lastSnapshotCacheState = "hit"
             lastSnapshotApplyAt = Date()
             fields.merge(Self.snapshotFields(cachedSnapshot), uniquingKeysWith: { _, new in new })
@@ -97,6 +105,7 @@ final class TaskThreadViewModel {
                 guard !Task.isCancelled, revision == self.snapshotRevision else { return }
                 self.snapshot = builtSnapshot
                 self.appliedSnapshotRevision += 1
+                self.appliedSnapshotTaskID = taskID
                 if let cacheKey {
                     Self.terminalSnapshotCache.store(builtSnapshot, for: cacheKey)
                 }

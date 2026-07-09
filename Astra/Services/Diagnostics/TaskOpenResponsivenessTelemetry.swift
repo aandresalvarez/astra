@@ -139,10 +139,17 @@ enum TaskOpenResponsivenessTelemetry {
         var intervalLifecycle = TaskOpenResponsivenessIntervalLifecycle()
     }
 
-    private static var activeTrace: ActiveTrace?
+    /// Each `ContentView` owns a stable scope for the lifetime of one main
+    /// window. Keeping traces in that scope prevents task opens in one window
+    /// from cancelling measurements that are still in flight in another.
+    private static var activeTraces: [UUID: ActiveTrace] = [:]
 
-    static func begin(task: AgentTask, source: String) {
-        cancelActiveTrace(reason: "superseded")
+    static func begin(task: AgentTask, source: String, scope: UUID) {
+        guard task.status != .draft else {
+            cancelActiveTrace(in: scope, reason: "draft_selected")
+            return
+        }
+        cancelActiveTrace(in: scope, reason: "superseded")
 
         let traceID = AuditTrace.make("task-open")
         let id = signposter.makeSignpostID()
@@ -150,7 +157,7 @@ enum TaskOpenResponsivenessTelemetry {
             shellVisible: signposter.beginInterval("task_selection_to_shell_visible", id: id),
             transcriptReady: signposter.beginInterval("task_selection_to_transcript_ready", id: id)
         )
-        activeTrace = ActiveTrace(
+        activeTraces[scope] = ActiveTrace(
             trace: TaskOpenResponsivenessTrace(
                 traceID: traceID,
                 taskID: task.id,
@@ -161,30 +168,33 @@ enum TaskOpenResponsivenessTelemetry {
         )
     }
 
-    static func beginIfNeeded(task: AgentTask, source: String) {
-        guard activeTrace?.trace.taskID != task.id else { return }
-        begin(task: task, source: source)
+    static func beginForSelection(task: AgentTask?, source: String, scope: UUID) {
+        guard let task else {
+            cancelActiveTrace(in: scope, reason: "selection_cleared")
+            return
+        }
+        begin(task: task, source: source, scope: scope)
     }
 
     static func measurePhase<T>(
         _ name: String,
         task: AgentTask,
+        scope: UUID,
         _ work: () -> T
     ) -> T {
         let start = DispatchTime.now().uptimeNanoseconds
         let result = work()
-        recordPhase(name, task: task, start: start)
+        recordPhase(name, task: task, scope: scope, start: start)
         return result
     }
 
-    static func shellBecameVisible(task: AgentTask) {
-        beginIfNeeded(task: task, source: "task_view_appearance")
-        guard var activeTrace, activeTrace.trace.taskID == task.id,
+    static func shellBecameVisible(task: AgentTask, scope: UUID) {
+        guard var activeTrace = activeTraces[scope], activeTrace.trace.taskID == task.id,
               let result = activeTrace.trace.markShellVisible(at: DispatchTime.now().uptimeNanoseconds)
         else { return }
 
         endShellVisibleInterval(&activeTrace)
-        self.activeTrace = activeTrace
+        activeTraces[scope] = activeTrace
         log(result, taskID: task.id)
     }
 
@@ -192,9 +202,10 @@ enum TaskOpenResponsivenessTelemetry {
         task: AgentTask,
         snapshot: TaskThreadSnapshot,
         appliedSnapshotRevision: Int,
-        cacheState: String
+        cacheState: String,
+        scope: UUID
     ) {
-        guard var activeTrace, activeTrace.trace.taskID == task.id,
+        guard var activeTrace = activeTraces[scope], activeTrace.trace.taskID == task.id,
               appliedSnapshotRevision > 0 else { return }
 
         if activeTrace.trace.shellVisibleDurationMilliseconds == nil,
@@ -213,21 +224,23 @@ enum TaskOpenResponsivenessTelemetry {
         ) else { return }
         endTranscriptReadyInterval(&activeTrace)
         log(result, taskID: task.id)
-        self.activeTrace = nil
+        activeTraces[scope] = nil
     }
 
-    static func cancel(task: AgentTask, reason: String) {
-        guard activeTrace?.trace.taskID == task.id else { return }
-        cancelActiveTrace(reason: reason)
+    static func cancel(task: AgentTask, reason: String, scope: UUID) {
+        guard activeTraces[scope]?.trace.taskID == task.id else { return }
+        cancelActiveTrace(in: scope, reason: reason)
     }
 
     static func resetForTesting() {
-        cancelActiveTrace(reason: "test_reset")
+        for scope in Array(activeTraces.keys) {
+            cancelActiveTrace(in: scope, reason: "test_reset")
+        }
     }
 
-    private static func recordPhase(_ name: String, task: AgentTask, start: UInt64) {
+    private static func recordPhase(_ name: String, task: AgentTask, scope: UUID, start: UInt64) {
         let elapsed = PerformanceTelemetry.elapsedMilliseconds(since: start)
-        guard let activeTrace, activeTrace.trace.taskID == task.id,
+        guard let activeTrace = activeTraces[scope], activeTrace.trace.taskID == task.id,
               elapsed >= PerformanceTelemetry.uiFrameThresholdMilliseconds
         else { return }
 
@@ -240,8 +253,8 @@ enum TaskOpenResponsivenessTelemetry {
         )
     }
 
-    private static func cancelActiveTrace(reason: String) {
-        guard var activeTrace else { return }
+    private static func cancelActiveTrace(in scope: UUID, reason: String) {
+        guard var activeTrace = activeTraces[scope] else { return }
         endShellVisibleInterval(&activeTrace)
         endTranscriptReadyInterval(&activeTrace)
         PerformanceTelemetry.log(
@@ -253,7 +266,7 @@ enum TaskOpenResponsivenessTelemetry {
             ], uniquingKeysWith: { _, new in new }),
             taskID: activeTrace.trace.taskID
         )
-        self.activeTrace = nil
+        activeTraces[scope] = nil
     }
 
     private static func endShellVisibleInterval(_ activeTrace: inout ActiveTrace) {

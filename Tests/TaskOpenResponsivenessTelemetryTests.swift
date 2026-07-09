@@ -103,15 +103,74 @@ struct TaskOpenResponsivenessTelemetryTests {
     func supersedingTraceAfterShellVisibilityDoesNotEndSignpostTwice() {
         let firstTask = makeTask(goal: "First task")
         let secondTask = makeTask(goal: "Second task")
+        let scope = UUID()
         TaskOpenResponsivenessTelemetry.resetForTesting()
 
-        TaskOpenResponsivenessTelemetry.begin(task: firstTask, source: "task_selection")
-        TaskOpenResponsivenessTelemetry.shellBecameVisible(task: firstTask)
+        TaskOpenResponsivenessTelemetry.begin(task: firstTask, source: "task_selection", scope: scope)
+        TaskOpenResponsivenessTelemetry.shellBecameVisible(task: firstTask, scope: scope)
 
         // This mirrors clicking a second sidebar row while the first task's
         // transcript snapshot is still loading. Before the regression fix,
         // begin() cancelled the trace by ending the shell signpost twice.
-        TaskOpenResponsivenessTelemetry.begin(task: secondTask, source: "task_selection")
+        TaskOpenResponsivenessTelemetry.begin(task: secondTask, source: "task_selection", scope: scope)
+        // A cancelled view's delayed callback must not replace the trace for
+        // the task that is now opening.
+        TaskOpenResponsivenessTelemetry.shellBecameVisible(task: firstTask, scope: scope)
+        TaskOpenResponsivenessTelemetry.transcriptBecameReady(
+            task: secondTask,
+            snapshot: .empty,
+            appliedSnapshotRevision: 1,
+            cacheState: "not_applicable",
+            scope: scope
+        )
+        TaskOpenResponsivenessTelemetry.resetForTesting()
+    }
+
+    @MainActor
+    @Test("Window-scoped traces complete independently")
+    func windowScopedTracesDoNotCancelOneAnother() {
+        let firstTask = makeTask(goal: "First window task")
+        let secondTask = makeTask(goal: "Second window task")
+        let firstScope = UUID()
+        let secondScope = UUID()
+        TaskOpenResponsivenessTelemetry.resetForTesting()
+
+        TaskOpenResponsivenessTelemetry.begin(task: firstTask, source: "task_selection", scope: firstScope)
+        TaskOpenResponsivenessTelemetry.begin(task: secondTask, source: "task_selection", scope: secondScope)
+        TaskOpenResponsivenessTelemetry.shellBecameVisible(task: firstTask, scope: firstScope)
+        TaskOpenResponsivenessTelemetry.transcriptBecameReady(
+            task: firstTask,
+            snapshot: .empty,
+            appliedSnapshotRevision: 1,
+            cacheState: "not_applicable",
+            scope: firstScope
+        )
+        AppLogger.flushForTesting()
+
+        let entries = AppLogger.entries.filter { $0.taskID == firstTask.id && $0.category == "Performance" }
+        #expect(entries.contains { $0.message.contains("event=task_selection_to_transcript_ready") })
+        TaskOpenResponsivenessTelemetry.resetForTesting()
+    }
+
+    @MainActor
+    @Test("Draft selection does not start a task-open trace")
+    func draftSelectionsDoNotStartTaskOpenTraces() {
+        let openedTask = makeTask(goal: "Opened task")
+        let draftTask = makeTask(goal: "Draft task", status: .draft)
+        let scope = UUID()
+        TaskOpenResponsivenessTelemetry.resetForTesting()
+
+        TaskOpenResponsivenessTelemetry.begin(task: openedTask, source: "task_selection", scope: scope)
+        TaskOpenResponsivenessTelemetry.beginForSelection(task: draftTask, source: "task_selection", scope: scope)
+        TaskOpenResponsivenessTelemetry.shellBecameVisible(task: draftTask, scope: scope)
+        AppLogger.flushForTesting()
+
+        let draftMeasurements = AppLogger.entries.filter {
+            $0.taskID == draftTask.id
+                && $0.category == "Performance"
+                && $0.message.contains("event=task_selection_to_")
+        }
+        #expect(draftMeasurements.isEmpty)
         TaskOpenResponsivenessTelemetry.resetForTesting()
     }
 
@@ -119,15 +178,17 @@ struct TaskOpenResponsivenessTelemetryTests {
     @Test("Completed task-open measurements reach the existing Performance log with task context")
     func completedMeasurementsReachPerformanceLogs() {
         let task = makeTask(goal: "Sensitive task goal")
+        let scope = UUID()
         TaskOpenResponsivenessTelemetry.resetForTesting()
 
-        TaskOpenResponsivenessTelemetry.begin(task: task, source: "task_selection")
-        TaskOpenResponsivenessTelemetry.shellBecameVisible(task: task)
+        TaskOpenResponsivenessTelemetry.begin(task: task, source: "task_selection", scope: scope)
+        TaskOpenResponsivenessTelemetry.shellBecameVisible(task: task, scope: scope)
         TaskOpenResponsivenessTelemetry.transcriptBecameReady(
             task: task,
             snapshot: .empty,
             appliedSnapshotRevision: 1,
-            cacheState: "not_applicable"
+            cacheState: "not_applicable",
+            scope: scope
         )
         AppLogger.flushForTesting()
 
