@@ -256,13 +256,19 @@ enum CodexCLIRuntime {
 
     static func extractUtilityText(from output: String) -> String {
         var pieces: [String] = []
+        var sawText = false
         for line in output.split(whereSeparator: \.isNewline).map(String.init) {
             for event in CodexStreamEventParser.parseAgentEvents(line: line) {
                 switch event {
                 case .text(let text):
                     pieces.append(text)
+                    sawText = true
                 case .completed(let summary):
-                    if let summary, !summary.isEmpty {
+                    // Mirrors the cursor-agent fix: a terminal completed/result event
+                    // can echo the full reply already delivered via streamed `.text`
+                    // events. Only use the echo when no `.text` arrived, so a provider
+                    // that streams deltas AND echoes the final text doesn't double up.
+                    if !sawText, let summary, !summary.isEmpty {
                         pieces.append(summary)
                     }
                 case .failed(let message):

@@ -421,4 +421,26 @@ struct CodexCLIRuntimeTests {
         #expect(readOnly == .readOnly)
         #expect(unknown == .restricted)
     }
+
+    @Test("Codex utility text extraction does not double an item.completed echo")
+    func codexUtilityTextExtractionDoesNotDoubleItemCompletedEcho() {
+        // Mirrors the cursor-agent bug: if a provider ever streams `.text` deltas
+        // for an assistant message AND ALSO emits a terminal item.completed with
+        // the full text, the two must not be concatenated.
+        let output = """
+        {"type":"thread.started","thread_id":"t1"}
+        {"type":"assistant.message_delta","text":"PING"}
+        {"type":"item.completed","item":{"type":"agent_message","text":"PING"}}
+        """
+        #expect(CodexCLIRuntime.extractUtilityText(from: output) == "PING")
+    }
+
+    @Test("Codex utility text extraction falls back to item.completed without streamed text")
+    func codexUtilityTextExtractionFallsBackToItemCompletedWithoutStreamedText() {
+        let output = """
+        {"type":"thread.started","thread_id":"t1"}
+        {"type":"item.completed","item":{"type":"agent_message","text":"PONG"}}
+        """
+        #expect(CodexCLIRuntime.extractUtilityText(from: output) == "PONG")
+    }
 }

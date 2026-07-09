@@ -310,4 +310,26 @@ struct CursorCLIRuntimeTests {
         )
         #expect(render.diagnostics.contains { $0.id == "cursor_cli.ask-checkpoints-brokered" })
     }
+
+    @Test("Cursor utility text extraction does not double the result event echo")
+    func cursorUtilityTextExtractionDoesNotDoubleResultEcho() {
+        // Captured live from cursor-agent --print --output-format stream-json: the
+        // terminal `result` event echoes the same text already streamed as an
+        // assistant `.text` event.
+        let output = """
+        {"type":"system","subtype":"init","session_id":"s1","model":"Composer 2.5 Fast"}
+        {"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"PING"}]},"session_id":"s1"}
+        {"type":"result","subtype":"success","duration_ms":1,"is_error":false,"result":"PING","session_id":"s1"}
+        """
+        #expect(CursorCLIRuntime.extractUtilityText(from: output) == "PING")
+    }
+
+    @Test("Cursor utility text extraction falls back to the result echo when no text streamed")
+    func cursorUtilityTextExtractionFallsBackToResultEchoWithoutStreamedText() {
+        let output = """
+        {"type":"system","subtype":"init","session_id":"s1","model":"Composer 2.5 Fast"}
+        {"type":"result","subtype":"success","duration_ms":1,"is_error":false,"result":"PONG","session_id":"s1"}
+        """
+        #expect(CursorCLIRuntime.extractUtilityText(from: output) == "PONG")
+    }
 }

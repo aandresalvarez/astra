@@ -205,13 +205,20 @@ enum CursorCLIRuntime {
 
     static func extractUtilityText(from output: String) -> String {
         var pieces: [String] = []
+        var sawText = false
         for line in output.split(whereSeparator: \.isNewline).map(String.init) {
             for event in CursorStreamEventParser.parseAgentEvents(line: line) {
                 switch event {
                 case .text(let text):
                     pieces.append(text)
+                    sawText = true
                 case .completed(let summary):
-                    if let summary, !summary.isEmpty {
+                    // The terminal `result` event echoes the FULL final reply the
+                    // streamed `.text` events already delivered (cursor-agent: an
+                    // assistant `.text` "PING" is followed by a result event whose
+                    // `result` field is also "PING") — appending both doubles every
+                    // reply. Only use the echo when no `.text` arrived.
+                    if !sawText, let summary, !summary.isEmpty {
                         pieces.append(summary)
                     }
                 case .failed(let message):
