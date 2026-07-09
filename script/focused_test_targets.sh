@@ -34,6 +34,9 @@ target_for_path() {
     Tests/AppSemanticFitnessTests.swift)
       add_target "AppSemanticFitnessTests"
       ;;
+    Tests/FeedbackEvidencePrivacyTests.swift|Astra/Services/Feedback/*)
+      add_target "FeedbackEvidencePrivacyTests"
+      ;;
     Tests/MCPGatewaySupportTests/*|Tools/AstraMCPGatewayTool/*|Tools/MCPGatewaySupport/*)
       add_target "MCPGatewaySupportTests"
       ;;

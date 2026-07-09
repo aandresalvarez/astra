@@ -27,6 +27,7 @@ struct ArchitectureFitnessTests {
             "Browser",
             "Capabilities",
             "Diagnostics",
+            "Feedback",
             "Git",
             "GoogleWorkspace",
             "Packs",
