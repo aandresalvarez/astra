@@ -78,7 +78,7 @@ struct FeedbackReportPersistenceTests {
         #expect(fetched.localStatus == .retryableFailure)
         #expect(fetched.failureDisposition == .retryable)
         #expect(fetched.uploadAttempts.count == 1)
-        #expect(fetched.localStatusDTO.lastFailure?.code == "offline")
+        #expect(try fetched.localStatusDTO.lastFailure?.code == "offline")
 
         let fieldNames = Set(Mirror(reflecting: fetched).children.compactMap(\.label))
         #expect(!fieldNames.contains(where: { name in
@@ -128,7 +128,7 @@ struct FeedbackReportPersistenceTests {
         #expect(fetched.receiptData == receiptData)
         #expect(fetched.receipt == receipt)
         #expect(fetched.receipt?.evidenceArchiveSHA256 == String(repeating: "b", count: 64))
-        #expect(fetched.localStatusDTO.receipt == receipt)
+        #expect(try fetched.localStatusDTO.receipt == receipt)
     }
 
     @MainActor

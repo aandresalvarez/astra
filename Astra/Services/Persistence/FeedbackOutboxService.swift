@@ -25,7 +25,7 @@ public final class FeedbackOutboxService {
         policy: FeedbackOutboxPolicy = FeedbackOutboxPolicy(),
         fileManager: FileManager = .default
     ) throws {
-        let normalizedStorageRoot = storageRoot.standardizedFileURL
+        let normalizedStorageRoot = storageRoot.standardizedFileURL.resolvingSymlinksInPath()
         self.modelContainer = modelContainer
         self.storageRoot = normalizedStorageRoot
         self.packagesRoot = normalizedStorageRoot.appendingPathComponent("packages", isDirectory: true)
@@ -83,8 +83,9 @@ public final class FeedbackOutboxService {
         try contents.validate()
         let context = makeContext()
         let report = try fetch(reportID: reportID, in: context)
-        guard report.localStatus == .draft else {
-            throw illegalTransition(report, to: .draft)
+        let current = try storedStatus(report)
+        guard current == .draft else {
+            throw illegalTransition(from: current, to: .draft)
         }
         report.intendedOutcome = contents.intendedOutcome
         report.actualResult = contents.actualResult
@@ -107,8 +108,9 @@ public final class FeedbackOutboxService {
     public func adoptPreparedPackage(reportID: UUID, from sourceDirectory: URL) throws {
         let context = makeContext()
         let report = try fetch(reportID: reportID, in: context)
-        guard report.localStatus == .draft else {
-            throw illegalTransition(report, to: .prepared)
+        let current = try storedStatus(report)
+        guard current == .draft else {
+            throw illegalTransition(from: current, to: .prepared)
         }
         let destination = packageURL(reportID: reportID)
         guard !fileManager.fileExists(atPath: destination.path) else {
@@ -139,8 +141,8 @@ public final class FeedbackOutboxService {
     @discardableResult
     public func recoverInterruptedAdoptions() throws -> Int {
         let context = makeContext()
-        let drafts = try context.fetch(FetchDescriptor<FeedbackReport>())
-            .filter { $0.localStatus == .draft }
+        let reports = try context.fetch(FetchDescriptor<FeedbackReport>())
+        let drafts = try reports.filter { try storedStatus($0) == .draft }
         var recovered = 0
         for report in drafts {
             let destination = packageURL(reportID: report.id)
@@ -174,6 +176,7 @@ public final class FeedbackOutboxService {
     public func queueRetry(reportID: UUID, force: Bool = false) throws {
         let context = makeContext()
         let report = try fetch(reportID: reportID, in: context)
+        _ = try storedStatus(report)
         let now = clock.now()
         guard force || report.nextRetryAt.map({ $0 <= now }) != false else {
             throw FeedbackOutboxError.retryNotDue
@@ -186,16 +189,16 @@ public final class FeedbackOutboxService {
     public func claimUpload(reportID: UUID) throws -> FeedbackUploadClaim {
         let context = makeContext()
         let report = try fetch(reportID: reportID, in: context)
+        _ = try storedStatus(report)
         guard report.activeClaimToken == nil else { throw FeedbackOutboxError.activeClaimExists }
         guard report.uploadAttemptCount < FeedbackContractLimitsV1.maximumUploadAttempts else {
             throw FeedbackOutboxError.maximumAttemptsExceeded
         }
-        guard let relativePath = report.packageRelativePath,
+        guard report.packageRelativePath != nil,
               let envelopeData = report.canonicalEnvelopeData else {
             throw FeedbackOutboxError.missingPreparedPackage
         }
-        let packageURL = storageRoot.appendingPathComponent(relativePath, isDirectory: true)
-        guard fileManager.fileExists(atPath: packageURL.path) else {
+        guard let packageURL = try validatedOwnedPackageURL(for: report, requireExists: true) else {
             throw FeedbackOutboxError.missingPreparedPackage
         }
 
@@ -290,7 +293,7 @@ public final class FeedbackOutboxService {
 
         let context = makeContext()
         let report = try fetch(reportID: reportID, in: context)
-        guard report.localStatus == .submitted,
+        guard try storedStatus(report) == .submitted,
               let receipt = report.receipt,
               receipt.receiptID == status.receiptID else {
             throw FeedbackOutboxError.remoteStatusMismatch
@@ -319,8 +322,8 @@ public final class FeedbackOutboxService {
     @discardableResult
     public func recoverInterruptedUploads() throws -> Int {
         let context = makeContext()
-        let uploads = try context.fetch(FetchDescriptor<FeedbackReport>())
-            .filter { $0.localStatus == .uploading }
+        let reports = try context.fetch(FetchDescriptor<FeedbackReport>())
+        let uploads = try reports.filter { try storedStatus($0) == .uploading }
         let now = clock.now()
         for report in uploads {
             try transition(report, to: .retryableFailure, at: now)
@@ -360,17 +363,16 @@ public final class FeedbackOutboxService {
         let cutoff = now ?? clock.now()
         let context = makeContext()
         let reports = try context.fetch(FetchDescriptor<FeedbackReport>())
+        let reportsWithStatus = try reports.map { ($0, try storedStatus($0)) }
         var purged = 0
-        for report in reports {
+        for (report, status) in reportsWithStatus {
             guard report.artifactsDeletedAt == nil,
                   report.activeClaimToken == nil,
-                  report.localStatus != .uploading,
+                  status != .uploading,
                   report.artifactsExpireAt.map({ $0 <= cutoff }) == true else { continue }
-            if let relativePath = report.packageRelativePath {
-                let packageURL = storageRoot.appendingPathComponent(relativePath, isDirectory: true)
-                if fileManager.fileExists(atPath: packageURL.path) {
-                    try fileManager.removeItem(at: packageURL)
-                }
+            if report.packageRelativePath != nil,
+               let packageURL = try validatedOwnedPackageURL(for: report, requireExists: false) {
+                try fileManager.removeItem(at: packageURL)
             }
             minimizeExpiredReport(report, at: cutoff)
             purged += 1
@@ -466,7 +468,7 @@ public final class FeedbackOutboxService {
         at date: Date
     ) {
         report.canonicalEnvelopeData = validated.envelopeData
-        report.packageRelativePath = String(destination.path.dropFirst(storageRoot.path.count + 1))
+        report.packageRelativePath = packageRelativePath(reportID: report.id)
         report.payloadSHA256 = validated.envelope.payloadSHA256
         report.evidenceArchiveSHA256 = validated.envelope.evidenceArchiveSHA256
         report.canonicalDigestSHA256 = validated.envelope.canonicalDigestSHA256
@@ -480,7 +482,7 @@ public final class FeedbackOutboxService {
         to next: FeedbackLocalStatusV1,
         at date: Date
     ) throws {
-        let current = report.localStatus
+        let current = try storedStatus(report)
         guard current.canTransition(to: next) else {
             throw FeedbackOutboxError.illegalTransition(
                 from: current.rawValue,
@@ -492,14 +494,14 @@ public final class FeedbackOutboxService {
     }
 
     private func illegalTransition(
-        _ report: FeedbackReport,
+        from current: FeedbackLocalStatusV1,
         to next: FeedbackLocalStatusV1
     ) -> FeedbackOutboxError {
-        .illegalTransition(from: report.localStatus.rawValue, to: next.rawValue)
+        .illegalTransition(from: current.rawValue, to: next.rawValue)
     }
 
     private func validateClaim(_ claim: FeedbackUploadClaim, report: FeedbackReport) throws {
-        guard report.localStatus == .uploading,
+        guard try storedStatus(report) == .uploading,
               report.activeClaimToken == claim.token else {
             throw FeedbackOutboxError.claimMismatch
         }
@@ -569,6 +571,42 @@ public final class FeedbackOutboxService {
         packagesRoot.appendingPathComponent(reportID.uuidString.lowercased(), isDirectory: true)
     }
 
+    private func packageRelativePath(reportID: UUID) -> String {
+        "packages/\(reportID.uuidString.lowercased())"
+    }
+
+    private func validatedOwnedPackageURL(
+        for report: FeedbackReport,
+        requireExists: Bool
+    ) throws -> URL? {
+        let expectedRelativePath = packageRelativePath(reportID: report.id)
+        guard report.packageRelativePath == expectedRelativePath else {
+            throw FeedbackOutboxError.invalidStoredPackagePath(
+                report.packageRelativePath ?? "<nil>"
+            )
+        }
+        let candidate = packageURL(reportID: report.id).standardizedFileURL
+        let rootPath = packagesRoot.standardizedFileURL.path
+        guard candidate.path.hasPrefix(rootPath + "/"),
+              candidate.deletingLastPathComponent().path == rootPath else {
+            throw FeedbackOutboxError.invalidStoredPackagePath(expectedRelativePath)
+        }
+        guard fileManager.fileExists(atPath: candidate.path) else {
+            if (try? candidate.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) == true {
+                throw FeedbackOutboxError.invalidStoredPackagePath(expectedRelativePath)
+            }
+            if requireExists { throw FeedbackOutboxError.missingPreparedPackage }
+            return nil
+        }
+        let values = try candidate.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+        guard values.isDirectory == true,
+              values.isSymbolicLink != true,
+              candidate.resolvingSymlinksInPath().standardizedFileURL == candidate else {
+            throw FeedbackOutboxError.invalidStoredPackagePath(expectedRelativePath)
+        }
+        return candidate
+    }
+
     private func sameVolume(_ lhs: URL, _ rhs: URL) throws -> Bool {
         let lhsAttributes = try fileManager.attributesOfFileSystem(forPath: lhs.path)
         let rhsAttributes = try fileManager.attributesOfFileSystem(forPath: rhs.path)
@@ -589,7 +627,19 @@ public final class FeedbackOutboxService {
         guard let report = try context.fetch(descriptor).first else {
             throw FeedbackOutboxError.reportNotFound
         }
+        _ = try storedStatus(report)
         return report
+    }
+
+    private func storedStatus(_ report: FeedbackReport) throws -> FeedbackLocalStatusV1 {
+        do {
+            return try report.requireLocalStatus()
+        } catch let error as FeedbackReportStoredStateError {
+            switch error {
+            case .invalidStoredState(let field, let value):
+                throw FeedbackOutboxError.invalidStoredState(field: field, value: value)
+            }
+        }
     }
 
     private func save(_ context: ModelContext, operation: String) throws {

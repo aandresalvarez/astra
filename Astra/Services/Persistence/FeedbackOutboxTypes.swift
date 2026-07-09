@@ -101,6 +101,8 @@ public struct FeedbackUploadClaim: Equatable, Sendable {
 
 public enum FeedbackOutboxError: Error, Equatable {
     case reportNotFound
+    case invalidStoredState(field: String, value: String)
+    case invalidStoredPackagePath(String)
     case invalidInstallationID
     case invalidIdempotencyKey
     case illegalTransition(from: String, to: String)
