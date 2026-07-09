@@ -2,11 +2,13 @@
 
 **Date:** 2026-07-09
 
-**Status:** Proposed
+**Status:** In progress — contract gate active; dependent production work blocked
 
-**Core delivery:** 11 pull requests
+**Core delivery:** 14 mergeable pull requests: PRs 1–10, 11A, 11B, 11C-server,
+and 11C-client; followed by non-merging integration Gate 11D
 
-**Optional resilience extension:** PR 12, standalone reporter
+**Optional resilience extension:** PR 12, standalone reporter (15th mergeable PR
+if selected)
 
 **Primary repository:** `aandresalvarez/astra`
 
@@ -43,7 +45,7 @@ storage, and native HTTPS transport.
   notification.
 - Regression, integration, security, and failure-injection coverage throughout.
 
-### Out of scope for the core 11 PRs
+### Out of scope for the core 14 PRs
 
 - Automatic merging or releasing of agent-authored fixes.
 - Public upload of raw logs, browser evidence, or macOS crash reports.
@@ -53,6 +55,8 @@ storage, and native HTTPS transport.
 - General-purpose telemetry or behavioral analytics unrelated to a user-created
   feedback report.
 - Reporting when ASTRA itself cannot launch; that is the optional PR 12.
+- Reporter email collection or outbound email notification; V1 uses the
+  receipt-scoped in-app status and optional local notification only.
 
 ## First-Principles Invariants
 
@@ -172,7 +176,8 @@ remote status and receipt as a local projection.
 - Browser evidence, only with explicit selection.
 - Screenshot thumbnails, only with explicit selection.
 - macOS crash, hang, spin, or diagnostic reports, only with explicit selection.
-- Optional reporter contact address, separately consented and never required.
+- No reporter contact address in V1; the opaque receipt/status credential owns
+  reporter-visible follow-up without identity collection.
 
 ### Local outputs
 
@@ -196,24 +201,34 @@ remote status and receipt as a local projection.
 
 Update this table whenever a branch is created, a PR is opened, validation
 changes, or a blocker appears. Use only the listed status values:
-`not_started`, `in_progress`, `blocked`, `in_review`, `merged`, `released`.
+`not_started`, `in_progress`, `blocked`, `in_review`, `merged`, `released`, or
+`optional` for PR 12 only.
 
 | PR | Status | Owner | Branch | PR link | Depends on | Wave | Last validation | Blocker/notes |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 1. Feedback contract | not_started | — | — | — | — | 0 | — | Contract gate |
-| 2. Diagnostics privacy | not_started | — | — | — | 1 | 1 | — | — |
-| 3. Runtime evidence | not_started | — | — | — | 2 | 2 | — | — |
-| 4. Durable outbox | not_started | — | — | — | 1 | 1 | — | SwiftData migration |
-| 5. Report UI | not_started | — | — | — | 2, 3, 4 | 3 | — | — |
-| 6. Native transport | not_started | — | — | — | 4, 7 | 2–3 | — | Can develop against fake server |
-| 7. Intake service | not_started | — | — | — | 1 | 1 | — | Backend location required |
-| 8. GitHub projection | not_started | — | — | — | 7 | 2 | — | GitHub App setup |
-| 9. Assessment/priority | not_started | — | — | — | 1; integrate with 7–8 | 1–2 | — | Use fixtures initially |
-| 10. Developer triage | not_started | — | — | — | 8, 9 | 3 | — | — |
-| 11. Closed-loop delivery | not_started | — | — | — | 5, 6, 8, 9, 10 | 4 | — | Final integration |
-| 12. Standalone reporter | optional | — | — | — | 2, 3 | parallel | — | Not core scope |
+| 1. Feedback contract | in_progress | Task `019f4890-bde1-7793-8b4a-10be3eb4bf21` | `alvaro/feedback-contract-v1` | — | — | 0 | Discovery complete | Hard language-neutral contract gate |
+| 2. Diagnostics privacy | blocked | Task `019f4890-bdd6-71a2-ac82-42aab7b8cd18` | TBD after PR 1 | — | 1 | 1 | Baseline `LogDiagnosticsTests` 49/49 pass | Wait for golden contract |
+| 3. Runtime evidence | blocked | Task `019f4890-bdd6-71a2-ac82-42aab7b8cd18` | Mapping branch after PR 1; integration stack after PR 2 | — | 1 for development; 2 for integration | 2 | Baseline diagnostics 49/49 pass | May map fixtures after PR 1; integrates PR 2 policy |
+| 4. Durable outbox | blocked | Task `019f4890-c2e8-7543-8fcd-f149f4ba7c75` | TBD after PR 1 | — | 1 | 1 | Discovery active | Owns V12 migration and prepared-package adoption |
+| 5. Report UI | blocked | Task `019f4890-c2e8-7543-8fcd-f149f4ba7c75` | TBD | — | 2, 3, 4; live Send also 6 | 3 | Discovery active | Queue/preview only until transport is integrated |
+| 6. Native transport | blocked | Task `019f4890-c2e8-7543-8fcd-f149f4ba7c75` | TBD | — | 1, 2, 4, 7 | 2–3 | Discovery active | Fake server allowed; production needs intake authority |
+| 7. Intake service | blocked | Task `019f4890-bdd9-7560-bde7-b057ec395791` | Backend repo TBD | — | 1 plus backend authority | 1 | ADR/discovery active | Repository, hosting, auth, retention, cost, owner unresolved |
+| 8. GitHub projection | blocked | Task `019f4890-bdd9-7560-bde7-b057ec395791` | Backend repo TBD | — | 7 | 2 | ADR/discovery active | Private target repo and GitHub App required |
+| 9. Assessment/priority | blocked | Task `019f4890-bdc8-7872-8f2c-7af6798f3ed2` | Backend repo TBD | — | 1 for fixtures; 7–8 for integration | 1–2 | Baseline triage suites 20/20 pass | Production worker belongs with backend |
+| 10. Developer triage | blocked | Task `019f4890-bdc8-7872-8f2c-7af6798f3ed2` | TBD | — | 7, 8, 9 | 3 | Baseline triage suites 20/20 pass | Requires authenticated staff triage API |
+| 11A. Root-cause/validation gate | blocked | Task `019f4890-c38c-74c0-92d2-b00a97387278` | TBD | — | 10 | 4 | Baseline focused suites 43/43 pass | Wait for upstream contracts |
+| 11B. Branch/worktree/draft PR | blocked | Task `019f4890-c38c-74c0-92d2-b00a97387278` | TBD | — | 10, 11A | 4 | Baseline focused suites 43/43 pass | ASTRA repository boundary |
+| 11C-server. Merge/release reconciliation | blocked | Task `019f4890-c38c-74c0-92d2-b00a97387278` | Backend branch TBD | — | 7, 8, 11B | 4 | Contract discovery | Backend authority required |
+| 11C-client. Released-status UI | blocked | Task `019f4890-c38c-74c0-92d2-b00a97387278` | ASTRA branch TBD | — | 6, 11C-server contract | 4 | Baseline focused suites 43/43 pass | ASTRA status projection only |
+| Gate 11D. End-to-end integration | blocked | Task `019f4890-c38c-74c0-92d2-b00a97387278` | Disposable integration branch | — | 1–11C-client | 4 | `040e80a6`: 43/43 focused pass | Non-merging proof; never a feature base |
+| 12. Standalone reporter | optional | — | — | — | 1–3 for export; add 6–7 for submission | parallel | — | Not core scope |
 
 ## Parallelization and Merge Order
+
+The program-plan branch is intentionally one commit ahead of `main`. Feature
+branches are stacked only on their declared dependency, target that dependency
+for review, and are retargeted after it merges. The disposable Gate 11D branch
+is never used as a feature base and never replaces the individual PR histories.
 
 ### Wave 0 — contract gate
 
@@ -223,38 +238,49 @@ changes, or a blocker appears. Use only the listed status values:
 
 - [ ] Track A: PR 2, diagnostics privacy and deterministic evidence packaging.
 - [ ] Track B: PR 4, durable feedback report and outbox.
-- [ ] Track C: PR 7, intake service and private evidence storage.
+- [ ] Track C: PR 7 only after backend repository, hosting, authentication,
+  retention, cost, and deployment ownership are authorized.
 - [ ] Track D: PR 9, assessment and priority contracts using fixtures.
 
 ### Wave 2 — parallel extensions
 
-- [ ] PR 3 follows PR 2.
+- [ ] PR 3 contract mapping can start after PR 1 in parallel with PR 2; its
+  production integration follows PR 2.
 - [ ] PR 8 follows PR 7.
-- [ ] PR 6 can develop against the PR 1 API fixture while PR 7 is in progress;
-  merge it only after client/server contract verification.
+- [ ] PR 6 can develop against the PR 1 API fixture after PR 2 defines final
+  package semantics; merge it only after client/server contract verification.
 - [ ] PR 9 integrates with PR 7/8 after its pure assessment and priority tests
   pass against fixtures.
 
 ### Wave 3 — product and developer workflows
 
 - [ ] PR 5 integrates diagnostics, runtime evidence, and durable report state.
+  Its live Send action remains queue-only until PR 6 is integrated.
 - [ ] PR 6 completes native upload and remote-status synchronization.
-- [ ] PR 10 integrates GitHub projection, assessment, priority, and human gates.
+- [ ] PR 10 integrates the authenticated staff triage API, GitHub projection,
+  assessment, priority, and human gates.
 
 ### Wave 4 — final integration
 
-- [ ] PR 11 proves the complete user-to-release loop and operational failure
-  paths on a disposable integration branch before merging.
+- [ ] PR 11A adds the ASTRA root-cause and validation readiness gate.
+- [ ] PR 11B adds isolated branch/worktree and idempotent draft-PR orchestration.
+- [ ] PR 11C-server owns backend merge/release reconciliation and notification;
+  PR 11C-client owns ASTRA released-status consumption and presentation.
+- [ ] Gate 11D proves the complete loop and operational failure paths on a
+  disposable integration branch. The integration branch is never merged
+  wholesale and is never used as a feature base.
 
 ### Conflict ownership
 
 Assign one active editor at a time for these hotspots:
 
-- `Astra/Services/Diagnostics/LogDiagnosticsService.swift`
-- `Astra/Models/SchemaVersions.swift`
-- `Package.swift`
-- `Tests/ArchitectureFitnessTests/ArchitectureFitnessTests.swift`
-- Shared feedback contract types in `ASTRACore`
+- `ASTRACore/Feedback/*`: PR 1 only until the contract gate merges.
+- `Astra/Services/Diagnostics/LogDiagnosticsService.swift`: PR 2 only.
+- `Astra/Services/Diagnostics/CrashDiagnosticsService.swift`: PR 2, then PR 5.
+- `Astra/Models/SchemaVersions.swift`: PR 4 only for V12 and its migration.
+- `Package.swift`: optional PR 12 only unless a separately reviewed need appears.
+- `Tests/ArchitectureFitnessTests/ArchitectureFitnessTests.swift`: one named
+  integration owner at a time.
 
 ## PR 1 — Versioned Feedback Contract and Privacy Model
 
@@ -278,10 +304,19 @@ status, consent, evidence, and idempotency.
 
 - `FeedbackReportEnvelopeV1`, `FeedbackReportPayloadV1`, evidence inventory,
   runtime snapshot, receipt, and status DTOs.
-- Canonical JSON encoding rules: sorted keys, ISO-8601 UTC timestamps, stable
-  enum raw values, deterministic artifact ordering.
-- Idempotency and request-signature rules.
-- Sanitized example and adversarial fixtures usable by client and server.
+- Language-neutral JSON Schema and OpenAPI definitions for request, receipt,
+  status, error, assessment, and staff-triage DTOs.
+- Canonical JSON rules covering timestamp precision, UTC formatting, Unicode
+  normalization, number encoding, stable enum values, artifact ordering, hash
+  inputs, request framing, unknown values, and size limits.
+- Checked-in golden request, receipt, status, and error bytes/hashes that every
+  implementation language must consume directly.
+- Idempotency and authentication semantics. A report identity is non-secret;
+  its status-read credential is separate and never placed in URLs, issues, or
+  logs. V1 does not freeze or expose a request-signature field/algorithm until
+  the authentication model is selected.
+- Sanitized example and adversarial fixtures usable by client and server without
+  re-encoding them through Swift-specific defaults.
 - Contract documentation and compatibility policy.
 
 ### Likely files
@@ -299,7 +334,16 @@ status, consent, evidence, and idempotency.
 - [ ] Define required versus optional fields and maximum lengths/counts.
 - [ ] Define local status, remote status, receipt, and retry semantics.
 - [ ] Define evidence disclosure classes: standard, sensitive, explicit opt-in.
-- [ ] Define canonical encoding and hashing test vectors.
+- [ ] Define canonical encoding and hashing test vectors across Swift and an
+  independent reference implementation; the selected backend language must
+  later pass the same checked-in vectors.
+- [ ] Bind an idempotency key to installation identity and canonical digest:
+  same key/same digest returns the original report; same key/different digest is
+  a typed conflict; cross-install replay and status reads are forbidden.
+- [ ] Define the digest over schema version, canonical payload, redaction-policy
+  version, and ordered hashes of the final artifact bytes.
+- [ ] Keep receipt/status credentials out of URLs and define protected-at-rest
+  server representation before backend implementation begins.
 - [ ] Define backward-compatible decoding expectations for additive V1 fields.
 - [ ] Add examples containing hostile strings, malformed Unicode, and unknown
   future enum values.
@@ -307,15 +351,20 @@ status, consent, evidence, and idempotency.
 ### Tests and regression coverage
 
 - [ ] Round-trip every contract type.
-- [ ] Assert canonical JSON bytes are stable across repeated encodes.
+- [ ] Assert golden canonical JSON bytes and hashes match across Swift and an
+  independent reference implementation, locales, time zones, timestamp
+  boundaries, Unicode forms, and supported numeric values.
 - [ ] Assert evidence ordering is deterministic.
 - [ ] Assert unknown or missing required versions fail with typed errors.
 - [ ] Assert size/count limits reject oversized payloads before transport.
 - [ ] Assert hostile strings remain inert data.
+- [ ] Assert same-key/different-digest, expired/malformed receipt,
+  cross-install status read, and remote-status downgrade fail with typed errors.
 
 ### Acceptance criteria
 
-- [ ] Client and fake-server fixtures validate the same payload bytes and hash.
+- [ ] Client and fake-server implementations validate checked-in golden bytes
+  and hashes rather than independently deriving compatible-looking fixtures.
 - [ ] No contract type imports runtime, UI, persistence, or GitHub code.
 - [ ] Contract changes after merge require a compatibility review and fixture
   update.
@@ -343,9 +392,13 @@ every included artifact.
 
 - `FeedbackEvidenceBuilder` with deterministic artifact ordering.
 - Central `FeedbackEvidencePolicy` allowlist and disclosure classification.
-- Second-pass textual sanitizer and typed omission records.
+- Typed per-artifact transformers and omission records. Generic raw-file copy is
+  not a valid remote-feedback path.
 - Manifest V1 hashes, byte counts, redaction counts, and warnings.
-- Safe evidence archive with no raw-copy shortcut for shareable content.
+- A temporary immutable prepared package produced transactionally and handed to
+  PR 4 through an explicit `prepare -> adopt` boundary.
+- Safe evidence package with stable metadata, permissions, ordering, and no
+  raw-copy shortcut for remotely shareable content.
 
 ### Likely files
 
@@ -361,21 +414,39 @@ every included artifact.
 
 - [ ] Separate local diagnostics export from remotely shareable feedback
   evidence while reusing common analysis code.
+- [ ] Build feedback only from typed allowlisted fields. Never consume generic
+  `TaskEvent.payload`, `TaskRun.output`, or arbitrary source files.
 - [ ] Classify each artifact kind and require explicit opt-in where necessary.
-- [ ] Sanitize every textual artifact after reading and before staging.
+- [ ] Transform browser JSONL structurally and exclude embedded base64 JPEGs;
+  screenshots are separate explicit-opt-in artifacts.
+- [ ] Transform crash and runtime diagnostics into typed bounded fields before
+  staging; regex-only redaction is not sufficient.
 - [ ] Reject or omit unsupported binary and oversized artifacts.
 - [ ] Make crash/browser evidence opt-in by construction.
+- [ ] Replace or omit stable unsalted browser hashes; any diagnostic
+  correlation identifier must be report-local and keyed.
 - [ ] Record omissions and redaction warnings in the manifest.
+- [ ] Inject one stable report timestamp; never derive hash-affecting timestamps
+  independently for each file or archive entry.
 - [ ] Hash final bytes, not source bytes.
-- [ ] Ensure staging cleanup occurs on success, failure, and cancellation.
+- [ ] Define manifest/package hashing without a circular self-hash.
+- [ ] Construct in a temporary location and atomically transfer ownership only
+  after all transforms, hashes, manifest checks, and close steps succeed. PR 4
+  owns retention and deletion after adoption.
+- [ ] Ensure temporary staging cleanup occurs on success, failure, cancellation,
+  and disk-full errors.
 
 ### Tests and regression coverage
 
 - [ ] Prove secrets, tokens, credentials, emails, home paths, and entered browser
   values do not survive in any shareable artifact.
 - [ ] Prove crash/browser artifacts are absent without explicit selection.
-- [ ] Prove deterministic archive inventory and hashes.
-- [ ] Prove corrupt, unreadable, symlinked, and oversized artifacts fail closed.
+- [ ] Prove deterministic package inventory and hashes. If an archive is used,
+  its timestamps, permissions, entry ordering, and bytes must also be stable.
+- [ ] Prove traversal, hardlinks, symlinks, corrupt, injected-unreadable,
+  changing-during-read, and oversized artifacts fail closed without adopting a
+  partial package.
+- [ ] Prove cancellation and disk-full failure clean temporary artifacts.
 - [ ] Prove diagnostics export still works for existing local users.
 - [ ] Prove generated files retain restrictive filesystem permissions.
 
@@ -396,11 +467,12 @@ provider.
 and failure facts exist, but a feedback report needs one stable cross-runtime
 shape and must never wait on a hung provider.
 
-**Dependencies:** PR 2.
+**Dependencies:** PR 1 for contract mapping; PR 2 for production integration
+with its privacy policy and prepared-package boundary.
 
 ### Inputs
 
-- Persisted run/task events and logs.
+- Typed persisted runtime diagnostic records and approved log fields.
 - `AgentRuntimeFailureDiagnostic` fields.
 - Runtime readiness results already recorded before or during launch.
 - Antigravity diagnostic summaries and provider stream telemetry.
@@ -427,6 +499,8 @@ shape and must never wait on a hung provider.
 - [ ] Define one provider-neutral mapping from existing runtime evidence.
 - [ ] Read persisted evidence only; never launch readiness probes during report
   preparation.
+- [ ] Never expose generic task-event payloads, task-run output, raw stderr, raw
+  environment, or arbitrary files through the snapshot contract.
 - [ ] Bound and sanitize provider output.
 - [ ] Record whether the runtime was missing, unauthenticated, misconfigured,
   denied, timed out, rate-limited, quota-limited, or failed opaquely.
@@ -439,7 +513,8 @@ shape and must never wait on a hung provider.
 - [ ] Test Claude empty stderr with useful result-output failure.
 - [ ] Test Copilot permission/auth failure.
 - [ ] Test Antigravity diagnostic-log evidence.
-- [ ] Test hung runtime snapshot completes without awaiting the process.
+- [ ] Test a recorded hung-runtime state completes without starting or awaiting
+  a real provider process; use a fail-fast spy to prove no readiness/launch call.
 - [ ] Test all runtimes absent and feedback evidence still builds.
 - [ ] Test unknown runtime and unknown failure category preservation.
 
@@ -467,8 +542,10 @@ that a report survives relaunch, network loss, cancellation, or server failure.
 
 ### Outputs
 
-- SwiftData `FeedbackReport` model and migration.
+- SwiftData `FeedbackReport` model and V12 migration.
 - `FeedbackOutboxService` owning legal transitions and persistence.
+- Atomic adoption of PR 2's immutable prepared package into outbox-owned local
+  storage; PR 4 becomes the sole retention/deletion owner after adoption.
 - Stable idempotency key created before the first network attempt.
 - Retry scheduling metadata, attempt history, receipt projection, and cleanup
   policy.
@@ -484,6 +561,8 @@ that a report survives relaunch, network loss, cancellation, or server failure.
 ### Implementation checklist
 
 - [ ] Add immutable report identity and idempotency key.
+- [ ] Adopt only complete prepared packages; reject missing, corrupt, or
+  manifest-mismatched packages without advancing report state.
 - [ ] Persist intent, selections, local artifact references, hashes, consent
   version, state, attempts, last error, receipt, and remote status.
 - [ ] Route all state changes through one service.
@@ -491,16 +570,22 @@ that a report survives relaunch, network loss, cancellation, or server failure.
 - [ ] Recover `uploading` reports deterministically after app termination.
 - [ ] Prevent duplicate concurrent sends for one report.
 - [ ] Bound local retention and preserve submitted receipts after artifact expiry.
+- [ ] Use injected clocks/backoff and separate persistence contexts for
+  deterministic retry, retention, and concurrent-claim tests.
 
 ### Tests and regression coverage
 
-- [ ] Open an existing pre-feature store through the new migration.
+- [ ] Open a populated disk-backed V11 store through the V12 migration and
+  verify existing rows and relationships remain intact.
 - [ ] Round-trip every state and optional receipt field.
 - [ ] Reject illegal transitions.
 - [ ] Recover an interrupted upload to a retryable queued state.
 - [ ] Prove repeated retry uses one idempotency key.
 - [ ] Prove concurrent send attempts result in one active claim.
-- [ ] Run full `swift test` because this changes the SwiftData schema.
+- [ ] Prove adoption, retention, and cancellation races never delete a package
+  still owned by an active outbox record.
+- [ ] Run full `swift test --no-parallel` because this changes the SwiftData
+  schema.
 
 ### Acceptance criteria
 
@@ -517,7 +602,8 @@ disclosure preview and useful entry points.
 translate logs into a developer issue. Privacy consent must occur at the moment
 evidence is selected.
 
-**Dependencies:** PRs 2, 3, and 4.
+**Dependencies:** PRs 2, 3, and 4. A live Send action additionally depends on
+PR 6; before then, this PR is queue/preview-only.
 
 ### Inputs
 
@@ -532,7 +618,8 @@ evidence is selected.
 - Required intent/actual/expected/blocked fields.
 - Default 15-minute evidence window.
 - Exact selectable disclosure inventory and privacy warnings.
-- Submission receipt/status presentation.
+- Queued/report status presentation; live receipt/status presentation is
+  enabled only after PR 6 is integrated.
 - Next-launch prompt for a newly detected unreported ASTRA crash.
 
 ### Likely files
@@ -554,6 +641,8 @@ evidence is selected.
 - [ ] Require review of sensitive evidence selections.
 - [ ] Save a draft before expensive evidence work.
 - [ ] Show queued, sending, submitted, retryable, and permanent-failure states.
+- [ ] Do not expose a live Send path on a branch without PR 6; label the action
+  as queue-only in intermediate stacked review.
 - [ ] Detect only new, not-yet-offered crash reports on next launch.
 - [ ] Keep reporting available when runtime settings are invalid or empty.
 
@@ -565,7 +654,11 @@ evidence is selected.
 - [ ] Test cancelling preserves or deletes a draft according to explicit choice.
 - [ ] Test all runtimes unavailable and the report UI remains enabled.
 - [ ] Test one crash prompt per crash fingerprint.
-- [ ] Add accessibility identifiers and keyboard/navigation coverage.
+- [ ] Test crash opt-out, corrupt crash metadata, fingerprint stability, consent
+  version changes, and preview-to-final-manifest identity.
+- [ ] Add accessibility identifiers and presentation/command routing tests.
+  Document a manual keyboard and accessibility pass unless this PR deliberately
+  adds a real UI automation harness.
 
 ### Acceptance criteria
 
@@ -581,12 +674,12 @@ or GitHub client dependency.
 **Root cause addressed:** A runtime-related failure cannot be reported reliably
 if delivery depends on a provider CLI, connector, MCP package, or `gh` login.
 
-**Dependencies:** PR 4 and the PR 7 server contract. Development may begin
-against the PR 1 fake server.
+**Dependencies:** PRs 1, 2, and 4 plus the PR 7 server contract. Development may
+begin against the golden PR 1 fake server after PR 2 freezes package semantics.
 
 ### Inputs
 
-- Prepared canonical payload and evidence archive.
+- Prepared canonical payload and PR 4-owned immutable evidence package.
 - Durable outbox claim and idempotency key.
 - Intake endpoint configuration and receipt/status contract.
 
@@ -610,6 +703,8 @@ against the PR 1 fake server.
 ### Implementation checklist
 
 - [ ] Use native HTTPS and ephemeral request configuration as appropriate.
+- [ ] Reject plaintext HTTP, HTTPS downgrades, cross-origin redirects, and
+  redirects that could forward status credentials or report content.
 - [ ] Send idempotency key and payload/evidence hashes.
 - [ ] Validate status codes, MIME types, receipt shape, and server hash echo.
 - [ ] Classify offline, timeout, server, validation, auth, and permanent errors.
@@ -624,6 +719,9 @@ against the PR 1 fake server.
 - [ ] Test timeout after server acceptance followed by idempotent retry.
 - [ ] Test duplicate receipt response maps to the original report.
 - [ ] Test malformed/hostile server response fails closed.
+- [ ] Test a real local server boundary, HTTPS enforcement, redirect rejection,
+  cancellation/backoff, same key/different digest, expired/malformed/cross-
+  report receipts, and remote-status downgrade.
 - [ ] Test app termination during upload and next-launch recovery.
 - [ ] Assert no runtime, MCP, connector, or `gh` call is reachable.
 
@@ -642,7 +740,9 @@ idempotent receipt without waiting for GitHub or AI.
 diagnostics directly to issues would expose credentials, couple the client to
 GitHub availability, and require reporters to use GitHub.
 
-**Dependencies:** PR 1.
+**Dependencies:** PR 1 plus explicit authorization of the backend repository,
+provider, region, authentication, retention, cost limits, deployment owner, and
+GitHub visibility. Production code cannot begin in the ASTRA app repository.
 
 ### Inputs
 
@@ -659,24 +759,40 @@ GitHub availability, and require reporters to use GitHub.
 - Hash/size/type verification before storage.
 - Asynchronous jobs for GitHub projection and assessment.
 - Status read endpoint scoped to the receipt.
+- Authenticated staff-triage API used by PR 10.
+- Release/status reconciliation API used by PR 11C-server/client.
 
 ### Likely files/repository
 
-- Backend repository and deployment configuration: **TBD before starting**.
+- Backend repository and deployment configuration: **TBD and a hard production
+  start gate**. The ASTRA app repository may hold ADR/API/security design only;
+  it must not add an in-process feedback backend target.
 - Contract fixtures copied or consumed from PR 1 without manual divergence.
 - Service unit, integration, infrastructure, and deployment tests.
 
 ### Implementation checklist
 
-- [ ] Select hosting, datastore, object storage, retention, and secret storage.
+- [ ] Implement and validate the authorized hosting, datastore, object storage,
+  retention, queue, KMS, and secret-storage design from the pre-PR ADR.
+- [ ] Implement the authorized client-authentication model without an embedded
+  app-wide secret.
+- [ ] Separate non-secret report identity from status-read credentials; store
+  credential verifiers encrypted or one-way protected and never log them.
 - [ ] Validate version, size, hash, MIME type, and consent inventory.
+- [ ] Prefer typed multipart artifact parts. If archives are accepted, enforce
+  path, symlink, entry-count, expanded-size, compression-ratio, and time limits
+  before extraction into an isolated location.
 - [ ] Store report metadata separately from encrypted evidence blobs.
-- [ ] Make idempotency atomic at the datastore boundary.
+- [ ] Store evidence in private object storage with KMS-backed encryption and no
+  public or issue-visible object URLs.
+- [ ] Make idempotency and accepted-report/job enqueue atomic at the datastore
+  boundary using a transactional outbox.
 - [ ] Return receipt before GitHub or assessment processing.
 - [ ] Apply per-client and per-network abuse controls without collecting
   unnecessary identity data.
 - [ ] Expire evidence while retaining minimal issue/status audit metadata.
-- [ ] Add operational logs that never contain report bodies or evidence.
+- [ ] Add operational logs that never contain report bodies, artifact names,
+  credentials, contact data, or evidence.
 
 ### Tests and regression coverage
 
@@ -684,9 +800,14 @@ GitHub availability, and require reporters to use GitHub.
 - [ ] Concurrent duplicate requests create one report.
 - [ ] Hash, size, version, and MIME mismatches are rejected.
 - [ ] Storage failure cannot return success.
+- [ ] Accepted-report persistence with enqueue failure recovers exactly once
+  through the transactional outbox.
+- [ ] Archive traversal and decompression-bomb fixtures fail before storage.
 - [ ] GitHub/assessment outage does not reject accepted intake.
 - [ ] Retention job deletes evidence and preserves required audit metadata.
 - [ ] Authorization prevents one receipt from reading another report.
+- [ ] Expired, malformed, replayed, and cross-install status credentials fail
+  without leaking report existence.
 - [ ] Load and rate-limit tests cover expected abuse paths.
 
 ### Acceptance criteria
@@ -694,6 +815,8 @@ GitHub availability, and require reporters to use GitHub.
 - [ ] The client receives a stable receipt without GitHub or AI availability.
 - [ ] Evidence is private, encrypted, expiring, and access-audited.
 - [ ] Replaying one request cannot duplicate storage or downstream jobs.
+- [ ] Backend-native lint, unit, integration, infrastructure, and deployment
+  checks pass in addition to the shared golden contract suite.
 
 ## PR 8 — GitHub App Projection, Deduplication, and Security Routing
 
@@ -710,7 +833,7 @@ placing sensitive evidence in issue bodies creates privacy and retention risk.
 - Accepted report record and sanitized summary.
 - Deterministic failure fingerprint.
 - GitHub App installation with minimum Issue permissions.
-- Repository, labels, and private security-routing configuration.
+- Private repository, labels, and private security-routing configuration for V1.
 
 ### Outputs
 
@@ -730,20 +853,26 @@ placing sensitive evidence in issue bodies creates privacy and retention risk.
 ### Implementation checklist
 
 - [ ] Define fingerprint inputs and normalization rules.
-- [ ] Search open issues by stored mapping/fingerprint before creation.
-- [ ] Keep raw evidence and expiring links out of public issue bodies.
+- [ ] Own deduplication through a database unique constraint and per-fingerprint
+  projection record; GitHub search is reconciliation evidence, not the owner.
+- [ ] Keep raw evidence, credentials, and expiring links out of issue bodies.
+- [ ] Generate titles from trusted component/kind enums and neutralize user
+  mentions, issue/commit autolinks, and hostile Markdown in projected text.
 - [ ] Record occurrence count and affected build range privately or in sanitized
   issue metadata.
 - [ ] Route high-risk reports to a private security workflow.
 - [ ] Make projection idempotent and reconcilable after partial API failures.
-- [ ] Use a GitHub App installation token with minimum permissions.
+- [ ] Use short-lived GitHub App installation tokens with repository metadata
+  read and issues write only.
 
 ### Tests and regression coverage
 
 - [ ] Same fingerprint updates one issue and increments one occurrence.
 - [ ] Different component/build evidence does not false-deduplicate.
 - [ ] GitHub timeout after creation reconciles without a second issue.
-- [ ] Security/credential signals never create a public issue.
+- [ ] Concurrent projection, token expiry/renewal, and closed-fixed-issue versus
+  genuine-regression cases remain deterministic.
+- [ ] Security/credential signals never leave the private security route.
 - [ ] Hostile title/body strings remain data and cannot alter API calls.
 - [ ] Missing labels/permissions produce a recoverable projection failure.
 
@@ -752,6 +881,8 @@ placing sensitive evidence in issue bodies creates privacy and retention risk.
 - [ ] Every remote report maps to zero or one active engineering issue.
 - [ ] GitHub contains enough sanitized context for triage and no raw evidence.
 - [ ] Intake remains successful when projection is delayed or unavailable.
+- [ ] Any future public projection is a separate explicit human decision and is
+  not part of the V1 automation.
 
 ## PR 9 — Read-Only Assessment and Deterministic Priority
 
@@ -791,10 +922,17 @@ fixtures.
 ### Implementation checklist
 
 - [ ] Separate the read-only analyzer from the privileged GitHub publisher.
+- [ ] Treat source as untrusted. A trusted fetcher maps signed ASTRA build
+  provenance to an allowlisted repository and full commit SHA.
+- [ ] Materialize a read-only snapshot with hooks, submodules, LFS smudge,
+  credential helpers, build scripts, and repository-local executables disabled.
 - [ ] Provide report contents as quoted/serialized data, never shell fragments.
-- [ ] Give the analyzer no code-write, issue-write, secret-read, or deployment
-  permissions.
-- [ ] Require schema-valid output and fail closed on malformed assessments.
+- [ ] Enforce an analyzer sandbox with no process/shell launch, network,
+  credential, database, GitHub, deployment, or source-write capabilities.
+- [ ] Require schema-valid, length-bounded output with citations to allowlisted
+  source/evidence identifiers; fail closed on malformed assessments.
+- [ ] Persist an immutable assessment draft, then let a distinct publisher
+  validate and publish it.
 - [ ] Compute priority from validated facts and deterministic policy.
 - [ ] Record human priority overrides and reasons.
 - [ ] Retry agent failures without blocking issue creation or human triage.
@@ -803,11 +941,15 @@ fixtures.
 
 - [ ] Prompt-injection payloads cannot trigger tools, shell, writes, or secret
   access.
+- [ ] Source-code prompt injection, malicious repo configuration, hooks,
+  submodules, and build scripts remain inert.
 - [ ] Malformed or missing model output leaves `assessment_pending/failed`.
 - [ ] Same facts produce the same deterministic priority.
 - [ ] P0 security/data-loss conditions override lower model recommendations.
 - [ ] Unknown cause produces `needs_information`, not a confident root cause.
 - [ ] Exact release source versus current-main drift is represented explicitly.
+- [ ] Missing/unknown build provenance and non-allowlisted commits cannot enter
+  the analyzer sandbox.
 - [ ] Full human triage remains possible with assessment disabled.
 
 ### Acceptance criteria
@@ -825,7 +967,8 @@ into draft implementation work only after an explicit human decision.
 input would cross the trust boundary and bypass product, priority, and scope
 judgment.
 
-**Dependencies:** PRs 8 and 9.
+**Dependencies:** PRs 7, 8, and 9. PR 7 must expose an authenticated staff API;
+the Workspace App must not read backend storage or evidence objects directly.
 
 ### Inputs
 
@@ -864,16 +1007,22 @@ judgment.
 - [ ] Populate constraints, acceptance criteria, exact release/source handles,
   and proposed regression test.
 - [ ] Record duplicate, decline, needs-information, and override decisions.
+- [ ] Bind approval to an immutable assessment/revision and reject stale
+  approvals after the underlying report, assessment, or proposed scope changes.
 
 ### Tests and regression coverage
 
 - [ ] Unapproved reports cannot create or run implementation tasks.
 - [ ] Approval creates exactly one draft task.
 - [ ] Repeated approval/retry returns the existing task.
+- [ ] Concurrent approvals still create one task and preserve one audit trail.
+- [ ] Stale assessment approval is rejected and re-prompts the reviewer.
 - [ ] A later gate re-prompts rather than inheriting earlier approval.
 - [ ] Declined/duplicate/security reports follow their distinct paths.
 - [ ] Missing assessment still permits human triage but requires explicit scope.
 - [ ] External route `run=1` remains unable to authorize execution.
+- [ ] Run the `FeedbackTriageWorkspaceApp`, `WorkspaceAppApprovalQueue`,
+  `AgenticWorkflow`, `AstraExternalRouting`, and Workspace App end-to-end suites.
 
 ### Acceptance criteria
 
@@ -882,84 +1031,121 @@ judgment.
   acceptance.
 - [ ] No external input directly mutates task execution status.
 
-## PR 11 — Root-Cause Implementation, Draft PR, Release, and Reporter Loop
+## PR 11 Work Package — Root Cause to Released Fix
 
-**Objective:** Complete the accepted-report-to-released-fix loop with enforced
-root-cause, regression, review, and notification gates.
+**Objective:** Complete the accepted-report-to-released-fix loop through four
+repository-local PRs with independent ownership and regression gates.
 
-**Root cause addressed:** Creating a task is not a closed feedback loop. Without
-explicit implementation and release gates, issues can receive symptom patches,
-lose validation evidence, or close before users receive the fix.
+**Root cause addressed:** Creating a task is not a closed feedback loop. The
+former single PR 11 crossed validation, Git authoring, backend reconciliation,
+release, notification, and end-to-end ownership boundaries. Splitting it keeps
+each state transition deterministic and reviewable.
 
-**Dependencies:** PRs 5, 6, 8, 9, and 10.
+### PR 11A — Root-Cause and Validation Readiness Gate
 
-### Inputs
+**Dependencies:** PR 10.
 
-- Human-approved draft implementation task.
-- Exact reported release and current `main`.
-- Structured assessment and private evidence access policy.
-- Repository branch protection, CI, release, and appcast metadata.
+**Inputs:** Human-approved draft implementation task, immutable assessment
+revision, exact reported release, current source revision, and acceptance scope.
 
-### Outputs
+**Outputs:** A typed readiness decision requiring behavioral owner, evidence,
+counterevidence, alternatives, regression plan, acceptance criteria, and
+validation commands before `agent_ready` or `fix_ready`.
 
-- Root-cause quality gate before implementation readiness.
-- Isolated feature branch/worktree and implementation task execution.
-- Regression test reproducing the defect and passing after the fix.
-- Validation contract, handoff, and draft PR linked to the issue.
-- GitHub/reporter status transitions through merged and released.
-- In-app `Fixed in version X` status and update guidance.
+**Likely files:** `Astra/Services/Validation/*`,
+`Astra/Services/Validation/TaskCorrectiveWorkService.swift`, task-validation
+events, and focused validation regression tests.
 
-### Likely files
+**Tests and acceptance:**
 
-- `Astra/Services/Validation/*`
-- `Astra/Services/Tasks/TaskWorkerHandoffService.swift`
-- `Astra/Services/Validation/TaskCorrectiveWorkService.swift`
-- `Astra/Services/Git/GitAuthoringService.swift`
-- Feedback status synchronization services from PR 6
-- `.github/workflows/ci.yml` or a focused new workflow only if necessary
-- Release/appcast integration and dedicated end-to-end tests
+- [ ] Missing or stale root-cause fields prevent implementation readiness.
+- [ ] A bug fix without linked regression proof cannot become `fix_ready`.
+- [ ] CI/validation failure prevents ready, merged, or released projection.
+- [ ] Existing task-completion, validation, corrective-work, and durable-event
+  suites remain green.
 
-### Implementation checklist
+### PR 11B — Isolated Branch, Worktree, Handoff, and Draft PR
 
-- [ ] Require behavioral owner, evidence, alternatives, regression plan, and
-  acceptance criteria before marking `agent_ready`.
-- [ ] Pin work to the intended repository and source revision.
-- [ ] Require an isolated branch/worktree for code changes.
-- [ ] Require a regression test for every accepted bug fix.
-- [ ] Run narrow tests before adjacent and full validation ladders.
-- [ ] Produce a durable handoff with files, commands, evidence, blockers, and
-  residual risks.
-- [ ] Open a draft PR; preserve human review, merge, and release authority.
-- [ ] Reconcile merged PR and release/appcast version back to report status.
-- [ ] Notify the reporter without exposing other reporters or private issues.
+**Dependencies:** PRs 10 and 11A.
 
-### Tests and regression coverage
+**Inputs:** Ready implementation task, pinned repository/full SHA, branch
+policy, validation evidence, and human acceptance record.
 
-- [ ] Task cannot become implementation-ready without root-cause fields.
-- [ ] Bug-fix task cannot become fix-ready without a linked regression test and
-  passing validation evidence.
-- [ ] PR creation is idempotent and links the correct issue/task.
-- [ ] CI failure prevents `fix_ready`/`merged` reporting.
-- [ ] Merge without release remains `merged`, not `released`.
-- [ ] Appcast/release confirmation moves only affected reports to `released`.
-- [ ] Reporter notification retries without duplicating messages.
-- [ ] Full fake end-to-end run covers runtime outage, offline retry, duplicate
-  issue, assessment outage, human approval, draft PR, and release.
+**Outputs:** Isolated feature branch/worktree, durable implementation handoff,
+regression-tested change, and exactly one draft PR linked to the report, issue,
+task, assessment revision, and validation record.
 
-### Acceptance criteria
+**Likely files:** `Astra/Services/Tasks/TaskWorkerHandoffService.swift`,
+`Astra/Services/Git/GitAuthoringService.swift`, PR/worktree services, and their
+existing regression suites.
 
+**Tests and acceptance:**
+
+- [ ] Work is pinned to the intended repository and full source revision.
+- [ ] Code changes require an isolated branch/worktree.
+- [ ] Repeated or concurrent PR creation returns the same draft PR.
+- [ ] The handoff records files, commands, evidence, blockers, and residual risk.
 - [ ] No agent-authored change is auto-merged or auto-released.
-- [ ] Every shipped bug fix has root-cause documentation and regression proof.
+
+### PRs 11C-server and 11C-client — Release and Reporter Loop
+
+**Dependencies:** PR 11C-server depends on PRs 7, 8, and 11B. PR 11C-client
+depends on PR 6 and the frozen PR 11C-server status/release contract.
+
+**Inputs:** GitHub PR/merge events, validated fix-to-release mapping, signed
+release/appcast metadata, report receipts, and reporter notification policy.
+
+**Outputs:** Backend-owned merged-versus-released reconciliation, client status
+projection, in-app `Fixed in version X`, update guidance, and idempotent reporter
+notification without exposing private reports or other reporters.
+
+**Repository split:** PR 11C-server implements backend merge/release
+reconciliation and notification in the authorized backend repository. PR
+11C-client implements only status consumption and reporter presentation in
+ASTRA. They are two of the 14 core mergeable PRs.
+
+**Tests and acceptance:**
+
+- [ ] Merge without a matching release remains `merged`, never `released`.
+- [ ] Replayed, wrong-version, unrelated, or out-of-order release events do not
+  release a report.
+- [ ] Appcast/release confirmation moves only included fixes to `released`.
+- [ ] Notification retry does not duplicate messages or reveal private data.
 - [ ] Reporter-visible resolution names the actual released version.
-- [ ] Full Swift tests, whitespace, build verification, and end-to-end feedback
-  tests pass on the integrated tree.
+
+### Gate 11D — Disposable End-to-End Integration and Release Proof
+
+**Dependencies:** PRs 1–11C-client.
+
+**Inputs:** Reviewable branches from every prerequisite repository, private
+preview backend/repository, test GitHub App, test appcast/release, and isolated
+ASTRA development data.
+
+**Outputs:** Cross-repository compatibility proof and an auditable matrix of the
+complete user-to-release flow. The integration branch is disposable, never a
+feature base, and never merged wholesale; validated feature PRs retain their
+own ancestry and review history. Gate 11D is not counted as a mergeable PR.
+
+**Tests and acceptance:**
+
+- [ ] Full fake end-to-end run covers runtime outage, offline retry, duplicate
+  issue, assessment outage, human approval, draft PR, merge, and release.
+- [ ] Preview-environment tests cover private GitHub projection, release-event
+  replay, status downgrade, notification retry, and evidence expiry.
+- [ ] All ASTRA focused suites, `script/prepush.sh`, full non-parallel Swift
+  tests, whitespace, and development build verification pass.
+- [ ] Production-channel verification runs only in a clean test account against
+  isolated data, never the user's active production workspaces or Keychain.
+- [ ] Backend-native lint, unit, integration, infrastructure, deployment, and
+  reconciliation suites pass in the selected backend repository.
 
 ## Optional PR 12 — Standalone ASTRA Reporter
 
 **Objective:** Permit diagnostics collection when the main ASTRA application
 cannot launch.
 
-**Dependencies:** PRs 2 and 3.
+**Dependencies:** PRs 1–3 for local export. Native submission additionally
+depends on PRs 6 and 7.
 
 ### Inputs
 
@@ -982,12 +1168,12 @@ cannot launch.
 
 ## Global Regression Matrix
 
-Every row must have at least one automated test before PR 11 merges.
+Every row must have at least one automated test before Gate 11D passes.
 
 | Scenario | Expected result | Owning PR |
 | --- | --- | --- |
 | Codex missing | Report prepared/submitted with missing-runtime evidence | 3, 6 |
-| Claude exits with stdout-only error | Sanitized result-output cause retained | 3 |
+| Claude exits with stdout-only error | Typed sanitized diagnostic cause retained | 3 |
 | Antigravity hangs | Snapshot completes without waiting | 3 |
 | All runtimes unavailable | Report creation and transport remain enabled | 3, 5, 6 |
 | Network offline | One durable queued report | 4, 6 |
@@ -999,34 +1185,75 @@ Every row must have at least one automated test before PR 11 merges.
 | Prompt injection in user text/log | No shell/tool/write interpretation | 1, 9 |
 | Secret/path/email in evidence | Redacted or artifact omitted | 2 |
 | Browser evidence not selected | Browser files/screenshots absent | 2, 5 |
+| Disk full during preparation/adoption | No partial package or advanced state | 2, 4 |
+| Preparation cancelled before adoption | Temporary artifacts removed; nothing adopted | 2 |
+| Outbox cancellation races adopted package use | Active owned package retained until safe cleanup | 4 |
+| Prepared package missing/corrupt | Adoption fails closed and remains recoverable | 4 |
 | App killed during upload | Report recovers to retryable state | 4, 6 |
+| Same idempotency key, different digest | Typed conflict; original report unchanged | 1, 6, 7 |
+| Receipt expired, malformed, or for another report | Status read denied without existence leak | 1, 6, 7 |
+| Remote status downgrade | Client/server reject stale transition | 1, 6, 7 |
+| Intake persists report but enqueue fails | Transactional outbox resumes exactly once | 7 |
+| Archive traversal or decompression bomb | Rejected before private storage | 7 |
+| Concurrent GitHub projections | One projection and occurrence update | 8 |
+| GitHub token expires during projection | Short-lived token refresh resumes idempotently | 8 |
+| Prior issue closed as fixed, new affected build | Explicit regression policy, no blind dedup | 8 |
+| Prompt injection in source code | Analyzer cannot execute source or repo config | 9 |
 | Repeated approval | One implementation task | 10 |
-| Fix without regression test | Cannot become fix-ready | 11 |
-| PR merged but not released | Reporter sees merged, not fixed/released | 11 |
-| Release contains fix | Reporter sees released version | 11 |
+| Concurrent or stale approval | One task or typed re-review requirement | 10 |
+| New crash offered/declined | Offered once per fingerprint and consent version | 5 |
+| Fix without regression test | Cannot become fix-ready | 11A |
+| Repeated draft-PR request | One linked draft PR | 11B |
+| PR merged but not released | Reporter sees merged, not fixed/released | 11C-server, 11C-client |
+| Release webhook replay/wrong/unrelated version | No duplicate or false release | 11C-server |
+| Release contains fix | Reporter sees released version | 11C-server, 11C-client |
 
 ## Validation Ladder
 
 Each PR runs its narrow tests first. Broaden verification based on risk.
 
-### Every PR
+### Every ASTRA PR
 
 ```bash
 swift test --filter <RelevantSuite>
-git diff --check
-script/precommit.sh
-```
-
-### Runtime, persistence, process, package, or Workspace App PRs
-
-```bash
 script/prepush.sh
+swift test --no-parallel
+git diff --check origin/main...HEAD
 ```
 
-### SwiftData schema, cross-runtime policy, release, or final integration PRs
+`script/precommit.sh` remains a local staged-diff guard, but is not sufficient as
+PR validation. Add every new feedback suite to `script/focused_test_targets.sh`
+and its mapping regression tests so the required `Focused Swift tests` check can
+select it.
+
+### Narrow-first development loop
 
 ```bash
-swift test
+swift test --filter <RelevantSuite>
+```
+
+Then run the full Every ASTRA PR commands before publication. Full tests use
+`--no-parallel` because this repository has documented load-sensitive/deadlock
+risk under parallel execution.
+
+### Backend PRs
+
+```bash
+<backend lint command>
+<backend unit command>
+<backend integration command>
+<infrastructure validation command>
+<deployment/preview validation command>
+<shared golden contract command>
+```
+
+Concrete commands are frozen by the PR 7 backend ADR after the repository and
+runtime are authorized. Backend PRs do not substitute ASTRA Swift checks for
+backend-native verification.
+
+### App integration PRs and Gate 11D
+
+```bash
 ./script/build_and_run.sh --verify
 ```
 
@@ -1036,8 +1263,9 @@ swift test
 ASTRA_CHANNEL=prod ./script/build_and_run.sh --verify
 ```
 
-Run production validation only against isolated test data. Do not use active
-production workspaces or Keychain state for feature development.
+Run production validation only for Gate 11D/release proof, in a clean test
+account against isolated data. Do not use active production workspaces or
+Keychain state for feature development.
 
 ## Review Checklist for Every PR
 
@@ -1072,22 +1300,28 @@ report bodies or evidence content.
 
 ## Open Decisions
 
-These do not block PR 1, but the named decision deadline must be respected.
+These do not block PR 1, local fixture work, or ADRs. Items 1–4 are hard blockers
+for PR 7/8 production code, deployment, secrets, paid resources, and live GitHub
+configuration; they also block production integration of PRs 6, 9, 10, and 11C.
 
-1. **Backend location and hosting** — choose before PR 7 starts. Decide service
-   repository, region, datastore, object storage, deployment owner, and cost
-   limits.
-2. **Authentication/abuse model** — finalize before PR 7 merges. Prefer an
-   installation-scoped opaque identity and rate limits without requiring a
-   personal account.
+1. **Backend location and hosting** — choose before PR 7 production work starts.
+   Decide private repository/org/name, provider/runtime, region/data residency,
+   datastore, object storage, queue, secret manager/KMS, IaC, deployment and
+   on-call owner, billing, and cost limits. The current unapproved recommendation
+   is a private `aandresalvarez/astra-feedback-service` using Cloud Run,
+   Firestore, Cloud Storage, Cloud Tasks, and Secret Manager.
+2. **Authentication/abuse model** — choose before PR 7 production work starts.
+   Define reporter installation identity, status-read credential, staff IdP/RBAC,
+   rate limits, replay rules, and credential recovery without requiring a
+   personal reporter account or embedding an app-wide secret.
 3. **Evidence retention** — define default and security-report retention before
    PR 7 merges.
-4. **GitHub repository visibility** — select a private feedback/security repo or
-   private routing strategy before PR 8.
-5. **Reporter contact** — decide whether in-app status alone is sufficient or
-   optional email is supported before PR 5.
+4. **GitHub repository visibility** — select the private V1 issue/security
+   destination and authorize a least-privilege GitHub App before PR 8.
+5. **Reporter contact (resolved for V1)** — use receipt-scoped in-app status and
+   optional local notification. Email/contact collection is deferred.
 6. **Standalone reporter** — decide whether inability to launch ASTRA is a V1
-   requirement before PR 11 begins.
+   requirement before Gate 11D begins.
 
 ## Final Definition of Done
 
