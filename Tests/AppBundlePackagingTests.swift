@@ -118,6 +118,82 @@ struct AppBundlePackagingTests {
         #expect(!script.contains(deepDistributedSign))
     }
 
+    @Test("release script validates the quarantined Sparkle zip before building the human DMG")
+    func releaseScriptValidatesQuarantinedZipBeforeHumanDmg() throws {
+        let script = try String(contentsOf: repoRoot.appendingPathComponent("script/release_update.sh"), encoding: .utf8)
+
+        let shippedZip = #"ditto -c -k --keepParent "$APP_BUNDLE" "$FINAL_ZIP""#
+        let firstLaunchCheck = #"verify_first_launch_experience "$FINAL_ZIP""#
+        let humanDmg = #"FINAL_DMG="$RELEASE_DIR/${APP_NAME}-${ASTRA_VERSION}.dmg""#
+        let quarantineExtraction = #"ditto -x -k "$zip_path" "$verify_dir""#
+        let quarantineStamp = #"find "$extracted_app" -exec xattr -w com.apple.quarantine "$quarantine_value" {} +"#
+        let gatekeeperAssessment = #"syspolicy_check distribution "$extracted_app" --verbose"#
+
+        #expect(script.contains("verify_first_launch_experience()"))
+        #expect(script.contains(quarantineExtraction))
+        #expect(script.contains(quarantineStamp))
+        #expect(script.contains(gatekeeperAssessment))
+        #expect(try index(of: shippedZip, in: script) < index(of: firstLaunchCheck, in: script))
+        #expect(try index(of: firstLaunchCheck, in: script) < index(of: humanDmg, in: script))
+    }
+
+    @Test("release script keeps the human DMG out of Sparkle appcast generation")
+    func releaseScriptKeepsHumanDmgOutOfSparkleAppcastGeneration() throws {
+        let script = try String(contentsOf: repoRoot.appendingPathComponent("script/release_update.sh"), encoding: .utf8)
+
+        let dmgOutsideReleaseDirectory = #"DMG_BUILD_PATH="$DIST_DIR/${APP_NAME}-${ASTRA_VERSION}.dmg""#
+        let createDmg = #"hdiutil create -volname "$APP_NAME" -srcfolder "$DMG_STAGING" -format UDZO -ov "$DMG_BUILD_PATH" >/dev/null"#
+        let generateAppcast = #""$GENERATE_APPCAST" "${GENERATE_APPCAST_ARGS[@]}" "$RELEASE_DIR""#
+        let publishDmg = #"mv "$DMG_BUILD_PATH" "$FINAL_DMG""#
+
+        #expect(script.contains(dmgOutsideReleaseDirectory))
+        #expect(script.contains(createDmg))
+        #expect(script.contains(generateAppcast))
+        #expect(script.contains(publishDmg))
+        #expect(try index(of: createDmg, in: script) < index(of: generateAppcast, in: script))
+        #expect(try index(of: generateAppcast, in: script) < index(of: publishDmg, in: script))
+    }
+
+    @Test("release workflow publishes the human DMG with Sparkle release assets")
+    func releaseWorkflowPublishesHumanDmgWithSparkleReleaseAssets() throws {
+        let workflow = try String(contentsOf: repoRoot.appendingPathComponent(".github/workflows/release.yml"), encoding: .utf8)
+
+        let stableHumanDmg = #"HUMAN_DMG="dist/release/ASTRA.dmg""#
+        let versionedHumanDmg = #"VERSIONED_DMG="dist/release/ASTRA-${VERSION}.dmg""#
+        let stableHumanDmgCopy = #"cp "$VERSIONED_DMG" "$HUMAN_DMG""#
+        let humanDmgAsset = #""$HUMAN_DMG#Download this for first install""#
+        let sparkleZipAsset = #""$SPARKLE_ZIP#Sparkle updater payload""#
+        let releaseCreate = #"gh release create "$TAG" "${ASSETS[@]}""#
+
+        #expect(workflow.contains(stableHumanDmg))
+        #expect(workflow.contains(versionedHumanDmg))
+        #expect(workflow.contains(stableHumanDmgCopy))
+        #expect(workflow.contains(humanDmgAsset))
+        #expect(workflow.contains(sparkleZipAsset))
+        #expect(workflow.contains(releaseCreate))
+        #expect(try index(of: stableHumanDmgCopy, in: workflow) < index(of: humanDmgAsset, in: workflow))
+        #expect(try index(of: humanDmgAsset, in: workflow) < index(of: releaseCreate, in: workflow))
+    }
+
+    @Test("release workflow prepends human install guidance before generated notes")
+    func releaseWorkflowPrependsHumanInstallGuidanceBeforeGeneratedNotes() throws {
+        let workflow = try String(contentsOf: repoRoot.appendingPathComponent(".github/workflows/release.yml"), encoding: .utf8)
+
+        let notes = #"RELEASE_DOWNLOAD_NOTES=$'## Download ASTRA\n\n'"#
+        let firstInstall = #"For a first install, download **ASTRA.dmg**"#
+        let zipWarning = #"Do not use \`ASTRA-${VERSION}.zip\` for a first install."#
+        let notesFlag = #"--notes "$RELEASE_DOWNLOAD_NOTES""#
+        let generatedNotesFlag = #"--generate-notes"#
+
+        #expect(workflow.contains(notes))
+        #expect(workflow.contains(firstInstall))
+        #expect(workflow.contains(zipWarning))
+        #expect(workflow.contains(notesFlag))
+        #expect(workflow.contains(generatedNotesFlag))
+        #expect(try index(of: notes, in: workflow) < index(of: notesFlag, in: workflow))
+        #expect(try index(of: notesFlag, in: workflow) < index(of: generatedNotesFlag, in: workflow))
+    }
+
     private var repoRoot: URL {
         URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()

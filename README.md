@@ -281,6 +281,13 @@ an Applications-folder shortcut side by side, the install convention Mac
 users expect. Point download links/buttons at the `.dmg`; leave the `.zip`
 for Sparkle alone.
 
+The GitHub release workflow also publishes a stable `ASTRA.dmg` alias copied
+from the versioned DMG. Use this URL for human download buttons:
+
+```text
+https://github.com/aandresalvarez/astra/releases/latest/download/ASTRA.dmg
+```
+
 The internal release path uses ad-hoc macOS code signing plus Sparkle EdDSA
 update signatures. It does not require the Mac App Store, Apple Developer
 Program, Developer ID, or notarization. The tradeoff is trust UX: the first
@@ -301,9 +308,12 @@ SPARKLE_GENERATE_APPCAST="$SPARKLE_BIN/generate_appcast" \
 ./script/release_update.sh
 ```
 
-Then upload all three generated files to the GitHub Release:
+Then upload the generated release files. The GitHub release workflow creates
+and uploads the stable `ASTRA.dmg` alias automatically; if publishing manually,
+copy `ASTRA-<version>.dmg` to `ASTRA.dmg` before upload:
 
 ```text
+dist/release/ASTRA.dmg
 dist/release/ASTRA-<version>.zip
 dist/release/ASTRA-<version>.dmg
 dist/release/appcast.xml
