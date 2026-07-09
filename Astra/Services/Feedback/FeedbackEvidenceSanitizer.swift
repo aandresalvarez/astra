@@ -29,6 +29,18 @@ enum FeedbackEvidenceSanitizer {
             options: []
         ),
         Rule(
+            pattern: #"(?im)\bauthorization\s*[:=]\s*['\"]?[^\r\n'\"]+['\"]?"#,
+            replacement: "authorization=[redacted-secret]",
+            category: .secret,
+            options: []
+        ),
+        Rule(
+            pattern: #"(?i)\b(?:basic|bearer)\s+[A-Za-z0-9+/=_~.-]+"#,
+            replacement: "[redacted-secret]",
+            category: .secret,
+            options: []
+        ),
+        Rule(
             pattern: #"(?i)(authorization|bearer|token|api[_-]?key|secret|password|credential)\s*[:=]\s*['\"]?[^'\"\s,;)]+"#,
             replacement: "$1=[redacted-secret]",
             category: .secret,

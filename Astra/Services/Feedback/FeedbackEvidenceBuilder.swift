@@ -13,17 +13,22 @@ struct FeedbackEvidenceBuilder {
     private let fileManager: FileManager
     private let cancellationCheck: @Sendable () throws -> Void
     private let writeData: @Sendable (Data, URL) throws -> Void
+    private let processEnvironment: @Sendable () -> [String: String]
 
     init(
         fileManager: FileManager = .default,
         cancellationCheck: @escaping @Sendable () throws -> Void = { try Task.checkCancellation() },
         writeData: @escaping @Sendable (Data, URL) throws -> Void = {
             try $0.write(to: $1, options: .atomic)
+        },
+        processEnvironment: @escaping @Sendable () -> [String: String] = {
+            ProcessInfo.processInfo.environment
         }
     ) {
         self.fileManager = fileManager
         self.cancellationCheck = cancellationCheck
         self.writeData = writeData
+        self.processEnvironment = processEnvironment
     }
 
     func prepare(
@@ -53,11 +58,17 @@ struct FeedbackEvidenceBuilder {
             ".feedback-staging-\(input.reportID.uuidString.lowercased())-\(UUID().uuidString.lowercased())",
             isDirectory: true
         )
-        let contentsDirectory = stagingPackage.appendingPathComponent("contents", isDirectory: true)
+        // Manifest paths are package-root relative because the outbox validates
+        // and adopts these exact loose files alongside the optional archive.
+        let contentsDirectory = stagingPackage
         var published = false
+        var movedToFinal = false
         defer {
             if !published {
-                try? fileManager.removeItem(at: stagingPackage)
+                removeConstructionPackage(at: stagingPackage)
+                if movedToFinal {
+                    removeConstructionPackage(at: finalPackage)
+                }
             }
         }
 
@@ -130,6 +141,7 @@ struct FeedbackEvidenceBuilder {
                 if lhs.relativePath != rhs.relativePath { return lhs.relativePath < rhs.relativePath }
                 return lhs.artifactID < rhs.artifactID
             }
+            try cancellationCheck()
             let archiveURL = stagingPackage.appendingPathComponent(FeedbackEvidencePolicy.archiveFileName)
             try createDeterministicArchive(
                 from: contentsDirectory,
@@ -137,6 +149,7 @@ struct FeedbackEvidenceBuilder {
                 at: archiveURL,
                 createdAt: input.reportCreatedAt
             )
+            try cancellationCheck()
             let archiveData = try Data(contentsOf: archiveURL, options: [.mappedIfSafe])
             let archiveSHA256 = FeedbackCanonicalJSONV1.sha256Hex(archiveData)
 
@@ -154,12 +167,17 @@ struct FeedbackEvidenceBuilder {
             let manifestURL = stagingPackage.appendingPathComponent(FeedbackEvidencePolicy.manifestFileName)
             try writeFinalBytes(manifestData, to: manifestURL, createdAt: input.reportCreatedAt)
 
+            try cancellationCheck()
             let reportData = try input.makeReportEnvelopeData(manifest)
+            try cancellationCheck()
+            guard FeedbackRawCanonicalJSONVerifier.isCanonicalObject(reportData) else {
+                throw FeedbackEvidenceBuildError.invalidReportEnvelope("report bytes are not canonical V1 JSON")
+            }
             let reportEnvelope = try FeedbackCanonicalJSONV1.decode(
                 FeedbackReportEnvelopeV1.self,
                 from: reportData
             )
-            guard !containsReporterContactMember(in: reportData) else {
+            guard !FeedbackContactMemberPolicy.containsForbiddenMember(in: reportData) else {
                 throw FeedbackEvidenceBuildError.invalidReportEnvelope("reporter contact members are not permitted")
             }
             guard reportEnvelope.payload.reportID.uuid == input.reportID else {
@@ -175,14 +193,19 @@ struct FeedbackEvidenceBuilder {
             let reportURL = stagingPackage.appendingPathComponent(FeedbackEvidencePolicy.reportFileName)
             try writeFinalBytes(reportData, to: reportURL, createdAt: input.reportCreatedAt)
 
-            try fileManager.removeItem(at: contentsDirectory)
+            try cancellationCheck()
             try fileManager.setAttributes([.posixPermissions: 0o400], ofItemAtPath: archiveURL.path)
             try fileManager.setAttributes([.posixPermissions: 0o400], ofItemAtPath: manifestURL.path)
             try fileManager.setAttributes([.posixPermissions: 0o400], ofItemAtPath: reportURL.path)
+            try closeArtifactTree(artifacts, in: stagingPackage)
+            try cancellationCheck()
             // Keep the directory owner-only and writable so the outbox can perform
             // its same-volume adoption rename. All closed package files are read-only.
             try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: stagingPackage.path)
+            try cancellationCheck()
             try fileManager.moveItem(at: stagingPackage, to: finalPackage)
+            movedToFinal = true
+            try cancellationCheck()
             published = true
 
             let result = FeedbackPreparedEvidencePackage(
@@ -367,7 +390,7 @@ struct FeedbackEvidenceBuilder {
                 continue
             }
             let rule = FeedbackEvidencePolicy.screenshotRule(index: index)
-            guard screenshot.width > 0, screenshot.height > 0, isJPEG(screenshot.jpegData) else {
+            guard let transformed = FeedbackScreenshotEvidenceTransformer.transform(screenshot) else {
                 omissions.append(FeedbackEvidenceOmissionV1(
                     artifactID: artifactID,
                     kind: .screenshot,
@@ -377,11 +400,7 @@ struct FeedbackEvidenceBuilder {
                 continue
             }
             try appendArtifact(
-                FeedbackTransformedArtifact(
-                    data: screenshot.jpegData,
-                    redaction: FeedbackRedactionSummaryV1(replacements: 0, secretPatterns: 0, pathPatterns: 0, contactPatterns: 0),
-                    warnings: []
-                ),
+                transformed,
                 artifactID: artifactID,
                 rule: rule,
                 contentsDirectory: contentsDirectory,
@@ -519,6 +538,11 @@ struct FeedbackEvidenceBuilder {
         process.executableURL = URL(fileURLWithPath: "/usr/bin/zip")
         process.currentDirectoryURL = contentsDirectory
         process.arguments = ["-X", "-q", archiveURL.path] + relativePaths.sorted()
+        var environment = processEnvironment()
+        environment["TZ"] = "UTC"
+        environment["LC_ALL"] = "C"
+        environment["COPYFILE_DISABLE"] = "1"
+        process.environment = environment
         let output = Pipe()
         process.standardOutput = output
         process.standardError = output
@@ -537,6 +561,40 @@ struct FeedbackEvidenceBuilder {
         ], ofItemAtPath: archiveURL.path)
     }
 
+    private func closeArtifactTree(
+        _ artifacts: [FeedbackEvidenceArtifactV1],
+        in packageDirectory: URL
+    ) throws {
+        var directories: Set<URL> = []
+        for artifact in artifacts {
+            let artifactURL = packageDirectory.appendingPathComponent(artifact.relativePath)
+            try fileManager.setAttributes([.posixPermissions: 0o400], ofItemAtPath: artifactURL.path)
+
+            var directory = artifactURL.deletingLastPathComponent()
+            while directory != packageDirectory {
+                directories.insert(directory)
+                directory.deleteLastPathComponent()
+            }
+        }
+        for directory in directories.sorted(by: { $0.path.count > $1.path.count }) {
+            try fileManager.setAttributes([.posixPermissions: 0o500], ofItemAtPath: directory.path)
+        }
+    }
+
+    private func removeConstructionPackage(at url: URL) {
+        guard fileManager.fileExists(atPath: url.path) else { return }
+        if let subpaths = try? fileManager.subpathsOfDirectory(atPath: url.path) {
+            for relativePath in subpaths {
+                let child = url.appendingPathComponent(relativePath)
+                if (try? child.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true {
+                    try? fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: child.path)
+                }
+            }
+        }
+        try? fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: url.path)
+        try? fileManager.removeItem(at: url)
+    }
+
     private func assertContained(_ url: URL, by root: URL) throws {
         let rootPath = root.standardizedFileURL.resolvingSymlinksInPath().path + "/"
         let candidate = url.standardizedFileURL.resolvingSymlinksInPath().path
@@ -545,29 +603,4 @@ struct FeedbackEvidenceBuilder {
         }
     }
 
-    private func isJPEG(_ data: Data) -> Bool {
-        data.count >= 4 && data.starts(with: [0xff, 0xd8, 0xff]) && data.suffix(2) == Data([0xff, 0xd9])
-    }
-
-    private func containsReporterContactMember(in data: Data) -> Bool {
-        guard let root = try? JSONSerialization.jsonObject(with: data) else { return true }
-        let forbidden = Set(["contact", "contactemail", "email", "emailaddress", "reporter", "reportercontact", "reporteremail", "reportername"])
-
-        func inspect(_ value: Any) -> Bool {
-            if let dictionary = value as? [String: Any] {
-                for (key, child) in dictionary {
-                    let normalized = key.lowercased().filter(\.isLetter)
-                    if forbidden.contains(normalized) || normalized.hasPrefix("reporter") {
-                        return true
-                    }
-                    if inspect(child) { return true }
-                }
-            } else if let array = value as? [Any] {
-                return array.contains(where: inspect)
-            }
-            return false
-        }
-
-        return inspect(root)
-    }
 }
