@@ -172,17 +172,22 @@ SPARKLE_GENERATE_APPCAST="$SPARKLE_BIN/generate_appcast" \
 ./script/release_update.sh
 ```
 
-Upload all three release assets:
+Upload the release assets:
 
 ```text
+dist/release/ASTRA.dmg
 dist/release/ASTRA-<version>.zip
 dist/release/ASTRA-<version>.dmg
 dist/release/appcast.xml
 ```
 
-The `.zip` is Sparkle's update payload; the `.dmg` is the human-facing
-download (double-click-to-mount, app + Applications-folder shortcut side by
-side) -- point download links at the `.dmg`, not the `.zip`.
+The `.zip` is Sparkle's update payload; `ASTRA.dmg` is the stable
+human-facing download URL; `ASTRA-<version>.dmg` is the versioned archival
+copy. Point public download links at `ASTRA.dmg`, not the `.zip`.
+
+```text
+https://github.com/aandresalvarez/astra/releases/latest/download/ASTRA.dmg
+```
 
 Sparkle checks:
 
