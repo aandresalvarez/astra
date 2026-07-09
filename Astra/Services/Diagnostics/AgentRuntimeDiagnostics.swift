@@ -16,6 +16,7 @@ enum AgentRuntimeFailureCategory: String, Sendable {
     case budgetExceeded = "budget_exceeded"
     case noVisibleOutput = "no_visible_output"
     case providerProcessFailed = "provider_process_failed"
+    case sandboxCredentialAccessBlocked = "sandbox_credential_access_blocked"
 }
 
 struct AgentRuntimeFailureDiagnostic: Equatable, Sendable {
@@ -85,6 +86,7 @@ struct AgentRuntimeFailureDiagnostic: Equatable, Sendable {
         let category = classifyCategory(
             haystack: haystack,
             meaningfulHaystackEmpty: meaningfulHaystack.isEmpty,
+            exitCode: exitCode,
             stream: stream,
             timedOut: timedOut,
             budgetExceeded: budgetExceeded,
@@ -156,9 +158,22 @@ struct AgentRuntimeFailureDiagnostic: Equatable, Sendable {
         return sections.joined(separator: "\n\n")
     }
 
+    /// macOS Security-framework API names that appear verbatim in a provider
+    /// CLI's own stderr when it logs an OSStatus failure from a Keychain call
+    /// (e.g. `ERROR: SecItemCopyMatching failed -25300`). Combined with a
+    /// signal-killed exit code, this is a strong, specific signal that ASTRA's
+    /// Seatbelt wrap denied a Keychain read the provider's own login needs —
+    /// not a generic crash — so it gets its own category and remediation
+    /// instead of falling through to the opaque providerProcessFailed catch-all.
+    private static let securityFrameworkFailureNeedles = [
+        "secitemcopymatching", "secitemadd", "secitemupdate", "secitemdelete",
+        "seckeychainfindgenericpassword", "seckeychainopen", "sectrustevaluate"
+    ]
+
     private static func classifyCategory(
         haystack: String,
         meaningfulHaystackEmpty: Bool,
+        exitCode: Int,
         stream: AgentRuntimeStreamTelemetrySnapshot?,
         timedOut: Bool,
         budgetExceeded: Bool,
@@ -169,6 +184,11 @@ struct AgentRuntimeFailureDiagnostic: Equatable, Sendable {
         }
         if budgetExceeded || maxTurnsExceeded {
             return .budgetExceeded
+        }
+        // exitCode > 128 means the process was killed by a signal (128 + signal
+        // number, e.g. 139 = SIGSEGV) rather than exiting normally.
+        if exitCode > 128, containsAny(haystack, securityFrameworkFailureNeedles) {
+            return .sandboxCredentialAccessBlocked
         }
         if containsAny(haystack, [
             "rate limit", "rate_limit", "too many requests", "http 429", "status 429", " 429 "
@@ -290,6 +310,8 @@ struct AgentRuntimeFailureDiagnostic: Equatable, Sendable {
             return "\(runtime.displayName) exited before returning a visible assistant response."
         case .providerProcessFailed:
             return "\(runtime.displayName) failed before ASTRA received a visible assistant response."
+        case .sandboxCredentialAccessBlocked:
+            return "\(runtime.displayName) crashed while reading its saved macOS Keychain login. This runtime's own sandbox is disabled under the current policy, so ASTRA wraps it in a stricter sandbox that blocks this Keychain read. Try Review or Interactive policy for this task, or lower the sandbox read scope in Settings."
         }
     }
 

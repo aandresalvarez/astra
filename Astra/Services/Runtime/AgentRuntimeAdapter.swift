@@ -2533,6 +2533,7 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
             providerVersion: providerVersion,
             parsesJSONLines: plan.parsesJSONLines,
             directoriesToCreate: [AntigravityCLIRuntime.diagnosticLogDirectory(for: diagnosticLogPath)].compactMap { $0 },
+            sandboxReadablePaths: AntigravityCLIRuntime.authReadablePaths(),
             providerDetectedFields: [
                 "runtime": id.rawValue,
                 "provider_version": providerVersion ?? "unknown",
@@ -2652,7 +2653,8 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
             browserShimDirectory: nil,
             providerVersion: nil,
             parsesJSONLines: plan.parsesJSONLines,
-            directoriesToCreate: trimmedHome.isEmpty ? [] : [trimmedHome]
+            directoriesToCreate: trimmedHome.isEmpty ? [] : [trimmedHome],
+            sandboxReadablePaths: AntigravityCLIRuntime.authReadablePaths()
         )
         let result = await AgentRuntimeProcessRunner().runUtilityProcess(
             AgentUtilityLaunchPlan(

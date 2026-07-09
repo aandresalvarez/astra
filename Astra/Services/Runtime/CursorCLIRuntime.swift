@@ -25,6 +25,27 @@ enum CursorCLIRuntime {
         RuntimePathResolver.detectCursorPath()
     }
 
+    static func authReadablePaths(userHome: String = FileManager.default.homeDirectoryForCurrentUser.path) -> [String] {
+        let trimmedHome = userHome.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedHome.isEmpty else { return [] }
+        // cursor-agent's own login session (`cursor-access-token` /
+        // `cursor-refresh-token`) is stored in the macOS login keychain DB and
+        // is read via SecItemCopyMatching on every run — including when
+        // Autonomous mode drops cursor-agent's own `--sandbox` confinement and
+        // ASTRA wraps it in Seatbelt instead (`ExecutionSandboxSettings.
+        // autonomousForcedWrapRuntimes`). Without this grant, the strict
+        // read-scope profile denies that read, SecItemCopyMatching returns
+        // errSecItemNotFound, and cursor-agent segfaults instead of failing
+        // gracefully. Mirrors ClaudeCodeRuntime.authReadablePaths /
+        // CopilotCLIRuntime.authReadablePaths: only the login keychain DB file
+        // is granted, read-only; metadata.keychain-db is deliberately withheld
+        // since it is not needed here and would expose every other stored
+        // credential's service/account name.
+        return [
+            (trimmedHome as NSString).appendingPathComponent("Library/Keychains/login.keychain-db")
+        ]
+    }
+
     static func defaultModelName() -> String {
         bundledModelNames.first ?? "composer-2.5-fast"
     }
