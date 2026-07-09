@@ -43,6 +43,10 @@ assert_targets "ArchitectureFitnessTests.ArchitectureFitnessTests" \
 assert_targets "AppSemanticFitnessTests" \
   "Tests/AppSemanticFitnessTests.swift"
 
+assert_targets "FeedbackEvidencePrivacyTests" \
+  "Astra/Services/Feedback/FeedbackEvidenceBuilder.swift" \
+  "Tests/FeedbackEvidencePrivacyTests.swift"
+
 assert_targets ""
 
 assert_targets "" \
