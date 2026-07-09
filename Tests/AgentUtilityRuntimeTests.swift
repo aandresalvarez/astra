@@ -5,6 +5,17 @@ import ASTRAModels
 @testable import ASTRA
 import ASTRACore
 
+/// Serialized: `copilotUtilityPromptObeysStrictSandboxWriteBoundary` (below,
+/// via `withStrictSandbox`) is the last remaining test in the suite that
+/// mutates `UserDefaults.standard` sandbox keys directly — `runUtilityPrompt`
+/// runs through `CopilotCLIRuntimeAdapter` -> `AgentRuntimeProcessRunner()`,
+/// which has no injected-defaults seam the way `sandboxedPlan` does (see
+/// `ExecutionSandboxRunnerTests`), so isolating it would require adding a
+/// `defaults:`-style parameter to the `AgentUtilityRuntimeAdapter` protocol
+/// and every conformer — out of proportion to one test. `AgentPolicyTests`,
+/// `ExecutionSandboxRunnerTests`, and `ExecutionSandboxTests` no longer touch
+/// `.standard` for these keys, so this is the sole mutator left; `.serialized`
+/// keeps it from racing itself.
 @Suite("Agent Utility Runtime", .serialized)
 struct AgentUtilityRuntimeTests {
     private static let longRunningHelperSleepSeconds = 30

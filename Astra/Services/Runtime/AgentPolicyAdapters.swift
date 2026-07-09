@@ -926,6 +926,7 @@ enum AgentPolicyManifestService {
         contextText: String = "",
         capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot? = nil,
         launchResourcePlan: TaskLaunchResourcePlan? = nil,
+        sandboxSettingsDefaults: UserDefaults = .standard,
         modelContext: ModelContext
     ) -> RunPermissionManifest {
         let defaultLevel = AgentPolicyDefaults.effectiveUserFacingLevel(
@@ -1060,7 +1061,7 @@ enum AgentPolicyManifestService {
         // unconfined at launch. Display-only; application + fallbacks are audited
         // at launch time.
         let effectiveSandboxPolicy = manifestExecutionPolicy.permissionPolicyOverride ?? permissionPolicy
-        let sandboxSettings = ExecutionSandboxSettings.current(permissionPolicy: effectiveSandboxPolicy)
+        let sandboxSettings = ExecutionSandboxSettings.current(permissionPolicy: effectiveSandboxPolicy, defaults: sandboxSettingsDefaults)
         if !executionEnvironment.providerRunsInsideContainer,
            sandboxSettings.shouldWrap(runtime: runtime),
            ExecutionSandbox.willLikelyApply(workspacePath: workspacePath, settings: sandboxSettings),
