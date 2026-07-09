@@ -19,6 +19,15 @@ and `~/Documents/Astra Dev/Workspaces`.
 
 ## Trust Boundaries
 
+- The feedback V1 contract is a privacy and interoperability boundary. All
+  report text, filenames, runtime summaries, and remote status metadata are
+  untrusted inert data. Evidence disclosure classes fail closed, payload and
+  artifact sizes are bounded before transport, sensitive and explicit-opt-in
+  evidence requires item-level review, and only canonical post-redaction bytes
+  may be hashed. The language-neutral schema and golden bytes live under
+  `docs/contracts/feedback/v1`; downstream tracks consume the authoritative
+  `ASTRACore/Feedback` types rather than redeclaring them.
+
 - User-selected files and folders enter through workspace import discovery and
   must not traverse or symlink into unrelated locations.
 - Imported workspace configs are untrusted. The selected config folder is the
