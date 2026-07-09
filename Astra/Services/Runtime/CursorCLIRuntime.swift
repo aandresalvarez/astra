@@ -205,14 +205,38 @@ enum CursorCLIRuntime {
 
     static func extractUtilityText(from output: String) -> String {
         var pieces: [String] = []
+        // Only text parsed from a genuine JSON stream event counts as "already
+        // streamed assistant reply" for de-dup below — a non-JSON line (a
+        // diagnostic/warning banner) also produces a `.text` event via the
+        // plain-text fallback parser, and comparing the terminal echo against
+        // THAT pool can false-positive: e.g. a banner "Using model: gpt-5"
+        // coincidentally ending in the same text as a real result "gpt-5" would
+        // otherwise look like a duplicate and get dropped.
+        var streamedTextPieces: [String] = []
         for line in output.split(whereSeparator: \.isNewline).map(String.init) {
+            let isJSONLine = lineParsesAsJSON(line)
             for event in CursorStreamEventParser.parseAgentEvents(line: line) {
                 switch event {
                 case .text(let text):
                     pieces.append(text)
+                    if isJSONLine {
+                        streamedTextPieces.append(text)
+                    }
                 case .completed(let summary):
+                    // The terminal `result` event can echo the FULL final reply the
+                    // streamed `.text` events already delivered (cursor-agent: an
+                    // assistant `.text` "PING" is followed by a result event whose
+                    // `result` field is also "PING") — appending both doubles the
+                    // reply. Compare only against genuinely-streamed text (see
+                    // above), and only skip the echo when it's an actual duplicate.
                     if let summary, !summary.isEmpty {
-                        pieces.append(summary)
+                        let trimmedSummary = summary.trimmingCharacters(in: .whitespacesAndNewlines)
+                        let alreadyStreamed = streamedTextPieces.joined().trimmingCharacters(in: .whitespacesAndNewlines)
+                        let isDuplicate = !trimmedSummary.isEmpty
+                            && (trimmedSummary == alreadyStreamed || alreadyStreamed.hasSuffix(trimmedSummary))
+                        if !isDuplicate {
+                            pieces.append(summary)
+                        }
                     }
                 case .failed(let message):
                     pieces.append(message)

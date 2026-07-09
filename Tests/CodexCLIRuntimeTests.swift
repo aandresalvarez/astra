@@ -421,4 +421,53 @@ struct CodexCLIRuntimeTests {
         #expect(readOnly == .readOnly)
         #expect(unknown == .restricted)
     }
+
+    @Test("Codex utility text extraction does not double an item.completed echo")
+    func codexUtilityTextExtractionDoesNotDoubleItemCompletedEcho() {
+        // Mirrors the cursor-agent bug: if a provider ever streams `.text` deltas
+        // for an assistant message AND ALSO emits a terminal item.completed with
+        // the full text, the two must not be concatenated.
+        let output = """
+        {"type":"thread.started","thread_id":"t1"}
+        {"type":"assistant.message_delta","text":"PING"}
+        {"type":"item.completed","item":{"type":"agent_message","text":"PING"}}
+        """
+        #expect(CodexCLIRuntime.extractUtilityText(from: output) == "PING")
+    }
+
+    @Test("Codex utility text extraction falls back to item.completed without streamed text")
+    func codexUtilityTextExtractionFallsBackToItemCompletedWithoutStreamedText() {
+        let output = """
+        {"type":"thread.started","thread_id":"t1"}
+        {"type":"item.completed","item":{"type":"agent_message","text":"PONG"}}
+        """
+        #expect(CodexCLIRuntime.extractUtilityText(from: output) == "PONG")
+    }
+
+    @Test("Codex utility text extraction preserves item.completed after a non-JSON diagnostic line")
+    func codexUtilityTextExtractionPreservesItemCompletedAfterNonJSONDiagnosticLine() {
+        // A stray non-JSON stdout line (a diagnostic/banner, not valid JSON) falls back
+        // to a `.text` event via the plain-text parser — that must not be mistaken for
+        // a streamed assistant reply and used to suppress a DIFFERENT item.completed
+        // payload (the failure mode a "sawText: any .text seen" guard would introduce).
+        let output = """
+        checking workspace trust...
+        {"type":"item.completed","item":{"type":"agent_message","text":"42"}}
+        """
+        #expect(CodexCLIRuntime.extractUtilityText(from: output) == "checking workspace trust...42")
+    }
+
+    @Test("Codex utility text extraction does not treat a diagnostic banner as a false-positive duplicate")
+    func codexUtilityTextExtractionDoesNotFalsePositiveOnDiagnosticSuffixMatch() {
+        // A non-JSON diagnostic banner that happens to END with the same text as the
+        // real result ("Using model: gpt-5" ends in "gpt-5") must NOT be mistaken for
+        // an already-streamed echo of that result — the diagnostic text never went
+        // through the JSON stream, so it isn't a genuine streamed reply to dedupe
+        // against. The real result must still make it into the output.
+        let output = """
+        Using model: gpt-5
+        {"type":"item.completed","item":{"type":"agent_message","text":"gpt-5"}}
+        """
+        #expect(CodexCLIRuntime.extractUtilityText(from: output) == "Using model: gpt-5gpt-5")
+    }
 }

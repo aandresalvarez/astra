@@ -310,4 +310,16 @@ struct OpenCodeCLIRuntimeTests {
         #expect(OpenCodePolicyAdapter().providerGrantStrings(for: grants) == ["shell(gh:pr list *)"])
         #expect(OpenCodePolicyAdapter().providerRuntimeGrantStrings(for: grants).contains("shell(gh:pr list *)"))
     }
+
+    @Test("OpenCode utility text extraction concatenates streamed text deltas")
+    func openCodeUtilityTextExtractionConcatenatesStreamedTextDeltas() {
+        // Regression guard for the cursor-agent-style doubling fix applied to
+        // extractUtilityText: normal multi-chunk streaming must still concatenate,
+        // not just the first chunk.
+        let output = """
+        {"type":"text","text":"PING"}
+        {"type":"text","text":" PONG"}
+        """
+        #expect(OpenCodeCLIRuntime.extractUtilityText(from: output) == "PING PONG")
+    }
 }
