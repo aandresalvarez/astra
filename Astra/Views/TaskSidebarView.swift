@@ -1414,14 +1414,18 @@ struct TaskSidebarView: View {
 
     /// The one writer of the accordion state. Closing a drawer — explicitly
     /// or by opening another — also retires its "Show more" expansion so it
-    /// reopens compact.
+    /// reopens compact. Only `openWorkspaceID` is persisted, so dismissal-only
+    /// changes (search-reveal closes, query edits) skip the defaults write.
     private func setAccordionState(_ newState: WorkspaceSidebarAccordion.State) {
         guard newState != accordion else { return }
-        if let previousOpen = accordion.openWorkspaceID, previousOpen != newState.openWorkspaceID {
+        let openDrawerChanged = accordion.openWorkspaceID != newState.openWorkspaceID
+        if openDrawerChanged, let previousOpen = accordion.openWorkspaceID {
             expandedWorkspaceTaskLists.remove(previousOpen)
         }
         accordion = newState
-        persistSidebarDisclosure()
+        if openDrawerChanged {
+            persistSidebarDisclosure()
+        }
     }
 
     private func loadSidebarDisclosure() {
@@ -2057,6 +2061,12 @@ private struct WorkspaceRunningIndicator: View {
             )
             .frame(width: 10, height: 22)
             .onAppear { isPulsing = !reduceMotion }
+            // Reduce Motion can flip while the dot is on screen. Rewriting
+            // `isPulsing` under the new setting replaces the in-flight
+            // repeatForever animation (animation is nil once RM is on), so
+            // the dot settles steady — or starts breathing — immediately
+            // instead of waiting to be recreated.
+            .onChange(of: reduceMotion) { isPulsing = !reduceMotion }
             .help(label)
             .accessibilityLabel(label)
     }
