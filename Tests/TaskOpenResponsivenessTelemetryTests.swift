@@ -82,6 +82,39 @@ struct TaskOpenResponsivenessTelemetryTests {
         ])
     }
 
+    @Test("Interval cancellation only ends each OS signpost once")
+    func intervalLifecyclePreventsDoubleEnd() {
+        var lifecycle = TaskOpenResponsivenessIntervalLifecycle()
+        let endedShellFirstTime = lifecycle.endShellVisibleIfNeeded()
+        let endedShellSecondTime = lifecycle.endShellVisibleIfNeeded()
+        let endedTranscriptFirstTime = lifecycle.endTranscriptReadyIfNeeded()
+        let endedTranscriptSecondTime = lifecycle.endTranscriptReadyIfNeeded()
+
+        #expect(endedShellFirstTime)
+        #expect(!endedShellSecondTime)
+        #expect(endedTranscriptFirstTime)
+        #expect(!endedTranscriptSecondTime)
+        #expect(lifecycle.shellVisibleEnded)
+        #expect(lifecycle.transcriptReadyEnded)
+    }
+
+    @MainActor
+    @Test("Selecting another task after its shell appears safely cancels the prior trace")
+    func supersedingTraceAfterShellVisibilityDoesNotEndSignpostTwice() {
+        let firstTask = makeTask(goal: "First task")
+        let secondTask = makeTask(goal: "Second task")
+        TaskOpenResponsivenessTelemetry.resetForTesting()
+
+        TaskOpenResponsivenessTelemetry.begin(task: firstTask, source: "task_selection")
+        TaskOpenResponsivenessTelemetry.shellBecameVisible(task: firstTask)
+
+        // This mirrors clicking a second sidebar row while the first task's
+        // transcript snapshot is still loading. Before the regression fix,
+        // begin() cancelled the trace by ending the shell signpost twice.
+        TaskOpenResponsivenessTelemetry.begin(task: secondTask, source: "task_selection")
+        TaskOpenResponsivenessTelemetry.resetForTesting()
+    }
+
     @MainActor
     @Test("Completed task-open measurements reach the existing Performance log with task context")
     func completedMeasurementsReachPerformanceLogs() {

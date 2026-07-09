@@ -14,6 +14,29 @@ struct TaskOpenResponsivenessResult: Equatable {
     let fields: [String: String]
 }
 
+/// Tracks which OS signpost intervals are still open for a task-open trace.
+///
+/// `OSSignposter` treats ending an interval twice as a programmer error and
+/// traps in debug builds. The shell interval can legitimately complete before
+/// the transcript interval, so cancellation must only end intervals that are
+/// still open.
+struct TaskOpenResponsivenessIntervalLifecycle: Equatable {
+    private(set) var shellVisibleEnded = false
+    private(set) var transcriptReadyEnded = false
+
+    mutating func endShellVisibleIfNeeded() -> Bool {
+        guard !shellVisibleEnded else { return false }
+        shellVisibleEnded = true
+        return true
+    }
+
+    mutating func endTranscriptReadyIfNeeded() -> Bool {
+        guard !transcriptReadyEnded else { return false }
+        transcriptReadyEnded = true
+        return true
+    }
+}
+
 /// Testable state for one task selection. `TaskOpenResponsivenessTelemetry`
 /// supplies the app-facing clock, signposts, and log delivery around this pure
 /// value type.
@@ -113,6 +136,7 @@ enum TaskOpenResponsivenessTelemetry {
     private struct ActiveTrace {
         var trace: TaskOpenResponsivenessTrace
         let intervals: SignpostIntervals
+        var intervalLifecycle = TaskOpenResponsivenessIntervalLifecycle()
     }
 
     private static var activeTrace: ActiveTrace?
@@ -159,7 +183,7 @@ enum TaskOpenResponsivenessTelemetry {
               let result = activeTrace.trace.markShellVisible(at: DispatchTime.now().uptimeNanoseconds)
         else { return }
 
-        signposter.endInterval("task_selection_to_shell_visible", activeTrace.intervals.shellVisible)
+        endShellVisibleInterval(&activeTrace)
         self.activeTrace = activeTrace
         log(result, taskID: task.id)
     }
@@ -175,7 +199,7 @@ enum TaskOpenResponsivenessTelemetry {
 
         if activeTrace.trace.shellVisibleDurationMilliseconds == nil,
            let shellResult = activeTrace.trace.markShellVisible(at: DispatchTime.now().uptimeNanoseconds) {
-            signposter.endInterval("task_selection_to_shell_visible", activeTrace.intervals.shellVisible)
+            endShellVisibleInterval(&activeTrace)
             log(shellResult, taskID: task.id)
         }
 
@@ -187,7 +211,7 @@ enum TaskOpenResponsivenessTelemetry {
                 cacheState: cacheState
             )
         ) else { return }
-        signposter.endInterval("task_selection_to_transcript_ready", activeTrace.intervals.transcriptReady)
+        endTranscriptReadyInterval(&activeTrace)
         log(result, taskID: task.id)
         self.activeTrace = nil
     }
@@ -217,9 +241,9 @@ enum TaskOpenResponsivenessTelemetry {
     }
 
     private static func cancelActiveTrace(reason: String) {
-        guard let activeTrace else { return }
-        signposter.endInterval("task_selection_to_shell_visible", activeTrace.intervals.shellVisible)
-        signposter.endInterval("task_selection_to_transcript_ready", activeTrace.intervals.transcriptReady)
+        guard var activeTrace else { return }
+        endShellVisibleInterval(&activeTrace)
+        endTranscriptReadyInterval(&activeTrace)
         PerformanceTelemetry.log(
             "task_selection_cancelled",
             level: .debug,
@@ -230,6 +254,16 @@ enum TaskOpenResponsivenessTelemetry {
             taskID: activeTrace.trace.taskID
         )
         self.activeTrace = nil
+    }
+
+    private static func endShellVisibleInterval(_ activeTrace: inout ActiveTrace) {
+        guard activeTrace.intervalLifecycle.endShellVisibleIfNeeded() else { return }
+        signposter.endInterval("task_selection_to_shell_visible", activeTrace.intervals.shellVisible)
+    }
+
+    private static func endTranscriptReadyInterval(_ activeTrace: inout ActiveTrace) {
+        guard activeTrace.intervalLifecycle.endTranscriptReadyIfNeeded() else { return }
+        signposter.endInterval("task_selection_to_transcript_ready", activeTrace.intervals.transcriptReady)
     }
 
     private static func log(_ result: TaskOpenResponsivenessResult, taskID: UUID) {
