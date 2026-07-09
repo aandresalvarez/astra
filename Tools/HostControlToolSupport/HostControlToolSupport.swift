@@ -414,6 +414,25 @@ private final class HostControlScopedProcess: @unchecked Sendable {
         self.environment = environment
         let trimmedDirectory = currentDirectory?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         self.currentDirectory = trimmedDirectory.isEmpty ? nil : trimmedDirectory
+        // Close-on-exec as early after creation as Foundation's Pipe API
+        // allows: without this, a sibling HostControlProcessRunner.run()
+        // call whose own posix_spawn forks while these fds are still open
+        // in this process inherits duplicates of them, which keeps this
+        // pipe's write end alive - and its read end from ever seeing real
+        // EOF - for as long as that unrelated sibling keeps running.
+        // `run()`'s posix_spawn_file_actions_adddup2 below creates a fresh,
+        // non-CLOEXEC descriptor at the target position, so this has no
+        // effect on what our own child inherits.
+        Self.setCloseOnExec(stdoutPipe.fileHandleForReading.fileDescriptor)
+        Self.setCloseOnExec(stdoutPipe.fileHandleForWriting.fileDescriptor)
+        Self.setCloseOnExec(stderrPipe.fileHandleForReading.fileDescriptor)
+        Self.setCloseOnExec(stderrPipe.fileHandleForWriting.fileDescriptor)
+    }
+
+    private static func setCloseOnExec(_ descriptor: Int32) {
+        let flags = fcntl(descriptor, F_GETFD)
+        guard flags >= 0 else { return }
+        _ = fcntl(descriptor, F_SETFD, flags | FD_CLOEXEC)
     }
 
     func run() throws {
@@ -2045,12 +2064,19 @@ private final class ProcessOutputReadHandle: @unchecked Sendable {
     func setReadabilityHandler(_ onReadable: @escaping @Sendable (FileHandle) -> Bool) {
         handle.readabilityHandler = { handle in
             self.lock.lock()
-            defer { self.lock.unlock() }
-            guard !self.stopped else { return }
-            if onReadable(handle) {
-                self.stopped = true
-                handle.readabilityHandler = nil
+            guard !self.stopped, onReadable(handle) else {
+                self.lock.unlock()
+                return
             }
+            self.stopped = true
+            self.handle.readabilityHandler = nil
+            self.lock.unlock()
+            // Matches the old inline `.stop()` calls this closure replaces:
+            // close promptly so an output-limited child that ignores
+            // SIGTERM gets EPIPE/SIGPIPE on its next write instead of
+            // filling the pipe buffer and blocking until the kill grace
+            // period expires.
+            try? handle.close()
         }
     }
 
