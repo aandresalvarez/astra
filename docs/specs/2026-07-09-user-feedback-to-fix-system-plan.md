@@ -12,6 +12,8 @@ if selected)
 
 **Primary repository:** `aandresalvarez/astra`
 
+**Program-plan draft PR:** [#255](https://github.com/aandresalvarez/astra/pull/255)
+
 **Backend repository/deployment:** To be selected before PR 7
 
 ## Goal
