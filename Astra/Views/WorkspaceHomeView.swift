@@ -1,7 +1,9 @@
 import AppKit
 import SwiftData
 import SwiftUI
+import ASTRACore
 import ASTRAModels
+import ASTRAPersistence
 
 private enum WorkspaceHomeLayout {
     static let boardMaxWidth: CGFloat = 1_520
@@ -9,25 +11,49 @@ private enum WorkspaceHomeLayout {
     static let pagePadding: CGFloat = 24
 }
 
+/// The workspace page's top-level sections, one tab each. `allCases` order is
+/// the tab order.
+enum WorkspaceHomeSection: String, CaseIterable, Identifiable {
+    case instructions
+    case capabilities
+    case access
+    case memory
+    case board
+    case apps
+    case routines
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .instructions: return "Instructions"
+        case .capabilities: return "Capabilities"
+        case .access: return "Access"
+        case .memory: return "Memory"
+        case .board: return "Task board"
+        case .apps: return "Apps"
+        case .routines: return "Routines"
+        }
+    }
+}
+
 enum WorkspaceHomePresentation {
-    static let usesWorkspaceContextCard = true
+    static let usesSectionTabs = true
+    // Instructions open readable by default: the default tab IS the full
+    // rendered document, never a collapsed preview behind a "Read" toggle.
+    static let defaultSection: WorkspaceHomeSection = .instructions
+    static let sectionSelectionPersistsPerWorkspace = true
     static let usesKanbanMeasuredPageRail = true
-    static let contextRowsUseSummaryPattern = true
-    static let contextCardShowsCapabilitiesRow = true
-    static let contextCardAlignsWithBoardColumns = true
     static let headerShowsWorkspaceStatus = false
     static let headerUsesOverviewMetrics = false
     static let headerUsesCompactOverviewMetrics = false
     static let statusCountsStayOnBoard = true
-    static let instructionsArePrimaryWorkspaceSurface = true
-    static let instructionsExpandByDefaultWhenConfigured = false
-    static let instructionsShowPreviewWhenConfigured = true
     static let emptyInstructionsUseSinglePrompt = true
     static let instructionBlockUsesPrimaryCTAWhenEmpty = true
     static let usesMinimumWelcomeRailWidth = true
     static let headerShowsPrimaryNewTaskAction = false
     static let routinesUseSummaryRows = true
-    static let instructionEditorStaysInsideContextCard = true
+    static let instructionEditorStaysInline = true
     static let rowIconFrame: CGFloat = 40
     static let rowMinHeight: CGFloat = 56
     static let rowSpacing: CGFloat = 14
@@ -35,226 +61,13 @@ enum WorkspaceHomePresentation {
     static let minimumWelcomeRailWidth = WorkspaceHomeLayout.minimumPageRailWidth
 }
 
-struct WorkspaceInstructionBlock: Equatable {
-    var title: String?
-    var items: [String]
-}
-
 enum WorkspaceInstructionPresentation {
     static let emptyPromptTitle = "Tell the agent how you work"
     static let emptyPromptBody = "Add conventions, tone, and what to avoid. They apply to every task in this workspace."
     static let emptyActionTitle = "Write instructions"
-    static let configuredSubtitle = "Workspace prompt"
-    static let configuredFallbackSubtitle = "Workspace guidance configured"
-    static let usesReadableExpandedBlocks = true
-    static let previewItemLimit = 2
-    static let detailTitleFontSize: CGFloat = 12
-    static let detailBodyFontSize: CGFloat = 13
-    static let detailLineSpacing: CGFloat = 3
-    static let detailBlockSpacing: CGFloat = 10
-    static let detailItemSpacing: CGFloat = 6
-    static let bulletSize: CGFloat = 4
-    static let bulletColumnWidth: CGFloat = 12
-
-    static func subtitle(for instructions: String) -> String {
-        let blocks = blocks(from: instructions)
-        let itemCount = blocks.reduce(0) { $0 + $1.items.count }
-
-        if itemCount > 1 {
-            return "\(itemCount) guidance items"
-        }
-
-        return blocks.first?.items.first
-            ?? configuredFallbackSubtitle
-    }
-
-    static func previewItems(from instructions: String) -> [String] {
-        Array(
-            blocks(from: instructions)
-                .flatMap(\.items)
-                .prefix(previewItemLimit)
-        )
-    }
-
-    static func blocks(from instructions: String) -> [WorkspaceInstructionBlock] {
-        var seenItems = Set<String>()
-        var renderedBlocks: [WorkspaceInstructionBlock] = []
-
-        for paragraph in normalizedParagraphs(from: instructions) {
-            if let firstLine = paragraph.first,
-               firstLine.hasSuffix(":"),
-               paragraph.count > 1 {
-                appendBlock(
-                    title: formattedHeading(firstLine),
-                    items: paragraph.dropFirst().flatMap { sentenceFragments(from: $0) },
-                    seenItems: &seenItems,
-                    renderedBlocks: &renderedBlocks
-                )
-                continue
-            }
-
-            var plainItems: [String] = []
-            var activeSectionTitle: String?
-            var activeSectionItems: [String] = []
-
-            for fragment in sentenceFragments(from: paragraph.joined(separator: " ")) {
-                if let section = splitSection(from: fragment) {
-                    appendBlock(
-                        title: nil,
-                        items: plainItems,
-                        seenItems: &seenItems,
-                        renderedBlocks: &renderedBlocks
-                    )
-                    plainItems = []
-
-                    if activeSectionTitle != section.title {
-                        appendBlock(
-                            title: activeSectionTitle,
-                            items: activeSectionItems,
-                            seenItems: &seenItems,
-                            renderedBlocks: &renderedBlocks
-                        )
-                        activeSectionTitle = section.title
-                        activeSectionItems = []
-                    }
-
-                    activeSectionItems.append(section.item)
-                } else if activeSectionTitle != nil {
-                    activeSectionItems.append(fragment)
-                } else {
-                    plainItems.append(fragment)
-                }
-            }
-
-            appendBlock(
-                title: nil,
-                items: plainItems,
-                seenItems: &seenItems,
-                renderedBlocks: &renderedBlocks
-            )
-            appendBlock(
-                title: activeSectionTitle,
-                items: activeSectionItems,
-                seenItems: &seenItems,
-                renderedBlocks: &renderedBlocks
-            )
-        }
-
-        return renderedBlocks
-    }
-
-    private static func appendBlock(
-        title: String?,
-        items: [String],
-        seenItems: inout Set<String>,
-        renderedBlocks: inout [WorkspaceInstructionBlock]
-    ) {
-        let uniqueItems = items.compactMap { item -> String? in
-            let normalized = normalizedDisplayText(item)
-            guard !normalized.isEmpty else { return nil }
-
-            let key = normalized
-                .lowercased()
-                .replacingOccurrences(of: #"[^a-z0-9]+"#, with: " ", options: .regularExpression)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !seenItems.contains(key) else { return nil }
-            seenItems.insert(key)
-            return normalized
-        }
-
-        guard !uniqueItems.isEmpty else { return }
-        renderedBlocks.append(WorkspaceInstructionBlock(title: title, items: uniqueItems))
-    }
-
-    private static func normalizedParagraphs(from instructions: String) -> [[String]] {
-        let lines = instructions
-            .replacingOccurrences(of: "\r\n", with: "\n")
-            .replacingOccurrences(of: "\r", with: "\n")
-            .components(separatedBy: "\n")
-
-        var paragraphs: [[String]] = []
-        var current: [String] = []
-
-        for line in lines {
-            let normalized = normalizedDisplayText(line)
-            if normalized.isEmpty {
-                if !current.isEmpty {
-                    paragraphs.append(current)
-                    current = []
-                }
-            } else {
-                current.append(stripListMarker(from: normalized))
-            }
-        }
-
-        if !current.isEmpty {
-            paragraphs.append(current)
-        }
-
-        return paragraphs
-    }
-
-    private static func sentenceFragments(from text: String) -> [String] {
-        let normalized = normalizedDisplayText(text)
-        var fragments: [String] = []
-        var current = ""
-
-        for character in normalized {
-            current.append(character)
-            if character == "." || character == "!" || character == "?" {
-                let fragment = normalizedDisplayText(current)
-                if !fragment.isEmpty {
-                    fragments.append(fragment)
-                }
-                current = ""
-            }
-        }
-
-        let remainder = normalizedDisplayText(current)
-        if !remainder.isEmpty {
-            fragments.append(remainder)
-        }
-
-        return fragments
-    }
-
-    private static func splitSection(from fragment: String) -> (title: String, item: String)? {
-        guard let colonIndex = fragment.firstIndex(of: ":") else { return nil }
-
-        let title = normalizedDisplayText(String(fragment[..<colonIndex]))
-        let itemStart = fragment.index(after: colonIndex)
-        let item = normalizedDisplayText(String(fragment[itemStart...]))
-
-        guard !title.isEmpty,
-              !item.isEmpty,
-              title.count <= 48,
-              !title.contains(".") else {
-            return nil
-        }
-
-        return (formattedHeading(title), item)
-    }
-
-    private static func formattedHeading(_ text: String) -> String {
-        let trimmed = normalizedDisplayText(text.trimmingCharacters(in: CharacterSet(charactersIn: ":")))
-        guard let first = trimmed.first else { return trimmed }
-        return String(first).uppercased() + trimmed.dropFirst()
-    }
-
-    private static func stripListMarker(from text: String) -> String {
-        text.replacingOccurrences(
-            of: #"^([-*•]|\d+[.)])\s+"#,
-            with: "",
-            options: .regularExpression
-        )
-    }
-
-    private static func normalizedDisplayText(_ text: String) -> String {
-        text
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .replacingOccurrences(of: #"\s+([,.;:!?])"#, with: "$1", options: .regularExpression)
-            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
-    }
+    static let rendersCommonMark = true
+    static let preservesAuthoredLineBreaks = true
+    static let editorHasFormattingToolbar = true
 }
 
 struct WorkspaceHomeContainerView: View {
@@ -270,6 +83,8 @@ struct WorkspaceHomeContainerView: View {
     var onEditSchedule: ((TaskSchedule) -> Void)?
     var onManageCapabilities: (() -> Void)?
     var onOpenWorkspaceApp: ((WorkspaceApp) -> Void)?
+    var onAddSSHConnection: (() -> Void)?
+    var sshReloadTrigger: Int = 0
 
     @Query private var tasks: [AgentTask]
     @Query private var workspaceApps: [WorkspaceApp]
@@ -288,7 +103,9 @@ struct WorkspaceHomeContainerView: View {
         onNewSchedule: (() -> Void)? = nil,
         onEditSchedule: ((TaskSchedule) -> Void)? = nil,
         onManageCapabilities: (() -> Void)? = nil,
-        onOpenWorkspaceApp: ((WorkspaceApp) -> Void)? = nil
+        onOpenWorkspaceApp: ((WorkspaceApp) -> Void)? = nil,
+        onAddSSHConnection: (() -> Void)? = nil,
+        sshReloadTrigger: Int = 0
     ) {
         self.workspace = workspace
         self.taskQueue = taskQueue
@@ -302,6 +119,8 @@ struct WorkspaceHomeContainerView: View {
         self.onEditSchedule = onEditSchedule
         self.onManageCapabilities = onManageCapabilities
         self.onOpenWorkspaceApp = onOpenWorkspaceApp
+        self.onAddSSHConnection = onAddSSHConnection
+        self.sshReloadTrigger = sshReloadTrigger
 
         let workspaceID = workspace.id
         _tasks = Query(
@@ -336,7 +155,9 @@ struct WorkspaceHomeContainerView: View {
             onManageCapabilities: onManageCapabilities,
             onOpenWorkspaceApp: onOpenWorkspaceApp,
             onImportWorkspaceApp: { isImportingApp = true },
-            onBrowseLibrary: { isBrowsingLibrary = true }
+            onBrowseLibrary: { isBrowsingLibrary = true },
+            onAddSSHConnection: onAddSSHConnection,
+            sshReloadTrigger: sshReloadTrigger
         )
         .sheet(isPresented: $isImportingApp) {
             WorkspaceAppImportReviewView(
@@ -376,14 +197,21 @@ struct WorkspaceHomeView: View {
     var onOpenWorkspaceApp: ((WorkspaceApp) -> Void)?
     var onImportWorkspaceApp: (() -> Void)?
     var onBrowseLibrary: (() -> Void)?
+    var onAddSSHConnection: (() -> Void)?
+    var sshReloadTrigger: Int = 0
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.modelContext) private var modelContext
     @State private var isEditingInstructions = false
     @State private var editedInstructions = ""
-    @State private var isInstructionsExpanded = false
-    @State private var initializedInstructionsWorkspaceID: UUID?
+    @State private var instructionEditorController = WorkspaceInstructionEditorController()
+    @State private var selectedSection = WorkspaceHomePresentation.defaultSection
+    @State private var initializedPresentationWorkspaceID: UUID?
+    @State private var sshConnections: [SSHConnection] = []
+    @State private var newMemoryText = ""
+    @State private var isMemoryComposerVisible = false
+    @State private var pendingSetupDeletion: PendingWorkspaceSetupDeletion?
     @AppStorage("kanbanBoardDensity") private var densityRaw = KanbanBoardDensity.spacious.rawValue
-    @FocusState private var isInstructionsFocused: Bool
 
     // The skill/connector/tool aggregators previously rendered by the
     // center-panel Plugins summary were deleted when that section moved
@@ -397,41 +225,28 @@ struct WorkspaceHomeView: View {
                     header
                         .padding(.bottom, 16)
 
-                    workspaceContextCard
-                        .padding(.bottom, 20)
+                    sectionTabBar
+                        .padding(.bottom, 16)
+
+                    if selectedSection != .board {
+                        selectedSectionPanel
+                            .padding(.bottom, 24)
+                    }
                 }
                 .frame(maxWidth: alignedContentWidth, alignment: .leading)
                 .padding(.horizontal, KanbanBoardLayout.outerPadding)
 
-                KanbanBoardView(
-                    tasks: tasks,
-                    onOpenTask: onOpenTask,
-                    onDeleteTask: onDeleteTask,
-                    onSetDoneState: onSetDoneState
-                )
-                .frame(maxWidth: pageRailWidth, alignment: .leading)
-                .padding(.bottom, 24)
-
-                // Workspace-scoped context such as Memories lives in the
-                // right rail's Workspace Setup section, so the main canvas
-                // stays focused on task flow.
-
-                // Routines (only when they exist)
-                if !workspace.schedules.isEmpty {
-                    WorkspaceScheduleSection(
-                        schedules: workspace.schedules.sorted { $0.name < $1.name },
-                        onToggle: { schedule in
-                            schedule.isEnabled.toggle()
-                            schedule.updatedAt = Date()
-                        },
-                        onEdit: { schedule in onEditSchedule?(schedule) },
-                        onNew: { onNewSchedule?() }
+                if selectedSection == .board {
+                    KanbanBoardView(
+                        tasks: tasks,
+                        onOpenTask: onOpenTask,
+                        onDeleteTask: onDeleteTask,
+                        onSetDoneState: onSetDoneState
                     )
-                    .workspaceSectionPanel()
-                    .frame(maxWidth: alignedContentWidth, alignment: .leading)
-                    .padding(.horizontal, KanbanBoardLayout.outerPadding)
+                    .frame(maxWidth: pageRailWidth, alignment: .leading)
                     .padding(.bottom, 24)
                 }
+
             }
             .frame(maxWidth: pageRailWidth, alignment: .leading)
             .padding(.horizontal, WorkspaceHomeLayout.pagePadding)
@@ -440,11 +255,134 @@ struct WorkspaceHomeView: View {
         }
         .background(Stanford.panelBackground)
         .onAppear {
-            initializeInstructionsPresentationIfNeeded()
+            initializePresentationIfNeeded()
+            loadSSHConnections()
         }
         .onChange(of: workspace.id) {
-            initializedInstructionsWorkspaceID = nil
-            initializeInstructionsPresentationIfNeeded()
+            initializedPresentationWorkspaceID = nil
+            initializePresentationIfNeeded()
+            loadSSHConnections()
+        }
+        .onChange(of: sshReloadTrigger) {
+            loadSSHConnections()
+        }
+        .confirmationDialog(
+            pendingSetupDeletion?.title ?? "",
+            isPresented: Binding(
+                get: { pendingSetupDeletion != nil },
+                set: { presented in if !presented { pendingSetupDeletion = nil } }
+            ),
+            titleVisibility: .visible,
+            presenting: pendingSetupDeletion
+        ) { deletion in
+            Button(deletion.confirmTitle, role: .destructive) {
+                deletion.perform()
+                pendingSetupDeletion = nil
+            }
+            Button("Cancel", role: .cancel) {
+                pendingSetupDeletion = nil
+            }
+        } message: { deletion in
+            Text(deletion.message)
+        }
+    }
+
+    // MARK: - Section Tabs
+
+    private var sectionTabBar: some View {
+        HStack(alignment: .bottom, spacing: 2) {
+            ForEach(WorkspaceHomeSection.allCases) { section in
+                sectionTabButton(section)
+            }
+            Spacer(minLength: 0)
+        }
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(Color.primary.opacity(0.055))
+                .frame(height: 1)
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Workspace sections")
+    }
+
+    private func sectionTabButton(_ section: WorkspaceHomeSection) -> some View {
+        let isSelected = selectedSection == section
+
+        return Button {
+            selectSection(section)
+        } label: {
+            HStack(spacing: 6) {
+                Text(section.title)
+                    .font(Stanford.ui(13, weight: isSelected ? .semibold : .medium))
+
+                if let count = sectionCount(section), count > 0 {
+                    Text("\(count)")
+                        .font(Stanford.caption(11).weight(.medium))
+                        .foregroundStyle(isSelected ? Stanford.lagunita : .secondary)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 1)
+                        .background(Capsule().fill(Color.primary.opacity(0.055)))
+                }
+            }
+            .foregroundStyle(isSelected ? Stanford.lagunita : Color.secondary)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(isSelected ? Stanford.lagunita : Color.clear)
+                .frame(height: 2)
+        }
+        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
+        .help(section.title)
+    }
+
+    private func sectionCount(_ section: WorkspaceHomeSection) -> Int? {
+        switch section {
+        case .instructions: return nil
+        case .board: return tasks.count
+        case .capabilities: return capabilityCount
+        case .memory: return workspace.memories.count
+        case .access: return accessConfiguredCount
+        case .apps: return workspaceApps.count
+        case .routines: return workspace.schedules.count
+        }
+    }
+
+    private var accessConfiguredCount: Int {
+        WorkspaceSetupChecklistPresentation.userConfiguredFolderCount(
+            primaryPath: workspace.primaryPath,
+            additionalPaths: workspace.additionalPaths
+        ) + sshConnections.count
+    }
+
+    private func selectSection(_ section: WorkspaceHomeSection) {
+        guard selectedSection != section else { return }
+        withAnimation(disclosureAnimation) {
+            selectedSection = section
+        }
+        persistSelectedSection(section)
+    }
+
+    @ViewBuilder
+    private var selectedSectionPanel: some View {
+        switch selectedSection {
+        case .instructions:
+            instructionsBlock.workspaceSectionPanel()
+        case .capabilities:
+            capabilitiesTab.workspaceSectionPanel()
+        case .memory:
+            memoryTab.workspaceSectionPanel()
+        case .access:
+            accessTab.workspaceSectionPanel()
+        case .apps:
+            appsTab.workspaceSectionPanel()
+        case .routines:
+            routinesTab.workspaceSectionPanel()
+        case .board:
+            EmptyView()
         }
     }
 
@@ -498,48 +436,492 @@ struct WorkspaceHomeView: View {
         }
     }
 
-    // MARK: - Workspace Context
+    // MARK: - Capabilities Tab
 
-    private var workspaceContextCard: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            // `.top` (not `.firstTextBaseline`): a baseline-aligned HStack that can hold selectable
-            // `Text` live-locks SwiftUI's layout engine. Keep `.top`. See MarkdownTextView in TaskMainView.
-            HStack(alignment: .top, spacing: 8) {
-                Text("Workspace context")
-                    .font(Stanford.caption(13).weight(.semibold))
-                    .foregroundStyle(.primary)
+    // Deliberately renders only what the Workspace model already holds
+    // (names + icons) — no capability-package or approval-record reads. The
+    // right rail once scanned those directories from `body` and it cost 68
+    // directory reads per evaluation; Manage remains the door to the full
+    // capability UI.
+    private var capabilitiesTab: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 10) {
+                Text(capabilitySubtitle)
+                    .font(Stanford.caption(12))
+                    .foregroundStyle(.tertiary)
 
-                Spacer()
+                Spacer(minLength: 12)
+
+                Button(action: onManageCapabilities ?? onConfigure) {
+                    HStack(spacing: 4) {
+                        Text("Manage")
+                        Image(systemName: "chevron.right")
+                            .font(Stanford.ui(10, weight: .semibold))
+                    }
+                    .font(Stanford.caption(12).weight(.medium))
+                    .foregroundStyle(Stanford.lagunita)
+                }
+                .buttonStyle(.plain)
+                .help("Manage workspace capabilities")
             }
-            .padding(.bottom, 8)
 
-            instructionsBlock
-
-            workspaceDivider
-
-            capabilitiesSummaryRow
-
-            if onImportWorkspaceApp != nil || (onOpenWorkspaceApp != nil && !workspaceApps.isEmpty) {
-                workspaceDivider
-
-                appsSummaryRow
+            if capabilityRowCount > 0 {
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(Array(workspace.skills.enumerated()), id: \.offset) { _, skill in
+                        capabilityRow(icon: skill.icon, fallbackIcon: "sparkles", name: skill.name, kind: "Skill")
+                    }
+                    ForEach(Array(workspace.connectors.enumerated()), id: \.offset) { _, connector in
+                        capabilityRow(icon: connector.icon, fallbackIcon: "link", name: connector.name, kind: "Connector")
+                    }
+                    ForEach(Array(workspace.localTools.enumerated()), id: \.offset) { _, tool in
+                        capabilityRow(icon: tool.icon, fallbackIcon: "wrench.and.screwdriver", name: tool.name, kind: "Tool")
+                    }
+                }
+            } else if capabilityCount > 0 {
+                // enabledCapabilityIDs can be ahead of the materialized
+                // skill/connector/tool relations, so there is nothing to list
+                // here even though capabilities are enabled. Point at Manage
+                // instead of claiming "none active".
+                sectionEmptyMessage(
+                    icon: "checkmark.shield",
+                    title: "\(capabilityCount) \(capabilityCount == 1 ? "capability" : "capabilities") enabled",
+                    body: "Open Manage to review and configure what's active in this workspace."
+                )
+            } else {
+                sectionEmptyMessage(
+                    icon: "checkmark.shield",
+                    title: "No capabilities active",
+                    body: "Browse the library to add skills, connectors, and tools the agent can use in this workspace."
+                )
             }
         }
-        .workspaceSectionPanel()
+        .padding(.vertical, 4)
     }
 
-    // F7: lists the workspace's published apps so they can be re-opened. Only
-    // shown when a host has provided an open handler and at least one app exists.
-    private var appsSummaryRow: some View {
-        VStack(alignment: .leading, spacing: 6) {
+    private func capabilityRow(icon: String, fallbackIcon: String, name: String, kind: String) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: icon.isEmpty ? fallbackIcon : icon)
+                .font(Stanford.ui(13))
+                .foregroundStyle(Stanford.lagunita)
+                .frame(width: 22)
+
+            Text(name)
+                .font(Stanford.body(13))
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+
+            Spacer(minLength: 10)
+
+            Text(kind)
+                .font(Stanford.caption(11))
+                .foregroundStyle(.tertiary)
+        }
+        .padding(.vertical, 5)
+    }
+
+    // MARK: - Memory Tab
+
+    // Memory/folders/remote-access mirror the same Workspace fields and
+    // actions the right rail's "Workspace setup" checklist already owns
+    // (WorkspaceRightRailView.swift) — reusing WorkspaceSetupChecklistPresentation's
+    // pure helpers there instead of re-deriving folder/state logic here.
+    private var memoryTab: some View {
+        memorySetupSubsection
+            .padding(.vertical, 4)
+    }
+
+    // MARK: - Access Tab
+
+    private var accessTab: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            folderSetupSubsection
+
+            workspaceDivider
+                .padding(.vertical, 16)
+
+            remoteAccessSetupSubsection
+        }
+        .padding(.vertical, 4)
+    }
+
+    private func setupSubsectionHeader(
+        icon: String,
+        title: String,
+        subtitle: String,
+        actionTitle: String?,
+        action: (() -> Void)?
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 8) {
-                Image(systemName: "square.grid.2x2")
+                Image(systemName: icon)
                     .font(Stanford.ui(13, weight: .semibold))
                     .foregroundStyle(Stanford.lagunita)
-                Text("Apps")
+                    .frame(width: 20)
+
+                Text(title)
+                    .font(Stanford.ui(14, weight: .semibold))
+                    .foregroundStyle(.primary)
+
+                Spacer(minLength: 12)
+
+                if let actionTitle, let action {
+                    Button(action: action) {
+                        Text(actionTitle)
+                            .font(Stanford.caption(12).weight(.medium))
+                            .foregroundStyle(Stanford.lagunita)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+
+            Text(subtitle)
+                .font(Stanford.caption(12))
+                .foregroundStyle(.tertiary)
+                .padding(.leading, 28)
+        }
+        .padding(.bottom, 10)
+    }
+
+    private func setupInlineRow<Trailing: View>(
+        title: String,
+        detail: String,
+        @ViewBuilder trailing: () -> Trailing
+    ) -> some View {
+        HStack(spacing: 8) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title)
                     .font(Stanford.caption(12).weight(.semibold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+
+                Text(detail)
+                    .font(Stanford.mono(10))
                     .foregroundStyle(.secondary)
-                Spacer()
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            .help(detail)
+
+            Spacer(minLength: 0)
+
+            trailing()
+        }
+        .padding(.horizontal, 9)
+        .padding(.vertical, 7)
+        .background(Color.primary.opacity(0.03))
+        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+    }
+
+    // MARK: Memory
+
+    private var memorySetupSubsection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            setupSubsectionHeader(
+                icon: "text.badge.checkmark",
+                title: "Memory",
+                subtitle: workspace.memories.isEmpty
+                    ? "Details the agent remembers"
+                    : "\(workspace.memories.count) saved \(workspace.memories.count == 1 ? "detail" : "details")",
+                actionTitle: "Add",
+                action: {
+                    withAnimation(disclosureAnimation) {
+                        isMemoryComposerVisible = true
+                    }
+                }
+            )
+
+            if workspace.memories.isEmpty && !isMemoryComposerVisible {
+                sectionEmptyMessage(
+                    icon: "text.badge.checkmark",
+                    title: "No memory yet",
+                    body: "Save details the agent should remember about this workspace so you don't have to re-explain them."
+                )
+            } else {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(Array(workspace.memories.indices), id: \.self) { index in
+                        memoryRow(index)
+                    }
+                }
+            }
+
+            if isMemoryComposerVisible {
+                memoryComposer
+            }
+        }
+    }
+
+    private func memoryRow(_ index: Int) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            TextField("Saved detail", text: memoryBinding(at: index), axis: .vertical)
+                .font(Stanford.caption(13))
+                .textFieldStyle(.plain)
+                .lineLimit(1...4)
+                .padding(.horizontal, 9)
+                .padding(.vertical, 7)
+                .background(Color.primary.opacity(0.03))
+                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .stroke(Color.primary.opacity(0.07), lineWidth: 1)
+                )
+
+            Button {
+                requestMemoryDeletion(at: index)
+            } label: {
+                Image(systemName: "trash")
+                    .font(Stanford.ui(11, weight: .medium))
+                    .foregroundStyle(.tertiary)
+                    .frame(width: 22, height: 26)
+            }
+            .buttonStyle(.plain)
+            .help("Remove memory")
+        }
+    }
+
+    private var memoryComposer: some View {
+        HStack(spacing: 8) {
+            TextField("Remember something about this workspace...", text: $newMemoryText, axis: .vertical)
+                .font(Stanford.caption(13))
+                .textFieldStyle(.roundedBorder)
+                .lineLimit(1...3)
+                .onSubmit { addMemory() }
+
+            Button {
+                addMemory()
+            } label: {
+                Image(systemName: "plus.circle.fill")
+                    .font(Stanford.ui(15))
+                    .foregroundStyle(
+                        newMemoryText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                            ? Color.secondary.opacity(0.4)
+                            : Stanford.lagunita
+                    )
+            }
+            .buttonStyle(.plain)
+            .disabled(newMemoryText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            .help("Save memory")
+
+            Button {
+                newMemoryText = ""
+                isMemoryComposerVisible = false
+            } label: {
+                Image(systemName: "xmark")
+                    .font(Stanford.ui(11, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            .buttonStyle(.plain)
+            .help("Cancel")
+        }
+    }
+
+    private func memoryBinding(at index: Int) -> Binding<String> {
+        Binding(
+            get: {
+                guard workspace.memories.indices.contains(index) else { return "" }
+                return workspace.memories[index]
+            },
+            set: { value in
+                guard workspace.memories.indices.contains(index) else { return }
+                workspace.memories[index] = value
+                markWorkspaceConfigurationChanged()
+            }
+        )
+    }
+
+    private func addMemory() {
+        let text = newMemoryText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        workspace.memories.append(text)
+        markWorkspaceConfigurationChanged()
+        newMemoryText = ""
+        isMemoryComposerVisible = false
+    }
+
+    private func requestMemoryDeletion(at index: Int) {
+        guard workspace.memories.indices.contains(index) else { return }
+        let detail = workspace.memories[index].trimmingCharacters(in: .whitespacesAndNewlines)
+        let shown = detail.isEmpty ? "This saved detail" : "\u{201c}\(detail.prefix(80))\u{201d}"
+        pendingSetupDeletion = PendingWorkspaceSetupDeletion(
+            title: "Remove memory?",
+            message: "\(shown) will be removed from this workspace's memory.",
+            confirmTitle: "Remove",
+            perform: { removeMemory(at: index) }
+        )
+    }
+
+    private func removeMemory(at index: Int) {
+        guard workspace.memories.indices.contains(index) else { return }
+        workspace.memories.remove(at: index)
+        markWorkspaceConfigurationChanged()
+    }
+
+    // MARK: Folders
+
+    private var folderSetupSubsection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            setupSubsectionHeader(
+                icon: "folder",
+                title: WorkspaceSetupChecklistPresentation.folderAccessTitle,
+                subtitle: WorkspaceSetupChecklistPresentation.folderSubtitle(
+                    primaryPath: workspace.primaryPath,
+                    additionalPaths: workspace.additionalPaths
+                ),
+                actionTitle: WorkspaceSetupChecklistPresentation.addFolderActionTitle,
+                action: addExtraFolder
+            )
+
+            VStack(alignment: .leading, spacing: 6) {
+                if let rootDescriptor = WorkspacePathPresentation.descriptors(
+                    primaryPath: workspace.primaryPath,
+                    additionalPaths: []
+                ).first {
+                    folderRow(WorkspaceSetupChecklistPresentation.folderDetailRow(for: rootDescriptor), removeAction: nil)
+                }
+
+                ForEach(WorkspaceSetupChecklistPresentation.userConfiguredFolderDescriptors(
+                    primaryPath: workspace.primaryPath,
+                    additionalPaths: workspace.additionalPaths
+                )) { descriptor in
+                    folderRow(
+                        WorkspaceSetupChecklistPresentation.folderDetailRow(for: descriptor),
+                        removeAction: { removeAdditionalPaths(matching: descriptor.path) }
+                    )
+                }
+            }
+        }
+    }
+
+    private func folderRow(_ row: WorkspaceFolderDetailRowPresentation, removeAction: (() -> Void)?) -> some View {
+        setupInlineRow(title: "\(row.title) · \(row.subtitle)", detail: row.path) {
+            HStack(spacing: 4) {
+                Button {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(row.path, forType: .string)
+                } label: {
+                    Image(systemName: "doc.on.doc")
+                        .font(Stanford.ui(10))
+                        .foregroundStyle(.tertiary)
+                        .frame(width: 20, height: 22)
+                }
+                .buttonStyle(.plain)
+                .help(row.copyPathHelp)
+
+                if row.canRemove, let removeAction {
+                    Button {
+                        pendingSetupDeletion = PendingWorkspaceSetupDeletion(
+                            title: "Remove folder?",
+                            message: "\(row.path) will no longer be available to the agent. The folder itself is not deleted.",
+                            confirmTitle: "Remove",
+                            perform: removeAction
+                        )
+                    } label: {
+                        Image(systemName: "trash")
+                            .font(Stanford.ui(11, weight: .medium))
+                            .foregroundStyle(.tertiary)
+                            .frame(width: 20, height: 22)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Remove folder")
+                }
+            }
+        }
+    }
+
+    private func addExtraFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.message = "Choose a folder the agent can also read from or execute in"
+        panel.prompt = "Add Folder"
+        if panel.runModal() == .OK, let url = panel.url {
+            let path = url.path
+            if !workspace.additionalPaths.contains(path) {
+                workspace.additionalPaths.append(path)
+                markWorkspaceConfigurationChanged()
+            }
+        }
+    }
+
+    private func removeAdditionalPaths(matching path: String) {
+        let remaining = WorkspaceSetupChecklistPresentation.remainingAdditionalPaths(
+            afterRemovingFolderMatching: path,
+            from: workspace.additionalPaths
+        )
+        guard remaining.count != workspace.additionalPaths.count else { return }
+        workspace.additionalPaths = remaining
+        markWorkspaceConfigurationChanged()
+    }
+
+    // MARK: Remote Access
+
+    private var remoteAccessSetupSubsection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            setupSubsectionHeader(
+                icon: "network",
+                title: "Remote access",
+                subtitle: sshConnections.isEmpty
+                    ? "Servers the agent can reach"
+                    : "\(sshConnections.count) configured \(sshConnections.count == 1 ? "server" : "servers")",
+                actionTitle: sshConnections.isEmpty ? "Connect" : "Add",
+                action: onAddSSHConnection
+            )
+
+            if sshConnections.isEmpty {
+                sectionEmptyMessage(
+                    icon: "network",
+                    title: "No remote servers",
+                    body: "Connect a server over SSH so the agent can run commands there directly."
+                )
+            } else {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(sshConnections) { connection in
+                        setupInlineRow(
+                            title: connection.name.isEmpty ? connection.host : connection.name,
+                            detail: remoteConnectionDetail(connection)
+                        ) {
+                            EmptyView()
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func remoteConnectionDetail(_ connection: SSHConnection) -> String {
+        let target = "\(connection.user)@\(connection.host):\(connection.port)"
+        let remotePath = connection.remotePath.trimmingCharacters(in: .whitespacesAndNewlines)
+        return remotePath.isEmpty ? target : "\(target)  \(remotePath)"
+    }
+
+    private func loadSSHConnections() {
+        guard !workspace.primaryPath.isEmpty else {
+            sshConnections = []
+            return
+        }
+        sshConnections = SSHConnectionManager.load(workspacePath: workspace.primaryPath)
+    }
+
+    // MARK: Shared
+
+    private func markWorkspaceConfigurationChanged() {
+        workspace.updatedAt = Date()
+        WorkspacePersistenceCoordinator.scheduleAutoExport(workspace: workspace, modelContext: modelContext)
+    }
+
+    // MARK: - Apps Tab
+
+    private var appsTab: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                Text(workspaceApps.isEmpty
+                    ? "Small apps published by tasks in this workspace"
+                    : "\(workspaceApps.count) \(workspaceApps.count == 1 ? "app" : "apps") in this workspace")
+                    .font(Stanford.caption(12))
+                    .foregroundStyle(.tertiary)
+
+                Spacer(minLength: 12)
+
                 if let onBrowseLibrary {
                     Button(action: onBrowseLibrary) {
                         Label("Library", systemImage: "books.vertical")
@@ -557,28 +939,124 @@ struct WorkspaceHomeView: View {
                     .help("Import an ASTRA app package (.astra-app)")
                 }
             }
-            ForEach(workspaceApps) { app in
-                Button {
-                    onOpenWorkspaceApp?(app)
-                } label: {
-                    HStack(spacing: 8) {
-                        Image(systemName: app.icon.isEmpty ? "square.grid.2x2" : app.icon)
-                            .font(Stanford.ui(12))
-                            .foregroundStyle(Stanford.lagunita)
-                        Text(app.name)
-                            .font(Stanford.body(13))
-                            .foregroundStyle(Stanford.black)
-                        Spacer()
-                        Image(systemName: "chevron.right")
-                            .font(Stanford.ui(11, weight: .semibold))
-                            .foregroundStyle(.secondary)
+
+            if workspaceApps.isEmpty {
+                sectionEmptyMessage(
+                    icon: "square.grid.2x2",
+                    title: "No apps yet",
+                    body: "Import an app package or browse the library — published apps show up here."
+                )
+            } else {
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(workspaceApps) { app in
+                        Button {
+                            onOpenWorkspaceApp?(app)
+                        } label: {
+                            HStack(spacing: 10) {
+                                Image(systemName: app.icon.isEmpty ? "square.grid.2x2" : app.icon)
+                                    .font(Stanford.ui(13))
+                                    .foregroundStyle(Stanford.lagunita)
+                                    .frame(width: 22)
+                                Text(app.name)
+                                    .font(Stanford.body(13))
+                                    .foregroundStyle(Stanford.black)
+                                Spacer()
+                                Image(systemName: "chevron.right")
+                                    .font(Stanford.ui(11, weight: .semibold))
+                                    .foregroundStyle(.secondary)
+                            }
+                            .padding(.vertical, 5)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
                     }
-                    .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
             }
         }
+        .padding(.vertical, 4)
     }
+
+    // MARK: - Routines Tab
+
+    private var routinesTab: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                Text(workspace.schedules.isEmpty
+                    ? "Recurring agent runs on a schedule"
+                    : "\(workspace.schedules.count) \(workspace.schedules.count == 1 ? "routine" : "routines") configured")
+                    .font(Stanford.caption(12))
+                    .foregroundStyle(.tertiary)
+
+                Spacer(minLength: 12)
+
+                if onNewSchedule != nil {
+                    Button(action: { onNewSchedule?() }) {
+                        Label("Add routine", systemImage: "plus")
+                            .font(Stanford.caption(11))
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Schedule a recurring agent run")
+                }
+            }
+
+            if workspace.schedules.isEmpty {
+                sectionEmptyMessage(
+                    icon: "arrow.triangle.2.circlepath",
+                    title: "No routines yet",
+                    body: "Add a routine to run a task on a schedule — daily digests, recurring checks, cleanups."
+                )
+            } else {
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(Array(sortedSchedules.enumerated()), id: \.element.id) { index, schedule in
+                        if index > 0 {
+                            workspaceDivider
+                        }
+
+                        WorkspaceScheduleRow(
+                            schedule: schedule,
+                            onToggle: {
+                                schedule.isEnabled.toggle()
+                                schedule.updatedAt = Date()
+                            },
+                            onEdit: { onEditSchedule?(schedule) }
+                        )
+                    }
+                }
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    private var sortedSchedules: [TaskSchedule] {
+        workspace.schedules.sorted { $0.name < $1.name }
+    }
+
+    private func sectionEmptyMessage(icon: String, title: String, body: String) -> some View {
+        HStack(alignment: .top, spacing: WorkspaceHomePresentation.rowSpacing) {
+            Image(systemName: icon)
+                .font(Stanford.ui(19, weight: .medium))
+                .foregroundStyle(Stanford.lagunita.opacity(0.8))
+                .frame(width: WorkspaceHomePresentation.rowIconFrame)
+                .padding(.top, 2)
+
+            VStack(alignment: .leading, spacing: 5) {
+                Text(title)
+                    .font(Stanford.ui(14, weight: .semibold))
+                    .foregroundStyle(.primary)
+
+                Text(body)
+                    .font(Stanford.caption(13))
+                    .foregroundStyle(.secondary)
+                    .lineSpacing(2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, 10)
+    }
+
+    // MARK: - Instructions Tab
 
     @ViewBuilder
     private var instructionsBlock: some View {
@@ -631,155 +1109,33 @@ struct WorkspaceHomeView: View {
     }
 
     private var instructionsConfiguredBlock: some View {
-        HStack(alignment: .top, spacing: WorkspaceHomePresentation.rowSpacing) {
-            Image(systemName: "text.alignleft")
-                .font(Stanford.ui(19, weight: .medium))
-                .foregroundStyle(Stanford.lagunita)
-                .frame(width: WorkspaceHomePresentation.rowIconFrame)
-                .padding(.top, 13)
-
-            VStack(alignment: .leading, spacing: 10) {
-                // `.top` (not `.firstTextBaseline`): a baseline-aligned HStack that can hold selectable
-                // `Text` live-locks SwiftUI's layout engine. Keep `.top`. See MarkdownTextView in TaskMainView.
-                HStack(alignment: .top, spacing: 10) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Instructions")
-                            .font(Stanford.caption(12).weight(.semibold))
-                            .foregroundStyle(.secondary)
-                            .textCase(.uppercase)
-
-                        Text(WorkspaceInstructionPresentation.configuredSubtitle)
-                            .font(Stanford.caption(12))
-                            .foregroundStyle(.tertiary)
-                    }
-
-                    Spacer(minLength: 12)
-
-                    Button {
-                        startEditingInstructions()
-                    } label: {
-                        Text("Edit")
-                            .font(Stanford.caption(12).weight(.medium))
-                            .foregroundStyle(Stanford.lagunita)
-                    }
-                    .buttonStyle(.plain)
-                    .help("Edit workspace instructions")
-
-                    Button {
-                        withAnimation(disclosureAnimation) {
-                            isInstructionsExpanded.toggle()
-                        }
-                        persistInstructionsExpanded(isInstructionsExpanded)
-                    } label: {
-                        HStack(spacing: 4) {
-                            Text(isInstructionsExpanded ? "Hide" : "Read")
-                            Image(systemName: isInstructionsExpanded ? "chevron.up" : "chevron.down")
-                                .font(Stanford.ui(10, weight: .semibold))
-                        }
-                            .font(Stanford.caption(12).weight(.medium))
-                            .foregroundStyle(Stanford.lagunita)
-                    }
-                    .buttonStyle(.plain)
-                    .help(isInstructionsExpanded ? "Collapse workspace instructions" : "Read workspace instructions")
-                }
-
-                if isInstructionsExpanded {
-                    instructionsExpandedDetail
-                } else {
-                    instructionsPreview
-                }
-            }
-            .layoutPriority(1)
-        }
-        .frame(maxWidth: .infinity, minHeight: 88, alignment: .leading)
-        .padding(.vertical, 10)
-    }
-
-    private var instructionsEditingBlock: some View {
-        HStack(alignment: .top, spacing: WorkspaceHomePresentation.rowSpacing) {
-            Image(systemName: "text.alignleft")
-                .font(Stanford.ui(19, weight: .medium))
-                .foregroundStyle(Stanford.lagunita)
-                .frame(width: WorkspaceHomePresentation.rowIconFrame)
-                .padding(.top, 13)
-
-            VStack(alignment: .leading, spacing: 10) {
-                Text("Instructions")
-                    .font(Stanford.caption(12).weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .textCase(.uppercase)
-
-                TextEditor(text: $editedInstructions)
-                    .font(Stanford.mono(13))
-                    .focused($isInstructionsFocused)
-                    .scrollContentBackground(.hidden)
-                    .frame(minHeight: 120, maxHeight: 280)
-                    .padding(10)
-                    .background(Color.primary.opacity(0.026))
-                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .stroke(Stanford.lagunita.opacity(0.32), lineWidth: 1)
-                    )
-                    .onAppear { isInstructionsFocused = true }
-
-                HStack(spacing: 10) {
-                    Spacer()
-
-                    Button {
-                        isEditingInstructions = false
-                    } label: {
-                        Text("Cancel")
-                            .font(Stanford.caption(12).weight(.medium))
-                            .foregroundStyle(.secondary)
-                    }
-                    .buttonStyle(.plain)
-
-                    Button {
-                        workspace.instructions = editedInstructions.trimmingCharacters(in: .whitespacesAndNewlines)
-                        workspace.updatedAt = Date()
-                        isEditingInstructions = false
-                        isInstructionsExpanded = !workspace.instructions.isEmpty
-                        persistInstructionsExpanded(isInstructionsExpanded)
-                    } label: {
-                        Text("Save")
-                            .font(Stanford.caption(12).weight(.semibold))
-                            .foregroundStyle(.white)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 6)
-                            .background(Stanford.lagunita)
-                            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            .layoutPriority(1)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.vertical, 10)
-    }
-
-    private var instructionsPreview: some View {
-        VStack(alignment: .leading, spacing: WorkspaceInstructionPresentation.detailItemSpacing) {
-            ForEach(Array(instructionPreviewItems.enumerated()), id: \.offset) { _, item in
-                instructionItem(item)
-            }
-
-            let remainingCount = max(0, instructionItemCount - instructionPreviewItems.count)
-            if remainingCount > 0 {
-                Text("\(remainingCount) more \(remainingCount == 1 ? "guidance item" : "guidance items")")
-                    .font(Stanford.caption(11).weight(.medium))
+        VStack(alignment: .leading, spacing: 12) {
+            // `.top` (not `.firstTextBaseline`): a baseline-aligned HStack that can hold selectable
+            // `Text` live-locks SwiftUI's layout engine. Keep `.top`. See MarkdownTextView in TaskMainView.
+            HStack(alignment: .top, spacing: 10) {
+                Text(instructionsStatsSummary)
+                    .font(Stanford.caption(12))
                     .foregroundStyle(.tertiary)
-                    .padding(.leading, WorkspaceInstructionPresentation.bulletColumnWidth + 6)
-            }
-        }
-    }
 
-    private var instructionsExpandedDetail: some View {
-        VStack(alignment: .leading, spacing: WorkspaceInstructionPresentation.detailBlockSpacing) {
-            ForEach(Array(instructionBlocks.enumerated()), id: \.offset) { _, block in
-                instructionBlock(block)
+                Spacer(minLength: 12)
+
+                Button {
+                    startEditingInstructions()
+                } label: {
+                    Text("Edit")
+                        .font(Stanford.caption(12).weight(.medium))
+                        .foregroundStyle(Stanford.lagunita)
+                }
+                .buttonStyle(.plain)
+                .help("Edit workspace instructions")
             }
+
+            MarkdownTextView(
+                text: instructionsRenderedMarkdown,
+                maxContentWidth: nil,
+                isSelectable: true
+            )
+            .frame(maxWidth: .infinity, alignment: .leading)
 
             if !workspace.additionalPaths.isEmpty {
                 Text("Includes \(workspace.additionalPaths.map { ($0 as NSString).lastPathComponent }.joined(separator: ", "))")
@@ -788,29 +1144,65 @@ struct WorkspaceHomeView: View {
                     .lineLimit(1)
             }
         }
+        .padding(.vertical, 4)
     }
 
-    private var capabilitiesSummaryRow: some View {
-        WorkspaceHomeSummaryRow(
-            icon: "checkmark.shield",
-            iconColor: Stanford.lagunita,
-            title: capabilityHeadline,
-            subtitle: capabilitySubtitle,
-            onSelect: onManageCapabilities ?? onConfigure
-        ) {
-            HStack(spacing: 12) {
-                Button(action: onManageCapabilities ?? onConfigure) {
-                    Text("Manage")
+    private var instructionsEditingBlock: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 0) {
+                WorkspaceInstructionToolbar(controller: instructionEditorController)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 6)
+
+                Rectangle()
+                    .fill(Color.primary.opacity(0.07))
+                    .frame(height: 1)
+
+                WorkspaceInstructionEditorView(text: $editedInstructions, controller: instructionEditorController)
+                    .frame(minHeight: 220, maxHeight: 480)
+                    .padding(10)
+            }
+            .background(Color.primary.opacity(0.026))
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .stroke(Stanford.lagunita.opacity(0.28), lineWidth: 1)
+            )
+
+            HStack(spacing: 10) {
+                Text(editedInstructionsWordCountLabel)
+                    .font(Stanford.caption(11))
+                    .foregroundStyle(.tertiary)
+
+                Spacer()
+
+                Button {
+                    cancelEditingInstructions()
+                } label: {
+                    Text("Cancel")
                         .font(Stanford.caption(12).weight(.medium))
-                        .foregroundStyle(Stanford.lagunita)
+                        .foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
+                .keyboardShortcut(.cancelAction)
 
-                Image(systemName: "chevron.right")
-                    .font(Stanford.ui(12, weight: .semibold))
-                    .foregroundStyle(.secondary)
+                Button {
+                    saveEditedInstructions()
+                } label: {
+                    Text("Save")
+                        .font(Stanford.caption(12).weight(.semibold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background(Stanford.lagunita)
+                        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .keyboardShortcut(.return, modifiers: .command)
+                .help("Save (⌘↩)")
             }
         }
+        .padding(.vertical, 4)
     }
 
     private var workspaceDivider: some View {
@@ -828,28 +1220,26 @@ struct WorkspaceHomeView: View {
         !workspace.instructions.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    private var instructionBlocks: [WorkspaceInstructionBlock] {
-        WorkspaceInstructionPresentation.blocks(from: workspace.instructions)
+    private var instructionsRenderedMarkdown: String {
+        WorkspaceInstructionMarkdown.preparedForRendering(workspace.instructions)
     }
 
-    private var instructionPreviewItems: [String] {
-        WorkspaceInstructionPresentation.previewItems(from: workspace.instructions)
+    private var instructionsStatsSummary: String {
+        WorkspaceInstructionMarkdown.summary(for: workspace.instructions)
     }
 
-    private var capabilityHeadline: String {
-        // Lead with the noun; the count and breakdown are metadata in the subtitle.
-        "Capabilities"
+    private var editedInstructionsWordCountLabel: String {
+        let words = editedInstructions.split(whereSeparator: \.isWhitespace).count
+        guard words > 0 else { return "Markdown supported" }
+        return "\(words) word\(words == 1 ? "" : "s")"
     }
 
-    private var instructionItemCount: Int {
-        instructionBlocks.reduce(0) { $0 + $1.items.count }
+    private var capabilityRowCount: Int {
+        workspace.skills.count + workspace.connectors.count + workspace.localTools.count
     }
 
     private var capabilityCount: Int {
-        max(
-            workspace.enabledCapabilityIDs.count,
-            workspace.skills.count + workspace.connectors.count + workspace.localTools.count
-        )
+        max(workspace.enabledCapabilityIDs.count, capabilityRowCount)
     }
 
     private var capabilitySubtitle: String {
@@ -860,10 +1250,11 @@ struct WorkspaceHomeView: View {
         ].compactMap { $0 }
 
         guard !parts.isEmpty else {
-            return "None active — browse the library to add skills, connectors, and tools"
+            return capabilityCount > 0
+                ? "\(capabilityCount) active"
+                : "None active — browse the library to add skills, connectors, and tools"
         }
-        let count = capabilityCount
-        return "\(count) active — \(parts.joined(separator: ", "))"
+        return "\(capabilityCount) active — \(parts.joined(separator: ", "))"
     }
 
     private func countPhrase(_ count: Int, singular: String, plural: String) -> String? {
@@ -874,68 +1265,52 @@ struct WorkspaceHomeView: View {
     private func startEditingInstructions() {
         editedInstructions = workspace.instructions
         isEditingInstructions = true
-        isInstructionsExpanded = false
+        selectSection(.instructions)
     }
 
-    private func initializeInstructionsPresentationIfNeeded() {
-        guard initializedInstructionsWorkspaceID != workspace.id else { return }
-        initializedInstructionsWorkspaceID = workspace.id
+    private func cancelEditingInstructions() {
         isEditingInstructions = false
-        // Restore the user's last expand choice for this workspace rather than
-        // forcing it collapsed every appearance / workspace switch.
-        isInstructionsExpanded = loadInstructionsExpanded()
     }
 
-    private func instructionsExpandedKey() -> String {
-        "workspaceHome.instructionsExpanded.\(workspace.id.uuidString)"
+    private func saveEditedInstructions() {
+        workspace.instructions = editedInstructions.trimmingCharacters(in: .whitespacesAndNewlines)
+        workspace.updatedAt = Date()
+        isEditingInstructions = false
     }
 
-    private func loadInstructionsExpanded() -> Bool {
-        UserDefaults.standard.bool(forKey: instructionsExpandedKey())
+    private func initializePresentationIfNeeded() {
+        guard initializedPresentationWorkspaceID != workspace.id else { return }
+        initializedPresentationWorkspaceID = workspace.id
+        isEditingInstructions = false
+        // Restore the user's last tab choice for this workspace; first visit
+        // lands on Instructions so the workspace prompt is open to read.
+        selectedSection = loadSelectedSection()
     }
 
-    private func persistInstructionsExpanded(_ value: Bool) {
-        UserDefaults.standard.set(value, forKey: instructionsExpandedKey())
+    private func selectedSectionKey() -> String {
+        "workspaceHome.selectedSection.\(workspace.id.uuidString)"
     }
 
-    @ViewBuilder
-    private func instructionBlock(_ block: WorkspaceInstructionBlock) -> some View {
-        VStack(alignment: .leading, spacing: WorkspaceInstructionPresentation.detailItemSpacing) {
-            if let title = block.title {
-                Text(title)
-                    .font(Stanford.caption(WorkspaceInstructionPresentation.detailTitleFontSize).weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-
-            VStack(alignment: .leading, spacing: WorkspaceInstructionPresentation.detailItemSpacing) {
-                ForEach(Array(block.items.enumerated()), id: \.offset) { _, item in
-                    instructionItem(item)
-                }
-            }
+    private func loadSelectedSection() -> WorkspaceHomeSection {
+        guard let raw = UserDefaults.standard.string(forKey: selectedSectionKey()),
+              let section = WorkspaceHomeSection(rawValue: raw) else {
+            return WorkspaceHomePresentation.defaultSection
         }
+        return section
     }
 
-    private func instructionItem(_ text: String) -> some View {
-        HStack(alignment: .top, spacing: 6) {
-            Circle()
-                .fill(Color.secondary.opacity(0.55))
-                .frame(
-                    width: WorkspaceInstructionPresentation.bulletSize,
-                    height: WorkspaceInstructionPresentation.bulletSize
-                )
-                .frame(width: WorkspaceInstructionPresentation.bulletColumnWidth)
-                .padding(.top, 7)
-
-            Text(text)
-                .font(Stanford.ui(WorkspaceInstructionPresentation.detailBodyFontSize))
-                .foregroundStyle(.primary)
-                .lineSpacing(WorkspaceInstructionPresentation.detailLineSpacing)
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
-        }
+    private func persistSelectedSection(_ section: WorkspaceHomeSection) {
+        UserDefaults.standard.set(section.rawValue, forKey: selectedSectionKey())
     }
 
+}
+
+private struct PendingWorkspaceSetupDeletion: Identifiable {
+    let id = UUID()
+    let title: String
+    let message: String
+    let confirmTitle: String
+    let perform: () -> Void
 }
 
 private struct WorkspaceHomeSummaryRow<Trailing: View>: View {
@@ -1010,47 +1385,7 @@ private extension View {
     }
 }
 
-// MARK: - Routine Section
-
-private struct WorkspaceScheduleSection: View {
-    let schedules: [TaskSchedule]
-    let onToggle: (TaskSchedule) -> Void
-    let onEdit: (TaskSchedule) -> Void
-    let onNew: () -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                Text("Routines")
-                    .font(Stanford.caption(13).weight(.semibold))
-                    .foregroundStyle(.primary)
-                Spacer()
-                Button(action: onNew) {
-                    Label("Add routine", systemImage: "plus")
-                        .font(Stanford.caption(12))
-                        .foregroundStyle(Stanford.lagunita)
-                }
-                .buttonStyle(.plain)
-            }
-            .padding(.bottom, 8)
-
-            ForEach(Array(schedules.enumerated()), id: \.element.id) { index, schedule in
-                if index > 0 {
-                    Rectangle()
-                        .fill(Color.primary.opacity(0.055))
-                        .frame(height: 1)
-                        .padding(.leading, WorkspaceHomePresentation.rowIconFrame + WorkspaceHomePresentation.rowSpacing)
-                }
-
-                WorkspaceScheduleRow(
-                    schedule: schedule,
-                    onToggle: { onToggle(schedule) },
-                    onEdit: { onEdit(schedule) }
-                )
-            }
-        }
-    }
-}
+// MARK: - Routine Row
 
 private struct WorkspaceScheduleRow: View {
     let schedule: TaskSchedule
