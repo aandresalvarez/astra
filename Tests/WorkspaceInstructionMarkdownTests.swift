@@ -155,6 +155,49 @@ struct WorkspaceInstructionMarkdownTests {
         #expect(table?.content.contains("2") == true)
     }
 
+    @Test("Two prose lines that each mention a pipe, but form no real table, still get split apart")
+    func pipeContainingProseLinesWithNoSeparatorRowAreSplit() {
+        // Neither line is a genuine table separator row (dash-only cells) —
+        // requiring one is what keeps a shell-pipeline example from being
+        // mistaken for a table and merged back into a run-on paragraph.
+        let input = "Run `ls | grep foo`.\nThen `cat file | wc -l`."
+        let expected = "Run `ls | grep foo`.\n\nThen `cat file | wc -l`."
+        #expect(WorkspaceInstructionMarkdown.preparedForRendering(input) == expected)
+    }
+
+    @Test("A separator row with no header line above it is not treated as a table")
+    func separatorRowWithNoPrecedingHeaderIsNotATable() {
+        let input = "| --- | --- |\nAfter."
+        let expected = "| --- | --- |\n\nAfter."
+        #expect(WorkspaceInstructionMarkdown.preparedForRendering(input) == expected)
+    }
+
+    @Test("A fence-shaped line with trailing text doesn't close an open fence")
+    func fenceLikeLineWithTrailingTextDoesNotClose() {
+        // ```swift here is literal content demonstrating fence syntax, not a
+        // close — CommonMark only lets a closing fence be followed by
+        // whitespace. Everything through the final bare ``` must stay one
+        // untouched block.
+        let input = "```\ncode\n```swift\nmore code\n```\nAfter."
+        #expect(WorkspaceInstructionMarkdown.preparedForRendering(input) == input)
+    }
+
+    @Test("Adjacent indented code lines are never split apart")
+    func indentedCodeBlockLinesAreUntouched() {
+        let input = "Before.\n    code line 1\n    code line 2\nAfter."
+        let expected = "Before.\n\n    code line 1\n    code line 2\n\nAfter."
+        #expect(WorkspaceInstructionMarkdown.preparedForRendering(input) == expected)
+
+        let blocks = MarkdownASTBlockParser.parse(WorkspaceInstructionMarkdown.preparedForRendering(input)) ?? []
+        let codeBlocks = blocks.filter {
+            if case .codeBlock = $0.kind { return true }
+            return false
+        }
+        #expect(codeBlocks.count == 1)
+        #expect(codeBlocks.first?.content.contains("code line 1") == true)
+        #expect(codeBlocks.first?.content.contains("code line 2") == true)
+    }
+
     @Test("Summary counts real Markdown sections and falls back to a word count")
     func summaryCountsSectionsAndWords() {
         #expect(WorkspaceInstructionMarkdown.summary(for: "") == "")
