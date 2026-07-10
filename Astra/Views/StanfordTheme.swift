@@ -286,10 +286,12 @@ enum Stanford {
     // slot + the row's 12pt vertical padding (6+6). Was 44, which centered
     // the row's content with ~8pt of dead air above and below — that slack
     // was what made the workspace list read as looser than the New
-    // task/New app command column above it. Don't drop this further: 36
-    // is the content floor, not a rhythm choice — going lower clips the
-    // star/ellipsis/new-task hover glyphs (24pt tall) top and bottom.
-    static var sidebarWorkspaceRowHeight: CGFloat { density(36) }
+    // task/New app command column above it. The floor is clamped UNSCALED:
+    // those accessory frames and paddings are fixed literals that don't
+    // follow uiScale, so a Decrease Size step below 1.0 would otherwise
+    // shrink the row's fixed frame under its own content and clip the
+    // star/ellipsis/new-task hover glyphs top and bottom.
+    static var sidebarWorkspaceRowHeight: CGFloat { max(density(36), 36) }
     static var sidebarSectionHeaderHeight: CGFloat { density(30) }
     // minHeight (not fixed), so this only raises the floor for single-line
     // rows (chat threads, published apps) — two-line rows (a subtitle, or
