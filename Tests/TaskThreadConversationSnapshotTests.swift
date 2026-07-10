@@ -1225,6 +1225,41 @@ extension TaskThreadSnapshotTests {
         #expect(snapshot.protocolState(for: run).todoItems.map(\.text) == ["Inspect", "Test"])
     }
 
+    @Test("Latest agent plan survives the transcript event window")
+    func latestAgentPlanSurvivesTranscriptEventWindow() {
+        let task = makeTask()
+        let run = TaskRun(task: task)
+        let planPayload = AstraRunProtocolParsedEvent.valid(.todoReplace(items: [
+            AstraRunProtocolEvent.TodoItem(text: "Keep this plan", status: .pending)
+        ])).normalizedPayload
+        var events = [makeEvent(
+            task: task,
+            type: "astra.todo.replace",
+            payload: planPayload,
+            timestamp: Date(timeIntervalSince1970: 1),
+            run: run
+        )]
+
+        for index in 0...1_200 {
+            events.append(makeEvent(
+                task: task,
+                type: "agent.response",
+                payload: "Later transcript event \(index)",
+                timestamp: Date(timeIntervalSince1970: Double(index + 2)),
+                run: run
+            ))
+        }
+        task.runs = [run]
+        task.events = events
+
+        let input = TaskThreadSnapshotInput(task: task)
+        let snapshot = TaskThreadSnapshot(input: input)
+
+        #expect(input.events.count == 1_201)
+        #expect(snapshot.latestAgentPlanItems.map(\.text) == ["Keep this plan"])
+        #expect(snapshot.protocolState(for: run).todoItems.map(\.text) == ["Keep this plan"])
+    }
+
     @Test("Conversation includes run with ARP completion even when output is empty")
     func protocolCompletionCreatesConversationItem() {
         let createdAt = Date(timeIntervalSince1970: 100)

@@ -244,7 +244,16 @@ private struct TaskThreadSnapshotWindow {
             return keptRunIDs.contains(runID)
         }
         let cappedToolResults = Self.capToolResults(runFilteredEvents)
-        events = Array(cappedToolResults.suffix(Self.maxEvents))
+        let displayEvents = Array(cappedToolResults.suffix(Self.maxEvents))
+        // The transcript window is intentionally bounded, but protocol and
+        // permission events also reconstruct durable per-run state. Keep the
+        // latest state transition for each kept run even when it predates the
+        // display window, so a long run does not lose its plan or permission
+        // presentation merely because newer conversational events arrived.
+        let stateEvents = Self.latestStateEvents(from: cappedToolResults)
+        let displayEventIDs = Set(displayEvents.map(\.id))
+        events = (displayEvents + stateEvents.filter { !displayEventIDs.contains($0.id) })
+            .sorted { $0.timestamp < $1.timestamp }
 
         omittedEventCount = max(0, totalEventCount - events.count)
         omittedRunCount = max(0, totalRunCount - runs.count)
@@ -278,6 +287,35 @@ private struct TaskThreadSnapshotWindow {
 
         return events.filter { event in
             event.type != "tool.result" || keepEventIDs.contains(event.id)
+        }
+    }
+
+    private static func latestStateEvents(from events: [TaskEvent]) -> [TaskEvent] {
+        var latestEvents: [StateEventKey: TaskEvent] = [:]
+        for event in events where isStateEvent(event) {
+            latestEvents[StateEventKey(event: event)] = event
+        }
+        return Array(latestEvents.values)
+    }
+
+    private static func isStateEvent(_ event: TaskEvent) -> Bool {
+        switch event.type {
+        case "astra.todo.replace", "astra.complete", "astra.protocol.invalid",
+             "astra.permission_manifest", "astra.permission_summary",
+             "permission.approval.requested", "permission.request.resolved":
+            return true
+        default:
+            return false
+        }
+    }
+
+    private struct StateEventKey: Hashable {
+        let runID: UUID?
+        let type: String
+
+        init(event: TaskEvent) {
+            runID = event.run?.id
+            type = event.type
         }
     }
 }
@@ -1197,99 +1235,37 @@ enum TaskLiveness {
 struct TaskThreadSnapshotCacheKey: Hashable, Sendable {
     let taskID: UUID
     let status: TaskStatus
-    let goalHash: UInt64
+    /// `updatedAt` is the durable task revision. Terminal cache hits must be
+    /// O(1), so do not rebuild signatures across an entire event history here.
+    let revision: Date
     let createdAt: Date
     let completedAt: Date?
     let maxRuns: Int
     let eventCount: Int
     let runCount: Int
-    let latestRunID: UUID?
-    let latestRunStatus: RunStatus?
-    let eventSignatures: [TaskThreadEventCacheSignature]
-    let runSignatures: [TaskThreadRunCacheSignature]
 
     init?(
         task: AgentTask,
-        trigger: TaskThreadSnapshotTrigger,
         maxRuns: Int
     ) {
-        guard Self.isCacheable(trigger) else { return nil }
+        guard Self.isCacheable(status: task.status) else { return nil }
         taskID = task.id
         status = task.status
-        goalHash = Self.stableHash(task.goal)
+        revision = task.updatedAt
         createdAt = task.createdAt
         completedAt = task.completedAt
         self.maxRuns = maxRuns
         eventCount = task.events.count
         runCount = task.runs.count
-        latestRunID = trigger.latestRunID
-        latestRunStatus = trigger.latestRunStatus
-        eventSignatures = task.events.map(TaskThreadEventCacheSignature.init(event:)).sorted()
-        runSignatures = task.runs.map(TaskThreadRunCacheSignature.init(run:)).sorted()
     }
 
-    private static func stableHash(_ value: String) -> UInt64 {
-        var hash: UInt64 = 14_695_981_039_346_656_037
-        for byte in value.utf8 {
-            hash ^= UInt64(byte)
-            hash &*= 1_099_511_628_211
-        }
-        return hash
-    }
-
-    private static func isCacheable(_ trigger: TaskThreadSnapshotTrigger) -> Bool {
-        switch trigger.status {
+    private static func isCacheable(status: TaskStatus) -> Bool {
+        switch status {
         case .running, .queued:
             return false
         default:
-            return trigger.latestRunStatus != .running
+            return true
         }
-    }
-}
-
-struct TaskThreadEventCacheSignature: Hashable, Comparable, Sendable {
-    let id: UUID
-    let runID: UUID?
-    let type: String
-    let payloadByteCount: Int
-    let timestamp: Date
-
-    init(event: TaskEvent) {
-        id = event.id
-        runID = event.run?.id
-        type = event.type
-        payloadByteCount = event.payload.utf8.count
-        timestamp = event.timestamp
-    }
-
-    static func < (lhs: TaskThreadEventCacheSignature, rhs: TaskThreadEventCacheSignature) -> Bool {
-        if lhs.timestamp != rhs.timestamp { return lhs.timestamp < rhs.timestamp }
-        return lhs.id.uuidString < rhs.id.uuidString
-    }
-}
-
-struct TaskThreadRunCacheSignature: Hashable, Comparable, Sendable {
-    let id: UUID
-    let status: RunStatus
-    let startedAt: Date
-    let completedAt: Date?
-    let outputByteCount: Int
-    let fileChangesByteCount: Int
-    let stopReason: String
-
-    init(run: TaskRun) {
-        id = run.id
-        status = run.status
-        startedAt = run.startedAt
-        completedAt = run.completedAt
-        outputByteCount = run.output.utf8.count
-        fileChangesByteCount = run.fileChangesJSON.utf8.count
-        stopReason = run.stopReason
-    }
-
-    static func < (lhs: TaskThreadRunCacheSignature, rhs: TaskThreadRunCacheSignature) -> Bool {
-        if lhs.startedAt != rhs.startedAt { return lhs.startedAt < rhs.startedAt }
-        return lhs.id.uuidString < rhs.id.uuidString
     }
 }
 

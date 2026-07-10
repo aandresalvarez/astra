@@ -281,6 +281,13 @@ enum TaskOpenResponsivenessTelemetry {
         cancelActiveTrace(in: scope, reason: reason)
     }
 
+    /// ContentView owns the window scope before a TaskMainView is mounted.
+    /// Cancelling by scope closes a trace when the window disappears during
+    /// that gap, where no task view lifecycle observer exists yet.
+    static func cancel(scope: UUID, reason: String) {
+        cancelActiveTrace(in: scope, reason: reason)
+    }
+
     /// Emits an explicit warning when an open never reaches transcript-ready
     /// while its view remains alive. Without this watchdog, the only evidence
     /// for a stuck open would be a later disappearance cancellation.
