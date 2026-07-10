@@ -285,7 +285,7 @@ public final class FeedbackOutboxService {
         }
         try fileManager.moveItem(at: sourceDirectory, to: destination)
 
-        applyPreparedPackage(validated, destination: destination, to: report, at: clock.now())
+        applyPreparedPackage(validated, to: report, at: clock.now())
         do {
             try save(context, operation: "package_adopted")
         } catch {
@@ -311,7 +311,7 @@ public final class FeedbackOutboxService {
                     fileManager: fileManager
                 )
                 try validate(validated.envelope, matches: report)
-                applyPreparedPackage(validated, destination: destination, to: report, at: clock.now())
+                applyPreparedPackage(validated, to: report, at: clock.now())
                 recovered += 1
             } catch {
                 try? fileManager.removeItem(at: destination)
@@ -348,7 +348,13 @@ public final class FeedbackOutboxService {
         let context = makeContext()
         let report = try fetch(reportID: reportID, in: context)
         _ = try storedStatus(report)
-        guard report.activeClaimToken == nil else { throw FeedbackOutboxError.activeClaimExists }
+        let now = clock.now()
+        if report.activeClaimToken != nil {
+            guard let claimExpiresAt = report.claimExpiresAt, claimExpiresAt <= now else {
+                throw FeedbackOutboxError.activeClaimExists
+            }
+            try recoverExpiredClaim(report, at: now)
+        }
         guard report.uploadAttemptCount < FeedbackContractLimitsV1.maximumUploadAttempts else {
             throw FeedbackOutboxError.maximumAttemptsExceeded
         }
@@ -365,7 +371,6 @@ public final class FeedbackOutboxService {
             storedEnvelopeData: envelopeData
         )
 
-        let now = clock.now()
         try transition(report, to: .uploading, at: now)
         let token = UUID().uuidString.lowercased()
         report.activeClaimToken = token
@@ -489,18 +494,7 @@ public final class FeedbackOutboxService {
         let uploads = try reports.filter { try storedStatus($0) == .uploading }
         let now = clock.now()
         for report in uploads {
-            try transition(report, to: .retryableFailure, at: now)
-            finishLatestAttempt(
-                report,
-                outcome: "retryable_failure",
-                failureCode: "interrupted_upload",
-                at: now
-            )
-            report.lastFailureCode = "interrupted_upload"
-            report.lastFailureDispositionRaw = FeedbackFailureDispositionV1.retryable.rawValue
-            report.lastFailureSafeMessage = "The upload was interrupted and can be retried."
-            report.nextRetryAt = now
-            clearClaim(report)
+            try markInterruptedUpload(report, at: now)
         }
         if !uploads.isEmpty {
             try save(context, operation: "uploads_recovered")
@@ -679,7 +673,6 @@ public final class FeedbackOutboxService {
 
     private func applyPreparedPackage(
         _ validated: ValidatedFeedbackPackage,
-        destination: URL,
         to report: FeedbackReport,
         at date: Date
     ) {
@@ -735,6 +728,31 @@ public final class FeedbackOutboxService {
         attempts[attempts.count - 1].outcome = outcome
         attempts[attempts.count - 1].failureCode = failureCode
         report.uploadAttempts = attempts
+    }
+
+    /// Records an abandoned in-flight upload through the same durable state
+    /// transition whether recovery happens at launch or when a lease expires.
+    private func markInterruptedUpload(_ report: FeedbackReport, at date: Date) throws {
+        try transition(report, to: .retryableFailure, at: date)
+        finishLatestAttempt(
+            report,
+            outcome: "retryable_failure",
+            failureCode: "interrupted_upload",
+            at: date
+        )
+        report.lastFailureCode = "interrupted_upload"
+        report.lastFailureDispositionRaw = FeedbackFailureDispositionV1.retryable.rawValue
+        report.lastFailureSafeMessage = "The upload was interrupted and can be retried."
+        report.nextRetryAt = date
+        clearClaim(report)
+    }
+
+    /// Requeues an expired lease in the same transaction that issues its
+    /// replacement, so callers cannot observe an unclaimed intermediate state.
+    private func recoverExpiredClaim(_ report: FeedbackReport, at date: Date) throws {
+        try markInterruptedUpload(report, at: date)
+        try transition(report, to: .queued, at: date)
+        report.nextRetryAt = nil
     }
 
     private func clearClaimAndFailure(_ report: FeedbackReport) {

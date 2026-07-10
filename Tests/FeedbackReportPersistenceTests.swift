@@ -132,6 +132,32 @@ struct FeedbackReportPersistenceTests {
     }
 
     @MainActor
+    @Test("Submitted persisted state without a valid receipt cannot project as a status DTO")
+    func submittedStatusWithoutReceiptFailsProjection() throws {
+        let container = try makeFeedbackOutboxContainer()
+        let context = container.mainContext
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let report = FeedbackReport(
+            installationID: "installation-v1",
+            idempotencyKey: "corrupt-submitted-status",
+            evidenceWindowStart: now.addingTimeInterval(-60),
+            evidenceWindowEnd: now,
+            consentVersion: "consent-v1",
+            createdAt: now
+        )
+        report.localStatusRaw = FeedbackLocalStatusV1.submitted.rawValue
+        report.receiptData = Data("not a receipt".utf8)
+        context.insert(report)
+        try context.save()
+
+        let fetched = try #require(try context.fetch(FetchDescriptor<FeedbackReport>()).first)
+        #expect(fetched.receipt == nil)
+        #expect(throws: FeedbackContractError.missingRequiredField(path: "status.receipt")) {
+            _ = try fetched.localStatusDTO
+        }
+    }
+
+    @MainActor
     @Test("Expired evidence is removed while receipt, hashes, and status survive")
     func receiptSurvivesArtifactExpiry() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())

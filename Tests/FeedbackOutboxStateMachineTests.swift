@@ -419,6 +419,42 @@ struct FeedbackOutboxStateMachineTests {
     }
 
     @MainActor
+    @Test("An expired upload lease is recovered before issuing a replacement claim")
+    func expiredClaimIsRecoveredAndReplaced() throws {
+        let fixture = try makeQueuedFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+
+        let first = try fixture.service.claimUpload(reportID: fixture.reportID)
+        fixture.clock.current = fixture.clock.current.addingTimeInterval(
+            fixture.policy.claimLeaseInterval + 1
+        )
+        let replacement = try fixture.service.claimUpload(reportID: fixture.reportID)
+
+        #expect(replacement.token != first.token)
+        #expect(replacement.attempt == 2)
+        let report = try fetchReport(fixture.container, id: fixture.reportID)
+        #expect(report.localStatus == .uploading)
+        #expect(report.activeClaimToken == replacement.token)
+        #expect(report.claimAcquiredAt == fixture.clock.current)
+        #expect(report.claimExpiresAt == fixture.clock.current.addingTimeInterval(
+            fixture.policy.claimLeaseInterval
+        ))
+        #expect(report.uploadAttemptCount == 2)
+        #expect(report.nextRetryAt == nil)
+        #expect(report.uploadAttempts.count == 2)
+        #expect(report.uploadAttempts[0].outcome == "retryable_failure")
+        #expect(report.uploadAttempts[0].failureCode == "interrupted_upload")
+        #expect(report.uploadAttempts[1].outcome == "uploading")
+        #expect(throws: FeedbackOutboxError.claimMismatch) {
+            try fixture.service.recordRetryableFailure(
+                claim: first,
+                code: "late-worker",
+                safeMessage: "The superseded worker returned late."
+            )
+        }
+    }
+
+    @MainActor
     @Test("Claim rejects absolute traversal mismatched and symlinked persisted package paths")
     func claimRejectsUntrustedPersistedPackagePaths() throws {
         let fixture = try makeQueuedFixture()

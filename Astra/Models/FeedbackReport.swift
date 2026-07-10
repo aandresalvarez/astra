@@ -148,7 +148,7 @@ public final class FeedbackReport {
 
     public var localStatusDTO: FeedbackLocalStatusDTOv1 {
         get throws {
-            FeedbackLocalStatusDTOv1(
+            let dto = FeedbackLocalStatusDTOv1(
                 reportID: FeedbackReportIDV1(id),
                 status: try requireLocalStatus(),
                 updatedAt: updatedAt,
@@ -165,6 +165,8 @@ public final class FeedbackReport {
                 },
                 receipt: receipt
             )
+            try dto.validate()
+            return dto
         }
     }
 }
