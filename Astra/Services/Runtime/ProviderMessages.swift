@@ -93,7 +93,7 @@ struct ProviderRuntimeMessages: Equatable, Sendable {
         providerName: nil,
         missingExecutableStyle: .resolvedPath,
         missingExecutableAuditReason: "provider_cli_not_found",
-        missingExecutableStopReason: nil,
+        missingExecutableStopReason: "missing_claude",
         usesLivePhaseForTimeoutAndMaxTurns: true
     )
 

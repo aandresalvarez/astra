@@ -155,14 +155,25 @@ struct SchemaVersionTests {
         #expect(ASTRASchemaV11.versionIdentifier == Schema.Version(11, 0, 0))
     }
 
-    @Test("Migration plan lists SchemaV1 through SchemaV11")
-    func migrationPlanHasVersions() {
-        #expect(ASTRAMigrationPlan.schemas.count == 11)
+    @Test("SchemaV12 adds only the durable feedback report entity")
+    func v12ModelCount() {
+        #expect(ASTRASchemaV12.models.count == 17)
+        #expect(ASTRASchemaV12.models.contains { $0 == FeedbackReport.self })
     }
 
-    @Test("Migration plan has V1 to V11 lightweight stages")
+    @Test("SchemaV12 version identifier is 12.0.0")
+    func v12VersionIdentifier() {
+        #expect(ASTRASchemaV12.versionIdentifier == Schema.Version(12, 0, 0))
+    }
+
+    @Test("Migration plan lists SchemaV1 through SchemaV12")
+    func migrationPlanHasVersions() {
+        #expect(ASTRAMigrationPlan.schemas.count == 12)
+    }
+
+    @Test("Migration plan has V1 to V12 lightweight stages")
     func migrationPlanHasStage() {
-        #expect(ASTRAMigrationPlan.stages.count == 10)
+        #expect(ASTRAMigrationPlan.stages.count == 11)
     }
 
     @Test("ModelContainer can be created with versioned schema")
@@ -173,7 +184,7 @@ struct SchemaVersionTests {
             migrationPlan: ASTRAMigrationPlan.self,
             configurations: [config]
         )
-        #expect(container.schema.entities.count == 16)
+        #expect(container.schema.entities.count == 17)
     }
 
     @MainActor
@@ -316,6 +327,56 @@ struct SchemaVersionTests {
         let schedules = try context.fetch(FetchDescriptor<TaskSchedule>())
         let migratedSchedule = try #require(schedules.first)
         #expect(migratedSchedule.resolvedRuntimeID == .claudeCode)
+    }
+
+    @MainActor
+    @Test("Populated SchemaV11 store migrates to V12 without disturbing existing relationships")
+    func v11StoreMigratesToFeedbackReportTable() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-schema-v11-feedback-migration-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let storeURL = root.appendingPathComponent("store.store")
+        var oldContainer: ModelContainer? = try ModelContainer(
+            for: Schema(versionedSchema: ASTRASchemaV11.self),
+            configurations: [ModelConfiguration(url: storeURL)]
+        )
+        let oldContext = try #require(oldContainer?.mainContext)
+        let workspace = Workspace(name: "V11 Workspace", primaryPath: "/tmp/v11-feedback")
+        oldContext.insert(workspace)
+        let task = AgentTask(title: "V11 Task", goal: "Preserve me", workspace: workspace)
+        oldContext.insert(task)
+        let run = TaskRun(task: task)
+        oldContext.insert(run)
+        try oldContext.save()
+        let workspaceID = workspace.id
+        let taskID = task.id
+        oldContainer = nil
+
+        let migratedContainer = try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(url: storeURL)]
+        )
+        let context = migratedContainer.mainContext
+        let migratedWorkspace = try #require(try context.fetch(FetchDescriptor<Workspace>()).first)
+        let migratedTask = try #require(try context.fetch(FetchDescriptor<AgentTask>()).first)
+        #expect(migratedWorkspace.id == workspaceID)
+        #expect(migratedTask.id == taskID)
+        #expect(migratedTask.workspace?.id == workspaceID)
+        #expect(migratedTask.runs.count == 1)
+        #expect(try context.fetch(FetchDescriptor<FeedbackReport>()).isEmpty)
+
+        let feedback = FeedbackReport(
+            installationID: "installation-v1",
+            evidenceWindowStart: Date(timeIntervalSince1970: 1_000),
+            evidenceWindowEnd: Date(timeIntervalSince1970: 1_900),
+            consentVersion: "consent-v1"
+        )
+        context.insert(feedback)
+        try context.save()
+        #expect(try context.fetch(FetchDescriptor<FeedbackReport>()).count == 1)
     }
 
     @MainActor

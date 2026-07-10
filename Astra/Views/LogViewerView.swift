@@ -14,6 +14,11 @@ struct LogViewerView: View {
     }
 
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.modelContext) private var modelContext
+    @EnvironmentObject private var feedbackRouter: FeedbackReportRouter
+    @EnvironmentObject private var crashOfferService: FeedbackCrashOfferService
+    @State private var feedbackHostID = UUID()
+    @State private var feedbackErrorMessage: String?
     @State private var entries: [LogEntry] = AppLogger.entries
     @State private var filteredEntries: [LogEntry] = []
     @State private var pendingLiveEntries: [LogEntry] = []
@@ -140,6 +145,14 @@ struct LogViewerView: View {
         .onDisappear {
             flushPendingLiveEntries()
         }
+        .focusedSceneValue(\.reportProblemAction, { presentFeedback() })
+        .feedbackReportSheetHost(feedbackHostID)
+        .alert("Feedback unavailable", isPresented: Binding(
+            get: { feedbackErrorMessage != nil },
+            set: { if !$0 { feedbackErrorMessage = nil } }
+        )) {
+            Button("OK", role: .cancel) { feedbackErrorMessage = nil }
+        } message: { Text(feedbackErrorMessage ?? "") }
     }
 
     private var header: some View {
@@ -160,6 +173,13 @@ struct LogViewerView: View {
             }
 
             Spacer(minLength: 16)
+
+            Button {
+                presentFeedback()
+            } label: {
+                Label("Report a Problem", systemImage: "exclamationmark.bubble")
+            }
+            .accessibilityIdentifier(FeedbackReportAccessibilityID.reportProblem)
 
             Button {
                 refreshFromLogger()
@@ -191,6 +211,26 @@ struct LogViewerView: View {
         .padding(.top, 16)
         .padding(.bottom, 12)
         .background(.regularMaterial)
+    }
+
+    private func presentFeedback() {
+        Task { @MainActor in
+            do {
+                try await FeedbackReportCoordinator(
+                    router: feedbackRouter,
+                    modelContainer: modelContext.container,
+                    crashLedger: crashOfferService
+                ).present(
+                    from: .logs,
+                    hostID: feedbackHostID
+                )
+            } catch {
+                feedbackErrorMessage = FeedbackEvidenceSanitizer.sanitize(
+                    error.localizedDescription,
+                    maximumBytes: 240
+                ).text
+            }
+        }
     }
 
     private var controls: some View {

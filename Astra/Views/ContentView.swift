@@ -75,7 +75,9 @@ struct NewWorkspaceDraft: Equatable {
 struct ContentView: View {
     @ObservedObject var appUpdateController: AppUpdateController
     let runtime: AppRuntimeController
-    @Environment(\.modelContext) private var modelContext
+    @Environment(\.modelContext) var modelContext
+    @EnvironmentObject var feedbackRouter: FeedbackReportRouter
+    @EnvironmentObject var crashOfferService: FeedbackCrashOfferService
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Query(sort: \Workspace.name) private var workspaces: [Workspace]
     @StateObject private var sceneSelection = SceneSelectionModel()
@@ -156,6 +158,10 @@ struct ContentView: View {
     /// actual probe via hasProbedForUpdates, so this is belt-and-suspenders.)
     @State private var didScheduleUpdateProbe = false
     @State private var didLogStoreScaleSnapshot = false
+    @State var didCheckCrashFeedback = false
+    @State var pendingCrashFeedbackOffer: FeedbackCrashOffer?
+    @State var feedbackErrorMessage: String?
+    @State var feedbackHostID = UUID()
     @State private var generatedHTMLDiscoveryTask: Task<Void, Never>?
     @State private var markdownAvailabilityTask: Task<Void, Never>?
     @State private var queryAvailabilityTask: Task<Void, Never>?
@@ -659,6 +665,7 @@ struct ContentView: View {
             studioSession: workspaceAppStudioSession,
             onStartWorkspaceAppStudio: { prompt in startWorkspaceAppStudio(initialPrompt: prompt) },
             onStartMCPInstallReview: { request in pendingMCPInstallRequest = request },
+            onReportProblem: presentTaskFeedback,
             onPublishApp: { seed in publishWorkspaceAppFromStudio(seedSampleData: seed) },
             onDraftChanged: { WorkspaceAppStudioDraftAutosaveCoordinator.autosave(session: workspaceAppStudioSession, preferredWorkspace: effectiveWorkspace, modelContext: modelContext) },
             onCancelStudio: { cancelWorkspaceAppStudio() }
@@ -946,8 +953,22 @@ struct ContentView: View {
         }
     }
 
-    var body: some View {
+    private var rootLayoutWithFeedbackChrome: some View {
         rootLayoutWithChrome
+            .focusedSceneValue(\.reportProblemAction, { presentGeneralFeedback(from: .help) })
+            .feedbackReportSheetHost(feedbackHostID)
+            .modifier(ContentFeedbackAlertsModifier(
+                hasCompletedOnboarding: hasCompletedOnboarding,
+                offer: $pendingCrashFeedbackOffer,
+                errorMessage: $feedbackErrorMessage,
+                checkForOffer: checkForCrashFeedbackOffer,
+                presentOffer: presentCrashFeedback,
+                declineOffer: declineCrashFeedback
+            ))
+    }
+
+    var body: some View {
+        rootLayoutWithFeedbackChrome
         .onChange(of: selectedTaskCanvasSignature) {
             handleSelectedTaskCanvasSignatureChanged()
         }
@@ -1104,10 +1125,7 @@ struct ContentView: View {
             UpdateSafetyObserver(
                 taskQueue: runtime.taskQueue,
                 runningTaskCount: runningTaskCount,
-                onChange: {
-                    refreshRunningTaskCount()
-                    refreshUpdateSafetyHooks()
-                }
+                onChange: handleUpdateSafetyChange
             )
         }
         .onChange(of: workspaceSelectionSignature) {
@@ -1156,6 +1174,11 @@ struct ContentView: View {
     }
 
     // MARK: - UI Actions
+
+    private func handleUpdateSafetyChange() {
+        refreshRunningTaskCount()
+        refreshUpdateSafetyHooks()
+    }
 
     private func openCapabilitiesManager() {
         configureInitialTab = .capabilities
@@ -2814,6 +2837,7 @@ private struct ContentDetailAreaView: View {
     @ObservedObject var studioSession: WorkspaceAppStudioSession
     let onStartWorkspaceAppStudio: (String?) -> Void
     let onStartMCPInstallReview: (MCPInstallChatRequest) -> Void
+    let onReportProblem: (AgentTask, FeedbackReportPrefill, UUID?, RuntimeFeedbackPersistedEvidence?) -> Void
     let onPublishApp: (_ seedSampleData: Bool) -> Void
     let onDraftChanged: () -> Void
     let onCancelStudio: () -> Void
@@ -3189,6 +3213,7 @@ private struct ContentDetailAreaView: View {
             studioSession: studioSession,
             onStartWorkspaceAppStudio: onStartWorkspaceAppStudio,
             onStartMCPInstallReview: onStartMCPInstallReview,
+            onReportProblem: onReportProblem,
             onPublishApp: onPublishApp,
             onDraftChanged: onDraftChanged,
             onCancelStudio: onCancelStudio
@@ -3287,6 +3312,7 @@ private struct ContentDetailContentView: View {
     @ObservedObject var studioSession: WorkspaceAppStudioSession
     let onStartWorkspaceAppStudio: (String?) -> Void
     let onStartMCPInstallReview: (MCPInstallChatRequest) -> Void
+    let onReportProblem: (AgentTask, FeedbackReportPrefill, UUID?, RuntimeFeedbackPersistedEvidence?) -> Void
     let onPublishApp: (_ seedSampleData: Bool) -> Void
     let onDraftChanged: () -> Void
     let onCancelStudio: () -> Void
@@ -3335,7 +3361,10 @@ private struct ContentDetailContentView: View {
                     onForkTask: onForkTask,
                     onOpenGeneratedFile: onOpenGeneratedFile,
                     canOpenGeneratedFileInShelf: canOpenGeneratedFileInShelf,
-                    onStartMCPInstallReview: onStartMCPInstallReview
+                    onStartMCPInstallReview: onStartMCPInstallReview,
+                    onReportProblem: { prefill, runID, evidence in
+                        onReportProblem(task, prefill, runID, evidence)
+                    }
                 )
                 .id(task.id)
             }

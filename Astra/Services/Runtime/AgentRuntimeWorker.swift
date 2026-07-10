@@ -1184,7 +1184,7 @@ final class AgentRuntimeWorker {
             modelContext.insert(event)
         } else {
             run.status = .failed
-            run.typedStopReason = .failed
+            run.typedStopReason = Self.durableFailureStopReason(category: failureDiagnostic?.category)
             if runtimeAdapter.shouldClearStaleSessionOnFailure(phase: auditPhase, result: result) {
                 task.sessionId = nil
                 let event = TaskEvent(task: task, eventType: TaskEventTypes.System.error,
@@ -1245,6 +1245,19 @@ final class AgentRuntimeWorker {
             handoffDiscoveredFiles: handoffDiscoveredFiles
         )
         isRunning = false
+    }
+
+    /// Keeps the provider-neutral diagnostic class on the durable run so UI,
+    /// diagnostics, and feedback can explain the actual failure after relaunch.
+    /// The legacy generic value remains stable for an unclassified process exit.
+    nonisolated static func durableFailureStopReason(
+        category: AgentRuntimeFailureCategory?
+    ) -> TaskRunStopReason {
+        guard let category,
+              category != .providerProcessFailed,
+              let reason = TaskRunStopReason.custom(category.rawValue)
+        else { return .failed }
+        return reason
     }
 
     @MainActor

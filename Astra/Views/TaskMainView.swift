@@ -376,6 +376,7 @@ struct TaskMainView: View {
     var onOpenGeneratedFile: ((String) -> Void)?
     var canOpenGeneratedFileInShelf: (TaskGeneratedFileShelfDestination?) -> Bool = { _ in true }
     var onStartMCPInstallReview: ((MCPInstallChatRequest) -> Void)?
+    var onReportProblem: ((FeedbackReportPrefill, UUID?, RuntimeFeedbackPersistedEvidence?) -> Void)?
 
     private var availableSkills: [Skill] {
         capabilitySnapshot.availableSkills
@@ -3902,6 +3903,7 @@ struct TaskMainView: View {
             canApprove: onApproveTask != nil,
             canRetry: onRetryTask != nil,
             canResume: task.hasProviderSession && onResumeTask != nil,
+            canReportProblem: onReportProblem != nil,
             canToggleDone: canToggleTaskDoneFromDecisionDock,
             hasProviderSession: task.hasProviderSession,
             failureReason: failureReason,
@@ -4296,12 +4298,41 @@ struct TaskMainView: View {
             onRetryTask?(task)
         case .resume:
             onResumeTask?(task)
+        case .reportProblem:
+            reportCurrentFailure()
         case .openArtifact:
             guard let path = action.payload else { return }
             openGeneratedFile(path: path, destination: TaskGeneratedFiles.shelfDestination(for: path))
         case .closeTask, .closeAnyway, .closeWithoutRunningPlan, .reopenTask:
             toggleTaskDoneFromDecisionDock()
         }
+    }
+
+    private func reportCurrentFailure() {
+        guard let onReportProblem else { return }
+        let run = latestRun
+        let context = run.map {
+            FeedbackTaskFailureReportContextBuilder.make(
+                runtimeID: $0.runtimeID,
+                providerVersion: $0.providerVersion,
+                status: $0.status,
+                exitCode: $0.exitCode,
+                stopReason: $0.stopReason
+            )
+        } ?? FeedbackTaskFailureReportContext(
+            prefill: FeedbackReportPrefill(
+                intendedOutcome: "Complete the task",
+                actualResult: "The provider run stopped before completing.",
+                expectedResult: "The provider run completes successfully",
+                workBlocked: true
+            ),
+            runtimeEvidence: nil
+        )
+        onReportProblem(
+            context.prefill,
+            run?.id,
+            context.runtimeEvidence
+        )
     }
 
     private var pendingReviewDecisionDock: some View {
