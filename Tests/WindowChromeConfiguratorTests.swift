@@ -1,4 +1,5 @@
 import CoreGraphics
+import SwiftUI
 import Testing
 @testable import ASTRA
 
@@ -58,16 +59,17 @@ struct WindowChromeConfiguratorTests {
         ))
     }
 
-    @Test("Leading command bar reserves the first titlebar accessory slot")
-    func leadingCommandBarReservesFirstAccessorySlot() {
-        #expect(
-            AstraLeadingCommandBarMetrics.reservedAccessorySlotWidth
-                >= AstraToolbarCommandMetrics.iconWidth
-        )
+    @Test("Leading command bar sits flush after the traffic lights")
+    func leadingCommandBarSitsFlushAfterTrafficLights() {
+        #expect(AstraLeadingCommandBarMetrics.leadingPadding == 0)
     }
 
-    @Test("Reserved leading command slot does not capture titlebar hit testing")
-    func leadingCommandBarReservedSlotDoesNotCaptureHitTesting() {
-        #expect(!AstraLeadingCommandBarMetrics.reservedAccessorySlotAllowsHitTesting)
+    // With no reserved spacer, click reliability for the leading-most button
+    // depends on the accessory never converting clicks into window drags.
+    @Test("Accessory hosting view keeps clicks out of titlebar window-drag")
+    @MainActor
+    func accessoryHostingViewKeepsClicksOutOfWindowDrag() {
+        let host = FullScreenSafeHostingView(rootView: EmptyView())
+        #expect(!host.mouseDownCanMoveWindow)
     }
 }
