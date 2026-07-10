@@ -625,6 +625,16 @@ struct SidebarGroupingTests {
         #expect(SidebarThreadRowLayout.titleFontSize == 14)
     }
 
+    @Test("Pinned task workspace context moves from the row to hover help")
+    func pinnedTaskWorkspaceContextUsesHoverHelp() {
+        #expect(
+            SidebarPinnedTaskPresentation.workspaceHoverHelp(workspaceName: "JSL")
+                == "Workspace: JSL"
+        )
+        #expect(SidebarPinnedTaskPresentation.workspaceHoverHelp(workspaceName: "  ") == nil)
+        #expect(SidebarPinnedTaskPresentation.workspaceHoverHelp(workspaceName: nil) == nil)
+    }
+
     @Test("Task row hover is borderless while keyboard focus remains explicit")
     func taskRowSurfaceStates() {
         let rest = SidebarThreadRowSurfaceStyle.resolve(
