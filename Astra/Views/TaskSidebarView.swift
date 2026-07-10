@@ -1312,7 +1312,6 @@ struct TaskSidebarView: View {
         let isExpanded = isWorkspaceExpanded(workspace, using: taskIndex)
         let isHovered = hoveredWorkspaceID == workspace.id
         let isSelected = selectedWorkspace?.id == workspace.id && selectedTask == nil
-        let workspaceTaskCount = tasksForWorkspace(workspace, using: taskIndex).count
         // Closed drawers still owe the user a liveness signal: with the
         // accordion keeping one drawer open, running work elsewhere would
         // otherwise be invisible. Expanded drawers show the spinner on the
@@ -1365,7 +1364,6 @@ struct TaskSidebarView: View {
             workspaceRowActions(
                 for: workspace,
                 isHovered: isHovered,
-                taskCount: workspaceTaskCount,
                 runningTaskCount: runningTaskCount
             )
         }
@@ -1447,13 +1445,11 @@ struct TaskSidebarView: View {
     private func workspaceRowActions(
         for workspace: Workspace,
         isHovered: Bool,
-        taskCount: Int,
         runningTaskCount: Int
     ) -> some View {
         WorkspaceRowActions(
             workspace: workspace,
             isRowHovered: isHovered,
-            taskCount: taskCount,
             runningTaskCount: runningTaskCount,
             onNewTask: { startNewTask(in: workspace) },
             onToggleStarred: { toggleStarred(for: workspace) },
@@ -1967,13 +1963,12 @@ private extension View {
 }
 
 /// Trailing accessory cluster on each workspace row. At rest it shows
-/// navigational metadata (task count + star). On hover that same slot
-/// becomes the row's controls, so hidden settings/new-task icons do not
-/// steal extra width from the workspace title.
+/// navigational metadata (running-task signal + star). On hover that same
+/// slot becomes the row's controls, so hidden settings/new-task icons do
+/// not steal extra width from the workspace title.
 private struct WorkspaceRowActions: View {
     let workspace: Workspace
     let isRowHovered: Bool
-    let taskCount: Int
     /// Live tasks inside a *closed* drawer — callers pass 0 for expanded
     /// rows, where the task rows' own spinners already carry the signal.
     let runningTaskCount: Int
@@ -2013,16 +2008,6 @@ private struct WorkspaceRowActions: View {
         HStack(spacing: 7) {
             if runningTaskCount > 0 {
                 WorkspaceRunningIndicator(count: runningTaskCount)
-            }
-
-            if taskCount > 0 {
-                // Pill badge — same chrome as the section-header counts —
-                // so counts and relative timestamps stop sharing one
-                // visual voice at the rail's right edge: badge = how
-                // many, plain text = how old.
-                SidebarCountBadge(count: taskCount)
-                    .fixedSize()
-                    .accessibilityLabel("\(taskCount) tasks")
             }
 
             if workspace.isStarred {
