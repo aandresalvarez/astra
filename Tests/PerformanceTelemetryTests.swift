@@ -102,4 +102,30 @@ struct PerformanceTelemetryTests {
         #expect(!StoreScalePerformanceSnapshot.shouldBuildDetailedFields(eventCount: 10_000, runCount: 0))
         #expect(!StoreScalePerformanceSnapshot.shouldBuildDetailedFields(eventCount: 0, runCount: 10_000))
     }
+
+    @Test("Startup store snapshot defers detailed event and run scans")
+    func startupStoreSnapshotDefersDetailedScans() throws {
+        let container = try makePerformanceTelemetryContainer()
+        let context = ModelContext(container)
+        let workspace = Workspace(name: "Workspace", primaryPath: "/tmp/workspace")
+        let task = AgentTask(title: "Task", goal: "Goal", workspace: workspace)
+        context.insert(workspace)
+        context.insert(task)
+        context.insert(TaskRun(task: task))
+        context.insert(TaskEvent(task: task, type: "agent.response", payload: "ignored"))
+        try context.save()
+
+        let fields = StoreScalePerformanceSnapshot.fields(
+            modelContext: context,
+            includeDetailedFields: false
+        )
+
+        #expect(fields["workspace_count"] == "1")
+        #expect(fields["task_count"] == "1")
+        #expect(fields["run_count"] == "1")
+        #expect(fields["event_count"] == "1")
+        #expect(fields["details_skipped"] == "deferred_from_startup")
+        #expect(fields["max_events_per_task"] == nil)
+        #expect(fields["max_run_output_bytes"] == nil)
+    }
 }
