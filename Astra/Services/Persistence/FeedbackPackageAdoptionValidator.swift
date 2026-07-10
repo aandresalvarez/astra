@@ -13,7 +13,6 @@ struct ValidatedFeedbackPackage {
 enum FeedbackPackageLayout {
     static let envelope = "feedback-report.json"
     static let manifest = "manifest.json"
-    static let summary = "summary.md"
     static let archive = "evidence.zip"
 }
 
@@ -73,8 +72,7 @@ enum FeedbackPackageAdoptionValidator {
 
         var allowedFiles: Set<String> = [
             FeedbackPackageLayout.envelope,
-            FeedbackPackageLayout.manifest,
-            FeedbackPackageLayout.summary
+            FeedbackPackageLayout.manifest
         ]
 
         let artifactPaths = try manifest.artifacts.map { artifact in

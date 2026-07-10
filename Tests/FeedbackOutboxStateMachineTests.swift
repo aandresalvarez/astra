@@ -30,6 +30,23 @@ struct FeedbackOutboxStateMachineTests {
     }
 
     @MainActor
+    @Test("An untracked summary file is rejected before package adoption")
+    func untrackedSummaryIsRejected() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let source = try writeFeedbackPreparedPackage(parent: fixture.root, envelope: fixture.envelope)
+        try Data("unreviewed summary".utf8).write(to: source.appendingPathComponent("summary.md"))
+
+        #expect(throws: FeedbackPackageValidationError.unexpectedFile("summary.md")) {
+            try fixture.service.adoptPreparedPackage(reportID: fixture.reportID, from: source)
+        }
+        #expect(FileManager.default.fileExists(atPath: source.path))
+        let report = try fetchReport(fixture.container, id: fixture.reportID)
+        #expect(report.localStatus == .draft)
+        #expect(report.packageRelativePath == nil)
+    }
+
+    @MainActor
     @Test("A non-empty loose package is byte-verified and retained after adoption")
     func nonEmptyLoosePackageIsVerifiedAndRetained() throws {
         let fixture = try makeFixture()
@@ -310,6 +327,74 @@ struct FeedbackOutboxStateMachineTests {
         #expect(report.nextRetryAt == fixture.clock.current)
         #expect(report.activeClaimToken == nil)
         #expect(report.uploadAttempts.last?.outcome == "retryable_failure")
+    }
+
+    @MainActor
+    @Test("Upload claim rejects changed owned envelope without consuming an attempt")
+    func claimRejectsChangedOwnedEnvelope() throws {
+        let fixture = try makeQueuedFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let envelopeURL = fixture.root
+            .appendingPathComponent("packages", isDirectory: true)
+            .appendingPathComponent(fixture.reportID.uuidString.lowercased(), isDirectory: true)
+            .appendingPathComponent(FeedbackPackageLayout.envelope)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: envelopeURL.path)
+        var bytes = try Data(contentsOf: envelopeURL)
+        bytes.append(0x0a)
+        try bytes.write(to: envelopeURL)
+
+        #expect(throws: FeedbackOutboxError.preparedPackageDoesNotMatchDraft) {
+            _ = try fixture.service.claimUpload(reportID: fixture.reportID)
+        }
+        let report = try fetchReport(fixture.container, id: fixture.reportID)
+        #expect(report.localStatus == .queued)
+        #expect(report.uploadAttemptCount == 0)
+        #expect(report.activeClaimToken == nil)
+        #expect(report.uploadAttempts.isEmpty)
+    }
+
+    @MainActor
+    @Test("Upload claim rejects changed owned archive without consuming an attempt")
+    func claimRejectsChangedOwnedArchive() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let evidence = feedbackArtifactData()
+        let artifact = makeFeedbackArtifact(data: evidence)
+        let archiveData = try makeFeedbackArchive(
+            parent: fixture.root,
+            relativePath: artifact.relativePath,
+            data: evidence
+        )
+        let package = try makeNonEmptyPackage(
+            fixture: fixture,
+            archiveSHA256: FeedbackCanonicalJSONV1.sha256Hex(archiveData)
+        )
+        let source = try writeFeedbackPreparedPackage(parent: fixture.root, envelope: package.envelope)
+        let evidenceURL = source.appendingPathComponent(package.artifact.relativePath)
+        try FileManager.default.createDirectory(
+            at: evidenceURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try package.evidence.write(to: evidenceURL)
+        try archiveData.write(to: source.appendingPathComponent(FeedbackPackageLayout.archive))
+        try fixture.service.adoptPreparedPackage(reportID: fixture.reportID, from: source)
+        try fixture.service.queue(reportID: fixture.reportID)
+
+        let archiveURL = fixture.root
+            .appendingPathComponent("packages", isDirectory: true)
+            .appendingPathComponent(fixture.reportID.uuidString.lowercased(), isDirectory: true)
+            .appendingPathComponent(FeedbackPackageLayout.archive)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: archiveURL.path)
+        try Data("changed archive".utf8).write(to: archiveURL)
+
+        #expect(throws: FeedbackPackageValidationError.hashMismatch(FeedbackPackageLayout.archive)) {
+            _ = try fixture.service.claimUpload(reportID: fixture.reportID)
+        }
+        let report = try fetchReport(fixture.container, id: fixture.reportID)
+        #expect(report.localStatus == .queued)
+        #expect(report.uploadAttemptCount == 0)
+        #expect(report.activeClaimToken == nil)
+        #expect(report.uploadAttempts.isEmpty)
     }
 
     @MainActor

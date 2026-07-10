@@ -359,6 +359,11 @@ public final class FeedbackOutboxService {
         guard let packageURL = try validatedOwnedPackageURL(for: report, requireExists: true) else {
             throw FeedbackOutboxError.missingPreparedPackage
         }
+        try validateOwnedPackageForUpload(
+            report: report,
+            directory: packageURL,
+            storedEnvelopeData: envelopeData
+        )
 
         let now = clock.now()
         try transition(report, to: .uploading, at: now)
@@ -625,6 +630,24 @@ public final class FeedbackOutboxService {
             reportSHA256: FeedbackCanonicalJSONV1.sha256Hex(storedEnvelope),
             archiveSHA256: storedArchiveSHA256
         )
+    }
+
+    /// Revalidates the complete owned package immediately before a claim can
+    /// mutate durable state or consume an upload attempt. Containment alone is
+    /// insufficient because package bytes can be corrupted after adoption.
+    private func validateOwnedPackageForUpload(
+        report: FeedbackReport,
+        directory: URL,
+        storedEnvelopeData: Data
+    ) throws {
+        let validated = try FeedbackPackageAdoptionValidator.validate(
+            directory: directory,
+            fileManager: fileManager
+        )
+        try validate(validated.envelope, matches: report)
+        guard validated.envelopeData == storedEnvelopeData,
+              validated.archiveSHA256 == report.evidenceArchiveSHA256
+        else { throw FeedbackOutboxError.preparedPackageDoesNotMatchDraft }
     }
 
     private func validate(
