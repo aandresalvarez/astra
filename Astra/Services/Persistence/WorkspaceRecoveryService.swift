@@ -5,7 +5,24 @@ import ASTRACore
 import ASTRAModels
 
 public enum WorkspaceRecoveryService {
+    public enum ActiveStorePointerState: Equatable {
+        case absent
+        case valid(URL)
+        case invalid
+    }
+
+    public enum PersistentStorePreparationError: Error, Equatable {
+        case invalidActiveStorePointer
+        case migrationSourceMissing
+        case migrationDestinationExists
+        case migrationFailed(String)
+    }
+
     public static let recoveryNoticeKey = "lastWorkspaceRecoveryNotice"
+    /// A deliberate storage boundary for binaries that predate durable store
+    /// ownership. Older ASTRA Dev bundles only know the channel-root store and
+    /// therefore cannot reset the current generation's store by mistake.
+    public static let storeGeneration = "g2"
     private static let maxRecoveryScanDirectories = 2_500
     private static let skippedRecoveryDirectoryNames: Set<String> = [
         "node_modules",
@@ -48,22 +65,160 @@ public enum WorkspaceRecoveryService {
             .appendingPathComponent(AppChannel.current.appSupportDirectoryName, isDirectory: true)
     }
 
+    public static var storeGenerationDirectory: URL {
+        applicationSupportDirectory
+            .appendingPathComponent("Stores", isDirectory: true)
+            .appendingPathComponent(storeGeneration, isDirectory: true)
+    }
+
+    public static var defaultStoreURL: URL {
+        storeGenerationDirectory.appendingPathComponent("default.store")
+    }
+
+    public static var activeStorePointerURL: URL {
+        storeGenerationDirectory.appendingPathComponent("active-store.json")
+    }
+
+    public static var storeLeaseURL: URL {
+        storeGenerationDirectory.appendingPathComponent("store.lock")
+    }
+
+    private static var storeGenerationEstablishedURL: URL {
+        storeGenerationDirectory.appendingPathComponent("generation-established.json")
+    }
+
     public static var storeURL: URL {
+        if case .valid(let url) = activeStorePointerState() {
+            return url
+        }
+        return defaultStoreURL
+    }
+
+    /// The pre-generation, channel-scoped location. Pre-fix development builds
+    /// still target this path, so the current app only copies from it once.
+    public static var channelLegacyStoreURL: URL {
         applicationSupportDirectory.appendingPathComponent("default.store")
     }
 
+    /// The original production-only, pre-channel store location.
     public static var legacyStoreURL: URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("default.store")
     }
 
-    public static func preparePersistentStoreURL() -> URL {
-        try? FileManager.default.createDirectory(
-            at: applicationSupportDirectory,
+    public static func preparePersistentStoreDirectory() throws {
+        try FileManager.default.createDirectory(
+            at: storeGenerationDirectory,
             withIntermediateDirectories: true
         )
-        migrateLegacyStoreIfNeeded()
+    }
+
+    public static func preparePersistentStoreURL() throws -> URL {
+        switch activeStorePointerState() {
+        case .invalid:
+            throw PersistentStorePreparationError.invalidActiveStorePointer
+        case .valid(let url):
+            return url
+        case .absent:
+            break
+        }
+
+        try FileManager.default.createDirectory(at: applicationSupportDirectory, withIntermediateDirectories: true)
+        try preparePersistentStoreDirectory()
+        try migratePreChannelLegacyStoreIfNeeded()
+        try migrateChannelStoreToGenerationIfNeeded()
         return storeURL
+    }
+
+    public static func existingPersistentStoreURL(
+        pointerURL: URL = activeStorePointerURL,
+        storeRoot: URL = storeGenerationDirectory,
+        fallbackStoreURL: URL = defaultStoreURL,
+        fileManager: FileManager = .default
+    ) -> URL? {
+        let candidate: URL
+        switch activeStorePointerState(
+            pointerURL: pointerURL,
+            storeRoot: storeRoot,
+            fileManager: fileManager
+        ) {
+        case .valid(let url):
+            candidate = url
+        case .absent:
+            candidate = fallbackStoreURL
+        case .invalid:
+            return nil
+        }
+        return fileManager.fileExists(atPath: candidate.path) ? candidate : nil
+    }
+
+    /// True only during this generation's one-time migration window. It lets
+    /// a new build recover from workspace mirrors when a legacy store belongs
+    /// to a newer, incompatible pre-generation binary, while future g2
+    /// downgrade attempts still fail closed.
+    public static var hasPendingLegacyStoreMigration: Bool {
+        !FileManager.default.fileExists(atPath: storeGenerationEstablishedURL.path) &&
+            FileManager.default.fileExists(atPath: defaultStoreURL.path) &&
+            FileManager.default.fileExists(atPath: channelLegacyStoreURL.path)
+    }
+
+    public static func markStoreGenerationEstablished() {
+        let payload = ["generation": storeGeneration, "established_at": ISO8601DateFormatter().string(from: Date())]
+        guard let data = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]) else { return }
+        try? data.write(to: storeGenerationEstablishedURL, options: .atomic)
+    }
+
+    /// Creates a fresh recovery target without touching the active store. The
+    /// caller must create and validate a ModelContainer at this URL before
+    /// calling `activateRecoveryStore(at:)`.
+    public static func makeRecoveryStoreURL() throws -> URL {
+        let directory = storeGenerationDirectory
+            .appendingPathComponent("recoveries", isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return directory.appendingPathComponent("default.store")
+    }
+
+    /// Atomically selects a validated recovery store. The previous active
+    /// store stays in place for forensic recovery and rollback.
+    public static func activateRecoveryStore(at url: URL) throws {
+        let standardizedRoot = storeGenerationDirectory.standardizedFileURL.path
+        let standardizedURL = url.standardizedFileURL
+        guard standardizedURL.path.hasPrefix(standardizedRoot + "/"),
+              FileManager.default.fileExists(atPath: standardizedURL.path) else {
+            throw CocoaError(.fileNoSuchFile)
+        }
+        let relativePath = String(standardizedURL.path.dropFirst(standardizedRoot.count + 1))
+        let data = try JSONEncoder().encode(ActiveStorePointer(relativePath: relativePath))
+        try data.write(to: activeStorePointerURL, options: .atomic)
+        markStoreGenerationEstablished()
+        AuditLoggingSeam.required.audit(.dataStoreRecovered, category: "Persistence", fields: [
+            "result": "recovery_store_activated",
+            "store_generation": storeGeneration
+        ])
+    }
+
+    public static func sqliteIntegrityIsValid(at url: URL) -> Bool {
+        var database: OpaquePointer?
+        let result = sqlite3_open_v2(url.path, &database, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nil)
+        guard result == SQLITE_OK, let database else {
+            if let database { sqlite3_close(database) }
+            return false
+        }
+        defer { sqlite3_close(database) }
+        _ = sqlite3_busy_timeout(database, 5_000)
+
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(database, "PRAGMA quick_check", -1, &statement, nil) == SQLITE_OK,
+              let statement else {
+            return false
+        }
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_step(statement) == SQLITE_ROW,
+              let text = sqlite3_column_text(statement, 0) else {
+            return false
+        }
+        return String(cString: text).lowercased() == "ok"
     }
 
     @discardableResult
@@ -193,28 +348,21 @@ public enum WorkspaceRecoveryService {
         return result
     }
 
+    /// Compatibility entry point retained for callers that previously asked to
+    /// "back up" a store. Backups now copy files; they never move a store that
+    /// another process could still have open.
     public static func backupStore(at url: URL) {
-        let formatter = ISO8601DateFormatter()
-        let suffix = formatter.string(from: Date())
-            .replacingOccurrences(of: ":", with: "-")
-            .replacingOccurrences(of: ".", with: "-")
-        for storeSuffix in ["", "-shm", "-wal"] {
-            let source = URL(fileURLWithPath: url.path + storeSuffix)
-            guard FileManager.default.fileExists(atPath: source.path) else { continue }
-            let backup = URL(fileURLWithPath: url.path + ".backup-\(suffix)" + storeSuffix)
-            do {
-                try FileManager.default.moveItem(at: source, to: backup)
-            } catch {
-                AuditLoggingSeam.required.audit(.workspaceStoreBackedUp, category: "Persistence", fields: [
-                    "result": "failed",
-                    "file_suffix": storeSuffix.isEmpty ? "store" : storeSuffix,
-                    "error_type": String(describing: type(of: error))
-                ], level: .error)
-            }
+        do {
+            _ = try copyStoreBackup(at: url, label: "recovery")
+            AuditLoggingSeam.required.audit(.workspaceStoreBackedUp, category: "Persistence", fields: [
+                "result": "completed"
+            ])
+        } catch {
+            AuditLoggingSeam.required.audit(.workspaceStoreBackedUp, category: "Persistence", fields: [
+                "result": "failed",
+                "error_type": String(describing: type(of: error))
+            ], level: .error)
         }
-        AuditLoggingSeam.required.audit(.workspaceStoreBackedUp, category: "Persistence", fields: [
-            "result": "completed"
-        ])
     }
 
     @discardableResult
@@ -265,6 +413,20 @@ public enum WorkspaceRecoveryService {
             ], level: .error)
             return []
         }
+    }
+
+    /// Preserves every recoverable representation before switching away from
+    /// a store proven corrupt. Read-only workspace export runs first so a
+    /// partially readable database can recreate mirrors; the byte-for-byte
+    /// backup then preserves the original SQLite artifacts for forensics.
+    @discardableResult
+    public static func preserveReadableStoreBeforeRecovery(
+        at url: URL,
+        backupRoot: URL? = nil
+    ) throws -> [WorkspaceConfigManager.WorkspaceConfigExportResult] {
+        let exports = exportReadableWorkspacesBeforeStoreReset(at: url)
+        _ = try copyStoreBackup(at: url, backupRoot: backupRoot, label: "verified-corruption")
+        return exports
     }
 
     @discardableResult
@@ -524,35 +686,160 @@ public enum WorkspaceRecoveryService {
         return configs
     }
 
-    private static func migrateLegacyStoreIfNeeded() {
-        guard AppChannel.current == .production else { return }
-        let fileManager = FileManager.default
-        guard !fileManager.fileExists(atPath: storeURL.path),
-              fileManager.fileExists(atPath: legacyStoreURL.path),
-              storeURL.path != legacyStoreURL.path else {
-            return
+    private struct ActiveStorePointer: Codable {
+        let relativePath: String
+    }
+
+    public static func activeStorePointerState(
+        pointerURL: URL = activeStorePointerURL,
+        storeRoot: URL = storeGenerationDirectory,
+        fileManager: FileManager = .default
+    ) -> ActiveStorePointerState {
+        guard fileManager.fileExists(atPath: pointerURL.path) else {
+            return .absent
+        }
+        guard let data = try? Data(contentsOf: pointerURL),
+              let pointer = try? JSONDecoder().decode(ActiveStorePointer.self, from: data),
+              !pointer.relativePath.isEmpty,
+              !pointer.relativePath.contains("..") else {
+            return .invalid
         }
 
-        for suffix in ["", "-shm", "-wal"] {
-            let source = URL(fileURLWithPath: legacyStoreURL.path + suffix)
-            let destination = URL(fileURLWithPath: storeURL.path + suffix)
-            guard fileManager.fileExists(atPath: source.path),
-                  !fileManager.fileExists(atPath: destination.path) else {
-                continue
-            }
-            do {
-                try fileManager.moveItem(at: source, to: destination)
-            } catch {
-                AuditLoggingSeam.required.audit(.workspaceStoreMigrated, category: "Persistence", fields: [
-                    "result": "failed",
-                    "file_suffix": suffix.isEmpty ? "store" : suffix,
-                    "error_type": String(describing: type(of: error))
-                ], level: .error)
-            }
+        let lexicalRoot = storeRoot.standardizedFileURL
+        let lexicalCandidate = lexicalRoot.appendingPathComponent(pointer.relativePath).standardizedFileURL
+        guard lexicalCandidate.path.hasPrefix(lexicalRoot.path + "/") else {
+            return .invalid
         }
+
+        let resolvedRoot = lexicalRoot.resolvingSymlinksInPath().standardizedFileURL
+        let resolvedCandidate = lexicalCandidate.resolvingSymlinksInPath().standardizedFileURL
+        guard resolvedCandidate.path.hasPrefix(resolvedRoot.path + "/"),
+              fileManager.fileExists(atPath: resolvedCandidate.path) else {
+            return .invalid
+        }
+        return .valid(resolvedCandidate)
+    }
+
+    private static func migratePreChannelLegacyStoreIfNeeded() throws {
+        guard AppChannel.current == .production else { return }
+        guard !FileManager.default.fileExists(atPath: channelLegacyStoreURL.path) else { return }
+        guard FileManager.default.fileExists(atPath: legacyStoreURL.path) else { return }
+        try copyStoreSnapshot(from: legacyStoreURL, to: channelLegacyStoreURL)
         AuditLoggingSeam.required.audit(.workspaceStoreMigrated, category: "Persistence", fields: [
-            "result": "completed"
+            "result": "copied",
+            "source": "pre_channel",
+            "store_generation": storeGeneration
         ])
+    }
+
+    private static func migrateChannelStoreToGenerationIfNeeded() throws {
+        guard activeStorePointerState() == .absent,
+              !FileManager.default.fileExists(atPath: defaultStoreURL.path) else {
+            return
+        }
+        guard FileManager.default.fileExists(atPath: channelLegacyStoreURL.path) else { return }
+        try copyStoreSnapshot(from: channelLegacyStoreURL, to: defaultStoreURL)
+        AuditLoggingSeam.required.audit(.workspaceStoreMigrated, category: "Persistence", fields: [
+            "result": "copied",
+            "source": "channel_legacy",
+            "store_generation": storeGeneration
+        ])
+    }
+
+    /// Copies a live SQLite store through SQLite's backup API into an atomic
+    /// temporary destination. Copying the database file and its WAL/SHM files
+    /// independently can produce a snapshot that never existed on disk.
+    public static func copyStoreSnapshot(from sourceStore: URL, to destinationStore: URL) throws {
+        let fileManager = FileManager.default
+        guard fileManager.fileExists(atPath: sourceStore.path) else {
+            throw PersistentStorePreparationError.migrationSourceMissing
+        }
+        let destinationArtifacts = ["", "-shm", "-wal"].map { suffix in
+            destinationStore.path + suffix
+        }
+        guard destinationArtifacts.allSatisfy({ !fileManager.fileExists(atPath: $0) }) else {
+            throw PersistentStorePreparationError.migrationDestinationExists
+        }
+
+        let temporaryDirectory = destinationStore.deletingLastPathComponent()
+            .appendingPathComponent(".migration-" + UUID().uuidString, isDirectory: true)
+        let temporaryStore = temporaryDirectory.appendingPathComponent(destinationStore.lastPathComponent)
+        do {
+            try fileManager.createDirectory(at: temporaryDirectory, withIntermediateDirectories: true)
+            try backupSQLiteDatabase(from: sourceStore, to: temporaryStore)
+            guard sqliteIntegrityIsValid(at: temporaryStore) else {
+                throw PersistentStorePreparationError.migrationFailed("SQLite quick_check failed")
+            }
+            try fileManager.moveItem(at: temporaryStore, to: destinationStore)
+        } catch let error as PersistentStorePreparationError {
+            try? fileManager.removeItem(at: temporaryDirectory)
+            throw error
+        } catch {
+            try? fileManager.removeItem(at: temporaryDirectory)
+            throw PersistentStorePreparationError.migrationFailed(String(describing: error))
+        }
+        try? fileManager.removeItem(at: temporaryDirectory)
+    }
+
+    private static func backupSQLiteDatabase(from sourceStore: URL, to destinationStore: URL) throws {
+        var sourceDatabase: OpaquePointer?
+        let sourceResult = sqlite3_open_v2(
+            sourceStore.path,
+            &sourceDatabase,
+            SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX,
+            nil
+        )
+        guard sourceResult == SQLITE_OK, let sourceDatabase else {
+            if let sourceDatabase { sqlite3_close(sourceDatabase) }
+            throw PersistentStorePreparationError.migrationFailed("source SQLite open returned \(sourceResult)")
+        }
+        defer { sqlite3_close(sourceDatabase) }
+        _ = sqlite3_busy_timeout(sourceDatabase, 5_000)
+
+        var destinationDatabase: OpaquePointer?
+        let destinationResult = sqlite3_open_v2(
+            destinationStore.path,
+            &destinationDatabase,
+            SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX,
+            nil
+        )
+        guard destinationResult == SQLITE_OK, let destinationDatabase else {
+            if let destinationDatabase { sqlite3_close(destinationDatabase) }
+            throw PersistentStorePreparationError.migrationFailed("destination SQLite open returned \(destinationResult)")
+        }
+        defer { sqlite3_close(destinationDatabase) }
+        _ = sqlite3_busy_timeout(destinationDatabase, 5_000)
+
+        guard let backup = sqlite3_backup_init(destinationDatabase, "main", sourceDatabase, "main") else {
+            throw PersistentStorePreparationError.migrationFailed("SQLite backup initialization failed")
+        }
+        let stepResult = sqlite3_backup_step(backup, -1)
+        let finishResult = sqlite3_backup_finish(backup)
+        guard stepResult == SQLITE_DONE, finishResult == SQLITE_OK else {
+            throw PersistentStorePreparationError.migrationFailed(
+                "SQLite backup failed with step \(stepResult), finish \(finishResult)"
+            )
+        }
+
+        // A backup inherits the source header, including WAL mode. Normalize
+        // the staged copy before moving it so the atomic destination consists
+        // of one self-contained database file rather than a file plus sidecars
+        // that would otherwise have to be moved independently.
+        var errorMessage: UnsafeMutablePointer<CChar>?
+        let journalResult = sqlite3_exec(
+            destinationDatabase,
+            "PRAGMA journal_mode = DELETE",
+            nil,
+            nil,
+            &errorMessage
+        )
+        guard journalResult == SQLITE_OK else {
+            let message = errorMessage.map { String(cString: $0) } ?? "unknown"
+            sqlite3_free(errorMessage)
+            throw PersistentStorePreparationError.migrationFailed(
+                "SQLite journal normalization failed: \(message)"
+            )
+        }
     }
 
     private static func sqliteTableExists(_ database: OpaquePointer, table: String) -> Bool {

@@ -105,14 +105,21 @@ struct WorkspaceStoreRepairTests {
         let workspaceID = workspace.id
         container = nil
 
-        let results = WorkspaceRecoveryService.exportReadableWorkspacesBeforeStoreReset(at: storeURL)
+        let backupRoot = root.appendingPathComponent("Backups", isDirectory: true)
+        let results = try WorkspaceRecoveryService.preserveReadableStoreBeforeRecovery(
+            at: storeURL,
+            backupRoot: backupRoot
+        )
         let configURL = URL(fileURLWithPath: WorkspaceFileLayout.workspaceConfigFile(for: workspaceRoot.path))
         let config = try WorkspaceConfigManager.loadConfig(from: configURL)
+        let backupFiles = FileManager.default.enumerator(at: backupRoot, includingPropertiesForKeys: nil)?
+            .compactMap { ($0 as? URL)?.lastPathComponent } ?? []
 
         #expect(results.count == 1)
         #expect(results.first?.didExport == true)
         #expect(config.id == workspaceID.uuidString)
         #expect(config.name == "Recoverable")
+        #expect(backupFiles.contains("default.store"))
     }
 }
 
