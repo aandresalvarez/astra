@@ -135,7 +135,7 @@ queued | uploading
   -> retryable_failure
   -> queued
 
-draft | prepared | queued
+draft | prepared | queued | retryable_failure | permanent_failure
   -> cancelled
 
 uploading
@@ -144,12 +144,20 @@ uploading
 
 `submitted` requires a persisted remote receipt. A report in
 `retryable_failure` remains one logical report with the same idempotency key.
+A user can explicitly cancel a report in `retryable_failure` or
+`permanent_failure`; cancellation discards the local record and releases its
+adopted evidence package immediately, rather than leaving it to wait on
+retention cleanup.
 
 ### Remote engineering states
 
 ```text
 received
   -> assessment_pending
+assessment_pending
+  -> assessment_failed
+  -> needs_information | accepted | duplicate | declined | security_private
+assessment_failed
   -> needs_information | accepted | duplicate | declined | security_private
 accepted
   -> implementation_queued
@@ -157,10 +165,23 @@ accepted
   -> fix_ready
   -> merged
   -> released
+duplicate
+  -> implementation_queued | in_progress | fix_ready | merged | released
 ```
 
 The server owns remote engineering status. ASTRA stores the last confirmed
-remote status and receipt as a local projection.
+remote status and receipt as a local projection. `assessment_failed` is a
+recorded worker outcome, not a dead end: a report reaches it only when the
+assessment worker returns malformed or missing output, and from there it
+takes the same human-triage transitions as `assessment_pending`
+(`needs_information | accepted | duplicate | declined | security_private`),
+so a failed assessment can never leave a report stuck pending (Invariant 9).
+`duplicate` is not a terminal peer of `accepted`: PR 8 links a duplicate
+report to the canonical issue it deduplicated against, and ASTRA's local
+projection for a duplicate report mirrors that canonical issue's status
+through `implementation_queued -> in_progress -> fix_ready -> merged ->
+released`, so a duplicate reporter sees the same `released` resolution as the
+canonical reporter once the canonical fix ships.
 
 ## Canonical Report Inputs and Outputs
 
@@ -319,8 +340,16 @@ status, consent, evidence, and idempotency.
   implementation language must consume directly.
 - Idempotency and authentication semantics. A report identity is non-secret;
   its status-read credential is separate and never placed in URLs, issues, or
-  logs. V1 does not freeze or expose a request-signature field/algorithm until
-  the authentication model is selected.
+  logs. PR 1 freezes authentication as an out-of-band transport concern:
+  credentials travel only in a dedicated HTTP request header, never inside the
+  canonical JSON body, so the checked-in golden request bytes/hashes cover the
+  canonical payload and digest only (already scoped in the digest definition
+  below) and stay stable no matter which concrete scheme Open Decision 2
+  later selects. The header name, scheme, and algorithm themselves remain
+  Open Decision 2 and must be resolved and folded into the golden fixtures
+  before PR 6 or PR 7 leave fixture-only development against the PR 1 fake
+  server; until then, the fake server accepts requests with no auth header
+  and PR 6/PR 7 must not treat that as the frozen production contract.
 - Sanitized example and adversarial fixtures usable by client and server without
   re-encoding them through Swift-specific defaults.
 - Contract documentation and compatibility policy.
@@ -590,6 +619,9 @@ that a report survives relaunch, network loss, cancellation, or server failure.
 - [ ] Prove concurrent send attempts result in one active claim.
 - [ ] Prove adoption, retention, and cancellation races never delete a package
   still owned by an active outbox record.
+- [ ] Prove a user can cancel a `retryable_failure` or `permanent_failure`
+  report, discarding its adopted evidence package without waiting on
+  retention cleanup.
 - [ ] Run full `swift test --no-parallel` because this changes the SwiftData
   schema.
 
@@ -647,6 +679,8 @@ PR 6; before then, this PR is queue/preview-only.
 - [ ] Require review of sensitive evidence selections.
 - [ ] Save a draft before expensive evidence work.
 - [ ] Show queued, sending, submitted, retryable, and permanent-failure states.
+- [ ] Let the user explicitly cancel or dismiss a `retryable_failure` or
+  `permanent_failure` report from the same status surface.
 - [ ] Do not expose a live Send path on a branch without PR 6; label the action
   as queue-only in intermediate stacked review.
 - [ ] Detect only new, not-yet-offered crash reports on next launch.
@@ -1118,6 +1152,9 @@ ASTRA. They are two of the 14 core mergeable PRs.
 - [ ] Appcast/release confirmation moves only included fixes to `released`.
 - [ ] Notification retry does not duplicate messages or reveal private data.
 - [ ] Reporter-visible resolution names the actual released version.
+- [ ] A report marked `duplicate` follows its canonical issue's
+  `merged`/`released` transitions, so the duplicate reporter is notified on
+  the same schedule as the canonical reporter.
 
 ### Gate 11D — Disposable End-to-End Integration and Release Proof
 
@@ -1187,6 +1224,7 @@ Every row must have at least one automated test before Gate 11D passes.
 | GitHub unavailable | Intake succeeds; projection stays pending | 7, 8 |
 | Assessment agent unavailable | Human triage remains available | 9, 10 |
 | Duplicate report | One issue, incremented occurrence | 8 |
+| Canonical issue behind a duplicate report is released | Duplicate reporter also sees released version | 8, 11C-server, 11C-client |
 | Security/credential signal | Private security route, no public issue | 8 |
 | Prompt injection in user text/log | No shell/tool/write interpretation | 1, 9 |
 | Secret/path/email in evidence | Redacted or artifact omitted | 2 |
@@ -1319,7 +1357,11 @@ configuration; they also block production integration of PRs 6, 9, 10, and 11C.
 2. **Authentication/abuse model** — choose before PR 7 production work starts.
    Define reporter installation identity, status-read credential, staff IdP/RBAC,
    rate limits, replay rules, and credential recovery without requiring a
-   personal reporter account or embedding an app-wide secret.
+   personal reporter account or embedding an app-wide secret. This decision
+   also selects the concrete request-authentication header, scheme, and
+   algorithm; fold it into PR 1's golden fixtures before PR 6 or PR 7 stop
+   treating the PR 1 fake server (which accepts no auth header) as fixture-only
+   and start relying on it as the frozen production request contract.
 3. **Evidence retention** — define default and security-report retention before
    PR 7 merges.
 4. **GitHub repository visibility** — select the private V1 issue/security
