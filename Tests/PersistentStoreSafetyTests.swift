@@ -101,12 +101,19 @@ struct PersistentStoreSafetyTests {
         defer { try? FileManager.default.removeItem(at: root) }
 
         let pointerURL = root.appendingPathComponent("active-store.json")
+        let fallbackURL = root.appendingPathComponent("default.store")
         try Data("{not-json".utf8).write(to: pointerURL)
+        try Data().write(to: fallbackURL)
 
         #expect(WorkspaceRecoveryService.activeStorePointerState(
             pointerURL: pointerURL,
             storeRoot: root
         ) == .invalid)
+        #expect(WorkspaceRecoveryService.existingPersistentStoreURL(
+            pointerURL: pointerURL,
+            storeRoot: root,
+            fallbackStoreURL: fallbackURL
+        ) == nil)
     }
 
     @Test("SQLite store migration uses a consistent backup and atomic destination")

@@ -130,9 +130,26 @@ public enum WorkspaceRecoveryService {
         return storeURL
     }
 
-    public static func existingPersistentStoreURL() -> URL? {
-        let url = storeURL
-        return FileManager.default.fileExists(atPath: url.path) ? url : nil
+    public static func existingPersistentStoreURL(
+        pointerURL: URL = activeStorePointerURL,
+        storeRoot: URL = storeGenerationDirectory,
+        fallbackStoreURL: URL = defaultStoreURL,
+        fileManager: FileManager = .default
+    ) -> URL? {
+        let candidate: URL
+        switch activeStorePointerState(
+            pointerURL: pointerURL,
+            storeRoot: storeRoot,
+            fileManager: fileManager
+        ) {
+        case .valid(let url):
+            candidate = url
+        case .absent:
+            candidate = fallbackStoreURL
+        case .invalid:
+            return nil
+        }
+        return fileManager.fileExists(atPath: candidate.path) ? candidate : nil
     }
 
     /// True only during this generation's one-time migration window. It lets
@@ -396,6 +413,20 @@ public enum WorkspaceRecoveryService {
             ], level: .error)
             return []
         }
+    }
+
+    /// Preserves every recoverable representation before switching away from
+    /// a store proven corrupt. Read-only workspace export runs first so a
+    /// partially readable database can recreate mirrors; the byte-for-byte
+    /// backup then preserves the original SQLite artifacts for forensics.
+    @discardableResult
+    public static func preserveReadableStoreBeforeRecovery(
+        at url: URL,
+        backupRoot: URL? = nil
+    ) throws -> [WorkspaceConfigManager.WorkspaceConfigExportResult] {
+        let exports = exportReadableWorkspacesBeforeStoreReset(at: url)
+        _ = try copyStoreBackup(at: url, backupRoot: backupRoot, label: "verified-corruption")
+        return exports
     }
 
     @discardableResult

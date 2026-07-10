@@ -427,7 +427,7 @@ private enum AstraStoreStartupCoordinator {
         }
 
         do {
-            _ = try WorkspaceRecoveryService.copyStoreBackup(at: sourceStoreURL, label: "verified-corruption")
+            _ = try WorkspaceRecoveryService.preserveReadableStoreBeforeRecovery(at: sourceStoreURL)
             return createFreshRecoveryStore(lease: lease)
         } catch {
             AppLogger.audit(.dataStoreRecovered, category: "App", fields: [
