@@ -176,6 +176,7 @@ struct CursorCLIRuntimeAdapter: AgentRuntimeAdapter {
     func makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext) -> AgentRuntimeProcessLaunchPlan {
         let taskEnv = AgentRuntimeProcessRunner.scopedEnvironmentVariables(
             for: context.task,
+            capabilityScope: context.capabilityResolutionSnapshot.providerLaunch,
             contextText: context.contextText,
             executionPolicy: context.executionPolicy
         )

@@ -19,7 +19,7 @@ private final class AttachmentPolicyMockProcess: AgentRuntimeProcessControl {
 @Suite("Runtime Attachment Policy Regressions", .serialized)
 @MainActor
 struct RuntimeAttachmentPolicyRegressionTests {
-    @Test("Preflight projects user inputs without exposing provider dependency paths")
+    @Test("Preflight projects user inputs and approved sandbox retries without exposing git-credential paths")
     func manifestProjectsOnlyUserSelectedReadPaths() throws {
         let fileManager = FileManager.default
         let workspaceRoot = fileManager.temporaryDirectory
@@ -28,14 +28,18 @@ struct RuntimeAttachmentPolicyRegressionTests {
             .appendingPathComponent("astra-policy-literature-\(UUID().uuidString).pdf")
         let providerDependency = fileManager.temporaryDirectory
             .appendingPathComponent("astra-policy-provider-\(UUID().uuidString)")
+        let sandboxApprovedPath = fileManager.temporaryDirectory
+            .appendingPathComponent("astra-policy-sandbox-approved-\(UUID().uuidString)")
         defer {
             try? fileManager.removeItem(at: workspaceRoot)
             try? fileManager.removeItem(at: attachment)
             try? fileManager.removeItem(at: providerDependency)
+            try? fileManager.removeItem(at: sandboxApprovedPath)
         }
         try fileManager.createDirectory(at: workspaceRoot, withIntermediateDirectories: true)
         try Data("pdf".utf8).write(to: attachment)
         try Data("credential".utf8).write(to: providerDependency)
+        try Data("approved".utf8).write(to: sandboxApprovedPath)
 
         let container = try makeContainer()
         let context = container.mainContext
@@ -57,17 +61,30 @@ struct RuntimeAttachmentPolicyRegressionTests {
             workspacePath: workspaceRoot.path,
             gitCredentialContextProvider: { _, _, _, _ in .empty }
         )
-        for source in [TaskLaunchResourceSource.gitCredential, .sandboxApproval] {
-            plan.hostPathGrants.append(RuntimePathGrant(
-                path: providerDependency.path,
-                access: .read,
-                source: source,
-                reason: "Provider-only dependency fixture.",
-                sensitivity: source == .gitCredential ? .credential : .normal,
-                lifetime: .run,
-                exists: true
-            ))
-        }
+        // `.gitCredential` stays excluded from the in-app read scope (it only
+        // exists to project git config/credential files into the sandbox, not
+        // to widen what Read/Grep/Glob may touch). `.sandboxApproval` is a
+        // user-approved Seatbelt denial retry (e.g. `Read` on an out-of-scope
+        // path) and must widen the read scope, or the retry can never
+        // actually succeed - see RuntimeSandboxDenialApproval.
+        plan.hostPathGrants.append(RuntimePathGrant(
+            path: providerDependency.path,
+            access: .read,
+            source: .gitCredential,
+            reason: "Provider-only dependency fixture.",
+            sensitivity: .credential,
+            lifetime: .run,
+            exists: true
+        ))
+        plan.hostPathGrants.append(RuntimePathGrant(
+            path: sandboxApprovedPath.path,
+            access: .read,
+            source: .sandboxApproval,
+            reason: "User approved this sandbox path for the current run retry.",
+            sensitivity: .normal,
+            lifetime: .run,
+            exists: true
+        ))
 
         let manifest = AgentPolicyManifestService.recordPreflightManifest(
             task: task,
@@ -84,7 +101,11 @@ struct RuntimeAttachmentPolicyRegressionTests {
         )
         let guardUnderTest = AgentRuntimePolicyGuard(manifest: manifest)
 
-        #expect(manifest.additionalReadOnlyPaths == [attachment.standardizedFileURL.path])
+        #expect(Set(manifest.additionalReadOnlyPaths) == Set([
+            attachment.standardizedFileURL.path,
+            sandboxApprovedPath.standardizedFileURL.path
+        ]))
+        #expect(!manifest.additionalReadOnlyPaths.contains(providerDependency.standardizedFileURL.path))
         #expect(!manifest.additionalPaths.contains { contains(attachment.path, root: $0) })
         #expect(manifest.providerRender.allowedTools.contains("Read"))
         #expect(manifest.providerRender.askFirstTools.contains("Write"))
@@ -97,6 +118,11 @@ struct RuntimeAttachmentPolicyRegressionTests {
                 id: "provider-dependency",
                 input: ["pattern": "*", "path": providerDependency.path]
             )) != nil)
+            #expect(guardUnderTest.violation(for: .toolUse(
+                name: tool,
+                id: "sandbox-approved-retry",
+                input: ["pattern": "*", "path": sandboxApprovedPath.path]
+            )) == nil)
         }
 
         let roundTrip = try JSONDecoder().decode(
@@ -163,6 +189,21 @@ struct RuntimeAttachmentPolicyRegressionTests {
         let broadViolation = try #require(AgentRuntimePolicyGuard(manifest: broadManifest).violation(for: writeEvent))
         #expect(broadViolation.violationCategory == "read_only_input_mutation")
         #expect(!broadViolation.requiresApproval)
+
+        // Broad/Auto mode skips normal per-tool validation for every tool
+        // except Write/Edit/MultiEdit. A shell command that plainly deletes
+        // or overwrites the same read-only attachment must still be caught -
+        // provider file tools are stopped above, so a bare `rm`/redirect
+        // shouldn't be the silent bypass.
+        let broadGuard = AgentRuntimePolicyGuard(manifest: broadManifest)
+        let shellRemoveViolation = try #require(broadGuard.violation(for: .toolUse(
+            name: "Bash", id: "bash-rm", input: ["command": "rm \(attachment.path)"]
+        )))
+        #expect(shellRemoveViolation.violationCategory == "read_only_input_mutation")
+        #expect(shellRemoveViolation.detail == attachment.path)
+        #expect(broadGuard.violation(for: .toolUse(
+            name: "Bash", id: "bash-cat", input: ["command": "cat \(attachment.path)"]
+        )) == nil)
     }
 
     @Test("Seatbelt reads external attachment without permitting mutation")

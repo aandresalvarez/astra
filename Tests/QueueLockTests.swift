@@ -536,7 +536,7 @@ struct TaskFolderTests {
         #expect(TaskWorkspaceAccess(task: task, fileSystem: fileSystem).codeWorkingDirectory == pinned)
     }
 
-    @Test("Runtime paths keep workspace roots writable and input directories read-only")
+    @Test("Runtime paths keep workspace roots writable and input files/directories read-only")
     func runtimePathsSeparateWritableRootsFromInputDirectories() {
         let primary = "/tmp/astra-primary-\(UUID().uuidString.prefix(8))"
         let extra = "/tmp/astra-extra-\(UUID().uuidString.prefix(8))"
@@ -553,7 +553,10 @@ struct TaskFolderTests {
 
         let access = TaskWorkspaceAccess(task: task, fileSystem: fileSystem)
         #expect(access.runtimeWritablePaths == [extra])
-        #expect(access.runtimeReadOnlyInputPaths == [inputDirectory])
+        // A single attached file (e.g. a PDF/config outside the workspace) must
+        // also project as a read-only input so containerized Docker runs mount
+        // it, matching what the host/Seatbelt launch-resource path already grants.
+        #expect(access.runtimeReadOnlyInputPaths == [inputDirectory, inputFile])
     }
 }
 

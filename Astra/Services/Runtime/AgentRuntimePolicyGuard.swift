@@ -211,12 +211,64 @@ struct AgentRuntimePolicyGuard: Sendable {
         _ observed: PolicyObservedEvent
     ) -> AgentRuntimePolicyViolation? {
         guard let toolName = observed.toolName?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !toolName.isEmpty,
-              isMutationTool(toolName) else {
+              !toolName.isEmpty else {
             return nil
         }
-        return validateTaskOutputMutationOwnership(observed, toolName: toolName)
-            ?? validateReadOnlyInputMutation(observed, toolName: toolName)
+        if isMutationTool(toolName) {
+            return validateTaskOutputMutationOwnership(observed, toolName: toolName)
+                ?? validateReadOnlyInputMutation(observed, toolName: toolName)
+        }
+        // Broad/Auto mode otherwise trusts the provider's own tool calls and
+        // skips ASTRA's normal per-tool validation entirely. Bash/Shell falls
+        // outside the Write/Edit/MultiEdit mutation-tool check above, so
+        // without this a shell command (e.g. `rm <read-only-input>`) could
+        // still mutate a user-selected read-only task input when ASTRA's OS
+        // sandbox isn't wrapping this run (disabled, or a self-sandboxing
+        // runtime like Codex/Cursor/Antigravity that isn't wrapped by
+        // default).
+        if isShellTool(toolName) {
+            return validateShellReadOnlyInputMutation(observed.command, toolName: toolName)
+        }
+        return nil
+    }
+
+    /// Best-effort text match: flags a shell command as a read-only-input
+    /// mutation only when it both looks like a mutating command (contains a
+    /// known write/delete indicator) and literally references one of this
+    /// run's read-only paths. This cannot see through shell
+    /// expansion/variables/aliasing, so it complements rather than replaces
+    /// OS-level sandbox enforcement - it exists for the broad/Auto path where
+    /// that enforcement may not be applied at all.
+    private func validateShellReadOnlyInputMutation(
+        _ command: String?,
+        toolName: String
+    ) -> AgentRuntimePolicyViolation? {
+        guard let trimmedCommand = command?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmedCommand.isEmpty,
+              Self.shellCommandLooksMutating(trimmedCommand) else {
+            return nil
+        }
+        guard let readOnlyPath = manifest.additionalReadOnlyPaths.first(where: { path in
+            !path.isEmpty && trimmedCommand.contains(path) && isPathReadable(path) && !isPathWritable(path)
+        }) else {
+            return nil
+        }
+        return AgentRuntimePolicyViolation(
+            reason: "The shell command references a read-only task input and looks like it would modify it",
+            toolName: toolName,
+            detail: readOnlyPath,
+            violationCategory: "read_only_input_mutation"
+        )
+    }
+
+    private static let mutatingShellCommandIndicators = [
+        "rm ", "rm\t", "mv ", "cp -f", "cp --force", ">>", "> ", "sed -i", "truncate ",
+        "shred ", "dd ", "tee ", "chmod ", "chown ", "rsync --delete", "git clean", ":>"
+    ]
+
+    private static func shellCommandLooksMutating(_ command: String) -> Bool {
+        let lower = command.lowercased()
+        return mutatingShellCommandIndicators.contains { lower.contains($0) }
     }
 
     private func validateObservedAction(

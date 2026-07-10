@@ -1178,11 +1178,18 @@ enum AgentPolicyManifestService {
         return plan.hostPathGrants.compactMap { grant in
             guard grant.access == .read else { return nil }
             switch grant.source {
-            case .taskInput, .userAttachment:
+            case .taskInput, .userAttachment, .sandboxApproval:
+                // `.sandboxApproval` grants only ever reach `hostPathGrants` with
+                // `access == .read` (see `appendRuntimePermissionGrants`), so
+                // widening the in-app read scope here is safe: without this, a
+                // user-approved Seatbelt file-read retry (e.g. `Read` on an
+                // out-of-scope path) still gets rejected by
+                // `AgentRuntimePolicyGuard` because the OS-sandbox projection
+                // alone doesn't widen ASTRA's own readable-scope check.
                 let path = (grant.path as NSString).expandingTildeInPath
                 guard !path.isEmpty, seen.insert(path).inserted else { return nil }
                 return path
-            case .workspace, .remoteWorkspace, .gitCredential, .dockerEnvironment, .sandboxApproval,
+            case .workspace, .remoteWorkspace, .gitCredential, .dockerEnvironment,
                  .dockerCredential, .controlPlane, .connector, .browser, .provider:
                 return nil
             }

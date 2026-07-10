@@ -212,6 +212,52 @@ struct CodexCLIRuntimeTests {
         #expect(plan.parsesJSONLines)
     }
 
+    @Test("Codex adapter keeps read-only task inputs in the --add-dir scope")
+    @MainActor
+    func codexAdapterKeepsReadOnlyTaskInputsInAddDirScope() throws {
+        // Codex is self-sandboxing and isn't wrapped by ASTRA's Seatbelt by
+        // default, so `--add-dir` is the only thing that keeps a read-only
+        // task input (a folder outside the workspace) visible to it.
+        let fileManager = FileManager.default
+        let workspaceRoot = fileManager.temporaryDirectory
+            .appendingPathComponent("astra-codex-workspace-\(UUID().uuidString)", isDirectory: true)
+        let inputDirectory = fileManager.temporaryDirectory
+            .appendingPathComponent("astra-codex-input-\(UUID().uuidString)", isDirectory: true)
+        defer {
+            try? fileManager.removeItem(at: workspaceRoot)
+            try? fileManager.removeItem(at: inputDirectory)
+        }
+        try fileManager.createDirectory(at: workspaceRoot, withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: inputDirectory, withIntermediateDirectories: true)
+
+        let workspace = Workspace(name: "Codex Workspace", primaryPath: workspaceRoot.path)
+        let task = AgentTask(
+            title: "Codex",
+            goal: "Read the attached folder",
+            workspace: workspace,
+            model: "gpt-5.5",
+            runtime: .codexCLI
+        )
+        task.inputs = [inputDirectory.path]
+
+        let plan = CodexCLIRuntimeAdapter().makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext(
+            prompt: "hello",
+            task: task,
+            workspacePath: workspaceRoot.path,
+            executablePath: "/bin/codex-not-present",
+            providerHomeDirectory: "",
+            permissionPolicy: .restricted,
+            executionPolicy: .default,
+            permissionManifest: nil,
+            timeoutSeconds: 30
+        ))
+
+        let addDirValues = plan.arguments.indices
+            .filter { plan.arguments[$0] == "--add-dir" }
+            .compactMap { plan.arguments.indices.contains($0 + 1) ? plan.arguments[$0 + 1] : nil }
+        #expect(addDirValues.contains(inputDirectory.standardizedFileURL.path))
+    }
+
     @Test("Codex sandbox roots follow provider home, inherited CODEX_HOME, and system requirements")
     func codexSandboxRootsFollowCodexLaunchState() {
         let providerRoots = CodexCLIRuntime.sandboxReadablePaths(

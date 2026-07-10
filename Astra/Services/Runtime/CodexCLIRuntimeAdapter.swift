@@ -2,6 +2,7 @@ import Foundation
 import SwiftData
 import ASTRACore
 import ASTRAModels
+import ASTRAPersistence
 
 struct CodexCLIRuntimeAdapterProvider: AgentRuntimeAdapterProvider {
     let providerID = "codex-cli"
@@ -188,6 +189,7 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
     func makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext) -> AgentRuntimeProcessLaunchPlan {
         let taskEnv = AgentRuntimeProcessRunner.scopedEnvironmentVariables(
             for: context.task,
+            capabilityScope: context.capabilityResolutionSnapshot.providerLaunch,
             contextText: context.contextText,
             executionPolicy: context.executionPolicy
         )
@@ -201,7 +203,13 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
         let providerVersion = CodexCLIRuntime.versionSummary(executablePath: executable)
         let model = AgentRuntimeProcessRunner.model(context.taskSnapshot.model, for: id)
         let providerModel = CodexCLIRuntime.resolvedModelName(model)
+        // Codex is a self-sandboxing runtime (`ExecutionSandbox.nativeSandboxRuntimes`)
+        // and isn't wrapped by ASTRA's Seatbelt by default in restricted/interactive
+        // modes, so `--add-dir` is the only mechanism that keeps a read-only task
+        // input (e.g. a folder selected outside the workspace) visible to Codex's
+        // own sandbox. Project both writable and read-only input paths through it.
         let additionalPaths = AgentRuntimeProcessRunner.runtimeWritablePaths(for: context.task)
+            + TaskWorkspaceAccess(task: context.task).runtimeReadOnlyInputPaths
         let resumingNativeSession = !(context.nativeContinuationSessionID ?? "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .isEmpty
