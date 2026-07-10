@@ -441,6 +441,13 @@ struct MarkdownTextViewTests {
         #expect(markers == ["1.", "2.", "3."])
     }
 
+    @Test("Display preparation leaves indented code blocks alone")
+    func displayPreparationLeavesIndentedCodeBlocksAlone() {
+        let source = "Example output:\n\n    calls: - foo - bar\n    steps: 1. one 2. two"
+
+        #expect(MarkdownRenderPreparation.prepareForDisplay(source) == source)
+    }
+
     @Test("Display preparation leaves prose hyphens and inline code markers alone")
     func displayPreparationLeavesProseHyphensAndInlineCodeMarkersAlone() {
         let hyphenated = "The state - of - the - art approach stays intact."

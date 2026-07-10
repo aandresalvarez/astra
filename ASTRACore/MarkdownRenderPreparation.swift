@@ -149,10 +149,21 @@ public enum MarkdownRenderPreparation {
                 output.append(line)
                 continue
             }
+            // Markdown's indented code blocks (4 spaces / tab) are code too;
+            // reflowing them would turn a snippet into prose plus list items
+            // and destroy its indentation.
+            if isIndentedCodeLine(line) {
+                output.append(line)
+                continue
+            }
             output.append(contentsOf: reflowedLine(line))
         }
 
         return output.joined(separator: "\n")
+    }
+
+    private static func isIndentedCodeLine(_ line: String) -> Bool {
+        line.hasPrefix("    ") || line.hasPrefix("\t")
     }
 
     private static func reflowedLine(_ line: String) -> [String] {

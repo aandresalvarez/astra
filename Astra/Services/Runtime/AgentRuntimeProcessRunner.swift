@@ -723,7 +723,14 @@ final class AgentRuntimeProcessRunner {
                     if !finalStdoutChunk.isEmpty {
                         lineBuffer.appendAndProcessLinesLocked(finalStdoutChunk, handleLine)
                     }
-                    handleLine(lineBuffer.drainRemainingLocked())
+                    // The final drain is an EOF flush, not a real stdout line;
+                    // an empty remainder must not reach handleLine's
+                    // blank-line-forwarding path (plain-text runtimes would
+                    // record it as a synthetic paragraph break).
+                    let remainder = lineBuffer.drainRemainingLocked()
+                    if !remainder.isEmpty {
+                        handleLine(remainder)
+                    }
                 }
                 errorOutput.synchronized {
                     let finalStderrChunk = String(decoding: proc.stderrFileHandle.readDataToEndOfFile(), as: UTF8.self)

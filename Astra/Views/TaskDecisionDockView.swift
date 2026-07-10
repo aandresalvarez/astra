@@ -45,9 +45,16 @@ struct TaskDecisionDockView<ExtendedDetails: View>: View {
         }
     }
 
+    /// The rail must carry the Details toggle in the compact (wrapped)
+    /// layouts: the thread renders no run-details disclosure while the dock
+    /// is visible, so this toggle is the only entry point to the inspector
+    /// at narrow widths.
     private var actionRail: some View {
         ViewThatFits(in: .horizontal) {
             HStack(alignment: .center, spacing: 10) {
+                if presentation.showsDetailsToggle {
+                    detailsToggle
+                }
                 if hasUtilityActions {
                     utilityActionsView
                 }
@@ -60,6 +67,9 @@ struct TaskDecisionDockView<ExtendedDetails: View>: View {
             }
 
             VStack(alignment: .leading, spacing: 8) {
+                if presentation.showsDetailsToggle {
+                    detailsToggle
+                }
                 if hasUtilityActions {
                     utilityActionsView
                 }
