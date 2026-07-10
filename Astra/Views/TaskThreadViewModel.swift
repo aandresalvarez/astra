@@ -23,8 +23,12 @@ final class TaskThreadViewModel {
     /// snapshot. This prevents a previous task's ready state from being used
     /// while a newly selected task is still displaying its placeholder.
     private(set) var appliedSnapshotTaskID: UUID?
-    /// Cache state for the most recently applied snapshot, exposed as a safe
-    /// diagnostic dimension for task-open responsiveness traces.
+    /// Cache state for the most recent snapshot refresh, exposed as a safe
+    /// diagnostic dimension for task-open responsiveness traces. Set to
+    /// "pending" by `reset`, then to "hit" on a cache hit or "miss"/
+    /// "not_applicable" as soon as a fresh build is kicked off -- in the
+    /// miss/not_applicable case this is set before the detached build
+    /// actually applies its result.
     private(set) var lastSnapshotCacheState = "not_applicable"
 
     /// An Equatable signal that changes when a real transcript snapshot is
