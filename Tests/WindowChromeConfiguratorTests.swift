@@ -58,16 +58,8 @@ struct WindowChromeConfiguratorTests {
         ))
     }
 
-    @Test("Leading command bar reserves the first titlebar accessory slot")
-    func leadingCommandBarReservesFirstAccessorySlot() {
-        #expect(
-            AstraLeadingCommandBarMetrics.reservedAccessorySlotWidth
-                >= AstraToolbarCommandMetrics.iconWidth
-        )
-    }
-
-    @Test("Reserved leading command slot does not capture titlebar hit testing")
-    func leadingCommandBarReservedSlotDoesNotCaptureHitTesting() {
-        #expect(!AstraLeadingCommandBarMetrics.reservedAccessorySlotAllowsHitTesting)
+    @Test("Leading command bar sits flush after the traffic lights")
+    func leadingCommandBarSitsFlushAfterTrafficLights() {
+        #expect(AstraLeadingCommandBarMetrics.leadingPadding == 0)
     }
 }

@@ -1,13 +1,12 @@
 import SwiftUI
 
 enum AstraLeadingCommandBarMetrics {
-    static let leadingPadding: CGFloat = 6
-    /// AppKit starts a leading titlebar accessory immediately after the traffic
-    /// lights, but the first accessory-sized child can still behave like titlebar
-    /// chrome. Reserving one inert command slot makes the first actionable button
-    /// land in the same reliable hit region where the following controls work.
-    static let reservedAccessorySlotWidth: CGFloat = AstraToolbarCommandMetrics.iconWidth
-    static let reservedAccessorySlotAllowsHitTesting = false
+    /// No leading inset: the commands sit flush after the traffic lights, with
+    /// the cluster's own horizontal padding as the only breathing room. An inert
+    /// icon-width slot used to pad this edge because the first accessory slot
+    /// could hit-test like titlebar chrome; restore it if toggle clicks or
+    /// hover-peek turn flaky beside the traffic lights.
+    static let leadingPadding: CGFloat = 0
     static let trailingPadding: CGFloat = 2
 }
 
@@ -40,14 +39,6 @@ struct AstraLeadingCommandBar: View {
 
     var body: some View {
         AstraToolbarCommandCluster {
-            Color.clear
-                .frame(
-                    width: AstraLeadingCommandBarMetrics.reservedAccessorySlotWidth,
-                    height: AstraToolbarCommandMetrics.controlHeight
-                )
-            .allowsHitTesting(AstraLeadingCommandBarMetrics.reservedAccessorySlotAllowsHitTesting)
-            .accessibilityHidden(true)
-
             Button {
                 sidebarCommands.requestSidebarToggle()
             } label: {
