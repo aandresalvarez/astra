@@ -233,7 +233,10 @@ enum FeedbackContractValidationV1 {
         path: String,
         maximum: Int
     ) throws {
-        guard !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        // JSON Schema's `minLength: 1` only requires the string to be non-empty; it does
+        // not treat whitespace-only strings as missing. Match that exactly so Swift
+        // validation doesn't reject bytes the schema (and other implementations) accept.
+        guard !value.isEmpty else {
             throw FeedbackContractError.missingRequiredField(path: path)
         }
         try bounded(value, path: path, maximum: maximum)
@@ -249,11 +252,16 @@ enum FeedbackContractValidationV1 {
     }
 
     static func bounded(_ value: String, path: String, maximum: Int) throws {
-        guard value.count <= maximum else {
+        // JSON Schema's maxLength/minLength count Unicode code points, not extended
+        // grapheme clusters. `String.count` counts grapheme clusters in Swift, which
+        // would under-count multi-scalar sequences (e.g. some emoji) relative to the
+        // schema; use unicodeScalars.count to match code-point semantics exactly.
+        let length = value.unicodeScalars.count
+        guard length <= maximum else {
             throw FeedbackContractError.exceedsMaximumLength(
                 path: path,
                 maximum: maximum,
-                actual: value.count
+                actual: length
             )
         }
         let normalized = FeedbackContractNormalizationV1.text(value)
