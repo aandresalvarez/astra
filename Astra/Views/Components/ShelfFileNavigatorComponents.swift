@@ -66,10 +66,12 @@ struct ShelfFileNavigatorHeader: View {
                 TextField("Search files by name or path", text: $searchText)
                     .textFieldStyle(.roundedBorder)
                     .font(Stanford.caption(12))
+            }
 
-                if showsScopePicker {
-                    scopeMenu
-                }
+            if showsScopePicker {
+                Divider()
+
+                scopeMenu
             }
         }
         .padding(.horizontal, 12)
@@ -91,11 +93,25 @@ struct ShelfFileNavigatorHeader: View {
                 }
             }
         } label: {
-            Label(effectiveScope.label, systemImage: "line.3.horizontal.decrease.circle")
-                .font(Stanford.caption(11).weight(.medium))
+            HStack(spacing: 7) {
+                Image(systemName: effectiveScope == .task ? "folder" : "folder.badge.gearshape")
+                    .font(Stanford.ui(11, weight: .medium))
+                    .foregroundStyle(Stanford.lagunita)
+
+                Text(effectiveScope.label)
+                    .font(Stanford.caption(11).weight(.medium))
+                    .foregroundStyle(.primary)
+
+                Spacer(minLength: 0)
+
+                Image(systemName: "chevron.down")
+                    .font(Stanford.ui(9, weight: .semibold))
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity)
+            .contentShape(Rectangle())
         }
         .menuStyle(.borderlessButton)
-        .fixedSize()
         .help("Choose which files to browse")
         .accessibilityIdentifier("FilesShelfScopeMenu")
     }
@@ -162,7 +178,7 @@ struct BrowseFilesToolbarButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(Stanford.caption(12).weight(.semibold))
-            .foregroundStyle(isActive ? Stanford.lagunita : Color.primary.opacity(0.82))
+            .foregroundStyle(Stanford.lagunita)
             .padding(.horizontal, 10)
             .frame(height: 28)
             .background(
@@ -171,15 +187,15 @@ struct BrowseFilesToolbarButtonStyle: ButtonStyle {
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .stroke(isActive ? Stanford.lagunita.opacity(0.24) : Color.primary.opacity(0.08), lineWidth: 1)
+                    .stroke(Stanford.lagunita.opacity(isActive ? 0.28 : 0.18), lineWidth: 1)
             )
             .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
     }
 
     private func backgroundColor(isPressed: Bool) -> Color {
         if isPressed {
-            return isActive ? Stanford.lagunita.opacity(0.16) : Color.primary.opacity(0.10)
+            return Stanford.lagunita.opacity(0.16)
         }
-        return isActive ? Stanford.lagunita.opacity(0.10) : Color.clear
+        return Stanford.lagunita.opacity(isActive ? 0.12 : 0.07)
     }
 }

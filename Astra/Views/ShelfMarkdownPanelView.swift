@@ -81,21 +81,20 @@ struct ShelfMarkdownPanelView: View {
         VStack(spacing: 0) {
             toolbar
             Divider()
-            if showsCombinedEmptyState {
-                // When there are no files to browse and nothing is selected,
-                // a split would show two empty states side by side ("No task
-                // files" + "No file selected"). Collapse to one centered state.
-                combinedEmptyState
-            } else {
-                fileWorkspace
-            }
+            fileWorkspace
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .id(ObjectIdentifier(session))
         .onAppear {
             normalizeViewMode()
             normalizeFileNavigatorScope()
-            isFileNavigatorPresented = isFileNavigatorPinned || !session.hasFile
+            let hasDiscoveredFileNavigator = ShelfFileNavigatorDiscoveryStore.hasDiscovered()
+            isFileNavigatorPresented = ShelfFileNavigatorInitialPresentationPolicy.shouldPresent(
+                isPinned: isFileNavigatorPinned,
+                hasSelectedFile: session.hasFile,
+                hasDiscoveredBrowser: hasDiscoveredFileNavigator
+            )
+            ShelfFileNavigatorDiscoveryStore.markDiscovered()
             refreshFileIndex()
         }
         .onDisappear {
@@ -155,7 +154,12 @@ struct ShelfMarkdownPanelView: View {
                 isFileNavigatorPresented.toggle()
             }
         } label: {
-            Label("Browse files", systemImage: "folder")
+            HStack(spacing: 7) {
+                Label("Browse files", systemImage: "folder")
+
+                Image(systemName: isFileNavigatorPresented ? "chevron.up" : "chevron.down")
+                    .font(Stanford.ui(9, weight: .semibold))
+            }
         }
         .buttonStyle(BrowseFilesToolbarButtonStyle(isActive: isFileNavigatorPresented))
         .help(isFileNavigatorPresented ? "Hide file browser" : "Browse files")
@@ -165,7 +169,9 @@ struct ShelfMarkdownPanelView: View {
 
     private var toolbarDocumentCluster: some View {
         HStack(spacing: 10) {
-            toolbarFileContext
+            if session.hasFile {
+                toolbarFileContext
+            }
 
             if shouldShowModePicker {
                 modePicker
@@ -335,49 +341,6 @@ struct ShelfMarkdownPanelView: View {
         reduceMotion ? .identity : .move(edge: .leading).combined(with: .opacity)
     }
 
-    /// True when the navigator is open, has no files to show, and nothing is
-    /// selected — the only situation that otherwise renders two empty states.
-    private var showsCombinedEmptyState: Bool {
-        isFileNavigatorPresented
-            && !session.hasFile
-            && fileNavigatorContentPresentation != .populatedList
-    }
-
-    private var combinedEmptyState: some View {
-        let isNoPaths = fileNavigatorContentPresentation == .noWorkspacePaths
-        let isScanning = fileNavigatorContentPresentation == .scanning
-        let title = isScanning ? scanningScopeTitle : (isNoPaths ? "No workspace paths" : emptyScopeTitle)
-        let message = isScanning ? scanningScopeMessage : (
-            isNoPaths ? "Configure a workspace folder to browse files." : emptyScopeMessage
-        )
-
-        return VStack(spacing: 8) {
-            if isScanning {
-                ProgressView()
-                    .controlSize(.regular)
-                    .padding(.bottom, 2)
-            } else {
-                Image(systemName: isNoPaths ? "folder.badge.questionmark" : "folder")
-                    .font(Stanford.ui(28, weight: .regular))
-                    .foregroundStyle(Stanford.textTertiary)
-            }
-
-            Text(title)
-                .font(Stanford.body(16).weight(.semibold))
-                .foregroundStyle(Stanford.textSecondary)
-
-            Text(message)
-                .font(Stanford.caption(12))
-                .foregroundStyle(Stanford.textTertiary)
-                .multilineTextAlignment(.center)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding(.horizontal, 24)
-        .padding(.top, 120)
-        .frame(maxHeight: .infinity, alignment: .top)
-    }
-
     private var fileNavigator: some View {
         VStack(spacing: 0) {
             ShelfFileNavigatorHeader(
@@ -410,11 +373,25 @@ struct ShelfMarkdownPanelView: View {
             case .scanning:
                 fileNavigatorScanningState
             case .emptyScope:
-                fileNavigatorEmptyState(
-                    title: emptyScopeTitle,
-                    message: emptyScopeMessage,
-                    systemImage: "folder"
-                )
+                VStack(spacing: 0) {
+                    fileNavigatorEmptyState(
+                        title: emptyScopeTitle,
+                        message: emptyScopeMessage,
+                        systemImage: "folder"
+                    )
+
+                    if effectiveFileNavigatorScope == .task, workspace != nil {
+                        Button {
+                            fileNavigatorScope = .workspace
+                        } label: {
+                            Label("Browse workspace files", systemImage: "folder")
+                        }
+                        .buttonStyle(BrowseFilesToolbarButtonStyle())
+                        .padding(.horizontal, 12)
+                        .padding(.bottom, 12)
+                        .accessibilityIdentifier("FilesShelfBrowseWorkspaceButton")
+                    }
+                }
             case .populatedList:
                 if isSearchingFiles {
                     searchResultsSection
@@ -1645,7 +1622,7 @@ struct ShelfMarkdownPanelView: View {
             fileUnavailableView(errorMessage)
         } else if !session.hasFile {
             VStack(spacing: 8) {
-                Image(systemName: "doc.text")
+                Image(systemName: "folder")
                     .font(Stanford.ui(28, weight: .regular))
                     .foregroundStyle(.tertiary)
 
@@ -1653,9 +1630,20 @@ struct ShelfMarkdownPanelView: View {
                     .font(Stanford.body(16).weight(.semibold))
                     .foregroundStyle(.secondary)
 
-                Text("Choose a file to preview.")
+                Text("Choose a task or workspace file to preview it here.")
                     .font(Stanford.caption(12))
                     .foregroundStyle(.tertiary)
+
+                Button {
+                    withAnimation(fileNavigatorAnimation) {
+                        isFileNavigatorPresented = true
+                    }
+                } label: {
+                    Label("Browse files", systemImage: "folder")
+                }
+                .buttonStyle(BrowseFilesToolbarButtonStyle(isActive: true))
+                .padding(.top, 8)
+                .accessibilityIdentifier("FilesShelfEmptyStateBrowseButton")
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .padding(.top, 120)

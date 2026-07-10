@@ -28,3 +28,15 @@ enum ShelfFileNavigatorSelectionPolicy {
         isPinned
     }
 }
+
+enum ShelfFileNavigatorInitialPresentationPolicy {
+    /// Reveal browsing once for discovery, whenever there is no current file,
+    /// or whenever the user has explicitly pinned the browser.
+    static func shouldPresent(
+        isPinned: Bool,
+        hasSelectedFile: Bool,
+        hasDiscoveredBrowser: Bool
+    ) -> Bool {
+        isPinned || !hasSelectedFile || !hasDiscoveredBrowser
+    }
+}
