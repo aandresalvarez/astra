@@ -532,8 +532,6 @@ struct TaskSidebarView: View {
             Divider()
                 .opacity(0.35)
             AppAccessMenu()
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
         }
         .accessibilityIdentifier("AppAccessSidebarFooter")
     }

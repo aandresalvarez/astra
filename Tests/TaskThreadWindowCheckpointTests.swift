@@ -281,20 +281,32 @@ struct TaskThreadViewModelTests {
     }
 
     @MainActor
-    @Test("Terminal snapshot cache key stores a goal fingerprint instead of full goal text")
-    func terminalSnapshotCacheKeyStoresGoalFingerprintInsteadOfFullGoalText() throws {
+    @Test("Terminal snapshot cache key uses the durable task revision without event signatures")
+    func terminalSnapshotCacheKeyUsesTaskRevisionWithoutEventSignatures() throws {
         let task = makeTask(
             goal: String(repeating: "Long goal with expensive retained text. ", count: 300),
             status: .completed
         )
         task.createdAt = Date(timeIntervalSince1970: 0)
         task.completedAt = Date(timeIntervalSince1970: 100)
-        let trigger = TaskThreadSnapshotTrigger(task: task)
-        let key = try #require(TaskThreadSnapshotCacheKey(task: task, trigger: trigger, maxRuns: 50))
+        let key = try #require(TaskThreadSnapshotCacheKey(task: task, maxRuns: 50))
 
         let fieldNames = Set(Mirror(reflecting: key).children.compactMap(\.label))
-        #expect(fieldNames.contains("goalHash"))
-        #expect(!fieldNames.contains("goal"))
+        #expect(fieldNames.contains("revision"))
+        #expect(!fieldNames.contains("eventSignatures"))
+        #expect(!fieldNames.contains("runSignatures"))
+    }
+
+    @Test("Terminal snapshot cache key invalidates from the task revision")
+    func terminalSnapshotCacheKeyInvalidatesFromTaskRevision() throws {
+        let task = makeTask(goal: "Completed task", status: .completed)
+        task.updatedAt = Date(timeIntervalSince1970: 100)
+        let initialKey = try #require(TaskThreadSnapshotCacheKey(task: task, maxRuns: 50))
+
+        task.updatedAt = Date(timeIntervalSince1970: 101)
+        let updatedKey = try #require(TaskThreadSnapshotCacheKey(task: task, maxRuns: 50))
+
+        #expect(initialKey != updatedKey)
     }
 
     @Test("Task thread view model reuses one cache key for terminal snapshot lookup and storage")
@@ -307,6 +319,19 @@ struct TaskThreadViewModelTests {
         let constructorCount = source.components(separatedBy: "TaskThreadSnapshotCacheKey(task:").count - 1
 
         #expect(constructorCount == 1)
+    }
+
+    @Test("Terminal cache lookup happens before the full snapshot trigger")
+    func terminalCacheLookupHappensBeforeSnapshotTrigger() throws {
+        let sourceURL = URL(filePath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appending(path: "Astra/Views/TaskThreadViewModel.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        let cacheLookup = try #require(source.range(of: "let cacheKey = TaskThreadSnapshotCacheKey"))
+        let triggerConstruction = try #require(source.range(of: "let trigger = TaskThreadSnapshotTrigger"))
+
+        #expect(cacheLookup.lowerBound < triggerConstruction.lowerBound)
     }
 }
 
