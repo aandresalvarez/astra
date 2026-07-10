@@ -6,6 +6,9 @@ struct SidebarTaskIndex {
     private let reviewTasksByWorkspaceID: [UUID: [AgentTask]]
     private let matchingReviewTasksByWorkspaceID: [UUID: [AgentTask]]
     private let anyTaskWorkspaceIDs: Set<UUID>
+    // Deliberately unfiltered by search: the collapsed-drawer running signal
+    // must not disappear just because a live query doesn't match the task.
+    private let runningTaskCountByWorkspaceID: [UUID: Int]
 
     let pinnedTasks: [AgentTask]
     let unreadTasks: [AgentTask]
@@ -17,6 +20,7 @@ struct SidebarTaskIndex {
         var reviewGroups: [UUID: [AgentTask]] = [:]
         var matchingGroups: [UUID: [AgentTask]] = [:]
         var workspaceIDs = Set<UUID>()
+        var runningCounts: [UUID: Int] = [:]
         var pinned: [AgentTask] = []
         var unread: [AgentTask] = []
         var reviewTaskCount = 0
@@ -24,19 +28,26 @@ struct SidebarTaskIndex {
         for task in tasks {
             guard let workspaceID = task.workspace?.id else { continue }
             workspaceIDs.insert(workspaceID)
+            if task.status == .running, !task.isDone {
+                runningCounts[workspaceID, default: 0] += 1
+            }
 
             guard Self.isSidebarReviewTask(task) else { continue }
 
             reviewTaskCount += 1
-            reviewGroups[workspaceID, default: []].append(task)
             if task.isPinned {
+                // Pinned tasks surface once, in the top-level Pinned
+                // section, so they're excluded from the per-workspace
+                // list entirely rather than rendered a second time there.
                 pinned.append(task)
+            } else {
+                reviewGroups[workspaceID, default: []].append(task)
+                if searchText.isEmpty || Self.taskMatchesSearch(task, searchText: searchText) {
+                    matchingGroups[workspaceID, default: []].append(task)
+                }
             }
             if Self.isUnreadTask(task) {
                 unread.append(task)
-            }
-            if searchText.isEmpty || Self.taskMatchesSearch(task, searchText: searchText) {
-                matchingGroups[workspaceID, default: []].append(task)
             }
         }
 
@@ -50,6 +61,7 @@ struct SidebarTaskIndex {
         reviewTasksByWorkspaceID = reviewGroups
         matchingReviewTasksByWorkspaceID = matchingGroups
         anyTaskWorkspaceIDs = workspaceIDs
+        runningTaskCountByWorkspaceID = runningCounts
         pinnedTasks = pinned.sorted { $0.updatedAt > $1.updatedAt }
         unreadTasks = unread.sorted {
             ($0.unreadAt ?? $0.updatedAt) > ($1.unreadAt ?? $1.updatedAt)
@@ -84,6 +96,10 @@ struct SidebarTaskIndex {
 
     func hasAnyTask(in workspace: Workspace) -> Bool {
         anyTaskWorkspaceIDs.contains(workspace.id)
+    }
+
+    func runningTaskCount(in workspace: Workspace) -> Int {
+        runningTaskCountByWorkspaceID[workspace.id] ?? 0
     }
 
     static func isSidebarReviewTask(_ task: AgentTask) -> Bool {

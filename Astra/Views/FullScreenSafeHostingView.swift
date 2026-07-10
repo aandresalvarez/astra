@@ -28,6 +28,15 @@ final class FullScreenSafeHostingView<Content: View>: NSHostingView<Content> {
     private var retryScheduled = false
     private var trappedCount = 0
 
+    /// The accessory is a control strip, not a drag region. NSHostingView is
+    /// non-opaque, so NSView's default returns true and AppKit may route a
+    /// click that lands on the accessory's transparent padding into titlebar
+    /// window-drag instead of the SwiftUI control beside it — worst next to
+    /// the traffic lights, where the leading-most button lives. Returning
+    /// false delivers every click to the hosted content; the rest of the
+    /// title bar still drags the window.
+    override var mouseDownCanMoveWindow: Bool { false }
+
     override func layout() {
         let raised = AstraExceptionTrap.catching {
             super.layout()
