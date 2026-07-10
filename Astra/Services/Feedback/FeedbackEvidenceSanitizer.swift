@@ -91,11 +91,20 @@ enum FeedbackEvidenceSanitizer {
             options: []
         ),
         Rule(
-            // macOS folder/file names commonly contain single spaces (e.g. "My Project").
-            // Allow one embedded space as long as it is immediately followed by another
-            // path character, so the match consumes the whole path instead of stopping
-            // at the first space and leaving the remainder unredacted.
-            pattern: #"(?:file://)?/Users/(?:[^\s\"']|[ ](?=[^\s\"']))+"#,
+            // A terminal file extension provides a safe boundary for filenames that
+            // themselves contain spaces. Stop at that boundary so trailing log prose
+            // survives while the complete private path is removed.
+            pattern: #"(?:file://)?/Users/[^\s/\"']+(?:/[^/\"'\r\n]+)*?\.[A-Za-z0-9]{1,16}(?=$|[\s,;:)\]])"#,
+            replacement: "[redacted-home-path]",
+            category: .path,
+            options: []
+        ),
+        Rule(
+            // A space is unambiguously part of an unquoted path component when that
+            // component is followed by another slash. Permit any whitespace run in
+            // those directory components, but keep the terminal component bounded by
+            // whitespace so ordinary log prose after the path remains diagnostic.
+            pattern: #"(?:file://)?/Users/[^\s/\"']+(?:/[^/\"'\r\n]+(?=/))*(?:/[^\s/\"']+)?"#,
             replacement: "[redacted-home-path]",
             category: .path,
             options: []
@@ -106,18 +115,25 @@ enum FeedbackEvidenceSanitizer {
     // reasonable heuristic for free-form log/text content, but it also matches an
     // ordinary URL route (e.g. "/issues/123"), so it must NOT be applied when
     // sanitizing a URL path field — use sanitizeURLPath for that instead.
-    private static let genericFilesystemPathRule = Rule(
-        // Widen the segment charset the same way as the /Users/ rule above: allow any
-        // non-whitespace/non-quote/non-slash character, plus a single embedded space,
-        // so a punctuated component (e.g. "/Volumes/Macintosh HD/Client (Secret)")
-        // can't stop the match early and leave the remainder of the path unredacted.
-        pattern: #"(?<![A-Za-z0-9_])(?:/(?:[^\s\"'/]|[ ](?=[^\s\"'/]))+){2,}"#,
+    private static let genericFilesystemFileRule = Rule(
+        pattern: #"(?<![A-Za-z0-9_])(?:/[^/\"'\r\n]+){2,}?\.[A-Za-z0-9]{1,16}(?=$|[\s,;:)\]])"#,
         replacement: "[redacted-path]",
         category: .path,
         options: []
     )
 
-    private static let rules: [Rule] = sharedRules + [genericFilesystemPathRule]
+    private static let genericFilesystemPathRule = Rule(
+        // Require at least one directory component followed by a slash, then a
+        // whitespace-bounded terminal component. This consumes punctuated or
+        // repeated-space directory names without swallowing unrelated prose after the
+        // terminal path component.
+        pattern: #"(?<![A-Za-z0-9_])(?:/[^/\"'\r\n]+(?=/)){1,}(?:/[^\s/\"']+)"#,
+        replacement: "[redacted-path]",
+        category: .path,
+        options: []
+    )
+
+    private static let rules: [Rule] = sharedRules + [genericFilesystemFileRule, genericFilesystemPathRule]
 
     // Rule set for sanitizing a URL path component (e.g. a browser evidence route).
     // Excludes genericFilesystemPathRule, whose local-file path heuristic matches any

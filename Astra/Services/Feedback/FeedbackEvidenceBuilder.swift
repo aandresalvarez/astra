@@ -254,26 +254,62 @@ struct FeedbackEvidenceBuilder {
     }
 
     /// Caps the omission inventory to the V1 manifest's `maximumOmissions` limit before
-    /// it reaches `encodeValidated`. Without this, a caller supplying more candidates
-    /// than the limit (e.g. many screenshots without opt-in) would produce one omission
-    /// per candidate, `encodeValidated(manifest)` would throw on the resulting oversized
-    /// array, and no feedback package would be published at all. Truncating to a bounded
-    /// inventory plus a single coalesced summary entry keeps publication possible.
+    /// it reaches `encodeValidated`. A global prefix cap makes the result depend on
+    /// ingestion order and can erase a later evidence kind entirely. Instead, group by
+    /// kind, assign deterministic per-kind budgets, and use a same-kind summary whenever
+    /// a group exceeds its budget. This preserves every evidence class represented by
+    /// the builder while keeping the contract-bounded inventory deterministic.
     private static func boundedOmissions(
         _ omissions: [FeedbackEvidenceOmissionV1]
     ) -> [FeedbackEvidenceOmissionV1] {
         let limit = FeedbackContractLimitsV1.maximumOmissions
         guard omissions.count > limit else { return omissions }
-        let retainedCount = max(0, limit - 1)
-        let truncatedCount = omissions.count - retainedCount
-        var bounded = Array(omissions.prefix(retainedCount))
-        bounded.append(FeedbackEvidenceOmissionV1(
-            artifactID: "omissions-truncated",
-            kind: FeedbackEvidenceArtifactKindV1(rawValue: "omission_summary"),
-            reason: .oversized,
-            detail: "\(truncatedCount) additional omission entries exceeded the V1 manifest limit and were coalesced."
-        ))
+
+        let grouped = Dictionary(grouping: omissions, by: \.kind)
+        let kinds = grouped.keys.sorted {
+            $0.rawValue.utf8.lexicographicallyPrecedes($1.rawValue.utf8)
+        }
+        // The builder emits only the finite allowlisted evidence kinds, so the number
+        // of represented kinds is necessarily far below the V1 omission-item limit.
+        guard !kinds.isEmpty, kinds.count <= limit else {
+            return Array(omissions.sorted(by: omissionLessThan).prefix(limit))
+        }
+
+        let baseBudget = limit / kinds.count
+        let remainder = limit % kinds.count
+        var bounded: [FeedbackEvidenceOmissionV1] = []
+        for (index, kind) in kinds.enumerated() {
+            let kindBudget = baseBudget + (index < remainder ? 1 : 0)
+            let entries = (grouped[kind] ?? []).sorted(by: omissionLessThan)
+            guard entries.count > kindBudget else {
+                bounded.append(contentsOf: entries)
+                continue
+            }
+
+            let retainedCount = max(0, kindBudget - 1)
+            bounded.append(contentsOf: entries.prefix(retainedCount))
+            let coalescedCount = entries.count - retainedCount
+            bounded.append(FeedbackEvidenceOmissionV1(
+                artifactID: "\(kind.rawValue)-omissions-truncated",
+                kind: kind,
+                reason: .oversized,
+                detail: "\(coalescedCount) additional \(kind.rawValue) omission entries exceeded the per-kind V1 manifest budget and were coalesced."
+            ))
+        }
         return bounded
+    }
+
+    private static func omissionLessThan(
+        _ lhs: FeedbackEvidenceOmissionV1,
+        _ rhs: FeedbackEvidenceOmissionV1
+    ) -> Bool {
+        if lhs.artifactID != rhs.artifactID {
+            return lhs.artifactID.utf8.lexicographicallyPrecedes(rhs.artifactID.utf8)
+        }
+        if lhs.reason.rawValue != rhs.reason.rawValue {
+            return lhs.reason.rawValue.utf8.lexicographicallyPrecedes(rhs.reason.rawValue.utf8)
+        }
+        return (lhs.detail ?? "").utf8.lexicographicallyPrecedes((rhs.detail ?? "").utf8)
     }
 
     /// Rounds a date to the millisecond precision the V1 canonical JSON encoder emits,

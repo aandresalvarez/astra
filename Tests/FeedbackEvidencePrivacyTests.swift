@@ -64,13 +64,46 @@ struct FeedbackEvidencePrivacyTests {
 
     @Test("Punctuated non-home paths are redacted completely, not just their prefix")
     func punctuatedNonHomePathsAreFullyRedacted() {
-        let raw = "See /Volumes/Macintosh HD/Client (Secret)/file.txt for details"
+        let raw = "See /Volumes/Macintosh HD/Client (Secret)/diagnosis  notes.txt for details"
 
         let result = FeedbackEvidenceSanitizer.sanitize(raw, maximumBytes: 4_000)
 
         #expect(!result.text.contains("Secret"))
-        #expect(!result.text.contains("file.txt"))
+        #expect(!result.text.contains("notes.txt"))
+        #expect(result.text.contains("for details"))
         #expect(result.redaction.pathPatterns > 0)
+    }
+
+    @Test("Repeated-space home paths are fully redacted in default log evidence")
+    func repeatedSpaceHomePathsAreFullyRedactedInDefaultLogs() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let privatePath = "/Users/alvaro/Patient  Jane/diagnosis  notes.txt"
+        let message = "opened \(privatePath) then preserved safe context"
+
+        let sanitized = FeedbackEvidenceSanitizer.sanitize(message, maximumBytes: 4_000)
+
+        #expect(sanitized.text == "opened [redacted-home-path] then preserved safe context")
+        #expect(sanitized.redaction.pathPatterns == 1)
+
+        let package = try FeedbackEvidenceBuilder().prepare(
+            input: fixture.input(applicationLogEntries: [
+                LogEntry(
+                    level: .info,
+                    category: "Diagnostics",
+                    message: message,
+                    timestamp: fixture.createdAt
+                )
+            ]),
+            selections: FeedbackEvidenceSelections(),
+            directory: fixture.outputDirectory
+        )
+        let applicationLog = try zipEntry("logs/application-log.jsonl", archive: package.archiveURL)
+
+        #expect(!applicationLog.contains("Patient"))
+        #expect(!applicationLog.contains("Jane"))
+        #expect(!applicationLog.contains("notes.txt"))
+        #expect(applicationLog.contains("then preserved safe context"))
     }
 
     @Test("Browser, screenshot, and crash evidence are excluded by default")
@@ -97,6 +130,52 @@ struct FeedbackEvidencePrivacyTests {
         #expect(try zipEntry("browser/browser-evidence.json", archive: package.archiveURL).isEmpty)
         #expect(try zipEntry("screenshots/browser-001.jpg", archive: package.archiveURL).isEmpty)
         #expect(try zipEntry("diagnostics/macos-diagnostics.json", archive: package.archiveURL).isEmpty)
+    }
+
+    @Test("Heterogeneous omission overflow retains every evidence kind deterministically")
+    func heterogeneousOmissionOverflowRetainsEveryKind() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let crash = try fixture.crashReport(contents: "Process: ASTRA Dev")
+        let screenshots = (0..<FeedbackContractLimitsV1.maximumOmissions).map { index in
+            FeedbackScreenshotCandidate(
+                jpegData: fixture.jpegScreenshot.jpegData,
+                source: String(format: "browser-%03d", index),
+                width: 2,
+                height: 2
+            )
+        }
+
+        let first = try FeedbackEvidenceBuilder().prepare(
+            input: fixture.input(
+                browserRecords: [fixture.browserRecord(outcome: nil)],
+                screenshots: screenshots,
+                crashReports: [crash]
+            ),
+            selections: FeedbackEvidenceSelections(),
+            directory: fixture.root.appendingPathComponent("omissions-first", isDirectory: true)
+        )
+        let second = try FeedbackEvidenceBuilder().prepare(
+            input: fixture.input(
+                browserRecords: [fixture.browserRecord(outcome: nil)],
+                screenshots: Array(screenshots.reversed()),
+                crashReports: [crash]
+            ),
+            selections: FeedbackEvidenceSelections(),
+            directory: fixture.root.appendingPathComponent("omissions-second", isDirectory: true)
+        )
+        let omissionKinds = Set(first.manifest.omissions.map(\.kind))
+
+        #expect(first.manifest.omissions == second.manifest.omissions)
+        #expect(first.manifest.omissions.count <= FeedbackContractLimitsV1.maximumOmissions)
+        #expect(omissionKinds.contains(.browserEvidence))
+        #expect(omissionKinds.contains(.screenshot))
+        #expect(omissionKinds.contains(.macOSDiagnostic))
+        #expect(first.manifest.omissions.contains { omission in
+            omission.kind == .screenshot &&
+                omission.reason == .oversized &&
+                omission.detail?.contains("coalesced") == true
+        })
     }
 
     @Test("Opt-in evidence is structured, allowlisted, and contact-free")
@@ -191,6 +270,46 @@ struct FeedbackEvidencePrivacyTests {
             #expect(FeedbackCanonicalJSONV1.sha256Hex(bytes) == artifact.sha256)
             #expect(Int64(bytes.count) == artifact.byteCount)
         }
+    }
+
+    @Test("Hostile ZIPOPT cannot alter the declared archive layout")
+    func hostileZIPOPTDoesNotAlterArchiveLayout() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        var environment = ProcessInfo.processInfo.environment
+        environment["ZIPOPT"] = "-j"
+        let immutableEnvironment = environment
+
+        let package = try FeedbackEvidenceBuilder(processEnvironment: { immutableEnvironment }).prepare(
+            input: fixture.input(),
+            selections: FeedbackEvidenceSelections(),
+            directory: fixture.outputDirectory
+        )
+
+        let nestedApplicationLog = try zipEntry("logs/application-log.jsonl", archive: package.archiveURL)
+        #expect(!nestedApplicationLog.isEmpty)
+        #expect(try zipEntry("application-log.jsonl", archive: package.archiveURL).isEmpty)
+        try assertAdoptionCompatibleLayout(package)
+    }
+
+    @Test("Submillisecond report timestamps crossing a second boundary remain stable")
+    func submillisecondTimestampBoundaryIsCanonicalized() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let createdAt = Date(timeIntervalSince1970: 1_700_000_000.9996)
+
+        let package = try FeedbackEvidenceBuilder().prepare(
+            input: fixture.input(reportCreatedAt: createdAt),
+            selections: FeedbackEvidenceSelections(),
+            directory: fixture.outputDirectory
+        )
+        let envelope = try FeedbackCanonicalJSONV1.decode(
+            FeedbackReportEnvelopeV1.self,
+            from: Data(contentsOf: package.reportURL)
+        )
+
+        #expect(envelope.payload.createdAt == Date(timeIntervalSince1970: 1_700_000_001))
+        #expect(package.reportCreatedAt == createdAt)
     }
 
     @Test("Browser truncation retains the newest 200 records in canonical order")
@@ -515,6 +634,40 @@ struct FeedbackEvidencePrivacyTests {
         #expect(children.isEmpty)
     }
 
+    @Test("Consent disclosure mismatch fails closed and cleans construction state")
+    func disclosureMismatchCleansConstructionState() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let reportID = fixture.reportID
+        let createdAt = fixture.createdAt
+        let input = fixture.input(makeReportEnvelopeData: { manifest in
+            let bytes = try makeEnvelopeData(reportID: reportID, createdAt: createdAt, manifest: manifest)
+            var envelope = try FeedbackCanonicalJSONV1.decode(FeedbackReportEnvelopeV1.self, from: bytes)
+            let index = try #require(envelope.payload.consent.evidenceSelections.firstIndex {
+                $0.artifactID == "application-log"
+            })
+            envelope.payload.consent.evidenceSelections[index].disclosureClass = .explicitOptIn
+            envelope.payload.consent.evidenceSelections[index].reviewedAt = createdAt
+            envelope.payloadSHA256 = try envelope.payload.canonicalSHA256()
+            envelope.canonicalDigestSHA256 = try envelope.computedCanonicalDigestSHA256()
+            return try envelope.canonicalData()
+        })
+
+        #expect(throws: FeedbackEvidenceBuildError.self) {
+            try FeedbackEvidenceBuilder().prepare(
+                input: input,
+                selections: FeedbackEvidenceSelections(),
+                directory: fixture.outputDirectory
+            )
+        }
+
+        let children = try FileManager.default.contentsOfDirectory(
+            at: fixture.outputDirectory,
+            includingPropertiesForKeys: nil
+        )
+        #expect(children.isEmpty)
+    }
+
     @Test("Construction cleanup never deletes a package it did not publish")
     func existingPackageIsNotDeleted() throws {
         let fixture = try Fixture()
@@ -832,17 +985,19 @@ private final class Fixture {
     }
 
     func input(
+        reportCreatedAt: Date? = nil,
+        applicationLogEntries: [LogEntry]? = nil,
         browserRecords: [FeedbackBrowserEvidenceRecord] = [],
         screenshots: [FeedbackScreenshotCandidate] = [],
         crashReports: [CrashReportSummary] = [],
         makeReportEnvelopeData: (@Sendable (FeedbackEvidenceManifestV1) throws -> Data)? = nil
     ) -> FeedbackEvidenceInput {
         let reportID = reportID
-        let createdAt = createdAt
+        let createdAt = reportCreatedAt ?? createdAt
         return FeedbackEvidenceInput(
             reportID: reportID,
             reportCreatedAt: createdAt,
-            applicationLogEntries: [
+            applicationLogEntries: applicationLogEntries ?? [
                 LogEntry(
                     level: .info,
                     category: "App",
