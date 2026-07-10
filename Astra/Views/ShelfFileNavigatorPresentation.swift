@@ -13,9 +13,12 @@ enum ShelfFileNavigatorLayout: Equatable {
         isPresented: Bool,
         isPinned: Bool,
         availableWidth: CGFloat,
-        minimumDockedWidth: CGFloat = ShelfWidthMetrics.filesMinReadableWidth
+        navigatorWidth: CGFloat = ShelfWidthMetrics.filesNavigatorDefaultWidth
     ) -> ShelfFileNavigatorLayout {
         guard isPresented else { return .hidden }
+        let minimumDockedWidth = navigatorWidth
+            + ShelfWidthMetrics.filesResizeHandleWidth
+            + ShelfWidthMetrics.filesMinimumPreviewWidth
         guard isPinned, availableWidth >= minimumDockedWidth else { return .floating }
         return .docked
     }

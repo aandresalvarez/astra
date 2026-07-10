@@ -290,7 +290,8 @@ struct ShelfMarkdownPanelView: View {
             let layout = ShelfFileNavigatorLayout.resolve(
                 isPresented: isFileNavigatorPresented,
                 isPinned: isFileNavigatorPinned,
-                availableWidth: proxy.size.width
+                availableWidth: proxy.size.width,
+                navigatorWidth: fileNavigatorWidth
             )
 
             switch layout {

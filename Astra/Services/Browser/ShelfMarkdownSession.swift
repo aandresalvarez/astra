@@ -152,7 +152,9 @@ final class ShelfMarkdownSession: ObservableObject {
     }
 
     func bindToTask(_ taskID: UUID?) {
+        guard boundTaskID != taskID else { return }
         boundTaskID = taskID
+        allowsPreferredDocumentAutoLoad = true
     }
 
     func load(_ url: URL) {
