@@ -60,12 +60,7 @@ struct FeedbackReportContractTests {
 
     @Test("language-neutral schema permits additive DTO shape overlap")
     func languageNeutralSchemaPermitsAdditiveDTOShapeOverlap() throws {
-        let schemaURL = repositoryRoot
-            .appendingPathComponent("docs/contracts/feedback/v1/feedback-contract.schema.json")
-        let schemaData = try Data(contentsOf: schemaURL)
-        let schema = try #require(
-            JSONSerialization.jsonObject(with: schemaData) as? [String: Any]
-        )
+        let schema = try contractSchema()
         let rootAlternatives = try #require(schema["anyOf"] as? [[String: Any]])
 
         #expect(schema["oneOf"] == nil)
@@ -76,6 +71,52 @@ struct FeedbackReportContractTests {
         #expect(rootAlternatives.compactMap { $0["$ref"] as? String }.contains(
             "#/$defs/statusReadRequest"
         ))
+    }
+
+    @Test("required string policy matches schema for statements and identity bindings")
+    func requiredStringPolicyMatchesSchema() throws {
+        let schema = try contractSchema()
+        let definitions = try #require(schema["$defs"] as? [String: Any])
+        let identifier = try #require(definitions["identifier"] as? [String: Any])
+        let statement = try #require(definitions["statement"] as? [String: Any])
+        let statementProperties = try #require(statement["properties"] as? [String: Any])
+        let actualResult = try #require(statementProperties["actualResult"] as? [String: Any])
+
+        let identifierMinimum = try #require(identifier["minLength"] as? Int)
+        let statementMinimum = try #require(actualResult["minLength"] as? Int)
+        #expect(identifierMinimum == 1)
+        #expect(statementMinimum == 1)
+        #expect("".unicodeScalars.count < identifierMinimum)
+        #expect(" \t".unicodeScalars.count >= identifierMinimum)
+        #expect("".unicodeScalars.count < statementMinimum)
+        #expect(" \t".unicodeScalars.count >= statementMinimum)
+
+        var payload = samplePayload()
+        payload.statement.actualResult = ""
+        #expect(throws: FeedbackContractError.missingRequiredField(
+            path: "payload.statement.actualResult"
+        )) {
+            try payload.validate()
+        }
+        payload.statement.actualResult = " \t"
+        try payload.validate()
+
+        var envelope = try FeedbackCanonicalJSONV1.decode(
+            FeedbackReportEnvelopeV1.self,
+            from: fixture("request.json")
+        )
+        envelope.installationID = FeedbackInstallationIDV1(rawValue: "")
+        #expect(throws: FeedbackContractError.missingRequiredField(path: "installationID")) {
+            try envelope.validate()
+        }
+        envelope.installationID = FeedbackInstallationIDV1(rawValue: "install-test-001")
+        envelope.idempotencyKey = ""
+        #expect(throws: FeedbackContractError.missingRequiredField(path: "idempotencyKey")) {
+            try envelope.validate()
+        }
+        envelope.installationID = FeedbackInstallationIDV1(rawValue: " \t")
+        envelope.idempotencyKey = " \t"
+        try envelope.validate()
     }
 
     @Test("canonical encoding sorts evidence independently of input order")
@@ -456,6 +497,45 @@ struct FeedbackReportContractTests {
             #"{"end":"1970-01-01T00:00:00.999Z","start":"1970-01-01T00:00:00.000Z"}"#)
     }
 
+    @Test("NFC multi-scalar graphemes use schema code-point length bounds")
+    func multiScalarGraphemesUseSchemaCodePointBounds() throws {
+        let schema = try contractSchema()
+        let definitions = try #require(schema["$defs"] as? [String: Any])
+        let statement = try #require(definitions["statement"] as? [String: Any])
+        let properties = try #require(statement["properties"] as? [String: Any])
+        let actualResult = try #require(properties["actualResult"] as? [String: Any])
+        let schemaMaximum = try #require(actualResult["maxLength"] as? Int)
+        #expect(schemaMaximum == FeedbackContractLimitsV1.userStatementLength)
+
+        let familyEmoji = "👨‍👩‍👧‍👦"
+        #expect(familyEmoji.count == 1)
+        #expect(familyEmoji.unicodeScalars.count == 7)
+        let repeatedCount = schemaMaximum / familyEmoji.unicodeScalars.count
+        let remainder = schemaMaximum % familyEmoji.unicodeScalars.count
+        let exactlyAtMaximum = String(repeating: familyEmoji, count: repeatedCount) +
+            String(repeating: "a", count: remainder)
+        #expect(exactlyAtMaximum.unicodeScalars.count == schemaMaximum)
+        #expect(exactlyAtMaximum.count < schemaMaximum)
+
+        var payload = samplePayload()
+        payload.statement.actualResult = exactlyAtMaximum
+        try payload.validate()
+
+        payload.statement.actualResult += "b"
+        do {
+            try payload.validate()
+            Issue.record("Expected code-point length bound to reject the over-limit value")
+        } catch let error as FeedbackContractError {
+            #expect(error == .exceedsMaximumLength(
+                path: "payload.statement.actualResult",
+                maximum: schemaMaximum,
+                actual: schemaMaximum + 1
+            ))
+        } catch {
+            Issue.record("Expected FeedbackContractError, got \(error)")
+        }
+    }
+
     @Test("SHA-256 implementation matches the standard abc vector")
     func sha256MatchesStandardVector() {
         #expect(
@@ -590,6 +670,15 @@ struct FeedbackReportContractTests {
 
     private var fixtureRoot: URL {
         repositoryRoot.appendingPathComponent("docs/contracts/feedback/v1/fixtures")
+    }
+
+    private func contractSchema() throws -> [String: Any] {
+        let schemaURL = repositoryRoot
+            .appendingPathComponent("docs/contracts/feedback/v1/feedback-contract.schema.json")
+        let schemaData = try Data(contentsOf: schemaURL)
+        return try #require(
+            JSONSerialization.jsonObject(with: schemaData) as? [String: Any]
+        )
     }
 
     private var repositoryRoot: URL {
