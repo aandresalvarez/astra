@@ -156,7 +156,7 @@ struct FeedbackEvidenceBuilder {
             let totalBytes = artifacts.reduce(Int64(0)) { $0 + $1.byteCount }
             let manifest = FeedbackEvidenceManifestV1(
                 artifacts: artifacts,
-                omissions: omissions,
+                omissions: Self.boundedOmissions(omissions),
                 warnings: warnings,
                 redactionPolicyVersion: FeedbackEvidencePolicy.redactionPolicyVersion,
                 totalByteCount: totalBytes,
@@ -183,11 +183,26 @@ struct FeedbackEvidenceBuilder {
             guard reportEnvelope.payload.reportID.uuid == input.reportID else {
                 throw FeedbackEvidenceBuildError.invalidReportEnvelope("report ID mismatch")
             }
-            guard reportEnvelope.payload.createdAt == input.reportCreatedAt else {
+            // The V1 canonical JSON encoder round-trips dates at millisecond precision.
+            // `input.reportCreatedAt` is typically a raw `Date()` with sub-millisecond
+            // precision, so compare against the same precision the envelope was encoded
+            // and decoded at instead of exact equality.
+            guard reportEnvelope.payload.createdAt == Self.canonicalTimestamp(input.reportCreatedAt) else {
                 throw FeedbackEvidenceBuildError.invalidReportEnvelope("stable report timestamp mismatch")
             }
             guard reportEnvelope.payload.evidence.canonicalized() == manifest else {
                 throw FeedbackEvidenceBuildError.invalidReportEnvelope("manifest mismatch")
+            }
+            let selectionsByArtifactID = Dictionary(
+                uniqueKeysWithValues: reportEnvelope.payload.consent.evidenceSelections.map { ($0.artifactID, $0) }
+            )
+            for artifact in manifest.artifacts {
+                guard let selection = selectionsByArtifactID[artifact.artifactID],
+                      selection.disclosureClass == artifact.disclosureClass else {
+                    throw FeedbackEvidenceBuildError.invalidReportEnvelope(
+                        "consent disclosure class mismatch for artifact \(artifact.artifactID)"
+                    )
+                }
             }
             let reportSHA256 = FeedbackCanonicalJSONV1.sha256Hex(reportData)
             let reportURL = stagingPackage.appendingPathComponent(FeedbackEvidencePolicy.reportFileName)
@@ -236,6 +251,78 @@ struct FeedbackEvidenceBuilder {
             )
             throw error
         }
+    }
+
+    /// Caps the omission inventory to the V1 manifest's `maximumOmissions` limit before
+    /// it reaches `encodeValidated`. A global prefix cap makes the result depend on
+    /// ingestion order and can erase a later evidence kind entirely. Instead, group by
+    /// kind, assign deterministic per-kind budgets, and use a same-kind summary whenever
+    /// a group exceeds its budget. This preserves every evidence class represented by
+    /// the builder while keeping the contract-bounded inventory deterministic.
+    private static func boundedOmissions(
+        _ omissions: [FeedbackEvidenceOmissionV1]
+    ) -> [FeedbackEvidenceOmissionV1] {
+        let limit = FeedbackContractLimitsV1.maximumOmissions
+        guard omissions.count > limit else { return omissions }
+
+        let grouped = Dictionary(grouping: omissions, by: \.kind)
+        let kinds = grouped.keys.sorted {
+            $0.rawValue.utf8.lexicographicallyPrecedes($1.rawValue.utf8)
+        }
+        // The builder emits only the finite allowlisted evidence kinds, so the number
+        // of represented kinds is necessarily far below the V1 omission-item limit.
+        guard !kinds.isEmpty, kinds.count <= limit else {
+            return Array(omissions.sorted(by: omissionLessThan).prefix(limit))
+        }
+
+        let baseBudget = limit / kinds.count
+        let remainder = limit % kinds.count
+        var bounded: [FeedbackEvidenceOmissionV1] = []
+        for (index, kind) in kinds.enumerated() {
+            let kindBudget = baseBudget + (index < remainder ? 1 : 0)
+            let entries = (grouped[kind] ?? []).sorted(by: omissionLessThan)
+            guard entries.count > kindBudget else {
+                bounded.append(contentsOf: entries)
+                continue
+            }
+
+            let retainedCount = max(0, kindBudget - 1)
+            bounded.append(contentsOf: entries.prefix(retainedCount))
+            let coalescedCount = entries.count - retainedCount
+            bounded.append(FeedbackEvidenceOmissionV1(
+                artifactID: "\(kind.rawValue)-omissions-truncated",
+                kind: kind,
+                reason: .oversized,
+                detail: "\(coalescedCount) additional \(kind.rawValue) omission entries exceeded the per-kind V1 manifest budget and were coalesced."
+            ))
+        }
+        return bounded
+    }
+
+    private static func omissionLessThan(
+        _ lhs: FeedbackEvidenceOmissionV1,
+        _ rhs: FeedbackEvidenceOmissionV1
+    ) -> Bool {
+        if lhs.artifactID != rhs.artifactID {
+            return lhs.artifactID.utf8.lexicographicallyPrecedes(rhs.artifactID.utf8)
+        }
+        if lhs.reason.rawValue != rhs.reason.rawValue {
+            return lhs.reason.rawValue.utf8.lexicographicallyPrecedes(rhs.reason.rawValue.utf8)
+        }
+        return (lhs.detail ?? "").utf8.lexicographicallyPrecedes((rhs.detail ?? "").utf8)
+    }
+
+    /// Rounds a date to the millisecond precision the V1 canonical JSON encoder emits,
+    /// by round-tripping it through the same ISO-8601-with-fractional-seconds formatting
+    /// the encoder/decoder use. This lets timestamp equality checks compare against what
+    /// the report envelope will actually decode to, instead of the raw sub-millisecond
+    /// `Date()` value callers typically pass in.
+    private static func canonicalTimestamp(_ date: Date) -> Date {
+        let formatter = ISO8601DateFormatter()
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let string = formatter.string(from: date)
+        return formatter.date(from: string) ?? date
     }
 
     private func appendLogArtifact(
@@ -358,14 +445,15 @@ struct FeedbackEvidenceBuilder {
         omissions: inout [FeedbackEvidenceOmissionV1]
     ) throws {
         guard !screenshots.isEmpty else { return }
-        let ordered = screenshots.sorted { lhs, rhs in
-            let leftHash = FeedbackCanonicalJSONV1.sha256Hex(lhs.jpegData)
-            let rightHash = FeedbackCanonicalJSONV1.sha256Hex(rhs.jpegData)
-            if leftHash != rightHash { return leftHash < rightHash }
-            if lhs.width != rhs.width { return lhs.width < rhs.width }
-            if lhs.height != rhs.height { return lhs.height < rhs.height }
-            return lhs.source < rhs.source
-        }
+        // Compute each candidate's digest once before sorting rather than recomputing
+        // it on every comparator invocation (the comparator is called O(n log n) times).
+        let digested = screenshots.map { (screenshot: $0, digest: FeedbackCanonicalJSONV1.sha256Hex($0.jpegData)) }
+        let ordered = digested.sorted { lhs, rhs in
+            if lhs.digest != rhs.digest { return lhs.digest < rhs.digest }
+            if lhs.screenshot.width != rhs.screenshot.width { return lhs.screenshot.width < rhs.screenshot.width }
+            if lhs.screenshot.height != rhs.screenshot.height { return lhs.screenshot.height < rhs.screenshot.height }
+            return lhs.screenshot.source < rhs.screenshot.source
+        }.map(\.screenshot)
         guard selected else {
             for index in ordered.indices {
                 omissions.append(FeedbackEvidenceOmissionV1(
@@ -539,6 +627,10 @@ struct FeedbackEvidenceBuilder {
         process.currentDirectoryURL = contentsDirectory
         process.arguments = ["-X", "-q", archiveURL.path] + relativePaths.sorted()
         var environment = processEnvironment()
+        // ZIPOPT can inject caller-supplied default options (e.g. "-j", which junks
+        // directory names) into every Info-ZIP invocation. Clear it so the archive
+        // layout always matches the manifest's declared nested paths.
+        environment.removeValue(forKey: "ZIPOPT")
         environment["TZ"] = "UTC"
         environment["LC_ALL"] = "C"
         environment["COPYFILE_DISABLE"] = "1"
