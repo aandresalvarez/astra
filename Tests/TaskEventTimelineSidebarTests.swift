@@ -614,16 +614,12 @@ struct SidebarGroupingTests {
         #expect(SidebarThreadRowLayout.showsRestStateGlyph(for: .failed, isUnread: false))
         #expect(!SidebarThreadRowLayout.showsRestStateGlyph(for: .completed, isUnread: false))
         #expect(!SidebarThreadRowLayout.showsRestStateGlyph(for: .cancelled, isUnread: false))
-        #expect(SidebarThreadRowLayout.restingTitleLeadingOffset(
+        // The glyph gutter is always reserved: the title's x-position no
+        // longer depends on status or unread state, so hover/selection
+        // glyph reveals fade in place instead of shoving the title.
+        #expect(SidebarThreadRowLayout.titleLeadingOffset(
             childListPadding: SidebarLeanPresentation.childTaskListLeadingPadding,
-            contentLeadingPadding: SidebarLeanPresentation.childTaskContentLeadingPadding,
-            status: .completed
-        ) == 20)
-        #expect(SidebarThreadRowLayout.restingTitleLeadingOffset(
-            childListPadding: SidebarLeanPresentation.childTaskListLeadingPadding,
-            contentLeadingPadding: SidebarLeanPresentation.childTaskContentLeadingPadding,
-            status: .completed,
-            isUnread: true
+            contentLeadingPadding: SidebarLeanPresentation.childTaskContentLeadingPadding
         ) == 43)
         #expect(SidebarThreadRowLayout.titleFontSize == 14)
     }
