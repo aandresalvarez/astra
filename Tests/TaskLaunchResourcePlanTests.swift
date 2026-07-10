@@ -12,6 +12,19 @@ private func makeTaskLaunchResourcePlanContainer() throws -> ModelContainer {
     return try ModelContainer(for: schema, migrationPlan: ASTRAMigrationPlan.self, configurations: [config])
 }
 
+private final class SandboxApprovalFileManager: FileManager {
+    private let existingPaths: Set<String>
+
+    init(existingPaths: Set<String>) {
+        self.existingPaths = existingPaths
+        super.init()
+    }
+
+    override func fileExists(atPath path: String) -> Bool {
+        existingPaths.contains(path)
+    }
+}
+
 @MainActor
 struct TaskLaunchResourcePlanTests {
     @Test("Resource resolver records user attachments and Git credential grants")
@@ -1084,6 +1097,54 @@ struct TaskLaunchResourcePlanTests {
         )
 
         #expect(!plan.hostPathGrants.contains { $0.source == .sandboxApproval })
+    }
+
+    @Test("Sandbox approval projection honors injected home and file manager")
+    func sandboxApprovalProjectionUsesInjectedPlanningDependencies() throws {
+        let workspaceRoot = try makeTempDir("resource-plan-sandbox-injected-dependencies")
+        defer { try? FileManager.default.removeItem(at: workspaceRoot) }
+        let planningHome = workspaceRoot.appendingPathComponent("planning-home", isDirectory: true)
+        try FileManager.default.createDirectory(at: planningHome, withIntermediateDirectories: true)
+        let approvedPath = workspaceRoot.appendingPathComponent("approved.txt").path
+        let canonicalApprovedPath = try #require(ExecutionSandbox.canonicalize(approvedPath))
+        let fileManager = SandboxApprovalFileManager(existingPaths: [canonicalApprovedPath])
+        let task = AgentTask(
+            title: "Read approved dependency",
+            goal: "Keep approval planning deterministic",
+            workspace: Workspace(name: "Approval", primaryPath: workspaceRoot.path)
+        )
+
+        let eligiblePlan = TaskLaunchResourceResolver.resolve(
+            task: task,
+            runID: UUID(),
+            runtime: .claudeCode,
+            phase: "resume",
+            prompt: "continue",
+            contextText: "",
+            workspacePath: workspaceRoot.path,
+            runtimePermissionGrants: [.sandboxPath(path: approvedPath, access: "read")],
+            homeDirectoryPath: planningHome.path,
+            fileManager: fileManager
+        )
+
+        let approvedGrant = try #require(eligiblePlan.hostPathGrants.first { $0.source == .sandboxApproval })
+        #expect(approvedGrant.exists)
+
+        let privatePath = planningHome.appendingPathComponent("Pictures/private.jpg").path
+        let protectedPlan = TaskLaunchResourceResolver.resolve(
+            task: task,
+            runID: UUID(),
+            runtime: .claudeCode,
+            phase: "resume",
+            prompt: "continue",
+            contextText: "",
+            workspacePath: workspaceRoot.path,
+            runtimePermissionGrants: [.sandboxPath(path: privatePath, access: "read")],
+            homeDirectoryPath: planningHome.path,
+            fileManager: fileManager
+        )
+
+        #expect(!protectedPlan.hostPathGrants.contains { $0.source == .sandboxApproval })
     }
 
     private func makeTempDir(_ name: String) throws -> URL {

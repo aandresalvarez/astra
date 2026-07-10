@@ -594,6 +594,14 @@ struct AgentPolicyTests {
             access: "read",
             toolName: "Read"
         )).isEmpty)
+        #expect(PermissionBroker.approvalGrants(for: .sandboxPath(
+            path: "/tmp/input",
+            access: "write",
+            toolName: "Read"
+        )).isEmpty)
+        #expect(PermissionBroker.sanitizeApprovedGrants([
+            .sandboxPath(path: "/tmp/input", access: "write")
+        ]).isEmpty)
     }
 
     @Test("Broker approval payload uses typed event payload encoding")

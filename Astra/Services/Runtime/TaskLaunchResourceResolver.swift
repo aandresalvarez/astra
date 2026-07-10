@@ -48,7 +48,12 @@ enum TaskLaunchResourceResolver {
             grants: &hostPathGrants,
             diagnostics: &diagnostics
         )
-        appendRuntimePermissionGrants(runtimePermissionGrants, to: &hostPathGrants)
+        appendRuntimePermissionGrants(
+            runtimePermissionGrants,
+            homeDirectoryPath: homeDirectoryPath,
+            fileManager: fileManager,
+            to: &hostPathGrants
+        )
 
         let routesGitHubMetadataThroughHostControl = routesGitHubMetadataThroughHostControl(
             task: task,
@@ -137,6 +142,8 @@ enum TaskLaunchResourceResolver {
 
     private static func appendRuntimePermissionGrants(
         _ grants: [PermissionGrant],
+        homeDirectoryPath: String,
+        fileManager: FileManager,
         to hostPathGrants: inout [RuntimePathGrant]
     ) {
         for grant in grants {
@@ -144,7 +151,8 @@ enum TaskLaunchResourceResolver {
                   access == "read",
                   case .eligible(let canonicalPath, _) = RuntimeSandboxPathGrantPolicy.evaluate(
                     path: path,
-                    operation: .read
+                    operation: .read,
+                    homeDirectory: URL(fileURLWithPath: homeDirectoryPath, isDirectory: true)
                   ) else {
                 continue
             }
@@ -155,7 +163,7 @@ enum TaskLaunchResourceResolver {
                 reason: "User approved this sandbox path for the current run retry.",
                 sensitivity: .normal,
                 lifetime: .run,
-                exists: FileManager.default.fileExists(atPath: canonicalPath)
+                exists: fileManager.fileExists(atPath: canonicalPath)
             ))
         }
     }

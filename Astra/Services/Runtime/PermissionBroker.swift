@@ -520,7 +520,7 @@ enum PermissionBroker {
     }
 
     private static func isSafeSandboxAccess(_ access: String) -> Bool {
-        isSafeBoundedField(access, limit: 64)
+        access == "read"
     }
 
     private static func safeDisplayField(_ value: String?, limit: Int) -> String? {

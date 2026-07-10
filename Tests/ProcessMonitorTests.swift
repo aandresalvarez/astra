@@ -2228,6 +2228,9 @@ struct RuntimePolicyGuardTests {
 
     @Test("Privacy-sensitive sandbox paths remain terminal")
     func privacySensitiveSandboxPathIsNotApprovable() {
+        let privatePhoto = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Pictures/private.jpg")
+            .path
         let monitor = AgentRuntimeWorker.ProcessMonitor(
             tokenBudget: Int.max,
             astraSandboxApplied: true
@@ -2235,7 +2238,7 @@ struct RuntimePolicyGuardTests {
         let shouldKill = monitor.processEvent(
             .toolResult(
                 toolId: "t1",
-                content: "/bin/sh: /Users/alvaro1/Pictures/private.jpg: Operation not permitted"
+                content: "/bin/sh: \(privatePhoto): Operation not permitted"
             ),
             process: nil
         )

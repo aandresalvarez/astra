@@ -20,11 +20,7 @@ enum RuntimeSandboxPathGrantPolicy {
               !ExecutionSandbox.isOverlyBroadRoot(path) else {
             return .denied(reason: "sandbox_path_unbounded")
         }
-        let accessBroker = HostFileAccessBroker(homeDirectory: homeDirectory)
-        guard !accessBroker.shouldSkip(
-            URL(fileURLWithPath: path),
-            intent: .implicitScan(root: nil)
-        ) else {
+        guard !isPrivacyProtected(path, homeDirectory: homeDirectory) else {
             return .denied(reason: "sandbox_path_privacy_protected")
         }
 
@@ -47,5 +43,18 @@ enum RuntimeSandboxPathGrantPolicy {
     private static func isInsideOrEqual(_ path: String, root: String) -> Bool {
         let canonicalRoot = ExecutionSandbox.canonicalize(root) ?? root
         return path == canonicalRoot || path.hasPrefix(canonicalRoot + "/")
+    }
+
+    private static func isPrivacyProtected(_ canonicalPath: String, homeDirectory: URL) -> Bool {
+        let accessBroker = HostFileAccessBroker(homeDirectory: homeDirectory)
+        if accessBroker.shouldSkip(
+            URL(fileURLWithPath: canonicalPath),
+            intent: .implicitScan(root: nil)
+        ) {
+            return true
+        }
+        return PrivacySensitivePathPolicy.protectedDirectoryPaths(homeDirectory: homeDirectory)
+            .compactMap(ExecutionSandbox.canonicalize)
+            .contains { isInsideOrEqual(canonicalPath, root: $0) }
     }
 }
