@@ -114,7 +114,25 @@ enum TaskDeliverableExpectation {
         scanEntryLimit: Int = artifactScanEntryLimit,
         scanDepthLimit: Int = artifactScanDepthLimit
     ) -> Bool {
-        if run.fileChanges.contains(where: { isUserArtifactPath($0.path, task: task) }) {
+        hasRunScopedArtifact(
+            for: task,
+            fileChanges: run.fileChanges,
+            runStartedAt: run.startedAt,
+            runCompletedAt: run.completedAt,
+            scanEntryLimit: scanEntryLimit,
+            scanDepthLimit: scanDepthLimit
+        )
+    }
+
+    static func hasRunScopedArtifact(
+        for task: AgentTask,
+        fileChanges: [StoredFileChange],
+        runStartedAt: Date,
+        runCompletedAt: Date?,
+        scanEntryLimit: Int = artifactScanEntryLimit,
+        scanDepthLimit: Int = artifactScanDepthLimit
+    ) -> Bool {
+        if fileChanges.contains(where: { isUserArtifactPath($0.path, task: task) }) {
             return true
         }
 
@@ -122,8 +140,8 @@ enum TaskDeliverableExpectation {
             for: task,
             entryLimit: scanEntryLimit,
             depthLimit: scanDepthLimit,
-            runStartedAt: run.startedAt,
-            runCompletedAt: run.completedAt
+            runStartedAt: runStartedAt,
+            runCompletedAt: runCompletedAt
         )
     }
 

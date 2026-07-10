@@ -5,6 +5,24 @@ import ASTRACore
 import ASTRAModels
 import ASTRAPersistence
 
+private extension PendingTaskReviewRunSnapshot {
+    init(_ snapshot: TaskRunSnapshot) {
+        self.init(
+            id: snapshot.id,
+            status: snapshot.status,
+            startedAt: snapshot.startedAt,
+            completedAt: snapshot.completedAt,
+            stopReason: snapshot.stopReason
+        )
+    }
+}
+
+private extension PendingTaskReviewEventSnapshot {
+    init(_ snapshot: TaskEventSnapshot) {
+        self.init(runID: snapshot.runID, type: snapshot.type, timestamp: snapshot.timestamp)
+    }
+}
+
 enum TaskComposerPresentation {
     static let usesCompactInputSpacing = true
     static let usesForcedExpandedInputHeight = false
@@ -4179,21 +4197,39 @@ struct TaskMainView: View {
 
     private var pendingTaskReviewState: PendingTaskReviewState {
         guard !hasOpenRuntimePermissionApprovalRequest else { return .none }
-        return PendingTaskReviewPolicy.reviewState(
-            for: task,
-            latestRun: latestRunModel
-        )
+        return PendingTaskReviewPolicy.reviewState(for: pendingTaskReviewSnapshotInput)
     }
 
     private var completedTaskNeedsArtifactAttention: Bool {
         PendingTaskReviewPolicy.completedTaskNeedsArtifactAttention(
-            task: task,
-            latestRun: latestRunModel
+            pendingTaskReviewSnapshotInput
         )
     }
 
-    private var latestRunModel: TaskRun? {
-        task.runs.max(by: { $0.startedAt < $1.startedAt })
+    private var pendingTaskReviewSnapshotInput: PendingTaskReviewSnapshotInput {
+        let snapshot = currentThreadSnapshot
+        let latestRun = snapshot.latestRun
+        let latestRunHasScopedArtifact: Bool
+        if let latestRun {
+            latestRunHasScopedArtifact = TaskDeliverableExpectation.hasRunScopedArtifact(
+                for: task,
+                fileChanges: latestRun.fileChanges,
+                runStartedAt: latestRun.startedAt,
+                runCompletedAt: latestRun.completedAt
+            )
+        } else {
+            latestRunHasScopedArtifact = false
+        }
+
+        return PendingTaskReviewSnapshotInput(
+            taskStatus: task.status,
+            isTaskDone: task.isDone,
+            requiresDeliverableArtifact: TaskDeliverableExpectation.requiresDeliverableArtifact(task),
+            latestRun: latestRun.map(PendingTaskReviewRunSnapshot.init),
+            runs: snapshot.sortedRuns.map(PendingTaskReviewRunSnapshot.init),
+            events: snapshot.sortedEvents.map(PendingTaskReviewEventSnapshot.init),
+            latestRunHasScopedArtifact: latestRunHasScopedArtifact
+        )
     }
 
     private var pendingDecisionTitle: String {

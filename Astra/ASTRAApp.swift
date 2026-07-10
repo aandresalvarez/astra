@@ -236,12 +236,255 @@ final class ASTRAAppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
+private struct StoreStartupBlocker {
+    let title: String
+    let message: String
+}
+
+private final class StoreLeaseHolder: ObservableObject {
+    let lease: PersistentStoreLease?
+
+    init(lease: PersistentStoreLease?) {
+        self.lease = lease
+    }
+}
+
+private struct StoreStartupBlockedView: View {
+    let blocker: StoreStartupBlocker
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Label(blocker.title, systemImage: "externaldrive.badge.exclamationmark")
+                .font(Stanford.heading(24))
+                .foregroundStyle(Stanford.black)
+
+            Text(blocker.message)
+                .font(Stanford.body(15))
+                .foregroundStyle(Stanford.coolGrey)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Text("ASTRA left the persistent store unchanged. Quit the conflicting app or open this store with a compatible ASTRA build, then relaunch.")
+                .font(Stanford.caption(12))
+                .foregroundStyle(Stanford.coolGrey)
+
+            HStack {
+                Spacer()
+                Button("Quit ASTRA") {
+                    NSApplication.shared.terminate(nil)
+                }
+                .buttonStyle(StanfordButtonStyle())
+            }
+        }
+        .padding(32)
+        .frame(maxWidth: 560, alignment: .leading)
+        .background(Stanford.panelBackground)
+    }
+}
+
+private enum AstraStoreStartupCoordinator {
+    struct Result {
+        let modelContainer: ModelContainer
+        let lease: PersistentStoreLease?
+        let blocker: StoreStartupBlocker?
+    }
+
+    static func start(isUITesting: Bool, appInfo: AppBuildInfo) -> Result {
+        guard !isUITesting else {
+            return Result(modelContainer: inMemoryContainer(), lease: nil, blocker: nil)
+        }
+
+        WorkspaceRecoveryService.preparePersistentStoreDirectory()
+        let owner = PersistentStoreLease.OwnerMetadata(
+            channel: appInfo.channelRawValue,
+            version: appInfo.version,
+            build: appInfo.build
+        )
+        let lease: PersistentStoreLease
+        do {
+            lease = try PersistentStoreLease.acquire(
+                at: WorkspaceRecoveryService.storeLeaseURL,
+                owner: owner
+            )
+        } catch PersistentStoreLease.AcquisitionError.alreadyOwned {
+            let recordedOwner = PersistentStoreLease.recordedOwner(at: WorkspaceRecoveryService.storeLeaseURL)
+            let detail: String
+            if let recordedOwner {
+                detail = "The store is already owned by PID \(recordedOwner.processID), \(recordedOwner.executablePath), version \(recordedOwner.version) (\(recordedOwner.build))."
+            } else {
+                detail = "Another ASTRA process already owns this channel's store."
+            }
+            AppLogger.audit(.dataStoreSelected, category: "App", fields: [
+                "result": "blocked_store_lease_held"
+            ], level: .warning)
+            return blocked(title: "ASTRA is already using this store", message: detail)
+        } catch {
+            AppLogger.audit(.dataStoreSelected, category: "App", fields: [
+                "result": "blocked_store_lease_failed",
+                "error_type": String(describing: type(of: error))
+            ], level: .error)
+            return blocked(
+                title: "ASTRA could not secure its store",
+                message: "The persistent-store ownership lease could not be acquired."
+            )
+        }
+
+        let storeURL = WorkspaceRecoveryService.preparePersistentStoreURL()
+        let hasPendingLegacyStoreMigration = WorkspaceRecoveryService.hasPendingLegacyStoreMigration
+        repairLegacyValuesIfNeeded(at: storeURL, build: appInfo.build)
+        let configuration = ModelConfiguration(url: storeURL)
+        do {
+            let container = try makePersistentContainer(configuration: configuration)
+            AppLogger.audit(.dataStoreSelected, category: "App", fields: [
+                "result": "model_container_created",
+                "store_generation": WorkspaceRecoveryService.storeGeneration
+            ])
+            WorkspaceRecoveryService.markStoreGenerationEstablished()
+            return Result(modelContainer: container, lease: lease, blocker: nil)
+        } catch {
+            return recoverOrBlock(
+                from: error,
+                sourceStoreURL: storeURL,
+                lease: lease,
+                canRecoverLegacyMigration: hasPendingLegacyStoreMigration
+            )
+        }
+    }
+
+    private static func repairLegacyValuesIfNeeded(at storeURL: URL, build: String) {
+        guard UserDefaults.standard.string(forKey: AppStorageKeys.completedLegacyStoreRepairBuild) != build else {
+            return
+        }
+        WorkspaceRecoveryService.repairLegacyStoreValues(at: storeURL)
+        UserDefaults.standard.set(build, forKey: AppStorageKeys.completedLegacyStoreRepairBuild)
+    }
+
+    private static func recoverOrBlock(
+        from error: Error,
+        sourceStoreURL: URL,
+        lease: PersistentStoreLease,
+        canRecoverLegacyMigration: Bool
+    ) -> Result {
+        let decision = PersistentStoreOpenFailurePolicy.decision(for: error)
+        AppLogger.audit(.dataStoreRecovered, category: "App", fields: [
+            "stage": "model_container_failed",
+            "decision": String(describing: decision),
+            "error_type": String(describing: type(of: error))
+        ], level: .warning)
+
+        if canRecoverLegacyMigration {
+            AppLogger.audit(.dataStoreRecovered, category: "App", fields: [
+                "result": "legacy_store_recovered_from_workspace_mirrors",
+                "open_decision": String(describing: decision),
+                "store_generation": WorkspaceRecoveryService.storeGeneration
+            ], level: .warning)
+            return createFreshRecoveryStore(lease: lease)
+        }
+
+        guard decision == .verifiedCorruption else {
+            let blocker: StoreStartupBlocker
+            switch decision {
+            case .incompatibleNewerSchema:
+                blocker = StoreStartupBlocker(
+                    title: "This ASTRA build is older than the store",
+                    message: "The store uses a newer schema. ASTRA did not modify it. Open the store with the newer build instead."
+                )
+            case .transientContention:
+                blocker = StoreStartupBlocker(
+                    title: "The ASTRA store is temporarily unavailable",
+                    message: "SQLite reported contention while opening the store. Wait for the other operation to finish, then relaunch."
+                )
+            case .blockedUnknown, .verifiedCorruption:
+                blocker = StoreStartupBlocker(
+                    title: "ASTRA could not safely open its store",
+                    message: "The failure was not proven to be recoverable, so ASTRA left the store unchanged."
+                )
+            }
+            return Result(modelContainer: inMemoryContainer(), lease: lease, blocker: blocker)
+        }
+
+        do {
+            _ = try WorkspaceRecoveryService.copyStoreBackup(at: sourceStoreURL, label: "verified-corruption")
+            return createFreshRecoveryStore(lease: lease)
+        } catch {
+            AppLogger.audit(.dataStoreRecovered, category: "App", fields: [
+                "stage": "recovery_store_failed",
+                "error_type": String(describing: type(of: error))
+            ], level: .error)
+            return Result(
+                modelContainer: inMemoryContainer(),
+                lease: lease,
+                blocker: StoreStartupBlocker(
+                    title: "ASTRA could not recover its store",
+                    message: "The original store was left in place. Review the preserved backup before trying recovery again."
+                )
+            )
+        }
+    }
+
+    private static func createFreshRecoveryStore(lease: PersistentStoreLease) -> Result {
+        do {
+            let recoveryStoreURL = try WorkspaceRecoveryService.makeRecoveryStoreURL()
+            let recoveryContainer = try makePersistentContainer(
+                configuration: ModelConfiguration(url: recoveryStoreURL)
+            )
+            guard WorkspaceRecoveryService.sqliteIntegrityIsValid(at: recoveryStoreURL) else {
+                throw CocoaError(.fileReadCorruptFile)
+            }
+            try WorkspaceRecoveryService.activateRecoveryStore(at: recoveryStoreURL)
+            AppLogger.audit(.dataStoreRecovered, category: "App", fields: [
+                "result": "recovery_store_created",
+                "store_generation": WorkspaceRecoveryService.storeGeneration
+            ])
+            return Result(modelContainer: recoveryContainer, lease: lease, blocker: nil)
+        } catch {
+            AppLogger.audit(.dataStoreRecovered, category: "App", fields: [
+                "stage": "recovery_store_failed",
+                "error_type": String(describing: type(of: error))
+            ], level: .error)
+            return Result(
+                modelContainer: inMemoryContainer(),
+                lease: lease,
+                blocker: StoreStartupBlocker(
+                    title: "ASTRA could not recover its store",
+                    message: "The original store was left in place. Review the preserved backup before trying recovery again."
+                )
+            )
+        }
+    }
+
+    private static func makePersistentContainer(configuration: ModelConfiguration) throws -> ModelContainer {
+        try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [configuration]
+        )
+    }
+
+    private static func inMemoryContainer() -> ModelContainer {
+        do {
+            return try ModelContainer(for: ASTRASchema.current, configurations: [ModelConfiguration(isStoredInMemoryOnly: true)])
+        } catch {
+            fatalError("Could not create ASTRA's in-memory blocked-startup container: \(error)")
+        }
+    }
+
+    private static func blocked(title: String, message: String) -> Result {
+        Result(
+            modelContainer: inMemoryContainer(),
+            lease: nil,
+            blocker: StoreStartupBlocker(title: title, message: message)
+        )
+    }
+}
+
 public struct ASTRAApp: App {
     public let modelContainer: ModelContainer
     @NSApplicationDelegateAdaptor(ASTRAAppDelegate.self) private var appDelegate
+    @StateObject private var storeLeaseHolder: StoreLeaseHolder
     @StateObject private var appUpdateController = AppUpdateController()
     @StateObject private var appSettings = AppSettingsSnapshotStore()
     @State private var runtime = AppRuntimeController()
+    private let startupBlocker: StoreStartupBlocker?
 
     public init() {
         // Must run before any code constructs a WorkspaceExecutionEnvironment
@@ -274,10 +517,8 @@ public struct ASTRAApp: App {
         let resourceBundle = AstraResourceBundle.current
         StanfordFontRegistrar.registerBundledFonts(bundle: resourceBundle)
 
-        let schema = ASTRASchema.current
         BundledToolInstaller.installBundledTools(bundle: resourceBundle)
 
-        // UI tests need a clean database each run
         let isUITesting = ProcessInfo.processInfo.arguments.contains(where: { $0.hasPrefix("--uitesting") })
         let skipWorkspaceRecovery = ProcessInfo.processInfo.arguments.contains("--skip-workspace-recovery") ||
             ["1", "true", "yes"].contains(
@@ -285,119 +526,32 @@ public struct ASTRAApp: App {
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                     .lowercased()
             )
-        let persistentStoreURL = isUITesting ? nil : WorkspaceRecoveryService.preparePersistentStoreURL()
-        if let persistentStoreURL, !isUITesting {
-            // The legacy enum repair is idempotent and only matters once per
-            // build (it backfills stale enum raw values written by older
-            // schemas). Gate it on the build number so we don't open a 2nd
-            // SQLite connection and run ~7 full-table UPDATE scans on every
-            // launch. Re-runs once after each app update — mirrors the
-            // one-time Skill migration gate. AppBuildInfo.current.build only
-            // reads Bundle.main.infoDictionary and UserDefaults is already
-            // safe here, so this is fine before ModelContainer creation.
-            let currentBuild = AppBuildInfo.current.build
-            if UserDefaults.standard.string(forKey: AppStorageKeys.completedLegacyStoreRepairBuild) != currentBuild {
-                WorkspaceRecoveryService.repairLegacyStoreValues(at: persistentStoreURL)
-                UserDefaults.standard.set(currentBuild, forKey: AppStorageKeys.completedLegacyStoreRepairBuild)
-            }
-        }
-        let config = persistentStoreURL.map { ModelConfiguration(url: $0) }
-            ?? ModelConfiguration(isStoredInMemoryOnly: true)
-        // Telemetry only — nobody awaits it, and its default `crashReports`
-        // argument scans the system crash-report directories. Run it off the
-        // launch critical path so that I/O doesn't delay the first frame.
+        let startup = AstraStoreStartupCoordinator.start(isUITesting: isUITesting, appInfo: appInfo)
+        modelContainer = startup.modelContainer
+        startupBlocker = startup.blocker
+        _storeLeaseHolder = StateObject(wrappedValue: StoreLeaseHolder(lease: startup.lease))
+
         Task.detached(priority: .utility) {
             StartupDiagnosticsService.record(
-                stage: "pre_model_container",
+                stage: startup.blocker == nil ? "model_container_ready" : "model_container_blocked",
                 isUITesting: isUITesting,
                 skipWorkspaceRecovery: skipWorkspaceRecovery,
-                persistentStoreURL: persistentStoreURL
+                persistentStoreURL: isUITesting ? nil : WorkspaceRecoveryService.existingPersistentStoreURL(),
+                modelContainerResult: startup.blocker == nil ? "created" : "blocked"
             )
         }
         if isUITesting {
             AppLogger.audit(.dataStoreSelected, category: "App", fields: ["mode": "ui-testing"])
-        } else if let persistentStoreURL {
+        } else if let persistentStoreURL = WorkspaceRecoveryService.existingPersistentStoreURL() {
             AppLogger.audit(.dataStoreSelected, category: "App", fields: [
                 "mode": "persistent",
-                "store": persistentStoreURL.lastPathComponent
+                "store": persistentStoreURL.lastPathComponent,
+                "store_generation": WorkspaceRecoveryService.storeGeneration
             ])
         }
-        do {
-            modelContainer = try ModelContainer(
-                for: schema,
-                migrationPlan: ASTRAMigrationPlan.self,
-                configurations: [config]
-            )
-            AppLogger.audit(.dataStoreSelected, category: "App", fields: [
-                "result": "model_container_created"
-            ])
-            Task.detached(priority: .utility) {
-                StartupDiagnosticsService.record(
-                    stage: "model_container_ready",
-                    isUITesting: isUITesting,
-                    skipWorkspaceRecovery: skipWorkspaceRecovery,
-                    persistentStoreURL: persistentStoreURL,
-                    modelContainerResult: "created"
-                )
-            }
-            // Keychain credential migration is scheduled immediately after the
-            // model container is ready, independent of view lifecycle. Other
-            // post-container chores (workspace recovery, capability sync +
-            // definition repair, one-time Skill migrations, orphaned-run
-            // recovery) are deferred to runDeferredStartupWork(), invoked from
-            // ContentView after the first frame, so none of that DB/JSON/FS
-            // work blocks launch. See runDeferredStartupWork below.
-        } catch {
-            AppLogger.audit(.dataStoreRecovered, category: "App", fields: [
-                "stage": "model_container_failed",
-                "error_type": String(describing: type(of: error))
-            ], level: .warning)
-            StartupDiagnosticsService.record(
-                stage: "model_container_failed",
-                isUITesting: isUITesting,
-                skipWorkspaceRecovery: skipWorkspaceRecovery,
-                persistentStoreURL: persistentStoreURL,
-                modelContainerResult: "initial_failed",
-                level: .warning
-            )
-            WorkspaceRecoveryService.exportReadableWorkspacesBeforeStoreReset(at: config.url)
-            WorkspaceRecoveryService.backupStore(at: config.url)
-            do {
-                modelContainer = try ModelContainer(
-                    for: schema,
-                    migrationPlan: ASTRAMigrationPlan.self,
-                    configurations: [config]
-                )
-                AppLogger.audit(.dataStoreRecovered, category: "App", fields: [
-                    "result": "model_container_recreated"
-                ])
-                StartupDiagnosticsService.record(
-                    stage: "model_container_recovered",
-                    isUITesting: isUITesting,
-                    skipWorkspaceRecovery: skipWorkspaceRecovery,
-                    persistentStoreURL: persistentStoreURL,
-                    modelContainerResult: "recreated"
-                )
-                // Keychain credential migration is scheduled below; other
-                // post-container chores are deferred to runDeferredStartupWork()
-                // (invoked from ContentView after first frame). See above.
-            } catch {
-                AppLogger.audit(.dataStoreRecovered, category: "App", fields: [
-                    "stage": "model_container_reset_failed",
-                    "error_type": String(describing: type(of: error))
-                ], level: .error)
-                StartupDiagnosticsService.record(
-                    stage: "model_container_reset_failed",
-                    isUITesting: isUITesting,
-                    skipWorkspaceRecovery: skipWorkspaceRecovery,
-                    persistentStoreURL: persistentStoreURL,
-                    modelContainerResult: "reset_failed",
-                    level: .error
-                )
-                fatalError("Failed to create ModelContainer: \(error)")
-            }
+        if startupBlocker == nil {
+            StartupCredentialMigrationService.schedule(modelContainer: modelContainer)
         }
-        StartupCredentialMigrationService.schedule(modelContainer: modelContainer)
     }
 
     /// Guards `runDeferredStartupWork` so post-launch chores run once per
@@ -544,15 +698,19 @@ public struct ASTRAApp: App {
 
     public var body: some Scene {
         WindowGroup(AppChannel.current.displayName) {
-            ContentView(appUpdateController: appUpdateController, runtime: runtime)
-                .frame(minWidth: AppWindowLayout.mainMinimumWidth, minHeight: AppWindowLayout.mainMinimumHeight)
-                .environmentObject(appSettings)
-                .tint(Stanford.interactive)
-                .preferredColorScheme(resolvedAppearance.colorScheme)
-                .onOpenURL { url in
-                    guard let route = AstraExternalRouteCodec.route(from: url) else { return }
-                    AstraExternalRouteStore.shared.submit(route)
-                }
+            if let startupBlocker {
+                StoreStartupBlockedView(blocker: startupBlocker)
+            } else {
+                ContentView(appUpdateController: appUpdateController, runtime: runtime)
+                    .frame(minWidth: AppWindowLayout.mainMinimumWidth, minHeight: AppWindowLayout.mainMinimumHeight)
+                    .environmentObject(appSettings)
+                    .tint(Stanford.interactive)
+                    .preferredColorScheme(resolvedAppearance.colorScheme)
+                    .onOpenURL { url in
+                        guard let route = AstraExternalRouteCodec.route(from: url) else { return }
+                        AstraExternalRouteStore.shared.submit(route)
+                    }
+            }
         }
         .modelContainer(modelContainer)
         .defaultSize(width: AppWindowLayout.mainDefaultWidth, height: AppWindowLayout.mainDefaultHeight)
