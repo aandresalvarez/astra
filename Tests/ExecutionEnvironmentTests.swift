@@ -8,6 +8,62 @@ import ASTRACore
 
 @Suite("Execution Environments")
 struct ExecutionEnvironmentTests {
+    @Test("Docker mount plan keeps input directories read-only")
+    func dockerMountPlanKeepsInputDirectoriesReadOnly() throws {
+        let root = try makeTempDir("docker-input-mount")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let workspace = (root as NSString).appendingPathComponent("workspace")
+        let additional = (root as NSString).appendingPathComponent("additional")
+        let input = (root as NSString).appendingPathComponent("input")
+        for path in [workspace, additional, input] {
+            try FileManager.default.createDirectory(atPath: path, withIntermediateDirectories: true)
+        }
+        let workspaceModel = Workspace(name: "Docker", primaryPath: workspace, additionalPaths: [additional])
+        let task = AgentTask(title: "Review input", goal: "Read files", workspace: workspaceModel)
+        task.inputs = [input]
+        task.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encode(WorkspaceExecutionEnvironment(
+            id: "image:test",
+            kind: .dockerImage,
+            displayName: "Test",
+            image: "astra/test:latest"
+        ))
+
+        let snapshot = DockerExecutionPlanner.snapshotForRun(task: task, currentDirectory: workspace)
+        let additionalMount = try #require(snapshot.mounts.first { $0.hostPath == additional })
+        let inputMount = try #require(snapshot.mounts.first { $0.hostPath == input })
+
+        #expect(additionalMount.access == .readWrite)
+        #expect(inputMount.access == .readOnly)
+    }
+
+    @Test("Docker mount plan also mounts a single attached file as a read-only input")
+    func dockerMountPlanMountsAttachedFileReadOnly() throws {
+        let root = try makeTempDir("docker-file-input-mount")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let workspace = (root as NSString).appendingPathComponent("workspace")
+        let inputFile = (root as NSString).appendingPathComponent("attached.pdf")
+        try FileManager.default.createDirectory(atPath: workspace, withIntermediateDirectories: true)
+        try Data("pdf".utf8).write(to: URL(fileURLWithPath: inputFile))
+
+        let workspaceModel = Workspace(name: "Docker", primaryPath: workspace)
+        let task = AgentTask(title: "Review attached file", goal: "Read the attached PDF", workspace: workspaceModel)
+        task.inputs = [inputFile]
+        task.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encode(WorkspaceExecutionEnvironment(
+            id: "image:test",
+            kind: .dockerImage,
+            displayName: "Test",
+            image: "astra/test:latest"
+        ))
+
+        // A single file input (e.g. an attached PDF/config outside the
+        // workspace) must be mounted too, not just directories - otherwise a
+        // containerized task that reads an attached file sees the host path
+        // in its context with no corresponding container mount.
+        let snapshot = DockerExecutionPlanner.snapshotForRun(task: task, currentDirectory: workspace)
+        let inputMount = try #require(snapshot.mounts.first { $0.hostPath == inputFile })
+        #expect(inputMount.access == .readOnly)
+    }
+
     @Test("Docker discovery is inert for Dockerfile, compose, and devcontainer markers")
     func dockerDiscoveryClassifiesMarkers() throws {
         let root = try makeTempDir("docker-discovery")

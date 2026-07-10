@@ -61,7 +61,6 @@ struct TaskCapabilityResolverTests {
         #expect(snapshot.providerLaunch.prunedForBrowserTask)
         #expect(!snapshot.providerLaunch.behaviorSkills.map(\.name).contains("GitHub Agent"))
         #expect(!snapshot.providerLaunch.localTools.contains { $0.command == "gh" })
-
         workspace.enabledCapabilityIDs = []
         task.goal = "Use GitHub to list PRs"
         try context.save()

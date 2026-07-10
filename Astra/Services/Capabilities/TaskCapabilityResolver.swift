@@ -36,20 +36,24 @@ struct TaskCapabilityResolutionSnapshot {
     let fullInventory: TaskCapabilityPromptScope
     let providerLaunch: TaskCapabilityPromptScope
     let providerLaunchContextText: String
+    let connectorCredentialExposurePolicy: ConnectorRuntimeProjection.CredentialExposurePolicy
 
     static func capture(
         for task: AgentTask,
         providerLaunchContextText: String,
-        additionalCredentialGrants: [PermissionGrant] = []
+        additionalCredentialGrants: [PermissionGrant] = [],
+        exposeAllConnectorCredentials: Bool = false
     ) -> TaskCapabilityResolutionSnapshot {
         let resolver = TaskCapabilityResolver(
             task: task,
-            additionalCredentialGrants: additionalCredentialGrants
+            additionalCredentialGrants: additionalCredentialGrants,
+            exposeAllConnectorCredentials: exposeAllConnectorCredentials
         )
         return TaskCapabilityResolutionSnapshot(
             fullInventory: resolver.resolvedScope(.fullInventory),
             providerLaunch: resolver.resolvedScope(.providerLaunch(contextText: providerLaunchContextText)),
-            providerLaunchContextText: providerLaunchContextText
+            providerLaunchContextText: providerLaunchContextText,
+            connectorCredentialExposurePolicy: resolver.connectorCredentialExposurePolicy
         )
     }
 
@@ -66,10 +70,16 @@ struct TaskCapabilityResolutionSnapshot {
 struct TaskCapabilityResolver {
     private let task: AgentTask
     private let additionalCredentialGrants: [PermissionGrant]
+    private let exposeAllConnectorCredentials: Bool
 
-    init(task: AgentTask, additionalCredentialGrants: [PermissionGrant] = []) {
+    init(
+        task: AgentTask,
+        additionalCredentialGrants: [PermissionGrant] = [],
+        exposeAllConnectorCredentials: Bool = false
+    ) {
         self.task = task
         self.additionalCredentialGrants = additionalCredentialGrants
+        self.exposeAllConnectorCredentials = exposeAllConnectorCredentials
     }
 
     var resolver: SkillResolver {
@@ -97,7 +107,7 @@ struct TaskCapabilityResolver {
 
         let connEnvVars = ConnectorRuntimeProjection(
             connectors: liveConnectors,
-            credentialExposurePolicy: credentialExposurePolicy()
+            credentialExposurePolicy: connectorCredentialExposurePolicy
         )
             .environmentVariables()
 
@@ -470,8 +480,11 @@ struct TaskCapabilityResolver {
         }
     }
 
-    private func credentialExposurePolicy() -> ConnectorRuntimeProjection.CredentialExposurePolicy {
-        ConnectorRuntimeProjection.CredentialExposurePolicy.approvedLabels(
+    var connectorCredentialExposurePolicy: ConnectorRuntimeProjection.CredentialExposurePolicy {
+        if exposeAllConnectorCredentials {
+            return .allowAllCredentials
+        }
+        return ConnectorRuntimeProjection.CredentialExposurePolicy.approvedLabels(
             Set(TaskRuntimePermissionGrants.approvedCredentialLabels(
                 for: task,
                 additionalGrants: additionalCredentialGrants
@@ -565,7 +578,7 @@ struct TaskCapabilityResolver {
 
         let connectorEnvVars = ConnectorRuntimeProjection(
             connectors: connectors,
-            credentialExposurePolicy: credentialExposurePolicy()
+            credentialExposurePolicy: connectorCredentialExposurePolicy
         )
             .environmentVariables()
 

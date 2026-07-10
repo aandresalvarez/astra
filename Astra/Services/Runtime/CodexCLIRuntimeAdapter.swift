@@ -2,6 +2,7 @@ import Foundation
 import SwiftData
 import ASTRACore
 import ASTRAModels
+import ASTRAPersistence
 
 struct CodexCLIRuntimeAdapterProvider: AgentRuntimeAdapterProvider {
     let providerID = "codex-cli"
@@ -188,6 +189,7 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
     func makeProcessLaunchPlan(context: AgentRuntimeProcessLaunchContext) -> AgentRuntimeProcessLaunchPlan {
         let taskEnv = AgentRuntimeProcessRunner.scopedEnvironmentVariables(
             for: context.task,
+            capabilityScope: context.capabilityResolutionSnapshot.providerLaunch,
             contextText: context.contextText,
             executionPolicy: context.executionPolicy
         )
@@ -201,7 +203,10 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
         let providerVersion = CodexCLIRuntime.versionSummary(executablePath: executable)
         let model = AgentRuntimeProcessRunner.model(context.taskSnapshot.model, for: id)
         let providerModel = CodexCLIRuntime.resolvedModelName(model)
-        let additionalPaths = AgentRuntimeProcessRunner.runtimeAdditionalPaths(for: context.task)
+        // Codex defines `--add-dir` as an additional writable root. Keep
+        // read-only task inputs out of this list; the process runner fails
+        // closed when a host-mode Codex launch cannot project them safely.
+        let additionalPaths = AgentRuntimeProcessRunner.runtimeWritablePaths(for: context.task)
         let resumingNativeSession = !(context.nativeContinuationSessionID ?? "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .isEmpty

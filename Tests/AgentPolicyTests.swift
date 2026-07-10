@@ -533,6 +533,77 @@ struct AgentPolicyTests {
         #expect(Set(executionPolicy.permissionGrantsOverride ?? []) == Set(structuredGrants))
     }
 
+    @Test("Sandbox path approvals round-trip as local one-run grants")
+    func sandboxPathApprovalsRoundTripAsLocalOneRunGrants() throws {
+        let request = PermissionRequest.sandboxPath(
+            path: "  /Users/example/Documents/report.csv  ",
+            access: "  read  ",
+            toolName: "Read"
+        )
+        let payload = PermissionBroker.approvalPayload(
+            providerID: .claudeCode,
+            request: request,
+            reason: "The path is outside the run's current sandbox.",
+            grants: [
+                .providerTool(name: "Write"),
+                .filePath(path: "/Users/example/Documents/report.csv", access: "write")
+            ]
+        )
+        let encoded = try #require(payload.encodedString())
+        let decoded = try #require(PermissionApprovalEventPayload.decoded(from: encoded))
+        let expectedGrant = PermissionGrant.sandboxPath(
+            path: "/Users/example/Documents/report.csv",
+            access: "read"
+        )
+
+        #expect(decoded.request == request)
+        #expect(decoded.grants == [expectedGrant])
+        #expect(PermissionBroker.structuredApprovalGrants(from: encoded) == [expectedGrant])
+        #expect(decoded.displayMessage.contains("local path inside the sandbox"))
+        #expect(decoded.displayMessage.contains("read access"))
+
+        let presentation = RuntimePermissionDecisionPresentation(payload: encoded)
+        #expect(presentation.title == "Local sandbox path access needs permission")
+        #expect(presentation.summary.contains("inside the local sandbox"))
+        #expect(presentation.summary.contains("provider write") == false)
+    }
+
+    @Test("Sandbox path grants never become provider or task-scoped grants")
+    func sandboxPathGrantsRemainOneRunLocalOnly() {
+        let grant = PermissionGrant.sandboxPath(path: "/tmp/local-input", access: "read")
+
+        #expect(PermissionBroker.providerGrantStrings(for: [grant], runtime: .claudeCode).isEmpty)
+        #expect(PermissionBroker.providerRuntimeGrantStrings(for: [grant], runtime: .claudeCode).isEmpty)
+        #expect(PermissionBroker.taskScopedApprovalGrants(for: [grant]).isEmpty)
+    }
+
+    @Test("Broker rejects unbounded or unsafe sandbox path fields")
+    func brokerRejectsUnsafeSandboxPathFields() {
+        #expect(PermissionBroker.approvalGrants(for: .sandboxPath(
+            path: "/tmp/\ninjected",
+            access: "read",
+            toolName: "Read"
+        )).isEmpty)
+        #expect(PermissionBroker.approvalGrants(for: .sandboxPath(
+            path: "/tmp/input",
+            access: String(repeating: "r", count: 65),
+            toolName: "Read"
+        )).isEmpty)
+        #expect(PermissionBroker.approvalGrants(for: .sandboxPath(
+            path: String(repeating: "p", count: 4_097),
+            access: "read",
+            toolName: "Read"
+        )).isEmpty)
+        #expect(PermissionBroker.approvalGrants(for: .sandboxPath(
+            path: "/tmp/input",
+            access: "write",
+            toolName: "Read"
+        )).isEmpty)
+        #expect(PermissionBroker.sanitizeApprovedGrants([
+            .sandboxPath(path: "/tmp/input", access: "write")
+        ]).isEmpty)
+    }
+
     @Test("Broker approval payload uses typed event payload encoding")
     func brokerApprovalPayloadUsesTypedEventPayloadEncoding() throws {
         let request = PermissionRequest.shell(
@@ -1394,16 +1465,11 @@ struct RunPermissionManifestTests {
         #expect(!manifest.providerRender.enforcementTiers.contains(.osSandboxed))
     }
 
-    @Test("Autonomous override floors a disabled sandbox to strict (OS sandbox tier present)")
-    func preflightManifestTierFloorsDisabledEnforcementUnderAutonomousOverride() throws {
-        // The stored sandbox setting is OFF, but an execution-policy override
-        // escalates the permission policy to autonomous. Autonomous always runs
-        // under a kernel floor (see `ExecutionSandboxSettings.current`), so the
-        // disabled setting is overridden to strict and the manifest DOES declare
-        // the "OS Sandboxed" tier. This exercises the override path
-        // (`manifestExecutionPolicy.permissionPolicyOverride ?? permissionPolicy`)
-        // and pins that the broadest-permission mode is never left unconfined by a
-        // user-set Off.
+    @Test("Autonomous override honors a disabled sandbox")
+    func preflightManifestTierHonorsDisabledEnforcementUnderAutonomousOverride() throws {
+        // Provider permission mode and OS sandbox enforcement are independent.
+        // The execution-policy override may select Auto, but an explicit Off
+        // remains Off and the manifest must not claim an OS sandbox tier.
         //
         // Isolated suite — see `preflightManifestDeclaresOSSandboxTier` above
         // for why this can't mutate `.standard`.
@@ -1439,7 +1505,51 @@ struct RunPermissionManifestTests {
             sandboxSettingsDefaults: defaults,
             modelContext: context
         )
-        #expect(manifest.providerRender.enforcementTiers.contains(.osSandboxed))
+        #expect(!manifest.providerRender.enforcementTiers.contains(.osSandboxed))
+    }
+
+    @Test("Preflight manifest sandbox tier follows task-selected Auto render")
+    func preflightManifestTierFollowsTaskSelectedAutoRender() throws {
+        // The worker may pass a restricted fallback policy while the task itself
+        // has a persisted Auto selection. The provider render is what launch
+        // uses, so the OS-sandbox tier must follow that rendered autonomous mode
+        // instead of the stale fallback argument.
+        let suiteName = "astra-agent-policy-sandbox-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set(ExecutionSandboxEnforcement.off.rawValue, forKey: AppStorageKeys.sandboxEnforcement)
+
+        let container = try makeAgentPolicyContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Task Auto Tier", primaryPath: "/tmp/task-auto-tier-workspace")
+        let task = AgentTask(title: "Claude", goal: "Do work", workspace: workspace)
+        let run = TaskRun(task: task)
+        context.insert(workspace)
+        context.insert(task)
+        context.insert(run)
+        TaskPolicyStore.recordSelection(level: .autonomous, task: task, modelContext: context, source: "test")
+
+        let manifest = AgentPolicyManifestService.recordPreflightManifest(
+            task: task,
+            run: run,
+            runtime: .claudeCode,
+            model: "claude-sonnet-4-6",
+            workspacePath: workspace.primaryPath,
+            phase: "test",
+            permissionPolicy: .restricted,
+            executionPolicy: .default,
+            defaultPolicyLevelRaw: AgentPolicyLevel.review.rawValue,
+            sandboxSettingsDefaults: defaults,
+            modelContext: context
+        )
+
+        #expect(manifest.policyLevel == .autonomous)
+        #expect(manifest.providerRender.permissionMode == .autonomous)
+        #expect(!manifest.providerRender.enforcementTiers.contains(.osSandboxed))
+        #expect(manifest.sandboxEvidence?.storedEnforcement == ExecutionSandboxEnforcement.off.rawValue)
+        #expect(manifest.sandboxEvidence?.effectiveEnforcement == ExecutionSandboxEnforcement.off.rawValue)
+        #expect(manifest.sandboxEvidence?.effectiveReadScope == ExecutionSandboxReadScope.open.rawValue)
+        #expect(manifest.sandboxEvidence?.resolutionReason == nil)
     }
 
     @Test("Preflight manifest persists Copilot runtime support tools separately")
@@ -1875,12 +1985,14 @@ struct RunPermissionManifestTests {
         var providerRender = try #require(object["providerRender"] as? [String: Any])
         providerRender.removeValue(forKey: "runtimeSupportTools")
         object["providerRender"] = providerRender
+        object.removeValue(forKey: "additionalReadOnlyPaths")
         let oldData = try JSONSerialization.data(withJSONObject: object)
 
         let decoded = try JSONDecoder().decode(RunPermissionManifest.self, from: oldData)
 
         #expect(decoded.providerRender.runtimeSupportTools.isEmpty)
         #expect(decoded.providerRender.allowedTools == ["read"])
+        #expect(decoded.additionalReadOnlyPaths.isEmpty)
     }
 
     @MainActor

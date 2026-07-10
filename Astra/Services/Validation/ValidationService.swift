@@ -21,9 +21,9 @@ struct ValidationCommandResult: Equatable, Sendable {
 }
 
 protocol ValidationCommandRunning: Sendable {
-    /// `additionalWritablePaths`: a multi-path workspace's `additionalPaths` +
-    /// input directories (the same set the agent path grants via
-    /// `AgentRuntimeProcessRunner.runtimeAdditionalPaths(for:)`) — so a
+    /// `additionalWritablePaths`: a multi-path workspace's writable
+    /// `additionalPaths` (the same set the agent receives via
+    /// `AgentRuntimeProcessRunner.runtimeWritablePaths(for:)`) — so a
     /// validation command that legitimately writes outside the workspace's
     /// primary path (generated fixtures, build output in another workspace
     /// root) isn't denied by the Seatbelt floor's write jail.
@@ -369,7 +369,7 @@ enum ValidationService {
             command: command,
             workingDirectory: workingDirectory,
             environment: validationCommandEnvironment(),
-            additionalWritablePaths: AgentRuntimeProcessRunner.runtimeAdditionalPaths(for: task)
+            additionalWritablePaths: AgentRuntimeProcessRunner.runtimeWritablePaths(for: task)
         )
         let output = [result.stdout, result.stderr].filter { !$0.isEmpty }.joined(separator: "\n")
 
@@ -755,7 +755,7 @@ enum ValidationService {
             command: command,
             workingDirectory: workingDirectory,
             environment: validationCommandEnvironment(),
-            additionalWritablePaths: AgentRuntimeProcessRunner.runtimeAdditionalPaths(for: task)
+            additionalWritablePaths: AgentRuntimeProcessRunner.runtimeWritablePaths(for: task)
         )
         let output = [result.stdout, result.stderr]
             .filter { !$0.isEmpty }

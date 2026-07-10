@@ -898,6 +898,21 @@ struct AgentRuntimeAdapterTests {
         #expect(plan.commandPlannedFields["claude_vertex_adc_readable"] == "true")
     }
 
+    @Test("Codex, Cursor, and OpenCode thread the Auto credential snapshot into env scoping")
+    func selfSandboxingAdaptersThreadAutoCredentialSnapshotIntoEnvScoping() throws {
+        // Without capabilityScope: context.capabilityResolutionSnapshot.providerLaunch,
+        // these adapters recapture a fresh scope with approved-labels-only
+        // access, dropping Auto mode's exposeAllConnectorCredentials decision.
+        let runtimeDirectory = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Astra/Services/Runtime")
+        let snippet = "capabilityScope: context.capabilityResolutionSnapshot.providerLaunch"
+        for name in ["CodexCLIRuntimeAdapter.swift", "CursorCLIRuntimeAdapter.swift", "OpenCodeCLIRuntimeAdapter.swift"] {
+            let source = try String(contentsOf: runtimeDirectory.appendingPathComponent(name), encoding: .utf8)
+            #expect(source.contains(snippet), "\(name) should thread the Auto credential snapshot")
+        }
+    }
+
     @Test("Codex launch does not grant full disk read for SSH workspaces")
     @MainActor
     func codexLaunchDoesNotGrantFullDiskReadForSSHWorkspaces() throws {

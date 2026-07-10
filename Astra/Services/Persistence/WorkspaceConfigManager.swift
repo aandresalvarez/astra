@@ -2466,7 +2466,21 @@ public enum WorkspaceConfigManager {
             config.executionEnvironmentSnapshotJSON,
             preservingHost: true
         )
-        task.runtimePermissionOpenRequestsJSON = config.runtimePermissionOpenRequestsJSON ?? "[]"
+        // A missing `runtimePermissionOpenRequestsJSON` in the config is
+        // ambiguous: export normalizes an explicit "[]" tombstone to nil
+        // (line above, mirrored below), so a genuinely legacy/pre-typed-store
+        // task (which never had typed state at all) is indistinguishable
+        // from one that was deliberately closed. Backfilling "[]" here used
+        // to collapse both into a typed tombstone, which made
+        // `TaskRuntimePermissionOpenRequestStore` skip its legacy
+        // `permission.approval.requested` compatibility fallback and lose a
+        // pendingUser task's resumable approval payload/grants. Leave it nil
+        // instead — `TaskRuntimePermissionOpenRequestStore` already treats
+        // nil as "missing typed state" and falls back to compatibility
+        // events, while a task's *own* requestID-correlated
+        // `permission.request.resolved` events (imported alongside it) still
+        // keep an actually-resolved request closed.
+        task.runtimePermissionOpenRequestsJSON = config.runtimePermissionOpenRequestsJSON
         task.runtimePermissionGrantsJSON = config.runtimePermissionGrantsJSON ?? "[]"
         modelContext.insert(task)
 

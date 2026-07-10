@@ -545,10 +545,16 @@ final class AgentRuntimeWorker {
             sessionMessage: sessionMessage,
             phase: auditPhase
         )
+        let launchPermissionPolicy = effectivePermissionPolicy(
+            for: task,
+            selectedRuntime: selectedRuntime,
+            executionPolicy: executionPolicy
+        )
         let capabilityResolutionSnapshot = TaskCapabilityResolutionSnapshot.capture(
             for: task,
             providerLaunchContextText: providerLaunchContextText,
-            additionalCredentialGrants: executionPolicy.permissionGrantsOverride ?? []
+            additionalCredentialGrants: executionPolicy.permissionGrantsOverride ?? [],
+            exposeAllConnectorCredentials: launchPermissionPolicy == .autonomous
         )
         if let block = appliedRuntime.launchBlock {
             AgentRuntimeCapabilityBlockRecorder.apply(
@@ -599,6 +605,7 @@ final class AgentRuntimeWorker {
             modelContext: modelContext,
             phase: auditPhase,
             contextText: providerLaunchContextText,
+            permissionPolicy: launchPermissionPolicy,
             executionPolicy: executionPolicy,
             capabilityResolutionSnapshot: capabilityResolutionSnapshot,
             runtimeConfiguration: runtimeConfiguration,
@@ -698,7 +705,11 @@ final class AgentRuntimeWorker {
         task.executionEnvironmentSnapshotJSON = executionEnvironmentJSON
         run.executionEnvironmentSnapshotJSON = executionEnvironmentJSON
 
-        let prompt = promptOverride ?? buildPrompt(for: task, executionPolicy: executionPolicy)
+        let prompt = promptOverride ?? buildPrompt(
+            for: task,
+            executionPolicy: executionPolicy,
+            capabilityResolutionSnapshot: capabilityResolutionSnapshot
+        )
         let launchResourcePlan = TaskLaunchResourceResolver.resolve(
             task: task,
             runID: run.id,
@@ -708,7 +719,8 @@ final class AgentRuntimeWorker {
             contextText: providerLaunchContextText,
             workspacePath: executionPath,
             executionEnvironment: executionEnvironment,
-            capabilityResolutionSnapshot: capabilityResolutionSnapshot
+            capabilityResolutionSnapshot: capabilityResolutionSnapshot,
+            runtimePermissionGrants: executionPolicy.permissionGrantsOverride ?? []
         )
         TaskLaunchResourceManifestStore.persist(launchResourcePlan, task: task)
         logContextPromptDiagnostics(for: task, prompt: prompt, phase: auditPhase)
@@ -742,11 +754,7 @@ final class AgentRuntimeWorker {
         let policyRenderer = AgentRuntimeAdapterRegistry.policyRenderer(for: selectedRuntime)
         let providerCapabilities = policyRenderer.policyCapabilities(executablePath: launchSettings.executablePath)
         let runtimeCapabilityProfile = AgentRuntimeCapabilityProfileService.profile(for: selectedRuntime, executablePath: launchSettings.executablePath)
-        let runPermissionPolicy = effectivePermissionPolicy(
-            for: task,
-            selectedRuntime: selectedRuntime,
-            executionPolicy: executionPolicy
-        )
+        let runPermissionPolicy = launchPermissionPolicy
         let manifest = AgentPolicyManifestService.recordPreflightManifest(
             task: task,
             run: run,
@@ -1970,9 +1978,14 @@ final class AgentRuntimeWorker {
     @MainActor
     func buildPrompt(
         for task: AgentTask,
-        executionPolicy: AgentRuntimeExecutionPolicy = .default
+        executionPolicy: AgentRuntimeExecutionPolicy = .default,
+        capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot? = nil
     ) -> String {
-        AgentPromptBuilder.buildPrompt(for: task, executionPolicy: executionPolicy)
+        AgentPromptBuilder.buildPrompt(
+            for: task,
+            executionPolicy: executionPolicy,
+            capabilityResolutionSnapshot: capabilityResolutionSnapshot
+        )
     }
 
     @MainActor
