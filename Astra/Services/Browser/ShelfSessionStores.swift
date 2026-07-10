@@ -142,13 +142,30 @@ final class ShelfBrowserSessionStore: ObservableObject {
 
 @MainActor
 final class ShelfMarkdownSessionStore: ObservableObject {
-    private let sharedSession = ShelfMarkdownSession()
+    private let unscopedSession = ShelfMarkdownSession()
+    private var workspaceSessions: [UUID: ShelfMarkdownSession] = [:]
     private var taskSessions: [UUID: ShelfMarkdownSession] = [:]
 
-    func session(for taskID: UUID?, pinnedToTask: Bool) -> ShelfMarkdownSession {
+    func session(
+        for taskID: UUID?,
+        workspaceID: UUID?,
+        pinnedToTask: Bool
+    ) -> ShelfMarkdownSession {
         guard pinnedToTask, let taskID else {
-            sharedSession.bindToTask(taskID)
-            return sharedSession
+            guard let workspaceID else {
+                unscopedSession.bindToTask(taskID)
+                return unscopedSession
+            }
+
+            if let session = workspaceSessions[workspaceID] {
+                session.bindToTask(taskID)
+                return session
+            }
+
+            let session = ShelfMarkdownSession()
+            session.bindToTask(taskID)
+            workspaceSessions[workspaceID] = session
+            return session
         }
 
         if let session = taskSessions[taskID] {
@@ -167,5 +184,9 @@ final class ShelfMarkdownSessionStore: ObservableObject {
     /// so removing the reference is sufficient.
     func releaseSession(for taskID: UUID) {
         taskSessions.removeValue(forKey: taskID)
+    }
+
+    func releaseSession(forWorkspaceID workspaceID: UUID) {
+        workspaceSessions.removeValue(forKey: workspaceID)
     }
 }
