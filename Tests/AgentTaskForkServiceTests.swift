@@ -274,6 +274,9 @@ struct AgentTaskForkServiceTests {
         run.startedAt = Date(timeIntervalSince1970: 100)
         run.completedAt = Date(timeIntervalSince1970: 110)
         run.output = "Use \(inputPath), but preserve the distinct \(inputPath).bak reference."
+        run.fileChangesJSON = TaskEvent.payloadString([
+            StoredFileChange(path: inputPath, changeType: "Write", content: "checkpoint report")
+        ])
         context.insert(run)
         let attachmentEvent = TaskEvent(
             task: source,
@@ -313,6 +316,7 @@ struct AgentTaskForkServiceTests {
         #expect(forkedRun.output.contains("Use \(copiedInput)"))
         #expect(forkedRun.output.contains("\(inputPath).bak"))
         #expect(!forkedRun.output.contains("\(copiedInput).bak"))
+        #expect(forkedRun.fileChanges.first?.path == copiedInput)
 
         try "changed source".write(toFile: inputPath, atomically: true, encoding: .utf8)
         try "changed evidence".write(toFile: attachmentPath, atomically: true, encoding: .utf8)
@@ -382,6 +386,7 @@ struct AgentTaskForkServiceTests {
         try context.save()
 
         #expect(TaskForkPolicyService.readOnlyReason(for: forked) == nil)
+        #expect(forked.isolationStrategy == .sameDirectory)
         source.status = .running
         let reason = try #require(TaskForkPolicyService.readOnlyReason(for: forked))
         #expect(reason.contains("Original conversation"))
@@ -405,6 +410,67 @@ struct AgentTaskForkServiceTests {
         #expect(forked.runs.first?.output == "Checkpoint answer")
         #expect(forked.events.contains { $0.type == TaskEventTypes.Task.checkpoint.rawValue })
         #expect(!forked.events.contains { $0.type == "task.fork_manifest.created" })
+    }
+
+    @Test("historical checkpoints reject file copies whose earlier bytes cannot be reconstructed")
+    func historicalCheckpointRejectsIndependentCopies() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let container = try makeAgentTaskForkContainer()
+        let context = ModelContext(container)
+        let workspace = Workspace(name: "Documents", primaryPath: root)
+        let source = AgentTask(title: "Source", goal: "Revise", workspace: workspace)
+        context.insert(workspace)
+        context.insert(source)
+        let checkpoint = TaskRun(task: source)
+        checkpoint.status = .completed
+        checkpoint.startedAt = Date(timeIntervalSince1970: 100)
+        let later = TaskRun(task: source)
+        later.status = .completed
+        later.startedAt = Date(timeIntervalSince1970: 200)
+        context.insert(checkpoint)
+        context.insert(later)
+
+        #expect(throws: AgentTaskForkError.historicalFileCopyUnavailable) {
+            try AgentTask.fork(
+                from: source,
+                upToRun: checkpoint,
+                options: TaskForkOptions(mode: .conversationWithFileCopies),
+                in: context
+            )
+        }
+        #expect(workspace.tasks.count == 1)
+    }
+
+    @Test("independent copies expand tilde input paths")
+    func independentCopiesExpandTildeInputs() throws {
+        let relativeName = "astra-fork-input-\(UUID().uuidString).md"
+        let tildePath = "~/\(relativeName)"
+        let expandedPath = (tildePath as NSString).expandingTildeInPath
+        defer { try? FileManager.default.removeItem(atPath: expandedPath) }
+        try "home input".write(toFile: expandedPath, atomically: true, encoding: .utf8)
+
+        let container = try makeAgentTaskForkContainer()
+        let context = ModelContext(container)
+        let workspace = Workspace(name: "Home", primaryPath: NSHomeDirectory())
+        let source = AgentTask(title: "Source", goal: "Copy input", workspace: workspace)
+        source.inputs = [tildePath]
+        context.insert(workspace)
+        context.insert(source)
+        let run = TaskRun(task: source)
+        run.status = .completed
+        context.insert(run)
+
+        let forked = try AgentTask.fork(
+            from: source,
+            upToRun: run,
+            options: TaskForkOptions(mode: .conversationWithFileCopies),
+            in: context
+        )
+        let copiedPath = try #require(forked.inputs.first)
+        #expect(copiedPath != tildePath)
+        #expect(copiedPath != expandedPath)
+        #expect(try String(contentsOfFile: copiedPath, encoding: .utf8) == "home input")
     }
 
     private func temporaryRoot() throws -> String {

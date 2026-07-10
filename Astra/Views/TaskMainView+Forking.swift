@@ -51,7 +51,7 @@ extension TaskMainView {
     }
 
     func presentForkConfirmation(from run: TaskRunSnapshot) {
-        let policy = TaskForkPolicyService.resolve(for: task)
+        let policy = TaskForkPolicyService.resolve(for: task, upToRunID: run.id)
         let sortedRuns = task.runs.sorted {
             if $0.startedAt != $1.startedAt { return $0.startedAt < $1.startedAt }
             return $0.id.uuidString < $1.id.uuidString

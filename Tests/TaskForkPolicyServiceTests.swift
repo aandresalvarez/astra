@@ -61,4 +61,21 @@ struct TaskForkPolicyServiceTests {
         #expect(policy.repository == nil)
         #expect(policy.allowedModes == [.conversationSharedFiles, .conversationWithFileCopies])
     }
+
+    @Test("historical checkpoint offers shared files only")
+    func historicalCheckpointOffersSharedFilesOnly() {
+        let workspace = Workspace(name: "Documents", primaryPath: "/tmp/documents")
+        let task = AgentTask(title: "Task", goal: "Write", workspace: workspace)
+        let checkpoint = TaskRun(task: task)
+        checkpoint.startedAt = Date(timeIntervalSince1970: 100)
+        let latest = TaskRun(task: task)
+        latest.startedAt = Date(timeIntervalSince1970: 200)
+
+        let policy = TaskForkPolicyService.resolve(for: task, upToRunID: checkpoint.id) { _, _ in
+            .init(output: "", exitCode: 128)
+        }
+
+        #expect(!policy.allowsIndependentCopies)
+        #expect(policy.allowedModes == [.conversationSharedFiles])
+    }
 }

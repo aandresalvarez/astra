@@ -6,10 +6,11 @@ import ASTRAPersistence
 struct TaskForkPolicy: Sendable, Equatable {
     let repository: TaskForkRepositorySnapshot?
     let eligibleFileCount: Int
+    var allowsIndependentCopies: Bool = true
 
     var isGitBacked: Bool { repository != nil }
     var allowedModes: [TaskForkMode] {
-        isGitBacked
+        isGitBacked || !allowsIndependentCopies
             ? [.conversationSharedFiles]
             : [.conversationSharedFiles, .conversationWithFileCopies]
     }
@@ -26,6 +27,7 @@ enum TaskForkPolicyService {
     @MainActor
     static func resolve(
         for task: AgentTask,
+        upToRunID targetRunID: UUID? = nil,
         fileManager: FileManager = .default,
         gitRunner: GitRunner = runGit
     ) -> TaskForkPolicy {
@@ -33,8 +35,18 @@ enum TaskForkPolicyService {
         let repository = repositorySnapshot(workingPath: workingPath, gitRunner: gitRunner)
         return TaskForkPolicy(
             repository: repository,
-            eligibleFileCount: eligibleFilePaths(for: task, fileManager: fileManager).count
+            eligibleFileCount: eligibleFilePaths(for: task, fileManager: fileManager).count,
+            allowsIndependentCopies: isLatestCheckpoint(targetRunID, in: task)
         )
+    }
+
+    private static func isLatestCheckpoint(_ targetRunID: UUID?, in task: AgentTask) -> Bool {
+        guard let targetRunID else { return true }
+        let latest = task.runs.max {
+            if $0.startedAt != $1.startedAt { return $0.startedAt < $1.startedAt }
+            return $0.id.uuidString < $1.id.uuidString
+        }
+        return latest?.id == targetRunID
     }
 
     @MainActor

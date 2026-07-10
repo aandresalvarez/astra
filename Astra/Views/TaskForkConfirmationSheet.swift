@@ -138,9 +138,12 @@ struct TaskForkConfirmationSheet: View {
             modeRow(
                 .conversationWithFileCopies,
                 title: "Create independent file copies",
-                detail: "Copies explicit files, attachments, and checkpoint artifacts. Folders remain shared and are never copied automatically.",
+                detail: policy.allowsIndependentCopies
+                    ? "Copies explicit files, attachments, and checkpoint artifacts. Folders remain shared and are never copied automatically."
+                    : "Available only from the latest step because files changed by later steps cannot be reconstructed safely.",
                 systemImage: "doc.on.doc"
             )
+            .disabled(!policy.allowsIndependentCopies)
             if presentation.eligibleFileCount > 0 {
                 Text("\(presentation.eligibleFileCount) explicit file\(presentation.eligibleFileCount == 1 ? "" : "s") currently eligible for copying.")
                     .font(Stanford.caption(11))

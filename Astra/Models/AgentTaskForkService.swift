@@ -38,6 +38,7 @@ public enum AgentTaskForkError: LocalizedError, Equatable {
     case targetRunMissing
     case targetRunStillRunning
     case repositoryFileCopyDenied
+    case historicalFileCopyUnavailable
     case manifestWriteFailed
 
     public var errorDescription: String? {
@@ -48,6 +49,8 @@ public enum AgentTaskForkError: LocalizedError, Equatable {
             "Wait for this step to finish before forking the conversation."
         case .repositoryFileCopyDenied:
             "Git repository files cannot be copied by conversation forking. Use the Git workspace controls for code isolation."
+        case .historicalFileCopyUnavailable:
+            "Independent file copies are only available from the latest checkpoint because ASTRA cannot reconstruct earlier versions of files that were later changed. Use shared files or fork from the latest step."
         case .manifestWriteFailed:
             "ASTRA could not prepare the conversation checkpoint. No fork was created."
         }
@@ -81,6 +84,9 @@ public enum AgentTaskForkService {
         guard targetRun.status != .running else {
             throw AgentTaskForkError.targetRunStillRunning
         }
+        if options.mode == .conversationWithFileCopies, cutoffIndex != sortedRuns.indices.last {
+            throw AgentTaskForkError.historicalFileCopyUnavailable
+        }
 
         let forked = AgentTask(
             title: "Fork of \(source.title)",
@@ -89,7 +95,7 @@ public enum AgentTaskForkService {
             tokenBudget: source.tokenBudget,
             model: source.model,
             runtime: source.resolvedRuntimeID,
-            isolationStrategy: source.isolationStrategy,
+            isolationStrategy: options.repository == nil ? source.isolationStrategy : .sameDirectory,
             validationStrategy: source.validationStrategy
         )
         forked.inputs = source.inputs
@@ -189,7 +195,7 @@ public enum AgentTaskForkService {
                 sourceTaskID: source.id,
                 sourceWorkspacePath: source.workspace?.primaryPath ?? "",
                 sourceArtifacts: source.artifacts.map { TaskForkArtifactFacts(createdAt: $0.createdAt, path: $0.path) },
-                sourceInputs: source.inputs,
+                sourceInputs: source.inputs.map(normalizedInputPath),
                 sourceAttachments: attachments,
                 forkedTaskID: forked.id,
                 forkedWorkspacePath: forkedWorkspacePath,
@@ -219,9 +225,13 @@ public enum AgentTaskForkService {
         }
 
         if options.mode == .conversationWithFileCopies {
-            forked.inputs = source.inputs.map { manifest.sourceToLocalPaths[$0] ?? $0 }
+            forked.inputs = source.inputs.map {
+                let normalized = normalizedInputPath($0)
+                return manifest.sourceToLocalPaths[normalized] ?? normalized
+            }
             for run in copiedRuns {
                 run.output = replacingPaths(in: run.output, using: manifest.sourceToLocalPaths)
+                rewriteFileChanges(in: run, using: manifest.sourceToLocalPaths)
             }
         }
 
@@ -324,5 +334,25 @@ public enum AgentTaskForkService {
 
     private static func isPathTokenCharacter(_ character: Character) -> Bool {
         character.isLetter || character.isNumber || "._-/~".contains(character)
+    }
+
+    private static func normalizedInputPath(_ path: String) -> String {
+        (path as NSString).expandingTildeInPath
+    }
+
+    private static func rewriteFileChanges(in run: TaskRun, using mapping: [String: String]) {
+        guard case .success(let changes) = run.fileChangesDecodeResult else { return }
+        let rewritten = changes.map { change in
+            StoredFileChange(
+                id: change.id,
+                path: mapping[change.path] ?? change.path,
+                changeType: change.changeType,
+                content: change.content,
+                oldString: change.oldString,
+                newString: change.newString,
+                timestamp: change.timestamp
+            )
+        }
+        run.fileChangesJSON = TaskEvent.payloadString(rewritten, fallback: run.fileChangesJSON)
     }
 }
