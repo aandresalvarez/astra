@@ -383,21 +383,54 @@ struct MarkdownTextViewTests {
 struct ShelfMarkdownSessionTests {
 
     @MainActor
-    @Test("Markdown session store keeps task-pinned sessions separate from shared session")
-    func markdownSessionStoreKeepsPinnedSessionsSeparateFromSharedSession() {
+    @Test("Markdown session store keeps task-pinned sessions separate from workspace session")
+    func markdownSessionStoreKeepsPinnedSessionsSeparateFromWorkspaceSession() {
         let store = ShelfMarkdownSessionStore()
         let taskID = UUID()
+        let workspaceID = UUID()
 
-        let shared = store.session(for: nil, pinnedToTask: false)
-        let sharedForTask = store.session(for: taskID, pinnedToTask: false)
-        let pinned = store.session(for: taskID, pinnedToTask: true)
-        let pinnedAgain = store.session(for: taskID, pinnedToTask: true)
+        let shared = store.session(for: nil, workspaceID: workspaceID, pinnedToTask: false)
+        let sharedForTask = store.session(for: taskID, workspaceID: workspaceID, pinnedToTask: false)
+        let pinned = store.session(for: taskID, workspaceID: workspaceID, pinnedToTask: true)
+        let pinnedAgain = store.session(for: taskID, workspaceID: workspaceID, pinnedToTask: true)
 
         #expect(shared === sharedForTask)
         #expect(shared.boundTaskID == taskID)
         #expect(pinned !== shared)
         #expect(pinned === pinnedAgain)
         #expect(pinned.boundTaskID == taskID)
+    }
+
+    @MainActor
+    @Test("Markdown session store isolates open documents by workspace")
+    func markdownSessionStoreIsolatesOpenDocumentsByWorkspace() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-markdown-workspace-sessions-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let firstWorkspaceID = UUID()
+        let secondWorkspaceID = UUID()
+        let firstFile = root.appendingPathComponent("first-workspace.md")
+        let secondFile = root.appendingPathComponent("second-workspace.md")
+        try "First workspace".write(to: firstFile, atomically: true, encoding: .utf8)
+        try "Second workspace".write(to: secondFile, atomically: true, encoding: .utf8)
+
+        let store = ShelfMarkdownSessionStore()
+        let firstSession = store.session(for: nil, workspaceID: firstWorkspaceID, pinnedToTask: false)
+        firstSession.load(firstFile)
+
+        let secondSession = store.session(for: nil, workspaceID: secondWorkspaceID, pinnedToTask: false)
+        #expect(secondSession !== firstSession)
+        #expect(secondSession.documents.isEmpty)
+        #expect(secondSession.fileURL == nil)
+
+        secondSession.load(secondFile)
+        let restoredFirstSession = store.session(for: nil, workspaceID: firstWorkspaceID, pinnedToTask: false)
+        #expect(restoredFirstSession === firstSession)
+        #expect(restoredFirstSession.fileURL == firstFile)
+        #expect(restoredFirstSession.documents.map(\.fileURL) == [firstFile])
+        #expect(secondSession.documents.map(\.fileURL) == [secondFile])
     }
 
     @MainActor
