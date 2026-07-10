@@ -1,21 +1,14 @@
 import SwiftUI
 
 enum AstraLeadingCommandBarMetrics {
-    /// Outer inset before the cluster. Purely cosmetic — unlike
-    /// `reservedAccessorySlotWidth` below, it doesn't change which view AppKit
-    /// sees as the accessory's first child, so it's safe to shrink on its own.
+    /// Flush against the traffic lights: no outer inset and no reserved slot —
+    /// the cluster's own horizontal padding is the only breathing room. An inert
+    /// icon-width spacer used to occupy the first slot on a hunch that clicks
+    /// there routed into titlebar chrome, but the toggle bug it accompanied was
+    /// actually command delivery + reveal settling (PR #36), and click routing
+    /// is owned by `FullScreenSafeHostingView.mouseDownCanMoveWindow` — clicks
+    /// on the accessory can never start a window drag, whichever slot is first.
     static let leadingPadding: CGFloat = 0
-    /// AppKit starts a leading titlebar accessory immediately after the traffic
-    /// lights, but the first accessory-sized child can still behave like titlebar
-    /// chrome: its clicks/hover can route to the window's title-bar-drag handling
-    /// instead of the SwiftUI control underneath. Reserving one inert,
-    /// non-hit-testing command slot keeps the real sidebar-toggle button out of
-    /// that first position, so its clicks and hover-peek land reliably. Do not
-    /// remove this without on-device verification across window states — a prior
-    /// attempt to drop it for a flush-left layout was caught by review (PR #264)
-    /// before shipping.
-    static let reservedAccessorySlotWidth: CGFloat = AstraToolbarCommandMetrics.iconWidth
-    static let reservedAccessorySlotAllowsHitTesting = false
     static let trailingPadding: CGFloat = 2
 }
 
@@ -48,14 +41,6 @@ struct AstraLeadingCommandBar: View {
 
     var body: some View {
         AstraToolbarCommandCluster {
-            Color.clear
-                .frame(
-                    width: AstraLeadingCommandBarMetrics.reservedAccessorySlotWidth,
-                    height: AstraToolbarCommandMetrics.controlHeight
-                )
-            .allowsHitTesting(AstraLeadingCommandBarMetrics.reservedAccessorySlotAllowsHitTesting)
-            .accessibilityHidden(true)
-
             Button {
                 sidebarCommands.requestSidebarToggle()
             } label: {
