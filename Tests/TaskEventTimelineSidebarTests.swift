@@ -523,6 +523,39 @@ struct SidebarGroupingTests {
         ))
     }
 
+    @Test("Header carries the running signal exactly when a workspace row can't")
+    func headerRunningSignalCoversHiddenWork() {
+        let visibleRunning = UUID()
+        let filteredRunning = UUID()
+        let filteredIdle = UUID()
+        let counts = [
+            (workspaceID: visibleRunning, count: 2),
+            (workspaceID: filteredRunning, count: 1),
+            (workspaceID: filteredIdle, count: 0)
+        ]
+
+        // Expanded section: only work in filtered-out workspaces needs the header.
+        #expect(SidebarLivenessSignal.headerRunningTaskCount(
+            runningCounts: counts,
+            visibleWorkspaceIDs: [visibleRunning, filteredIdle],
+            isSectionExpanded: true
+        ) == 1)
+
+        // Everything visible and expanded: rows carry their own signal.
+        #expect(SidebarLivenessSignal.headerRunningTaskCount(
+            runningCounts: counts,
+            visibleWorkspaceIDs: [visibleRunning, filteredRunning, filteredIdle],
+            isSectionExpanded: true
+        ) == 0)
+
+        // Collapsed section hides every row, so the header owns all of it.
+        #expect(SidebarLivenessSignal.headerRunningTaskCount(
+            runningCounts: counts,
+            visibleWorkspaceIDs: [visibleRunning, filteredRunning, filteredIdle],
+            isSectionExpanded: false
+        ) == 3)
+    }
+
     @Test("SidebarTaskIndex counts running tasks per workspace regardless of search")
     func sidebarTaskIndexRunningCounts() {
         let busy = makeWorkspace(name: "Busy")
@@ -558,7 +591,12 @@ struct SidebarGroupingTests {
         #expect(SidebarLeanPresentation.workspaceRowsShowRestStateDisclosure)
         #expect(SidebarLeanPresentation.workspaceDisclosureChevronWidth == 11)
         #expect(SidebarLeanPresentation.pinnedDropZoneAppearsOnlyDuringDrag)
-        #expect(SidebarLeanPresentation.pinnedPreviewLimit == 5)
+        // One fold for every capped rail list: Pinned, Unreads, and
+        // workspace drawers all preview the same number of rows.
+        #expect(SidebarLeanPresentation.sectionPreviewLimit == 6)
+        #expect(SidebarLeanPresentation.pinnedPreviewLimit == SidebarLeanPresentation.sectionPreviewLimit)
+        #expect(SidebarLeanPresentation.unreadPreviewLimit == SidebarLeanPresentation.sectionPreviewLimit)
+        #expect(SidebarWorkspaceTaskList.collapsedLimit == SidebarLeanPresentation.sectionPreviewLimit)
         #expect(SidebarLeanPresentation.childTaskListLeadingPadding == 0)
         // Child content steps in 12pt so containment reads without a
         // guide rail; row surfaces still span the full rail width.
