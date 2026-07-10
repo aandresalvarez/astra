@@ -216,4 +216,46 @@ extension TaskThreadSnapshotTests {
         #expect(snapshot.sortedRuns.count == 50)
         #expect(snapshot.sortedEvents.count <= 1_200)
     }
+
+    @Test("Dismissal for the latest run survives the bounded transcript window")
+    func latestRunDismissalSurvivesTranscriptWindow() throws {
+        let task = makeTask(goal: "Dismissed result")
+        task.status = .pendingUser
+        let run = TaskRun(task: task)
+        run.status = .failed
+        run.startedAt = Date(timeIntervalSince1970: 10)
+        run.stopReason = "policy_violation"
+        task.runs.append(run)
+        task.events.append(makeEvent(
+            task: task,
+            type: "task.dismissed",
+            payload: "Dismissed",
+            timestamp: Date(timeIntervalSince1970: 11),
+            run: run
+        ))
+        for index in 0..<1_300 {
+            task.events.append(makeEvent(
+                task: task,
+                type: "agent.response",
+                payload: "later event \(index)",
+                timestamp: Date(timeIntervalSince1970: Double(20 + index)),
+                run: run
+            ))
+        }
+
+        let snapshot = TaskThreadSnapshot(input: TaskThreadSnapshotInput(task: task))
+        let latestRun = try #require(snapshot.latestRun)
+        let reviewInput = PendingTaskReviewSnapshotInput(
+            taskStatus: task.status,
+            isTaskDone: task.isDone,
+            requiresDeliverableArtifact: false,
+            latestRun: PendingTaskReviewRunSnapshot(latestRun),
+            runs: snapshot.sortedRuns.map(PendingTaskReviewRunSnapshot.init),
+            events: snapshot.sortedEvents.map(PendingTaskReviewEventSnapshot.init),
+            latestRunHasScopedArtifact: false
+        )
+
+        #expect(snapshot.sortedEvents.contains { $0.type == "task.dismissed" && $0.runID == run.id })
+        #expect(PendingTaskReviewPolicy.reviewState(for: reviewInput).isDismissed)
+    }
 }

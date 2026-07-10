@@ -161,4 +161,16 @@ struct ApplicationsFolderMoverTests {
         )
         #expect(decision.action == .doNothing)
     }
+
+    @Test("relaunch waits for the current process to exit before opening the copied app")
+    func relaunchWaitsForLeaseRelease() {
+        let destination = URL(fileURLWithPath: "/Applications/ASTRA.app")
+        let command = ApplicationsFolderMover.relaunchCommand(processID: 42, destination: destination)
+
+        #expect(command.executableURL.path == "/bin/sh")
+        #expect(command.arguments[1].contains("while kill -0 \"$1\""))
+        #expect(command.arguments[1].contains("exec /usr/bin/open \"$2\""))
+        #expect(command.arguments[3] == "42")
+        #expect(command.arguments[4] == destination.path)
+    }
 }

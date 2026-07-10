@@ -405,14 +405,18 @@ struct SettingsView: View {
             Section("Data Locations") {
                 dataLocationRow("App Channel", path: AppChannel.current.displayName, canOpen: false)
                 dataLocationRow("App Support", path: WorkspaceRecoveryService.applicationSupportDirectory.path)
+                dataLocationRow("Store Generation", path: WorkspaceRecoveryService.storeGeneration, canOpen: false)
                 dataLocationRow("SwiftData Store", path: WorkspaceRecoveryService.storeURL.path)
                 dataLocationRow("Workspaces", path: resolvedWorkspacesRoot)
                 dataLocationRow("Workspace Support", path: "<workspace>/.astra", canOpen: false)
                 dataLocationRow("Logs", path: AppLogger.mainLogFile.deletingLastPathComponent().path)
                 dataLocationRow("Provider Sessions", path: NSHomeDirectory() + "/.claude/projects")
                 dataLocationRow("ASTRA Tools", path: NSHomeDirectory() + "/.astra")
+                if FileManager.default.fileExists(atPath: WorkspaceRecoveryService.channelLegacyStoreURL.path) {
+                    dataLocationRow("Legacy Channel Store", path: WorkspaceRecoveryService.channelLegacyStoreURL.path)
+                }
                 if FileManager.default.fileExists(atPath: WorkspaceRecoveryService.legacyStoreURL.path) {
-                    dataLocationRow("Legacy Store", path: WorkspaceRecoveryService.legacyStoreURL.path)
+                    dataLocationRow("Pre-channel Legacy Store", path: WorkspaceRecoveryService.legacyStoreURL.path)
                 }
                 Text("App state, workspace artifacts, logs, secrets, and provider session data intentionally live in separate macOS-standard locations.")
                     .font(Stanford.caption(12))

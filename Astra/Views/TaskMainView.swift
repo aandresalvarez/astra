@@ -4239,21 +4239,17 @@ struct TaskMainView: View {
 
     private var pendingTaskReviewState: PendingTaskReviewState {
         guard !hasOpenRuntimePermissionApprovalRequest else { return .none }
-        return PendingTaskReviewPolicy.reviewState(
-            for: task,
-            latestRun: latestRunModel
-        )
+        return PendingTaskReviewPolicy.reviewState(for: pendingTaskReviewSnapshotInput)
     }
 
     private var completedTaskNeedsArtifactAttention: Bool {
         PendingTaskReviewPolicy.completedTaskNeedsArtifactAttention(
-            task: task,
-            latestRun: latestRunModel
+            pendingTaskReviewSnapshotInput
         )
     }
 
-    private var latestRunModel: TaskRun? {
-        task.runs.max(by: { $0.startedAt < $1.startedAt })
+    private var pendingTaskReviewSnapshotInput: PendingTaskReviewSnapshotInput {
+        PendingTaskReviewSnapshotInput(task: task, snapshot: currentThreadSnapshot)
     }
 
     private var pendingDecisionTitle: String {
