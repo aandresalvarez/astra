@@ -1092,6 +1092,7 @@ struct ContentView: View {
         }
         .onDisappear {
             sidebarTitlebarCommands.clearSidebarToggleHandler()
+            TaskOpenResponsivenessTelemetry.cancel(scope: taskOpenResponsivenessScope, reason: "content_view_disappeared")
             screenTransitionCoordinator.cancelForViewDisappearance()
         }
         .onChange(of: executionSettingsSignature) { applySettings() }
