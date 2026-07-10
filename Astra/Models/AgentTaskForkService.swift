@@ -167,7 +167,9 @@ public enum AgentTaskForkService {
                 return event.timestamp <= cutoffDate
             }
             .sorted(by: eventOrdering)
-        let attachments = attachmentPaths(in: eventsToFork)
+        let attachments = attachmentPaths(in: eventsToFork.filter {
+            $0.type == TaskEventTypes.Conversation.userMessage.rawValue
+        })
         let forkedWorkspacePath = forked.workspace?.primaryPath ?? ""
         let forkFolder = TaskFolderResolvingSeam.required.taskFolder(
             workspacePath: forkedWorkspacePath,
@@ -175,8 +177,15 @@ public enum AgentTaskForkService {
         )
 
         let manifest: TaskForkManifestSummary
-        do {
-            manifest = try TaskForkManifestWritingSeam.required.writeManifest(TaskForkManifestRequest(
+        if forkedWorkspacePath.isEmpty {
+            manifest = TaskForkManifestSummary(
+                sourceTaskID: source.id,
+                checkpointRunID: targetRun.id,
+                checkpointRunIndex: cutoffIndex
+            )
+        } else {
+            do {
+                manifest = try TaskForkManifestWritingSeam.required.writeManifest(TaskForkManifestRequest(
                 sourceTaskID: source.id,
                 sourceWorkspacePath: source.workspace?.primaryPath ?? "",
                 sourceArtifacts: source.artifacts.map { TaskForkArtifactFacts(createdAt: $0.createdAt, path: $0.path) },
@@ -198,18 +207,22 @@ public enum AgentTaskForkService {
                         isDirty: $0.isDirty
                     )
                 }
-            ))
-        } catch {
-            TaskForkManifestWritingSeam.required.removePreparedFork(taskFolder: forkFolder)
-            AuditLoggingSeam.required.audit(.taskFailed, category: "Persistence", taskID: forked.id, fields: [
-                "reason": "fork_manifest_write_failed",
-                "error_type": String(describing: type(of: error))
-            ], level: .error)
-            throw AgentTaskForkError.manifestWriteFailed
+                ))
+            } catch {
+                TaskForkManifestWritingSeam.required.removePreparedFork(taskFolder: forkFolder)
+                AuditLoggingSeam.required.audit(.taskFailed, category: "Persistence", taskID: forked.id, fields: [
+                    "reason": "fork_manifest_write_failed",
+                    "error_type": String(describing: type(of: error))
+                ], level: .error)
+                throw AgentTaskForkError.manifestWriteFailed
+            }
         }
 
         if options.mode == .conversationWithFileCopies {
             forked.inputs = source.inputs.map { manifest.sourceToLocalPaths[$0] ?? $0 }
+            for run in copiedRuns {
+                run.output = replacingPaths(in: run.output, using: manifest.sourceToLocalPaths)
+            }
         }
 
         var copiedEvents: [TaskEvent] = eventsToFork.map { sourceEvent in
@@ -235,24 +248,26 @@ public enum AgentTaskForkService {
             run: forkedRunsBySourceID[targetRun.id]
         ))
 
-        let manifestPath = TaskForkManifestWritingSeam.required.manifestPath(taskFolder: forkFolder)
-        let payload = ForkManifestEventPayload(
-            sourceTaskID: manifest.sourceTaskID.uuidString,
-            checkpointRunID: manifest.checkpointRunID.uuidString,
-            checkpointRunIndex: manifest.checkpointRunIndex,
-            manifestPath: manifestPath,
-            forkMode: options.mode.rawValue
-        )
-        let eventPayload = (try? String(
-            data: JSONEncoder().encode(payload),
-            encoding: .utf8
-        )) ?? ""
-        copiedEvents.append(TaskEvent(
-            task: forked,
-            type: "task.fork_manifest.created",
-            payload: eventPayload,
-            run: forkedRunsBySourceID[targetRun.id]
-        ))
+        if !forkFolder.isEmpty {
+            let manifestPath = TaskForkManifestWritingSeam.required.manifestPath(taskFolder: forkFolder)
+            let payload = ForkManifestEventPayload(
+                sourceTaskID: manifest.sourceTaskID.uuidString,
+                checkpointRunID: manifest.checkpointRunID.uuidString,
+                checkpointRunIndex: manifest.checkpointRunIndex,
+                manifestPath: manifestPath,
+                forkMode: options.mode.rawValue
+            )
+            let eventPayload = (try? String(
+                data: JSONEncoder().encode(payload),
+                encoding: .utf8
+            )) ?? ""
+            copiedEvents.append(TaskEvent(
+                task: forked,
+                type: "task.fork_manifest.created",
+                payload: eventPayload,
+                run: forkedRunsBySourceID[targetRun.id]
+            ))
+        }
 
         context.insert(forked)
         copiedRuns.forEach(context.insert)
@@ -288,7 +303,26 @@ public enum AgentTaskForkService {
 
     private static func replacingPaths(in payload: String, using mapping: [String: String]) -> String {
         mapping.keys.sorted { $0.count > $1.count }.reduce(payload) { value, sourcePath in
-            value.replacingOccurrences(of: sourcePath, with: mapping[sourcePath] ?? sourcePath)
+            guard let replacement = mapping[sourcePath], !sourcePath.isEmpty else { return value }
+            var result = value
+            var searchStart = result.startIndex
+            while let range = result.range(of: sourcePath, range: searchStart..<result.endIndex) {
+                let beforeIsBoundary = range.lowerBound == result.startIndex
+                    || !isPathTokenCharacter(result[result.index(before: range.lowerBound)])
+                let afterIsBoundary = range.upperBound == result.endIndex
+                    || !isPathTokenCharacter(result[range.upperBound])
+                if beforeIsBoundary && afterIsBoundary {
+                    result.replaceSubrange(range, with: replacement)
+                    searchStart = result.index(range.lowerBound, offsetBy: replacement.count)
+                } else {
+                    searchStart = range.upperBound
+                }
+            }
+            return result
         }
+    }
+
+    private static func isPathTokenCharacter(_ character: Character) -> Bool {
+        character.isLetter || character.isNumber || "._-/~".contains(character)
     }
 }

@@ -52,7 +52,10 @@ enum TaskCheckpointPresentation {
     static let sectionTitle = "Checkpoints"
 
     static func summaries(from runs: [TaskRunSnapshot]) -> [TaskCheckpointSummary] {
-        runs.sorted { $0.startedAt < $1.startedAt }
+        runs.sorted {
+            if $0.startedAt != $1.startedAt { return $0.startedAt < $1.startedAt }
+            return $0.id.uuidString < $1.id.uuidString
+        }
             .enumerated()
             .map { index, run in
                 TaskCheckpointSummary(

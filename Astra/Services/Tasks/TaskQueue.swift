@@ -161,6 +161,11 @@ final class TaskQueue {
         resourceAccess: TaskResourceAccessMode = .write,
         onEvent: @escaping (ParsedEvent) -> Void = { _ in }
     ) async {
+        if let readOnlyReason = TaskForkPolicyService.readOnlyReason(for: task) {
+            recordForkReadOnlyBlock(task, reason: readOnlyReason, modelContext: modelContext)
+            return
+        }
+
         guard hasAvailableWorker else {
             AppLogger.audit(.workerBlocked, category: "Queue", taskID: task.id, fields: [
                 "reason": "pool_busy",
@@ -481,6 +486,11 @@ final class TaskQueue {
         resourceAccess: TaskResourceAccessMode = .write,
         onEvent: @escaping (ParsedEvent) -> Void = { _ in }
     ) async {
+        if let readOnlyReason = TaskForkPolicyService.readOnlyReason(for: task) {
+            recordForkReadOnlyBlock(task, reason: readOnlyReason, modelContext: modelContext)
+            return
+        }
+
         guard hasAvailableWorker else {
             AppLogger.audit(.workerBlocked, category: "Queue", taskID: task.id, fields: [
                 "reason": "pool_busy",

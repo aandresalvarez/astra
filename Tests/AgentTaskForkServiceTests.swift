@@ -255,9 +255,11 @@ struct AgentTaskForkServiceTests {
         defer { try? FileManager.default.removeItem(atPath: root) }
         let inputPath = (root as NSString).appendingPathComponent("report.md")
         let attachmentPath = (root as NSString).appendingPathComponent("evidence.txt")
+        let providerSuggestedPath = (root as NSString).appendingPathComponent("provider-secret.txt")
         let directoryPath = (root as NSString).appendingPathComponent("shared-folder")
         try "checkpoint report".write(toFile: inputPath, atomically: true, encoding: .utf8)
         try "checkpoint evidence".write(toFile: attachmentPath, atomically: true, encoding: .utf8)
+        try "not user attached".write(toFile: providerSuggestedPath, atomically: true, encoding: .utf8)
         try FileManager.default.createDirectory(atPath: directoryPath, withIntermediateDirectories: true)
 
         let container = try makeAgentTaskForkContainer()
@@ -271,6 +273,7 @@ struct AgentTaskForkServiceTests {
         run.status = .completed
         run.startedAt = Date(timeIntervalSince1970: 100)
         run.completedAt = Date(timeIntervalSince1970: 110)
+        run.output = "Use \(inputPath), but preserve the distinct \(inputPath).bak reference."
         context.insert(run)
         let attachmentEvent = TaskEvent(
             task: source,
@@ -280,6 +283,14 @@ struct AgentTaskForkServiceTests {
         )
         attachmentEvent.timestamp = Date(timeIntervalSince1970: 105)
         context.insert(attachmentEvent)
+        let providerEvent = TaskEvent(
+            task: source,
+            type: "assistant.message",
+            payload: "Attached files:\n- \(providerSuggestedPath)",
+            run: run
+        )
+        providerEvent.timestamp = Date(timeIntervalSince1970: 106)
+        context.insert(providerEvent)
 
         let forked = try AgentTask.fork(
             from: source,
@@ -294,9 +305,14 @@ struct AgentTaskForkServiceTests {
         let copiedInput = try #require(manifest.sourceInputs?.first { $0.sourcePath == inputPath }?.localCopyPath)
         let copiedAttachment = try #require(manifest.sourceAttachments?.first { $0.sourcePath == attachmentPath }?.localCopyPath)
         #expect(manifest.sourceInputs?.first { $0.sourcePath == inputPath }?.sha256 != nil)
+        #expect(manifest.sourceAttachments?.contains { $0.sourcePath == providerSuggestedPath } == false)
         #expect(forked.inputs.contains(copiedInput))
         #expect(forked.inputs.contains(directoryPath))
         #expect(forked.events.contains { $0.payload.contains(copiedAttachment) && !$0.payload.contains(attachmentPath) })
+        let forkedRun = try #require(forked.runs.first)
+        #expect(forkedRun.output.contains("Use \(copiedInput)"))
+        #expect(forkedRun.output.contains("\(inputPath).bak"))
+        #expect(!forkedRun.output.contains("\(copiedInput).bak"))
 
         try "changed source".write(toFile: inputPath, atomically: true, encoding: .utf8)
         try "changed evidence".write(toFile: attachmentPath, atomically: true, encoding: .utf8)
@@ -370,6 +386,25 @@ struct AgentTaskForkServiceTests {
         let reason = try #require(TaskForkPolicyService.readOnlyReason(for: forked))
         #expect(reason.contains("Original conversation"))
         #expect(reason.contains("shared Git worktree"))
+    }
+
+    @Test("workspace-less conversation still forks history without a manifest")
+    func workspaceLessConversationForksHistory() throws {
+        let container = try makeAgentTaskForkContainer()
+        let context = ModelContext(container)
+        let source = AgentTask(title: "Standalone", goal: "Discuss an idea")
+        context.insert(source)
+        let run = TaskRun(task: source)
+        run.status = .completed
+        run.output = "Checkpoint answer"
+        context.insert(run)
+
+        let forked = try AgentTask.fork(from: source, upToRun: run, in: context)
+
+        #expect(forked.workspace == nil)
+        #expect(forked.runs.first?.output == "Checkpoint answer")
+        #expect(forked.events.contains { $0.type == TaskEventTypes.Task.checkpoint.rawValue })
+        #expect(!forked.events.contains { $0.type == "task.fork_manifest.created" })
     }
 
     private func temporaryRoot() throws -> String {
