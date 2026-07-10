@@ -397,11 +397,10 @@ private enum AstraStoreStartupCoordinator {
         if canRecoverLegacyMigration,
            PersistentStoreOpenFailurePolicy.permitsFreshStoreForLegacyMigration(decision) {
             AppLogger.audit(.dataStoreRecovered, category: "App", fields: [
-                "result": "legacy_store_recovered_from_workspace_mirrors",
+                "result": "legacy_store_recovery_authorized",
                 "open_decision": String(describing: decision),
                 "store_generation": WorkspaceRecoveryService.storeGeneration
             ], level: .warning)
-            return createFreshRecoveryStore(lease: lease)
         }
 
         guard decision == .verifiedCorruption else {
