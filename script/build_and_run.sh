@@ -137,6 +137,19 @@ APP_BINARY="$APP_MACOS/$APP_NAME"
 INFO_PLIST="$APP_CONTENTS/Info.plist"
 ENTITLEMENTS="$ROOT_DIR/script/ASTRA.entitlements"
 
+stop_existing_app() {
+  pkill -x "$APP_NAME" >/dev/null 2>&1 || true
+  local attempts=0
+  while pgrep -x "$APP_NAME" >/dev/null 2>&1; do
+    attempts=$((attempts + 1))
+    if [[ "$attempts" -ge 50 ]]; then
+      echo "FAIL: $APP_NAME did not exit before bundle replacement; refusing to stage over a running app." >&2
+      exit 4
+    fi
+    sleep 0.1
+  done
+}
+
 if [[ "$REQUIRE_ARM64" == "1" ]]; then
   HOST_ARCH="$(/usr/bin/uname -m)"
   if [[ "$HOST_ARCH" != "arm64" ]]; then
@@ -144,10 +157,6 @@ if [[ "$REQUIRE_ARM64" == "1" ]]; then
     echo "Current process architecture: $HOST_ARCH" >&2
     exit 2
   fi
-fi
-
-if [[ "$MODE" != "bundle" && "$MODE" != "--bundle" ]]; then
-  pkill -x "$APP_NAME" >/dev/null 2>&1 || true
 fi
 
 SWIFT_BUILD_ARGS=(--package-path "$ROOT_DIR")
@@ -168,6 +177,8 @@ if [[ "$REQUIRE_ARM64" == "1" ]]; then
     verify_arm64_binary "$BUILD_DIR/$tool_product"
   done
 fi
+
+stop_existing_app
 
 rm -rf "$APP_BUNDLE"
 mkdir -p "$APP_MACOS" "$APP_FRAMEWORKS" "$APP_RESOURCES"
@@ -475,7 +486,28 @@ verify_app_bundle() {
 verify_app_bundle
 
 open_app() {
-  /usr/bin/open -n "$APP_BUNDLE"
+  stop_existing_app
+  /usr/bin/open "$APP_BUNDLE"
+}
+
+verify_single_launched_app() {
+  local pids
+  pids="$(pgrep -x "$APP_NAME" || true)"
+  local count
+  count="$(printf '%s\n' "$pids" | awk 'NF { count += 1 } END { print count + 0 }')"
+  if [[ "$count" != "1" ]]; then
+    echo "FAIL: expected exactly one $APP_NAME process after launch; found $count." >&2
+    exit 4
+  fi
+  local pid
+  pid="$(printf '%s\n' "$pids" | awk 'NF { print; exit }')"
+  local command
+  command="$(ps -p "$pid" -o command= | sed -e 's/^[[:space:]]*//')"
+  if [[ "$command" != "$APP_BINARY"* ]]; then
+    echo "FAIL: $APP_NAME launched from an unexpected bundle: $command" >&2
+    exit 4
+  fi
+  echo "OK: $APP_NAME is running (pid $pid)."
 }
 
 case "$MODE" in
@@ -486,6 +518,7 @@ case "$MODE" in
     open_app
     ;;
   --debug|debug)
+    stop_existing_app
     lldb -- "$APP_BINARY"
     ;;
   --logs|logs)
@@ -499,12 +532,7 @@ case "$MODE" in
   --verify|verify)
     open_app
     sleep 2
-    if ! pgrep -x "$APP_NAME" >/dev/null; then
-      echo "FAIL: $APP_NAME did not stay running after launch." >&2
-      echo "Check Console.app or 'log show --last 10s' for crash details." >&2
-      exit 4
-    fi
-    echo "OK: $APP_NAME is running (pid $(pgrep -x "$APP_NAME"))."
+    verify_single_launched_app
     ;;
   *)
     echo "usage: $0 [bundle|run|--debug|--logs|--telemetry|--verify]" >&2
