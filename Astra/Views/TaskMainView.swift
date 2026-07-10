@@ -305,7 +305,7 @@ struct TaskMainView: View {
     var onToggleDone: ((AgentTask) -> Void)?
     var sshReloadTrigger: Int = 0
 
-    @Environment(\.modelContext) private var modelContext
+    @Environment(\.modelContext) var modelContext
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var messageText = ""
     @State private var attachedFiles: [String] = []
@@ -350,7 +350,11 @@ struct TaskMainView: View {
     @State private var pendingVerificationPresentationRefreshTask: Task<Void, Never>?
     @State private var cachedVerificationRequest: TaskVerificationLoadRequest?
     @State private var cachedVerificationPresentation: TaskVerificationPresentation?
-    @State private var cachedForkSourceAvailabilityWarning: String?
+    @State var cachedForkSourceAvailabilityWarning: String?
+    @State var cachedForkModeLabel: String?
+    @State var cachedForkRepositorySummary: String?
+    @State var pendingForkRequest: PendingTaskForkRequest?
+    @State var forkCreationError: String?
     @FocusState private var isComposerFocused: Bool
     @AppStorage(AppStorageKeys.claudePath) private var claudePath = ""
     @AppStorage(AppStorageKeys.copilotPath) private var copilotPath = ""
@@ -590,9 +594,25 @@ struct TaskMainView: View {
             TaskCheckpointBrowserSheet(
                 task: task,
                 snapshot: currentThreadSnapshot,
-                onRestore: forkTask(from:)
+                onRestore: presentForkConfirmation(from:)
             )
             .frame(minWidth: 780, minHeight: 540)
+        }
+        .sheet(item: $pendingForkRequest) { request in
+            TaskForkConfirmationSheet(
+                taskTitle: task.title,
+                checkpointStep: request.checkpointStep,
+                policy: request.policy,
+                onConfirm: { mode in createFork(from: request.run, mode: mode, policy: request.policy) }
+            )
+        }
+        .alert("Couldn’t Fork Conversation", isPresented: Binding(
+            get: { forkCreationError != nil },
+            set: { if !$0 { forkCreationError = nil } }
+        )) {
+            Button("OK", role: .cancel) { forkCreationError = nil }
+        } message: {
+            Text(forkCreationError ?? "The conversation fork could not be created.")
         }
         .task(id: runtimeAvailabilitySignature) {
             await refreshRuntimeAvailability()
@@ -793,10 +813,6 @@ struct TaskMainView: View {
         }
         refreshForkSourceAvailabilityWarning()
         scheduleVerificationPresentationRefresh()
-    }
-
-    private func refreshForkSourceAvailabilityWarning() {
-        cachedForkSourceAvailabilityWarning = TaskForkManifestService.sourceAvailabilityWarning(for: task)
     }
 
     private func scheduleVerificationPresentationRefresh() {
@@ -1723,24 +1739,7 @@ struct TaskMainView: View {
     @ViewBuilder
     private var chatThreadContentBody: some View {
         if task.isForked {
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 6) {
-                    Image(systemName: "arrow.branch")
-                        .font(Stanford.ui(11))
-                    Text("Forked from another task at step \(task.forkedAtRunIndex + 1)")
-                        .font(Stanford.caption(12))
-                }
-                if let warning = cachedForkSourceAvailabilityWarning {
-                    Text(warning)
-                        .font(Stanford.caption(11))
-                        .foregroundStyle(Stanford.coolGrey)
-                }
-            }
-            .foregroundStyle(Stanford.plum)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-            .background(Stanford.plum.opacity(0.08))
-            .clipShape(RoundedRectangle(cornerRadius: 6))
+            forkContextBanner
                 .padding(.horizontal, 14)
         }
 
@@ -2528,14 +2527,14 @@ struct TaskMainView: View {
                         }
 
                         Button {
-                            forkTask(from: run)
+                            presentForkConfirmation(from: run)
                         } label: {
                             Image(systemName: "arrow.branch")
                             .font(Stanford.ui(12))
                         }
                         .buttonStyle(.plain)
                         .foregroundStyle(Stanford.coolGrey.opacity(0.7))
-                        .help("Fork from here")
+                        .help("Fork conversation from here")
                     }
 
                     runFooterSummaryLabel(
@@ -3692,13 +3691,6 @@ struct TaskMainView: View {
         default:
             return nil
         }
-    }
-
-    private func forkTask(from run: TaskRunSnapshot) {
-        guard let sourceRun = task.runs.first(where: { $0.id == run.id }) else { return }
-        let forked = AgentTask.fork(from: task, upToRun: sourceRun, in: modelContext)
-        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
-        onForkTask?(forked)
     }
 
     private func agentPlanPanel(items: [TaskProtocolTodoItem]) -> some View {
@@ -5566,6 +5558,16 @@ struct TaskMainView: View {
     }
 
     private func sendConversationMessage(_ msg: String) {
+        if let readOnlyReason = TaskForkPolicyService.readOnlyReason(for: task) {
+            modelContext.insert(TaskEvent(
+                task: task,
+                eventType: TaskEventTypes.System.info,
+                payload: readOnlyReason
+            ))
+            WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
+            threadViewModel.refreshSnapshot(for: task)
+            return
+        }
         if !attachedFiles.isEmpty { attachedFiles = [] }
         messageText = ""
         let traceID = AuditTrace.make(isPlanMode ? "task-plan-chat" : "task-chat")
@@ -5621,6 +5623,16 @@ struct TaskMainView: View {
 
     private func sendPlanningMessage(_ msg: String, traceID: String = AuditTrace.make("task-plan-chat")) {
         guard !isPlanning else { return }
+        if let readOnlyReason = TaskForkPolicyService.readOnlyReason(for: task) {
+            modelContext.insert(TaskEvent(
+                task: task,
+                eventType: TaskEventTypes.System.info,
+                payload: readOnlyReason
+            ))
+            WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
+            threadViewModel.refreshSnapshot(for: task)
+            return
+        }
 
         shouldScrollAfterUserMessage = true
         let userEvent = TaskEvent(task: task, type: TaskPlanConversationEventTypes.userMessage, payload: msg)

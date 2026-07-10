@@ -382,7 +382,7 @@ struct TaskCheckpointPresentationTests {
         #expect(comparison.laterOutputPreview.contains("restore path"))
         #expect(comparison.branchSummary == "1 later step will stay on the current task.")
         #expect(comparison.canRestore)
-        #expect(TaskCheckpointPresentation.restoreActionTitle == "Restore as New Branch")
+        #expect(TaskCheckpointPresentation.restoreActionTitle == "Fork Conversation")
     }
 
     @Test("Checkpoint file counts match deduplicated file lists")

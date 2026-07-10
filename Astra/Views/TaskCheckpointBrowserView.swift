@@ -48,7 +48,7 @@ struct TaskCheckpointComparison: Equatable, Sendable {
 }
 
 enum TaskCheckpointPresentation {
-    static let restoreActionTitle = "Restore as New Branch"
+    static let restoreActionTitle = "Fork Conversation"
     static let sectionTitle = "Checkpoints"
 
     static func summaries(from runs: [TaskRunSnapshot]) -> [TaskCheckpointSummary] {
@@ -327,8 +327,8 @@ struct TaskCheckpointBrowserSheet: View {
                     comparisonHeader(comparison)
                     factGrid(comparison)
                     compareSection(
-                        title: "Included Up To Checkpoint",
-                        subtitle: "\(comparison.includedRunCount) step\(comparison.includedRunCount == 1 ? "" : "s") copied into the restored branch.",
+                        title: "Conversation Included Up To Checkpoint",
+                        subtitle: "\(comparison.includedRunCount) step\(comparison.includedRunCount == 1 ? "" : "s") copied into the new conversation.",
                         files: comparison.includedFiles,
                         fileCount: comparison.includedFileCount,
                         outputPreview: comparison.selected.outputPreview
@@ -375,7 +375,7 @@ struct TaskCheckpointBrowserSheet: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(!comparison.canRestore)
-                .help(comparison.restoreDisabledReason ?? "Create a new task branch from this checkpoint")
+                .help(comparison.restoreDisabledReason ?? "Create a new conversation from this checkpoint")
 
                 if let reason = comparison.restoreDisabledReason {
                     Text(reason)

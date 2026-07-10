@@ -1536,6 +1536,12 @@ enum AgentPromptBuilder {
                 lines.append("- Fork manifest: \(forkManifestPath)")
                 lines.append("  - Source task: \(forkManifest.sourceTaskID.uuidString)")
                 lines.append("  - Checkpoint run: \(forkManifest.checkpointRunID.uuidString)")
+                lines.append("  - Conversation fork mode: \(forkManifest.resolvedForkMode.rawValue)")
+                if let repository = forkManifest.repository {
+                    lines.append("  - Shared Git repository: \(repository.rootPath)")
+                    lines.append("  - Git context at fork: \(repository.branch) @ \(repository.headSHA)\(repository.isDirty ? " (uncommitted changes present)" : "")")
+                    lines.append("  - This conversation fork did not create, switch, commit, push, or publish a Git branch.")
+                }
                 if let warning = TaskForkManifestService.sourceAvailabilityWarning(for: forkManifest) {
                     lines.append("  - Warning: \(warning)")
                 }
@@ -1556,6 +1562,20 @@ enum AgentPromptBuilder {
                     for ref in forkManifest.sourceArtifacts.suffix(contextSourceIndexArtifactLimit) {
                         lines.append("    - \((ref.sourcePath as NSString).lastPathComponent): \(ref.localCopyPath ?? ref.sourcePath)")
                         pointers.append(sourcePointer(label: "source checkpoint artifact", target: ref.localCopyPath ?? ref.sourcePath))
+                    }
+                }
+                if !(forkManifest.sourceInputs ?? []).isEmpty {
+                    lines.append("  - Conversation fork inputs:")
+                    for ref in (forkManifest.sourceInputs ?? []).suffix(contextSourceIndexArtifactLimit) {
+                        lines.append("    - \((ref.sourcePath as NSString).lastPathComponent): \(ref.localCopyPath ?? ref.sourcePath)")
+                        pointers.append(sourcePointer(label: "conversation fork input", target: ref.localCopyPath ?? ref.sourcePath))
+                    }
+                }
+                if !(forkManifest.sourceAttachments ?? []).isEmpty {
+                    lines.append("  - Conversation fork attachments:")
+                    for ref in (forkManifest.sourceAttachments ?? []).suffix(contextSourceIndexArtifactLimit) {
+                        lines.append("    - \((ref.sourcePath as NSString).lastPathComponent): \(ref.localCopyPath ?? ref.sourcePath)")
+                        pointers.append(sourcePointer(label: "conversation fork attachment", target: ref.localCopyPath ?? ref.sourcePath))
                     }
                 }
             }

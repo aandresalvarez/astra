@@ -270,16 +270,21 @@ struct GitWorktreeTests {
         )
         let context = container.mainContext
 
-        let workspace = Workspace(name: "WS", primaryPath: "/repo/root")
+        let root = try makeTempDir("fork-pin-root")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let pinnedRoot = try makeTempDir("fork-pin-worktree")
+        defer { try? FileManager.default.removeItem(atPath: pinnedRoot) }
+        let workspace = Workspace(name: "WS", primaryPath: root)
         context.insert(workspace)
         let source = AgentTask(title: "src", goal: "g", workspace: workspace)
-        source.executionRootPath = "/worktrees/root/feature"
+        source.executionRootPath = pinnedRoot
         context.insert(source)
         let run = TaskRun(task: source)
+        run.status = .completed
         context.insert(run)
 
-        let forked = AgentTaskForkService.fork(from: source, upToRun: run, in: context)
-        #expect(forked.executionRootPath == "/worktrees/root/feature")
+        let forked = try AgentTaskForkService.fork(from: source, upToRun: run, in: context)
+        #expect(forked.executionRootPath == pinnedRoot)
     }
 
     // MARK: - ViewModel working-path resolution

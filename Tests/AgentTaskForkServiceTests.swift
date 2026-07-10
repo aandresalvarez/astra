@@ -66,11 +66,12 @@ struct AgentTaskForkServiceTests {
         secondEvent.timestamp = Date(timeIntervalSince1970: 205)
         context.insert(secondEvent)
 
-        let forked = AgentTask.fork(from: source, upToRun: firstRun, in: context)
+        let forked = try AgentTask.fork(from: source, upToRun: firstRun, in: context)
         try context.save()
 
         #expect(forked.forkedFromID == source.id)
         #expect(forked.forkedAtRunIndex == 0)
+        #expect(forked.testCommand == source.testCommand)
         #expect(forked.runs.count == 1)
         let forkedRun = try #require(forked.runs.first)
         let copiedFirstEvent = try #require(forked.events.first { $0.payload.contains("FirstBranchTests") })
@@ -148,7 +149,7 @@ struct AgentTaskForkServiceTests {
         secondRun.output = "Second branch result"
         context.insert(secondRun)
 
-        let forked = AgentTask.fork(from: source, upToRun: firstRun, in: context)
+        let forked = try AgentTask.fork(from: source, upToRun: firstRun, in: context)
         try context.save()
 
         let forkFolder = TaskWorkspaceAccess(task: forked).taskFolder
@@ -230,7 +231,7 @@ struct AgentTaskForkServiceTests {
         secondArtifact.createdAt = Date(timeIntervalSince1970: 106)
         context.insert(secondArtifact)
 
-        let forked = AgentTask.fork(from: source, upToRun: run, in: context)
+        let forked = try AgentTask.fork(from: source, upToRun: run, in: context)
         try context.save()
 
         #expect(TaskForkManifestService.sourceAvailabilityWarning(for: forked) == nil)
@@ -246,6 +247,129 @@ struct AgentTaskForkServiceTests {
         TaskContextStateManager.refresh(task: forked)
         let prompt = try #require(TaskContextStateManager.promptContext(for: forked))
         #expect(prompt.contains("Checkpoint files are unavailable"))
+    }
+
+    @Test("independent fork snapshots explicit files and rewrites attachment references")
+    func independentForkSnapshotsExplicitFiles() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let inputPath = (root as NSString).appendingPathComponent("report.md")
+        let attachmentPath = (root as NSString).appendingPathComponent("evidence.txt")
+        let directoryPath = (root as NSString).appendingPathComponent("shared-folder")
+        try "checkpoint report".write(toFile: inputPath, atomically: true, encoding: .utf8)
+        try "checkpoint evidence".write(toFile: attachmentPath, atomically: true, encoding: .utf8)
+        try FileManager.default.createDirectory(atPath: directoryPath, withIntermediateDirectories: true)
+
+        let container = try makeAgentTaskForkContainer()
+        let context = ModelContext(container)
+        let workspace = Workspace(name: "Independent Files", primaryPath: root)
+        let source = AgentTask(title: "Source", goal: "Revise the report", workspace: workspace)
+        source.inputs = [inputPath, directoryPath]
+        context.insert(workspace)
+        context.insert(source)
+        let run = TaskRun(task: source)
+        run.status = .completed
+        run.startedAt = Date(timeIntervalSince1970: 100)
+        run.completedAt = Date(timeIntervalSince1970: 110)
+        context.insert(run)
+        let attachmentEvent = TaskEvent(
+            task: source,
+            type: "user.message",
+            payload: "Review this.\n\nAttached files:\n- \(attachmentPath)",
+            run: run
+        )
+        attachmentEvent.timestamp = Date(timeIntervalSince1970: 105)
+        context.insert(attachmentEvent)
+
+        let forked = try AgentTask.fork(
+            from: source,
+            upToRun: run,
+            options: TaskForkOptions(mode: .conversationWithFileCopies),
+            in: context
+        )
+        try context.save()
+
+        let manifest = try #require(TaskForkManifestService.load(for: forked))
+        #expect(manifest.resolvedForkMode == .conversationWithFileCopies)
+        let copiedInput = try #require(manifest.sourceInputs?.first { $0.sourcePath == inputPath }?.localCopyPath)
+        let copiedAttachment = try #require(manifest.sourceAttachments?.first { $0.sourcePath == attachmentPath }?.localCopyPath)
+        #expect(manifest.sourceInputs?.first { $0.sourcePath == inputPath }?.sha256 != nil)
+        #expect(forked.inputs.contains(copiedInput))
+        #expect(forked.inputs.contains(directoryPath))
+        #expect(forked.events.contains { $0.payload.contains(copiedAttachment) && !$0.payload.contains(attachmentPath) })
+
+        try "changed source".write(toFile: inputPath, atomically: true, encoding: .utf8)
+        try "changed evidence".write(toFile: attachmentPath, atomically: true, encoding: .utf8)
+        #expect(try String(contentsOfFile: copiedInput, encoding: .utf8) == "checkpoint report")
+        #expect(try String(contentsOfFile: copiedAttachment, encoding: .utf8) == "checkpoint evidence")
+    }
+
+    @Test("Git-backed fork rejects file-copy mode before creating state")
+    func gitBackedForkRejectsFileCopyMode() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let container = try makeAgentTaskForkContainer()
+        let context = ModelContext(container)
+        let workspace = Workspace(name: "Repository", primaryPath: root)
+        let source = AgentTask(title: "Source", goal: "Continue", workspace: workspace)
+        context.insert(workspace)
+        context.insert(source)
+        let run = TaskRun(task: source)
+        run.status = .completed
+        context.insert(run)
+
+        #expect(throws: AgentTaskForkError.repositoryFileCopyDenied) {
+            try AgentTask.fork(
+                from: source,
+                upToRun: run,
+                options: TaskForkOptions(
+                    mode: .conversationWithFileCopies,
+                    repository: TaskForkRepositorySnapshot(
+                        rootPath: root,
+                        branch: "main",
+                        headSHA: "12345678",
+                        isDirty: false
+                    )
+                ),
+                in: context
+            )
+        }
+        #expect(workspace.tasks.count == 1)
+    }
+
+    @Test("Git fork becomes read-only while another task owns the shared worktree")
+    func gitForkBecomesReadOnlyDuringSharedWorktreeRun() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let container = try makeAgentTaskForkContainer()
+        let context = ModelContext(container)
+        let workspace = Workspace(name: "Repository", primaryPath: root)
+        let source = AgentTask(title: "Original conversation", goal: "Continue", workspace: workspace)
+        context.insert(workspace)
+        context.insert(source)
+        let run = TaskRun(task: source)
+        run.status = .completed
+        context.insert(run)
+        let forked = try AgentTask.fork(
+            from: source,
+            upToRun: run,
+            options: TaskForkOptions(
+                repository: TaskForkRepositorySnapshot(
+                    rootPath: root,
+                    branch: "main",
+                    headSHA: "12345678",
+                    isDirty: false
+                )
+            ),
+            in: context
+        )
+        try context.save()
+
+        #expect(TaskForkPolicyService.readOnlyReason(for: forked) == nil)
+        source.status = .running
+        let reason = try #require(TaskForkPolicyService.readOnlyReason(for: forked))
+        #expect(reason.contains("Original conversation"))
+        #expect(reason.contains("shared Git worktree"))
     }
 
     private func temporaryRoot() throws -> String {

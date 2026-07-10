@@ -376,6 +376,11 @@ final class TaskQueue {
     ) async -> Bool {
         let lifecycle = ContinuationLaunchLifecycle(task: task)
 
+        if let readOnlyReason = TaskForkPolicyService.readOnlyReason(for: task) {
+            recordForkReadOnlyBlock(task, reason: readOnlyReason, modelContext: modelContext)
+            return false
+        }
+
         // Try to find the original worker, or use any available one
         guard taskWorkerMap[task.id] != nil || hasAvailableWorker else {
             AppLogger.audit(.workerBlocked, category: "Queue", taskID: task.id, fields: [
@@ -960,6 +965,31 @@ final class TaskQueue {
         guard !blockers.isEmpty else { return "resource lock unavailable" }
         let modes = blockers.map(\.accessMode.rawValue).joined(separator: ",")
         return "waiting for \(blockers.count) active \(modes) lock\(blockers.count == 1 ? "" : "s")"
+    }
+
+    @MainActor
+    private func recordForkReadOnlyBlock(
+        _ task: AgentTask,
+        reason: String,
+        modelContext: ModelContext
+    ) {
+        guard !task.events.contains(where: {
+            $0.type == TaskEventTypes.System.info.rawValue && $0.payload == reason
+        }) else { return }
+        modelContext.insert(TaskEvent(
+            task: task,
+            eventType: TaskEventTypes.System.info,
+            payload: reason
+        ))
+        WorkspacePersistenceCoordinator.saveAndAutoExport(
+            workspace: task.workspace,
+            modelContext: modelContext,
+            taskID: task.id,
+            auditFields: [
+                "operation": "git_conversation_fork_read_only_block",
+                "result": "blocked"
+            ]
+        )
     }
 
     private func resourceKeysConflict(_ lhs: String, _ rhs: String) -> Bool {
