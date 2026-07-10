@@ -1,12 +1,21 @@
 import SwiftUI
 
 enum AstraLeadingCommandBarMetrics {
-    /// No leading inset: the commands sit flush after the traffic lights, with
-    /// the cluster's own horizontal padding as the only breathing room. An inert
-    /// icon-width slot used to pad this edge because the first accessory slot
-    /// could hit-test like titlebar chrome; restore it if toggle clicks or
-    /// hover-peek turn flaky beside the traffic lights.
+    /// Outer inset before the cluster. Purely cosmetic — unlike
+    /// `reservedAccessorySlotWidth` below, it doesn't change which view AppKit
+    /// sees as the accessory's first child, so it's safe to shrink on its own.
     static let leadingPadding: CGFloat = 0
+    /// AppKit starts a leading titlebar accessory immediately after the traffic
+    /// lights, but the first accessory-sized child can still behave like titlebar
+    /// chrome: its clicks/hover can route to the window's title-bar-drag handling
+    /// instead of the SwiftUI control underneath. Reserving one inert,
+    /// non-hit-testing command slot keeps the real sidebar-toggle button out of
+    /// that first position, so its clicks and hover-peek land reliably. Do not
+    /// remove this without on-device verification across window states — a prior
+    /// attempt to drop it for a flush-left layout was caught by review (PR #264)
+    /// before shipping.
+    static let reservedAccessorySlotWidth: CGFloat = AstraToolbarCommandMetrics.iconWidth
+    static let reservedAccessorySlotAllowsHitTesting = false
     static let trailingPadding: CGFloat = 2
 }
 
@@ -39,6 +48,14 @@ struct AstraLeadingCommandBar: View {
 
     var body: some View {
         AstraToolbarCommandCluster {
+            Color.clear
+                .frame(
+                    width: AstraLeadingCommandBarMetrics.reservedAccessorySlotWidth,
+                    height: AstraToolbarCommandMetrics.controlHeight
+                )
+            .allowsHitTesting(AstraLeadingCommandBarMetrics.reservedAccessorySlotAllowsHitTesting)
+            .accessibilityHidden(true)
+
             Button {
                 sidebarCommands.requestSidebarToggle()
             } label: {
