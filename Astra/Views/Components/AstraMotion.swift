@@ -12,4 +12,11 @@ enum AstraMotion {
     static func disclosure(reduceMotion: Bool) -> Animation? {
         reduceMotion ? nil : .smooth(duration: 0.16, extraBounce: 0.0)
     }
+
+    /// Workspace drawer open/close. A touch slower than plain disclosure so
+    /// the accordion's close+open reads as one drawer handing off to another
+    /// rather than two unrelated snaps.
+    static func accordion(reduceMotion: Bool) -> Animation? {
+        reduceMotion ? nil : .smooth(duration: 0.20, extraBounce: 0.0)
+    }
 }

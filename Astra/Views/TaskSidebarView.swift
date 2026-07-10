@@ -85,16 +85,6 @@ enum WorkspaceSidebarFilter {
     }
 }
 
-enum WorkspaceSidebarSelection {
-    static func shouldEnsureSelectedWorkspaceExpanded(
-        selectedWorkspaceID: UUID?,
-        collapsedWorkspaceIDs: Set<UUID>
-    ) -> Bool {
-        guard let selectedWorkspaceID else { return false }
-        return !collapsedWorkspaceIDs.contains(selectedWorkspaceID)
-    }
-}
-
 enum SidebarLeanPresentation {
     static let usesQuietNewTaskCommand = true
     static let sectionHeadersShowCounts = true
@@ -118,7 +108,11 @@ enum SidebarLeanPresentation {
     // The pinned drop target is drag-time chrome: it appears while a task
     // drag is in flight and otherwise cedes the space above the fold.
     static let pinnedDropZoneAppearsOnlyDuringDrag = true
-    static let pinnedPreviewLimit = 5
+    // One preview cap for every capped list on the rail (Pinned, Unreads,
+    // workspace drawers) so the fold falls in the same place everywhere.
+    static let sectionPreviewLimit = 6
+    static let pinnedPreviewLimit = sectionPreviewLimit
+    static let unreadPreviewLimit = sectionPreviewLimit
     // Row surfaces still span the full rail width (childTaskListLeadingPadding
     // stays 0 so hover/selection chrome lines up with the workspace card), but
     // child content steps in 12pt so containment reads without a guide rail.
@@ -280,7 +274,7 @@ private struct SidebarTopToolbar: View {
 }
 
 enum SidebarWorkspaceTaskList {
-    static let collapsedLimit = 6
+    static let collapsedLimit = SidebarLeanPresentation.sectionPreviewLimit
 
     static func visibleTasks(_ tasks: [AgentTask], isShowingAll: Bool) -> [AgentTask] {
         isShowingAll ? tasks : Array(tasks.prefix(collapsedLimit))
@@ -324,9 +318,12 @@ struct TaskSidebarView: View {
     @State private var searchText = ""
     @State private var isPinnedExpanded = true
     @State private var showsAllPinnedTasks = false
+    @State private var showsAllUnreadTasks = false
     @State private var isWorkspacesExpanded = true
-    @State private var expandedWorkspaceIDs: Set<UUID> = []
-    @State private var collapsedWorkspaceIDs: Set<UUID> = []
+    // Single-open accordion intent + per-query search-reveal dismissals.
+    // All writes funnel through `setAccordionState` so the "Show more"
+    // expansion of a drawer that just closed is always retired with it.
+    @State private var accordion = WorkspaceSidebarAccordion.State()
     @State private var isPinnedDropTargeted = false
     // True from the moment a sidebar task drag begins until the mouse
     // button is released. An `onDrop(isTargeted:)` on the column proved
@@ -356,6 +353,12 @@ struct TaskSidebarView: View {
 
     private var disclosureAnimation: Animation? {
         AstraMotion.disclosure(reduceMotion: reduceMotion)
+    }
+
+    /// Workspace drawer motion only — a touch slower than section
+    /// disclosure so the accordion's close+open reads as one handoff.
+    private var accordionAnimation: Animation? {
+        AstraMotion.accordion(reduceMotion: reduceMotion)
     }
 
     private var hoverAnimation: Animation? {
@@ -449,14 +452,27 @@ struct TaskSidebarView: View {
                 }
             }
 
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 0) {
-                    pinnedSection(using: taskIndex)
-                    unreadSection(using: taskIndex)
-                    workspaceSection(using: taskIndex)
-                    schedulesSection
+            ScrollViewReader { scrollProxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 0) {
+                        pinnedSection(using: taskIndex)
+                        unreadSection(using: taskIndex)
+                        workspaceSection(using: taskIndex)
+                        schedulesSection
+                    }
+                    .padding(.bottom, 12)
                 }
-                .padding(.bottom, 12)
+                // Keep the drawer that just opened on screen. Matters most
+                // when the open came from elsewhere (a pinned/unread task
+                // click, a new workspace) and the folder row sits below the
+                // fold; a click on a visible row scrolls nothing (no-anchor
+                // scrollTo is minimal), so it never fights the drawer motion.
+                .onChange(of: accordion.openWorkspaceID) {
+                    guard let openWorkspaceID = accordion.openWorkspaceID else { return }
+                    withAnimation(accordionAnimation) {
+                        scrollProxy.scrollTo(openWorkspaceID)
+                    }
+                }
             }
 
             appAccessFooter
@@ -472,9 +488,13 @@ struct TaskSidebarView: View {
         // repeating timer must not outlive it.
         .onDisappear { endTaskDrag() }
         .onChange(of: sidebarTasksVersion) { rebuildTaskIndex() }
-        .onChange(of: searchText) { rebuildTaskIndex() }
+        .onChange(of: searchText) {
+            rebuildTaskIndex()
+            setAccordionState(WorkspaceSidebarAccordion.searchChanged(in: accordion))
+        }
         .onChange(of: schedulesVersion) { rebuildSchedules() }
         .onChange(of: selectedWorkspace?.id) { handleSelectedWorkspaceChanged() }
+        .onChange(of: selectedTask?.id) { handleSelectedTaskChanged() }
         .onChange(of: selectedWorkspaceHasNoTasks) { updateNewTaskNudge() }
         .navigationTitle(selectedWorkspace?.name ?? "ASTRA")
         .toolbar {
@@ -554,6 +574,14 @@ struct TaskSidebarView: View {
                                     }
                                 }
                             )
+                            .padding(.leading, 2)
+                        } else if showsAllPinnedTasks,
+                                  taskIndex.pinnedTasks.count > SidebarLeanPresentation.pinnedPreviewLimit {
+                            sidebarShowMoreButton(title: "Show less", collapses: true) {
+                                withAnimation(disclosureAnimation) {
+                                    showsAllPinnedTasks = false
+                                }
+                            }
                             .padding(.leading, 2)
                         }
 
@@ -726,7 +754,7 @@ struct TaskSidebarView: View {
             .animation(hoverAnimation, value: isHovered)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .onHover { hovering in hoveredTaskID = hovering ? task.id : nil }
+        .onHover { updateTaskHover($0, id: task.id) }
         .contextMenu {
             Button {
                 withAnimation(disclosureAnimation) {
@@ -747,12 +775,39 @@ struct TaskSidebarView: View {
     @ViewBuilder
     private func unreadSection(using taskIndex: SidebarTaskIndex) -> some View {
         if !taskIndex.unreadTasks.isEmpty {
+            // Same fold as Pinned and workspace drawers: a burst of unread
+            // results must not shove Workspaces below the fold — the dock
+            // previews, and "Show more" opens the rest on demand.
+            let visibleUnreadTasks = showsAllUnreadTasks
+                ? taskIndex.unreadTasks
+                : Array(taskIndex.unreadTasks.prefix(SidebarLeanPresentation.unreadPreviewLimit))
+
             VStack(alignment: .leading, spacing: 0) {
                 unreadHeader(count: taskIndex.unreadTasks.count)
 
                 VStack(alignment: .leading, spacing: 2) {
-                    ForEach(taskIndex.unreadTasks) { task in
+                    ForEach(visibleUnreadTasks) { task in
                         unreadTaskRow(for: task)
+                    }
+
+                    if taskIndex.unreadTasks.count > visibleUnreadTasks.count {
+                        sidebarShowMoreButton(
+                            title: "Show \(taskIndex.unreadTasks.count - visibleUnreadTasks.count) more",
+                            action: {
+                                withAnimation(disclosureAnimation) {
+                                    showsAllUnreadTasks = true
+                                }
+                            }
+                        )
+                        .padding(.leading, 2)
+                    } else if showsAllUnreadTasks,
+                              taskIndex.unreadTasks.count > SidebarLeanPresentation.unreadPreviewLimit {
+                        sidebarShowMoreButton(title: "Show less", collapses: true) {
+                            withAnimation(disclosureAnimation) {
+                                showsAllUnreadTasks = false
+                            }
+                        }
+                        .padding(.leading, 2)
                     }
                 }
                 .padding(.horizontal, 10)
@@ -804,7 +859,7 @@ struct TaskSidebarView: View {
                 .padding(.trailing, 8)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .onHover { hovering in hoveredTaskID = hovering ? task.id : nil }
+        .onHover { updateTaskHover($0, id: task.id) }
         .contextMenu {
             taskContextMenu(for: task)
         }
@@ -880,8 +935,17 @@ struct TaskSidebarView: View {
                             .padding(.vertical, 5)
                             .frame(height: Stanford.sidebarScheduleRowHeight, alignment: .leading)
                             .contentShape(Rectangle())
+                            // Same hover chrome as task rows: routines were
+                            // the one clickable row type with no hover
+                            // feedback, which made them read as inert text.
+                            .background(
+                                RoundedRectangle(cornerRadius: Stanford.radiusSmall + 1, style: .continuous)
+                                    .fill(hoveredScheduleID == schedule.id ? Color.primary.opacity(0.052) : .clear)
+                                    .animation(hoverAnimation, value: hoveredScheduleID == schedule.id)
+                            )
                         }
                         .buttonStyle(.plain)
+                        .onHover { updateScheduleHover($0, id: schedule.id) }
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal, 10)
                         .padding(.vertical, 1)
@@ -900,6 +964,11 @@ struct TaskSidebarView: View {
                         Text("Routines")
                             .font(Stanford.caption(14))
                             .foregroundStyle(.secondary)
+                        // Same count badge as Pinned/Unreads/Workspaces — this
+                        // was the one section header without one.
+                        if !allSchedules.isEmpty {
+                            SidebarCountBadge(count: allSchedules.count)
+                        }
                         Image(systemName: "chevron.right")
                             .font(Stanford.ui(9, weight: .medium))
                             .foregroundStyle(.tertiary)
@@ -975,6 +1044,14 @@ struct TaskSidebarView: View {
 
     private func workspaceSection(using taskIndex: SidebarTaskIndex) -> some View {
         let visibleWorkspaces = visibleWorkspaces(using: taskIndex)
+        // Liveness invariant: running work whose own row is hidden (section
+        // collapsed, or workspace filtered out by star/search) signals from
+        // the header instead, so it is never invisible.
+        let headerRunningTaskCount = SidebarLivenessSignal.headerRunningTaskCount(
+            runningCounts: workspaces.map { (workspaceID: $0.id, count: taskIndex.runningTaskCount(in: $0)) },
+            visibleWorkspaceIDs: Set(visibleWorkspaces.map(\.id)),
+            isSectionExpanded: isWorkspacesExpanded
+        )
 
         return Section {
             if isWorkspacesExpanded && visibleWorkspaces.isEmpty {
@@ -1005,6 +1082,9 @@ struct TaskSidebarView: View {
                             .foregroundStyle(.secondary)
                         if !visibleWorkspaces.isEmpty {
                             SidebarCountBadge(count: visibleWorkspaces.count)
+                        }
+                        if headerRunningTaskCount > 0 {
+                            WorkspaceRunningIndicator(count: headerRunningTaskCount)
                         }
                         // Hover-only disclosure cue. Lives next to the
                         // label rather than at the right edge so the
@@ -1139,6 +1219,14 @@ struct TaskSidebarView: View {
                                 }
                             )
                             .padding(.leading, 2)
+                        } else if isShowingAll,
+                                  workspaceTasks.count > SidebarWorkspaceTaskList.collapsedLimit {
+                            sidebarShowMoreButton(title: "Show less", collapses: true) {
+                                withAnimation(disclosureAnimation) {
+                                    _ = expandedWorkspaceTaskLists.remove(workspace.id)
+                                }
+                            }
+                            .padding(.leading, 2)
                         }
                     }
                 }
@@ -1171,11 +1259,40 @@ struct TaskSidebarView: View {
         // use for selection chrome.
         .padding(.horizontal, 10)
         .padding(.vertical, 1)
-        .animation(disclosureAnimation, value: isExpanded)
+        .animation(accordionAnimation, value: isExpanded)
     }
 
     @State private var hoveredWorkspaceID: UUID?
     @State private var hoveredTaskID: UUID?
+    @State private var hoveredScheduleID: UUID?
+
+    // `.onHover` exit events are not ordered against the next row's enter
+    // event: clearing unconditionally lets a stale exit from the previous
+    // row wipe the hover the new row just claimed, which reads as chrome
+    // flicker while tracking down the rail. Only the current owner clears.
+    private func updateWorkspaceHover(_ hovering: Bool, id: UUID) {
+        if hovering {
+            hoveredWorkspaceID = id
+        } else if hoveredWorkspaceID == id {
+            hoveredWorkspaceID = nil
+        }
+    }
+
+    private func updateTaskHover(_ hovering: Bool, id: UUID) {
+        if hovering {
+            hoveredTaskID = id
+        } else if hoveredTaskID == id {
+            hoveredTaskID = nil
+        }
+    }
+
+    private func updateScheduleHover(_ hovering: Bool, id: UUID) {
+        if hovering {
+            hoveredScheduleID = id
+        } else if hoveredScheduleID == id {
+            hoveredScheduleID = nil
+        }
+    }
 
     private var workspaceEmptyTitle: String {
         if showStarredWorkspacesOnly {
@@ -1196,10 +1313,18 @@ struct TaskSidebarView: View {
         let isHovered = hoveredWorkspaceID == workspace.id
         let isSelected = selectedWorkspace?.id == workspace.id && selectedTask == nil
         let workspaceTaskCount = tasksForWorkspace(workspace, using: taskIndex).count
+        // Closed drawers still owe the user a liveness signal: with the
+        // accordion keeping one drawer open, running work elsewhere would
+        // otherwise be invisible. Expanded drawers show the spinner on the
+        // task row itself, so the badge would just double the signal there.
+        let runningTaskCount = isExpanded ? 0 : taskIndex.runningTaskCount(in: workspace)
 
         return HStack(alignment: .center, spacing: 7) {
+            // One button spanning chevron + folder + title. These used to be
+            // two buttons with the identical action, which made VoiceOver
+            // announce "Expand <workspace>" twice per row.
             Button {
-                withAnimation(disclosureAnimation) {
+                withAnimation(accordionAnimation) {
                     toggleWorkspaceOpenState(workspace, using: taskIndex)
                 }
             } label: {
@@ -1214,24 +1339,13 @@ struct TaskSidebarView: View {
                         .foregroundStyle(isHovered ? .secondary : .tertiary)
                         .rotationEffect(.degrees(isExpanded ? 90 : 0))
                         .frame(width: SidebarLeanPresentation.workspaceDisclosureChevronWidth, height: 22)
-                        .animation(disclosureAnimation, value: isExpanded)
+                        .animation(accordionAnimation, value: isExpanded)
 
                     Image(systemName: isSelected ? "folder.fill" : "folder")
                         .font(Stanford.ui(13, weight: .medium))
                         .foregroundStyle(isSelected ? Stanford.lagunita : .secondary)
                         .frame(width: 17, height: 22)
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel(isExpanded ? "Collapse \(workspace.name)" : "Expand \(workspace.name)")
 
-            Button {
-                withAnimation(disclosureAnimation) {
-                    toggleWorkspaceOpenState(workspace, using: taskIndex)
-                }
-            } label: {
-                HStack(spacing: 0) {
                     Text(workspace.name)
                         .font(Stanford.body(15))
                         .foregroundStyle(.primary)
@@ -1248,7 +1362,12 @@ struct TaskSidebarView: View {
             .accessibilityHint("Expands or collapses the workspace.")
             .help(workspace.name)
 
-            workspaceRowActions(for: workspace, isHovered: isHovered, taskCount: workspaceTaskCount)
+            workspaceRowActions(
+                for: workspace,
+                isHovered: isHovered,
+                taskCount: workspaceTaskCount,
+                runningTaskCount: runningTaskCount
+            )
         }
         .padding(.leading, 4)
         .padding(.trailing, 4)
@@ -1256,7 +1375,7 @@ struct TaskSidebarView: View {
         .frame(height: Stanford.sidebarWorkspaceRowHeight, alignment: .leading)
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
-        .onHover { hovering in hoveredWorkspaceID = hovering ? workspace.id : nil }
+        .onHover { updateWorkspaceHover($0, id: workspace.id) }
         .background(
             RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
                 .fill(workspaceRowFill(isSelected: isSelected, isHovered: isHovered))
@@ -1325,11 +1444,17 @@ struct TaskSidebarView: View {
         return .clear
     }
 
-    private func workspaceRowActions(for workspace: Workspace, isHovered: Bool, taskCount: Int) -> some View {
+    private func workspaceRowActions(
+        for workspace: Workspace,
+        isHovered: Bool,
+        taskCount: Int,
+        runningTaskCount: Int
+    ) -> some View {
         WorkspaceRowActions(
             workspace: workspace,
             isRowHovered: isHovered,
             taskCount: taskCount,
+            runningTaskCount: runningTaskCount,
             onNewTask: { startNewTask(in: workspace) },
             onToggleStarred: { toggleStarred(for: workspace) },
             onEdit: {
@@ -1356,25 +1481,27 @@ struct TaskSidebarView: View {
         let wasExpanded = isWorkspaceExpanded(workspace, using: taskIndex)
         selectedTask = nil
         selectedWorkspace = workspace
+        setAccordionState(WorkspaceSidebarAccordion.toggling(
+            workspace.id,
+            in: accordion,
+            wasExpanded: wasExpanded
+        ))
+    }
 
-        if wasExpanded {
-            collapseWorkspace(workspace)
-        } else {
-            expandWorkspace(workspace)
+    /// The one writer of the accordion state. Closing a drawer — explicitly
+    /// or by opening another — also retires its "Show more" expansion so it
+    /// reopens compact. Only `openWorkspaceID` is persisted, so dismissal-only
+    /// changes (search-reveal closes, query edits) skip the defaults write.
+    private func setAccordionState(_ newState: WorkspaceSidebarAccordion.State) {
+        guard newState != accordion else { return }
+        let openDrawerChanged = accordion.openWorkspaceID != newState.openWorkspaceID
+        if openDrawerChanged, let previousOpen = accordion.openWorkspaceID {
+            expandedWorkspaceTaskLists.remove(previousOpen)
         }
-    }
-
-    private func expandWorkspace(_ workspace: Workspace) {
-        collapsedWorkspaceIDs.remove(workspace.id)
-        expandedWorkspaceIDs.insert(workspace.id)
-        persistSidebarDisclosure()
-    }
-
-    private func collapseWorkspace(_ workspace: Workspace) {
-        expandedWorkspaceIDs.remove(workspace.id)
-        collapsedWorkspaceIDs.insert(workspace.id)
-        expandedWorkspaceTaskLists.remove(workspace.id)
-        persistSidebarDisclosure()
+        accordion = newState
+        if openDrawerChanged {
+            persistSidebarDisclosure()
+        }
     }
 
     private func loadSidebarDisclosure() {
@@ -1382,8 +1509,10 @@ struct TaskSidebarView: View {
         isPinnedExpanded = state.isPinnedExpanded
         isWorkspacesExpanded = state.isWorkspacesExpanded
         isSchedulesExpanded = state.isSchedulesExpanded
-        collapsedWorkspaceIDs = state.collapsedWorkspaceIDs
-        expandedWorkspaceIDs = state.expandedWorkspaceIDs
+        // Nothing persisted (first run, or the accordion migration) seeds
+        // the open drawer from the restored selection, so launch shows the
+        // working context instead of a wall of closed folders.
+        accordion.openWorkspaceID = state.openWorkspaceID ?? selectedWorkspace?.id
     }
 
     private func persistSidebarDisclosure() {
@@ -1391,17 +1520,20 @@ struct TaskSidebarView: View {
             isPinnedExpanded: isPinnedExpanded,
             isWorkspacesExpanded: isWorkspacesExpanded,
             isSchedulesExpanded: isSchedulesExpanded,
-            collapsedWorkspaceIDs: collapsedWorkspaceIDs,
-            expandedWorkspaceIDs: expandedWorkspaceIDs
+            openWorkspaceID: accordion.openWorkspaceID
         ))
     }
 
-    private func sidebarShowMoreButton(title: String, action: @escaping () -> Void) -> some View {
+    private func sidebarShowMoreButton(
+        title: String,
+        collapses: Bool = false,
+        action: @escaping () -> Void
+    ) -> some View {
         Button(action: action) {
             HStack(spacing: 5) {
                 Text(title)
                     .font(Stanford.caption(12).weight(.medium))
-                Image(systemName: "chevron.down")
+                Image(systemName: collapses ? "chevron.up" : "chevron.down")
                     .font(Stanford.ui(9, weight: .semibold))
             }
             .foregroundStyle(.secondary)
@@ -1464,7 +1596,7 @@ struct TaskSidebarView: View {
                 .padding(.trailing, 8)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .onHover { hovering in hoveredTaskID = hovering ? task.id : nil }
+        .onHover { updateTaskHover($0, id: task.id) }
         .onDrag {
             beginTaskDrag()
             return NSItemProvider(object: task.id.uuidString as NSString)
@@ -1536,27 +1668,22 @@ struct TaskSidebarView: View {
         .frame(width: 24, height: 24, alignment: .center)
         .opacity(isHovered ? 1 : 0)
         .allowsHitTesting(isHovered)
-        .accessibilityHidden(!isHovered)
+        // Visually hover-only, but always present to assistive tech —
+        // VoiceOver has no hover, and the context menu shouldn't be the
+        // only discoverable path to task actions.
+        .accessibilityLabel("Task options")
         .animation(hoverAnimation, value: isHovered)
         .help("Task options")
     }
 
     private func isWorkspaceExpanded(_ workspace: Workspace, using taskIndex: SidebarTaskIndex) -> Bool {
-        if collapsedWorkspaceIDs.contains(workspace.id) {
-            return false
-        }
-
-        return selectedWorkspace?.id == workspace.id ||
-            expandedWorkspaceIDs.contains(workspace.id) ||
-            (!searchText.isEmpty && !tasksForWorkspace(workspace, matchingSearch: true, using: taskIndex).isEmpty) ||
-            workspaceHasMatchingApp(workspace)
-    }
-
-    private func toggleWorkspaceExpansion(_ workspace: Workspace, using taskIndex: SidebarTaskIndex) {
-        if isWorkspaceExpanded(workspace, using: taskIndex) {
-            collapseWorkspace(workspace)
-        } else {
-            expandWorkspace(workspace)
+        WorkspaceSidebarAccordion.isExpanded(
+            workspaceID: workspace.id,
+            state: accordion,
+            isSearchActive: !searchText.isEmpty
+        ) {
+            !tasksForWorkspace(workspace, matchingSearch: true, using: taskIndex).isEmpty ||
+                workspaceHasMatchingApp(workspace)
         }
     }
 
@@ -1702,18 +1829,27 @@ struct TaskSidebarView: View {
     }
 
     private func handleSelectedWorkspaceChanged() {
-        if let selectedWorkspace,
-           WorkspaceSidebarSelection.shouldEnsureSelectedWorkspaceExpanded(
-               selectedWorkspaceID: selectedWorkspace.id,
-               collapsedWorkspaceIDs: collapsedWorkspaceIDs
-           ) {
-            ensureWorkspaceExpanded(selectedWorkspace)
-        }
+        // Accordion: the open drawer follows the workspace you switch to,
+        // wherever the switch originates (row click, new workspace, schedule
+        // row, App Studio). The drawer animates because `workspaceListRow`
+        // animates on `isExpanded` itself, not only on toggle clicks.
+        // `selectionChanged` (not `selecting`) so this deferred echo cannot
+        // reopen a drawer the user just collapsed.
+        setAccordionState(WorkspaceSidebarAccordion.selectionChanged(selectedWorkspace?.id, in: accordion))
         updateNewTaskNudge()
     }
 
+    /// Picking a task — from Pinned, Unreads, or anywhere else — moves the
+    /// working context to that task's workspace, so the accordion follows:
+    /// the drawer you're "in" opens and the stale one closes. Goes through
+    /// `selectionChanged` so a drawer the user just dismissed stays closed.
+    private func handleSelectedTaskChanged() {
+        guard let workspaceID = selectedTask?.workspace?.id else { return }
+        setAccordionState(WorkspaceSidebarAccordion.selectionChanged(workspaceID, in: accordion))
+    }
+
     private func ensureWorkspaceExpanded(_ workspace: Workspace) {
-        expandWorkspace(workspace)
+        setAccordionState(WorkspaceSidebarAccordion.selecting(workspace.id, in: accordion))
     }
 
     private func handleNewTaskButton() {
@@ -1838,6 +1974,9 @@ private struct WorkspaceRowActions: View {
     let workspace: Workspace
     let isRowHovered: Bool
     let taskCount: Int
+    /// Live tasks inside a *closed* drawer — callers pass 0 for expanded
+    /// rows, where the task rows' own spinners already carry the signal.
+    let runningTaskCount: Int
     let onNewTask: () -> Void
     let onToggleStarred: () -> Void
     let onEdit: () -> Void
@@ -1862,7 +2001,9 @@ private struct WorkspaceRowActions: View {
             actions
                 .opacity(isRowHovered ? 1 : 0)
                 .allowsHitTesting(isRowHovered)
-                .accessibilityHidden(!isRowHovered)
+                // Stays in the accessibility tree at rest: VoiceOver can't
+                // hover, so the options/new-task controls must be reachable
+                // without the pointer.
         }
         .frame(width: SidebarLeanPresentation.workspaceRowTrailingSlotWidth, alignment: .trailing)
         .animation(hoverAnimation, value: isRowHovered)
@@ -1870,6 +2011,10 @@ private struct WorkspaceRowActions: View {
 
     private var metadata: some View {
         HStack(spacing: 7) {
+            if runningTaskCount > 0 {
+                WorkspaceRunningIndicator(count: runningTaskCount)
+            }
+
             if taskCount > 0 {
                 // Pill badge — same chrome as the section-header counts —
                 // so counts and relative timestamps stop sharing one
@@ -1984,6 +2129,43 @@ private struct NewTaskNudgePopover: View {
     }
 }
 
+/// Quiet liveness signal on a collapsed workspace row: a small lagunita dot
+/// with a slow breathing pulse, meaning "an agent is working inside this
+/// closed drawer". Lagunita matches the running spinner's tint so "teal =
+/// running" stays one vocabulary, distinct from the cardinal unread dot.
+/// Under Reduce Motion the dot holds steady — presence alone carries it.
+private struct WorkspaceRunningIndicator: View {
+    let count: Int
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var isPulsing = false
+
+    private var label: String {
+        count == 1 ? "1 task running" : "\(count) tasks running"
+    }
+
+    var body: some View {
+        Circle()
+            .fill(Stanford.lagunita)
+            .frame(width: 6, height: 6)
+            .opacity(isPulsing ? 0.35 : 1)
+            .animation(
+                reduceMotion ? nil : .easeInOut(duration: 1.1).repeatForever(autoreverses: true),
+                value: isPulsing
+            )
+            .frame(width: 10, height: 22)
+            .onAppear { isPulsing = !reduceMotion }
+            // Reduce Motion can flip while the dot is on screen. Rewriting
+            // `isPulsing` under the new setting replaces the in-flight
+            // repeatForever animation (animation is nil once RM is on), so
+            // the dot settles steady — or starts breathing — immediately
+            // instead of waiting to be recreated.
+            .onChange(of: reduceMotion) { isPulsing = !reduceMotion }
+            .help(label)
+            .accessibilityLabel(label)
+    }
+}
+
 private struct SidebarCountBadge: View {
     let count: Int
 
@@ -2031,272 +2213,5 @@ private struct SectionAddIcon: View {
             )
             .contentShape(Rectangle())
             .animation(hoverAnimation, value: isHovered)
-    }
-}
-
-private struct SidebarThreadRow: View {
-    let task: AgentTask
-    let isSelected: Bool
-    /// Hover signal driven by the parent's `hoveredTaskID` instead of an
-    /// internal `@State`. Two separate hover sources (one inner, one
-    /// outer) used to race — the three-dots overlay would appear (parent's
-    /// hover fired) while the inner timestamp stayed visible (inner
-    /// hover hadn't fired yet), which is what produced the overlap. One
-    /// source of truth fixes the race.
-    let isHovered: Bool
-    var contentLeadingPadding: CGFloat = 0
-    var attemptCount: Int = 1
-    var subtitle: String?
-    /// Hidden when the row is rendered inside the Pinned section — the
-    /// section already implies "pinned" and the unpin overlay button
-    /// covers the same gutter on hover, so showing the glyph there
-    /// would just add noise.
-    var showsPinIndicator: Bool = true
-    /// Hidden inside the Pinned section: the same task already shows
-    /// its timestamp in its workspace row, and dropping it here keeps
-    /// the right gutter clear for the unpin overlay (which previously
-    /// had to fight the timestamp for the same x-position) and gives
-    /// pinned titles more room before they truncate.
-    var showsTimestamp: Bool = true
-
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    private var selectionAnimation: Animation? {
-        reduceMotion ? nil : .easeOut(duration: 0.12)
-    }
-
-    private var hoverAnimation: Animation? {
-        reduceMotion ? nil : .easeOut(duration: 0.10)
-    }
-
-    private var metadataAnimation: Animation? {
-        reduceMotion ? nil : .easeOut(duration: 0.14)
-    }
-
-    private var titleWeight: Font.Weight {
-        if task.shouldShowUnread { return .semibold }
-        return isSelected ? .medium : .regular
-    }
-
-    private var metadataWeight: Font.Weight {
-        task.shouldShowUnread ? .semibold : .regular
-    }
-
-    private var showIcon: Bool {
-        SidebarThreadRowLayout.showsStatusIcon(
-            for: task.status,
-            isUnread: task.shouldShowUnread,
-            isHovered: isHovered,
-            isSelected: isSelected
-        )
-    }
-
-    private var isActionableStatus: Bool {
-        SidebarThreadRowLayout.isActionableStatus(task.status)
-    }
-
-    /// True when the row's glyph is the unread dot: a finished result the
-    /// user hasn't looked at yet. Actionable states keep their own glyphs —
-    /// they already say "needs me" more specifically than a dot could.
-    private var showsUnreadDot: Bool {
-        task.shouldShowUnread && !isActionableStatus
-    }
-
-    /// Names the leading glyph for tooltips and VoiceOver — the status text
-    /// no longer renders as a second line, so the glyph has to speak.
-    private var statusGlyphDescription: String {
-        if showsUnreadDot { return "Unread result" }
-        switch task.status {
-        case .running:        return "Running"
-        case .pendingUser:    return "Needs input"
-        case .failed:         return "Needs retry"
-        case .budgetExceeded: return "Budget hit"
-        case .cancelled:      return "Cancelled"
-        case .completed:      return "Completed"
-        case .queued:         return "Queued"
-        case .draft:          return "Draft"
-        }
-    }
-
-    private var titlePresentation: Formatters.SidebarTaskTitlePresentation {
-        Formatters.sidebarTaskTitlePresentation(task.title)
-    }
-
-    var body: some View {
-        HStack(alignment: .center, spacing: SidebarThreadRowLayout.statusIconTitleSpacing) {
-            if showIcon {
-                statusIcon
-                    .frame(
-                        width: SidebarThreadRowLayout.statusIconWidth,
-                        height: SidebarThreadRowLayout.statusIconWidth
-                    )
-                    .opacity(isActionableStatus && !isSelected && !isHovered ? 0.6 : 1)
-                    .padding(.leading, contentLeadingPadding)
-                    .help(statusGlyphDescription)
-                    .accessibilityLabel(statusGlyphDescription)
-            }
-
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 5) {
-                    SidebarTaskTitleText(
-                        presentation: titlePresentation,
-                        font: Stanford.ui(SidebarThreadRowLayout.titleFontSize, weight: titleWeight)
-                    )
-                    .layoutPriority(1)
-
-                    if attemptCount > 1 {
-                        Text("\(attemptCount) attempts")
-                            .font(Stanford.caption(10).weight(.medium))
-                            .foregroundStyle(Stanford.textSecondary)
-                            .padding(.horizontal, 5)
-                            .padding(.vertical, 2)
-                            .background(Color.primary.opacity(0.04))
-                            .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
-                            .fixedSize()
-                    }
-                }
-
-                if let subtitle {
-                    Text(subtitle)
-                        .font(Stanford.caption(11))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-            }
-            .padding(.leading, showIcon ? 0 : contentLeadingPadding)
-
-            Spacer(minLength: 6)
-
-            // Right-side metadata is hidden on
-            // hover so the three-dots context-menu overlay (added by
-            // `compactTaskRow`) can render without overlapping text.
-            // Keep the layout in place (no width shift) by using opacity,
-            // not conditional removal.
-            if showsTimestamp {
-                HStack(spacing: 5) {
-                    if task.isPinned && showsPinIndicator {
-                        // Tells the user "this row also appears in the
-                        // Pinned section" — pinned tasks render twice (once
-                        // in Pinned, once under their workspace), and
-                        // without this glyph the workspace appearance
-                        // looks like a duplicate.
-                        Image(systemName: "pin.fill")
-                            .font(Stanford.ui(9, weight: .medium))
-                            .foregroundStyle(.secondary.opacity(0.58))
-                            .help("Pinned")
-                            .accessibilityLabel("Pinned")
-                    }
-                    Text(relativeTime(task.updatedAt))
-                        .font(Stanford.caption(11).weight(metadataWeight))
-                        .foregroundStyle(task.shouldShowUnread ? Color.primary : Stanford.textSecondary)
-                        .lineLimit(1)
-                        .fixedSize()
-                        .frame(minWidth: 24, alignment: .trailing)
-                }
-                .opacity(isHovered ? 0 : 1)
-                // Fades the timestamp out at the same rate as the
-                // hover-only overlay buttons (`unpin`, `taskOptionsMenu`)
-                // fade in, so the right gutter swaps smoothly instead of
-                // one element snapping while the other animates.
-                .animation(metadataAnimation, value: isHovered)
-            }
-        }
-        .padding(.horizontal, SidebarThreadRowLayout.rowHorizontalPadding)
-        .padding(.vertical, 5)
-        .frame(minHeight: Stanford.sidebarThreadRowHeight, alignment: .leading)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: Stanford.radiusSmall + 1, style: .continuous)
-                .fill(rowFill)
-                .animation(selectionAnimation, value: isSelected)
-                .animation(hoverAnimation, value: isHovered)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: Stanford.radiusSmall + 1, style: .continuous)
-                .stroke(rowStroke, lineWidth: 1)
-                .animation(selectionAnimation, value: isSelected)
-                .animation(hoverAnimation, value: isHovered)
-        )
-        .contentShape(Rectangle())
-        .accessibilityIdentifier("TaskRow_\(task.title)")
-    }
-
-    private var rowFill: Color {
-        if isSelected { return Stanford.selectionFill }
-        if isHovered { return Color.primary.opacity(0.052) }
-        return .clear
-    }
-
-    private var rowStroke: Color {
-        if isSelected { return Color.primary.opacity(0.10) }
-        if isHovered { return Color.primary.opacity(0.055) }
-        return .clear
-    }
-
-    @ViewBuilder
-    private var statusIcon: some View {
-        if showsUnreadDot {
-            // Same dot the Unreads section header wears, so "red dot =
-            // unseen result" stays one vocabulary across the rail.
-            Image(systemName: "circle.fill")
-                .font(Stanford.ui(6, weight: .medium))
-                .foregroundStyle(Stanford.cardinalRed)
-        } else {
-            statusGlyph
-        }
-    }
-
-    @ViewBuilder
-    private var statusGlyph: some View {
-        switch task.status {
-        case .running:
-            ProgressView()
-                .controlSize(.small)
-                .tint(Stanford.lagunita)
-                .scaleEffect(0.8)
-        case .completed:
-            Image(systemName: "checkmark.circle")
-                .font(Stanford.ui(12))
-                .foregroundStyle(Stanford.completed)
-        case .pendingUser:
-            Image(systemName: "person.crop.circle")
-                .font(Stanford.ui(12))
-                .foregroundStyle(Stanford.pendingUser)
-        case .failed:
-            Image(systemName: "exclamationmark.triangle")
-                .font(Stanford.ui(12))
-                .foregroundStyle(Stanford.failed)
-        case .budgetExceeded:
-            Image(systemName: "exclamationmark.triangle")
-                .font(Stanford.ui(12))
-                .foregroundStyle(Stanford.poppy)
-        case .cancelled:
-            Image(systemName: "minus.circle")
-                .font(Stanford.ui(12))
-                .foregroundStyle(.secondary)
-        case .queued:
-            Image(systemName: "clock")
-                .font(Stanford.ui(12))
-                .foregroundStyle(.secondary)
-        case .draft:
-            Image(systemName: "pencil")
-                .font(Stanford.ui(11))
-                .foregroundStyle(.secondary)
-        }
-    }
-
-    private func relativeTime(_ date: Date) -> String {
-        let interval = Date().timeIntervalSince(date)
-        if interval < 60 { return "now" }
-        if interval < 3600 { return "\(Int(interval / 60))m" }
-        if interval < 86400 { return "\(Int(interval / 3600))h" }
-        if interval < 604800 { return "\(Int(interval / 86400))d" }
-        if interval < 2592000 { return "\(Int(interval / 604800))w" }
-        return "\(Int(interval / 2592000))mo"
-    }
-
-    private func formatCost(_ cost: Double) -> String {
-        if cost < 0.01 { return "<$0.01" }
-        return String(format: "$%.2f", cost)
     }
 }
