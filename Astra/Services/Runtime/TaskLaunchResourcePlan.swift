@@ -19,6 +19,7 @@ enum TaskLaunchResourceSource: String, Codable, Sendable {
     case connector
     case browser
     case provider
+    case sandboxApproval = "sandbox_approval"
 }
 
 enum TaskLaunchResourceSensitivity: String, Codable, Sendable {
@@ -246,6 +247,16 @@ struct TaskLaunchResourcePlan: Codable, Equatable, Sendable {
 
     var needsProviderNativeCredentialReadAccess: Bool {
         !providerNativeCredentialReadablePaths.isEmpty
+    }
+
+    var providerNativeReadOnlyInputPaths: [String] {
+        uniquePaths(hostPathGrants.compactMap { grant in
+            guard grant.access == .read,
+                  grant.source == .taskInput || grant.source == .userAttachment else {
+                return nil
+            }
+            return grant.path
+        })
     }
 
     var gitCredentialSandboxContext: GitCredentialSandboxContext {

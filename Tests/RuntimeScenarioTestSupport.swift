@@ -39,9 +39,12 @@ extension AgentRuntimeWorker {
     /// test. Tests that exercise readiness *failure* inject a blocked report
     /// directly (see AgentRuntimeComponentTests) and are unaffected.
     @MainActor
-    static func scenarioWorker() -> AgentRuntimeWorker {
+    static func scenarioWorker(
+        sandboxEnforcementOverride: ExecutionSandboxEnforcement? = nil
+    ) -> AgentRuntimeWorker {
         let runner = AgentRuntimeProcessRunner { permissionPolicy in
-            let enforcement: ExecutionSandboxEnforcement = permissionPolicy == .autonomous ? .strict : .bestEffort
+            let enforcement = sandboxEnforcementOverride
+                ?? (permissionPolicy == .autonomous ? .strict : .bestEffort)
             return ExecutionSandboxSettings(enforcement: enforcement)
         }
         let worker = AgentRuntimeWorker(

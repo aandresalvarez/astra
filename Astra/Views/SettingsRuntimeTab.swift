@@ -217,7 +217,7 @@ struct SettingsRuntimeTab: View {
                 }
                 .pickerStyle(.segmented)
 
-                Text(selectedSandboxEnforcement.helpText)
+                Text(sandboxEnforcementHelpText)
                     .font(Stanford.caption(12))
                     .foregroundStyle(Stanford.coolGrey)
                     .fixedSize(horizontal: false, vertical: true)
@@ -464,6 +464,20 @@ struct SettingsRuntimeTab: View {
         case .strict:
             return .enforce
         }
+    }
+
+    private var selectedSandboxResolution: ExecutionSandboxResolution {
+        ExecutionSandboxSettings.resolve(
+            permissionPolicy: PermissionPolicy.fromAgentPolicyLevel(selectedDefaultPolicyLevel),
+            storedEnforcement: selectedSandboxEnforcement,
+            storedAllowNetwork: sandboxAllowNetwork,
+            storedLayerNativeProviders: sandboxLayerNativeProviders,
+            storedReadScope: selectedSandboxReadScope
+        )
+    }
+
+    private var sandboxEnforcementHelpText: String {
+        "\(selectedSandboxEnforcement.helpText) \(selectedSandboxResolution.effectiveSummary)"
     }
 
     private var sandboxEnforcementSelectionBinding: Binding<String> {

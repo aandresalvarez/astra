@@ -46,6 +46,13 @@ struct ComposerPresentationTests {
         #expect(ComposerToolbarPresentation.permissionModeUsesFlatChrome == true)
     }
 
+    @Test("composer keeps Auto separate from execution sandbox state")
+    func composerSeparatesAutoFromExecutionSandbox() {
+        #expect(ComposerToolbarPresentation.permissionModeLabel(for: .autonomous) == "Auto")
+        #expect(ComposerToolbarPresentation.permissionModeHelp(for: .autonomous).contains("independently controls OS isolation"))
+        #expect(ComposerToolbarPresentation.permissionModeLabel(for: .review) == "Ask")
+    }
+
     @Test("chat transcript bubbles are shared across chat surfaces")
     func chatTranscriptBubblesAreSharedAcrossChatSurfaces() throws {
         let chatPanel = try sourceFile("Astra/Views/ChatPanelView.swift")

@@ -4,6 +4,21 @@ import ASTRAModels
 import ASTRAPersistence
 
 struct ConnectorRuntimeProjection {
+    struct CredentialApprovalRequest: Equatable {
+        var connectorID: UUID
+        var connectorName: String
+        var serviceType: String
+        var labels: [String]
+
+        var displayName: String {
+            let name = connectorName.trimmingCharacters(in: .whitespacesAndNewlines)
+            let service = serviceType.trimmingCharacters(in: .whitespacesAndNewlines)
+            let connectorDisplayName = name.isEmpty ? (service.isEmpty ? "Connector" : service) : name
+            let noun = labels.count == 1 ? "credential" : "credentials"
+            return "\(connectorDisplayName) connector \(noun) (\(labels.count) configured \(noun))"
+        }
+    }
+
     struct CredentialExposurePolicy: Equatable {
         var approvedCredentialLabels: Set<String>
         var allowUnapprovedNonHTTPConnectorCredentials: Bool
@@ -162,15 +177,34 @@ struct ConnectorRuntimeProjection {
     }
 
     func unapprovedCredentialLabelsRequiringApproval() -> [String] {
-        Self.uniquedSorted(configuredCredentialBindings().compactMap { binding in
-            guard !credentialExposurePolicy.exposeAllCredentials,
-                  !credentialExposurePolicy.approvedCredentialLabels.contains(binding.label),
-                  !(credentialExposurePolicy.allowUnapprovedNonHTTPConnectorCredentials
-                    && Self.allowsCompatibilityCredentialEgress(for: binding.connector)) else {
-                return nil
+        Self.uniquedSorted(unapprovedCredentialApprovalRequests().flatMap(\.labels))
+    }
+
+    func unapprovedCredentialApprovalRequests() -> [CredentialApprovalRequest] {
+        connectors.compactMap { connector in
+            let credentials = connector.credentials(store: secretStore)
+            let labels = connector.credentialKeys.compactMap { key -> String? in
+                let originalKey = key.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !originalKey.isEmpty,
+                      let value = credentials[key] ?? credentials[originalKey],
+                      !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    return nil
+                }
+                let label = Self.credentialLabel(for: connector, key: originalKey)
+                guard requiresCredentialApproval(label: label, connector: connector) else {
+                    return nil
+                }
+                return label
             }
-            return binding.label
-        })
+            let uniqueLabels = Self.uniquedSorted(labels)
+            guard !uniqueLabels.isEmpty else { return nil }
+            return CredentialApprovalRequest(
+                connectorID: connector.id,
+                connectorName: connector.name,
+                serviceType: connector.serviceType,
+                labels: uniqueLabels
+            )
+        }
     }
 
     static func credentialLabel(for connector: Connector, key: String) -> String {
@@ -346,6 +380,10 @@ struct ConnectorRuntimeProjection {
             || credentialExposurePolicy.approvedCredentialLabels.contains(label)
             || (credentialExposurePolicy.allowUnapprovedNonHTTPConnectorCredentials
                 && Self.allowsCompatibilityCredentialEgress(for: connector))
+    }
+
+    private func requiresCredentialApproval(label: String, connector: Connector) -> Bool {
+        !canExposeCredential(label: label, connector: connector)
     }
 
     private static func appendBinding(

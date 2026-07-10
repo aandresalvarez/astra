@@ -65,8 +65,8 @@ struct AskCoverageBadgeTests {
         )
         #expect(!badge.hasLiveApprovals)
         #expect(badge.tier == .providerManaged)
-        // Autonomous escalates ANY non-strict enforcement (including a user-set
-        // .off) to strict, so the strict kernel floor always holds for Auto runs.
+        // This fixture explicitly supplies strict wrapping, so Auto retains the
+        // configured kernel floor while still opening no live approval channel.
         #expect(badge.hasKernelFloor)
     }
 
