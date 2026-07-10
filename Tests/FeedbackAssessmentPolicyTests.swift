@@ -122,6 +122,89 @@ struct FeedbackAssessmentPolicyTests {
         }
     }
 
+    @Test("whitespace-only assessment semantics fail closed")
+    func blankAssessmentSemanticsFailClosed() throws {
+        let report = try fixtureReport()
+        let cases: [(field: String, mutate: (inout FeedbackAssessmentV1) -> Void)] = [
+            ("assessment.revisionID", { $0.revisionID = " \n\t" }),
+            ("assessment.behavioralOwner", { $0.behavioralOwner = " \n\t" }),
+            ("assessment.evidence[].evidenceID", { $0.evidence[0].evidenceID = " \n\t" }),
+            ("assessment.evidence[].summary", { $0.evidence[0].summary = " \n\t" }),
+            ("assessment.counterevidence[].evidenceID", {
+                $0.counterevidence = [
+                    FeedbackAssessmentEvidenceV1(evidenceID: " \n\t", summary: "Known contradiction.")
+                ]
+            }),
+            ("assessment.counterevidence[].summary", {
+                $0.counterevidence = [
+                    FeedbackAssessmentEvidenceV1(evidenceID: "known-counter", summary: " \n\t")
+                ]
+            }),
+            ("assessment.regressionTestProposal", { $0.regressionTestProposal = " \n\t" }),
+            ("assessment.acceptanceCriteria[]", { $0.acceptanceCriteria = [" \n\t"] }),
+            ("assessment.missingQuestions[]", { $0.missingQuestions = [" \n\t"] }),
+            ("assessment.sourceRevision", { $0.sourceRevision = " \n\t" }),
+            ("assessment.currentMainRevision", { $0.currentMainRevision = " \n\t" })
+        ]
+
+        for testCase in cases {
+            var value = assessment(for: report)
+            testCase.mutate(&value)
+            #expect(throws: FeedbackAssessmentSemanticValidationError.blankSemanticValue(
+                field: testCase.field
+            )) {
+                try validate(value, for: report)
+            }
+        }
+    }
+
+    @Test("trusted report and coordinator revision semantics reject blanks")
+    func blankTrustedRevisionAndCitationSemanticsFailClosed() throws {
+        let report = try fixtureReport()
+
+        var blankReportedRevision = report
+        blankReportedRevision.build.gitCommit = " \n\t"
+        #expect(throws: FeedbackAssessmentSemanticValidationError.blankSemanticValue(
+            field: "report.build.gitCommit"
+        )) {
+            try validate(
+                assessment(for: report),
+                for: blankReportedRevision,
+                trustedContext: trustedContext(for: report)
+            )
+        }
+
+        let contexts: [(field: String, value: FeedbackAssessmentTrustedContext)] = [
+            (
+                "trustedContext.assessmentRevisionID",
+                trustedContext(for: report, assessmentRevisionID: " \n\t")
+            ),
+            (
+                "trustedContext.sourceRevision",
+                trustedContext(for: report, sourceRevision: " \n\t")
+            ),
+            (
+                "trustedContext.currentMainRevision",
+                trustedContext(for: report, currentMainRevision: " \n\t")
+            ),
+            (
+                "trustedContext.allowedEvidenceIDs[]",
+                trustedContext(for: report, allowedEvidenceIDs: ["app-log", " \n\t"])
+            )
+        ]
+        for testCase in contexts {
+            #expect(throws: FeedbackAssessmentSemanticValidationError.blankSemanticValue(
+                field: testCase.field
+            )) {
+                try validate(
+                    assessment(for: report),
+                    for: report,
+                    trustedContext: testCase.value
+                )
+            }
+        }
+    }
+
     @Test("unknown cause requires questions and cannot claim confident root cause")
     func unknownCauseNeedsInformation() throws {
         let report = try fixtureReport()
@@ -148,6 +231,36 @@ struct FeedbackAssessmentPolicyTests {
         value.rootCauseHypothesis = nil
         value.reproductionConfidence = FeedbackAssessmentValueV1(rawValue: "high")
         #expect(throws: FeedbackAssessmentSemanticValidationError.unknownCauseCannotClaimConfidence("high")) {
+            try validate(value, for: report)
+        }
+    }
+
+    @Test("known classification with no semantic root cause has exact needs-information errors")
+    func knownClassificationMissingRootCauseErrorsAreExact() throws {
+        let report = try fixtureReport()
+        var value = assessment(for: report)
+        value.rootCauseHypothesis = " \n\t"
+        value.reproductionConfidence = FeedbackAssessmentValueV1(rawValue: "low")
+        value.missingQuestions = ["Which operation first diverged?"]
+
+        let needsInformation = try validate(value, for: report)
+        #expect(needsInformation.triageDisposition == .needsInformation)
+
+        value.rootCauseHypothesis = nil
+        value.missingQuestions = []
+        #expect(throws: FeedbackAssessmentSemanticValidationError.missingRootCauseRequiresQuestions) {
+            try validate(value, for: report)
+        }
+
+        value.reproductionConfidence = FeedbackAssessmentValueV1(rawValue: "high")
+        #expect(throws: FeedbackAssessmentSemanticValidationError.missingRootCauseRequiresQuestions) {
+            try validate(value, for: report)
+        }
+
+        value.missingQuestions = ["Which operation first diverged?"]
+        #expect(throws: FeedbackAssessmentSemanticValidationError.missingRootCauseCannotClaimConfidence(
+            "high"
+        )) {
             try validate(value, for: report)
         }
     }
@@ -252,6 +365,35 @@ struct FeedbackAssessmentPolicyTests {
         #expect(overridden.overrideAudit?.reason == "Scope is narrow and a workaround exists.")
         #expect(overridden.overrideAudit?.previousPriority == base.effectivePriority)
         #expect(overridden.overrideAudit?.decidedAt == decidedAt)
+    }
+
+    @Test("priority override reviewer and reason must be semantically nonblank")
+    func priorityOverrideRejectsBlankAuditIdentityAndReason() throws {
+        let report = try fixtureReport()
+        let validated = try validate(assessment(for: report), for: report)
+        let decision = try FeedbackPriorityPolicy.decide(report: report, assessment: validated)
+
+        var blankReviewer = triage(
+            reportID: report.reportID,
+            assessmentRevisionID: validated.assessment.revisionID
+        )
+        blankReviewer.reviewerID = " \n\t"
+        #expect(throws: FeedbackPriorityPolicyError.blankSemanticValue(
+            field: "staffTriage.reviewerID"
+        )) {
+            try FeedbackPriorityPolicy.applyingHumanOverride(blankReviewer, to: decision)
+        }
+
+        var blankReason = triage(
+            reportID: report.reportID,
+            assessmentRevisionID: validated.assessment.revisionID
+        )
+        blankReason.reason = " \n\t"
+        #expect(throws: FeedbackPriorityPolicyError.blankSemanticValue(
+            field: "staffTriage.reason"
+        )) {
+            try FeedbackPriorityPolicy.applyingHumanOverride(blankReason, to: decision)
+        }
     }
 
     @Test("priority revalidates a sealed assessment against the exact report")
@@ -393,6 +535,27 @@ struct FeedbackAssessmentPolicyTests {
             #expect(validationSource.contains("public let \(property)"))
             #expect(!validationSource.contains("public var \(property)"))
         }
+
+        let prioritySource = try String(
+            contentsOf: root.appendingPathComponent("ASTRACore/FeedbackPriorityPolicy.swift"),
+            encoding: .utf8
+        )
+        let auditStart = try #require(prioritySource.range(
+            of: "public struct FeedbackPriorityOverrideAudit"
+        ))
+        let decisionStart = try #require(prioritySource.range(
+            of: "public struct FeedbackPriorityDecision"
+        ))
+        let errorStart = try #require(prioritySource.range(
+            of: "public enum FeedbackPriorityPolicyError"
+        ))
+        let auditRegion = prioritySource[auditStart.lowerBound..<decisionStart.lowerBound]
+        let decisionRegion = prioritySource[decisionStart.lowerBound..<errorStart.lowerBound]
+        #expect(auditRegion.contains("fileprivate init("))
+        #expect(!auditRegion.contains("public init("))
+        #expect(!auditRegion.contains("Codable"))
+        #expect(decisionRegion.contains("fileprivate init("))
+        #expect(!decisionRegion.contains("public init("))
     }
 
     private func assessment(

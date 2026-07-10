@@ -44,6 +44,7 @@ public enum FeedbackAssessmentSemanticValidationError: Error, Equatable, Sendabl
     case sourceRevisionMismatch(reported: String, assessed: String)
     case currentMainRevisionMismatch(trusted: String, assessed: String)
     case invalidGitRevision(field: String, value: String)
+    case blankSemanticValue(field: String)
     case invalidTrustedEvidenceID(String)
     case untrustedEvidenceID(String)
     case unsupportedClassification(String)
@@ -54,6 +55,13 @@ public enum FeedbackAssessmentSemanticValidationError: Error, Equatable, Sendabl
     case missingRootCauseRequiresQuestions
     case unknownCauseCannotClaimRootCause
     case unknownCauseCannotClaimConfidence(String)
+    case missingRootCauseCannotClaimConfidence(String)
+}
+
+enum FeedbackSemanticText {
+    static func isBlank(_ value: String) -> Bool {
+        value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
 }
 
 /// Coordinator-issued provenance that is never sourced from analyzer output.
@@ -130,6 +138,19 @@ public enum FeedbackAssessmentValidator {
         try report.validate()
         try assessment.validate()
 
+        try requireSemanticText(report.build.gitCommit, field: "report.build.gitCommit")
+        try requireSemanticText(
+            trustedContext.assessmentRevisionID,
+            field: "trustedContext.assessmentRevisionID"
+        )
+        try requireSemanticText(
+            trustedContext.sourceRevision,
+            field: "trustedContext.sourceRevision"
+        )
+        try requireSemanticText(
+            trustedContext.currentMainRevision,
+            field: "trustedContext.currentMainRevision"
+        )
         guard trustedContext.reportID == report.reportID else {
             throw FeedbackAssessmentSemanticValidationError.trustedContextReportIDMismatch
         }
@@ -145,6 +166,10 @@ public enum FeedbackAssessmentValidator {
             field: "trustedContext.currentMainRevision"
         )
         for evidenceID in trustedContext.allowedEvidenceIDs {
+            try requireSemanticText(
+                evidenceID,
+                field: "trustedContext.allowedEvidenceIDs[]"
+            )
             do {
                 try FeedbackContractValidationV1.required(
                     evidenceID,
@@ -158,6 +183,23 @@ public enum FeedbackAssessmentValidator {
 
         guard assessment.reportID == trustedContext.reportID else {
             throw FeedbackAssessmentSemanticValidationError.reportIDMismatch
+        }
+        try requireSemanticText(assessment.revisionID, field: "assessment.revisionID")
+        try requireSemanticText(assessment.sourceRevision, field: "assessment.sourceRevision")
+        try requireSemanticText(
+            assessment.currentMainRevision,
+            field: "assessment.currentMainRevision"
+        )
+        try requireSemanticText(assessment.behavioralOwner, field: "assessment.behavioralOwner")
+        try requireSemanticText(
+            assessment.regressionTestProposal,
+            field: "assessment.regressionTestProposal"
+        )
+        for question in assessment.missingQuestions {
+            try requireSemanticText(question, field: "assessment.missingQuestions[]")
+        }
+        for criterion in assessment.acceptanceCriteria {
+            try requireSemanticText(criterion, field: "assessment.acceptanceCriteria[]")
         }
         guard assessment.revisionID == trustedContext.assessmentRevisionID else {
             throw FeedbackAssessmentSemanticValidationError.assessmentRevisionMismatch(
@@ -197,16 +239,22 @@ public enum FeedbackAssessmentValidator {
         }
 
         var evidenceIDs = Set<String>()
-        for item in assessment.evidence + assessment.counterevidence {
-            guard trustedContext.allowedEvidenceIDs.contains(item.evidenceID) else {
-                throw FeedbackAssessmentSemanticValidationError.untrustedEvidenceID(item.evidenceID)
-            }
-            guard evidenceIDs.insert(item.evidenceID).inserted else {
-                throw FeedbackAssessmentSemanticValidationError.duplicateEvidenceID(item.evidenceID)
-            }
-        }
+        try validateEvidenceItems(
+            assessment.evidence,
+            path: "assessment.evidence",
+            trustedContext: trustedContext,
+            seenIDs: &evidenceIDs
+        )
+        try validateEvidenceItems(
+            assessment.counterevidence,
+            path: "assessment.counterevidence",
+            trustedContext: trustedContext,
+            seenIDs: &evidenceIDs
+        )
 
-        let hasRootCause = assessment.rootCauseHypothesis?.isEmpty == false
+        let hasRootCause = assessment.rootCauseHypothesis.map {
+            !FeedbackSemanticText.isBlank($0)
+        } ?? false
         let isUnknownClassification = classification == .unknown
         let needsInformation = isUnknownClassification || !hasRootCause
         if needsInformation {
@@ -219,9 +267,13 @@ public enum FeedbackAssessmentValidator {
                 throw FeedbackAssessmentSemanticValidationError.unknownCauseCannotClaimRootCause
             }
             guard confidence == .low || confidence == .unknown else {
-                throw FeedbackAssessmentSemanticValidationError.unknownCauseCannotClaimConfidence(
-                    confidence.rawValue
-                )
+                throw isUnknownClassification
+                    ? FeedbackAssessmentSemanticValidationError.unknownCauseCannotClaimConfidence(
+                        confidence.rawValue
+                    )
+                    : FeedbackAssessmentSemanticValidationError.missingRootCauseCannotClaimConfidence(
+                        confidence.rawValue
+                    )
             }
         }
 
@@ -248,6 +300,30 @@ public enum FeedbackAssessmentValidator {
                 field: field,
                 value: value
             )
+        }
+    }
+
+    private static func validateEvidenceItems(
+        _ items: [FeedbackAssessmentEvidenceV1],
+        path: String,
+        trustedContext: FeedbackAssessmentTrustedContext,
+        seenIDs: inout Set<String>
+    ) throws {
+        for item in items {
+            try requireSemanticText(item.evidenceID, field: "\(path)[].evidenceID")
+            try requireSemanticText(item.summary, field: "\(path)[].summary")
+            guard trustedContext.allowedEvidenceIDs.contains(item.evidenceID) else {
+                throw FeedbackAssessmentSemanticValidationError.untrustedEvidenceID(item.evidenceID)
+            }
+            guard seenIDs.insert(item.evidenceID).inserted else {
+                throw FeedbackAssessmentSemanticValidationError.duplicateEvidenceID(item.evidenceID)
+            }
+        }
+    }
+
+    private static func requireSemanticText(_ value: String, field: String) throws {
+        guard !FeedbackSemanticText.isBlank(value) else {
+            throw FeedbackAssessmentSemanticValidationError.blankSemanticValue(field: field)
         }
     }
 }

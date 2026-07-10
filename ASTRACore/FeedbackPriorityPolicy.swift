@@ -32,7 +32,7 @@ public enum FeedbackPriorityReason: String, Codable, Equatable, Sendable {
     case conservativeDefault = "conservative_default"
 }
 
-public struct FeedbackPriorityOverrideAudit: Codable, Equatable, Sendable {
+public struct FeedbackPriorityOverrideAudit: Equatable, Sendable {
     public let reportID: FeedbackReportIDV1
     public let assessmentRevisionID: String?
     public let reviewerID: String
@@ -41,7 +41,7 @@ public struct FeedbackPriorityOverrideAudit: Codable, Equatable, Sendable {
     public let previousPriority: FeedbackPriority
     public let effectivePriority: FeedbackPriority
 
-    public init(
+    fileprivate init(
         reportID: FeedbackReportIDV1,
         assessmentRevisionID: String?,
         reviewerID: String,
@@ -68,7 +68,7 @@ public struct FeedbackPriorityDecision: Equatable, Sendable {
     public let assessmentRevisionID: String?
     public let overrideAudit: FeedbackPriorityOverrideAudit?
 
-    public init(
+    fileprivate init(
         reportID: FeedbackReportIDV1,
         basePriority: FeedbackPriority,
         effectivePriority: FeedbackPriority,
@@ -89,6 +89,7 @@ public enum FeedbackPriorityPolicyError: Error, Equatable, Sendable {
     case reportIDMismatch
     case assessmentRevisionMismatch
     case invalidOverride(String)
+    case blankSemanticValue(field: String)
 }
 
 /// Deterministic priority owner. Assessment contributes validated facts only;
@@ -147,6 +148,8 @@ public enum FeedbackPriorityPolicy {
             throw FeedbackPriorityPolicyError.reportIDMismatch
         }
         guard let rawOverride = triage.priorityOverride?.rawValue else { return decision }
+        try requireSemanticText(triage.reviewerID, field: "staffTriage.reviewerID")
+        try requireSemanticText(triage.reason, field: "staffTriage.reason")
         guard triage.assessmentRevisionID == decision.assessmentRevisionID else {
             throw FeedbackPriorityPolicyError.assessmentRevisionMismatch
         }
@@ -170,5 +173,11 @@ public enum FeedbackPriorityPolicy {
                 effectivePriority: priority
             )
         )
+    }
+
+    private static func requireSemanticText(_ value: String, field: String) throws {
+        guard !FeedbackSemanticText.isBlank(value) else {
+            throw FeedbackPriorityPolicyError.blankSemanticValue(field: field)
+        }
     }
 }

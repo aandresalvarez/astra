@@ -27,8 +27,12 @@ repository):
   revision ID, source release, current-main revision, and every evidence or
   counterevidence citation must exactly match coordinator-issued context;
   drift is derived from that context rather than analyzer-authored values.
+  Policy-relevant text must also remain meaningful after trimming whitespace;
+  whitespace-only root cause is missing information and other blank semantic
+  values fail validation.
 - `src/feedback/assessment/priority_projection`: ports the deterministic
-  `FeedbackPriorityPolicy`; model wording never assigns priority.
+  `FeedbackPriorityPolicy`; model wording never assigns priority, and only the
+  policy may construct priority decisions or override audit records.
 
 The worker must publish only schema-valid assessment data. Missing, malformed,
 or unavailable model output stays pending/failed and leaves issue creation,
