@@ -93,18 +93,30 @@ struct RunIssuePresentation: Identifiable, Hashable, Sendable {
         if lower.contains("launch estimate") {
             return "This task may use more budget than expected. ASTRA continued because budget enforcement is set to warning mode."
         }
-        return "This task used more budget than expected. ASTRA kept it running because budget enforcement is set to warning mode."
+        if lower.contains("warning mode") || lower.contains("warning only") {
+            return "This task has used more budget than expected. ASTRA kept it running because budget enforcement is set to warning mode."
+        }
+        return "This task may use more budget than expected. ASTRA continued because budget enforcement is set to warning mode."
     }
+
+    /// Human-authored provider messages stay whole up to this length; the old
+    /// hard 220-char cut regularly amputated the actionable last line ("Fix
+    /// the capability in Manage Capabilities…"), leaving the fix reachable
+    /// only through "Show raw output".
+    private static let fullErrorBodyLimit = 600
 
     private static func providerErrorBody(for payload: String) -> String {
         let lower = payload.lowercased()
         if lower.contains("exited with code") || lower.contains("failed before astra received") {
-            return "The provider stopped before returning a visible response. Open technical output for diagnostics."
+            return "The provider stopped before returning a visible response. Retry the task or open the raw output below."
         }
         if payload.isEmpty {
-            return "The provider stopped unexpectedly. Open technical output for diagnostics."
+            return "The provider stopped unexpectedly. Retry the task or open run details for diagnostics."
         }
-        return String(payload.prefix(220))
+        if payload.count <= fullErrorBodyLimit {
+            return payload
+        }
+        return String(payload.prefix(220)) + "…"
     }
 }
 
@@ -117,6 +129,30 @@ enum TaskRunNoticePresentationRules {
         default:
             return false
         }
+    }
+
+    /// Error-class banners are the run's single visible explanation (the
+    /// details disclosure no longer repeats them), so they render expanded
+    /// with no collapse affordance. Warnings stay collapsible strips.
+    static func rendersFixedExpanded(_ notice: TaskRunNotice) -> Bool {
+        switch notice.type {
+        case "error", "budget.exceeded":
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// The dock's Details popover is the single run inspector: while the dock
+    /// is visible, NO finished run renders an in-thread disclosure — the
+    /// inspector stacks every run's sections instead, so the rule is
+    /// homogeneous across statuses and multi-run threads. The only exception
+    /// is a live run, whose inline activity feed must stay in the thread.
+    static func detailsLiveInDock(
+        runStatus: RunStatus,
+        dockVisible: Bool
+    ) -> Bool {
+        dockVisible && runStatus != .running
     }
 }
 
@@ -323,21 +359,12 @@ struct RunActivityPresentation: Hashable, Sendable {
                 continue
             }
 
-            let issue = RunIssuePresentation(notice: notice)
-            if suppressedNoticeIDs.contains(notice.id) {
-                if let rawPayload = issue.rawPayload {
-                    technicalRows.append(TechnicalOutputPresentation(
-                        id: "notice-\(notice.id.uuidString)",
-                        title: "\(issue.title) details",
-                        summary: issue.summary,
-                        facts: [],
-                        rawPayload: rawPayload,
-                        severity: issue.severity
-                    ))
-                }
-            } else {
-                issueRows.append(issue)
-            }
+            // A suppressed notice is already rendered as an inline banner in
+            // the thread (title, summary, AND raw payload). Re-emitting it
+            // here as a technical row painted the same failure twice on one
+            // screen; the disclosure carries only what the banner doesn't.
+            guard !suppressedNoticeIDs.contains(notice.id) else { continue }
+            issueRows.append(RunIssuePresentation(notice: notice))
         }
 
         technicalRows.append(contentsOf: activity.toolResults.map(Self.technicalOutput))
@@ -356,7 +383,8 @@ struct RunActivityPresentation: Hashable, Sendable {
         prefersExpandedDetails = Self.prefersExpandedDetails(
             run: run,
             issues: issueRows,
-            technicalOutputs: technicalRows
+            technicalOutputs: technicalRows,
+            hasInlineNotices: !suppressedNoticeIDs.isEmpty
         )
     }
 
@@ -367,9 +395,14 @@ struct RunActivityPresentation: Hashable, Sendable {
     private static func prefersExpandedDetails(
         run: TaskRunSnapshot,
         issues: [RunIssuePresentation],
-        technicalOutputs: [TechnicalOutputPresentation]
+        technicalOutputs: [TechnicalOutputPresentation],
+        hasInlineNotices: Bool
     ) -> Bool {
-        if run.status.prefersExpandedRunActivityDetails {
+        // When an inline banner already explains the failure, auto-opening
+        // the disclosure too stacks a second block under the first; the
+        // status-driven expansion is only for runs with no banner to speak
+        // for them.
+        if run.status.prefersExpandedRunActivityDetails, !hasInlineNotices {
             return true
         }
         if issues.contains(where: { $0.severity == .error }) {

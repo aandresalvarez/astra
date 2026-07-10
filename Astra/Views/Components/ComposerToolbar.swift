@@ -51,6 +51,9 @@ struct ComposerToolbar: View {
     var runtimeReadinessStates: [AgentRuntimeID: RuntimeReadinessState] = [:]
     var taskStatus: TaskStatus?
     var taskStatusOverride: ComposerTaskStatusPresentation? = nil
+    /// The decision dock above the composer owns the task status while it is
+    /// visible; showing the pill too duplicates (and can contradict) it.
+    var showsTaskStatusPill: Bool = true
     let isRunning: Bool
     let hasInput: Bool
     let onAttachFile: () -> Void
@@ -108,7 +111,9 @@ struct ComposerToolbar: View {
 
             Spacer(minLength: ComposerToolbarPresentation.controlSpacing)
 
-            taskStatusPill
+            if showsTaskStatusPill {
+                taskStatusPill
+            }
             runtimeStatusPill
             submitArea
         }

@@ -9,7 +9,9 @@ enum TaskConversationItem: Identifiable, Sendable {
     case planUserMessage(text: String, timestamp: Date)
     case planAssistantMessage(text: String, timestamp: Date)
     case scheduleResult(text: String, timestamp: Date)
-    case systemInfo(text: String, timestamp: Date)
+    /// `count` > 1 means adjacent identical notices were coalesced into one
+    /// row (e.g. the same permission approved several times in a run).
+    case systemInfo(text: String, timestamp: Date, count: Int)
     case recapResult(text: String, timestamp: Date)
 
     var id: String {
@@ -19,7 +21,7 @@ enum TaskConversationItem: Identifiable, Sendable {
         case .planUserMessage(_, let timestamp): return "plan-user-\(timestamp.timeIntervalSince1970)"
         case .planAssistantMessage(_, let timestamp): return "plan-assistant-\(timestamp.timeIntervalSince1970)"
         case .scheduleResult(_, let timestamp): return "schedule-\(timestamp.timeIntervalSince1970)"
-        case .systemInfo(_, let timestamp): return "system-\(timestamp.timeIntervalSince1970)"
+        case .systemInfo(_, let timestamp, _): return "system-\(timestamp.timeIntervalSince1970)"
         case .recapResult(_, let timestamp): return "recap-\(timestamp.timeIntervalSince1970)"
         }
     }
@@ -862,20 +864,20 @@ struct TaskThreadSnapshot: Sendable {
             case "user.message":
                 items.append(.userMessage(text: event.payload, timestamp: event.timestamp))
             case "task.approved":
-                items.append(.systemInfo(text: systemTimelineText(for: event), timestamp: event.timestamp))
+                items.append(.systemInfo(text: systemTimelineText(for: event), timestamp: event.timestamp, count: 1))
             case TaskPlanConversationEventTypes.userMessage:
                 items.append(.planUserMessage(text: event.payload, timestamp: event.timestamp))
             case TaskPlanConversationEventTypes.assistantMessage:
                 items.append(.planAssistantMessage(text: event.payload, timestamp: event.timestamp))
             case let type where visibleSystemTimelineEventTypes.contains(type):
-                items.append(.systemInfo(text: systemTimelineText(for: event), timestamp: event.timestamp))
+                items.append(.systemInfo(text: systemTimelineText(for: event), timestamp: event.timestamp, count: 1))
             case "schedule.result":
                 if isActionableScheduleResult(event.payload) {
                     items.append(.scheduleResult(text: event.payload, timestamp: event.timestamp))
                 }
             case "system.info":
                 if isVisibleSystemInfo(event.payload) {
-                    items.append(.systemInfo(text: event.payload, timestamp: event.timestamp))
+                    items.append(.systemInfo(text: event.payload, timestamp: event.timestamp, count: 1))
                 }
             case "recap.result":
                 items.append(.recapResult(text: event.payload, timestamp: event.timestamp))
@@ -889,7 +891,48 @@ struct TaskThreadSnapshot: Sendable {
             nextRunIndex += 1
         }
 
-        return items
+        return coalescedSystemTimelineItems(items)
+    }
+
+    /// One live approval narrates itself twice (the channel's "Live permission
+    /// approved for X…" system.info plus the task.approved echo "Permission
+    /// approved. Continuing."), and a run with several approvals repeats the
+    /// pair each time. Collapse each echo into its richer neighbor and roll
+    /// identical adjacent notices into a single item with a count, so system
+    /// notes read as chat flow instead of a spam wall.
+    static func coalescedSystemTimelineItems(_ items: [TaskConversationItem]) -> [TaskConversationItem] {
+        var output: [TaskConversationItem] = []
+        for item in items {
+            guard case let .systemInfo(text, timestamp, count) = item,
+                  case let .systemInfo(previousText, _, previousCount)? = output.last else {
+                output.append(item)
+                continue
+            }
+
+            if text == previousText {
+                output[output.count - 1] = .systemInfo(text: previousText, timestamp: timestamp, count: previousCount + count)
+                continue
+            }
+            if isGenericPermissionApprovalText(text), isLivePermissionApprovalText(previousText) {
+                // The generic echo of the approval the previous line already narrates.
+                continue
+            }
+            if isLivePermissionApprovalText(text), isGenericPermissionApprovalText(previousText), previousCount == 1 {
+                output[output.count - 1] = .systemInfo(text: text, timestamp: timestamp, count: count)
+                continue
+            }
+            output.append(item)
+        }
+        return output
+    }
+
+    private static func isLivePermissionApprovalText(_ text: String) -> Bool {
+        text.hasPrefix("Live permission approved for")
+    }
+
+    private static func isGenericPermissionApprovalText(_ text: String) -> Bool {
+        text == "Permission approved. Continuing." ||
+            text == "Permission approved for this task. Continuing."
     }
 
     private static func isVisibleConversationEvent(_ event: TaskEventSnapshot) -> Bool {

@@ -10,18 +10,21 @@ struct RunActivityDisclosureStateTests {
     private static let completedIssueRunID = UUID(uuidString: "00000000-0000-0000-0000-000000000103")!
     private static let completedTechnicalOutputRunID = UUID(uuidString: "00000000-0000-0000-0000-000000000104")!
 
-    @Test("failed run details open by default and still respect manual collapse")
-    func failedRunDetailsOpenByDefaultAndStillRespectManualCollapse() {
+    @Test("failed run with an inline banner keeps details collapsed until opened")
+    func failedRunWithInlineBannerKeepsDetailsCollapsedUntilOpened() {
         let runID = Self.failedRunID
         let presentation = failedRunPresentation()
         var state = RunActivityDisclosureState()
 
-        #expect(presentation.prefersExpandedDetails)
-        #expect(state.isExpanded(runID: runID, presentation: presentation))
+        // The inline "Run stopped" banner is the visible explanation; the
+        // disclosure carries stats/diagnostics and must not auto-open a
+        // second block under it.
+        #expect(!presentation.prefersExpandedDetails)
+        #expect(!state.isExpanded(runID: runID, presentation: presentation))
 
         state.toggle(runID: runID, presentation: presentation)
 
-        #expect(!state.isExpanded(runID: runID, presentation: presentation))
+        #expect(state.isExpanded(runID: runID, presentation: presentation))
     }
 
     @Test("nonfailure run details stay compact until manually opened")
@@ -55,8 +58,8 @@ struct RunActivityDisclosureStateTests {
         #expect(presentation.prefersExpandedDetails)
     }
 
-    @Test("completed run with error technical output opens details by severity")
-    func completedRunWithErrorTechnicalOutputOpensDetailsBySeverity() {
+    @Test("banner-carried error notice leaves the disclosure quiet")
+    func bannerCarriedErrorNoticeLeavesTheDisclosureQuiet() {
         let notice = TaskRunNotice(
             id: UUID(uuidString: "00000000-0000-0000-0000-000000000202")!,
             type: "error",
@@ -69,8 +72,90 @@ struct RunActivityDisclosureStateTests {
             suppressedNoticeIDs: [notice.id]
         )
 
-        #expect(presentation.technicalOutputs.contains { $0.severity == .error })
-        #expect(presentation.prefersExpandedDetails)
+        #expect(presentation.issues.isEmpty)
+        #expect(presentation.technicalOutputs.isEmpty)
+        #expect(!presentation.prefersExpandedDetails)
+    }
+
+    @Test("short provider error messages keep their actionable last line")
+    func shortProviderErrorMessagesKeepTheirActionableLastLine() {
+        let payload = """
+        ASTRA could not launch because one or more selected capabilities are not fully connected to runtime resources:
+
+        - GitHub: local tool gh — GitHub CLI is not active
+
+        Fix the capability in Manage Capabilities, or disable/exclude it for this task, then retry.
+        """
+        let issue = RunIssuePresentation(notice: TaskRunNotice(
+            id: UUID(uuidString: "00000000-0000-0000-0000-000000000203")!,
+            type: "error",
+            payload: payload
+        ))
+
+        // The full message fits the banner, including the fix guidance, so
+        // there is nothing left for a raw-output disclosure to add.
+        #expect(issue.summary == payload)
+        #expect(issue.rawPayload == nil)
+    }
+
+    @Test("long provider error dumps stay truncated with raw output preserved")
+    func longProviderErrorDumpsStayTruncatedWithRawOutputPreserved() {
+        let payload = String(repeating: "diagnostic line of provider output. ", count: 40)
+        let issue = RunIssuePresentation(notice: TaskRunNotice(
+            id: UUID(uuidString: "00000000-0000-0000-0000-000000000204")!,
+            type: "error",
+            payload: payload
+        ))
+
+        #expect(issue.summary.count < 240)
+        #expect(issue.summary.hasSuffix("…"))
+        #expect(issue.rawPayload?.contains("diagnostic line") == true)
+    }
+
+    @Test("run details live in the dock for every finished run while it is visible")
+    func runDetailsLiveInTheDockForEveryFinishedRunWhileItIsVisible() {
+        // Homogeneous across statuses and multi-run threads: any finished run
+        // moves its details into the dock inspector while the dock is visible.
+        #expect(TaskRunNoticePresentationRules.detailsLiveInDock(
+            runStatus: .failed, dockVisible: true
+        ))
+        #expect(TaskRunNoticePresentationRules.detailsLiveInDock(
+            runStatus: .completed, dockVisible: true
+        ))
+        #expect(TaskRunNoticePresentationRules.detailsLiveInDock(
+            runStatus: .cancelled, dockVisible: true
+        ))
+        #expect(TaskRunNoticePresentationRules.detailsLiveInDock(
+            runStatus: .budgetExceeded, dockVisible: true
+        ))
+        #expect(TaskRunNoticePresentationRules.detailsLiveInDock(
+            runStatus: .timeout, dockVisible: true
+        ))
+
+        // A live run keeps its inline activity feed.
+        #expect(!TaskRunNoticePresentationRules.detailsLiveInDock(
+            runStatus: .running, dockVisible: true
+        ))
+        // No dock (e.g. draft) → thread disclosure stays.
+        #expect(!TaskRunNoticePresentationRules.detailsLiveInDock(
+            runStatus: .failed, dockVisible: false
+        ))
+    }
+
+    @Test("error banners render fixed expanded while warnings stay collapsible")
+    func errorBannersRenderFixedExpandedWhileWarningsStayCollapsible() {
+        func notice(_ type: String) -> TaskRunNotice {
+            TaskRunNotice(
+                id: UUID(uuidString: "00000000-0000-0000-0000-000000000205")!,
+                type: type,
+                payload: "payload"
+            )
+        }
+
+        #expect(TaskRunNoticePresentationRules.rendersFixedExpanded(notice("error")))
+        #expect(TaskRunNoticePresentationRules.rendersFixedExpanded(notice("budget.exceeded")))
+        #expect(!TaskRunNoticePresentationRules.rendersFixedExpanded(notice("budget.warning")))
+        #expect(!TaskRunNoticePresentationRules.rendersFixedExpanded(notice("permission.approval.requested")))
     }
 
     private func failedRunPresentation() -> RunActivityPresentation {

@@ -328,6 +328,18 @@ enum MarkdownASTBlockParser {
     }
 
     private static func normalizedParagraph(_ lines: [String]) -> String {
+        // Mirrors MarkdownTextView.normalizedParagraph: step-per-line
+        // narration (every line a complete sentence) keeps its line breaks;
+        // only genuinely soft-wrapped prose is space-joined.
+        let trimmedLines = lines
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        if trimmedLines.count >= 3, trimmedLines.allSatisfy(isSentenceLine) {
+            return trimmedLines
+                .map(repairMissingSentenceSpaces)
+                .joined(separator: "\n")
+        }
+
         var result = ""
 
         for rawLine in lines {
@@ -345,6 +357,11 @@ enum MarkdownASTBlockParser {
         }
 
         return repairMissingSentenceSpaces(result)
+    }
+
+    private static func isSentenceLine(_ line: String) -> Bool {
+        guard let last = line.last else { return false }
+        return last == "." || last == "!" || last == "?" || last == ":"
     }
 
     private static func repairMissingSentenceSpaces(_ text: String) -> String {

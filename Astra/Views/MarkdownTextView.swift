@@ -163,7 +163,13 @@ struct MarkdownTextView: View, Equatable {
 
         case .text:
             VStack(alignment: .leading, spacing: 7) {
-                Text(Self.markdownAttributed(block.content))
+                // Preserved line breaks (sentence-per-line narration, markdown
+                // hard breaks) survive only in the whitespace-preserving inline
+                // mode; `.normalized` folds "\n" back into a space.
+                Text(Self.markdownAttributed(
+                    block.content,
+                    whitespaceMode: block.content.contains("\n") ? .preserving : .normalized
+                ))
                     .font(Stanford.chatBody())
                     .foregroundStyle(Stanford.readingText)
                     .markdownTextSelection(isSelectable)
@@ -346,6 +352,9 @@ struct MarkdownTextView: View, Equatable {
     private static let parseCache: NSCache<NSString, MarkdownBlockCacheEntry> = {
         let cache = NSCache<NSString, MarkdownBlockCacheEntry>()
         cache.countLimit = 500
+        // Streaming feeds the cache one growing prefix per snapshot tick;
+        // bound by source size so live turns can't pin hundreds of copies.
+        cache.totalCostLimit = 8_000_000
         return cache
     }()
 
@@ -356,7 +365,7 @@ struct MarkdownTextView: View, Equatable {
             return cached.blocks
         }
         let blocks = parsePrepared(prepared)
-        parseCache.setObject(MarkdownBlockCacheEntry(blocks: blocks), forKey: key)
+        parseCache.setObject(MarkdownBlockCacheEntry(blocks: blocks), forKey: key, cost: prepared.utf16.count)
         return blocks
     }
 
@@ -839,55 +848,21 @@ struct MarkdownTextView: View, Equatable {
         return blocks
     }
 
-    static func normalizedStreamingText(_ text: String) -> String {
-        let lines = MarkdownRenderPreparation.prepareForDisplay(text).components(separatedBy: "\n")
-        var normalizedLines: [String] = []
-        var paragraph: [String] = []
-        var isInsideCodeBlock = false
-
-        func flushParagraph() {
-            let normalized = normalizedParagraph(paragraph)
-            if !normalized.isEmpty {
-                normalizedLines.append(normalized)
-            }
-            paragraph = []
-        }
-
-        for line in lines {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            if trimmed.hasPrefix("```") {
-                flushParagraph()
-                isInsideCodeBlock.toggle()
-                normalizedLines.append(line)
-                continue
-            }
-            if isInsideCodeBlock {
-                normalizedLines.append(line)
-                continue
-            }
-            if trimmed.isEmpty {
-                flushParagraph()
-                if normalizedLines.last?.isEmpty != true {
-                    normalizedLines.append("")
-                }
-                continue
-            }
-            if headingMatch(trimmed) != nil ||
-                listItemMatch(trimmed) != nil ||
-                blockquoteLineContent(trimmed) != nil ||
-                tableHeaderCells(line) != nil {
-                flushParagraph()
-                normalizedLines.append(line)
-                continue
-            }
-            paragraph.append(line)
-        }
-
-        flushParagraph()
-        return normalizedLines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
     private static func normalizedParagraph(_ lines: [String]) -> String {
+        // Plain-text runtimes narrate step-per-line ("I will read X." /
+        // "I will check Y.") with no blank lines between steps. Space-joining
+        // those lines produces an unreadable wall; when every line reads as a
+        // complete sentence, keep the line breaks instead. Genuinely
+        // soft-wrapped prose breaks mid-sentence, so it never matches.
+        let trimmedLines = lines
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        if trimmedLines.count >= 3, trimmedLines.allSatisfy(isSentenceLine) {
+            return trimmedLines
+                .map(repairMissingSentenceSpaces)
+                .joined(separator: "\n")
+        }
+
         var segments: [String] = []
         var current = ""
 
@@ -934,6 +909,11 @@ struct MarkdownTextView: View, Equatable {
         }
 
         return normalizedParagraph(lines)
+    }
+
+    private static func isSentenceLine(_ line: String) -> Bool {
+        guard let last = line.last else { return false }
+        return last == "." || last == "!" || last == "?" || last == ":"
     }
 
     private static func repairMissingSentenceSpaces(_ text: String) -> String {

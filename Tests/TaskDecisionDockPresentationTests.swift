@@ -39,7 +39,8 @@ struct TaskDecisionDockPresentationTests {
 
         let dock = try #require(presentation)
         #expect(dock.title == "Result ready")
-        #expect(dock.summary == "1 artifact · 1 file changed · not verified")
+        #expect(dock.compactMeta == "1 artifact · 1 file changed · not verified")
+        #expect(dock.summary == "Review the result before closing.")
         #expect(dock.metrics.isEmpty)
         #expect(dock.details.contains {
             $0.id == "goal" &&
@@ -97,7 +98,8 @@ struct TaskDecisionDockPresentationTests {
 
         let dock = try #require(presentation)
         #expect(dock.title == "Run cancelled")
-        #expect(dock.summary == "Partial result · 1 artifact · 1 file changed · not verified")
+        #expect(dock.compactMeta == "Partial result · 1 artifact · 1 file changed · not verified")
+        #expect(dock.summary == "Review the partial result, then retry or close.")
         #expect(!dock.prefersExpandedDetails)
         #expect(dock.details.contains { $0.id == "goal" })
         #expect(dock.details.contains { $0.id == "run" && $0.summary.contains("Run cancelled - Needs review") })
@@ -217,7 +219,7 @@ struct TaskDecisionDockPresentationTests {
         ))
 
         let dock = try #require(presentation)
-        #expect(dock.summary == "1 artifact · 1 file changed · syntax checked")
+        #expect(dock.compactMeta == "1 artifact · 1 file changed · syntax checked")
         #expect(dock.details.contains { $0.id == "proof" && $0.summary == "Syntax checked for 1 artifact." })
         #expect(!actionTitles(dock).contains { $0.localizedCaseInsensitiveContains("verification") })
     }

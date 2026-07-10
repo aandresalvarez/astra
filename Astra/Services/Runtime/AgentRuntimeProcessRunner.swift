@@ -593,7 +593,17 @@ final class AgentRuntimeProcessRunner {
 
             let handleLine: (String) -> Void = { line in
                 let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !trimmed.isEmpty else { return }
+                guard !trimmed.isEmpty else {
+                    // Plain-text providers use blank lines as paragraph
+                    // boundaries; forward them to the recording path so
+                    // transcripts keep their structure. JSON-lines providers
+                    // treat blank lines as framing noise, and the monitor
+                    // never needs them.
+                    if !plan.parsesJSONLines {
+                        onLine(line, plan.parsesJSONLines)
+                    }
+                    return
+                }
                 if plan.interactiveAsk != nil,
                    let control = ClaudeControlProtocol.controlRequest(from: trimmed) {
                     Self.answerControlRequest(

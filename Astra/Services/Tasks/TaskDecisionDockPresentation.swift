@@ -107,6 +107,10 @@ struct TaskDecisionDockPresentation: Equatable {
     var tone: TaskDecisionDockTone
     var title: String
     var summary: String
+    /// Short dot-separated evidence ("3 artifacts · 2 files changed ·
+    /// syntax checked") rendered inline after the title in the compact row.
+    /// `summary` stays hover/accessibility copy per the decision-dock spec.
+    var compactMeta: String? = nil
     var metrics: [TaskDecisionDockMetric]
     var details: [TaskDecisionDockDetail]
     var primaryAction: TaskDecisionDockAction?
@@ -451,7 +455,8 @@ struct TaskDecisionDockPresentation: Equatable {
             icon: icon,
             tone: tone,
             title: title,
-            summary: compactEvidenceSummary(context, fallback: "Review the result before closing."),
+            summary: "Review the result before closing.",
+            compactMeta: compactEvidenceMeta(context),
             metrics: metrics(context),
             details: details(context),
             primaryAction: context.canToggleDone ? action(.closeTask, title: TaskPresentationState.closeTaskActionTitle, systemImage: "checkmark.circle") : nil,
@@ -469,7 +474,8 @@ struct TaskDecisionDockPresentation: Equatable {
             icon: "xmark.circle.fill",
             tone: .attention,
             title: "Run cancelled",
-            summary: compactEvidenceSummary(context, prefix: "Partial result", fallback: "Review the partial result, then retry or close."),
+            summary: "Review the partial result, then retry or close.",
+            compactMeta: compactEvidenceMeta(context, prefix: "Partial result"),
             metrics: metrics(context),
             details: details(context),
             primaryAction: context.canRetry ? action(.retry, title: "Retry", systemImage: "arrow.clockwise") : nil,
@@ -589,17 +595,16 @@ struct TaskDecisionDockPresentation: Equatable {
         return cleanedParts.isEmpty ? verification.summary : cleanedParts.joined(separator: " · ")
     }
 
-    private static func compactEvidenceSummary(
+    private static func compactEvidenceMeta(
         _ context: Context,
-        prefix: String? = nil,
-        fallback: String
-    ) -> String {
+        prefix: String? = nil
+    ) -> String? {
         var parts: [String] = []
         if let prefix {
             parts.append(prefix)
         }
         parts.append(contentsOf: compactEvidenceParts(context))
-        return parts.isEmpty ? fallback : parts.joined(separator: " · ")
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
     private static func compactEvidenceParts(_ context: Context) -> [String] {
