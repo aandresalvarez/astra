@@ -38,6 +38,8 @@ public enum AppStorageKeys {
     public static let activeWorkspaceCanvasItemsByConversation = "astra.workspaceCanvas.activeItemsByConversation.v1"
     public static let rightRailWidth = "astra.rightRail.width.v1"
     public static let markdownShelfShowHiddenPaths = "astra.markdownShelf.showHiddenPaths.v1"
+    public static let markdownShelfFileNavigatorPinned = "astra.markdownShelf.fileNavigatorPinned.v1"
+    public static let markdownShelfFileNavigatorDiscovered = "astra.markdownShelf.fileNavigatorDiscovered.v1"
     public static let browserPinnedToTask = "astra.browser.pinnedToTask.v1"
     public static let markdownPinnedToTask = "astra.markdown.pinnedToTask.v1"
     public static let browserDebugCapture = "astra.browser.debugCapture.v1"
