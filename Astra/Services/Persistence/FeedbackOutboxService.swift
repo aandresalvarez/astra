@@ -127,7 +127,7 @@ public final class FeedbackOutboxService {
         try validate(validated.envelope, matches: report)
         try fileManager.moveItem(at: sourceDirectory, to: destination)
 
-        applyPreparedPackage(validated, destination: destination, to: report, at: clock.now())
+        applyPreparedPackage(validated, to: report, at: clock.now())
         do {
             try save(context, operation: "package_adopted")
         } catch {
@@ -153,7 +153,7 @@ public final class FeedbackOutboxService {
                     fileManager: fileManager
                 )
                 try validate(validated.envelope, matches: report)
-                applyPreparedPackage(validated, destination: destination, to: report, at: clock.now())
+                applyPreparedPackage(validated, to: report, at: clock.now())
                 recovered += 1
             } catch {
                 try? fileManager.removeItem(at: destination)
@@ -190,7 +190,16 @@ public final class FeedbackOutboxService {
         let context = makeContext()
         let report = try fetch(reportID: reportID, in: context)
         _ = try storedStatus(report)
-        guard report.activeClaimToken == nil else { throw FeedbackOutboxError.activeClaimExists }
+        let now = clock.now()
+        if report.activeClaimToken != nil {
+            guard let claimExpiresAt = report.claimExpiresAt, claimExpiresAt <= now else {
+                throw FeedbackOutboxError.activeClaimExists
+            }
+            // The previous claim's lease elapsed without a matching
+            // record*Failure/completeSubmission call. Treat it the same as a
+            // recovered interrupted upload so this claim isn't stuck forever.
+            try recoverExpiredClaim(report, at: now)
+        }
         guard report.uploadAttemptCount < FeedbackContractLimitsV1.maximumUploadAttempts else {
             throw FeedbackOutboxError.maximumAttemptsExceeded
         }
@@ -202,7 +211,6 @@ public final class FeedbackOutboxService {
             throw FeedbackOutboxError.missingPreparedPackage
         }
 
-        let now = clock.now()
         try transition(report, to: .uploading, at: now)
         let token = UUID().uuidString.lowercased()
         report.activeClaimToken = token
@@ -326,18 +334,7 @@ public final class FeedbackOutboxService {
         let uploads = try reports.filter { try storedStatus($0) == .uploading }
         let now = clock.now()
         for report in uploads {
-            try transition(report, to: .retryableFailure, at: now)
-            finishLatestAttempt(
-                report,
-                outcome: "retryable_failure",
-                failureCode: "interrupted_upload",
-                at: now
-            )
-            report.lastFailureCode = "interrupted_upload"
-            report.lastFailureDispositionRaw = FeedbackFailureDispositionV1.retryable.rawValue
-            report.lastFailureSafeMessage = "The upload was interrupted and can be retried."
-            report.nextRetryAt = now
-            clearClaim(report)
+            try markInterruptedUpload(report, at: now)
         }
         if !uploads.isEmpty {
             try save(context, operation: "uploads_recovered")
@@ -463,7 +460,6 @@ public final class FeedbackOutboxService {
 
     private func applyPreparedPackage(
         _ validated: ValidatedFeedbackPackage,
-        destination: URL,
         to report: FeedbackReport,
         at date: Date
     ) {
@@ -527,6 +523,35 @@ public final class FeedbackOutboxService {
         report.lastFailureCode = nil
         report.lastFailureDispositionRaw = nil
         report.lastFailureSafeMessage = nil
+    }
+
+    /// Marks an in-flight upload as interrupted: transitions it to
+    /// `.retryableFailure`, records the failure on the latest attempt, and
+    /// clears the claim. Shared by `recoverInterruptedUploads` (startup
+    /// recovery) and `claimUpload` (expired-lease recovery).
+    private func markInterruptedUpload(_ report: FeedbackReport, at date: Date) throws {
+        try transition(report, to: .retryableFailure, at: date)
+        finishLatestAttempt(
+            report,
+            outcome: "retryable_failure",
+            failureCode: "interrupted_upload",
+            at: date
+        )
+        report.lastFailureCode = "interrupted_upload"
+        report.lastFailureDispositionRaw = FeedbackFailureDispositionV1.retryable.rawValue
+        report.lastFailureSafeMessage = "The upload was interrupted and can be retried."
+        report.nextRetryAt = date
+        clearClaim(report)
+    }
+
+    /// Recovers a report whose claim lease elapsed without a terminal call
+    /// (record*Failure/completeSubmission), then re-queues it so `claimUpload`
+    /// can immediately hand out a fresh claim instead of blocking forever on
+    /// a stuck uploader.
+    private func recoverExpiredClaim(_ report: FeedbackReport, at date: Date) throws {
+        try markInterruptedUpload(report, at: date)
+        try transition(report, to: .queued, at: date)
+        report.nextRetryAt = nil
     }
 
     private func clearClaim(_ report: FeedbackReport) {
