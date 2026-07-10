@@ -235,26 +235,17 @@ struct RuntimeFeedbackSnapshotBuilder {
     }
 
     private func isRedactionOnly(_ value: String) -> Bool {
-        if isRedactionPlaceholder(value) {
-            return true
-        }
-        for separator in ["=", ":"] {
-            guard let index = value.firstIndex(of: Character(separator)) else { continue }
-            let label = value[..<index].trimmingCharacters(in: .whitespacesAndNewlines)
-            let remainder = value[value.index(after: index)...]
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            if !label.isEmpty, isRedactionPlaceholder(remainder) {
-                return true
-            }
-        }
-        return false
-    }
+        let pattern = #"(?i)(?:\b[A-Z][A-Z0-9_.-]*\s*[:=]\s*)?\[redacted-[A-Z-]+\]"#
+        guard let expression = try? NSRegularExpression(pattern: pattern) else { return false }
+        let range = NSRange(value.startIndex..<value.endIndex, in: value)
+        guard expression.firstMatch(in: value, range: range) != nil else { return false }
 
-    private func isRedactionPlaceholder(_ value: String) -> Bool {
-        let lower = value.lowercased()
-        guard lower.hasPrefix("[redacted-"), lower.hasSuffix("]") else { return false }
-        let content = lower.dropFirst("[redacted-".count).dropLast()
-        return !content.isEmpty && content.allSatisfy { $0.isLetter || $0 == "-" }
+        let remainder = expression.stringByReplacingMatches(
+            in: value,
+            range: range,
+            withTemplate: " "
+        )
+        return !remainder.unicodeScalars.contains(where: CharacterSet.alphanumerics.contains)
     }
 
     private func isRecordedStall(_ stopReason: String?) -> Bool {

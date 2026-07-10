@@ -242,6 +242,29 @@ struct RuntimeFeedbackSnapshotTests {
         #expect(snapshot.unavailableReason == .notRecorded)
     }
 
+    @Test("Multiple redactions in one field do not become recorded evidence")
+    func multipleRedactionsInOneFieldAreNotRecorded() throws {
+        for summary in [
+            "ghp_abcdefgh12345678 sk-abcdefgh12345678",
+            "token=ghp_abcdefgh12345678 password=sk-abcdefgh12345678"
+        ] {
+            let snapshot = try #require(builder.build(from: RuntimeFeedbackPersistedEvidence(
+                runtimeID: "codex_cli",
+                sanitizedSummary: summary
+            )))
+
+            #expect(snapshot.sanitizedSummary == nil)
+            #expect(snapshot.unavailableReason == .notRecorded)
+        }
+
+        let meaningful = try #require(builder.build(from: RuntimeFeedbackPersistedEvidence(
+            runtimeID: "codex_cli",
+            sanitizedSummary: "Provider authentication failed: ghp_abcdefgh12345678 sk-abcdefgh12345678"
+        )))
+        #expect(meaningful.sanitizedSummary?.contains("Provider authentication failed") == true)
+        #expect(meaningful.unavailableReason == nil)
+    }
+
     @Test("Persisted projection round-trips deterministically without generic provider fields")
     func persistedProjectionRoundTrip() throws {
         let evidence = RuntimeFeedbackPersistedEvidence(
