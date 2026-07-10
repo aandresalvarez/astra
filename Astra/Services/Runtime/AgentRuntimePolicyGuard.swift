@@ -114,6 +114,7 @@ struct AgentRuntimePolicyGuard: Sendable {
     private let manifest: RunPermissionManifest
     private let readablePathRoots: [String]
     private let writablePathRoots: [String]
+    private let readOnlyInputPathRoots: [String]
     private let taskOutputPathRoots: [String]
     private let pathMapper: ExecutionEnvironmentPathMapper?
 
@@ -133,11 +134,11 @@ struct AgentRuntimePolicyGuard: Sendable {
             .map(Self.standardizedAbsolutePath)
             .filter { !$0.isEmpty }
         self.writablePathRoots = baseRoots
-        self.readablePathRoots = Array(Set(
-            baseRoots + manifest.additionalReadOnlyPaths
-                .map(Self.standardizedAbsolutePath)
-                .filter { !$0.isEmpty }
-        )).sorted()
+        let readOnlyInputRoots = manifest.additionalReadOnlyPaths
+            .map(Self.standardizedAbsolutePath)
+            .filter { !$0.isEmpty }
+        self.readOnlyInputPathRoots = readOnlyInputRoots
+        self.readablePathRoots = Array(Set(baseRoots + readOnlyInputRoots)).sorted()
         let taskFolderName = String(manifest.taskID.uuidString.prefix(8)).uppercased()
         self.taskOutputPathRoots = baseRoots
             .map { (($0 as NSString).appendingPathComponent(".astra/tasks/\(taskFolderName)")) }
@@ -249,7 +250,7 @@ struct AgentRuntimePolicyGuard: Sendable {
             return nil
         }
         guard let readOnlyPath = manifest.additionalReadOnlyPaths.first(where: { path in
-            !path.isEmpty && trimmedCommand.contains(path) && isPathReadable(path) && !isPathWritable(path)
+            !path.isEmpty && trimmedCommand.contains(path) && isReadOnlyInputPath(path)
         }) else {
             return nil
         }
@@ -662,9 +663,7 @@ struct AgentRuntimePolicyGuard: Sendable {
         toolName: String
     ) -> AgentRuntimePolicyViolation? {
         let paths = mutationPaths(from: observed, toolName: toolName)
-        guard let readOnlyPath = paths.first(where: { path in
-            isPathReadable(path) && !isPathWritable(path)
-        }) else {
+        guard let readOnlyPath = paths.first(where: isReadOnlyInputPath) else {
             return nil
         }
         return AgentRuntimePolicyViolation(
@@ -779,6 +778,18 @@ struct AgentRuntimePolicyGuard: Sendable {
 
     private func isPathWritable(_ rawPath: String) -> Bool {
         isPath(rawPath, inside: writablePathRoots)
+    }
+
+    /// True when `rawPath` falls under one of the run's explicitly read-only
+    /// input paths (`manifest.additionalReadOnlyPaths`) — regardless of
+    /// whether that same path also happens to sit inside a writable root
+    /// (e.g. an attached context file inside the workspace). Unlike
+    /// `isPathReadable(_:) && !isPathWritable(_:)`, this stays true for
+    /// read-only inputs nested inside a writable workspace, so the
+    /// read-only-input mutation guard can't be bypassed just by attaching a
+    /// file that already lives under the workspace root.
+    private func isReadOnlyInputPath(_ rawPath: String) -> Bool {
+        isPath(rawPath, inside: readOnlyInputPathRoots)
     }
 
     private func isPath(_ rawPath: String, inside roots: [String]) -> Bool {

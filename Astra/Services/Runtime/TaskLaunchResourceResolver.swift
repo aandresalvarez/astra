@@ -431,8 +431,11 @@ enum TaskLaunchResourceResolver {
         guard let sshConfigPath = existingPath("~/.ssh/config", homeDirectoryPath: homeDirectoryPath, fileManager: fileManager) else {
             return
         }
+        let normalizedAliases = Set(aliases.map(normalizedSSHHostPatternComponent).filter { !$0.isEmpty })
+        guard !normalizedAliases.isEmpty else { return }
         let expandedConfig = expandedSSHConfig(
             at: sshConfigPath,
+            aliases: normalizedAliases,
             homeDirectoryPath: homeDirectoryPath,
             fileManager: fileManager
         )
@@ -514,8 +517,17 @@ enum TaskLaunchResourceResolver {
         var includedPaths: [String]
     }
 
+    /// Expands `Include` directives into a flattened synthetic config, but only
+    /// for `Include` lines whose enclosing `Host`/`Match` scope actually
+    /// applies to one of `aliases` — mirroring OpenSSH, which only processes an
+    /// `Include` when the block it appears in matches the host being resolved.
+    /// Without this, an `Include` nested under an unrelated `Host` block would
+    /// still be spliced in, over-granting read access to unrelated SSH config
+    /// files and letting a ProxyCommand that would never apply to `aliases`
+    /// reach the resolver below.
     private static func expandedSSHConfig(
         at path: String,
+        aliases: Set<String>,
         homeDirectoryPath: String,
         fileManager: FileManager,
         depth: Int = 0,
@@ -530,14 +542,40 @@ enum TaskLaunchResourceResolver {
         visited.insert(path)
         var lines: [String] = []
         var includedPaths: [String] = []
+        // Unscoped lines (before any `Host`/`Match` line) apply to every
+        // alias, matching `sshProxyCommandExecutableResolutions`'s handling of
+        // the same file once flattened.
+        var matchingAliases = aliases
         for rawLine in content.components(separatedBy: .newlines) {
             let line = uncommentedSSHConfigLine(rawLine)
             let parts = line.split(maxSplits: 1, omittingEmptySubsequences: true) { $0.isWhitespace }
-            guard parts.first?.lowercased() == "include", parts.count > 1 else {
+            let directive = parts.first?.lowercased()
+            let value = parts.count > 1 ? String(parts[1]) : ""
+
+            if directive == "host" {
+                matchingAliases = sshHostPatterns(value, matchingAliasesIn: aliases)
                 lines.append(rawLine)
                 continue
             }
-            let patterns = shellTokens(in: String(parts[1])) ?? []
+            if directive == "match" {
+                // Conservative: `Match` criteria aren't evaluated here, so
+                // treat the block as not applying to any alias rather than
+                // risk expanding an Include that shouldn't apply.
+                matchingAliases = []
+                lines.append(rawLine)
+                continue
+            }
+            guard directive == "include" else {
+                lines.append(rawLine)
+                continue
+            }
+            guard !matchingAliases.isEmpty else {
+                // This Include sits in a Host/Match block that doesn't match
+                // any requested alias — OpenSSH would never load it while
+                // resolving these aliases, so don't splice it in.
+                continue
+            }
+            let patterns = shellTokens(in: value) ?? []
             for pattern in patterns {
                 for includePath in sshIncludePaths(
                     pattern,
@@ -546,6 +584,7 @@ enum TaskLaunchResourceResolver {
                 ) where !visited.contains(includePath) {
                     let nested = expandedSSHConfig(
                         at: includePath,
+                        aliases: aliases,
                         homeDirectoryPath: homeDirectoryPath,
                         fileManager: fileManager,
                         depth: depth + 1,
