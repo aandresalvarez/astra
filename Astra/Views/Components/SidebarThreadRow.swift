@@ -2,6 +2,56 @@ import SwiftUI
 import ASTRAModels
 import ASTRACore
 
+/// Resolves task-row chrome without baking light-mode colors into the policy.
+/// The view maps these semantic roles to adaptive SwiftUI/theme colors.
+enum SidebarThreadRowSurfaceStyle {
+    enum Fill: Equatable {
+        case clear
+        case adaptiveNeutral(opacity: Double)
+        case keyboardFocus
+        case selection
+    }
+
+    enum Stroke: Equatable {
+        case clear
+        case keyboardFocus
+        case selection
+    }
+
+    struct Resolution: Equatable {
+        let fill: Fill
+        let stroke: Stroke
+        let strokeWidth: CGFloat
+    }
+
+    static let hoverFillOpacity = 0.03
+
+    static func resolve(
+        isSelected: Bool,
+        isHovered: Bool,
+        isKeyboardFocused: Bool
+    ) -> Resolution {
+        let fill: Fill
+        if isSelected {
+            fill = .selection
+        } else if isKeyboardFocused {
+            fill = .keyboardFocus
+        } else if isHovered {
+            fill = .adaptiveNeutral(opacity: hoverFillOpacity)
+        } else {
+            fill = .clear
+        }
+
+        if isKeyboardFocused {
+            return Resolution(fill: fill, stroke: .keyboardFocus, strokeWidth: 2)
+        }
+        if isSelected {
+            return Resolution(fill: fill, stroke: .selection, strokeWidth: 1)
+        }
+        return Resolution(fill: fill, stroke: .clear, strokeWidth: 0)
+    }
+}
+
 /// A task row on the sidebar rail (workspace drawers, Pinned, Unreads).
 /// Lives here (not in `TaskSidebarView`) to keep that file within its
 /// architecture-fitness line budget.
@@ -15,6 +65,10 @@ struct SidebarThreadRow: View {
     /// hover hadn't fired yet), which is what produced the overlap. One
     /// source of truth fixes the race.
     let isHovered: Bool
+    /// True while either the row button or its trailing accessory owns
+    /// keyboard focus. Focus is deliberately distinct from pointer hover so
+    /// the active control remains visible without relying on a gray shade.
+    var isKeyboardFocused: Bool = false
     var contentLeadingPadding: CGFloat = 0
     var attemptCount: Int = 1
     var subtitle: String?
@@ -62,12 +116,25 @@ struct SidebarThreadRow: View {
             for: task.status,
             isUnread: task.shouldShowUnread,
             isHovered: isHovered,
+            isKeyboardFocused: isKeyboardFocused,
             isSelected: isSelected
         )
     }
 
     private var isActionableStatus: Bool {
         SidebarThreadRowLayout.isActionableStatus(task.status)
+    }
+
+    private var showsHoverChrome: Bool {
+        isHovered || isKeyboardFocused
+    }
+
+    private var surfaceStyle: SidebarThreadRowSurfaceStyle.Resolution {
+        SidebarThreadRowSurfaceStyle.resolve(
+            isSelected: isSelected,
+            isHovered: isHovered,
+            isKeyboardFocused: isKeyboardFocused
+        )
     }
 
     /// True when the row's glyph is the unread dot: a finished result the
@@ -182,12 +249,12 @@ struct SidebarThreadRow: View {
                             .accessibilityLabel(relativeTimeSpoken(task.updatedAt, now: context.date))
                     }
                 }
-                .opacity(isHovered ? 0 : 1)
+                .opacity(showsHoverChrome ? 0 : 1)
                 // Fades the timestamp out at the same rate as the
                 // hover-only overlay buttons (`unpin`, `taskOptionsMenu`)
                 // fade in, so the right gutter swaps smoothly instead of
                 // one element snapping while the other animates.
-                .animation(metadataAnimation, value: isHovered)
+                .animation(metadataAnimation, value: showsHoverChrome)
             }
         }
         .padding(.horizontal, SidebarThreadRowLayout.rowHorizontalPadding)
@@ -199,27 +266,41 @@ struct SidebarThreadRow: View {
                 .fill(rowFill)
                 .animation(selectionAnimation, value: isSelected)
                 .animation(hoverAnimation, value: isHovered)
+                .animation(hoverAnimation, value: isKeyboardFocused)
         )
         .overlay(
             RoundedRectangle(cornerRadius: Stanford.radiusSmall + 1, style: .continuous)
-                .stroke(rowStroke, lineWidth: 1)
+                .stroke(rowStroke, lineWidth: surfaceStyle.strokeWidth)
                 .animation(selectionAnimation, value: isSelected)
                 .animation(hoverAnimation, value: isHovered)
+                .animation(hoverAnimation, value: isKeyboardFocused)
         )
         .contentShape(Rectangle())
         .accessibilityIdentifier("TaskRow_\(task.title)")
     }
 
     private var rowFill: Color {
-        if isSelected { return Stanford.selectionFill }
-        if isHovered { return Color.primary.opacity(0.052) }
-        return .clear
+        switch surfaceStyle.fill {
+        case .clear:
+            return .clear
+        case .adaptiveNeutral(let opacity):
+            return Color.primary.opacity(opacity)
+        case .keyboardFocus:
+            return Stanford.focusRing.opacity(0.08)
+        case .selection:
+            return Stanford.selectionFill
+        }
     }
 
     private var rowStroke: Color {
-        if isSelected { return Color.primary.opacity(0.10) }
-        if isHovered { return Color.primary.opacity(0.055) }
-        return .clear
+        switch surfaceStyle.stroke {
+        case .clear:
+            return .clear
+        case .keyboardFocus:
+            return Stanford.focusRing.opacity(0.82)
+        case .selection:
+            return Color.primary.opacity(0.10)
+        }
     }
 
     @ViewBuilder
