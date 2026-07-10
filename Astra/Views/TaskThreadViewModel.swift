@@ -2,6 +2,15 @@ import Foundation
 import ASTRAModels
 import ASTRAPersistence
 
+struct TaskThreadSnapshotReadiness: Equatable, Sendable {
+    let taskID: UUID?
+    let revision: Int
+
+    func isReady(for taskID: UUID) -> Bool {
+        self.taskID == taskID && revision > 0
+    }
+}
+
 @Observable @MainActor
 final class TaskThreadViewModel {
     private(set) var snapshot: TaskThreadSnapshot?
@@ -17,6 +26,16 @@ final class TaskThreadViewModel {
     /// Cache state for the most recently applied snapshot, exposed as a safe
     /// diagnostic dimension for task-open responsiveness traces.
     private(set) var lastSnapshotCacheState = "not_applicable"
+
+    /// An Equatable signal that changes when a real transcript snapshot is
+    /// applied, even when that snapshot produces the same layout geometry as
+    /// the placeholder it replaces.
+    var appliedSnapshotReadiness: TaskThreadSnapshotReadiness {
+        TaskThreadSnapshotReadiness(
+            taskID: appliedSnapshotTaskID,
+            revision: appliedSnapshotRevision
+        )
+    }
 
     private var snapshotTrigger: TaskThreadSnapshotTrigger?
     private var snapshotTask: Task<Void, Never>?

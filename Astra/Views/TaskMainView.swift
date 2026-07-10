@@ -1665,15 +1665,7 @@ struct TaskMainView: View {
                     deferTaskViewMutation {
                         updateChatBottomState(bottomMinY: bottomMinY, viewportHeight: viewport.size.height)
                     }
-                    if threadViewModel.appliedSnapshotTaskID == task.id {
-                        TaskOpenResponsivenessTelemetry.transcriptBecameReady(
-                            task: task,
-                            snapshot: currentThreadSnapshot,
-                            appliedSnapshotRevision: threadViewModel.appliedSnapshotRevision,
-                            cacheState: threadViewModel.lastSnapshotCacheState,
-                            scope: taskOpenResponsivenessScope
-                        )
-                    }
+                    recordTranscriptReadinessIfAvailable()
                     // Not wrapped in deferTaskViewMutation: this only feeds the watchdog's
                     // internal (non-@State) bookkeeping, so it carries none of the
                     // AttributeGraph-cycle risk that motivates deferring the @State
@@ -1686,6 +1678,11 @@ struct TaskMainView: View {
                     deferTaskViewMutation {
                         handleChatTopPositionChange(topMinY: topMinY)
                     }
+                }
+                .task(id: threadViewModel.appliedSnapshotReadiness) {
+                    guard threadViewModel.appliedSnapshotReadiness.isReady(for: task.id),
+                          await waitForViewUpdateBoundary() else { return }
+                    recordTranscriptReadinessIfAvailable()
                 }
                 .onAppear {
                     deferTaskViewMutation {
@@ -1703,6 +1700,17 @@ struct TaskMainView: View {
                 }
             }
         }
+    }
+
+    private func recordTranscriptReadinessIfAvailable() {
+        guard threadViewModel.appliedSnapshotReadiness.isReady(for: task.id) else { return }
+        TaskOpenResponsivenessTelemetry.transcriptBecameReady(
+            task: task,
+            snapshot: currentThreadSnapshot,
+            appliedSnapshotRevision: threadViewModel.appliedSnapshotRevision,
+            cacheState: threadViewModel.lastSnapshotCacheState,
+            scope: taskOpenResponsivenessScope
+        )
     }
 
     @ViewBuilder

@@ -27,6 +27,23 @@ struct TaskThreadViewModelTests {
     }
 
     @MainActor
+    private func awaitReadiness(
+        _ vm: TaskThreadViewModel,
+        taskID: UUID,
+        timeout: TimeInterval = 30
+    ) async -> TaskThreadSnapshotReadiness {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            let readiness = vm.appliedSnapshotReadiness
+            if readiness.isReady(for: taskID) {
+                return readiness
+            }
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+        return vm.appliedSnapshotReadiness
+    }
+
+    @MainActor
     @Test("ViewModel starts with default 50-run window")
     func viewModelStartsWithDefaultWindow() async {
         let vm = TaskThreadViewModel()
@@ -72,7 +89,26 @@ struct TaskThreadViewModelTests {
 
         #expect(vm.appliedSnapshotTaskID == nil)
         #expect(vm.appliedSnapshotRevision == 0)
-        #expect(vm.lastSnapshotCacheState == "pending")
+        // refreshSnapshot resolves cache eligibility synchronously during
+        // reset, before the detached snapshot has been applied.
+        #expect(vm.lastSnapshotCacheState == "not_applicable")
+    }
+
+    @MainActor
+    @Test("Applied empty snapshot advances readiness even when placeholder geometry matches")
+    func appliedEmptySnapshotAdvancesReadiness() async {
+        let vm = TaskThreadViewModel()
+        let task = makeTask(goal: "Only the initial goal")
+
+        vm.reset(for: task)
+        let pendingReadiness = vm.appliedSnapshotReadiness
+        let appliedReadiness = await awaitReadiness(vm, taskID: task.id)
+
+        #expect(!pendingReadiness.isReady(for: task.id))
+        #expect(appliedReadiness.isReady(for: task.id))
+        #expect(appliedReadiness != pendingReadiness)
+        #expect(vm.snapshot?.sortedRuns.isEmpty == true)
+        #expect(vm.snapshot?.sortedEvents.isEmpty == true)
     }
 
     @MainActor
