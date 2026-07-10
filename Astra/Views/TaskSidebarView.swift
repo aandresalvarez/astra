@@ -285,6 +285,12 @@ private struct SidebarTopToolbar: View {
 
 enum SidebarWorkspaceTaskList {
     static let collapsedLimit = SidebarLeanPresentation.sectionPreviewLimit
+    /// Overflow controls sit with the task titles, not the full-width row
+    /// surface, so a long workspace list keeps one readable left edge.
+    static let showMoreLeadingPadding = SidebarThreadRowLayout.titleLeadingOffset(
+        childListPadding: SidebarLeanPresentation.childTaskListLeadingPadding,
+        contentLeadingPadding: SidebarLeanPresentation.childTaskContentLeadingPadding
+    )
 
     static func visibleTasks(_ tasks: [AgentTask], isShowingAll: Bool) -> [AgentTask] {
         isShowingAll ? tasks : Array(tasks.prefix(collapsedLimit))
@@ -1234,7 +1240,7 @@ struct TaskSidebarView: View {
                                     }
                                 }
                             )
-                            .padding(.leading, 2)
+                            .padding(.leading, SidebarWorkspaceTaskList.showMoreLeadingPadding)
                         } else if isShowingAll,
                                   workspaceTasks.count > SidebarWorkspaceTaskList.collapsedLimit {
                             sidebarShowMoreButton(title: "Show less", collapses: true) {
@@ -1242,7 +1248,7 @@ struct TaskSidebarView: View {
                                     _ = expandedWorkspaceTaskLists.remove(workspace.id)
                                 }
                             }
-                            .padding(.leading, 2)
+                            .padding(.leading, SidebarWorkspaceTaskList.showMoreLeadingPadding)
                         }
                     }
                 }
