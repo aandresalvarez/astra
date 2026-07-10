@@ -1255,9 +1255,7 @@ final class AgentRuntimeWorker {
         isRunning = false
     }
 
-    /// Keeps the provider-neutral diagnostic class on the durable run so UI,
-    /// diagnostics, and feedback can explain the actual failure after relaunch.
-    /// The legacy generic value remains stable for an unclassified process exit.
+    /// Persists classified failures while retaining the generic legacy value for unclassified exits.
     nonisolated static func durableFailureStopReason(
         category: AgentRuntimeFailureCategory?
     ) -> TaskRunStopReason {
