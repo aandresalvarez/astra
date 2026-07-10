@@ -293,7 +293,18 @@ private enum AstraStoreStartupCoordinator {
             return Result(modelContainer: inMemoryContainer(), lease: nil, blocker: nil)
         }
 
-        WorkspaceRecoveryService.preparePersistentStoreDirectory()
+        do {
+            try WorkspaceRecoveryService.preparePersistentStoreDirectory()
+        } catch {
+            AppLogger.audit(.dataStoreSelected, category: "App", fields: [
+                "result": "blocked_store_directory_preparation_failed",
+                "error_type": String(describing: type(of: error))
+            ], level: .error)
+            return blocked(
+                title: "ASTRA could not prepare its store",
+                message: "The persistent-store directory could not be prepared, so ASTRA left existing data unchanged."
+            )
+        }
         let owner = PersistentStoreLease.OwnerMetadata(
             channel: appInfo.channelRawValue,
             version: appInfo.version,
@@ -328,12 +339,24 @@ private enum AstraStoreStartupCoordinator {
             )
         }
 
-        let storeURL = WorkspaceRecoveryService.preparePersistentStoreURL()
+        let storeURL: URL
+        do {
+            storeURL = try WorkspaceRecoveryService.preparePersistentStoreURL()
+        } catch {
+            AppLogger.audit(.dataStoreSelected, category: "App", fields: [
+                "result": "blocked_store_preparation_failed",
+                "error_type": String(describing: type(of: error))
+            ], level: .error)
+            return blocked(
+                title: "ASTRA could not safely prepare its store",
+                message: "The active store pointer or legacy-store migration was invalid, incomplete, or unavailable. ASTRA left existing data unchanged."
+            )
+        }
         let hasPendingLegacyStoreMigration = WorkspaceRecoveryService.hasPendingLegacyStoreMigration
-        repairLegacyValuesIfNeeded(at: storeURL, build: appInfo.build)
         let configuration = ModelConfiguration(url: storeURL)
         do {
             let container = try makePersistentContainer(configuration: configuration)
+            repairLegacyValuesIfNeeded(at: storeURL, build: appInfo.build)
             AppLogger.audit(.dataStoreSelected, category: "App", fields: [
                 "result": "model_container_created",
                 "store_generation": WorkspaceRecoveryService.storeGeneration
