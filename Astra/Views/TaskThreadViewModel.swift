@@ -141,21 +141,16 @@ final class TaskThreadViewModel {
     }
 
     func refreshSnapshot(for task: AgentTask) {
-        let trigger = TaskThreadSnapshotTrigger(task: task)
-        guard snapshotTrigger != trigger else { return }
-        snapshotTrigger = trigger
         var fields = Self.taskFields(task)
-        fields.merge(Self.triggerFields(trigger), uniquingKeysWith: { _, new in new })
-        fields.merge([
-            "status": trigger.status.rawValue,
-            "latest_run_status": trigger.latestRunStatus?.rawValue ?? "none"
-        ], uniquingKeysWith: { _, new in new })
-
-        snapshotTask?.cancel()
         let responsivenessContext = responsivenessContext
-        let cacheKey = TaskThreadSnapshotCacheKey(task: task, trigger: trigger, maxRuns: expansionRunCount)
+        // A terminal cache key is intentionally built before the reactive
+        // trigger. It uses only the task's durable revision and O(1) counts,
+        // keeping repeated opens of long completed histories off the main
+        // actor's event scan path.
+        let cacheKey = TaskThreadSnapshotCacheKey(task: task, maxRuns: expansionRunCount)
         if let cacheKey,
            let cachedSnapshot = Self.terminalSnapshotCache.snapshot(for: cacheKey) {
+            snapshotTask?.cancel()
             let cacheApplyStart = DispatchTime.now().uptimeNanoseconds
             snapshot = cachedSnapshot
             appliedSnapshotRevision += 1
@@ -175,14 +170,19 @@ final class TaskThreadViewModel {
             PerformanceTelemetry.log("thread_snapshot_cache", level: .debug, fields: fields.merging([
                 "cache_state": "hit"
             ], uniquingKeysWith: { _, new in new }))
-            Self.logSnapshotState(
-                snapshot: cachedSnapshot,
-                trigger: trigger,
-                taskID: task.id,
-                workspaceID: task.workspace?.id
-            )
             return
         }
+
+        let trigger = TaskThreadSnapshotTrigger(task: task)
+        guard snapshotTrigger != trigger else { return }
+        snapshotTrigger = trigger
+        fields.merge(Self.triggerFields(trigger), uniquingKeysWith: { _, new in new })
+        fields.merge([
+            "status": trigger.status.rawValue,
+            "latest_run_status": trigger.latestRunStatus?.rawValue ?? "none"
+        ], uniquingKeysWith: { _, new in new })
+
+        snapshotTask?.cancel()
 
         let inputStart = DispatchTime.now().uptimeNanoseconds
         let input = TaskThreadSnapshotInput(

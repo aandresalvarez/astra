@@ -241,4 +241,18 @@ struct TaskOpenResponsivenessTelemetryTests {
         #expect(timeout?.message.contains("transcript_ready=false") == true)
         TaskOpenResponsivenessTelemetry.resetForTesting()
     }
+
+    @MainActor
+    @Test("Window disappearance cancels a task-open trace before its task view mounts")
+    func windowDisappearanceCancelsTraceBeforeTaskViewMounts() {
+        let task = makeTask(goal: "Close the window immediately")
+        let scope = UUID()
+        TaskOpenResponsivenessTelemetry.resetForTesting()
+
+        TaskOpenResponsivenessTelemetry.begin(task: task, source: "task_selection", scope: scope)
+        TaskOpenResponsivenessTelemetry.cancel(scope: scope, reason: "content_view_disappeared")
+
+        #expect(!TaskOpenResponsivenessTelemetry.isActive(task: task, scope: scope))
+        TaskOpenResponsivenessTelemetry.resetForTesting()
+    }
 }
