@@ -434,8 +434,8 @@ struct ScheduleFireLogicTests {
         #expect(resolved.map(\.name) == ["Enabled Shared"])
     }
 
-    @Test("task runtime additional paths include folder inputs")
-    func taskRuntimeAdditionalPathsIncludeFolderInputs() throws {
+    @Test("Task runtime paths separate folder inputs from writable workspace paths")
+    func taskRuntimePathsKeepFolderInputsReadOnly() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("astra-routine-paths-\(UUID().uuidString)", isDirectory: true)
         let extra = root.appendingPathComponent("extra", isDirectory: true)
@@ -448,7 +448,9 @@ struct ScheduleFireLogicTests {
         let task = AgentTask(title: "Routine Run", goal: "Run", workspace: workspace)
         task.inputs = [routine.path]
 
-        #expect(TaskWorkspaceAccess(task: task).runtimeAdditionalPaths == [extra.path, routine.path])
+        let access = TaskWorkspaceAccess(task: task)
+        #expect(access.runtimeWritablePaths == [extra.path])
+        #expect(access.runtimeReadOnlyInputPaths == [routine.path])
     }
 
     @Test("Due vs future filtering logic")

@@ -117,6 +117,13 @@ public enum CopilotStreamEventParser {
             return []
         }
 
+        // Copilot streams one tool call's JSON arguments as many deltas before
+        // emitting the authoritative tool.execution_start event. Treating each
+        // fragment as a tool invocation makes one call look like a retry loop.
+        if normalized == "assistant.tool_call_delta" {
+            return []
+        }
+
         if normalized == "assistant.message_delta" {
             if let text = textValue(in: object), !text.isEmpty {
                 return [.text(text: text)]
@@ -125,6 +132,15 @@ public enum CopilotStreamEventParser {
         }
 
         if normalized == "assistant.message" {
+            // A message carrying tool requests is an intermediate model
+            // envelope. The matching tool.execution_start owns the actionable
+            // event; this envelope is not a completed assistant response.
+            if hasToolRequests(in: object) {
+                if let text = textValue(in: object), !text.isEmpty {
+                    return [.text(text: text)]
+                }
+                return []
+            }
             if let text = textValue(in: object), !text.isEmpty {
                 return [.completed(summary: text)]
             }
@@ -578,6 +594,17 @@ public enum CopilotStreamEventParser {
             return false
         }
         return keys.contains { payload[$0] != nil }
+    }
+
+    private static func hasToolRequests(in object: [String: Any]) -> Bool {
+        for candidate in [object, payloadObject(in: object)].compactMap({ $0 }) {
+            for key in ["toolRequests", "tool_requests"] {
+                if let requests = candidate[key] as? [Any], !requests.isEmpty {
+                    return true
+                }
+            }
+        }
+        return false
     }
 
     private static func payloadObject(in object: [String: Any]) -> [String: Any]? {

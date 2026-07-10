@@ -132,18 +132,29 @@ enum AgentPromptBuilder {
     static func buildPrompt(
         for task: AgentTask,
         budgetProfile: PromptContextBudgetProfile = .standard,
-        executionPolicy: AgentRuntimeExecutionPolicy = .default
+        executionPolicy: AgentRuntimeExecutionPolicy = .default,
+        capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot? = nil
     ) -> String {
-        buildPromptAssembly(for: task, budgetProfile: budgetProfile, executionPolicy: executionPolicy).prompt
+        buildPromptAssembly(
+            for: task,
+            budgetProfile: budgetProfile,
+            executionPolicy: executionPolicy,
+            capabilityResolutionSnapshot: capabilityResolutionSnapshot
+        ).prompt
     }
 
     static func buildPromptAssembly(
         for task: AgentTask,
         budgetProfile: PromptContextBudgetProfile = .standard,
-        executionPolicy: AgentRuntimeExecutionPolicy = .default
+        executionPolicy: AgentRuntimeExecutionPolicy = .default,
+        capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot? = nil
     ) -> PromptAssemblyManifest {
         assemblePrompt(
-            buildPromptSections(for: task, executionPolicy: executionPolicy),
+            buildPromptSections(
+                for: task,
+                executionPolicy: executionPolicy,
+                capabilityResolutionSnapshot: capabilityResolutionSnapshot
+            ),
             mode: .initialRun,
             budgetProfile: budgetProfile
         )
@@ -151,7 +162,8 @@ enum AgentPromptBuilder {
 
     private static func buildPromptSections(
         for task: AgentTask,
-        executionPolicy: AgentRuntimeExecutionPolicy = .default
+        executionPolicy: AgentRuntimeExecutionPolicy = .default,
+        capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot? = nil
     ) -> [PromptContextSection] {
         buildPromptSections(
             using: PromptContextSectionProviderRegistry.providerIDs(for: .initialRun),
@@ -159,12 +171,12 @@ enum AgentPromptBuilder {
                 mode: .initialRun,
                 task: task,
                 followUpMessage: "",
-                capabilityScope: TaskCapabilityResolver(
+                capabilityScope: capabilityResolutionSnapshot?.providerLaunch ?? TaskCapabilityResolver(
                     task: task,
                     additionalCredentialGrants: executionPolicy.permissionGrantsOverride ?? []
                 ).promptScope(),
                 ioSnapshot: .empty,
-                connectorCredentialExposurePolicy: connectorCredentialExposurePolicy(
+                connectorCredentialExposurePolicy: capabilityResolutionSnapshot?.connectorCredentialExposurePolicy ?? connectorCredentialExposurePolicy(
                     for: task,
                     executionPolicy: executionPolicy
                 )

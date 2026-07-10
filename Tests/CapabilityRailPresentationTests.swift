@@ -1,6 +1,7 @@
 import Testing
 @testable import ASTRA
 import ASTRACore
+import ASTRAModels
 
 @Suite("Capability Rail Presentation")
 struct CapabilityRailPresentationTests {
@@ -618,5 +619,150 @@ struct CapabilityRailPresentationTests {
             primaryPath: " ",
             additionalPaths: ["/Users/alvaro/Documents/Code/astra"]
         ) == "No workspace root selected.")
+    }
+
+    @Test("pending connector permission highlights the owning capability without secret labels")
+    func pendingConnectorPermissionHighlightsOwningCapabilityWithoutSecretLabels() {
+        let workspace = Workspace(name: "JSL", primaryPath: "/tmp/jsl")
+        let connector = Connector(
+            name: "Jira-new",
+            serviceType: "jira",
+            baseURL: "https://example.atlassian.net",
+            authMethod: "basic"
+        )
+        connector.workspace = workspace
+        let task = AgentTask(title: "Review Jira", goal: "Review Jira issues", workspace: workspace)
+        let secretLabel = "connector:\(connector.id.uuidString):JIRA_API_TOKEN"
+        let payload = PermissionBroker.approvalPayloadString(
+            providerID: .claudeCode,
+            request: .connectorCredentials(
+                connectorID: connector.id,
+                displayName: "Jira-new connector credentials (2 configured credentials)",
+                labels: [secretLabel, "connector:\(connector.id.uuidString):JIRA_EMAIL"]
+            ),
+            reason: "Connector credential access requires approval.",
+            grants: [.credential(label: secretLabel)],
+            requestID: "jira-permission"
+        )
+        TaskRuntimePermissionOpenRequestStore.recordOpenRequest(payload: payload, task: task)
+        let jira = railItem(name: "Jira", connectorNames: ["Jira-new"])
+        let google = railItem(name: "Google Cloud", connectorNames: ["GCloud"])
+
+        let attentions = CapabilityRuntimePermissionAttention.pending(for: task)
+        let items = CapabilityRuntimePermissionAttention.applying(
+            attentions,
+            to: [jira, google],
+            connectors: [connector]
+        )
+
+        #expect(attentions.count == 1)
+        #expect(items[0].runtimePermissionAttention?.connectorID == connector.id)
+        #expect(items[0].readiness.level == .needsAttention)
+        #expect(items[0].presentation.statusLabel == "Approval needed")
+        #expect(items[0].presentation.rowSubtitle == "Jira-new: permission to use 2 configured credentials for this task")
+        #expect(items[0].presentation.rowSubtitle.contains("JIRA_API_TOKEN") == false)
+        #expect(items[1].runtimePermissionAttention == nil)
+        #expect(items[1].readiness.level == .ready)
+
+        let decision = RuntimePermissionDecisionPresentation(payload: payload)
+        #expect(decision.title == "Jira-new connector needs permission")
+        #expect(decision.summary == "ASTRA wants to expose 2 configured credentials from the Jira-new connector to this task's agent process.")
+        #expect(decision.summary.contains("JIRA_API_TOKEN") == false)
+    }
+
+    @Test("connector origin selects one capability when connector names collide")
+    func connectorOriginSelectsOneCapabilityWhenConnectorNamesCollide() {
+        let workspace = Workspace(name: "Shared", primaryPath: "/tmp/shared")
+        let connector = Connector(
+            name: "Shared Jira",
+            serviceType: "jira",
+            baseURL: "https://example.atlassian.net",
+            authMethod: "basic"
+        )
+        connector.workspace = workspace
+        connector.originPackageID = "jira-workflow"
+        let task = AgentTask(title: "Shared Jira", goal: "Review Jira", workspace: workspace)
+        let label = "connector:\(connector.id.uuidString):JIRA_API_TOKEN"
+        let payload = PermissionBroker.approvalPayloadString(
+            providerID: .claudeCode,
+            request: .connectorCredentials(
+                connectorID: connector.id,
+                displayName: "Shared Jira connector credential (1 configured credential)",
+                labels: [label]
+            ),
+            reason: "Connector credential access requires approval.",
+            grants: [.credential(label: label)],
+            requestID: "shared-jira-permission"
+        )
+        TaskRuntimePermissionOpenRequestStore.recordOpenRequest(payload: payload, task: task)
+        let unrelated = railItem(id: "other-package", name: "Other Jira", connectorNames: ["Shared Jira"])
+        let owner = railItem(id: "jira-workflow", name: "Jira", connectorNames: ["Shared Jira"])
+
+        let items = CapabilityRuntimePermissionAttention.applying(
+            CapabilityRuntimePermissionAttention.pending(for: task),
+            to: [unrelated, owner],
+            connectors: [connector]
+        )
+
+        #expect(items[0].runtimePermissionAttention == nil)
+        #expect(items[0].readiness.level == .ready)
+        #expect(items[1].runtimePermissionAttention?.connectorID == connector.id)
+        #expect(items[1].presentation.statusLabel == "Approval needed")
+
+        let otherConnector = Connector(
+            name: "Disabled Shared Jira",
+            serviceType: "jira",
+            baseURL: "https://other.atlassian.net",
+            authMethod: "basic"
+        )
+        let ownershipConnectors = CapabilityRuntimePermissionAttention.ownershipConnectors(
+            workspaceConnectors: [connector],
+            availableGlobalConnectors: [connector, otherConnector]
+        )
+        #expect(ownershipConnectors.map(\.id) == [connector.id, otherConnector.id])
+    }
+
+    private func railItem(id: String? = nil, name: String, connectorNames: [String]) -> RailCapabilityItem {
+        let package = PluginPackage(
+            id: id ?? name.lowercased().replacingOccurrences(of: " ", with: "-"),
+            name: name,
+            icon: "puzzlepiece.extension",
+            description: "Test capability",
+            author: "Tests",
+            category: "Tests",
+            tags: [],
+            version: "1.0.0",
+            skills: [],
+            connectors: [],
+            localTools: [],
+            templates: [],
+            governance: .builtInApproved()
+        )
+        return RailCapabilityItem(
+            id: "package:\(package.id)",
+            name: name,
+            icon: package.icon,
+            summary: package.description,
+            color: Stanford.lagunita,
+            isEnabled: true,
+            readiness: .ready,
+            presentation: CapabilityRailPackagePresentation.make(
+                isEnabled: true,
+                readinessLevel: .ready,
+                workspaceName: "JSL",
+                sharedResourceCount: 0,
+                workspaceResourceCount: connectorNames.count,
+                declaredResourceCount: connectorNames.count,
+                contentSummary: "\(connectorNames.count) connector"
+            ),
+            source: .package(package),
+            skillNames: [],
+            connectorNames: connectorNames,
+            toolNames: [],
+            mcpServerNames: [],
+            browserAdapterNames: [],
+            templateNames: [],
+            requirementNames: []
+        )
     }
 }

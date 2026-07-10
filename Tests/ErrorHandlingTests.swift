@@ -27,12 +27,12 @@ struct ErrorHandlingTests {
     func timeoutKillsProcess() async throws {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/sleep")
-        process.arguments = ["10"]
+        process.arguments = ["60"]
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
         try process.run()
 
-        DispatchQueue.global().asyncAfter(deadline: .now() + 1.0) {
+        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 1.0) {
             if process.isRunning { process.terminate() }
         }
 

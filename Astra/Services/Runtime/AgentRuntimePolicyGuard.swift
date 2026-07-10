@@ -112,7 +112,9 @@ struct AgentRuntimePolicyViolation: Equatable, Sendable {
 
 struct AgentRuntimePolicyGuard: Sendable {
     private let manifest: RunPermissionManifest
-    private let allowedPathRoots: [String]
+    private let readablePathRoots: [String]
+    private let writablePathRoots: [String]
+    private let readOnlyInputPathRoots: [String]
     private let taskOutputPathRoots: [String]
     private let pathMapper: ExecutionEnvironmentPathMapper?
 
@@ -131,7 +133,12 @@ struct AgentRuntimePolicyGuard: Sendable {
         let baseRoots = roots
             .map(Self.standardizedAbsolutePath)
             .filter { !$0.isEmpty }
-        self.allowedPathRoots = baseRoots
+        self.writablePathRoots = baseRoots
+        let readOnlyInputRoots = manifest.additionalReadOnlyPaths
+            .map(Self.standardizedAbsolutePath)
+            .filter { !$0.isEmpty }
+        self.readOnlyInputPathRoots = readOnlyInputRoots
+        self.readablePathRoots = Array(Set(baseRoots + readOnlyInputRoots)).sorted()
         let taskFolderName = String(manifest.taskID.uuidString.prefix(8)).uppercased()
         self.taskOutputPathRoots = baseRoots
             .map { (($0 as NSString).appendingPathComponent(".astra/tasks/\(taskFolderName)")) }
@@ -184,9 +191,11 @@ struct AgentRuntimePolicyGuard: Sendable {
 
     func violation(for parsed: ParsedEvent) -> AgentRuntimePolicyViolation? {
         let adapter = ProviderPolicyAdapterRegistry.adapter(for: manifest.providerID)
-        guard !manifest.providerRender.usesBroadProviderPermissions,
-              let observed = adapter.observedEvent(from: parsed) else {
+        guard let observed = adapter.observedEvent(from: parsed) else {
             return nil
+        }
+        if manifest.providerRender.usesBroadProviderPermissions {
+            return validateBroadPermissionInvariant(observed)
         }
         let request = adapter.permissionRequest(from: parsed)
             ?? PermissionBroker.permissionRequest(from: observed)
@@ -197,6 +206,81 @@ struct AgentRuntimePolicyGuard: Sendable {
         case .toolResult, .deniedAction:
             return nil
         }
+    }
+
+    private func validateBroadPermissionInvariant(
+        _ observed: PolicyObservedEvent
+    ) -> AgentRuntimePolicyViolation? {
+        guard let toolName = observed.toolName?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !toolName.isEmpty else {
+            return nil
+        }
+        if isMutationTool(toolName) {
+            return validateTaskOutputMutationOwnership(observed, toolName: toolName)
+                ?? validateReadOnlyInputMutation(observed, toolName: toolName)
+        }
+        // Broad/Auto mode otherwise trusts the provider's own tool calls and
+        // skips ASTRA's normal per-tool validation entirely. Bash/Shell falls
+        // outside the Write/Edit/MultiEdit mutation-tool check above, so
+        // without this a shell command (e.g. `rm <read-only-input>`) could
+        // still mutate a user-selected read-only task input when ASTRA's OS
+        // sandbox isn't wrapping this run (disabled, or a self-sandboxing
+        // runtime like Codex/Cursor/Antigravity that isn't wrapped by
+        // default).
+        if isShellTool(toolName) {
+            return validateShellReadOnlyInputMutation(observed.command, toolName: toolName)
+        }
+        return nil
+    }
+
+    /// Best-effort text match: flags a shell command as a read-only-input
+    /// mutation only when it both looks like a mutating command (contains a
+    /// known write/delete indicator) and literally references one of this
+    /// run's read-only paths. This cannot see through shell
+    /// expansion/variables/aliasing, so it complements rather than replaces
+    /// OS-level sandbox enforcement - it exists for the broad/Auto path where
+    /// that enforcement may not be applied at all.
+    private func validateShellReadOnlyInputMutation(
+        _ command: String?,
+        toolName: String
+    ) -> AgentRuntimePolicyViolation? {
+        guard let trimmedCommand = command?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmedCommand.isEmpty,
+              Self.shellCommandLooksMutating(trimmedCommand) else {
+            return nil
+        }
+        guard let readOnlyPath = readOnlyInputPathRoots.first(where: { path in
+            shellCommand(trimmedCommand, referencesHostPath: path)
+        }) else {
+            return nil
+        }
+        return AgentRuntimePolicyViolation(
+            reason: "The shell command references a read-only task input and looks like it would modify it",
+            toolName: toolName,
+            detail: readOnlyPath,
+            violationCategory: "read_only_input_mutation"
+        )
+    }
+
+    private func shellCommand(_ command: String, referencesHostPath hostPath: String) -> Bool {
+        if command.contains(hostPath) {
+            return true
+        }
+        guard let containerPath = pathMapper?.containerPath(forHostPath: hostPath),
+              !containerPath.isEmpty else {
+            return false
+        }
+        return command.contains(containerPath)
+    }
+
+    private static let mutatingShellCommandIndicators = [
+        "rm ", "rm\t", "mv ", "cp -f", "cp --force", ">>", "> ", "sed -i", "truncate ",
+        "shred ", "dd ", "tee ", "chmod ", "chown ", "rsync --delete", "git clean", ":>"
+    ]
+
+    private static func shellCommandLooksMutating(_ command: String) -> Bool {
+        let lower = command.lowercased()
+        return mutatingShellCommandIndicators.contains { lower.contains($0) }
     }
 
     private func validateObservedAction(
@@ -237,6 +321,11 @@ struct AgentRuntimePolicyGuard: Sendable {
 
         if isMutationTool(toolName),
            let violation = validateTaskOutputMutationOwnership(observed, toolName: toolName) {
+            return violation
+        }
+
+        if isMutationTool(toolName),
+           let violation = validateReadOnlyInputMutation(observed, toolName: toolName) {
             return violation
         }
 
@@ -502,7 +591,10 @@ struct AgentRuntimePolicyGuard: Sendable {
                 detail: summary
             )
         }
-        guard isPathInScope(path) else {
+        let pathIsAllowed = isMutationTool(toolName)
+            ? isPathWritable(path)
+            : isPathReadable(path)
+        guard pathIsAllowed else {
             return AgentRuntimePolicyViolation(
                 reason: "The file path is outside the workspace paths allowed for this run",
                 toolName: toolName,
@@ -577,6 +669,22 @@ struct AgentRuntimePolicyGuard: Sendable {
         )
     }
 
+    private func validateReadOnlyInputMutation(
+        _ observed: PolicyObservedEvent,
+        toolName: String
+    ) -> AgentRuntimePolicyViolation? {
+        let paths = mutationPaths(from: observed, toolName: toolName)
+        guard let readOnlyPath = paths.first(where: isReadOnlyInputPath) else {
+            return nil
+        }
+        return AgentRuntimePolicyViolation(
+            reason: "The file path is a read-only task input and cannot be modified by the provider",
+            toolName: toolName,
+            detail: readOnlyPath,
+            violationCategory: "read_only_input_mutation"
+        )
+    }
+
     private func mutationPaths(from observed: PolicyObservedEvent, toolName: String) -> [String] {
         if isPatchMutationTool(toolName) {
             return patchMutationPaths(from: observed)
@@ -599,7 +707,7 @@ struct AgentRuntimePolicyGuard: Sendable {
             )
         }
 
-        if let outsidePath = paths.first(where: { !isPathInScope($0) }) {
+        if let outsidePath = paths.first(where: { !isPathWritable($0) }) {
             return AgentRuntimePolicyViolation(
                 reason: "The patch file path is outside the workspace paths allowed for this run",
                 toolName: toolName,
@@ -675,10 +783,30 @@ struct AgentRuntimePolicyGuard: Sendable {
         return values.filter { seen.insert($0).inserted }
     }
 
-    private func isPathInScope(_ rawPath: String) -> Bool {
+    private func isPathReadable(_ rawPath: String) -> Bool {
+        isPath(rawPath, inside: readablePathRoots)
+    }
+
+    private func isPathWritable(_ rawPath: String) -> Bool {
+        isPath(rawPath, inside: writablePathRoots)
+    }
+
+    /// True when `rawPath` falls under one of the run's explicitly read-only
+    /// input paths (`manifest.additionalReadOnlyPaths`) — regardless of
+    /// whether that same path also happens to sit inside a writable root
+    /// (e.g. an attached context file inside the workspace). Unlike
+    /// `isPathReadable(_:) && !isPathWritable(_:)`, this stays true for
+    /// read-only inputs nested inside a writable workspace, so the
+    /// read-only-input mutation guard can't be bypassed just by attaching a
+    /// file that already lives under the workspace root.
+    private func isReadOnlyInputPath(_ rawPath: String) -> Bool {
+        isPath(rawPath, inside: readOnlyInputPathRoots)
+    }
+
+    private func isPath(_ rawPath: String, inside roots: [String]) -> Bool {
         let candidate = standardizedRunPath(rawPath)
 
-        return allowedPathRoots.contains { root in
+        return roots.contains { root in
             candidate == root || candidate.hasPrefix(root + "/")
         }
     }
@@ -994,7 +1122,7 @@ struct AgentRuntimePolicyGuard: Sendable {
     }
 
     private func isFileTool(_ tool: String) -> Bool {
-        ["read", "write", "edit", "multiedit"].contains(Self.normalizedToolName(tool))
+        ["read", "grep", "glob", "ls", "write", "edit", "multiedit"].contains(Self.normalizedToolName(tool))
     }
 
     private func isNetworkTool(_ tool: String) -> Bool {

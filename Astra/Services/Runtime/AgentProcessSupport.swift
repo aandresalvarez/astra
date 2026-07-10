@@ -632,6 +632,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
     /// owns them — so it can't double-prompt or kill a run whose command simply
     /// can't be reduced to a replayable scoped grant. Hard denies still stop.
     let liveApprovalsActive: Bool
+    let astraSandboxApplied: Bool
 
     private let lock = NSLock()
 
@@ -707,7 +708,8 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         terminalProgressExitGraceSeconds: TimeInterval? = nil,
         taskID: UUID = UUID(),
         policyGuard: AgentRuntimePolicyGuard? = nil,
-        liveApprovalsActive: Bool = false
+        liveApprovalsActive: Bool = false,
+        astraSandboxApplied: Bool = false
     ) {
         self.tokenBudget = tokenBudget
         self.budgetEnforcementMode = budgetEnforcementMode
@@ -722,6 +724,7 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         self.taskID = taskID
         self.policyGuard = policyGuard
         self.liveApprovalsActive = liveApprovalsActive
+        self.astraSandboxApplied = astraSandboxApplied
     }
 
     static func estimatedTokenCount(for text: String) -> Int {
@@ -1680,17 +1683,38 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         toolID: String?,
         process: AgentRuntimeProcessControl?
     ) -> Bool {
-        guard _runtimeStopReason == nil else { return false }
+        guard astraSandboxApplied,
+              !_policyViolation,
+              !_policyApprovalRequired,
+              _runtimeStopReason == nil else { return false }
         let context = toolContext(for: toolID)
         let toolName = Self.nonEmpty(context?.name) ?? "Tool"
         let requestText = context?.summary
             .map { "\nRecent request: \(LogSanitizer.sanitize($0, maxLength: 500))" }
             ?? ""
-        let message = """
-        ASTRA's macOS sandbox denied \(toolName) \(denial.operation.rawValue) access to \(denial.path).
-        Auto mode can skip provider approval prompts, but it does not bypass ASTRA's OS sandbox. The needed host path must be explicitly projected before the provider launches.\(requestText)
-        Detail: \(denial.detail)
-        """
+        let decision = RuntimeSandboxDenialApproval.resolve(
+            denial: denial,
+            toolName: toolName,
+            requestText: requestText,
+            approvalWasApplied: policyGuard?.hasAppliedApprovalGrants([
+                .sandboxPath(path: ExecutionSandbox.canonicalize(denial.path) ?? denial.path, access: "read")
+            ]) == true
+        )
+        guard case .request(let request, let grants) = decision else {
+            guard case .terminal(let reason, let message) = decision else { return false }
+            _runtimeStopReason = reason
+            _runtimeStopMessage = message
+            process?.terminate()
+            return true
+        }
+        let providerID = policyGuard?.providerID ?? .claudeCode
+        let message = PermissionBroker.approvalPayloadString(
+            providerID: providerID,
+            request: request,
+            reason: "ASTRA's applied macOS sandbox blocked a bounded local read required by this operation.",
+            providerDetail: denial.detail,
+            grants: grants
+        )
         AppLogger.audit(.workerBlocked, category: "Worker", taskID: taskID, fields: [
             "reason": denial.stopReason,
             "source": "os_sandbox_denial",
@@ -1698,13 +1722,12 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
             "path": denial.path,
             "tool": toolName,
             "detail": denial.detail
-        ], level: .error, fieldMaxLength: 360)
-        _runtimeStopReason = denial.stopReason
-        _runtimeStopMessage = message
+        ], level: .warning, fieldMaxLength: 360)
+        _policyApprovalRequired = true
+        _policyApprovalMessage = message
         process?.terminate()
         return true
     }
-
     private func recordRuntimeStop(
         reason: String,
         message: String,

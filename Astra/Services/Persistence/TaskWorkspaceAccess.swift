@@ -37,10 +37,15 @@ public struct TaskWorkspaceAccess {
         return effectiveWorkspacePath
     }
 
-    public var runtimeAdditionalPaths: [String] {
-        var paths = task.workspace?.additionalPaths ?? []
-        paths.append(contentsOf: inputDirectoryPaths)
+    public var runtimeWritablePaths: [String] {
+        normalizedUniquePaths(task.workspace?.additionalPaths ?? [])
+    }
 
+    public var runtimeReadOnlyInputPaths: [String] {
+        normalizedUniquePaths(inputPaths)
+    }
+
+    private func normalizedUniquePaths(_ paths: [String]) -> [String] {
         var seen: Set<String> = []
         return paths.compactMap { rawPath in
             let path = (rawPath as NSString).expandingTildeInPath
@@ -79,10 +84,14 @@ public struct TaskWorkspaceAccess {
         return path
     }
 
-    private var inputDirectoryPaths: [String] {
+    /// Task inputs projected for read-only mounting. Includes both directories
+    /// and single files (e.g. an attached PDF/config file outside the
+    /// workspace) so containerized runs mount the same paths the host/Seatbelt
+    /// launch-resource path already grants as read-only.
+    private var inputPaths: [String] {
         task.inputs.compactMap { input in
             let path = (input as NSString).expandingTildeInPath
-            guard fileSystem.directoryExists(atPath: path) else {
+            guard fileSystem.fileExists(atPath: path) else {
                 return nil
             }
             return path
