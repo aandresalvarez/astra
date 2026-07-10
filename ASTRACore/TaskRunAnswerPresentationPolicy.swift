@@ -160,10 +160,12 @@ public enum TaskRunAnswerPresentationPolicy {
         var output: [String] = []
         var previousKey: String?
         for segment in rawSegments {
-            let trimmed = segment.trimmingCharacters(in: .whitespacesAndNewlines)
-            let key = comparisonKey(trimmed)
+            // Key on collapsed whitespace but emit the ORIGINAL segment:
+            // trimming per line would strip significant indentation from
+            // fenced code that reaches the line tier (no blank lines).
+            let key = comparisonKey(segment)
             guard !key.isEmpty, key != previousKey else { continue }
-            output.append(trimmed)
+            output.append(segment)
             previousKey = key
         }
         return output.joined(separator: separator).trimmingCharacters(in: .whitespacesAndNewlines)

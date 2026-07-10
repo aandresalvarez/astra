@@ -136,16 +136,23 @@ public enum MarkdownRenderPreparation {
     /// colon-introduced numbered sequences. Fenced code is never touched.
     static func reflowInlineBlockMarkers(in text: String) -> String {
         var output: [String] = []
-        var isInsideFence = false
+        // A fence only closes on a matching fence character (CommonMark): a
+        // "~~~" line inside a backtick block is content, not a closer, and
+        // must not drop the following code lines out of code mode.
+        var openFenceCharacter: Character?
 
         for line in text.components(separatedBy: "\n") {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
-            if isFenceLine(trimmed) {
-                isInsideFence.toggle()
+            if isFenceLine(trimmed), let fenceCharacter = trimmed.first {
+                if openFenceCharacter == nil {
+                    openFenceCharacter = fenceCharacter
+                } else if openFenceCharacter == fenceCharacter {
+                    openFenceCharacter = nil
+                }
                 output.append(line)
                 continue
             }
-            if isInsideFence {
+            if openFenceCharacter != nil {
                 output.append(line)
                 continue
             }
@@ -239,21 +246,26 @@ public enum MarkdownRenderPreparation {
     }
 
     /// Breaks marker runs onto their own lines when the run is unambiguous:
-    /// colon-introduced bullets ("calls: - `a` → GET - `b` → POST"),
+    /// colon-introduced dash bullets ("calls: - `a` → GET - `b` → POST"),
     /// colon-introduced numbered steps ("steps: 1. Open app. 2. Go to …"),
     /// and lines that already start with "1." and glue the later numbers.
-    /// Ordinary prose hyphens ("state - of - the - art") never match a
-    /// trigger, so they stay intact.
+    /// Only `-` opens a colon bullet run: `*` after a colon is routinely a
+    /// cron wildcard or multiplication ("Schedule: * * * * *"), and prose
+    /// hyphens ("state - of - the - art") never match a trigger. A trigger
+    /// found inside an inline code span is no trigger at all.
     private static func listRunSplit(_ chunk: String) -> [String] {
-        if let bulletTrigger = firstMatchRange(#":\s+[-*+]\s"#, in: chunk) {
+        let nsChunk = chunk as NSString
+        if let bulletTrigger = firstMatchRange(#":\s+-\s"#, in: chunk),
+           !isInsideInlineCode(nsChunk, location: bulletTrigger.location) {
             return splitMarkerRun(
                 chunk,
-                markerPattern: #"\s[-*+]\s+"#,
+                markerPattern: #"\s-\s+"#,
                 searchStart: bulletTrigger.location + 1,
                 firstExpectedNumber: nil
             )
         }
-        if let numberTrigger = firstMatchRange(#":\s+1[.)]\s"#, in: chunk) {
+        if let numberTrigger = firstMatchRange(#":\s+1[.)]\s"#, in: chunk),
+           !isInsideInlineCode(nsChunk, location: numberTrigger.location) {
             return splitMarkerRun(
                 chunk,
                 markerPattern: #"\s\d{1,2}[.)]\s+"#,

@@ -455,6 +455,41 @@ struct MarkdownTextViewTests {
         #expect(MarkdownRenderPreparation.prepareForDisplay(source) == source)
     }
 
+    @Test("Display preparation leaves cron wildcards after a colon alone")
+    func displayPreparationLeavesCronWildcardsAfterAColonAlone() {
+        let source = "Schedule: * * * * * runs every minute."
+
+        #expect(MarkdownRenderPreparation.prepareForDisplay(source) == source)
+    }
+
+    @Test("Display preparation ignores list triggers inside inline code spans")
+    func displayPreparationIgnoresListTriggersInsideInlineCodeSpans() {
+        let source = "Use `pattern: - x` and state - of - the - art prose."
+
+        #expect(MarkdownRenderPreparation.prepareForDisplay(source) == source)
+    }
+
+    @Test("Display preparation keeps tilde lines inside backtick fences as code")
+    func displayPreparationKeepsTildeLinesInsideBacktickFencesAsCode() {
+        let source = """
+        ```
+        ~~~
+        calls: - foo - bar
+        ```
+        """
+
+        #expect(MarkdownRenderPreparation.prepareForDisplay(source) == source)
+    }
+
+    @Test("Answer presentation preserves code indentation in line-structured text")
+    func answerPresentationPreservesCodeIndentationInLineStructuredText() {
+        let rawText = "```python\ndef f():\n    return 1\n```\n"
+
+        let presentation = TaskRunAnswerPresentationPolicy.presentation(rawText: rawText)
+
+        #expect(presentation.answerText.contains("    return 1"))
+    }
+
     @Test("Recovered headings keep hyphen and numbered title punctuation")
     func recoveredHeadingsKeepHyphenAndNumberedTitlePunctuation() {
         let hyphenBlocks = MarkdownTextView.parse("Done. ### Install - macOS setup")
