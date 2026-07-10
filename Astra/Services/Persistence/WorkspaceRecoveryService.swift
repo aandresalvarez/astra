@@ -705,13 +705,19 @@ public enum WorkspaceRecoveryService {
             return .invalid
         }
 
-        let root = storeRoot.standardizedFileURL
-        let candidate = root.appendingPathComponent(pointer.relativePath).standardizedFileURL
-        guard candidate.path.hasPrefix(root.path + "/"),
-              fileManager.fileExists(atPath: candidate.path) else {
+        let lexicalRoot = storeRoot.standardizedFileURL
+        let lexicalCandidate = lexicalRoot.appendingPathComponent(pointer.relativePath).standardizedFileURL
+        guard lexicalCandidate.path.hasPrefix(lexicalRoot.path + "/") else {
             return .invalid
         }
-        return .valid(candidate)
+
+        let resolvedRoot = lexicalRoot.resolvingSymlinksInPath().standardizedFileURL
+        let resolvedCandidate = lexicalCandidate.resolvingSymlinksInPath().standardizedFileURL
+        guard resolvedCandidate.path.hasPrefix(resolvedRoot.path + "/"),
+              fileManager.fileExists(atPath: resolvedCandidate.path) else {
+            return .invalid
+        }
+        return .valid(resolvedCandidate)
     }
 
     private static func migratePreChannelLegacyStoreIfNeeded() throws {

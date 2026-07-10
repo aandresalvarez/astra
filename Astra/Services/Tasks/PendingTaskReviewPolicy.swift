@@ -42,6 +42,32 @@ struct PendingTaskReviewSnapshotInput: Equatable, Sendable {
 }
 
 enum PendingTaskReviewPolicy {
+    static func requiresScopedArtifactEvidence(
+        taskStatus: TaskStatus,
+        isTaskDone: Bool,
+        requiresDeliverableArtifact: Bool,
+        latestRun: PendingTaskReviewRunSnapshot?,
+        runs: [PendingTaskReviewRunSnapshot],
+        events: [PendingTaskReviewEventSnapshot]
+    ) -> Bool {
+        guard requiresDeliverableArtifact, let latestRun else { return false }
+
+        if taskStatus == .completed {
+            return !isTaskDone && latestRun.status == .completed
+        }
+
+        guard taskStatus == .pendingUser else { return false }
+        let dismissed = events.contains { event in
+            event.type == "task.dismissed" &&
+                (event.runID == latestRun.id || legacyDismissal(event, appliesTo: latestRun, runs: runs))
+        }
+        guard !dismissed else { return false }
+
+        let stopReason = TaskRunStopReason(rawValue: latestRun.stopReason)
+        guard !stopReasonIsPolicyBlocked(stopReason) else { return false }
+        return stopReason == .noUsableResult || latestRun.status == .completed
+    }
+
     static func dismissalReason(for task: AgentTask, latestRun: TaskRun?) -> PendingTaskDismissalReason? {
         reviewState(for: task, latestRun: latestRun).dismissalReason
     }

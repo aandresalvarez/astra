@@ -116,6 +116,32 @@ struct PersistentStoreSafetyTests {
         ) == nil)
     }
 
+    @Test("Active-store pointers reject symlink escapes from the generation root")
+    func activeStorePointerRejectsSymlinkEscape() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-pointer-root-" + UUID().uuidString, isDirectory: true)
+        let outside = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-pointer-outside-" + UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: root)
+            try? FileManager.default.removeItem(at: outside)
+        }
+
+        let outsideStoreURL = outside.appendingPathComponent("outside.store")
+        try Data().write(to: outsideStoreURL)
+        let linkedDirectoryURL = root.appendingPathComponent("linked", isDirectory: true)
+        try FileManager.default.createSymbolicLink(at: linkedDirectoryURL, withDestinationURL: outside)
+        let pointerURL = root.appendingPathComponent("active-store.json")
+        try Data(#"{"relativePath":"linked/outside.store"}"#.utf8).write(to: pointerURL)
+
+        #expect(WorkspaceRecoveryService.activeStorePointerState(
+            pointerURL: pointerURL,
+            storeRoot: root
+        ) == .invalid)
+    }
+
     @Test("SQLite store migration uses a consistent backup and atomic destination")
     func storeSnapshotIsConsistentAndAtomic() throws {
         let root = FileManager.default.temporaryDirectory

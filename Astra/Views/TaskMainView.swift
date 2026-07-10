@@ -4249,29 +4249,7 @@ struct TaskMainView: View {
     }
 
     private var pendingTaskReviewSnapshotInput: PendingTaskReviewSnapshotInput {
-        let snapshot = currentThreadSnapshot
-        let latestRun = snapshot.latestRun
-        let latestRunHasScopedArtifact: Bool
-        if let latestRun {
-            latestRunHasScopedArtifact = TaskDeliverableExpectation.hasRunScopedArtifact(
-                for: task,
-                fileChanges: latestRun.fileChanges,
-                runStartedAt: latestRun.startedAt,
-                runCompletedAt: latestRun.completedAt
-            )
-        } else {
-            latestRunHasScopedArtifact = false
-        }
-
-        return PendingTaskReviewSnapshotInput(
-            taskStatus: task.status,
-            isTaskDone: task.isDone,
-            requiresDeliverableArtifact: TaskDeliverableExpectation.requiresDeliverableArtifact(task),
-            latestRun: latestRun.map(PendingTaskReviewRunSnapshot.init),
-            runs: snapshot.sortedRuns.map(PendingTaskReviewRunSnapshot.init),
-            events: snapshot.sortedEvents.map(PendingTaskReviewEventSnapshot.init),
-            latestRunHasScopedArtifact: latestRunHasScopedArtifact
-        )
+        PendingTaskReviewSnapshotInput(task: task, snapshot: currentThreadSnapshot)
     }
 
     private var pendingDecisionTitle: String {
