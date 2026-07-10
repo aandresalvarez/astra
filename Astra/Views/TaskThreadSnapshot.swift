@@ -304,7 +304,8 @@ private struct TaskThreadSnapshotWindow {
         switch event.type {
         case "astra.todo.replace", "astra.complete", "astra.protocol.invalid",
              "astra.permission_manifest", "astra.permission_summary",
-             "permission.approval.requested", "permission.request.resolved":
+             "permission.approval.requested", "permission.request.resolved",
+             "task.dismissed":
             return true
         default:
             return false
