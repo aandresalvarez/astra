@@ -447,7 +447,19 @@ struct WorkspaceRightRailView: View {
 
     private var configurePanel: some View {
         let signature = capabilityRailSnapshotSignature
-        let snapshot = capabilityRailSnapshotCache.snapshot(for: signature) ?? .empty
+        let baseSnapshot = capabilityRailSnapshotCache.snapshot(for: signature) ?? .empty
+        let permissionAwareItems = CapabilityRuntimePermissionAttention.applying(
+            CapabilityRuntimePermissionAttention.pending(for: selectedTask),
+            to: baseSnapshot.items,
+            connectors: CapabilityRuntimePermissionAttention.ownershipConnectors(
+                workspaceConnectors: capabilities.workspaceConnectors,
+                availableGlobalConnectors: capabilities.availableGlobalConnectors
+            )
+        )
+        let snapshot = CapabilityRailSnapshot(
+            items: permissionAwareItems,
+            isDraft: isDraftCapability
+        )
 
         // Once setup is complete the panel leads with the capabilities the
         // workspace actually uses; while setup is pending it stays directly under
@@ -949,6 +961,9 @@ struct WorkspaceRightRailView: View {
     }
 
     private func capabilityListSubtitle(for item: RailCapabilityItem) -> String {
+        if item.runtimePermissionAttention != nil {
+            return item.presentation.rowSubtitle
+        }
         let source = isWorkspaceAuthoredCapability(item) ? "Custom" : "Built-in"
         let composition = WorkspaceRightRailPresentation.compositionSummary(for: item)
         return "\(source): \(composition)"

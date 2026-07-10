@@ -153,7 +153,7 @@ struct TaskThreadSnapshotInput: Sendable {
     let totalRunCount: Int
     let omittedRunCount: Int
 
-    init(task: AgentTask, maxRuns: Int = 50) {
+    init(task: AgentTask, maxRuns: Int = 50, performanceFields: [String: String] = [:]) {
         let start = DispatchTime.now().uptimeNanoseconds
         let window = TaskThreadSnapshotWindow(events: task.events, runs: task.runs, maxRuns: maxRuns)
         self.init(
@@ -179,7 +179,8 @@ struct TaskThreadSnapshotInput: Sendable {
                 "omitted_events": PerformanceTelemetryFields.count(omittedEventCount),
                 "omitted_runs": PerformanceTelemetryFields.count(omittedRunCount),
                 "max_runs": PerformanceTelemetryFields.count(maxRuns)
-            ]
+            ].merging(performanceFields, uniquingKeysWith: { _, new in new }),
+            taskID: task.id
         )
     }
 
@@ -245,7 +246,16 @@ private struct TaskThreadSnapshotWindow {
             return keptRunIDs.contains(runID)
         }
         let cappedToolResults = Self.capToolResults(runFilteredEvents)
-        events = Array(cappedToolResults.suffix(Self.maxEvents))
+        let displayEvents = Array(cappedToolResults.suffix(Self.maxEvents))
+        // The transcript window is intentionally bounded, but protocol and
+        // permission events also reconstruct durable per-run state. Keep the
+        // latest state transition for each kept run even when it predates the
+        // display window, so a long run does not lose its plan or permission
+        // presentation merely because newer conversational events arrived.
+        let stateEvents = Self.latestStateEvents(from: cappedToolResults)
+        let displayEventIDs = Set(displayEvents.map(\.id))
+        events = (displayEvents + stateEvents.filter { !displayEventIDs.contains($0.id) })
+            .sorted { $0.timestamp < $1.timestamp }
 
         omittedEventCount = max(0, totalEventCount - events.count)
         omittedRunCount = max(0, totalRunCount - runs.count)
@@ -279,6 +289,35 @@ private struct TaskThreadSnapshotWindow {
 
         return events.filter { event in
             event.type != "tool.result" || keepEventIDs.contains(event.id)
+        }
+    }
+
+    private static func latestStateEvents(from events: [TaskEvent]) -> [TaskEvent] {
+        var latestEvents: [StateEventKey: TaskEvent] = [:]
+        for event in events where isStateEvent(event) {
+            latestEvents[StateEventKey(event: event)] = event
+        }
+        return Array(latestEvents.values)
+    }
+
+    private static func isStateEvent(_ event: TaskEvent) -> Bool {
+        switch event.type {
+        case "astra.todo.replace", "astra.complete", "astra.protocol.invalid",
+             "astra.permission_manifest", "astra.permission_summary",
+             "permission.approval.requested", "permission.request.resolved":
+            return true
+        default:
+            return false
+        }
+    }
+
+    private struct StateEventKey: Hashable {
+        let runID: UUID?
+        let type: String
+
+        init(event: TaskEvent) {
+            runID = event.run?.id
+            type = event.type
         }
     }
 }
@@ -574,6 +613,9 @@ struct TaskThreadSnapshot: Sendable {
     let omittedEventCount: Int
     let totalRunCount: Int
     let omittedRunCount: Int
+    /// Transcript shape computed while building the snapshot, so task-open
+    /// readiness logging never rescans user-visible content on the main actor.
+    let transcriptMetrics: TaskThreadTranscriptMetrics
 
     private let activityByRunID: [UUID: TaskRunActivity]
     private let protocolByRunID: [UUID: TaskRunProtocolState]
@@ -598,25 +640,37 @@ struct TaskThreadSnapshot: Sendable {
 
     static func buildAsync(
         input: TaskThreadSnapshotInput,
-        fields: [String: String]
+        fields: [String: String],
+        responsivenessContext: TaskThreadResponsivenessContext? = nil
     ) async -> TaskThreadSnapshot {
         await Task.detached(priority: .userInitiated) {
-            PerformanceTelemetry.measure(
-                "thread_snapshot_build",
-                thresholdMilliseconds: 8,
-                fields: fields,
-                resultFields: { snapshot in
-                    [
-                        "conversation_item_count": PerformanceTelemetryFields.count(snapshot.conversationItems.count),
-                        "snapshot_event_count": PerformanceTelemetryFields.count(snapshot.sortedEvents.count),
-                        "snapshot_run_count": PerformanceTelemetryFields.count(snapshot.sortedRuns.count)
-                    ]
-                }
-            ) {
-                PerformanceSignposts.buildThreadSnapshot {
-                    TaskThreadSnapshot(input: input)
-                }
+            let startedAt = DispatchTime.now().uptimeNanoseconds
+            let snapshot = PerformanceSignposts.buildThreadSnapshot {
+                TaskThreadSnapshot(input: input)
             }
+            let resultFields = fields.merging([
+                "conversation_item_count": PerformanceTelemetryFields.count(snapshot.conversationItems.count),
+                "snapshot_event_count": PerformanceTelemetryFields.count(snapshot.sortedEvents.count),
+                "snapshot_run_count": PerformanceTelemetryFields.count(snapshot.sortedRuns.count)
+            ], uniquingKeysWith: { _, new in new })
+            if let responsivenessContext {
+                responsivenessContext.performWithCorrelationFields { correlationFields in
+                    PerformanceTelemetry.logIfNeeded(
+                        "thread_snapshot_build",
+                        start: startedAt,
+                        thresholdMilliseconds: 8,
+                        fields: resultFields.merging(correlationFields, uniquingKeysWith: { _, new in new })
+                    )
+                }
+            } else {
+                PerformanceTelemetry.logIfNeeded(
+                    "thread_snapshot_build",
+                    start: startedAt,
+                    thresholdMilliseconds: 8,
+                    fields: resultFields
+                )
+            }
+            return snapshot
         }.value
     }
 
@@ -770,6 +824,7 @@ struct TaskThreadSnapshot: Sendable {
             activityByRunID: activity,
             protocolByRunID: protocolStatesByRunID
         )
+        transcriptMetrics = TaskThreadTranscriptMetrics(items: conversationItems)
     }
 
     func activityPresentation(for run: TaskRunSnapshot) -> RunActivityPresentation {
@@ -1055,6 +1110,54 @@ struct TaskThreadSnapshot: Sendable {
     }
 }
 
+/// Privacy-safe transcript shape counts calculated off the main actor as part
+/// of snapshot construction. The values never retain or emit transcript text.
+struct TaskThreadTranscriptMetrics: Equatable, Sendable {
+    let textBytes: Int
+    let agentResponseCount: Int
+    let codeFenceCount: Int
+    let tableRowCount: Int
+
+    init(items: [TaskConversationItem]) {
+        var textBytes = 0
+        var agentResponseCount = 0
+        var codeFenceCount = 0
+        var tableRowCount = 0
+
+        for item in items {
+            let text: String
+            switch item {
+            case .userMessage(let value, _), .planUserMessage(let value, _), .planAssistantMessage(let value, _), .scheduleResult(let value, _), .systemInfo(let value, _), .recapResult(let value, _):
+                text = value
+            case .agentResponse(let run):
+                text = run.output
+                agentResponseCount += 1
+            }
+            textBytes += text.utf8.count
+            codeFenceCount += Self.occurrences(of: "```", in: text)
+            tableRowCount += text.split(separator: "\n", omittingEmptySubsequences: false).reduce(into: 0) { count, line in
+                if line.drop(while: { $0 == " " || $0 == "\t" }).first == "|" { count += 1 }
+            }
+        }
+
+        self.textBytes = textBytes
+        self.agentResponseCount = agentResponseCount
+        self.codeFenceCount = codeFenceCount
+        self.tableRowCount = tableRowCount
+    }
+
+    private static func occurrences(of needle: String, in text: String) -> Int {
+        guard !needle.isEmpty else { return 0 }
+        var count = 0
+        var searchStart = text.startIndex
+        while let range = text.range(of: needle, range: searchStart..<text.endIndex) {
+            count += 1
+            searchStart = range.upperBound
+        }
+        return count
+    }
+}
+
 struct TaskThreadSnapshotTrigger: Equatable {
     private static let liveOutputBucketSize = 1_024
     private static let highFrequencyEventTypes: Set<String> = ["agent.response", "agent.thinking"]
@@ -1175,99 +1278,37 @@ enum TaskLiveness {
 struct TaskThreadSnapshotCacheKey: Hashable, Sendable {
     let taskID: UUID
     let status: TaskStatus
-    let goalHash: UInt64
+    /// `updatedAt` is the durable task revision. Terminal cache hits must be
+    /// O(1), so do not rebuild signatures across an entire event history here.
+    let revision: Date
     let createdAt: Date
     let completedAt: Date?
     let maxRuns: Int
     let eventCount: Int
     let runCount: Int
-    let latestRunID: UUID?
-    let latestRunStatus: RunStatus?
-    let eventSignatures: [TaskThreadEventCacheSignature]
-    let runSignatures: [TaskThreadRunCacheSignature]
 
     init?(
         task: AgentTask,
-        trigger: TaskThreadSnapshotTrigger,
         maxRuns: Int
     ) {
-        guard Self.isCacheable(trigger) else { return nil }
+        guard Self.isCacheable(status: task.status) else { return nil }
         taskID = task.id
         status = task.status
-        goalHash = Self.stableHash(task.goal)
+        revision = task.updatedAt
         createdAt = task.createdAt
         completedAt = task.completedAt
         self.maxRuns = maxRuns
         eventCount = task.events.count
         runCount = task.runs.count
-        latestRunID = trigger.latestRunID
-        latestRunStatus = trigger.latestRunStatus
-        eventSignatures = task.events.map(TaskThreadEventCacheSignature.init(event:)).sorted()
-        runSignatures = task.runs.map(TaskThreadRunCacheSignature.init(run:)).sorted()
     }
 
-    private static func stableHash(_ value: String) -> UInt64 {
-        var hash: UInt64 = 14_695_981_039_346_656_037
-        for byte in value.utf8 {
-            hash ^= UInt64(byte)
-            hash &*= 1_099_511_628_211
-        }
-        return hash
-    }
-
-    private static func isCacheable(_ trigger: TaskThreadSnapshotTrigger) -> Bool {
-        switch trigger.status {
+    private static func isCacheable(status: TaskStatus) -> Bool {
+        switch status {
         case .running, .queued:
             return false
         default:
-            return trigger.latestRunStatus != .running
+            return true
         }
-    }
-}
-
-struct TaskThreadEventCacheSignature: Hashable, Comparable, Sendable {
-    let id: UUID
-    let runID: UUID?
-    let type: String
-    let payloadByteCount: Int
-    let timestamp: Date
-
-    init(event: TaskEvent) {
-        id = event.id
-        runID = event.run?.id
-        type = event.type
-        payloadByteCount = event.payload.utf8.count
-        timestamp = event.timestamp
-    }
-
-    static func < (lhs: TaskThreadEventCacheSignature, rhs: TaskThreadEventCacheSignature) -> Bool {
-        if lhs.timestamp != rhs.timestamp { return lhs.timestamp < rhs.timestamp }
-        return lhs.id.uuidString < rhs.id.uuidString
-    }
-}
-
-struct TaskThreadRunCacheSignature: Hashable, Comparable, Sendable {
-    let id: UUID
-    let status: RunStatus
-    let startedAt: Date
-    let completedAt: Date?
-    let outputByteCount: Int
-    let fileChangesByteCount: Int
-    let stopReason: String
-
-    init(run: TaskRun) {
-        id = run.id
-        status = run.status
-        startedAt = run.startedAt
-        completedAt = run.completedAt
-        outputByteCount = run.output.utf8.count
-        fileChangesByteCount = run.fileChangesJSON.utf8.count
-        stopReason = run.stopReason
-    }
-
-    static func < (lhs: TaskThreadRunCacheSignature, rhs: TaskThreadRunCacheSignature) -> Bool {
-        if lhs.startedAt != rhs.startedAt { return lhs.startedAt < rhs.startedAt }
-        return lhs.id.uuidString < rhs.id.uuidString
     }
 }
 

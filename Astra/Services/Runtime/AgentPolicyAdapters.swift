@@ -40,7 +40,7 @@ extension ProviderPolicyAdapter {
                 return name.trimmingCharacters(in: .whitespacesAndNewlines)
             case .shellCommand(let executable, let pattern):
                 return "shell(\(executable):\(pattern))"
-            case .filePath, .networkPattern, .credential:
+            case .filePath, .networkPattern, .credential, .sandboxPath:
                 return nil
             }
         }
@@ -147,7 +147,7 @@ struct ClaudePolicyAdapter: ProviderPolicyAdapter {
                 return canonicalClaudeToolName(name)
             case .shellCommand(let executable, let pattern):
                 return claudeShellGrant(executable: executable, pattern: pattern)
-            case .filePath, .networkPattern, .credential:
+            case .filePath, .networkPattern, .credential, .sandboxPath:
                 return nil
             }
         })
@@ -339,7 +339,7 @@ struct CopilotPolicyAdapter: ProviderPolicyAdapter {
                 return canonicalCopilotToolName(name)
             case .shellCommand(let executable, let pattern):
                 return "shell(\(executable):\(pattern))"
-            case .filePath, .networkPattern, .credential:
+            case .filePath, .networkPattern, .credential, .sandboxPath:
                 return nil
             }
         })
@@ -708,7 +708,7 @@ private enum BrokeredProviderGrantStrings {
                 return name.trimmingCharacters(in: .whitespacesAndNewlines)
             case .shellCommand(let executable, let pattern):
                 return "shell(\(executable):\(pattern))"
-            case .filePath, .networkPattern, .credential:
+            case .filePath, .networkPattern, .credential, .sandboxPath:
                 return nil
             }
         })
@@ -991,7 +991,8 @@ enum AgentPolicyManifestService {
             ?? AgentRuntimeCapabilityProfileService.profile(for: runtime, executablePath: "")
         let providerPolicyAdapter = runtimeAdapter.policyAdapter(runtimeCapabilities: providerCapabilities)
         let configOwnership = runtimeAdapter.providerConfigOwnership(workspacePath: workspacePath)
-        let runtimePaths = runtimeAdditionalPaths(for: task)
+        let runtimePaths = runtimeWritablePaths(for: task)
+        let additionalReadOnlyPaths = brokeredReadOnlyPaths(from: launchResourcePlan)
         let context = PolicyRenderContext(
             runtimeID: runtime,
             model: model,
@@ -1060,8 +1061,15 @@ enum AgentPolicyManifestService {
         // claim "OS Sandboxed" for a best-effort run that silently falls back to
         // unconfined at launch. Display-only; application + fallbacks are audited
         // at launch time.
-        let effectiveSandboxPolicy = manifestExecutionPolicy.permissionPolicyOverride ?? permissionPolicy
-        let sandboxSettings = ExecutionSandboxSettings.current(permissionPolicy: effectiveSandboxPolicy, defaults: sandboxSettingsDefaults)
+        // The process runner launches with `executionPolicy.applyingProviderRender`,
+        // so the final provider render is the source of truth for the effective
+        // permission mode after task defaults, one-run grants, and runtime clamps.
+        let effectiveSandboxPolicy = PermissionPolicy(providerMode: render.permissionMode)
+        let sandboxResolution = ExecutionSandboxSettings.resolve(
+            permissionPolicy: effectiveSandboxPolicy,
+            defaults: sandboxSettingsDefaults
+        )
+        let sandboxSettings = sandboxResolution.effectiveSettings
         if !executionEnvironment.providerRunsInsideContainer,
            sandboxSettings.shouldWrap(runtime: runtime),
            ExecutionSandbox.willLikelyApply(workspacePath: workspacePath, settings: sandboxSettings),
@@ -1119,7 +1127,14 @@ enum AgentPolicyManifestService {
                 capabilityScope: taskCapabilityScope
             ),
             approvalsGranted: approvals,
-            approvalGrants: effectiveGrants
+            approvalGrants: effectiveGrants,
+            additionalReadOnlyPaths: additionalReadOnlyPaths,
+            sandboxEvidence: RunPermissionManifest.SandboxEvidence(
+                storedEnforcement: sandboxResolution.storedEnforcement.rawValue,
+                effectiveEnforcement: sandboxSettings.enforcement.rawValue,
+                effectiveReadScope: sandboxSettings.readScope.rawValue,
+                resolutionReason: sandboxResolution.reason?.rawValue
+            )
         )
         insertManifestEvent(manifest, type: preflightEventType, task: task, run: run, modelContext: modelContext)
         AppLogger.audit(.runtimeCommandPlanned, category: "Worker", taskID: task.id, fields: [
@@ -1129,6 +1144,10 @@ enum AgentPolicyManifestService {
             "policy_scope": manifest.policyScope.rawValue,
             "provider_adapter_version": String(render.adapterVersion),
             "enforcement": render.enforcementTiers.map(\.rawValue).joined(separator: ","),
+            "sandbox_stored_enforcement": sandboxResolution.storedEnforcement.rawValue,
+            "sandbox_effective_enforcement": sandboxSettings.enforcement.rawValue,
+            "sandbox_resolution_reason": sandboxResolution.reason?.rawValue ?? "none",
+            "brokered_read_only_path_count": String(additionalReadOnlyPaths.count),
             "diagnostics_blocked": String(render.diagnostics.filter { $0.severity == .blocked }.count),
             "diagnostics_warning": String(render.diagnostics.filter { $0.severity == .warning }.count),
             "uses_broad_provider_permissions": String(render.usesBroadProviderPermissions)
@@ -1136,9 +1155,9 @@ enum AgentPolicyManifestService {
         return manifest
     }
 
-    private static func runtimeAdditionalPaths(for task: AgentTask) -> [String] {
+    private static func runtimeWritablePaths(for task: AgentTask) -> [String] {
         let access = TaskWorkspaceAccess(task: task)
-        var paths = access.runtimeAdditionalPaths
+        var paths = access.runtimeWritablePaths
         if !access.effectiveWorkspacePath.isEmpty {
             paths.append(access.effectiveWorkspacePath)
         }
@@ -1151,6 +1170,30 @@ enum AgentPolicyManifestService {
             guard !path.isEmpty, seen.insert(path).inserted else { return nil }
             return path
         }
+    }
+
+    private static func brokeredReadOnlyPaths(from plan: TaskLaunchResourcePlan?) -> [String] {
+        guard let plan else { return [] }
+        var seen: Set<String> = []
+        return plan.hostPathGrants.compactMap { grant in
+            guard grant.access == .read else { return nil }
+            switch grant.source {
+            case .taskInput, .userAttachment, .sandboxApproval:
+                // `.sandboxApproval` grants only ever reach `hostPathGrants` with
+                // `access == .read` (see `appendRuntimePermissionGrants`), so
+                // widening the in-app read scope here is safe: without this, a
+                // user-approved Seatbelt file-read retry (e.g. `Read` on an
+                // out-of-scope path) still gets rejected by
+                // `AgentRuntimePolicyGuard` because the OS-sandbox projection
+                // alone doesn't widen ASTRA's own readable-scope check.
+                let path = (grant.path as NSString).expandingTildeInPath
+                guard !path.isEmpty, seen.insert(path).inserted else { return nil }
+                return path
+            case .workspace, .remoteWorkspace, .gitCredential, .dockerEnvironment,
+                 .dockerCredential, .controlPlane, .connector, .browser, .provider:
+                return nil
+            }
+        }.sorted()
     }
 
     private static func applyingHostControlPlaneManifestSupport(

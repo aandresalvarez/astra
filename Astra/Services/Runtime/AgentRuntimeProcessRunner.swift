@@ -140,6 +140,7 @@ final class AgentRuntimeProcessRunner {
             contextText: context.contextText,
             workspacePath: context.workspacePath,
             capabilityResolutionSnapshot: context.capabilityResolutionSnapshot,
+            runtimePermissionGrants: context.executionPolicy.permissionGrantsOverride ?? [],
             gitCredentialContextProvider: { [gitCredentialContextProvider] _, _, _, _ in
                 gitCredentialContextProvider(context)
             }
@@ -154,6 +155,20 @@ final class AgentRuntimeProcessRunner {
         if !gitCredentialContext.isEmpty {
             plan = plan.addingGitCredentialContext(gitCredentialContext)
         }
+        if let diagnostic = launchResourcePlan.diagnostics.first(where: { $0.severity == .error }) {
+            let message = "ASTRA could not prepare a required launch dependency: \(diagnostic.message)"
+            AppLogger.audit(.workerBlocked, category: "Worker", taskID: context.taskSnapshot.id, fields: [
+                "runtime": plan.runtime.rawValue,
+                "reason": "launch_resource_unresolved",
+                "diagnostic_code": diagnostic.code
+            ], level: .error)
+            return .blocked(AgentProcessResult(
+                exitCode: -1,
+                error: message,
+                runtimeStopReason: "launch_resource_unresolved",
+                runtimeStopMessage: message
+            ))
+        }
         let environment = DockerExecutionPlanner.resolveEnvironment(for: context.task)
         if let block = plan.unsupportedProviderNativeCredentialReadBlock(
             for: launchResourcePlan,
@@ -167,6 +182,19 @@ final class AgentRuntimeProcessRunner {
                 "git_credential_writable_path_count": String(gitCredentialContext.writablePaths.count),
                 "git_credential_transports": gitCredentialContext.transports.map(\.rawValue).joined(separator: ","),
                 "provider_native_credential_read_path_count": String(launchResourcePlan.providerNativeCredentialReadablePaths.count)
+            ], level: .error)
+            return .blocked(block)
+        }
+        if let block = plan.unsupportedProviderNativeReadOnlyInputBlock(
+            for: launchResourcePlan,
+            workspaceCommandsRunInsideManagedExecutor: environment.workspaceCommandsRunInsideContainer
+        ) {
+            AppLogger.audit(.workerBlocked, category: "Worker", taskID: context.taskSnapshot.id, fields: [
+                "runtime": plan.runtime.rawValue,
+                "reason": block.runtimeStopReason ?? "read_only_input_native_access_unavailable",
+                "provider_native_read_only_input_path_count": String(
+                    launchResourcePlan.providerNativeReadOnlyInputPaths.count
+                )
             ], level: .error)
             return .blocked(block)
         }
@@ -249,16 +277,15 @@ final class AgentRuntimeProcessRunner {
             ], level: .debug)
             return .plan(plan)
         }
-        // Multi-path workspaces: the agent is granted the workspace's additional
-        // paths + input dirs (same set passed to providers via `--add-dir` and
-        // honored by the in-band policy guard), so include them in the sandbox's
-        // writable allowlist or the kernel would block legitimate writes.
-        let runtimeAdditionalPaths = Self.runtimeAdditionalPaths(for: context.task)
+        // Workspace roots are writable. Task inputs and message attachments come
+        // from the launch resource plan and remain read-only unless the user also
+        // configured the same directory as an additional workspace path.
+        let runtimeWritablePaths = Self.runtimeWritablePaths(for: context.task)
         let decision = ExecutionSandbox.decide(
             plan: plan,
             providerHomeDirectory: context.providerHomeDirectory,
-            additionalWritablePaths: runtimeAdditionalPaths + launchResourcePlan.hostWritablePaths,
-            additionalReadablePaths: runtimeAdditionalPaths + launchResourcePlan.hostReadablePaths,
+            additionalWritablePaths: runtimeWritablePaths + launchResourcePlan.hostWritablePaths,
+            additionalReadablePaths: runtimeWritablePaths + launchResourcePlan.hostReadablePaths,
             settings: settings
         )
         let taskID = context.taskSnapshot.id
@@ -297,6 +324,12 @@ final class AgentRuntimeProcessRunner {
             ], level: .error)
         }
 
+        if case .applied(let wrappedPlan, _) = decision {
+            return .plan(wrappedPlan.addingSandboxReadablePaths(
+                [],
+                plannedFields: ["astra_sandbox_applied": "true"]
+            ))
+        }
         return Self.sandboxOutcome(for: decision, originalPlan: plan)
     }
 
@@ -588,7 +621,8 @@ final class AgentRuntimeProcessRunner {
                 policyGuard: permissionManifest.map {
                     AgentRuntimePolicyGuard(manifest: $0, pathMapper: plan.pathMapper)
                 },
-                liveApprovalsActive: plan.interactiveAsk != nil
+                liveApprovalsActive: plan.interactiveAsk != nil,
+                astraSandboxApplied: plan.commandPlannedFields["astra_sandbox_applied"] == "true"
             )
 
             let handleLine: (String) -> Void = { line in
@@ -967,11 +1001,18 @@ final class AgentRuntimeProcessRunner {
     }
 
     static func copilotAdditionalPaths(for task: AgentTask) -> [String] {
-        runtimeAdditionalPaths(for: task)
+        // CopilotCLIRuntime.buildCommand renders these as --add-dir grants,
+        // which is also the only way an external read-only task input (a
+        // folder selected outside the workspace) stays visible to Copilot's
+        // own directory allowlist. Writable-only roots would leave that input
+        // out of scope even though the launch-resource/Seatbelt plan already
+        // grants it read-only — matching the same writable+read-only
+        // projection CodexCLIRuntimeAdapter uses for its --add-dir grants.
+        runtimeWritablePaths(for: task) + TaskWorkspaceAccess(task: task).runtimeReadOnlyInputPaths
     }
 
-    static func runtimeAdditionalPaths(for task: AgentTask) -> [String] {
-        var paths = TaskWorkspaceAccess(task: task).runtimeAdditionalPaths
+    static func runtimeWritablePaths(for task: AgentTask) -> [String] {
+        var paths = TaskWorkspaceAccess(task: task).runtimeWritablePaths
         if !TaskWorkspaceAccess(task: task).effectiveWorkspacePath.isEmpty {
             paths.append(TaskWorkspaceAccess(task: task).effectiveWorkspacePath)
         }

@@ -34,7 +34,8 @@ struct AppAccessPresentationTests {
         #expect(source.contains("private var appAccessFooter: some View"))
         #expect(!source.contains("appAccessFooterIsBottomAnchored"))
         #expect(AppAccessMenuPresentation.footerMenuTitle == "ASTRA")
-        #expect(AppAccessMenuPresentation.footerMinimumHeight == 44)
+        #expect(AppAccessMenuPresentation.footerMinimumHeight == 56)
+        #expect(AppAccessMenuPresentation.footerContentHorizontalPadding == 22)
     }
 
     @Test("Sidebar app access menu uses an attached drawer instead of a popover bubble")
@@ -49,6 +50,9 @@ struct AppAccessPresentationTests {
         #expect(!source.contains(".strokeBorder(controlStroke)"))
         #expect(!source.contains("controlStroke"))
         #expect(!source.contains("SidebarLeanPresentation"))
+        #expect(source.contains(".contentShape(Rectangle())"))
+        #expect(source.contains("controlFill\n                }"))
+        #expect(!source.contains("RoundedRectangle(cornerRadius: Stanford.radiusSmall, style: .continuous)\n                        .fill(controlFill)"))
         // Gear (VS Code's Manage-menu pattern: the button opens a drawer
         // that itself contains Settings) — ellipsis.circle promised only
         // "more…" and was the vaguest glyph on the rail.
