@@ -185,6 +185,19 @@ final class AgentRuntimeProcessRunner {
             ], level: .error)
             return .blocked(block)
         }
+        if let block = plan.unsupportedProviderNativeReadOnlyInputBlock(
+            for: launchResourcePlan,
+            workspaceCommandsRunInsideManagedExecutor: environment.workspaceCommandsRunInsideContainer
+        ) {
+            AppLogger.audit(.workerBlocked, category: "Worker", taskID: context.taskSnapshot.id, fields: [
+                "runtime": plan.runtime.rawValue,
+                "reason": block.runtimeStopReason ?? "read_only_input_native_access_unavailable",
+                "provider_native_read_only_input_path_count": String(
+                    launchResourcePlan.providerNativeReadOnlyInputPaths.count
+                )
+            ], level: .error)
+            return .blocked(block)
+        }
         if environment.workspaceCommandsRunInsideContainer,
            (!DockerWorkspaceMCPProjection.supportsHostProviderWorkspaceExecutor(
                 runtime: plan.runtime,

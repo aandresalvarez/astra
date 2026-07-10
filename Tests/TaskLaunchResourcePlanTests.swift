@@ -701,6 +701,66 @@ struct TaskLaunchResourcePlanTests {
         })
     }
 
+    @Test("Resource resolver restores parent SSH scope after an included Host block")
+    func resolverRestoresParentSSHScopeAfterInclude() throws {
+        let fm = FileManager.default
+        let root = try makeTempDir("resource-plan-proxy-parent-scope")
+        defer { try? fm.removeItem(atPath: root.path) }
+        let workspaceRoot = root.appendingPathComponent("workspace", isDirectory: true)
+        let home = root.appendingPathComponent("home", isDirectory: true)
+        let sshDir = home.appendingPathComponent(".ssh", isDirectory: true)
+        let configDirectory = sshDir.appendingPathComponent("config.d", isDirectory: true)
+        let helper = home.appendingPathComponent("foo-helper")
+        try fm.createDirectory(at: workspaceRoot, withIntermediateDirectories: true)
+        try fm.createDirectory(at: configDirectory, withIntermediateDirectories: true)
+        try "#!/bin/sh\nexit 0\n".write(to: helper, atomically: true, encoding: .utf8)
+
+        try """
+        Host foo
+          Include config.d/nested.conf
+          ProxyCommand \(helper.path) %h %p
+        """.write(
+            to: sshDir.appendingPathComponent("config"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try """
+        Host bar
+          ProxyCommand /missing/bar-helper %h %p
+        """.write(
+            to: configDirectory.appendingPathComponent("nested.conf"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        SSHConnectionManager.save([
+            SSHConnection(name: "foo", host: "foo.internal", user: "example", configAlias: "foo")
+        ], workspacePath: workspaceRoot.path)
+        let workspace = Workspace(name: "Parent SSH scope", primaryPath: workspaceRoot.path)
+        let task = AgentTask(
+            title: "Use parent SSH scope",
+            goal: "Connect to foo",
+            workspace: workspace,
+            runtime: .claudeCode
+        )
+        let plan = TaskLaunchResourceResolver.resolve(
+            task: task,
+            runID: UUID(),
+            runtime: .claudeCode,
+            phase: "run",
+            prompt: AgentPromptBuilder.buildPrompt(for: task),
+            contextText: task.goal,
+            workspacePath: workspaceRoot.path,
+            homeDirectoryPath: home.path,
+            gitCredentialContextProvider: { _, _, _, _ in .empty }
+        )
+
+        #expect(plan.hostPathGrants.contains {
+            $0.source == .remoteWorkspace && $0.path == helper.standardizedFileURL.path
+        })
+        #expect(!plan.diagnostics.contains { $0.code == "ssh_proxy_command_executable_unresolved" })
+    }
+
     @Test("Resource resolver parses env-wrapped ProxyCommand executable")
     func resolverParsesEnvWrappedProxyCommandExecutable() throws {
         let fm = FileManager.default

@@ -249,6 +249,16 @@ struct TaskLaunchResourcePlan: Codable, Equatable, Sendable {
         !providerNativeCredentialReadablePaths.isEmpty
     }
 
+    var providerNativeReadOnlyInputPaths: [String] {
+        uniquePaths(hostPathGrants.compactMap { grant in
+            guard grant.access == .read,
+                  grant.source == .taskInput || grant.source == .userAttachment else {
+                return nil
+            }
+            return grant.path
+        })
+    }
+
     var gitCredentialSandboxContext: GitCredentialSandboxContext {
         gitCredential?.sandboxContext ?? .empty
     }

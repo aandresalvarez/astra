@@ -71,9 +71,10 @@ enum PermissionBroker {
         requestID: String? = nil
     ) -> PermissionApprovalEventPayload {
         let sanitizedGrants: [PermissionGrant]
-        if case .sandboxPath = request {
+        switch request {
+        case .sandboxPath, .credential, .connectorCredentials:
             sanitizedGrants = approvalGrants(for: request)
-        } else {
+        default:
             sanitizedGrants = sanitizeGrants(grants)
         }
         let message = approvalMessage(
@@ -102,15 +103,6 @@ enum PermissionBroker {
     static func structuredApprovalGrants(from payload: String) -> [PermissionGrant] {
         guard let decoded = PermissionApprovalEventPayload.decoded(from: payload) else {
             return []
-        }
-        if isCredentialRequest(decoded.request) {
-            let credentialGrants = sanitizeGrants(decoded.grants).filter { grant in
-                if case .credential = grant { return true }
-                return false
-            }
-            if !credentialGrants.isEmpty {
-                return credentialGrants
-            }
         }
         let requestGrants = approvalGrants(for: decoded.request)
         guard !requestGrants.isEmpty else { return [] }

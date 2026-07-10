@@ -346,6 +346,48 @@ struct ExecutionSandboxRunnerTests {
         }
     }
 
+    @Test("sandboxedPlan blocks host Codex when read-only inputs need native access")
+    func sandboxedPlanBlocksHostCodexReadOnlyInputAccess() {
+        let inputPath = "/tmp/astra-read-only-input"
+        let launchResourcePlan = TaskLaunchResourcePlan(
+            taskID: UUID(),
+            runID: UUID(),
+            runtime: AgentRuntimeID.codexCLI.rawValue,
+            phase: "run",
+            workspacePath: "/tmp/whatever",
+            executionEnvironmentID: WorkspaceExecutionEnvironment.host.id,
+            executionEnvironmentKind: ExecutionEnvironmentKind.host.rawValue,
+            providerPlacement: ExecutionEnvironmentProviderPlacement.host.rawValue,
+            hostPathGrants: [RuntimePathGrant(
+                path: inputPath,
+                access: .read,
+                source: .taskInput,
+                reason: "Task input selected by the user.",
+                sensitivity: .normal,
+                lifetime: .run,
+                exists: true
+            )]
+        )
+
+        withStandardEnforcement(.off) { sandboxSettingsProvider in
+            let runner = AgentRuntimeProcessRunner(sandboxSettingsProvider: sandboxSettingsProvider)
+            let outcome = runner.sandboxedPlan(
+                adapter: FakeLaunchAdapter(runtime: .codexCLI, currentDirectory: "/tmp/whatever"),
+                context: makeContext(
+                    workspacePath: "/tmp/whatever",
+                    permissionPolicy: .autonomous,
+                    launchResourcePlan: launchResourcePlan
+                )
+            )
+            guard case .blocked(let result) = outcome else {
+                Issue.record("Expected Codex to fail closed rather than make a read-only input writable")
+                return
+            }
+            #expect(result.runtimeStopReason == "read_only_input_native_access_unavailable")
+            #expect(result.runtimeStopMessage?.contains("writable roots") == true)
+        }
+    }
+
     @Test("sandboxedPlan does not block restricted Codex when Git credential context has no paths")
     func sandboxedPlanDoesNotBlockRestrictedCodexWhenGitCredentialContextHasNoPaths() {
         let launchResourcePlan = TaskLaunchResourcePlan(

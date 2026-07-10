@@ -49,7 +49,8 @@ stage_suites() {
     permission_actions)
       printf '%s\n' \
         TaskRuntimePermissionActionHandlerTests \
-        RuntimePermissionGrantRegressionTests
+        RuntimePermissionGrantRegressionTests \
+        PermissionBrokerCredentialIntegrityRegressionTests
       ;;
     denial_diagnostics)
       printf '%s\n' RuntimePolicyGuardTests RuntimeSandboxDenialDiagnosticsTests

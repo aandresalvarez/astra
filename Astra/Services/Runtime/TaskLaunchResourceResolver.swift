@@ -604,6 +604,11 @@ enum TaskLaunchResourceResolver {
                     includedPaths.append(includePath)
                     includedPaths.append(contentsOf: nested.includedPaths)
                     lines.append(nested.text)
+                    // An included file is parsed in place, then OpenSSH
+                    // resumes the parent Host scope. The flattened config
+                    // needs an explicit marker so nested Host/Match lines do
+                    // not leak into directives that follow this Include.
+                    lines.append("Host \(matchingAliases.sorted().joined(separator: " "))")
                 }
             }
         }

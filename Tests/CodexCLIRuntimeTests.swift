@@ -212,12 +212,9 @@ struct CodexCLIRuntimeTests {
         #expect(plan.parsesJSONLines)
     }
 
-    @Test("Codex adapter keeps read-only task inputs in the --add-dir scope")
+    @Test("Codex adapter keeps read-only task inputs out of writable --add-dir roots")
     @MainActor
-    func codexAdapterKeepsReadOnlyTaskInputsInAddDirScope() throws {
-        // Codex is self-sandboxing and isn't wrapped by ASTRA's Seatbelt by
-        // default, so `--add-dir` is the only thing that keeps a read-only
-        // task input (a folder outside the workspace) visible to it.
+    func codexAdapterKeepsReadOnlyTaskInputsOutOfAddDirScope() throws {
         let fileManager = FileManager.default
         let workspaceRoot = fileManager.temporaryDirectory
             .appendingPathComponent("astra-codex-workspace-\(UUID().uuidString)", isDirectory: true)
@@ -255,7 +252,7 @@ struct CodexCLIRuntimeTests {
         let addDirValues = plan.arguments.indices
             .filter { plan.arguments[$0] == "--add-dir" }
             .compactMap { plan.arguments.indices.contains($0 + 1) ? plan.arguments[$0 + 1] : nil }
-        #expect(addDirValues.contains(inputDirectory.standardizedFileURL.path))
+        #expect(!addDirValues.contains(inputDirectory.standardizedFileURL.path))
     }
 
     @Test("Codex sandbox roots follow provider home, inherited CODEX_HOME, and system requirements")
