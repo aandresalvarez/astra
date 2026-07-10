@@ -154,11 +154,13 @@ struct SidebarGroupingTests {
         #expect(queued.isEmpty)
     }
 
-    @Test("SidebarTaskIndex groups review tasks by workspace")
+    @Test("SidebarTaskIndex groups review tasks by workspace, excluding pinned ones")
     func sidebarTaskIndexGroupsReviewTasks() {
         let firstWorkspace = makeWorkspace(name: "First")
         let secondWorkspace = makeWorkspace(name: "Second")
 
+        // Pinned tasks surface once, in the top-level Pinned section — not
+        // duplicated into their own workspace's list.
         let pinnedReview = makeTask(title: "Pinned review", status: .completed, workspace: firstWorkspace)
         pinnedReview.isPinned = true
         pinnedReview.updatedAt = Date(timeIntervalSince1970: 200)
@@ -170,10 +172,28 @@ struct SidebarGroupingTests {
 
         let index = SidebarTaskIndex(tasks: [archived, running, pinnedReview], searchText: "")
 
-        #expect(index.reviewTasks(for: firstWorkspace).map(\.id) == [pinnedReview.id])
+        #expect(index.reviewTasks(for: firstWorkspace).isEmpty)
         #expect(index.reviewTasks(for: secondWorkspace).map(\.id) == [running.id])
         #expect(index.pinnedTasks.map(\.id) == [pinnedReview.id])
+        // Still not "empty": the pinned task means there's history here, so
+        // the workspace shouldn't offer the empty-state "Add task" CTA.
         #expect(index.hasAnyTask(in: firstWorkspace))
+    }
+
+    @Test("A pinned task matching a live search still doesn't reappear in its workspace's list")
+    func sidebarTaskIndexPinnedTaskExcludedFromSearchMatches() {
+        let workspace = makeWorkspace(name: "Deploys")
+        let pinned = makeTask(title: "Deploy fix", status: .completed, workspace: workspace)
+        pinned.isPinned = true
+
+        let index = SidebarTaskIndex(tasks: [pinned], searchText: "deploy")
+
+        #expect(index.reviewTasks(
+            for: workspace,
+            matchingSearch: true,
+            workspaceMatchesSearch: false
+        ).isEmpty)
+        #expect(index.pinnedTasks.map(\.id) == [pinned.id])
     }
 
     @Test("SidebarTaskIndex pre-sorts workspace review tasks newest first")
@@ -421,22 +441,140 @@ struct SidebarGroupingTests {
         #expect(visible.map(\.id) == [starredBeta.id, starredZoo.id, regularAlpha.id])
     }
 
-    @Test("Collapsed selected workspace is not force-expanded on selection change")
-    func collapsedSelectedWorkspaceDoesNotAutoExpand() {
-        let workspaceID = UUID()
+    @Test("Accordion keeps at most one workspace drawer open")
+    func accordionKeepsSingleDrawerOpen() {
+        let first = UUID()
+        let second = UUID()
+        var state = WorkspaceSidebarAccordion.State()
 
-        #expect(!WorkspaceSidebarSelection.shouldEnsureSelectedWorkspaceExpanded(
-            selectedWorkspaceID: workspaceID,
-            collapsedWorkspaceIDs: [workspaceID]
+        state = WorkspaceSidebarAccordion.toggling(first, in: state, wasExpanded: false)
+        #expect(state.openWorkspaceID == first)
+
+        // Opening another drawer closes the first by exclusivity.
+        state = WorkspaceSidebarAccordion.toggling(second, in: state, wasExpanded: false)
+        #expect(state.openWorkspaceID == second)
+        #expect(!WorkspaceSidebarAccordion.isExpanded(
+            workspaceID: first, state: state, isSearchActive: false, matchesSearch: { false }
         ))
-        #expect(WorkspaceSidebarSelection.shouldEnsureSelectedWorkspaceExpanded(
-            selectedWorkspaceID: workspaceID,
-            collapsedWorkspaceIDs: []
+
+        // Toggling the open drawer closes it; nothing stays open.
+        state = WorkspaceSidebarAccordion.toggling(second, in: state, wasExpanded: true)
+        #expect(state.openWorkspaceID == nil)
+    }
+
+    @Test("Accordion follows workspace selection; nil selection leaves drawers alone")
+    func accordionFollowsSelection() {
+        let first = UUID()
+        let second = UUID()
+        var state = WorkspaceSidebarAccordion.selecting(first, in: .init())
+        #expect(state.openWorkspaceID == first)
+
+        state = WorkspaceSidebarAccordion.selecting(second, in: state)
+        #expect(state.openWorkspaceID == second)
+
+        state = WorkspaceSidebarAccordion.selecting(nil, in: state)
+        #expect(state.openWorkspaceID == second)
+    }
+
+    @Test("Deferred selection echo cannot reopen the drawer a collapse click just closed")
+    func accordionSelectionEchoRespectsDismissal() {
+        let workspaceID = UUID()
+        // The collapse click: closes the drawer and selects its workspace.
+        var state = WorkspaceSidebarAccordion.selecting(workspaceID, in: .init())
+        state = WorkspaceSidebarAccordion.toggling(workspaceID, in: state, wasExpanded: true)
+        #expect(state.openWorkspaceID == nil)
+
+        // SwiftUI delivers the selection onChange a frame later.
+        let echoed = WorkspaceSidebarAccordion.selectionChanged(workspaceID, in: state)
+        #expect(echoed.openWorkspaceID == nil)
+
+        // A direct intent still opens through the dismissal.
+        let direct = WorkspaceSidebarAccordion.selecting(workspaceID, in: state)
+        #expect(direct.openWorkspaceID == workspaceID)
+    }
+
+    @Test("Search reveals matches without disturbing the open drawer, and dismissed reveals stay closed for the query")
+    func accordionSearchRevealIsNonDestructive() {
+        let open = UUID()
+        let match = UUID()
+        var state = WorkspaceSidebarAccordion.selecting(open, in: .init())
+
+        // A matching drawer reveals during search while the open drawer keeps its intent.
+        #expect(WorkspaceSidebarAccordion.isExpanded(
+            workspaceID: match, state: state, isSearchActive: true, matchesSearch: { true }
         ))
-        #expect(!WorkspaceSidebarSelection.shouldEnsureSelectedWorkspaceExpanded(
-            selectedWorkspaceID: nil,
-            collapsedWorkspaceIDs: [workspaceID]
+        // Without an active search the same match stays closed.
+        #expect(!WorkspaceSidebarAccordion.isExpanded(
+            workspaceID: match, state: state, isSearchActive: false, matchesSearch: { true }
         ))
+
+        // Closing a search-revealed drawer sticks for the rest of the query
+        // without stealing the open drawer's slot.
+        state = WorkspaceSidebarAccordion.toggling(match, in: state, wasExpanded: true)
+        #expect(state.openWorkspaceID == open)
+        #expect(!WorkspaceSidebarAccordion.isExpanded(
+            workspaceID: match, state: state, isSearchActive: true, matchesSearch: { true }
+        ))
+
+        // Editing the query resets the dismissal.
+        state = WorkspaceSidebarAccordion.searchChanged(in: state)
+        #expect(WorkspaceSidebarAccordion.isExpanded(
+            workspaceID: match, state: state, isSearchActive: true, matchesSearch: { true }
+        ))
+    }
+
+    @Test("Header carries the running signal exactly when a workspace row can't")
+    func headerRunningSignalCoversHiddenWork() {
+        let visibleRunning = UUID()
+        let filteredRunning = UUID()
+        let filteredIdle = UUID()
+        let counts = [
+            (workspaceID: visibleRunning, count: 2),
+            (workspaceID: filteredRunning, count: 1),
+            (workspaceID: filteredIdle, count: 0)
+        ]
+
+        // Expanded section: only work in filtered-out workspaces needs the header.
+        #expect(SidebarLivenessSignal.headerRunningTaskCount(
+            runningCounts: counts,
+            visibleWorkspaceIDs: [visibleRunning, filteredIdle],
+            isSectionExpanded: true
+        ) == 1)
+
+        // Everything visible and expanded: rows carry their own signal.
+        #expect(SidebarLivenessSignal.headerRunningTaskCount(
+            runningCounts: counts,
+            visibleWorkspaceIDs: [visibleRunning, filteredRunning, filteredIdle],
+            isSectionExpanded: true
+        ) == 0)
+
+        // Collapsed section hides every row, so the header owns all of it.
+        #expect(SidebarLivenessSignal.headerRunningTaskCount(
+            runningCounts: counts,
+            visibleWorkspaceIDs: [visibleRunning, filteredRunning, filteredIdle],
+            isSectionExpanded: false
+        ) == 3)
+    }
+
+    @Test("SidebarTaskIndex counts running tasks per workspace regardless of search")
+    func sidebarTaskIndexRunningCounts() {
+        let busy = makeWorkspace(name: "Busy")
+        let idle = makeWorkspace(name: "Idle")
+        let tasks = [
+            makeTask(title: "Running one", status: .running, workspace: busy),
+            makeTask(title: "Running two", status: .running, workspace: busy),
+            makeTask(title: "Finished", status: .completed, workspace: busy),
+            makeTask(title: "Queued", status: .queued, workspace: idle)
+        ]
+
+        let index = SidebarTaskIndex(tasks: tasks, searchText: "")
+        #expect(index.runningTaskCount(in: busy) == 2)
+        #expect(index.runningTaskCount(in: idle) == 0)
+
+        // The liveness signal must survive a query that matches none of the
+        // running tasks — it reports work, not search results.
+        let filtered = SidebarTaskIndex(tasks: tasks, searchText: "Finished")
+        #expect(filtered.runningTaskCount(in: busy) == 2)
     }
 
     @Test("Lean sidebar presentation contracts keep the left rail navigational")
@@ -453,7 +591,12 @@ struct SidebarGroupingTests {
         #expect(SidebarLeanPresentation.workspaceRowsShowRestStateDisclosure)
         #expect(SidebarLeanPresentation.workspaceDisclosureChevronWidth == 11)
         #expect(SidebarLeanPresentation.pinnedDropZoneAppearsOnlyDuringDrag)
-        #expect(SidebarLeanPresentation.pinnedPreviewLimit == 5)
+        // One fold for every capped rail list: Pinned, Unreads, and
+        // workspace drawers all preview the same number of rows.
+        #expect(SidebarLeanPresentation.sectionPreviewLimit == 6)
+        #expect(SidebarLeanPresentation.pinnedPreviewLimit == SidebarLeanPresentation.sectionPreviewLimit)
+        #expect(SidebarLeanPresentation.unreadPreviewLimit == SidebarLeanPresentation.sectionPreviewLimit)
+        #expect(SidebarWorkspaceTaskList.collapsedLimit == SidebarLeanPresentation.sectionPreviewLimit)
         #expect(SidebarLeanPresentation.childTaskListLeadingPadding == 0)
         // Child content steps in 12pt so containment reads without a
         // guide rail; row surfaces still span the full rail width.
