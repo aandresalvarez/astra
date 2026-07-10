@@ -112,6 +112,21 @@ struct TaskThreadViewModelTests {
     }
 
     @MainActor
+    @Test("Initial snapshot pipeline retains and clears the task-open trace ID")
+    func initialSnapshotPipelineCarriesTraceID() async {
+        let vm = TaskThreadViewModel()
+        let task = makeTask(goal: "Trace correlation")
+        let context = TaskThreadResponsivenessContext(traceID: "task-open-test-trace")
+
+        vm.reset(for: task, responsivenessContext: context)
+        _ = await awaitReadiness(vm, taskID: task.id)
+
+        #expect(vm.initialSnapshotResponsivenessTraceID == "task-open-test-trace")
+        vm.completeInitialResponsivenessTrace(for: task.id)
+        #expect(vm.initialSnapshotResponsivenessTraceID == nil)
+    }
+
+    @MainActor
     @Test("expandWindow increases the run window and rebuilds snapshot")
     func expandWindowIncreasesRunWindow() async {
         let vm = TaskThreadViewModel()

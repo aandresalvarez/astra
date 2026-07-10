@@ -48,6 +48,8 @@ struct TaskOpenResponsivenessTrace: Equatable {
 
     private(set) var shellVisibleDurationMilliseconds: Double?
     private(set) var transcriptReadyDurationMilliseconds: Double?
+    private(set) var maxMainActorProbeGapMilliseconds: Double = 0
+    private(set) var mainActorHitchCount = 0
 
     init(
         traceID: String,
@@ -63,7 +65,7 @@ struct TaskOpenResponsivenessTrace: Equatable {
 
     mutating func markShellVisible(at uptimeNanoseconds: UInt64) -> TaskOpenResponsivenessResult? {
         guard shellVisibleDurationMilliseconds == nil else { return nil }
-        let duration = elapsedMilliseconds(at: uptimeNanoseconds)
+        let duration = durationMilliseconds(at: uptimeNanoseconds)
         shellVisibleDurationMilliseconds = duration
         return result(
             event: "task_selection_to_shell_visible",
@@ -76,7 +78,7 @@ struct TaskOpenResponsivenessTrace: Equatable {
         snapshotFields: [String: String]
     ) -> TaskOpenResponsivenessResult? {
         guard transcriptReadyDurationMilliseconds == nil else { return nil }
-        let duration = elapsedMilliseconds(at: uptimeNanoseconds)
+        let duration = durationMilliseconds(at: uptimeNanoseconds)
         transcriptReadyDurationMilliseconds = duration
         return result(
             event: "task_selection_to_transcript_ready",
@@ -85,6 +87,14 @@ struct TaskOpenResponsivenessTrace: Equatable {
                 "shell_visible_ms": shellVisibleDurationMilliseconds.map { String(format: "%.2f", $0) } ?? "not_recorded"
             ], uniquingKeysWith: { _, new in new })
         )
+    }
+
+    mutating func recordMainActorProbeGap(_ gapMilliseconds: Double) {
+        let normalizedGap = max(0, gapMilliseconds)
+        maxMainActorProbeGapMilliseconds = max(maxMainActorProbeGapMilliseconds, normalizedGap)
+        if normalizedGap >= 50 {
+            mainActorHitchCount += 1
+        }
     }
 
     func phaseFields(name: String) -> [String: String] {
@@ -104,14 +114,20 @@ struct TaskOpenResponsivenessTrace: Equatable {
             durationMilliseconds: durationMilliseconds,
             fields: fields
                 .merging([
-                    "trace_id": traceID
+                    "trace_id": traceID,
+                    "max_main_actor_probe_gap_ms": String(format: "%.2f", maxMainActorProbeGapMilliseconds),
+                    "main_actor_hitch_count": PerformanceTelemetryFields.count(mainActorHitchCount)
                 ], uniquingKeysWith: { _, new in new })
                 .merging(extraFields, uniquingKeysWith: { _, new in new })
         )
     }
 
-    private func elapsedMilliseconds(at uptimeNanoseconds: UInt64) -> Double {
+    private func durationMilliseconds(at uptimeNanoseconds: UInt64) -> Double {
         Double(uptimeNanoseconds - startedAtUptimeNanoseconds) / 1_000_000
+    }
+
+    func elapsedMilliseconds(at uptimeNanoseconds: UInt64) -> Double {
+        durationMilliseconds(at: uptimeNanoseconds)
     }
 }
 
@@ -123,6 +139,8 @@ struct TaskOpenResponsivenessTrace: Equatable {
 enum TaskOpenResponsivenessTelemetry {
     private static let slowInteractionThresholdMilliseconds: Double = 250
     private static let slowPhaseThresholdMilliseconds: Double = 50
+    static let timeoutNanoseconds: UInt64 = 5_000_000_000
+    private static let mainActorProbeIntervalMilliseconds: Double = 16
     private static let signposter = OSSignposter(
         subsystem: AppChannel.current.loggingSubsystem,
         category: "Performance"
@@ -168,6 +186,24 @@ enum TaskOpenResponsivenessTelemetry {
         )
     }
 
+    static func responsivenessContext(task: AgentTask, scope: UUID) -> TaskThreadResponsivenessContext? {
+        guard let activeTrace = activeTraces[scope], activeTrace.trace.taskID == task.id else { return nil }
+        return TaskThreadResponsivenessContext(traceID: activeTrace.trace.traceID)
+    }
+
+    static func isActive(task: AgentTask, scope: UUID) -> Bool {
+        activeTraces[scope]?.trace.taskID == task.id
+    }
+
+    /// Records a bounded main-actor probe gap while a task-open trace is in
+    /// flight. This is deliberately a summary, not per-frame logging, so it
+    /// surfaces apparent freezes without adding a high-volume telemetry loop.
+    static func recordMainActorProbe(task: AgentTask, observedIntervalMilliseconds: Double, scope: UUID) {
+        guard var activeTrace = activeTraces[scope], activeTrace.trace.taskID == task.id else { return }
+        activeTrace.trace.recordMainActorProbeGap(observedIntervalMilliseconds - mainActorProbeIntervalMilliseconds)
+        activeTraces[scope] = activeTrace
+    }
+
     static func beginForSelection(task: AgentTask?, source: String, scope: UUID) {
         guard let task else {
             cancelActiveTrace(in: scope, reason: "selection_cleared")
@@ -203,6 +239,7 @@ enum TaskOpenResponsivenessTelemetry {
         snapshot: TaskThreadSnapshot,
         appliedSnapshotRevision: Int,
         cacheState: String,
+        snapshotAppliedUptimeNanoseconds: UInt64?,
         scope: UUID
     ) {
         guard var activeTrace = activeTraces[scope], activeTrace.trace.taskID == task.id,
@@ -214,15 +251,27 @@ enum TaskOpenResponsivenessTelemetry {
             log(shellResult, taskID: task.id)
         }
 
+        let readyAt = DispatchTime.now().uptimeNanoseconds
         guard let result = activeTrace.trace.markTranscriptReady(
-            at: DispatchTime.now().uptimeNanoseconds,
+            at: readyAt,
             snapshotFields: snapshotFields(
                 snapshot,
                 appliedSnapshotRevision: appliedSnapshotRevision,
-                cacheState: cacheState
+                cacheState: cacheState,
+                snapshotAppliedUptimeNanoseconds: snapshotAppliedUptimeNanoseconds,
+                transcriptReadyUptimeNanoseconds: readyAt
             )
         ) else { return }
         endTranscriptReadyInterval(&activeTrace)
+        if let snapshotAppliedUptimeNanoseconds, snapshotAppliedUptimeNanoseconds <= readyAt {
+            PerformanceTelemetry.log(
+                "task_open_snapshot_apply_to_transcript_ready",
+                durationMilliseconds: Double(readyAt - snapshotAppliedUptimeNanoseconds) / 1_000_000,
+                level: .debug,
+                fields: activeTrace.trace.phaseFields(name: "snapshot_apply_to_transcript_ready"),
+                taskID: task.id
+            )
+        }
         log(result, taskID: task.id)
         activeTraces[scope] = nil
     }
@@ -230,6 +279,25 @@ enum TaskOpenResponsivenessTelemetry {
     static func cancel(task: AgentTask, reason: String, scope: UUID) {
         guard activeTraces[scope]?.trace.taskID == task.id else { return }
         cancelActiveTrace(in: scope, reason: reason)
+    }
+
+    /// Emits an explicit warning when an open never reaches transcript-ready
+    /// while its view remains alive. Without this watchdog, the only evidence
+    /// for a stuck open would be a later disappearance cancellation.
+    static func timeout(task: AgentTask, scope: UUID) {
+        guard let activeTrace = activeTraces[scope], activeTrace.trace.taskID == task.id else { return }
+        PerformanceTelemetry.log(
+            "task_selection_timeout",
+            durationMilliseconds: activeTrace.trace.elapsedMilliseconds(at: DispatchTime.now().uptimeNanoseconds),
+            level: .warning,
+            fields: activeTrace.trace.fields.merging([
+                "trace_id": activeTrace.trace.traceID,
+                "shell_visible": PerformanceTelemetryFields.bool(activeTrace.trace.shellVisibleDurationMilliseconds != nil),
+                "transcript_ready": PerformanceTelemetryFields.bool(activeTrace.trace.transcriptReadyDurationMilliseconds != nil)
+            ], uniquingKeysWith: { _, new in new }),
+            taskID: task.id
+        )
+        cancelActiveTrace(in: scope, reason: "timeout")
     }
 
     static func resetForTesting() {
@@ -259,10 +327,13 @@ enum TaskOpenResponsivenessTelemetry {
         endTranscriptReadyInterval(&activeTrace)
         PerformanceTelemetry.log(
             "task_selection_cancelled",
+            durationMilliseconds: activeTrace.trace.elapsedMilliseconds(at: DispatchTime.now().uptimeNanoseconds),
             level: .debug,
             fields: activeTrace.trace.fields.merging([
                 "trace_id": activeTrace.trace.traceID,
-                "reason": reason
+                "reason": reason,
+                "shell_visible": PerformanceTelemetryFields.bool(activeTrace.trace.shellVisibleDurationMilliseconds != nil),
+                "transcript_ready": PerformanceTelemetryFields.bool(activeTrace.trace.transcriptReadyDurationMilliseconds != nil)
             ], uniquingKeysWith: { _, new in new }),
             taskID: activeTrace.trace.taskID
         )
@@ -290,7 +361,7 @@ enum TaskOpenResponsivenessTelemetry {
         )
         guard result.event == "task_selection_to_shell_visible" else { return }
         PerformanceTelemetry.log(
-            "screen_transition_to_interactive",
+            "screen_transition_to_view_ready",
             durationMilliseconds: result.durationMilliseconds,
             level: level,
             fields: result.fields.merging([
@@ -313,9 +384,15 @@ enum TaskOpenResponsivenessTelemetry {
     private static func snapshotFields(
         _ snapshot: TaskThreadSnapshot,
         appliedSnapshotRevision: Int,
-        cacheState: String
+        cacheState: String,
+        snapshotAppliedUptimeNanoseconds: UInt64?,
+        transcriptReadyUptimeNanoseconds: UInt64
     ) -> [String: String] {
         let latestOutputBytes = snapshot.latestRun?.output.utf8.count ?? 0
+        let contentMetrics = TaskOpenResponsivenessContentMetrics(snapshot: snapshot)
+        let applyToReadyMilliseconds = snapshotAppliedUptimeNanoseconds.map { appliedAt in
+            max(0, Double(transcriptReadyUptimeNanoseconds - appliedAt) / 1_000_000)
+        }
         return [
             "applied_snapshot_revision": PerformanceTelemetryFields.count(appliedSnapshotRevision),
             "snapshot_cache_state": cacheState,
@@ -328,7 +405,62 @@ enum TaskOpenResponsivenessTelemetry {
             "omitted_events": PerformanceTelemetryFields.count(snapshot.omittedEventCount),
             "omitted_runs": PerformanceTelemetryFields.count(snapshot.omittedRunCount),
             "conversation_item_count": PerformanceTelemetryFields.count(snapshot.conversationItems.count),
-            "latest_run_output_bucket": PerformanceTelemetryFields.byteBucket(latestOutputBytes)
+            "latest_run_output_bucket": PerformanceTelemetryFields.byteBucket(latestOutputBytes),
+            "visible_transcript_bytes_bucket": PerformanceTelemetryFields.byteBucket(contentMetrics.textBytes),
+            "visible_agent_response_count": PerformanceTelemetryFields.count(contentMetrics.agentResponseCount),
+            "visible_code_fence_count_bucket": PerformanceTelemetryFields.countBucket(contentMetrics.codeFenceCount),
+            "visible_table_row_count_bucket": PerformanceTelemetryFields.countBucket(contentMetrics.tableRowCount),
+            "snapshot_apply_to_transcript_ready_ms": applyToReadyMilliseconds.map { String(format: "%.2f", $0) } ?? "not_recorded"
         ]
+    }
+}
+
+/// Counts only transcript shape, never transcript content, so a performance
+/// report can distinguish a large Markdown-heavy transcript from a small one.
+struct TaskOpenResponsivenessContentMetrics: Equatable {
+    let textBytes: Int
+    let agentResponseCount: Int
+    let codeFenceCount: Int
+    let tableRowCount: Int
+
+    init(snapshot: TaskThreadSnapshot) {
+        var textBytes = 0
+        var agentResponseCount = 0
+        var codeFenceCount = 0
+        var tableRowCount = 0
+
+        for item in snapshot.conversationItems {
+            let text: String
+            switch item {
+            case .userMessage(let value, _), .planUserMessage(let value, _), .planAssistantMessage(let value, _), .scheduleResult(let value, _), .systemInfo(let value, _), .recapResult(let value, _):
+                text = value
+            case .agentResponse(let run):
+                text = run.output
+                agentResponseCount += 1
+            }
+            textBytes += text.utf8.count
+            codeFenceCount += Self.occurrences(of: "```", in: text)
+            tableRowCount += text.split(separator: "\n", omittingEmptySubsequences: false).reduce(into: 0) { count, line in
+                if line.drop(while: { $0 == " " || $0 == "\t" }).first == "|" {
+                    count += 1
+                }
+            }
+        }
+
+        self.textBytes = textBytes
+        self.agentResponseCount = agentResponseCount
+        self.codeFenceCount = codeFenceCount
+        self.tableRowCount = tableRowCount
+    }
+
+    private static func occurrences(of needle: String, in text: String) -> Int {
+        guard !needle.isEmpty else { return 0 }
+        var count = 0
+        var searchStart = text.startIndex
+        while let range = text.range(of: needle, range: searchStart..<text.endIndex) {
+            count += 1
+            searchStart = range.upperBound
+        }
+        return count
     }
 }

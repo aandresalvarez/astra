@@ -62,11 +62,12 @@ enum PerformanceTelemetry {
         start: UInt64,
         thresholdMilliseconds: Double,
         level: LogLevel = .debug,
-        fields: [String: String] = [:]
+        fields: [String: String] = [:],
+        taskID: UUID? = nil
     ) {
         let elapsed = elapsedMilliseconds(since: start)
         guard elapsed >= thresholdMilliseconds else { return }
-        log(event, durationMilliseconds: elapsed, level: level, fields: fields)
+        log(event, durationMilliseconds: elapsed, level: level, fields: fields, taskID: taskID)
     }
 
     static func log(

@@ -60,6 +60,7 @@ struct LogDiagnosticsReport: Equatable {
     let issueFingerprints: [String]
     let issues: [LogDiagnosticsIssue]
     let notices: [LogDiagnosticsNotice]
+    let responsiveness: UIResponsivenessReport
     let crashReports: [CrashReportSummary]
     let markdown: String
 }
@@ -169,6 +170,7 @@ enum LogDiagnosticsService {
         )
         let visibleIssues = Array(issueGroups.prefix(maxIssueGroups))
         let notices = buildNotices(from: orderedEntries)
+        let responsiveness = UIResponsivenessDiagnostics.makeReport(entries: orderedEntries)
         let markdown = renderMarkdown(
             entries: orderedEntries,
             generatedAt: generatedAt,
@@ -177,6 +179,7 @@ enum LogDiagnosticsService {
             previousDiagnosticsContext: previousDiagnosticsContext,
             issues: visibleIssues,
             notices: notices,
+            responsiveness: responsiveness,
             crashReports: crashReports,
             omittedIssueCount: max(0, issueGroups.count - visibleIssues.count)
         )
@@ -194,6 +197,7 @@ enum LogDiagnosticsService {
             issueFingerprints: issueGroups.map(\.id).sorted(),
             issues: visibleIssues,
             notices: notices,
+            responsiveness: responsiveness,
             crashReports: crashReports,
             markdown: markdown
         )
@@ -1852,6 +1856,7 @@ enum LogDiagnosticsService {
         previousDiagnosticsContext: PreviousDiagnosticsContext?,
         issues: [LogDiagnosticsIssue],
         notices: [LogDiagnosticsNotice],
+        responsiveness: UIResponsivenessReport,
         crashReports: [CrashReportSummary],
         omittedIssueCount: Int
     ) -> String {
@@ -1916,6 +1921,7 @@ enum LogDiagnosticsService {
         ]
         appendCrashReports(crashReports, to: &lines)
         appendTraceSummaries(traceSummaries, to: &lines)
+        appendResponsivenessSummary(responsiveness, to: &lines)
         lines += ["", "## Issues"]
 
         if issues.isEmpty {
@@ -2103,6 +2109,44 @@ enum LogDiagnosticsService {
                 "Additional trace groups omitted from this report: \(summaries.count - 8). Omitted index: \(omitted). Narrow the time window if more detail is needed."
             ]
         }
+    }
+
+    private static func appendResponsivenessSummary(_ report: UIResponsivenessReport, to lines: inout [String]) {
+        lines += ["", "## UI Responsiveness"]
+        guard !report.eventSummaries.isEmpty else {
+            lines += ["", "No completed responsiveness measurements were found in this log window."]
+            return
+        }
+
+        lines += [
+            "",
+            "Completed interaction measurements are summarized from sanitized Performance logs. p50 and p95 use nearest-rank percentiles for the selected log window.",
+            "",
+            "| Event | Samples | p50 | p95 | Max | Warnings | Cache states |",
+            "| --- | ---: | ---: | ---: | ---: | ---: | --- |"
+        ]
+        for summary in report.eventSummaries {
+            let cacheStates = summary.cacheStates
+                .sorted { $0.key < $1.key }
+                .map { "\($0.key):\($0.value)" }
+                .joined(separator: ", ")
+            lines.append(
+                "| `\(summary.event)` | \(summary.sampleCount) | \(milliseconds(summary.p50Milliseconds)) | \(milliseconds(summary.p95Milliseconds)) | \(milliseconds(summary.maxMilliseconds)) | \(summary.warningCount) | \(cacheStates.isEmpty ? "—" : cacheStates) |"
+            )
+        }
+
+        guard !report.slowestTraces.isEmpty else { return }
+        lines += ["", "### Slowest Correlated Traces"]
+        for trace in report.slowestTraces {
+            lines += [
+                "",
+                "- `\(trace.traceID)` task=\(trace.taskID) endpoint=`\(trace.event)` duration=\(milliseconds(trace.durationMilliseconds)) phases=\(trace.phases.isEmpty ? "none recorded" : trace.phases.joined(separator: ", "))"
+            ]
+        }
+    }
+
+    private static func milliseconds(_ value: Double) -> String {
+        String(format: "%.2f ms", value)
     }
 
     private static func buildTraceSummaries(from entries: [LogEntry]) -> [LogDiagnosticsTraceSummary] {

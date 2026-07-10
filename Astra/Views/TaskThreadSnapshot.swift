@@ -151,7 +151,7 @@ struct TaskThreadSnapshotInput: Sendable {
     let totalRunCount: Int
     let omittedRunCount: Int
 
-    init(task: AgentTask, maxRuns: Int = 50) {
+    init(task: AgentTask, maxRuns: Int = 50, performanceFields: [String: String] = [:]) {
         let start = DispatchTime.now().uptimeNanoseconds
         let window = TaskThreadSnapshotWindow(events: task.events, runs: task.runs, maxRuns: maxRuns)
         self.init(
@@ -177,7 +177,8 @@ struct TaskThreadSnapshotInput: Sendable {
                 "omitted_events": PerformanceTelemetryFields.count(omittedEventCount),
                 "omitted_runs": PerformanceTelemetryFields.count(omittedRunCount),
                 "max_runs": PerformanceTelemetryFields.count(maxRuns)
-            ]
+            ].merging(performanceFields, uniquingKeysWith: { _, new in new }),
+            taskID: task.id
         )
     }
 

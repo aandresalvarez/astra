@@ -80,6 +80,7 @@ struct ContentView: View {
     @Query(sort: \Workspace.name) private var workspaces: [Workspace]
     @StateObject private var sceneSelection = SceneSelectionModel()
     @State private var taskOpenResponsivenessScope = UUID()
+    @State private var screenTransitionCoordinator = ScreenTransitionCoordinator()
     @State private var showingConfigure = false
     @State private var configureInitialTab: ConfigureTab = .capabilities
     @State private var configureFocusItemID: UUID?
@@ -950,6 +951,7 @@ struct ContentView: View {
 
     var body: some View {
         rootLayoutWithChrome
+        .modifier(ScreenTransitionReadinessObserver(coordinator: screenTransitionCoordinator))
         .onChange(of: selectedTaskCanvasSignature) {
             handleSelectedTaskCanvasSignatureChanged()
         }
@@ -1100,6 +1102,7 @@ struct ContentView: View {
         }
         .onDisappear {
             sidebarTitlebarCommands.clearSidebarToggleHandler()
+            screenTransitionCoordinator.cancelForViewDisappearance()
         }
         .onChange(of: executionSettingsSignature) { applySettings() }
         .background {
@@ -1267,6 +1270,7 @@ struct ContentView: View {
 
     private func presentCanvas(_ item: WorkspaceCanvasItem) {
         guard canPresentWorkspaceCanvasItem(item) else { return }
+        beginScreenTransitionIfNeeded(to: item, source: "shelf_action")
         animatePanelChange {
             rightPanel.presentCanvas(item, conversationID: selectedWorkspaceCanvasConversationID)
         }
@@ -1287,7 +1291,25 @@ struct ContentView: View {
     }
 
     private func setActiveWorkspaceCanvasItem(_ item: WorkspaceCanvasItem?, remember: Bool) {
+        beginScreenTransitionIfNeeded(to: item, source: "shelf_state")
         rightPanel.setActiveCanvasItem(item, remember: remember, conversationID: selectedWorkspaceCanvasConversationID)
+    }
+
+    private func beginScreenTransitionIfNeeded(to item: WorkspaceCanvasItem?, source: String) {
+        guard activeWorkspaceCanvasItem != item else { return }
+        beginScreenTransition(destination: screenTransitionDestination(item), source: source)
+    }
+
+    private func beginScreenTransition(destination: String, source: String) {
+        screenTransitionCoordinator.begin(
+            destination: destination,
+            source: source,
+            taskID: selectedTask?.id
+        )
+    }
+
+    private func screenTransitionDestination(_ item: WorkspaceCanvasItem?) -> String {
+        item.map { "shelf_\($0.rawValue)" } ?? "task_chat"
     }
 
     private func restoreRememberedWorkspaceCanvasItemIfAvailable() {
@@ -1298,6 +1320,7 @@ struct ContentView: View {
             return
         }
 
+        beginScreenTransition(destination: screenTransitionDestination(item), source: "remembered_shelf_restore")
         prepareWorkspaceCanvasItemForPresentation(item, source: "remembered_shelf_restore")
     }
 
@@ -2342,6 +2365,9 @@ struct ContentView: View {
                 source: "task_selection",
                 scope: taskOpenResponsivenessScope
             )
+            if task == nil {
+                beginScreenTransition(destination: "workspace_home", source: "task_selection_cleared")
+            }
         }
         updateCanvasForTaskSelectionChange(previousTaskID: previousTaskID, nextTaskID: task?.id)
         let wasComposingWorkspaceApp = isComposingWorkspaceApp

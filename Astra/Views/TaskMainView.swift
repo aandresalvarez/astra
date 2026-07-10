@@ -617,23 +617,11 @@ struct TaskMainView: View {
                 installPasteMonitor()
             }
         }
-        .task(id: task.id) {
-            await Task.yield()
-            guard !Task.isCancelled else { return }
-            TaskOpenResponsivenessTelemetry.shellBecameVisible(
-                task: task,
-                scope: taskOpenResponsivenessScope
-            )
-        }
+        .modifier(TaskOpenResponsivenessLifecycleObserver(task: task, scope: taskOpenResponsivenessScope))
         .onDisappear {
             pendingPlanStateRefreshTask?.cancel()
             threadViewModel.cancelGeneratedFilesRefresh()
             removePasteMonitor()
-            TaskOpenResponsivenessTelemetry.cancel(
-                task: task,
-                reason: "task_view_disappeared",
-                scope: taskOpenResponsivenessScope
-            )
         }
         .onChange(of: sshReloadTrigger) {
             deferTaskViewMutation {
@@ -741,7 +729,13 @@ struct TaskMainView: View {
                 task: task,
                 scope: taskOpenResponsivenessScope
             ) {
-                threadViewModel.reset(for: task)
+                threadViewModel.reset(
+                    for: task,
+                    responsivenessContext: TaskOpenResponsivenessTelemetry.responsivenessContext(
+                        task: task,
+                        scope: taskOpenResponsivenessScope
+                    )
+                )
             }
             loadSSHConnections()
             alignTaskAfterRuntimeAvailabilityRefresh()
@@ -1709,8 +1703,10 @@ struct TaskMainView: View {
             snapshot: currentThreadSnapshot,
             appliedSnapshotRevision: threadViewModel.appliedSnapshotRevision,
             cacheState: threadViewModel.lastSnapshotCacheState,
+            snapshotAppliedUptimeNanoseconds: threadViewModel.lastSnapshotAppliedUptimeNanoseconds,
             scope: taskOpenResponsivenessScope
         )
+        threadViewModel.completeInitialResponsivenessTrace(for: task.id)
     }
 
     @ViewBuilder
@@ -2197,6 +2193,18 @@ struct TaskMainView: View {
         AppLogger.audit(.chatScrollRecovered, category: "UI", taskID: task.id, fields: [
             "bottom_min_y": String(format: "%.1f", bottomMinY)
         ], level: .warning)
+        PerformanceTelemetry.log(
+            "chat_scroll_recovery",
+            durationMilliseconds: scrollRecoveryWatchdog.settleDelayMilliseconds,
+            level: .warning,
+            fields: [
+                "recovery": "parked_past_content",
+                "task_id": PerformanceTelemetryFields.abbreviatedID(task.id),
+                "snapshot_run_count": PerformanceTelemetryFields.count(currentThreadSnapshot.sortedRuns.count),
+                "conversation_item_count": PerformanceTelemetryFields.count(currentThreadSnapshot.conversationItems.count)
+            ],
+            taskID: task.id
+        )
         scrollChatToBottom(proxy, animated: false)
     }
 

@@ -49,6 +49,23 @@ struct TaskOpenResponsivenessTelemetryTests {
         #expect(trace.markTranscriptReady(at: 1_500_000_000, snapshotFields: [:]) == nil)
     }
 
+    @Test("Trace includes a bounded main actor hitch summary")
+    func traceIncludesMainActorHitchSummary() {
+        var trace = TaskOpenResponsivenessTrace(
+            traceID: "task-open-hitch",
+            taskID: UUID(),
+            startedAtUptimeNanoseconds: 0,
+            fields: [:]
+        )
+        trace.recordMainActorProbeGap(12)
+        trace.recordMainActorProbeGap(84)
+
+        let result = trace.markTranscriptReady(at: 100_000_000, snapshotFields: [:])
+
+        #expect(result?.fields["max_main_actor_probe_gap_ms"] == "84.00")
+        #expect(result?.fields["main_actor_hitch_count"] == "1")
+    }
+
     @Test("Transcript result records a missing shell explicitly when needed")
     func transcriptResultHandlesMissingShell() {
         var trace = TaskOpenResponsivenessTrace(
@@ -121,6 +138,7 @@ struct TaskOpenResponsivenessTelemetryTests {
             snapshot: .empty,
             appliedSnapshotRevision: 1,
             cacheState: "not_applicable",
+            snapshotAppliedUptimeNanoseconds: nil,
             scope: scope
         )
         TaskOpenResponsivenessTelemetry.resetForTesting()
@@ -143,6 +161,7 @@ struct TaskOpenResponsivenessTelemetryTests {
             snapshot: .empty,
             appliedSnapshotRevision: 1,
             cacheState: "not_applicable",
+            snapshotAppliedUptimeNanoseconds: nil,
             scope: firstScope
         )
         AppLogger.flushForTesting()
@@ -188,6 +207,7 @@ struct TaskOpenResponsivenessTelemetryTests {
             snapshot: .empty,
             appliedSnapshotRevision: 1,
             cacheState: "not_applicable",
+            snapshotAppliedUptimeNanoseconds: nil,
             scope: scope
         )
         AppLogger.flushForTesting()
@@ -197,7 +217,28 @@ struct TaskOpenResponsivenessTelemetryTests {
 
         #expect(messages.contains("event=task_selection_to_shell_visible"))
         #expect(messages.contains("event=task_selection_to_transcript_ready"))
-        #expect(messages.contains("event=screen_transition_to_interactive"))
+        #expect(messages.contains("event=screen_transition_to_view_ready"))
         #expect(!messages.contains("Sensitive task goal"))
+    }
+
+    @MainActor
+    @Test("A stuck task-open trace emits a timeout with its reached stage")
+    func stuckTraceEmitsTimeout() {
+        let task = makeTask(goal: "Task that never becomes ready")
+        let scope = UUID()
+        TaskOpenResponsivenessTelemetry.resetForTesting()
+
+        TaskOpenResponsivenessTelemetry.begin(task: task, source: "task_selection", scope: scope)
+        TaskOpenResponsivenessTelemetry.shellBecameVisible(task: task, scope: scope)
+        TaskOpenResponsivenessTelemetry.timeout(task: task, scope: scope)
+        AppLogger.flushForTesting()
+
+        let timeout = AppLogger.entries.first { entry in
+            entry.taskID == task.id && entry.message.contains("event=task_selection_timeout")
+        }
+        #expect(timeout?.logLevel == .warning)
+        #expect(timeout?.message.contains("shell_visible=true") == true)
+        #expect(timeout?.message.contains("transcript_ready=false") == true)
+        TaskOpenResponsivenessTelemetry.resetForTesting()
     }
 }
