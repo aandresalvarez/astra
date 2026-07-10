@@ -4,6 +4,10 @@ import ASTRACore
 struct ValidatedFeedbackPackage {
     let envelope: FeedbackReportEnvelopeV1
     let envelopeData: Data
+    let manifest: FeedbackEvidenceManifestV1
+    let manifestSHA256: String
+    let reportSHA256: String
+    let archiveSHA256: String?
 }
 
 enum FeedbackPackageLayout {
@@ -107,17 +111,27 @@ enum FeedbackPackageAdoptionValidator {
             }
         }
 
+        var actualArchiveSHA256: String?
         if let expectedArchiveHash = envelope.evidenceArchiveSHA256 {
             let archiveData = try requiredData(
                 at: archiveURL,
                 relativePath: FeedbackPackageLayout.archive,
                 fileManager: fileManager
             )
-            guard FeedbackCanonicalJSONV1.sha256Hex(archiveData) == expectedArchiveHash else {
+            let archiveSHA256 = FeedbackCanonicalJSONV1.sha256Hex(archiveData)
+            guard archiveSHA256 == expectedArchiveHash else {
                 throw FeedbackPackageValidationError.hashMismatch(FeedbackPackageLayout.archive)
             }
+            actualArchiveSHA256 = archiveSHA256
         }
-        return ValidatedFeedbackPackage(envelope: envelope, envelopeData: envelopeData)
+        return ValidatedFeedbackPackage(
+            envelope: envelope,
+            envelopeData: envelopeData,
+            manifest: manifest,
+            manifestSHA256: FeedbackCanonicalJSONV1.sha256Hex(manifestData),
+            reportSHA256: FeedbackCanonicalJSONV1.sha256Hex(envelopeData),
+            archiveSHA256: actualArchiveSHA256
+        )
     }
 
     private static func requiredData(

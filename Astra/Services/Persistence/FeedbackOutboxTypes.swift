@@ -198,6 +198,28 @@ public struct FeedbackPreparedPackageRecovery: Equatable, Sendable {
     }
 }
 
+/// Immutable identity of the exact package bytes shown at the review boundary.
+/// Adoption must match this identity so a different self-consistent package
+/// cannot replace the user's reviewed evidence before queueing.
+public struct FeedbackPreparedPackageReview: Equatable, Sendable {
+    public let manifest: FeedbackEvidenceManifestV1
+    public let manifestSHA256: String
+    public let reportSHA256: String
+    public let archiveSHA256: String?
+
+    public init(
+        manifest: FeedbackEvidenceManifestV1,
+        manifestSHA256: String,
+        reportSHA256: String,
+        archiveSHA256: String?
+    ) {
+        self.manifest = manifest
+        self.manifestSHA256 = manifestSHA256
+        self.reportSHA256 = reportSHA256
+        self.archiveSHA256 = archiveSHA256
+    }
+}
+
 public struct FeedbackUploadClaim: Equatable, Sendable {
     public let reportID: UUID
     public let token: String
@@ -216,6 +238,7 @@ public enum FeedbackOutboxError: Error, Equatable {
     case packageAlreadyAdopted
     case packageNotOnOutboxVolume
     case preparedPackageDoesNotMatchDraft
+    case preparedPackageChangedAfterReview
     case missingPreparedPackage
     case activeClaimExists
     case claimMismatch

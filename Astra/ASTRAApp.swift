@@ -462,6 +462,24 @@ public struct ASTRAApp: App {
             AppLogger.error("Feedback staging reconciliation could not inspect its trusted root", category: "Diagnostics")
         }
 
+        do {
+            let recovered = try FeedbackOutboxService(
+                modelContainer: modelContext.container,
+                storageRoot: FeedbackReportStoragePaths.root
+            ).recoverInterruptedAdoptions()
+            if recovered > 0 {
+                AppLogger.info(
+                    "Recovered \(recovered) interrupted feedback package adoption(s)",
+                    category: "Diagnostics"
+                )
+            }
+        } catch {
+            AppLogger.error(
+                "Interrupted feedback package adoption recovery failed safely",
+                category: "Diagnostics"
+            )
+        }
+
         if !skipWorkspaceRecovery {
             WorkspaceRecoveryService.recoverMissingWorkspacesAfterLaunch(modelContext: modelContext)
         }

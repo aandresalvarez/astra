@@ -59,13 +59,12 @@ public struct FeedbackRemoteStatusV1: RawRepresentable, Codable, Equatable, Hash
     ]
 
     public func validateTransition(to next: Self) throws {
-        guard Self.known.contains(self) else {
-            throw FeedbackRemoteStatusTransitionError.unknownStatus(rawValue)
-        }
-        guard Self.known.contains(next) else {
-            throw FeedbackRemoteStatusTransitionError.unknownStatus(next.rawValue)
-        }
         if self == next { return }
+        // The server status vocabulary is intentionally extensible. An older
+        // client cannot order a value it does not know, so the DTO timestamp is
+        // the only safe advancement signal whenever either side is unknown.
+        // Known-to-known transitions retain the stricter V1 state machine.
+        guard Self.known.contains(self), Self.known.contains(next) else { return }
         let allowed: Bool = switch (self, next) {
         case (.received, .assessmentPending),
              (.assessmentPending, .needsInformation),

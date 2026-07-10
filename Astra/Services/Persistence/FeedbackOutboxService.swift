@@ -252,7 +252,11 @@ public final class FeedbackOutboxService {
     /// same-volume directory rename. If the process stops after the rename but
     /// before SwiftData saves, `recoverInterruptedAdoptions` completes the
     /// durable transition from the deterministic destination.
-    public func adoptPreparedPackage(reportID: UUID, from sourceDirectory: URL) throws {
+    public func adoptPreparedPackage(
+        reportID: UUID,
+        from sourceDirectory: URL,
+        matching review: FeedbackPreparedPackageReview? = nil
+    ) throws {
         let context = makeContext()
         let report = try fetch(reportID: reportID, in: context)
         let current = try storedStatus(report)
@@ -272,6 +276,13 @@ public final class FeedbackOutboxService {
             fileManager: fileManager
         )
         try validate(validated.envelope, matches: report)
+        if let review {
+            guard validated.manifest == review.manifest.canonicalized(),
+                  validated.manifestSHA256 == review.manifestSHA256,
+                  validated.reportSHA256 == review.reportSHA256,
+                  validated.archiveSHA256 == review.archiveSHA256
+            else { throw FeedbackOutboxError.preparedPackageChangedAfterReview }
+        }
         try fileManager.moveItem(at: sourceDirectory, to: destination)
 
         applyPreparedPackage(validated, destination: destination, to: report, at: clock.now())

@@ -452,6 +452,33 @@ struct FeedbackOutboxStateMachineTests {
     }
 
     @MainActor
+    @Test("Future remote status bytes are retained after a monotonic server update")
+    func futureRemoteStatusIsRetained() throws {
+        let fixture = try makeQueuedFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let claim = try fixture.service.claimUpload(reportID: fixture.reportID)
+        try fixture.service.completeSubmission(
+            claim: claim,
+            receiptData: try makeFeedbackReceiptData(
+                envelope: fixture.envelope,
+                receivedAt: fixture.clock.current
+            )
+        )
+        let future = FeedbackRemoteStatusDTOv1(
+            receiptID: "receipt-123",
+            status: FeedbackRemoteStatusV1(rawValue: "future_server_state"),
+            updatedAt: fixture.clock.current.addingTimeInterval(1)
+        )
+        let statusData = try future.canonicalData()
+
+        try fixture.service.applyRemoteStatus(reportID: fixture.reportID, statusData: statusData)
+
+        let report = try fetchReport(fixture.container, id: fixture.reportID)
+        #expect(report.remoteStatusRaw == "future_server_state")
+        #expect(report.remoteStatusData == statusData)
+    }
+
+    @MainActor
     @Test("Permanent failure and cancellation remain distinct terminal paths")
     func permanentFailureAndCancellationAreDistinct() throws {
         let failed = try makeQueuedFixture()

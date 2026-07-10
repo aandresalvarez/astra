@@ -1,9 +1,37 @@
 import Foundation
 import Dispatch
 import Testing
+import ASTRACore
 @testable import ASTRA
 
 extension FeedbackReportPresentationTests {
+    @Test("Old crash offers anchor the evidence window to the crash")
+    func oldCrashOfferAnchorsEvidenceWindow() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let crashDate = now.addingTimeInterval(-3 * 24 * 60 * 60)
+        let crash = CrashReportSummary(
+            url: URL(fileURLWithPath: "/tmp/old-feedback.crash"),
+            appName: "ASTRA Dev",
+            modifiedAt: crashDate,
+            sizeBytes: 42
+        )
+        let crashLaunch = FeedbackReportLaunch(
+            hostID: UUID(),
+            entryPoint: .crashRecovery,
+            crashReports: [crash]
+        )
+
+        let form = FeedbackReportFormState(launch: crashLaunch, now: now)
+
+        #expect(form.evidenceWindowStart <= crashDate)
+        #expect(form.evidenceWindowEnd >= crashDate)
+        #expect(
+            form.evidenceWindowEnd.timeIntervalSince(form.evidenceWindowStart) <=
+            FeedbackContractLimitsV1.maximumEvidenceWindow
+        )
+        #expect(form.evidenceWindowEnd < now)
+    }
+
     @Test("Early successful settlement preserves payload across host teardown")
     @MainActor
     func earlySuccessBeforeUnregisterPreservesLaunch() throws {

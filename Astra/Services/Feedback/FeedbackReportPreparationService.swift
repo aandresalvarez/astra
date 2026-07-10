@@ -27,14 +27,23 @@ struct FeedbackReportFormState: Equatable, Sendable {
         actualResult = launch.prefill.actualResult
         expectedResult = launch.prefill.expectedResult
         workBlocked = launch.prefill.workBlocked
-        evidenceWindowEnd = now
         let defaultStart = now.addingTimeInterval(-Self.defaultEvidenceWindow)
-        if let crashDate = launch.crashReports.map(\.modifiedAt).min() {
+        let crashDates = launch.crashReports.map { min($0.modifiedAt, now) }
+        if let oldestCrashDate = crashDates.min(),
+           let newestCrashDate = crashDates.max() {
+            // Crash offers can survive across launches. Anchor the bounded window
+            // to the crash cohort instead of to the current launch so an older
+            // offered diagnostic cannot be filtered out of its own report.
+            evidenceWindowEnd = min(now, newestCrashDate.addingTimeInterval(1))
             evidenceWindowStart = max(
-                now.addingTimeInterval(-FeedbackContractLimitsV1.maximumEvidenceWindow),
-                min(defaultStart, crashDate.addingTimeInterval(-1))
+                evidenceWindowEnd.addingTimeInterval(-FeedbackContractLimitsV1.maximumEvidenceWindow),
+                min(
+                    evidenceWindowEnd.addingTimeInterval(-Self.defaultEvidenceWindow),
+                    oldestCrashDate.addingTimeInterval(-1)
+                )
             )
         } else {
+            evidenceWindowEnd = now
             evidenceWindowStart = defaultStart
         }
         selections = FeedbackEvidenceSelections()
@@ -99,6 +108,7 @@ enum FeedbackReportPreparationError: Error, Equatable {
     case reportMissingAfterDraftSave
     case reportIsNotDraft
     case stalePreparedPreview
+    case stagedPackageChangedAfterReview
     case unsafeStagingPath
     case stagingCleanupFailed(String)
     case cancelledPreviewCleanupFailed(FeedbackReportPreparedPreview, String)
@@ -460,7 +470,20 @@ struct FeedbackReportPreparationService {
         )
         let outbox = try makeOutbox()
         try outbox.updateDraft(reportID: launch.id, contents: exactContents)
-        try outbox.adoptPreparedPackage(reportID: launch.id, from: preview.package.directoryURL)
+        do {
+            try outbox.adoptPreparedPackage(
+                reportID: launch.id,
+                from: preview.package.directoryURL,
+                matching: FeedbackPreparedPackageReview(
+                    manifest: preview.package.manifest,
+                    manifestSHA256: preview.package.manifestSHA256,
+                    reportSHA256: preview.package.reportSHA256,
+                    archiveSHA256: preview.package.archiveSHA256
+                )
+            )
+        } catch FeedbackOutboxError.preparedPackageChangedAfterReview {
+            throw FeedbackReportPreparationError.stagedPackageChangedAfterReview
+        }
     }
 
     /// Idempotent UI boundary for the local-only PR5 transition. It never

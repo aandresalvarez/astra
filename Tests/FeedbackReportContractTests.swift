@@ -218,6 +218,29 @@ struct FeedbackReportContractTests {
         #expect(envelope.payload.evidence.artifacts.first?.kind.rawValue == "future_artifact")
     }
 
+    @Test("runtime snapshot identifier fields match schema bounds")
+    func runtimeSnapshotIdentifierFieldsMatchSchemaBounds() throws {
+        var payload = samplePayload()
+        payload.runtimeSnapshot?.failureCategory = FeedbackRuntimeFailureCategoryV1(rawValue: "")
+        #expect(throws: FeedbackContractError.missingRequiredField(
+            path: "payload.runtimeSnapshot.failureCategory"
+        )) {
+            try payload.validate()
+        }
+
+        payload = samplePayload()
+        payload.runtimeSnapshot?.unavailableReason = FeedbackEvidenceReasonV1(
+            rawValue: String(repeating: "x", count: FeedbackContractLimitsV1.identifierLength + 1)
+        )
+        #expect(throws: FeedbackContractError.exceedsMaximumLength(
+            path: "payload.runtimeSnapshot.unavailableReason",
+            maximum: FeedbackContractLimitsV1.identifierLength,
+            actual: FeedbackContractLimitsV1.identifierLength + 1
+        )) {
+            try payload.validate()
+        }
+    }
+
     @Test("unpaired surrogate JSON is rejected")
     func unpairedSurrogateJSONIsRejected() throws {
         let bytes = try fixture("request-malformed-unicode.json")
@@ -449,6 +472,10 @@ struct FeedbackReportContractTests {
     @Test("remote status downgrade and illegal jumps fail with typed errors")
     func remoteStatusDowngradeFailsClosed() throws {
         try FeedbackRemoteStatusV1.accepted.validateTransition(to: .implementationQueued)
+        try FeedbackRemoteStatusV1.received.validateTransition(
+            to: FeedbackRemoteStatusV1(rawValue: "future_server_state")
+        )
+        try FeedbackRemoteStatusV1(rawValue: "future_server_state").validateTransition(to: .released)
         #expect(throws: FeedbackRemoteStatusTransitionError.illegalOrDowngrade(
             from: "released",
             to: "merged"

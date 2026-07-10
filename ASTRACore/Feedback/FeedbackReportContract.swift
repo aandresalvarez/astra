@@ -417,6 +417,16 @@ public struct FeedbackRuntimeSnapshotV1: Codable, Equatable, Sendable, FeedbackC
             path: "payload.runtimeSnapshot.runtimeID",
             maximum: FeedbackContractLimitsV1.identifierLength
         )
+        try FeedbackContractValidationV1.optional(
+            failureCategory?.rawValue,
+            path: "payload.runtimeSnapshot.failureCategory",
+            maximum: FeedbackContractLimitsV1.identifierLength
+        )
+        try FeedbackContractValidationV1.optional(
+            unavailableReason?.rawValue,
+            path: "payload.runtimeSnapshot.unavailableReason",
+            maximum: FeedbackContractLimitsV1.identifierLength
+        )
         for (name, value) in [
             ("providerVersion", providerVersion), ("readiness", readiness),
             ("stopReason", stopReason), ("sandboxState", sandboxState),

@@ -630,6 +630,58 @@ struct FeedbackReportPresentationTests {
         #expect(report.activeClaimToken == nil)
     }
 
+    @Test("Draft confirmation rejects a self-consistent package that replaced reviewed bytes")
+    @MainActor
+    func draftConfirmationRejectsReplacedReviewedPackage() async throws {
+        let fixture = try makeFixture()
+        defer { fixture.cleanup() }
+        let launch = launch()
+        let form = validForm()
+        let original = FeedbackReportPreparationService(
+            modelContainer: fixture.container,
+            crashOfferService: fixture.crashService,
+            storageRoot: fixture.root,
+            defaults: fixture.defaults,
+            evidenceSourceProvider: { _, _, _ in .empty },
+            now: { Date(timeIntervalSince1970: 1_800_000_000) }
+        )
+        let reviewed = try await original.preparePreview(launch: launch, form: form)
+        let displaced = fixture.root.appendingPathComponent("reviewed-package", isDirectory: true)
+        try FileManager.default.moveItem(at: reviewed.package.directoryURL, to: displaced)
+        let replacementLaunch = FeedbackReportLaunch(
+            reportID: launch.id,
+            hostID: UUID(),
+            entryPoint: .help,
+            runtimeEvidence: RuntimeFeedbackPersistedEvidence(
+                runtimeID: "codex",
+                executableFound: true,
+                failureCategory: "provider_process_failed",
+                sanitizedSummary: "A different persisted runtime snapshot."
+            )
+        )
+        let replacementService = FeedbackReportPreparationService(
+            modelContainer: fixture.container,
+            crashOfferService: fixture.crashService,
+            storageRoot: fixture.root,
+            defaults: fixture.defaults,
+            evidenceSourceProvider: { _, _, _ in .empty },
+            now: { Date(timeIntervalSince1970: 1_800_000_001) }
+        )
+        let replacement = try await replacementService.preparePreview(
+            launch: replacementLaunch,
+            form: form
+        )
+        #expect(replacement.package.reportSHA256 != reviewed.package.reportSHA256)
+        #expect(throws: FeedbackReportPreparationError.stagedPackageChangedAfterReview) {
+            try original.confirmPreparedPreview(reviewed, launch: launch, form: form)
+        }
+        #expect(try fetchReport(fixture.container, id: launch.id)?.localStatus == .draft)
+        #expect(FileManager.default.fileExists(atPath: replacement.package.directoryURL.path))
+        try replacementService.invalidatePreparedPreview(replacement)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: displaced.path)
+        try? FileManager.default.removeItem(at: displaced)
+    }
+
     @Test("Prepared retry revalidates every adopted artifact before queueing")
     @MainActor
     func preparedRetryRejectsChangedOrMissingArtifact() async throws {
@@ -1684,6 +1736,7 @@ struct FeedbackReportPresentationTests {
         #expect(app.contains("Report a Problem…"))
         #expect(app.contains("ReportProblemMenuItem()"))
         #expect(app.contains("FeedbackPreparationStagingReconciler().reconcileAbandonedPackages()"))
+        #expect(app.contains(".recoverInterruptedAdoptions()"))
         #expect(content.contains("presentGeneralFeedback(from: .help)"))
         #expect(content.contains(".feedbackReportSheetHost(feedbackHostID)"))
         #expect(logs.contains("presentFeedback()"))
