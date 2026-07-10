@@ -60,6 +60,25 @@ struct MarkdownSourceSyntaxTokenizerTests {
         ])
     }
 
+    @Test("A fence delimiter indented up to 3 spaces is still recognized")
+    func fenceDelimiterIndentedUpToThreeSpacesIsRecognized() {
+        let text = "   ```\ncode\n   ```"
+        #expect(describe(text, MarkdownSourceSyntaxTokenizer.tokens(in: text)) == [
+            "codeFenceMarker|   ```",
+            "codeBlockLine|code",
+            "codeFenceMarker|   ```"
+        ])
+    }
+
+    @Test("A fence delimiter indented 4+ spaces is not a real fence and doesn't trap later lines")
+    func indentedFenceDelimiterDoesNotTrapSubsequentLines() {
+        let text = "    ```\n# Heading"
+        #expect(describe(text, MarkdownSourceSyntaxTokenizer.tokens(in: text)) == [
+            "headingMarker|# ",
+            "heading(level: 1)|Heading"
+        ])
+    }
+
     @Test("Inline emphasis: bold does not get mistaken for two italics")
     func boldIsNotMistakenForItalics() {
         let text = "**bold** and *italic* and _also italic_ and __also bold__"

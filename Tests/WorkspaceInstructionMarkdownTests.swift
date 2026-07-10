@@ -22,6 +22,48 @@ struct WorkspaceInstructionMarkdownTests {
         #expect(WorkspaceInstructionMarkdown.preparedForRendering(input) == expected)
     }
 
+    @Test("A fence delimiter indented up to 3 spaces is still recognized as a real fence")
+    func fenceDelimiterIndentedUpToThreeSpacesIsRecognized() {
+        let input = "Before.\n   ```\ncode line\n   ```\nAfter."
+        let expected = "Before.\n\n   ```\ncode line\n   ```\nAfter."
+        #expect(WorkspaceInstructionMarkdown.preparedForRendering(input) == expected)
+    }
+
+    @Test("A fence delimiter indented 4+ spaces is not treated as a real fence")
+    func fenceDelimiterIndentedFourSpacesIsNotTreatedAsFence() {
+        // CommonMark treats 4+ leading spaces as an indented code block, not a
+        // fence — so this line should be promoted to its own paragraph like
+        // any other line, not silently swallow everything after it as "inside
+        // a fence that never closes".
+        let input = "Before.\n    ```\nAfter."
+        let expected = "Before.\n\n    ```\n\nAfter."
+        #expect(WorkspaceInstructionMarkdown.preparedForRendering(input) == expected)
+    }
+
+    @Test("A shorter same-character fence line nested inside a longer fence doesn't close it early")
+    func shorterNestedFenceDoesNotCloseEarly() {
+        // A 4-backtick fence is a common way to show a 3-backtick example —
+        // CommonMark only closes on a delimiter at least as long as the
+        // opener, so the inner ``` lines must stay literal fence content.
+        let input = "````\nExample:\n```\ncode\n```\n````"
+        #expect(WorkspaceInstructionMarkdown.preparedForRendering(input) == input)
+    }
+
+    @Test("A different-character fence line nested inside a fence doesn't close it")
+    func differentCharacterFenceDoesNotClose() {
+        let input = "~~~\n```\ncontent\n~~~"
+        #expect(WorkspaceInstructionMarkdown.preparedForRendering(input) == input)
+    }
+
+    @Test("A longer same-character closing fence still closes")
+    func longerClosingFenceStillCloses() {
+        // The closing line itself never gets a trailing blank line inserted
+        // (fence marker lines always `continue` before that decision), so a
+        // successful close here means the whole block is left byte-identical.
+        let input = "```\ncode\n````\nAfter."
+        #expect(WorkspaceInstructionMarkdown.preparedForRendering(input) == input)
+    }
+
     @Test("One-rule-per-line prompts render as distinct text blocks, not a run-on paragraph")
     func oneRulePerLineRendersAsDistinctBlocks() {
         let instructions = """

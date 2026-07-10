@@ -27,18 +27,29 @@ enum WorkspaceInstructionMarkdown {
 
         var result: [String] = []
         result.reserveCapacity(lines.count * 2)
-        var isInsideFence = false
+        var openFence: FenceDelimiter?
 
         for (index, line) in lines.enumerated() {
             result.append(line)
 
             let trimmed = line.trimmingCharacters(in: .whitespaces)
-            if trimmed.hasPrefix("```") || trimmed.hasPrefix("~~~") {
-                isInsideFence.toggle()
-                continue
+            if let delimiter = fenceDelimiter(in: line) {
+                if let open = openFence {
+                    if delimiter.closes(open) {
+                        openFence = nil
+                        continue
+                    }
+                    // Fence-shaped but doesn't match the open fence's character
+                    // or is shorter than it — CommonMark treats that as literal
+                    // content inside the fence, not a close, so fall through to
+                    // the still-open guard below instead of toggling here.
+                } else {
+                    openFence = delimiter
+                    continue
+                }
             }
 
-            guard !isInsideFence, !trimmed.isEmpty else { continue }
+            guard openFence == nil, !trimmed.isEmpty else { continue }
 
             let nextLine = index + 1 < lines.count ? lines[index + 1] : nil
             let nextTrimmed = nextLine?.trimmingCharacters(in: .whitespaces) ?? ""
@@ -89,6 +100,35 @@ enum WorkspaceInstructionMarkdown {
         guard count >= 100 else { return "\(count)" }
         let rounded = Int((Double(count) / 10).rounded()) * 10
         return "~\(rounded)"
+    }
+
+    /// A fenced-code delimiter's character and run length. CommonMark closes
+    /// a fence only on a delimiter of the *same* character that is *at least
+    /// as long* as the opener — tracking just "is this fence-shaped" isn't
+    /// enough, or a nested ` ``` ` shown inside a ```` ```` -fenced example
+    /// (or a stray `~~~` inside a backtick fence) would prematurely close it.
+    private struct FenceDelimiter {
+        let character: Character
+        let length: Int
+
+        func closes(_ opener: FenceDelimiter) -> Bool {
+            character == opener.character && length >= opener.length
+        }
+    }
+
+    /// A fenced-code delimiter candidate: a run of 3+ backticks or tildes
+    /// preceded by at most 3 spaces. CommonMark treats 4+ leading spaces as
+    /// an indented code block instead — trimming *all* leading whitespace
+    /// before checking would wrongly recognize a delimiter the real parser
+    /// ignores.
+    private static func fenceDelimiter(in line: String) -> FenceDelimiter? {
+        let leadingSpaces = line.prefix(while: { $0 == " " }).count
+        guard leadingSpaces <= 3 else { return nil }
+        let content = line.dropFirst(leadingSpaces)
+        guard let first = content.first, first == "`" || first == "~" else { return nil }
+        let length = content.prefix(while: { $0 == first }).count
+        guard length >= 3 else { return nil }
+        return FenceDelimiter(character: first, length: length)
     }
 
     /// A setext heading underline: one or more of the same character (`=` for

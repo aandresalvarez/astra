@@ -182,7 +182,12 @@ enum MarkdownSourceSyntaxTokenizer {
     private static let dividerPattern = makePattern(#"^\s*(-{3,}|\*{3,}|_{3,})\s*$"#)
     private static let blockquotePattern = makePattern(#"^\s*(?:>\s*)+"#)
     private static let listPattern = makePattern(#"^\s*([-*+]|\d+[.)])\s+"#)
-    private static let fencePattern = makePattern(#"^\s*(```|~~~)"#)
+    // CommonMark caps a fence delimiter's leading indentation at 3 spaces —
+    // 4+ makes it an indented code block instead, not a fence. `{0,3}` (not
+    // `\s*`) enforces that; `\s*` would also swallow tabs, which don't count
+    // toward the limit the same way and would let a tab-indented line
+    // wrongly toggle fence state.
+    private static let fencePattern = makePattern(#"^ {0,3}(```|~~~)"#)
 
     private static let codeSpanPattern = makePattern(#"(`+)([^`]+?)(?:\1)(?!`)"#)
     private static let boldAsteriskPattern = makePattern(#"\*\*(?=\S)(.+?)(?<=\S)\*\*"#)

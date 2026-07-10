@@ -263,6 +263,9 @@ struct WorkspaceHomeView: View {
             initializePresentationIfNeeded()
             loadSSHConnections()
         }
+        .onChange(of: workspace.primaryPath) {
+            loadSSHConnections()
+        }
         .onChange(of: sshReloadTrigger) {
             loadSSHConnections()
         }
@@ -1274,7 +1277,7 @@ struct WorkspaceHomeView: View {
 
     private func saveEditedInstructions() {
         workspace.instructions = editedInstructions.trimmingCharacters(in: .whitespacesAndNewlines)
-        workspace.updatedAt = Date()
+        markWorkspaceConfigurationChanged()
         isEditingInstructions = false
     }
 
@@ -1282,6 +1285,14 @@ struct WorkspaceHomeView: View {
         guard initializedPresentationWorkspaceID != workspace.id else { return }
         initializedPresentationWorkspaceID = workspace.id
         isEditingInstructions = false
+        // This view instance is reused across workspace switches, so any
+        // in-progress Memory-tab draft belongs to whichever workspace was
+        // showing when the user started it — carrying it over would append a
+        // stale draft to the wrong workspace's memory, or leave a deletion
+        // dialog for a memory that isn't even on screen anymore.
+        isMemoryComposerVisible = false
+        newMemoryText = ""
+        pendingSetupDeletion = nil
         // Restore the user's last tab choice for this workspace; first visit
         // lands on Instructions so the workspace prompt is open to read.
         selectedSection = loadSelectedSection()
