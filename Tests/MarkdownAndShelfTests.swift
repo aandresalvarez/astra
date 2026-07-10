@@ -496,6 +496,35 @@ struct ShelfMarkdownSessionTests {
     }
 
     @MainActor
+    @Test("Closing the last file suppresses preferred document restoration until a manual open")
+    func closingLastFileSuppressesPreferredDocumentRestoration() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-markdown-explicit-close-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let preferred = root.appendingPathComponent("preferred.md")
+        let manuallyOpened = root.appendingPathComponent("manual.md")
+        try "Preferred".write(to: preferred, atomically: true, encoding: .utf8)
+        try "Manual".write(to: manuallyOpened, atomically: true, encoding: .utf8)
+
+        let session = ShelfMarkdownSession()
+        session.loadAutomaticallyIfAllowed(preferred)
+        #expect(session.fileURL == preferred)
+
+        session.closeSelectedDocument()
+        #expect(!session.loadAutomaticallyIfAllowed(preferred))
+        #expect(session.fileURL == nil)
+        #expect(session.documents.isEmpty)
+
+        session.load(manuallyOpened)
+        #expect(session.fileURL == manuallyOpened)
+        session.closeSelectedDocument()
+        #expect(!session.loadAutomaticallyIfAllowed(preferred))
+        #expect(session.fileURL == nil)
+    }
+
+    @MainActor
     @Test("Copying selected Markdown tab writes content to pasteboard")
     func copyingSelectedMarkdownTabWritesContentToPasteboard() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())

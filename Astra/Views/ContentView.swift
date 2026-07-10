@@ -1347,9 +1347,7 @@ struct ContentView: View {
             currentMarkdownSession.bindToTask(selectedTask?.id)
             guard !selectedTaskPreferredMarkdownPath.isEmpty else { return }
             let url = URL(fileURLWithPath: selectedTaskPreferredMarkdownPath)
-            if currentMarkdownSession.fileURL?.path != url.path {
-                currentMarkdownSession.load(url)
-            }
+            currentMarkdownSession.loadAutomaticallyIfAllowed(url)
         case .browser:
             currentBrowserSession.bindToTask(selectedTask?.id)
             loadPreferredGeneratedHTMLForBrowserShelfIfNeeded(source: source)
@@ -1431,9 +1429,7 @@ struct ContentView: View {
         currentMarkdownSession.bindToTask(selectedTask?.id)
         if !selectedTaskPreferredMarkdownPath.isEmpty {
             let url = URL(fileURLWithPath: selectedTaskPreferredMarkdownPath)
-            if currentMarkdownSession.fileURL?.path != url.path {
-                currentMarkdownSession.load(url)
-            }
+            currentMarkdownSession.loadAutomaticallyIfAllowed(url)
         }
         if activeWorkspaceCanvasItem == .markdown {
             animatePanelChange {

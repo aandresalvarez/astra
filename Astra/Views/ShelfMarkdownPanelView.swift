@@ -1140,8 +1140,9 @@ struct ShelfMarkdownPanelView: View {
               let node = nodes.first(where: { !$0.isDirectory }) else {
             return
         }
-        session.load(URL(fileURLWithPath: node.path))
-        expandFileNavigator(to: node.path, isFile: true)
+        if session.loadAutomaticallyIfAllowed(URL(fileURLWithPath: node.path)) {
+            expandFileNavigator(to: node.path, isFile: true)
+        }
     }
 
     private func flattenedFileNode(
