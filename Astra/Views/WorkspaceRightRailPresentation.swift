@@ -1,4 +1,6 @@
 import SwiftUI
+import ASTRACore
+import ASTRAModels
 
 enum WorkspaceRightRailPresentation {
     /// Order while a workspace still has setup to do: setup stays directly under
@@ -54,6 +56,137 @@ enum WorkspaceRightRailPresentation {
     private static func appendCount(_ count: Int, singular: String, plural: String, to parts: inout [String]) {
         guard count > 0 else { return }
         parts.append("\(count) \(count == 1 ? singular : plural)")
+    }
+}
+
+struct CapabilityRuntimePermissionAttention: Equatable {
+    let connectorID: UUID
+    let requestDisplayName: String
+    let credentialCount: Int
+
+    static func pending(for task: AgentTask?) -> [CapabilityRuntimePermissionAttention] {
+        guard let task else { return [] }
+        return TaskRuntimePermissionOpenRequestStore.openRequestPayloads(for: task).compactMap { payload in
+            guard let decoded = PermissionApprovalEventPayload.decoded(from: payload) else { return nil }
+            switch decoded.request {
+            case .connectorCredentials(let connectorID, let displayName, let labels):
+                return CapabilityRuntimePermissionAttention(
+                    connectorID: connectorID,
+                    requestDisplayName: displayName,
+                    credentialCount: max(labels.count, 1)
+                )
+            case .credential(let label):
+                guard let connectorID = connectorID(fromCredentialLabel: label) else { return nil }
+                return CapabilityRuntimePermissionAttention(
+                    connectorID: connectorID,
+                    requestDisplayName: "Connector credentials",
+                    credentialCount: 1
+                )
+            default:
+                return nil
+            }
+        }
+    }
+
+    static func applying(
+        _ attentions: [CapabilityRuntimePermissionAttention],
+        to items: [RailCapabilityItem],
+        connectors: [Connector]
+    ) -> [RailCapabilityItem] {
+        var result = items
+        for attention in attentions {
+            guard let connector = connectors.first(where: { $0.id == attention.connectorID }),
+                  let targetIndex = targetIndex(for: connector, in: result) else {
+                continue
+            }
+            result[targetIndex] = result[targetIndex].applyingRuntimePermissionAttention(
+                attention,
+                connectorName: connector.name
+            )
+        }
+        return result
+    }
+
+    static func ownershipConnectors(
+        workspaceConnectors: [Connector],
+        availableGlobalConnectors: [Connector]
+    ) -> [Connector] {
+        var seen = Set<UUID>()
+        return (workspaceConnectors + availableGlobalConnectors).filter {
+            seen.insert($0.id).inserted
+        }
+    }
+
+    func rowSubtitle(connectorName: String) -> String {
+        let noun = credentialCount == 1 ? "credential" : "credentials"
+        let trimmedConnectorName = connectorName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let subject = trimmedConnectorName.isEmpty ? requestDisplayName : trimmedConnectorName
+        return "\(subject): permission to use \(credentialCount) configured \(noun) for this task"
+    }
+
+    private static func targetIndex(for connector: Connector, in items: [RailCapabilityItem]) -> Int? {
+        let packageID = connector.originPackageID?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        if let packageID, !packageID.isEmpty,
+           let match = items.firstIndex(where: { item in
+               guard case .package(let package) = item.source else { return false }
+               return package.id.lowercased() == packageID
+           }) {
+            return match
+        }
+
+        let connectorName = connector.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !connectorName.isEmpty else { return nil }
+        return items.firstIndex { item in
+            item.connectorNames.contains {
+                $0.trimmingCharacters(in: .whitespacesAndNewlines)
+                    .localizedCaseInsensitiveCompare(connectorName) == .orderedSame
+            }
+        }
+    }
+
+    private static func connectorID(fromCredentialLabel label: String) -> UUID? {
+        let parts = label.split(separator: ":", maxSplits: 2, omittingEmptySubsequences: false)
+        guard parts.count == 3, parts[0] == "connector" else { return nil }
+        return UUID(uuidString: String(parts[1]))
+    }
+}
+
+private extension RailCapabilityItem {
+    func applyingRuntimePermissionAttention(
+        _ attention: CapabilityRuntimePermissionAttention,
+        connectorName: String
+    ) -> RailCapabilityItem {
+        let permissionMessage = attention.rowSubtitle(connectorName: connectorName)
+        let existingMessages = readiness.level == .ready ? [] : readiness.messages
+        return RailCapabilityItem(
+            id: id,
+            name: name,
+            icon: icon,
+            summary: summary,
+            color: color,
+            isEnabled: isEnabled,
+            readiness: CapabilityReadiness(
+                level: .needsAttention,
+                messages: [permissionMessage] + existingMessages
+            ),
+            presentation: CapabilityRailPackagePresentation(
+                statusLabel: "Approval needed",
+                actionTitle: presentation.actionTitle,
+                rowSubtitle: permissionMessage,
+                scopeValues: [permissionMessage] + presentation.scopeValues
+            ),
+            source: source,
+            skillNames: skillNames,
+            connectorNames: connectorNames,
+            toolNames: toolNames,
+            mcpServerNames: mcpServerNames,
+            browserAdapterNames: browserAdapterNames,
+            templateNames: templateNames,
+            requirementNames: requirementNames,
+            runtimePermissionAttention: attention
+        )
     }
 }
 

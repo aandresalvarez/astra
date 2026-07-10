@@ -222,9 +222,12 @@ final class HeadlessChatHarness {
         runtime: AgentRuntimeID,
         executablePath: String,
         permissionPolicy: PermissionPolicy = .restricted,
-        liveApprovals: Bool = false
+        liveApprovals: Bool = false,
+        sandboxEnforcementOverride: ExecutionSandboxEnforcement? = nil
     ) -> AgentRuntimeWorker {
-        let worker = AgentRuntimeWorker.scenarioWorker()
+        let worker = AgentRuntimeWorker.scenarioWorker(
+            sandboxEnforcementOverride: sandboxEnforcementOverride
+        )
         worker.timeoutSeconds = 10
         worker.permissionPolicy = permissionPolicy
         // Most scenario fakes assert on argv prompt delivery; live approvals

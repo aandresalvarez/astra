@@ -6,6 +6,20 @@ import ASTRAModels
 import ASTRACore
 
 extension TaskThreadSnapshotTests {
+    @Test("Snapshot precomputes privacy-safe transcript shape metrics")
+    func snapshotPrecomputesTranscriptMetrics() {
+        let task = makeTask(goal: "Goal\n```swift\nlet value = 1\n```\n| Name |")
+        let run = TaskRun(task: task)
+        run.output = "| Result |\n| --- |\n| done |"
+
+        let snapshot = TaskThreadSnapshot(goal: task.goal, createdAt: task.createdAt, events: [], runs: [run])
+
+        #expect(snapshot.transcriptMetrics.textBytes > 0)
+        #expect(snapshot.transcriptMetrics.agentResponseCount == 1)
+        #expect(snapshot.transcriptMetrics.codeFenceCount == 2)
+        #expect(snapshot.transcriptMetrics.tableRowCount == 4)
+    }
+
     @Test("Conversation snapshot preserves chronological run and message behavior")
     func conversationSnapshotOrdering() {
         let createdAt = Date(timeIntervalSince1970: 100)
@@ -1275,6 +1289,41 @@ extension TaskThreadSnapshotTests {
         #expect(snapshot.latestAgentPlanItems.map(\.text) == ["Inspect", "Test"])
         #expect(snapshot.latestAgentPlanItems.map(\.isDone) == [true, false])
         #expect(snapshot.protocolState(for: run).todoItems.map(\.text) == ["Inspect", "Test"])
+    }
+
+    @Test("Latest agent plan survives the transcript event window")
+    func latestAgentPlanSurvivesTranscriptEventWindow() {
+        let task = makeTask()
+        let run = TaskRun(task: task)
+        let planPayload = AstraRunProtocolParsedEvent.valid(.todoReplace(items: [
+            AstraRunProtocolEvent.TodoItem(text: "Keep this plan", status: .pending)
+        ])).normalizedPayload
+        var events = [makeEvent(
+            task: task,
+            type: "astra.todo.replace",
+            payload: planPayload,
+            timestamp: Date(timeIntervalSince1970: 1),
+            run: run
+        )]
+
+        for index in 0...1_200 {
+            events.append(makeEvent(
+                task: task,
+                type: "agent.response",
+                payload: "Later transcript event \(index)",
+                timestamp: Date(timeIntervalSince1970: Double(index + 2)),
+                run: run
+            ))
+        }
+        task.runs = [run]
+        task.events = events
+
+        let input = TaskThreadSnapshotInput(task: task)
+        let snapshot = TaskThreadSnapshot(input: input)
+
+        #expect(input.events.count == 1_201)
+        #expect(snapshot.latestAgentPlanItems.map(\.text) == ["Keep this plan"])
+        #expect(snapshot.protocolState(for: run).todoItems.map(\.text) == ["Keep this plan"])
     }
 
     @Test("Conversation includes run with ARP completion even when output is empty")

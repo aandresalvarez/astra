@@ -115,6 +115,7 @@ enum AgentRuntimeLaunchPreflight {
         modelContext: ModelContext,
         phase: RunPhase,
         contextText: String,
+        permissionPolicy: PermissionPolicy = .restricted,
         executionPolicy: AgentRuntimeExecutionPolicy = .default,
         capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot? = nil,
         runtimeConfiguration: AgentRuntimeConfiguration? = nil,
@@ -123,10 +124,32 @@ enum AgentRuntimeLaunchPreflight {
         mcpDetectExecutable: (String) -> String = { RuntimePathResolver.detectExecutablePath(named: $0) },
         mcpIsExecutableFile: (String) -> Bool = { FileManager.default.isExecutableFile(atPath: $0) }
     ) async -> AgentRuntimeLaunchPreflightResult {
+        let effectivePermissionPolicy = executionPolicy.permissionPolicy(default: permissionPolicy)
+        if effectivePermissionPolicy == .autonomous {
+            let closedRequestCount = TaskRuntimePermissionOpenRequestStore
+                .closeRequestsAuthorizedByAutonomousPolicy(for: task)
+            if closedRequestCount > 0 {
+                let requestNoun = closedRequestCount == 1 ? "request" : "requests"
+                task.updatedAt = Date()
+                modelContext.insert(TaskEvent(
+                    task: task,
+                    eventType: TaskEventTypes.System.info,
+                    payload: "Auto mode superseded \(closedRequestCount) pending provider permission \(requestNoun). Sandbox path approvals remain explicit.",
+                    run: run
+                ))
+                AppLogger.audit(.connectorTested, category: "Worker", taskID: task.id, fields: [
+                    "source": "auto_permission_reconciliation",
+                    "phase": phase.rawValue,
+                    "closed_request_count": String(closedRequestCount),
+                    "result": "provider_requests_superseded"
+                ])
+            }
+        }
         let resolutionSnapshot = capabilityResolutionSnapshot ?? TaskCapabilityResolutionSnapshot.capture(
             for: task,
             providerLaunchContextText: contextText,
-            additionalCredentialGrants: executionPolicy.permissionGrantsOverride ?? []
+            additionalCredentialGrants: executionPolicy.permissionGrantsOverride ?? [],
+            exposeAllConnectorCredentials: effectivePermissionPolicy == .autonomous
         )
         let capabilityResult = await preflightCapabilitiesBeforeLaunchResultWithPrerequisiteChecks(
             task: task,
@@ -153,15 +176,18 @@ enum AgentRuntimeLaunchPreflight {
         // Service-agnostic credential presence check. Non-blocking — the
         // agent may not need every projected connector — but a connector
         // with declared, unloadable credentials must not fail silently.
-        let credentialProjection = ConnectorRuntimeProjection(
-            connectors: scopedConnectors,
-            secretStore: secretStore,
-            credentialExposurePolicy: .approvedLabels(
+        let exposurePolicy: ConnectorRuntimeProjection.CredentialExposurePolicy = effectivePermissionPolicy == .autonomous
+            ? .allowAllCredentials
+            : .approvedLabels(
                 Set(TaskRuntimePermissionGrants.approvedCredentialLabels(
                     for: task,
                     additionalGrants: executionPolicy.permissionGrantsOverride ?? []
                 ))
             )
+        let credentialProjection = ConnectorRuntimeProjection(
+            connectors: scopedConnectors,
+            secretStore: secretStore,
+            credentialExposurePolicy: exposurePolicy
         )
         let missingCredentials = credentialProjection
             .missingCredentialKeysByConnector()
@@ -180,13 +206,13 @@ enum AgentRuntimeLaunchPreflight {
                 .joined(separator: ",")
             AppLogger.audit(.connectorTested, category: "Worker", taskID: task.id, fields: warningFields, level: .warning, fieldMaxLength: 240)
         }
-        if let credentialLabel = credentialProjection.unapprovedCredentialLabelsRequiringApproval().first {
+        if let credentialRequest = credentialProjection.unapprovedCredentialApprovalRequests().first {
             return finishPreLaunchCredentialApprovalRequest(
                 task: task,
                 run: run,
                 modelContext: modelContext,
                 phase: phase,
-                credentialLabel: credentialLabel
+                credentialRequest: credentialRequest
             )
         }
         let connectors = ConnectorPreflightService.connectorsRequiringPreflight(
@@ -267,22 +293,28 @@ enum AgentRuntimeLaunchPreflight {
         run: TaskRun,
         modelContext: ModelContext,
         phase: RunPhase,
-        credentialLabel: String
+        credentialRequest: ConnectorRuntimeProjection.CredentialApprovalRequest
     ) -> AgentRuntimeLaunchPreflightResult {
-        let request = PermissionRequest.credential(label: credentialLabel)
+        let request = PermissionRequest.connectorCredentials(
+            connectorID: credentialRequest.connectorID,
+            displayName: credentialRequest.displayName,
+            labels: credentialRequest.labels
+        )
         let grants = PermissionBroker.approvalGrants(for: request)
         let payload = PermissionBroker.approvalPayloadString(
             providerID: task.resolvedRuntimeID,
             request: request,
-            reason: "Connector credential egress requires explicit first-use approval before ASTRA injects it into the provider environment.",
-            providerDetail: credentialLabel,
+            reason: "Connector credential egress requires explicit first-use approval before ASTRA injects configured connector credentials into the provider environment.",
+            providerDetail: credentialRequest.displayName,
             grants: grants
         )
         let fields: [String: String] = [
             "source": "connector_credential_egress",
             "phase": phase.rawValue,
             "runtime": task.resolvedRuntimeID.rawValue,
-            "credential_label": credentialLabel,
+            "connector_id": credentialRequest.connectorID.uuidString,
+            "connector_name": credentialRequest.connectorName,
+            "credential_label_count": String(credentialRequest.labels.count),
             "diagnostic_result": AgentRuntimeLaunchPreflightResult.Status.connectorCredentialApprovalRequired.rawValue,
             "result": "approval_required"
         ]
@@ -303,7 +335,7 @@ enum AgentRuntimeLaunchPreflight {
             status: .connectorCredentialApprovalRequired,
             phase: phase,
             reason: TaskRunStopReason.permissionApprovalRequired.rawValue,
-            detail: credentialLabel,
+            detail: credentialRequest.displayName,
             auditFields: fields
         )
     }
@@ -314,6 +346,7 @@ enum AgentRuntimeLaunchPreflight {
         modelContext: ModelContext,
         phase: RunPhase,
         contextText: String,
+        permissionPolicy: PermissionPolicy = .restricted,
         executionPolicy: AgentRuntimeExecutionPolicy = .default,
         capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot? = nil,
         runtimeConfiguration: AgentRuntimeConfiguration? = nil,
@@ -328,6 +361,7 @@ enum AgentRuntimeLaunchPreflight {
             modelContext: modelContext,
             phase: phase,
             contextText: contextText,
+            permissionPolicy: permissionPolicy,
             executionPolicy: executionPolicy,
             capabilityResolutionSnapshot: capabilityResolutionSnapshot,
             runtimeConfiguration: runtimeConfiguration,

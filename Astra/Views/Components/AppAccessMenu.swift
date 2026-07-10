@@ -32,12 +32,14 @@ struct AppAccessMenu: View {
                         .animation(menuAnimation, value: isPresented)
                 }
                 .foregroundStyle(Stanford.black)
-                .padding(.horizontal, 10)
+                .padding(.horizontal, AppAccessMenuPresentation.footerContentHorizontalPadding)
                 .frame(maxWidth: .infinity, minHeight: AppAccessMenuPresentation.footerMinimumHeight)
-                .contentShape(RoundedRectangle(cornerRadius: Stanford.radiusSmall, style: .continuous))
+                .contentShape(Rectangle())
                 .background {
-                    RoundedRectangle(cornerRadius: Stanford.radiusSmall, style: .continuous)
-                        .fill(controlFill)
+                    // This intentionally fills the footer's rectangular bounds.
+                    // The enclosing sidebar clips its bottom edge to the system
+                    // rounded corner, avoiding a second, mismatched corner radius.
+                    controlFill
                 }
             }
             .buttonStyle(.plain)

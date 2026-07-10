@@ -7,7 +7,13 @@ enum AppWindowIDs {
 
 enum AppAccessMenuPresentation {
     static let footerMenuTitle = "ASTRA"
-    static let footerMinimumHeight: CGFloat = 44
+    /// The footer owns the full-width hover surface. Keeping the previous 6pt
+    /// vertical breathing room inside this height lets its fill reach the
+    /// sidebar's bottom edge, where the enclosing sidebar supplies the corner.
+    static let footerMinimumHeight: CGFloat = 56
+    /// Preserves the former 12pt footer inset plus the button's 10pt content
+    /// inset now that the button itself spans the footer.
+    static let footerContentHorizontalPadding: CGFloat = 22
     // Gear, not ellipsis: the drawer holds app utilities (Settings, Logs,
     // Usage), and a gear names that; ellipsis-in-a-circle promised only
     // "more…" and was the vaguest glyph on the rail.

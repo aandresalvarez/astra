@@ -27,6 +27,23 @@ struct TaskThreadViewModelTests {
     }
 
     @MainActor
+    private func awaitReadiness(
+        _ vm: TaskThreadViewModel,
+        taskID: UUID,
+        timeout: TimeInterval = 30
+    ) async -> TaskThreadSnapshotReadiness {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            let readiness = vm.appliedSnapshotReadiness
+            if readiness.isReady(for: taskID) {
+                return readiness
+            }
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+        return vm.appliedSnapshotReadiness
+    }
+
+    @MainActor
     @Test("ViewModel starts with default 50-run window")
     func viewModelStartsWithDefaultWindow() async {
         let vm = TaskThreadViewModel()
@@ -50,6 +67,80 @@ struct TaskThreadViewModelTests {
         #expect(snapshot.sortedRuns.count == 50)
         #expect(snapshot.omittedRunCount == 50)
         #expect(snapshot.latestRun?.output == "run 99")
+        #expect(vm.appliedSnapshotRevision > 0)
+        #expect(vm.appliedSnapshotTaskID == task.id)
+        #expect(vm.lastSnapshotCacheState == "not_applicable")
+    }
+
+    @MainActor
+    @Test("Reset clears the previous task readiness before applying the next snapshot")
+    func resetClearsPreviousTaskReadiness() async {
+        let vm = TaskThreadViewModel()
+        let firstTask = makeTask(goal: "First task")
+        let secondTask = makeTask(goal: "Second task")
+        firstTask.runs.append(TaskRun(task: firstTask))
+
+        vm.reset(for: firstTask)
+        _ = await awaitSnapshot(vm, where: { $0.sortedRuns.count == 1 })
+        #expect(vm.appliedSnapshotTaskID == firstTask.id)
+        #expect(vm.appliedSnapshotRevision > 0)
+
+        vm.reset(for: secondTask)
+
+        #expect(vm.appliedSnapshotTaskID == nil)
+        #expect(vm.appliedSnapshotRevision == 0)
+        // refreshSnapshot resolves cache eligibility synchronously during
+        // reset, before the detached snapshot has been applied.
+        #expect(vm.lastSnapshotCacheState == "not_applicable")
+    }
+
+    @MainActor
+    @Test("Applied empty snapshot advances readiness even when placeholder geometry matches")
+    func appliedEmptySnapshotAdvancesReadiness() async {
+        let vm = TaskThreadViewModel()
+        let task = makeTask(goal: "Only the initial goal")
+
+        vm.reset(for: task)
+        let pendingReadiness = vm.appliedSnapshotReadiness
+        let appliedReadiness = await awaitReadiness(vm, taskID: task.id)
+
+        #expect(!pendingReadiness.isReady(for: task.id))
+        #expect(appliedReadiness.isReady(for: task.id))
+        #expect(appliedReadiness != pendingReadiness)
+        #expect(vm.snapshot?.sortedRuns.isEmpty == true)
+        #expect(vm.snapshot?.sortedEvents.isEmpty == true)
+    }
+
+    @MainActor
+    @Test("Initial snapshot pipeline retains and clears the task-open trace ID")
+    func initialSnapshotPipelineCarriesTraceID() async {
+        let vm = TaskThreadViewModel()
+        let task = makeTask(goal: "Trace correlation")
+        let context = TaskThreadResponsivenessContext(traceID: "task-open-test-trace")
+
+        vm.reset(for: task, responsivenessContext: context)
+        _ = await awaitReadiness(vm, taskID: task.id)
+
+        #expect(vm.initialSnapshotResponsivenessTraceID == "task-open-test-trace")
+        vm.completeInitialResponsivenessTrace(for: task.id)
+        #expect(vm.initialSnapshotResponsivenessTraceID == nil)
+    }
+
+    @MainActor
+    @Test("Cancelling an unfinished open trace keeps the snapshot build alive")
+    func cancellationClearsCorrelationWithoutCancellingSnapshot() async {
+        let vm = TaskThreadViewModel()
+        let task = makeTask(goal: "Cancelled trace")
+        let context = TaskThreadResponsivenessContext(traceID: "cancelled-trace")
+        vm.reset(for: task, responsivenessContext: context)
+
+        vm.cancelInitialResponsivenessCorrelation(for: task.id)
+        let readiness = await awaitReadiness(vm, taskID: task.id)
+
+        #expect(!context.isActive)
+        #expect(vm.initialSnapshotResponsivenessTraceID == nil)
+        #expect(readiness.isReady(for: task.id))
+        #expect(vm.appliedSnapshotTaskID == task.id)
     }
 
     @MainActor
@@ -174,6 +265,7 @@ struct TaskThreadViewModelTests {
         #expect(firstStats.entryCount == 1)
         #expect(firstStats.missCount == 1)
         #expect(firstStats.hitCount == 0)
+        #expect(vm.lastSnapshotCacheState == "miss")
 
         vm.reset(for: task)
 
@@ -183,25 +275,38 @@ struct TaskThreadViewModelTests {
         #expect(secondStats.entryCount == 1)
         #expect(secondStats.hitCount == 1)
         #expect(secondStats.missCount == 1)
+        #expect(vm.lastSnapshotCacheState == "hit")
 
         TaskThreadViewModel.resetSnapshotCacheForTesting()
     }
 
     @MainActor
-    @Test("Terminal snapshot cache key stores a goal fingerprint instead of full goal text")
-    func terminalSnapshotCacheKeyStoresGoalFingerprintInsteadOfFullGoalText() throws {
+    @Test("Terminal snapshot cache key uses the durable task revision without event signatures")
+    func terminalSnapshotCacheKeyUsesTaskRevisionWithoutEventSignatures() throws {
         let task = makeTask(
             goal: String(repeating: "Long goal with expensive retained text. ", count: 300),
             status: .completed
         )
         task.createdAt = Date(timeIntervalSince1970: 0)
         task.completedAt = Date(timeIntervalSince1970: 100)
-        let trigger = TaskThreadSnapshotTrigger(task: task)
-        let key = try #require(TaskThreadSnapshotCacheKey(task: task, trigger: trigger, maxRuns: 50))
+        let key = try #require(TaskThreadSnapshotCacheKey(task: task, maxRuns: 50))
 
         let fieldNames = Set(Mirror(reflecting: key).children.compactMap(\.label))
-        #expect(fieldNames.contains("goalHash"))
-        #expect(!fieldNames.contains("goal"))
+        #expect(fieldNames.contains("revision"))
+        #expect(!fieldNames.contains("eventSignatures"))
+        #expect(!fieldNames.contains("runSignatures"))
+    }
+
+    @Test("Terminal snapshot cache key invalidates from the task revision")
+    func terminalSnapshotCacheKeyInvalidatesFromTaskRevision() throws {
+        let task = makeTask(goal: "Completed task", status: .completed)
+        task.updatedAt = Date(timeIntervalSince1970: 100)
+        let initialKey = try #require(TaskThreadSnapshotCacheKey(task: task, maxRuns: 50))
+
+        task.updatedAt = Date(timeIntervalSince1970: 101)
+        let updatedKey = try #require(TaskThreadSnapshotCacheKey(task: task, maxRuns: 50))
+
+        #expect(initialKey != updatedKey)
     }
 
     @Test("Task thread view model reuses one cache key for terminal snapshot lookup and storage")
@@ -214,6 +319,19 @@ struct TaskThreadViewModelTests {
         let constructorCount = source.components(separatedBy: "TaskThreadSnapshotCacheKey(task:").count - 1
 
         #expect(constructorCount == 1)
+    }
+
+    @Test("Terminal cache lookup happens before the full snapshot trigger")
+    func terminalCacheLookupHappensBeforeSnapshotTrigger() throws {
+        let sourceURL = URL(filePath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appending(path: "Astra/Views/TaskThreadViewModel.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        let cacheLookup = try #require(source.range(of: "let cacheKey = TaskThreadSnapshotCacheKey"))
+        let triggerConstruction = try #require(source.range(of: "let trigger = TaskThreadSnapshotTrigger"))
+
+        #expect(cacheLookup.lowerBound < triggerConstruction.lowerBound)
     }
 }
 

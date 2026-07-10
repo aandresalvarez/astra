@@ -2473,7 +2473,7 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
         let diagnosticLogPath = context.runID.flatMap {
             AntigravityCLIRuntime.diagnosticLogPath(task: context.task, runID: $0)
         }
-        let additionalPaths = AgentRuntimeProcessRunner.runtimeAdditionalPaths(for: context.task)
+        let additionalPaths = AgentRuntimeProcessRunner.runtimeWritablePaths(for: context.task)
         let executionEnvironment = DockerExecutionPlanner.resolveEnvironment(for: context.task)
         let hostControlTools = HostControlPlaneMCPProjection.enabledToolNames(
             task: context.task,

@@ -103,7 +103,7 @@ enum AsyncProcessRunner {
     ) {
         guard let timeoutSeconds, timeoutSeconds > 0 else { return }
 
-        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + timeoutSeconds) {
+        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + timeoutSeconds) {
             guard state.markTimedOutIfRunning(process) else { return }
             terminateProcessTree(process)
         }
@@ -115,7 +115,7 @@ enum AsyncProcessRunner {
         terminateDescendants(of: pid, signal: SIGTERM)
         process.terminate()
 
-        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 2) {
+        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 2) {
             guard process.isRunning else { return }
             terminateDescendants(of: pid, signal: SIGKILL)
             kill(pid, SIGKILL)

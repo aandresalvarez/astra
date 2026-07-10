@@ -188,8 +188,231 @@ struct RuntimePermissionApprovalNoticePresentation: Identifiable, Hashable, Send
         id = notice.id
         decision = RuntimePermissionDecisionPresentation(payload: notice.payload)
         let raw = notice.payload.trimmingCharacters(in: .whitespacesAndNewlines)
-        rawPayload = raw.isEmpty ? nil : PayloadFormatter.prettyRawPayload(raw)
+        rawPayload = Self.safeRawPayload(raw)
     }
+
+    private static func safeRawPayload(_ raw: String) -> String? {
+        guard !raw.isEmpty else { return nil }
+        if let decoded = PermissionApprovalEventPayload.decoded(from: raw),
+           isCredentialApprovalPayload(decoded) {
+            return PayloadFormatter.prettyRawPayload(safeCredentialApprovalDisplayMessage(from: decoded))
+        }
+        if containsLegacyConnectorCredentialLabel(raw) {
+            return PayloadFormatter.prettyRawPayload(safeCredentialApprovalDisplayMessage(from: nil))
+        }
+        return PayloadFormatter.prettyRawPayload(raw)
+    }
+}
+
+private func containsLegacyConnectorCredentialLabel(_ text: String) -> Bool {
+    text.range(
+        of: #"connector:[0-9A-Fa-f-]{36}:[A-Za-z_][A-Za-z0-9_]*"#,
+        options: .regularExpression
+    ) != nil
+}
+
+private func isCredentialApprovalPayload(_ decoded: PermissionApprovalEventPayload) -> Bool {
+    switch decoded.request {
+    case .credential, .connectorCredentials:
+        return true
+    default:
+        break
+    }
+    return decoded.grants.contains { grant in
+        if case .credential = grant { return true }
+        return false
+    }
+}
+
+private func safeCredentialApprovalDisplayMessage(from decoded: PermissionApprovalEventPayload?) -> String {
+    let count = decoded.map(credentialGrantCount(in:)) ?? 0
+    let noun = count == 1 ? "credential" : "credentials"
+    return [
+        "Permission requested for tool: Connector credentials. ASTRA paused before allowing this run to continue.",
+        "What ASTRA observed: Connector credential request.",
+        "Why approval is needed: Connector credential egress requires explicit first-use approval before ASTRA injects configured connector credentials into the provider environment.",
+        "What allowing does: Allows ASTRA to expose the approved connector \(noun) to this run, then restarts the provider from the stopped point.",
+        "What to check: Allow only if this task should use this connector's configured credentials."
+    ].joined(separator: "\n")
+}
+
+private func credentialGrantCount(in decoded: PermissionApprovalEventPayload) -> Int {
+    let grantCount = decoded.grants.filter { grant in
+        if case .credential = grant { return true }
+        return false
+    }.count
+    if grantCount > 0 {
+        return grantCount
+    }
+    switch decoded.request {
+    case .credential:
+        return 1
+    case .connectorCredentials(_, _, let labels):
+        return labels.count
+    default:
+        return 0
+    }
+}
+
+private func redactedEnvironmentKeyNames(
+    _ values: [String],
+    credentialLabels: [String]
+) -> [String] {
+    let declaredKeys = credentialLabels.filter(isEnvironmentKeyName)
+    let connectorKeys = credentialLabels.flatMap { connectorCredentialKeyNames(in: $0) }
+    return redactedEnvironmentKeyNames(
+        values,
+        knownCredentialKeys: Set(declaredKeys).union(connectorKeys)
+    )
+}
+
+private func isEnvironmentKeyName(_ value: String) -> Bool {
+    guard let regex = try? NSRegularExpression(pattern: #"^[A-Za-z_][A-Za-z0-9_]*$"#) else {
+        return false
+    }
+    return regex.firstMatch(
+        in: value,
+        range: NSRange(value.startIndex..<value.endIndex, in: value)
+    ) != nil
+}
+
+private func redactedEnvironmentKeyNames(
+    _ values: [String],
+    knownCredentialKeys: Set<String>
+) -> [String] {
+    var visible: [String] = []
+    var credentialCount = 0
+    for value in values {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { continue }
+        if knownCredentialKeys.contains(trimmed) || isSensitiveCredentialKeyName(trimmed) {
+            credentialCount += 1
+        } else {
+            visible.append(trimmed)
+        }
+    }
+    if credentialCount > 0 {
+        let noun = credentialCount == 1 ? "key" : "keys"
+        visible.append("\(credentialCount) connector credential \(noun)")
+    }
+    return uniquedPreservingOrder(visible)
+}
+
+private func redactedCredentialLabels(_ values: [String]) -> [String] {
+    var visible: [String] = []
+    var credentialCount = 0
+    for value in values {
+        if connectorCredentialKeyName(in: value) != nil || isEnvironmentKeyName(value) {
+            credentialCount += 1
+        } else {
+            let redacted = redactedCredentialString(value, knownCredentialKeys: [])
+            if !redacted.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                visible.append(redacted)
+            }
+        }
+    }
+    if credentialCount > 0 {
+        let noun = credentialCount == 1 ? "label" : "labels"
+        visible.append("\(credentialCount) connector credential \(noun)")
+    }
+    return uniquedPreservingOrder(visible)
+}
+
+private func credentialKeyNames(in value: Any) -> Set<String> {
+    var keys = Set<String>()
+    func visit(_ value: Any) {
+        if let string = value as? String {
+            keys.formUnion(connectorCredentialKeyNames(in: string))
+        } else if let array = value as? [Any] {
+            array.forEach(visit)
+        } else if let dictionary = value as? [String: Any] {
+            if let declared = dictionary["credentialLabels"] as? [String] {
+                keys.formUnion(declared.filter(isEnvironmentKeyName))
+            }
+            dictionary.values.forEach(visit)
+        }
+    }
+    visit(value)
+    return keys
+}
+
+private func redactedCredentialObject(_ value: Any, knownCredentialKeys: Set<String>) -> Any {
+    if let string = value as? String {
+        return redactedCredentialString(string, knownCredentialKeys: knownCredentialKeys)
+    }
+    if let strings = value as? [String] {
+        return uniquedPreservingOrder(strings.map {
+            redactedCredentialString($0, knownCredentialKeys: knownCredentialKeys)
+        })
+    }
+    if let array = value as? [Any] {
+        return array.map { redactedCredentialObject($0, knownCredentialKeys: knownCredentialKeys) }
+    }
+    if let dictionary = value as? [String: Any] {
+        return dictionary.mapValues { redactedCredentialObject($0, knownCredentialKeys: knownCredentialKeys) }
+    }
+    return value
+}
+
+private func redactedCredentialString(_ value: String, knownCredentialKeys: Set<String>) -> String {
+    var redacted = value
+        .replacingOccurrences(
+            of: #"credential\(connector:[^)]+\)"#,
+            with: "credential(connector credential)",
+            options: .regularExpression
+        )
+        .replacingOccurrences(
+            of: connectorCredentialLabelPattern,
+            with: "connector credential",
+            options: .regularExpression
+        )
+    for key in knownCredentialKeys where !key.isEmpty {
+        redacted = redacted.replacingOccurrences(of: key, with: "connector credential key")
+    }
+    if isSensitiveCredentialKeyName(redacted.trimmingCharacters(in: .whitespacesAndNewlines)) {
+        return "connector credential key"
+    }
+    return redacted
+}
+
+private func connectorCredentialKeyName(in value: String) -> String? {
+    connectorCredentialKeyNames(in: value).first
+}
+
+private func connectorCredentialKeyNames(in value: String) -> Set<String> {
+    guard let regex = try? NSRegularExpression(pattern: connectorCredentialLabelPattern) else {
+        return []
+    }
+    let nsRange = NSRange(value.startIndex..<value.endIndex, in: value)
+    return Set(regex.matches(in: value, range: nsRange).compactMap { match in
+        guard match.numberOfRanges > 1,
+              let range = Range(match.range(at: 1), in: value) else {
+            return nil
+        }
+        return String(value[range])
+    })
+}
+
+private let connectorCredentialLabelPattern = #"connector:[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}:([A-Za-z0-9_.-]+)"#
+
+private func isSensitiveCredentialKeyName(_ value: String) -> Bool {
+    let uppercased = value.uppercased()
+    return uppercased.contains("TOKEN")
+        || uppercased.contains("SECRET")
+        || uppercased.contains("PASSWORD")
+        || uppercased.contains("API_KEY")
+        || uppercased.contains("PRIVATE_KEY")
+        || uppercased.contains("ACCESS_KEY")
+}
+
+private func uniquedPreservingOrder<T: Hashable>(_ values: [T]) -> [T] {
+    var seen = Set<T>()
+    var result: [T] = []
+    for value in values where !seen.contains(value) {
+        seen.insert(value)
+        result.append(value)
+    }
+    return result
 }
 
 struct TechnicalOutputPresentation: Identifiable, Hashable, Sendable {
@@ -235,7 +458,9 @@ struct PolicySummaryPresentation: Identifiable, Hashable, Sendable {
         }
 
         facts = Self.uniqueFacts(summaryFacts + manifestFacts)
-        rawPayload = permissionSummaryPayload.flatMap(PayloadFormatter.prettyRawPayload)
+        rawPayload = permissionSummaryPayload
+            .map(Self.safePermissionSummaryRawPayload)
+            .map(PayloadFormatter.prettyRawPayload)
     }
 
     static func permissionSummaryFacts(from payload: String) -> [RunFactPresentation] {
@@ -254,9 +479,36 @@ struct PolicySummaryPresentation: Identifiable, Hashable, Sendable {
         appendListFact("Observed tools", key: "toolsUsed", object: object, facts: &facts, limit: 8)
         appendListFact("Commands", key: "commandsRun", object: object, facts: &facts, limit: 4, isMonospaced: true)
         appendListFact("External domains", key: "externalDomains", object: object, facts: &facts, limit: 6)
-        appendListFact("Env keys", key: "environmentKeyNames", object: object, facts: &facts, limit: 8, isMonospaced: true)
+        appendEnvironmentKeyFact(object: object, facts: &facts)
         appendListFact("Approvals", key: "approvalsGranted", object: object, facts: &facts, limit: 4)
         return facts
+    }
+
+    private static func appendEnvironmentKeyFact(
+        object: [String: Any],
+        facts: inout [RunFactPresentation]
+    ) {
+        guard let values = object["environmentKeyNames"] as? [String], !values.isEmpty else {
+            return
+        }
+        let keys = credentialKeyNames(in: object)
+        let redacted = redactedEnvironmentKeyNames(values, knownCredentialKeys: keys)
+        guard !redacted.isEmpty else { return }
+        facts.append(.init(title: "Env keys", value: compactList(redacted, limit: 8), isMonospaced: true))
+    }
+
+    private static func safePermissionSummaryRawPayload(_ payload: String) -> String {
+        guard let object = PayloadFormatter.jsonObject(from: payload) as? [String: Any] else {
+            return redactedCredentialString(payload, knownCredentialKeys: [])
+        }
+        let knownKeys = credentialKeyNames(in: object)
+        let redacted = redactedCredentialObject(object, knownCredentialKeys: knownKeys)
+        guard JSONSerialization.isValidJSONObject(redacted),
+              let data = try? JSONSerialization.data(withJSONObject: redacted, options: [.sortedKeys]),
+              let encoded = String(data: data, encoding: .utf8) else {
+            return redactedCredentialString(payload, knownCredentialKeys: knownKeys)
+        }
+        return encoded
     }
 
     private static func permissionSummaryBroadMode(_ payload: String?) -> Bool {
@@ -279,11 +531,19 @@ struct PolicySummaryPresentation: Identifiable, Hashable, Sendable {
             .init(title: "Denied shell", value: compactList(manifest.providerRender.deniedShellPatterns, empty: "None"), isMonospaced: true),
             .init(title: "Network", value: manifest.providerRender.allowedURLPatterns.isEmpty ? "Ask or connector scoped" : compactList(manifest.providerRender.allowedURLPatterns), isMonospaced: true),
             .init(title: "Paths", value: compactList([manifest.workspacePath] + manifest.additionalPaths, empty: "None"), isMonospaced: true),
-            .init(title: "Environment keys", value: compactList(manifest.environmentKeyNames, empty: "None"), isMonospaced: true),
-            .init(title: "Credential labels", value: compactList(manifest.credentialLabels, empty: "None")),
+            .init(title: "Environment keys", value: compactList(redactedEnvironmentKeyNames(manifest.environmentKeyNames, credentialLabels: manifest.credentialLabels), empty: "None"), isMonospaced: true),
+            .init(title: "Credential labels", value: compactList(redactedCredentialLabels(manifest.credentialLabels), empty: "None")),
             .init(title: "MCP servers", value: mcpServersFactValue(manifest)),
             .init(title: "Approvals", value: compactList(manifest.approvalsGranted, empty: "None"))
         ]
+
+        if let sandbox = manifest.sandboxEvidence {
+            facts.append(.init(title: "Stored sandbox", value: sandbox.storedEnforcement))
+            facts.append(.init(title: "Effective sandbox", value: sandbox.effectiveEnforcement))
+            if let reason = sandbox.resolutionReason, !reason.isEmpty {
+                facts.append(.init(title: "Sandbox reason", value: reason))
+            }
+        }
 
         if !manifest.providerRender.generatedConfigPreview.isEmpty {
             facts.append(.init(title: "Generated config", value: manifest.providerRender.generatedConfigPreview, isMonospaced: true))
@@ -735,9 +995,32 @@ struct RuntimePermissionApprovalText: Hashable, Sendable {
     let detail: String?
     let approvalGrant: String?
     let providerDetailSummary: String?
+    let isCredentialApproval: Bool
+    let sandboxPathAccess: String?
+    let connectorCredentialDisplayName: String?
+    let connectorCredentialCount: Int
 
     init(payload: String) {
-        self.payload = PermissionBroker.displayMessage(from: payload).trimmingCharacters(in: .whitespacesAndNewlines)
+        let decoded = PermissionApprovalEventPayload.decoded(from: payload)
+        isCredentialApproval = decoded.map(isCredentialApprovalPayload)
+            ?? containsLegacyConnectorCredentialLabel(payload)
+        if case .connectorCredentials(_, let displayName, let labels) = decoded?.request {
+            connectorCredentialDisplayName = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+            connectorCredentialCount = max(labels.count, 1)
+        } else {
+            connectorCredentialDisplayName = nil
+            connectorCredentialCount = 0
+        }
+        if case .sandboxPath(_, let access, _) = decoded?.request {
+            sandboxPathAccess = access.trimmingCharacters(in: .whitespacesAndNewlines)
+        } else {
+            sandboxPathAccess = nil
+        }
+        self.payload = (
+            isCredentialApproval
+            ? safeCredentialApprovalDisplayMessage(from: decoded)
+            : PermissionBroker.displayMessage(from: payload)
+        ).trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmed = self.payload
         toolName = Self.toolName(in: trimmed)
         reason = Self.field(
@@ -822,6 +1105,13 @@ struct RuntimePermissionApprovalText: Hashable, Sendable {
             return "File change needs permission"
         case .network:
             return "Network access needs permission"
+        case .credential:
+            if let connectorCredentialContext {
+                return "\(connectorCredentialContext.connectorName) connector needs permission"
+            }
+            return "Connector credentials need permission"
+        case .sandboxPath:
+            return "Local sandbox path access needs permission"
         case .provider:
             let name = toolName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             return "\(name.isEmpty ? "Provider" : name) access needs permission"
@@ -853,6 +1143,17 @@ struct RuntimePermissionApprovalText: Hashable, Sendable {
             return action.map { "ASTRA wants to change \($0)." } ?? "ASTRA wants to change a local file."
         case .network:
             return action.map { "ASTRA wants to access \($0)." } ?? "ASTRA wants to access a network destination."
+        case .credential:
+            if let connectorCredentialContext {
+                let noun = connectorCredentialContext.credentialCount == 1 ? "credential" : "credentials"
+                return "ASTRA wants to expose \(connectorCredentialContext.credentialCount) configured \(noun) from the \(connectorCredentialContext.connectorName) connector to this task's agent process."
+            }
+            return "ASTRA wants to use configured connector credentials for this task."
+        case .sandboxPath:
+            let access = sandboxPathAccess.flatMap { $0.isEmpty ? nil : $0 } ?? "requested"
+            return action.map {
+                "ASTRA wants to allow \(access) access to \($0) inside the local sandbox for this run."
+            } ?? "ASTRA wants to allow \(access) access to a local path inside the sandbox for this run."
         case .provider:
             return action.map { "ASTRA wants to use \(accessLabel): \($0)." } ?? "ASTRA wants to use \(accessLabel)."
         }
@@ -867,6 +1168,12 @@ struct RuntimePermissionApprovalText: Hashable, Sendable {
     }
 
     var allowSimilarLabel: String {
+        if case .sandboxPath = accessKind {
+            return "Allow once for this run"
+        }
+        if case .credential = accessKind {
+            return "Allow this connector for task"
+        }
         switch shellRoot {
         case "gh":
             return "Allow similar GitHub commands"
@@ -879,6 +1186,20 @@ struct RuntimePermissionApprovalText: Hashable, Sendable {
         default:
             return "Allow similar for this task"
         }
+    }
+
+    private var connectorCredentialContext: (connectorName: String, credentialCount: Int)? {
+        guard let connectorCredentialDisplayName else { return nil }
+        let trimmed = connectorCredentialDisplayName
+        let connectorName: String
+        if let marker = trimmed.range(of: " connector credential", options: .caseInsensitive) {
+            connectorName = String(trimmed[..<marker.lowerBound])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        } else {
+            connectorName = trimmed
+        }
+        guard !connectorName.isEmpty else { return nil }
+        return (connectorName, connectorCredentialCount)
     }
 
     var noticeBody: String {
@@ -907,10 +1228,18 @@ struct RuntimePermissionApprovalText: Hashable, Sendable {
         case fileRead
         case fileWrite
         case network
+        case credential
+        case sandboxPath
         case provider
     }
 
     private var accessKind: AccessKind {
+        if sandboxPathAccess != nil {
+            return .sandboxPath
+        }
+        if isCredentialApproval {
+            return .credential
+        }
         switch normalizedToolName {
         case "bash", "shell":
             return .shell
@@ -920,6 +1249,8 @@ struct RuntimePermissionApprovalText: Hashable, Sendable {
             return .fileWrite
         case "webfetch", "websearch":
             return .network
+        case "connector credentials", "connector credential":
+            return .credential
         default:
             return .provider
         }
@@ -957,6 +1288,8 @@ struct RuntimePermissionApprovalText: Hashable, Sendable {
             return "file change"
         case "webfetch", "websearch":
             return "web access"
+        case "connector credentials", "connector credential":
+            return "connector credentials"
         default:
             return "\(toolName) access"
         }
@@ -985,6 +1318,8 @@ struct RuntimePermissionApprovalText: Hashable, Sendable {
             return "allow only if the provider should change that path for this task."
         case "webfetch", "websearch":
             return "allow only if that web or network access is expected for this task."
+        case "connector credentials", "connector credential":
+            return "allow only if this task should use this connector's configured credentials."
         default:
             return "allow only if this action matches the task and the requested access is expected."
         }
