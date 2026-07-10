@@ -1,8 +1,59 @@
 import Testing
+import CoreGraphics
 @testable import ASTRA
 
 @Suite("Shelf Markdown Panel Layout")
 struct ShelfMarkdownPanelLayoutTests {
+    @Test("document reader hides the file navigator by default")
+    func documentReaderHidesFileNavigatorByDefault() {
+        let layout = ShelfFileNavigatorLayout.resolve(
+            isPresented: false,
+            isPinned: false,
+            availableWidth: 620
+        )
+
+        #expect(layout == .hidden)
+    }
+
+    @Test("unpinned file browsing floats over the document")
+    func unpinnedFileBrowsingFloatsOverDocument() {
+        let layout = ShelfFileNavigatorLayout.resolve(
+            isPresented: true,
+            isPinned: false,
+            availableWidth: 620
+        )
+
+        #expect(layout == .floating)
+    }
+
+    @Test("pinned file browsing docks when both panes fit")
+    func pinnedFileBrowsingDocksWhenBothPanesFit() {
+        let layout = ShelfFileNavigatorLayout.resolve(
+            isPresented: true,
+            isPinned: true,
+            availableWidth: ShelfWidthMetrics.filesMinReadableWidth
+        )
+
+        #expect(layout == .docked)
+    }
+
+    @Test("pinned preference falls back to floating in narrow space")
+    func pinnedPreferenceFallsBackToFloatingInNarrowSpace() {
+        let layout = ShelfFileNavigatorLayout.resolve(
+            isPresented: true,
+            isPinned: true,
+            availableWidth: ShelfWidthMetrics.filesMinReadableWidth - 1
+        )
+
+        #expect(layout == .floating)
+    }
+
+    @Test("temporary browser closes after selection while pinned browser remains")
+    func selectionRespectsPinnedBrowserIntent() {
+        #expect(ShelfFileNavigatorSelectionPolicy.isPresentedAfterSelectingFile(isPinned: false) == false)
+        #expect(ShelfFileNavigatorSelectionPolicy.isPresentedAfterSelectingFile(isPinned: true) == true)
+    }
+
     @Test("empty workspace file scope stays on the navigator list surface")
     func emptyWorkspaceFileScopeStaysOnNavigatorListSurface() {
         let presentation = ShelfFileNavigatorContentPresentation.resolve(

@@ -37,29 +37,12 @@ enum ShelfFileNavigatorContentPresentation: Equatable {
 }
 
 struct ShelfMarkdownPanelView: View {
-    private enum FileNavigatorScope: String, CaseIterable, Identifiable {
-        case task
-        case workspace
-        case all
-
-        var id: String { rawValue }
-
-        var label: String {
-            switch self {
-            case .task: "This Task"
-            case .workspace: "Workspace"
-            case .all: "All"
-            }
-        }
-    }
-
     private static let fileSizeFormatter: ByteCountFormatter = {
         let formatter = ByteCountFormatter()
         formatter.allowedUnits = [.useKB, .useMB, .useGB]
         formatter.countStyle = .file
         return formatter
     }()
-    private static let autoExpandedRootNodeThreshold = 200
     private static let visibleNodeBatchLimit = 180
 
     @ObservedObject var session: ShelfMarkdownSession
@@ -69,6 +52,7 @@ struct ShelfMarkdownPanelView: View {
     var task: AgentTask?
     var onOpenGeneratedFile: ((String) -> Void)?
     @AppStorage(AppStorageKeys.markdownShelfShowHiddenPaths) private var showHiddenWorkspacePaths = false
+    @AppStorage(AppStorageKeys.markdownShelfFileNavigatorPinned) private var isFileNavigatorPinned = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var viewMode: ShelfTextViewMode = .preview
     @State private var isEditing = false
@@ -78,20 +62,18 @@ struct ShelfMarkdownPanelView: View {
     @State private var fileIndexErrors: [WorkspaceFileIndexError] = []
     @State private var fileIndexTruncated = false
     @State private var isScanningFiles = false
-    @State private var fileNavigatorScope: FileNavigatorScope = .task
+    @State private var fileNavigatorScope: ShelfFileNavigatorScope = .task
     @State private var fileSearchText = ""
     /// Debounced mirror of `fileSearchText` that actually drives filtering, so a
     /// keystroke doesn't re-filter the (up to ~5,000 node) tree on every key.
     /// See the UI responsiveness audit (Cluster 3).
     @State private var appliedFileSearchText = ""
-    @State private var isFileSearchVisible = false
-    @State private var isFileSearchCollapsed = false
     @State private var expandedRootIDs: Set<String> = []
     @State private var expandedDirectoryIDs: Set<String> = []
     @State private var fileIndexTask: Task<Void, Never>?
-    @State private var isFileNavigatorCollapsed = false
-    @State private var fileNavigatorWidth: CGFloat = 282
-    @State private var fileNavigatorResizeStartWidth: CGFloat = 282
+    @State private var isFileNavigatorPresented = false
+    @State private var fileNavigatorWidth: CGFloat = ShelfWidthMetrics.filesNavigatorDefaultWidth
+    @State private var fileNavigatorResizeStartWidth: CGFloat = ShelfWidthMetrics.filesNavigatorDefaultWidth
     @State private var isResizingFileNavigator = false
     @State private var largePreviewDocumentIDs: Set<String> = []
 
@@ -105,20 +87,7 @@ struct ShelfMarkdownPanelView: View {
                 // files" + "No file selected"). Collapse to one centered state.
                 combinedEmptyState
             } else {
-                HStack(spacing: 0) {
-                    if !isFileNavigatorCollapsed {
-                        fileNavigator
-                            .frame(width: fileNavigatorWidth)
-
-                        FileNavigatorResizeHandle(
-                            isResizing: isResizingFileNavigator,
-                            onChanged: resizeFileNavigator,
-                            onEnded: finishResizingFileNavigator
-                        )
-                    }
-
-                    viewerPane
-                }
+                fileWorkspace
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -126,6 +95,7 @@ struct ShelfMarkdownPanelView: View {
         .onAppear {
             normalizeViewMode()
             normalizeFileNavigatorScope()
+            isFileNavigatorPresented = isFileNavigatorPinned || !session.hasFile
             refreshFileIndex()
         }
         .onDisappear {
@@ -156,11 +126,17 @@ struct ShelfMarkdownPanelView: View {
         .onChange(of: fileNavigatorScope) {
             resetFileNavigatorExpansion()
         }
+        .onExitCommand {
+            guard isFileNavigatorPresented, !isFileNavigatorPinned else { return }
+            withAnimation(fileNavigatorAnimation) {
+                isFileNavigatorPresented = false
+            }
+        }
     }
 
     private var toolbar: some View {
         HStack(spacing: 10) {
-            fileExplorerToggle
+            browseFilesButton
 
             toolbarDocumentCluster
 
@@ -173,17 +149,18 @@ struct ShelfMarkdownPanelView: View {
         .background(.bar)
     }
 
-    private var fileExplorerToggle: some View {
+    private var browseFilesButton: some View {
         Button {
             withAnimation(fileNavigatorAnimation) {
-                isFileNavigatorCollapsed.toggle()
+                isFileNavigatorPresented.toggle()
             }
         } label: {
-            Image(systemName: "sidebar.leading")
+            Label("Browse files", systemImage: "folder")
         }
-        .buttonStyle(TextShelfToolbarButtonStyle(isActive: !isFileNavigatorCollapsed))
-        .help(isFileNavigatorCollapsed ? "Show file explorer" : "Hide file explorer")
-        .accessibilityLabel(isFileNavigatorCollapsed ? "Show file explorer" : "Hide file explorer")
+        .buttonStyle(BrowseFilesToolbarButtonStyle(isActive: isFileNavigatorPresented))
+        .help(isFileNavigatorPresented ? "Hide file browser" : "Browse files")
+        .accessibilityLabel(isFileNavigatorPresented ? "Hide file browser" : "Browse files")
+        .accessibilityIdentifier("FilesShelfBrowseButton")
     }
 
     private var toolbarDocumentCluster: some View {
@@ -194,7 +171,6 @@ struct ShelfMarkdownPanelView: View {
                 modePicker
             }
         }
-        .fixedSize(horizontal: true, vertical: false)
         .layoutPriority(1)
     }
 
@@ -230,7 +206,7 @@ struct ShelfMarkdownPanelView: View {
                 }
             }
         }
-        .frame(minWidth: 120, idealWidth: 260, maxWidth: 320, alignment: .leading)
+        .frame(minWidth: 100, idealWidth: 190, maxWidth: 240, alignment: .leading)
         .help(session.displayPath.isEmpty ? "Files shelf" : session.displayPath)
     }
 
@@ -303,10 +279,66 @@ struct ShelfMarkdownPanelView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
+    private var fileWorkspace: some View {
+        GeometryReader { proxy in
+            let layout = ShelfFileNavigatorLayout.resolve(
+                isPresented: isFileNavigatorPresented,
+                isPinned: isFileNavigatorPinned,
+                availableWidth: proxy.size.width
+            )
+
+            switch layout {
+            case .hidden:
+                viewerPane
+            case .floating:
+                ZStack(alignment: .leading) {
+                    viewerPane
+
+                    Color.black.opacity(0.025)
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            withAnimation(fileNavigatorAnimation) {
+                                isFileNavigatorPresented = false
+                            }
+                        }
+                        .accessibilityHidden(true)
+
+                    fileNavigator
+                        .frame(width: floatingFileNavigatorWidth(availableWidth: proxy.size.width))
+                        .background(.bar)
+                        .shadow(color: Color.black.opacity(0.14), radius: 14, x: 3, y: 0)
+                        .transition(fileNavigatorTransition)
+                        .zIndex(1)
+                }
+            case .docked:
+                HStack(spacing: 0) {
+                    fileNavigator
+                        .frame(width: fileNavigatorWidth)
+
+                    FileNavigatorResizeHandle(
+                        isResizing: isResizingFileNavigator,
+                        onChanged: resizeFileNavigator,
+                        onEnded: finishResizingFileNavigator
+                    )
+
+                    viewerPane
+                }
+            }
+        }
+    }
+
+    private func floatingFileNavigatorWidth(availableWidth: CGFloat) -> CGFloat {
+        max(0, min(ShelfWidthMetrics.filesNavigatorDefaultWidth, availableWidth))
+    }
+
+    private var fileNavigatorTransition: AnyTransition {
+        reduceMotion ? .identity : .move(edge: .leading).combined(with: .opacity)
+    }
+
     /// True when the navigator is open, has no files to show, and nothing is
     /// selected — the only situation that otherwise renders two empty states.
     private var showsCombinedEmptyState: Bool {
-        !isFileNavigatorCollapsed
+        isFileNavigatorPresented
             && !session.hasFile
             && fileNavigatorContentPresentation != .populatedList
     }
@@ -348,77 +380,15 @@ struct ShelfMarkdownPanelView: View {
 
     private var fileNavigator: some View {
         VStack(spacing: 0) {
-            VStack(alignment: .leading, spacing: 7) {
-                HStack(spacing: 8) {
-                    Text("Workspace Paths")
-                        .font(Stanford.caption(11).weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .textCase(.uppercase)
-
-                    Spacer(minLength: 0)
-
-                    if isScanningFiles {
-                        ProgressView()
-                            .controlSize(.small)
-                            .scaleEffect(0.7)
-                            .frame(width: 18, height: 18)
-                    }
-
-                    Button {
-                        withAnimation(fileNavigatorAnimation) {
-                            let shouldHideSearch = shouldShowFileSearchField
-                            isFileSearchVisible = !shouldHideSearch
-                            isFileSearchCollapsed = shouldHideSearch
-                            if shouldHideSearch {
-                                fileSearchText = ""
-                            }
-                        }
-                    } label: {
-                        Image(systemName: shouldShowFileSearchField ? "magnifyingglass.circle.fill" : "magnifyingglass")
-                            .font(Stanford.ui(11, weight: .semibold))
-                            .frame(width: 22, height: 22)
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(shouldShowFileSearchField ? Stanford.lagunita : .secondary)
-                    .help(shouldShowFileSearchField ? "Hide search" : "Search files")
-                    .accessibilityLabel(shouldShowFileSearchField ? "Hide search" : "Search files")
-                    .accessibilityIdentifier("FilesShelfSearchToggle")
-
-                    Button {
-                        refreshFileIndex()
-                    } label: {
-                        Image(systemName: "arrow.clockwise")
-                            .font(Stanford.ui(11, weight: .semibold))
-                            .frame(width: 22, height: 22)
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.secondary)
-                    .help("Refresh workspace files")
-                }
-
-                if shouldShowScopePicker {
-                    Picker("", selection: $fileNavigatorScope) {
-                        ForEach(FileNavigatorScope.allCases) { scope in
-                            Text(scope.label).tag(scope)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    .controlSize(.small)
-                    .labelsHidden()
-                    .tint(Stanford.interactive)
-                    .help("Choose which paths to show")
-                }
-
-                if shouldShowFileSearchField {
-                    TextField("Search files by name or path", text: $fileSearchText)
-                        .textFieldStyle(.roundedBorder)
-                        .font(Stanford.caption(12))
-                        .transition(.opacity)
-                }
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, shouldShowFileSearchField ? 9 : 8)
-            .background(Stanford.cardBackground.opacity(0.45))
+            ShelfFileNavigatorHeader(
+                searchText: $fileSearchText,
+                scope: $fileNavigatorScope,
+                isPinned: $isFileNavigatorPinned,
+                effectiveScope: effectiveFileNavigatorScope,
+                showsScopePicker: shouldShowScopePicker,
+                isScanning: isScanningFiles,
+                onRefresh: refreshFileIndex
+            )
 
             Divider()
 
@@ -448,11 +418,15 @@ struct ShelfMarkdownPanelView: View {
             case .populatedList:
                 if isSearchingFiles {
                     searchResultsSection
-                } else if effectiveFileNavigatorScope == .task {
-                    taskScopeFileSections
                 } else {
-                    ForEach(visibleFileRoots) { root in
-                        fileRootSection(root)
+                    ShelfOpenDocumentsSection(session: session, onSelect: selectOpenDocument)
+
+                    if effectiveFileNavigatorScope == .task {
+                        taskScopeFileSections
+                    } else {
+                        ForEach(visibleFileRoots) { root in
+                            fileRootSection(root)
+                        }
                     }
                 }
 
@@ -478,10 +452,15 @@ struct ShelfMarkdownPanelView: View {
     }
 
     private var taskScopeFileSections: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        let generatedRoots = visibleFileRoots.filter { rootProvenance($0) == .taskGenerated }
+        return VStack(alignment: .leading, spacing: 0) {
             taskFileGroupSection(
-                title: ShelfFileProvenance.taskGenerated.groupTitle,
-                roots: visibleFileRoots.filter { rootProvenance($0) == .taskGenerated }
+                title: "Task Files",
+                roots: generatedRoots.filter { !isTaskOutputRoot($0) }
+            )
+            taskFileGroupSection(
+                title: "Task Output",
+                roots: generatedRoots.filter(isTaskOutputRoot)
             )
             taskFileGroupSection(
                 title: ShelfFileProvenance.userProvided.groupTitle,
@@ -655,7 +634,7 @@ struct ShelfMarkdownPanelView: View {
 
                         VStack(alignment: .leading, spacing: 1) {
                             HStack(spacing: 5) {
-                                Text(root.title)
+                                Text(fileRootTitle(root))
                                     .font(Stanford.caption(12).weight(.semibold))
                                     .foregroundStyle(.primary)
                                     .lineLimit(1)
@@ -773,36 +752,17 @@ struct ShelfMarkdownPanelView: View {
                     .foregroundStyle(node.isDirectory ? Stanford.lagunita : fileNodeColor(node))
                     .frame(width: 16)
 
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(node.name)
-                        .font(Stanford.caption(12).weight(isSelected ? .semibold : .regular))
-                        .foregroundStyle(isSelected ? Stanford.lagunita : .primary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-
-                    if let label = fileNodeProvenanceLabel(node) {
-                        Text(label)
-                            .font(Stanford.caption(9))
-                            .foregroundStyle(.tertiary)
-                            .lineLimit(1)
-                    }
-                }
+                Text(node.name)
+                    .font(Stanford.caption(12).weight(isSelected ? .semibold : .regular))
+                    .foregroundStyle(isSelected ? Stanford.lagunita : .primary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
 
                 Spacer(minLength: 0)
-
-                if !node.isDirectory {
-                    let size = fileSizeLabel(node.size)
-                    if !size.isEmpty {
-                        Text(size)
-                            .font(Stanford.caption(9))
-                            .foregroundStyle(.tertiary)
-                            .lineLimit(1)
-                    }
-                }
             }
             .padding(.leading, CGFloat(rowDepth) * 12 + 10)
             .padding(.trailing, 10)
-            .padding(.vertical, 5)
+            .padding(.vertical, 6)
             .contentShape(Rectangle())
             .background(isSelected ? Stanford.lagunita.opacity(0.10) : Color.clear)
         }
@@ -958,7 +918,7 @@ struct ShelfMarkdownPanelView: View {
         !normalizedFileSearchText.isEmpty
     }
 
-    private var effectiveFileNavigatorScope: FileNavigatorScope {
+    private var effectiveFileNavigatorScope: ShelfFileNavigatorScope {
         if task == nil && fileNavigatorScope == .task {
             return .workspace
         }
@@ -967,14 +927,6 @@ struct ShelfMarkdownPanelView: View {
 
     private var shouldShowScopePicker: Bool {
         task != nil
-    }
-
-    private var browsableFileCount: Int {
-        scopedFileNodes.filter { !$0.isDirectory }.count
-    }
-
-    private var shouldShowFileSearchField: Bool {
-        isFileSearchVisible || isSearchingFiles || (browsableFileCount > 8 && !isFileSearchCollapsed)
     }
 
     private var scopedFileRoots: [WorkspaceFileRoot] {
@@ -1100,11 +1052,15 @@ struct ShelfMarkdownPanelView: View {
     }
 
     private func resetFileNavigatorExpansion() {
-        expandedRootIDs = Set(scopedFileRoots.compactMap { root in
-            let count = filteredNodes(for: root).count
-            guard count > 0, count <= Self.autoExpandedRootNodeThreshold else { return nil }
-            return root.id
-        })
+        expandedRootIDs = []
+        expandedDirectoryIDs = []
+
+        guard let fileURL = session.fileURL,
+              let root = scopedFileRoots.first(where: { WorkspaceFileIndexService.isPath(fileURL.path, inside: $0) }) else {
+            return
+        }
+        expandedRootIDs.insert(root.id)
+        expandFileNavigator(to: fileURL.path, isFile: true)
     }
 
     private func alignFileNavigatorWithSelectedDocument() {
@@ -1114,7 +1070,6 @@ struct ShelfMarkdownPanelView: View {
             return
         }
 
-        isFileNavigatorCollapsed = false
         switch root.kind {
         case .primary, .additional:
             if fileNavigatorScope == .task {
@@ -1128,7 +1083,7 @@ struct ShelfMarkdownPanelView: View {
         expandFileNavigator(to: path, isFile: true)
     }
 
-    private func isRoot(_ root: WorkspaceFileRoot, in scope: FileNavigatorScope) -> Bool {
+    private func isRoot(_ root: WorkspaceFileRoot, in scope: ShelfFileNavigatorScope) -> Bool {
         switch scope {
         case .task:
             root.kind == .taskFolder || root.kind == .input
@@ -1177,6 +1132,21 @@ struct ShelfMarkdownPanelView: View {
         )
     }
 
+    private func isTaskOutputRoot(_ root: WorkspaceFileRoot) -> Bool {
+        guard root.kind == .taskFolder, let task else { return false }
+        let taskFolder = URL(fileURLWithPath: TaskWorkspaceAccess(task: task).taskFolder)
+            .standardizedFileURL.path
+        return URL(fileURLWithPath: root.path).standardizedFileURL.path != taskFolder
+    }
+
+    private func fileRootTitle(_ root: WorkspaceFileRoot) -> String {
+        guard root.kind == .taskFolder else { return root.title }
+        guard isTaskOutputRoot(root) else { return "Working files" }
+
+        let folderName = URL(fileURLWithPath: root.path).lastPathComponent
+        return currentTaskOutputFolderNames.contains(folderName) ? "Current result" : "Related result"
+    }
+
     private func fileNodeProvenance(_ node: WorkspaceFileNode) -> ShelfFileProvenance? {
         guard let root = fileRoots.first(where: { $0.id == node.rootID }) else {
             return nil
@@ -1186,23 +1156,6 @@ struct ShelfMarkdownPanelView: View {
             node: node,
             currentTaskOutputFolderNames: currentTaskOutputFolderNames
         )
-    }
-
-    private func fileNodeProvenanceLabel(_ node: WorkspaceFileNode) -> String? {
-        guard let provenance = fileNodeProvenance(node) else { return nil }
-        let kind = fileKindLabel(node)
-        return kind.isEmpty ? provenance.label : "\(provenance.label) · \(kind)"
-    }
-
-    private func fileKindLabel(_ node: WorkspaceFileNode) -> String {
-        if node.isDirectory {
-            return "Folder"
-        }
-        let ext = URL(fileURLWithPath: node.path).pathExtension.uppercased()
-        if !ext.isEmpty {
-            return ext
-        }
-        return "File"
     }
 
     private func autoOpenFirstFileIfNeeded(nodes: [WorkspaceFileNode]) {
@@ -1285,6 +1238,19 @@ struct ShelfMarkdownPanelView: View {
     private func openFileNode(_ node: WorkspaceFileNode) {
         guard !node.isDirectory else { return }
         session.load(URL(fileURLWithPath: node.path))
+        finishFileSelection()
+    }
+
+    private func selectOpenDocument(_ documentID: String) {
+        session.selectDocument(documentID)
+        finishFileSelection()
+    }
+
+    private func finishFileSelection() {
+        withAnimation(fileNavigatorAnimation) {
+            isFileNavigatorPresented = ShelfFileNavigatorSelectionPolicy
+                .isPresentedAfterSelectingFile(isPinned: isFileNavigatorPinned)
+        }
     }
 
     private func resizeFileNavigator(_ translation: CGSize) {
@@ -1550,7 +1516,7 @@ struct ShelfMarkdownPanelView: View {
 
     private func revealBreadcrumbSegment(_ segment: FileBreadcrumbSegment) {
         withAnimation(fileNavigatorAnimation) {
-            isFileNavigatorCollapsed = false
+            isFileNavigatorPresented = true
         }
         expandFileNavigator(to: segment.path, isFile: segment.isFile)
     }
