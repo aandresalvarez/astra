@@ -80,6 +80,39 @@ struct WorkspaceInstructionMarkdownTests {
         #expect(headings == [1, 1])
     }
 
+    @Test("A setext H1 heading keeps its title and === underline adjacent")
+    func setextH1HeadingStaysAdjacent() {
+        let input = "Title\n===\nBody text."
+        #expect(WorkspaceInstructionMarkdown.preparedForRendering(input) == "Title\n===\n\nBody text.")
+
+        let blocks = MarkdownASTBlockParser.parse(WorkspaceInstructionMarkdown.preparedForRendering(input)) ?? []
+        #expect(blocks.contains { if case .heading(1) = $0.kind { return true }; return false })
+    }
+
+    @Test("A setext H2 heading keeps its title and --- underline adjacent, not split into a divider")
+    func setextH2HeadingStaysAdjacentNotADivider() {
+        let input = "Title\n---\nBody text."
+        #expect(WorkspaceInstructionMarkdown.preparedForRendering(input) == "Title\n---\n\nBody text.")
+
+        let blocks = MarkdownASTBlockParser.parse(WorkspaceInstructionMarkdown.preparedForRendering(input)) ?? []
+        #expect(blocks.contains { if case .heading(2) = $0.kind { return true }; return false })
+        #expect(!blocks.contains { $0.kind == .divider })
+    }
+
+    @Test("A GFM table's header, separator, and data rows all stay adjacent so the table parses whole")
+    func tableRowsStayAdjacent() {
+        let input = "| A | B |\n| --- | --- |\n| 1 | 2 |"
+        #expect(WorkspaceInstructionMarkdown.preparedForRendering(input) == input)
+
+        let blocks = MarkdownASTBlockParser.parse(WorkspaceInstructionMarkdown.preparedForRendering(input)) ?? []
+        let table = blocks.first { $0.kind == .table }
+        #expect(table != nil)
+        // Not just "a table exists" — the data row must have survived inside
+        // it rather than being split off into a disconnected paragraph.
+        #expect(table?.content.contains("1") == true)
+        #expect(table?.content.contains("2") == true)
+    }
+
     @Test("Summary counts real Markdown sections and falls back to a word count")
     func summaryCountsSectionsAndWords() {
         #expect(WorkspaceInstructionMarkdown.summary(for: "") == "")

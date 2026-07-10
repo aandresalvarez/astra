@@ -12,7 +12,10 @@ import Foundation
 /// back out. The only way to keep a line visually distinct is to make it its
 /// *own* block. `preparedForRendering` does that by inserting a genuine blank
 /// line between adjacent authored lines (skipping fenced code, where content
-/// is already literal) so each becomes its own paragraph/heading/list item.
+/// is already literal) so each becomes its own paragraph/heading/list item —
+/// except where CommonMark itself requires lines to stay adjacent (a setext
+/// heading underline, the rows of a GFM table), where splitting them would
+/// corrupt the construct instead of merely losing its formatting.
 /// The original `workspace.instructions` string is never mutated — this only
 /// transforms the copy handed to `MarkdownTextView`.
 enum WorkspaceInstructionMarkdown {
@@ -38,8 +41,19 @@ enum WorkspaceInstructionMarkdown {
             guard !isInsideFence, !trimmed.isEmpty else { continue }
 
             let nextLine = index + 1 < lines.count ? lines[index + 1] : nil
-            let nextLineHasContent = !(nextLine?.trimmingCharacters(in: .whitespaces).isEmpty ?? true)
-            if nextLineHasContent {
+            let nextTrimmed = nextLine?.trimmingCharacters(in: .whitespaces) ?? ""
+            let nextLineHasContent = !nextTrimmed.isEmpty
+            // A setext heading underline (`===`/`---`) only parses when it
+            // stays on the line directly below its title — splitting the pair
+            // doesn't just lose the heading, a `---` underline on its own
+            // becomes an unrelated thematic break. A table's rows (header,
+            // separator, and every data row) all need to stay adjacent to each
+            // other too, or the table breaks at the first gap; checking both
+            // sides of the gap keeps a whole contiguous run of rows together
+            // without needing to special-case which row is the separator.
+            let nextLineRequiresAdjacency = isSetextHeadingUnderline(nextTrimmed)
+                || (isPipeTableRow(trimmed) && isPipeTableRow(nextTrimmed))
+            if nextLineHasContent && !nextLineRequiresAdjacency {
                 result.append("")
             }
         }
@@ -75,5 +89,29 @@ enum WorkspaceInstructionMarkdown {
         guard count >= 100 else { return "\(count)" }
         let rounded = Int((Double(count) / 10).rounded()) * 10
         return "~\(rounded)"
+    }
+
+    /// A setext heading underline: one or more of the same character (`=` for
+    /// H1, `-` for H2), nothing else. Note this has no 3-character minimum —
+    /// unlike a thematic break (`---`), a bare `-` or `=` is already valid.
+    private static func isSetextHeadingUnderline(_ trimmedLine: String) -> Bool {
+        guard !trimmedLine.isEmpty else { return false }
+        let characters = Set(trimmedLine)
+        return characters == ["-"] || characters == ["="]
+    }
+
+    /// A pipe-delimited table row — header, separator (`| --- | --- |`), or
+    /// data row alike. Deliberately lenient (just "has at least one non-empty
+    /// `|`-delimited cell") rather than validating separator-row syntax
+    /// specifically: every row in a table needs the same adjacency
+    /// protection, not just the header/separator pair, and a false positive
+    /// here only costs an unrelated pair of pipe-containing lines their split
+    /// — a soft-wrap merge, not a corrupted render.
+    private static func isPipeTableRow(_ trimmedLine: String) -> Bool {
+        guard trimmedLine.contains("|") else { return false }
+        var row = trimmedLine
+        if row.hasPrefix("|") { row.removeFirst() }
+        if row.hasSuffix("|") { row.removeLast() }
+        return row.components(separatedBy: "|").contains { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
     }
 }
