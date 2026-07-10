@@ -235,7 +235,7 @@ struct RuntimeFeedbackSnapshotBuilder {
     }
 
     private func isRedactionOnly(_ value: String) -> Bool {
-        let pattern = #"(?i)(?:\b[A-Z][A-Z0-9_.-]*\s*[:=]\s*)?\[redacted-[A-Z-]+\]"#
+        let pattern = #"(?i)(?:\b(?:authorization|bearer|token|api[_-]?key|secret|password|credential)\s*[:=]\s*)?\[redacted-[A-Z-]+\]"#
         guard let expression = try? NSRegularExpression(pattern: pattern) else { return false }
         let range = NSRange(value.startIndex..<value.endIndex, in: value)
         guard expression.firstMatch(in: value, range: range) != nil else { return false }

@@ -263,6 +263,19 @@ struct RuntimeFeedbackSnapshotTests {
         )))
         #expect(meaningful.sanitizedSummary?.contains("Provider authentication failed") == true)
         #expect(meaningful.unavailableReason == nil)
+
+        for (summary, semanticLabel) in [
+            ("Failure: ghp_abcdefgh12345678 sk-abcdefgh12345678", "Failure"),
+            ("TimedOut: ghp_abcdefgh12345678", "TimedOut"),
+            ("AuthFailed=ghp_abcdefgh12345678", "AuthFailed")
+        ] {
+            let semantic = try #require(builder.build(from: RuntimeFeedbackPersistedEvidence(
+                runtimeID: "codex_cli",
+                sanitizedSummary: summary
+            )))
+            #expect(semantic.sanitizedSummary?.contains(semanticLabel) == true)
+            #expect(semantic.unavailableReason == nil)
+        }
     }
 
     @Test("Persisted projection round-trips deterministically without generic provider fields")
