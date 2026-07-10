@@ -101,6 +101,153 @@ public final class FeedbackOutboxService {
         try save(context, operation: "draft_updated")
     }
 
+    @discardableResult
+    public func createDraftProgress(
+        reportID: UUID,
+        installationID: FeedbackInstallationIDV1,
+        idempotencyKey: String = UUID().uuidString.lowercased(),
+        progress: FeedbackDraftProgress
+    ) throws -> UUID {
+        try progress.validate()
+        try validateIdentity(installationID: installationID, idempotencyKey: idempotencyKey)
+        let context = makeContext()
+        guard try fetchIfPresent(reportID: reportID, in: context) == nil else {
+            throw FeedbackOutboxError.invalidIdempotencyKey
+        }
+        let duplicateDescriptor = FetchDescriptor<FeedbackReport>(
+            predicate: #Predicate<FeedbackReport> {
+                $0.installationID == installationID.rawValue && $0.idempotencyKey == idempotencyKey
+            }
+        )
+        guard try context.fetch(duplicateDescriptor).isEmpty else {
+            throw FeedbackOutboxError.invalidIdempotencyKey
+        }
+        context.insert(FeedbackReport(
+            id: reportID,
+            installationID: installationID.rawValue,
+            idempotencyKey: idempotencyKey,
+            intendedOutcome: progress.intendedOutcome,
+            actualResult: progress.actualResult,
+            expectedResult: progress.expectedResult,
+            workBlocked: progress.workBlocked,
+            taskID: progress.taskID,
+            runID: progress.runID,
+            evidenceWindowStart: progress.evidenceWindow.start,
+            evidenceWindowEnd: progress.evidenceWindow.end,
+            consentVersion: progress.consent.version,
+            evidenceSelectionsJSON: try encodeSelections(progress.consent.evidenceSelections),
+            createdAt: clock.now()
+        ))
+        try save(context, operation: "draft_progress_saved")
+        return reportID
+    }
+
+    public func updateDraftProgress(reportID: UUID, progress: FeedbackDraftProgress) throws {
+        try progress.validate()
+        let context = makeContext()
+        let report = try fetch(reportID: reportID, in: context)
+        let status = try storedStatus(report)
+        guard status == .draft else { throw illegalTransition(from: status, to: .draft) }
+        guard report.taskID == progress.taskID, report.runID == progress.runID else {
+            throw FeedbackOutboxError.preparedPackageDoesNotMatchDraft
+        }
+        try apply(progress, to: report)
+        report.updatedAt = clock.now()
+        try save(context, operation: "draft_progress_updated")
+    }
+
+    public func draftSnapshot(reportID: UUID) throws -> FeedbackDraftSnapshot {
+        let context = makeContext()
+        let report = try fetch(reportID: reportID, in: context)
+        let status = try storedStatus(report)
+        guard status == .draft else { throw illegalTransition(from: status, to: .draft) }
+        return try snapshot(report, status: status)
+    }
+
+    public func recoverableSnapshot(reportID: UUID) throws -> FeedbackDraftSnapshot {
+        let context = makeContext()
+        let report = try fetch(reportID: reportID, in: context)
+        let status = try storedStatus(report)
+        guard status == .draft || status == .prepared else {
+            throw illegalTransition(from: status, to: .draft)
+        }
+        if status == .prepared {
+            _ = try validatedPreparedRecovery(for: report)
+        }
+        return try snapshot(report, status: status)
+    }
+
+    public func latestDraft(
+        taskID: String?,
+        runID: String?,
+        excluding reportIDs: Set<UUID> = []
+    ) throws -> FeedbackDraftSnapshot? {
+        let context = makeContext()
+        let reports = try context.fetch(FetchDescriptor<FeedbackReport>())
+        let exactContext = reports.filter {
+            $0.taskID == taskID && $0.runID == runID && !reportIDs.contains($0.id)
+        }
+        let matching = try exactContext.filter { try storedStatus($0) == .draft }
+        guard let report = matching.sorted(by: {
+            if $0.updatedAt != $1.updatedAt { return $0.updatedAt > $1.updatedAt }
+            return $0.id.uuidString.lowercased() < $1.id.uuidString.lowercased()
+        }).first else { return nil }
+        return try snapshot(report, status: .draft)
+    }
+
+    public func latestRecoverable(
+        taskID: String?,
+        runID: String?,
+        excluding reportIDs: Set<UUID> = []
+    ) throws -> FeedbackDraftSnapshot? {
+        let context = makeContext()
+        let reports = try context.fetch(FetchDescriptor<FeedbackReport>())
+        let exactContext = reports.filter {
+            $0.taskID == taskID && $0.runID == runID && !reportIDs.contains($0.id)
+        }
+        let matching = try exactContext.filter {
+            let status = try storedStatus($0)
+            return status == .draft || status == .prepared
+        }.sorted {
+            if $0.updatedAt != $1.updatedAt { return $0.updatedAt > $1.updatedAt }
+            return $0.id.uuidString.lowercased() < $1.id.uuidString.lowercased()
+        }
+        guard let report = matching.first else { return nil }
+        let status = try storedStatus(report)
+        if status == .prepared {
+            _ = try validatedPreparedRecovery(for: report)
+        }
+        return try snapshot(report, status: status)
+    }
+
+    public func recoverablePreparedPackage(reportID: UUID) throws -> FeedbackPreparedPackageRecovery {
+        let context = makeContext()
+        let report = try fetch(reportID: reportID, in: context)
+        guard try storedStatus(report) == .prepared else {
+            throw FeedbackOutboxError.illegalTransition(
+                from: report.localStatusRaw,
+                to: FeedbackLocalStatusV1.queued.rawValue
+            )
+        }
+        return try validatedPreparedRecovery(for: report)
+    }
+
+    public func recoverableReportIDs() throws -> Set<UUID> {
+        let context = makeContext()
+        let reports = try context.fetch(FetchDescriptor<FeedbackReport>())
+        var result = Set<UUID>()
+        for report in reports {
+            let status = try storedStatus(report)
+            if status == .draft {
+                result.insert(report.id)
+            } else if status == .prepared {
+                _ = try validatedPreparedRecovery(for: report)
+                result.insert(report.id)
+            }
+        }
+        return result
+    }
+
     /// Atomically transfers a complete PR 2 package into outbox ownership by a
     /// same-volume directory rename. If the process stops after the rename but
     /// before SwiftData saves, `recoverInterruptedAdoptions` completes the
@@ -434,6 +581,41 @@ public final class FeedbackOutboxService {
         }
     }
 
+    private func validatedPreparedRecovery(
+        for report: FeedbackReport
+    ) throws -> FeedbackPreparedPackageRecovery {
+        guard let directory = try validatedOwnedPackageURL(for: report, requireExists: true) else {
+            throw FeedbackOutboxError.preparedPackageDoesNotMatchDraft
+        }
+        let validated = try FeedbackPackageAdoptionValidator.validate(
+            directory: directory,
+            fileManager: fileManager
+        )
+        try validate(validated.envelope, matches: report)
+        guard let storedEnvelope = report.canonicalEnvelopeData,
+              storedEnvelope == validated.envelopeData,
+              let storedArchiveSHA256 = report.evidenceArchiveSHA256,
+              storedArchiveSHA256 == validated.envelope.evidenceArchiveSHA256
+        else { throw FeedbackOutboxError.preparedPackageDoesNotMatchDraft }
+
+        let manifest = validated.envelope.payload.evidence.canonicalized()
+        let canonicalManifest = try FeedbackCanonicalJSONV1.encodeValidated(manifest)
+        let manifestURL = directory.appendingPathComponent(FeedbackPackageLayout.manifest)
+        guard let manifestData = try? Data(contentsOf: manifestURL),
+              manifestData == canonicalManifest
+        else { throw FeedbackOutboxError.preparedPackageDoesNotMatchDraft }
+        return FeedbackPreparedPackageRecovery(
+            reportID: report.id,
+            reportCreatedAt: report.createdAt,
+            directoryURL: directory,
+            envelopeData: storedEnvelope,
+            manifest: manifest,
+            manifestSHA256: FeedbackCanonicalJSONV1.sha256Hex(manifestData),
+            reportSHA256: FeedbackCanonicalJSONV1.sha256Hex(storedEnvelope),
+            archiveSHA256: storedArchiveSHA256
+        )
+    }
+
     private func validate(
         _ envelope: FeedbackReportEnvelopeV1,
         matches report: FeedbackReport
@@ -558,6 +740,77 @@ public final class FeedbackOutboxService {
             )
         }
         return value
+    }
+
+    private func apply(_ progress: FeedbackDraftProgress, to report: FeedbackReport) throws {
+        report.intendedOutcome = progress.intendedOutcome
+        report.actualResult = progress.actualResult
+        report.expectedResult = progress.expectedResult
+        report.workBlocked = progress.workBlocked
+        report.taskID = progress.taskID
+        report.runID = progress.runID
+        report.evidenceWindowStart = progress.evidenceWindow.start
+        report.evidenceWindowEnd = progress.evidenceWindow.end
+        report.consentVersion = progress.consent.version
+        report.evidenceSelectionsJSON = try encodeSelections(progress.consent.evidenceSelections)
+    }
+
+    private func snapshot(
+        _ report: FeedbackReport,
+        status: FeedbackLocalStatusV1
+    ) throws -> FeedbackDraftSnapshot {
+        try validateStoredProgressText(report.intendedOutcome, path: "draft.intendedOutcome")
+        try validateStoredProgressText(report.actualResult, path: "draft.actualResult")
+        try validateStoredProgressText(report.expectedResult, path: "draft.expectedResult")
+        let consent = FeedbackConsentV1(
+            version: report.consentVersion,
+            evidenceSelections: try decodeSelections(report.evidenceSelectionsJSON)
+        )
+        let progress = FeedbackDraftProgress(
+            intendedOutcome: report.intendedOutcome,
+            actualResult: report.actualResult,
+            expectedResult: report.expectedResult,
+            workBlocked: report.workBlocked,
+            taskID: report.taskID,
+            runID: report.runID,
+            evidenceWindow: FeedbackEvidenceWindowV1(
+                start: report.evidenceWindowStart,
+                end: report.evidenceWindowEnd
+            ),
+            consent: consent
+        )
+        try progress.validate()
+        return FeedbackDraftSnapshot(
+            reportID: report.id,
+            status: status,
+            progress: progress,
+            createdAt: report.createdAt,
+            updatedAt: report.updatedAt
+        )
+    }
+
+    private func validateStoredProgressText(_ value: String, path: String) throws {
+        guard FeedbackContractNormalizationV1.text(value) == value else {
+            throw FeedbackContractError.invalidValue(
+                path: path,
+                description: "stored text is not canonically normalized"
+            )
+        }
+        guard value.count <= FeedbackContractLimitsV1.userStatementLength else {
+            throw FeedbackContractError.exceedsMaximumLength(
+                path: path,
+                maximum: FeedbackContractLimitsV1.userStatementLength,
+                actual: value.count
+            )
+        }
+    }
+
+    private func fetchIfPresent(reportID: UUID, in context: ModelContext) throws -> FeedbackReport? {
+        let id = reportID
+        let descriptor = FetchDescriptor<FeedbackReport>(
+            predicate: #Predicate<FeedbackReport> { $0.id == id }
+        )
+        return try context.fetch(descriptor).first
     }
 
     private func decodeSelections(_ json: String) throws -> [FeedbackEvidenceSelectionV1] {

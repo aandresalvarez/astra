@@ -30,6 +30,10 @@ struct ImportWorkspaceActionKey: FocusedValueKey {
     typealias Value = () -> Void
 }
 
+struct ReportProblemActionKey: FocusedValueKey {
+    typealias Value = () -> Void
+}
+
 extension FocusedValues {
     var newWorkspaceAction: NewWorkspaceActionKey.Value? {
         get { self[NewWorkspaceActionKey.self] }
@@ -39,6 +43,21 @@ extension FocusedValues {
     var importWorkspaceAction: ImportWorkspaceActionKey.Value? {
         get { self[ImportWorkspaceActionKey.self] }
         set { self[ImportWorkspaceActionKey.self] = newValue }
+    }
+
+    var reportProblemAction: ReportProblemActionKey.Value? {
+        get { self[ReportProblemActionKey.self] }
+        set { self[ReportProblemActionKey.self] = newValue }
+    }
+}
+
+private struct ReportProblemMenuItem: View {
+    @FocusedValue(\.reportProblemAction) private var action
+
+    var body: some View {
+        Button("Report a Problem…") { action?() }
+            .disabled(action == nil)
+            .accessibilityIdentifier(FeedbackReportAccessibilityID.reportProblem)
     }
 }
 
@@ -241,6 +260,8 @@ public struct ASTRAApp: App {
     @NSApplicationDelegateAdaptor(ASTRAAppDelegate.self) private var appDelegate
     @StateObject private var appUpdateController = AppUpdateController()
     @StateObject private var appSettings = AppSettingsSnapshotStore()
+    @StateObject private var feedbackRouter = FeedbackReportRouter()
+    @StateObject private var feedbackCrashOfferService = FeedbackCrashOfferService()
     @State private var runtime = AppRuntimeController()
 
     public init() {
@@ -423,6 +444,24 @@ public struct ASTRAApp: App {
                     .lowercased()
             )
 
+        do {
+            let result = try FeedbackPreparationStagingReconciler().reconcileAbandonedPackages()
+            if result.removedPackageCount > 0 {
+                AppLogger.info(
+                    "Removed \(result.removedPackageCount) abandoned feedback staging package(s)",
+                    category: "Diagnostics"
+                )
+            }
+            if result.unsafePackageCount > 0 || result.failedPackageCount > 0 {
+                AppLogger.error(
+                    "Feedback staging reconciliation incomplete unsafe=\(result.unsafePackageCount) failed=\(result.failedPackageCount)",
+                    category: "Diagnostics"
+                )
+            }
+        } catch {
+            AppLogger.error("Feedback staging reconciliation could not inspect its trusted root", category: "Diagnostics")
+        }
+
         if !skipWorkspaceRecovery {
             WorkspaceRecoveryService.recoverMissingWorkspacesAfterLaunch(modelContext: modelContext)
         }
@@ -547,6 +586,8 @@ public struct ASTRAApp: App {
             ContentView(appUpdateController: appUpdateController, runtime: runtime)
                 .frame(minWidth: AppWindowLayout.mainMinimumWidth, minHeight: AppWindowLayout.mainMinimumHeight)
                 .environmentObject(appSettings)
+                .environmentObject(feedbackRouter)
+                .environmentObject(feedbackCrashOfferService)
                 .tint(Stanford.interactive)
                 .preferredColorScheme(resolvedAppearance.colorScheme)
                 .onOpenURL { url in
@@ -585,6 +626,10 @@ public struct ASTRAApp: App {
                 CheckForUpdatesMenuItem(appUpdateController: appUpdateController)
             }
 
+            CommandGroup(after: .help) {
+                ReportProblemMenuItem()
+            }
+
             CommandGroup(after: .toolbar) {
                 Button("Increase Size") {
                     Stanford.uiScale = min(Stanford.uiScale + 0.1, 1.5)
@@ -616,6 +661,9 @@ public struct ASTRAApp: App {
                 .frame(minWidth: 760, minHeight: 460)
                 .tint(Stanford.interactive)
                 .preferredColorScheme(resolvedAppearance.colorScheme)
+                .environmentObject(feedbackRouter)
+                .environmentObject(feedbackCrashOfferService)
+                .modelContainer(modelContainer)
         }
         .defaultSize(width: 980, height: 620)
         .keyboardShortcut("l", modifiers: [.command, .option])

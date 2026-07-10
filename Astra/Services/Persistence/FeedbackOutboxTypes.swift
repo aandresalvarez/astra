@@ -91,6 +91,113 @@ public struct FeedbackDraftContents: Equatable, Sendable {
     }
 }
 
+/// Bounded, normalized UI progress stored by the outbox owner. Unlike
+/// `FeedbackDraftContents`, statements may be incomplete until preparation.
+public struct FeedbackDraftProgress: Equatable, Sendable {
+    public let intendedOutcome: String
+    public let actualResult: String
+    public let expectedResult: String
+    public let workBlocked: Bool
+    public let taskID: String?
+    public let runID: String?
+    public let evidenceWindow: FeedbackEvidenceWindowV1
+    public let consent: FeedbackConsentV1
+
+    public init(
+        intendedOutcome: String,
+        actualResult: String,
+        expectedResult: String,
+        workBlocked: Bool,
+        taskID: String? = nil,
+        runID: String? = nil,
+        evidenceWindow: FeedbackEvidenceWindowV1,
+        consent: FeedbackConsentV1
+    ) {
+        self.intendedOutcome = FeedbackContractNormalizationV1.text(intendedOutcome)
+        self.actualResult = FeedbackContractNormalizationV1.text(actualResult)
+        self.expectedResult = FeedbackContractNormalizationV1.text(expectedResult)
+        self.workBlocked = workBlocked
+        self.taskID = taskID
+        self.runID = runID
+        self.evidenceWindow = evidenceWindow
+        self.consent = consent
+    }
+
+    public func validate() throws {
+        for (path, value) in [
+            ("draft.intendedOutcome", intendedOutcome),
+            ("draft.actualResult", actualResult),
+            ("draft.expectedResult", expectedResult)
+        ] where value.count > FeedbackContractLimitsV1.userStatementLength {
+            throw FeedbackContractError.exceedsMaximumLength(
+                path: path,
+                maximum: FeedbackContractLimitsV1.userStatementLength,
+                actual: value.count
+            )
+        }
+        for (path, value) in [
+            ("draft.intendedOutcome", intendedOutcome),
+            ("draft.actualResult", actualResult),
+            ("draft.expectedResult", expectedResult)
+        ] where FeedbackContractNormalizationV1.text(value) != value {
+            throw FeedbackContractError.invalidValue(
+                path: path,
+                description: "must use canonical normalized text"
+            )
+        }
+        try evidenceWindow.validate()
+        try consent.validate()
+        for (path, value) in [("draft.taskID", taskID), ("draft.runID", runID)] {
+            if let value, value.count > FeedbackContractLimitsV1.identifierLength {
+                throw FeedbackContractError.exceedsMaximumLength(
+                    path: path,
+                    maximum: FeedbackContractLimitsV1.identifierLength,
+                    actual: value.count
+                )
+            }
+        }
+    }
+}
+
+public struct FeedbackDraftSnapshot: Equatable, Sendable {
+    public let reportID: UUID
+    public let status: FeedbackLocalStatusV1
+    public let progress: FeedbackDraftProgress
+    public let createdAt: Date
+    public let updatedAt: Date
+}
+
+public struct FeedbackPreparedPackageRecovery: Equatable, Sendable {
+    public let reportID: UUID
+    public let reportCreatedAt: Date
+    public let directoryURL: URL
+    public let envelopeData: Data
+    public let manifest: FeedbackEvidenceManifestV1
+    public let manifestSHA256: String
+    public let reportSHA256: String
+    public let archiveSHA256: String
+
+    public init(
+        reportID: UUID,
+        reportCreatedAt: Date,
+        directoryURL: URL,
+        envelopeData: Data,
+        manifest: FeedbackEvidenceManifestV1,
+        manifestSHA256: String,
+        reportSHA256: String,
+        archiveSHA256: String
+    ) {
+        self.reportID = reportID
+        self.reportCreatedAt = reportCreatedAt
+        self.directoryURL = directoryURL
+        self.envelopeData = envelopeData
+        self.manifest = manifest
+        self.manifestSHA256 = manifestSHA256
+        self.reportSHA256 = reportSHA256
+        self.archiveSHA256 = archiveSHA256
+    }
+}
+
 public struct FeedbackUploadClaim: Equatable, Sendable {
     public let reportID: UUID
     public let token: String
