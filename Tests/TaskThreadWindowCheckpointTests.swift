@@ -127,6 +127,18 @@ struct TaskThreadViewModelTests {
     }
 
     @MainActor
+    @Test("Cancelling an unfinished open trace clears its snapshot correlation")
+    func cancellationClearsInitialSnapshotCorrelation() {
+        let vm = TaskThreadViewModel()
+        let task = makeTask(goal: "Cancelled trace")
+        vm.reset(for: task, responsivenessContext: TaskThreadResponsivenessContext(traceID: "cancelled-trace"))
+
+        vm.cancelInitialResponsivenessSnapshot(for: task.id)
+
+        #expect(vm.initialSnapshotResponsivenessTraceID == nil)
+    }
+
+    @MainActor
     @Test("expandWindow increases the run window and rebuilds snapshot")
     func expandWindowIncreasesRunWindow() async {
         let vm = TaskThreadViewModel()

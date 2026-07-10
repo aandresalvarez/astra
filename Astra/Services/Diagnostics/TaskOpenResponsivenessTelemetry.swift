@@ -389,7 +389,7 @@ enum TaskOpenResponsivenessTelemetry {
         transcriptReadyUptimeNanoseconds: UInt64
     ) -> [String: String] {
         let latestOutputBytes = snapshot.latestRun?.output.utf8.count ?? 0
-        let contentMetrics = TaskOpenResponsivenessContentMetrics(snapshot: snapshot)
+        let contentMetrics = snapshot.transcriptMetrics
         let applyToReadyMilliseconds = snapshotAppliedUptimeNanoseconds.map { appliedAt in
             max(0, Double(transcriptReadyUptimeNanoseconds - appliedAt) / 1_000_000)
         }
@@ -405,62 +405,12 @@ enum TaskOpenResponsivenessTelemetry {
             "omitted_events": PerformanceTelemetryFields.count(snapshot.omittedEventCount),
             "omitted_runs": PerformanceTelemetryFields.count(snapshot.omittedRunCount),
             "conversation_item_count": PerformanceTelemetryFields.count(snapshot.conversationItems.count),
-            "latest_run_output_bucket": PerformanceTelemetryFields.byteBucket(latestOutputBytes),
+            "latest_run_output_byte_bucket": PerformanceTelemetryFields.byteBucket(latestOutputBytes),
             "visible_transcript_bytes_bucket": PerformanceTelemetryFields.byteBucket(contentMetrics.textBytes),
             "visible_agent_response_count": PerformanceTelemetryFields.count(contentMetrics.agentResponseCount),
             "visible_code_fence_count_bucket": PerformanceTelemetryFields.countBucket(contentMetrics.codeFenceCount),
             "visible_table_row_count_bucket": PerformanceTelemetryFields.countBucket(contentMetrics.tableRowCount),
             "snapshot_apply_to_transcript_ready_ms": applyToReadyMilliseconds.map { String(format: "%.2f", $0) } ?? "not_recorded"
         ]
-    }
-}
-
-/// Counts only transcript shape, never transcript content, so a performance
-/// report can distinguish a large Markdown-heavy transcript from a small one.
-struct TaskOpenResponsivenessContentMetrics: Equatable {
-    let textBytes: Int
-    let agentResponseCount: Int
-    let codeFenceCount: Int
-    let tableRowCount: Int
-
-    init(snapshot: TaskThreadSnapshot) {
-        var textBytes = 0
-        var agentResponseCount = 0
-        var codeFenceCount = 0
-        var tableRowCount = 0
-
-        for item in snapshot.conversationItems {
-            let text: String
-            switch item {
-            case .userMessage(let value, _), .planUserMessage(let value, _), .planAssistantMessage(let value, _), .scheduleResult(let value, _), .systemInfo(let value, _), .recapResult(let value, _):
-                text = value
-            case .agentResponse(let run):
-                text = run.output
-                agentResponseCount += 1
-            }
-            textBytes += text.utf8.count
-            codeFenceCount += Self.occurrences(of: "```", in: text)
-            tableRowCount += text.split(separator: "\n", omittingEmptySubsequences: false).reduce(into: 0) { count, line in
-                if line.drop(while: { $0 == " " || $0 == "\t" }).first == "|" {
-                    count += 1
-                }
-            }
-        }
-
-        self.textBytes = textBytes
-        self.agentResponseCount = agentResponseCount
-        self.codeFenceCount = codeFenceCount
-        self.tableRowCount = tableRowCount
-    }
-
-    private static func occurrences(of needle: String, in text: String) -> Int {
-        guard !needle.isEmpty else { return 0 }
-        var count = 0
-        var searchStart = text.startIndex
-        while let range = text.range(of: needle, range: searchStart..<text.endIndex) {
-            count += 1
-            searchStart = range.upperBound
-        }
-        return count
     }
 }

@@ -1218,6 +1218,19 @@ enum LogDiagnosticsService {
         let message = entry.message
         let lower = message.lowercased()
 
+        if entry.category == "Performance",
+           entry.logLevel == .warning,
+           let event = field("event", in: message),
+           event != "task_selection_timeout",
+           UIResponsivenessDiagnostics.isRoutineMeasurement(event) {
+            return (
+                key: "performance.responsiveness.\(event)",
+                title: "Slow UI responsiveness sample",
+                signal: "event=\(event)",
+                analysis: "This completed interaction exceeded the responsiveness warning threshold and is summarized in the UI Responsiveness section. It is diagnostic evidence, not an application failure by itself."
+            )
+        }
+
         if isOptionalValidationBehaviorFailure(entry, index: index, entries: entries) {
             let assertionID = field("assertion_id", in: message) ?? "browser_behavior"
             return (

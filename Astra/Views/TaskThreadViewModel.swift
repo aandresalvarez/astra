@@ -86,6 +86,8 @@ final class TaskThreadViewModel {
             appliedSnapshotTaskID = nil
             lastSnapshotCacheState = "pending"
             self.responsivenessContext = responsivenessContext
+            deferredLiveSnapshotCount = 0
+            lastLiveSnapshotTelemetryAt = .distantPast
             snapshot = TaskThreadSnapshot.placeholder(goal: task.goal, createdAt: task.createdAt)
             refreshSnapshot(for: task)
             refreshGeneratedFiles(folder: TaskWorkspaceAccess(task: task).taskFolder)
@@ -246,6 +248,16 @@ final class TaskThreadViewModel {
     /// their own bounded cadence telemetry but are not misattributed to open.
     func completeInitialResponsivenessTrace(for taskID: UUID) {
         guard appliedSnapshotTaskID == taskID else { return }
+        responsivenessContext = nil
+        initialSnapshotResponsivenessTraceID = nil
+    }
+
+    /// Stops the initial snapshot pipeline when its task-open trace ends before
+    /// the transcript becomes ready, preventing late phases from using a stale
+    /// trace ID.
+    func cancelInitialResponsivenessSnapshot(for taskID: UUID) {
+        guard snapshotTrigger?.taskID == taskID, responsivenessContext != nil else { return }
+        snapshotTask?.cancel()
         responsivenessContext = nil
         initialSnapshotResponsivenessTraceID = nil
     }

@@ -7,6 +7,7 @@ import ASTRAModels
 struct TaskOpenResponsivenessLifecycleObserver: ViewModifier {
     let task: AgentTask
     let scope: UUID
+    let stopInitialSnapshot: () -> Void
 
     func body(content: Content) -> some View {
         content
@@ -41,6 +42,7 @@ struct TaskOpenResponsivenessLifecycleObserver: ViewModifier {
                 }
                 guard !Task.isCancelled else { return }
                 TaskOpenResponsivenessTelemetry.timeout(task: task, scope: scope)
+                stopInitialSnapshot()
             }
             .onDisappear {
                 TaskOpenResponsivenessTelemetry.cancel(
@@ -48,6 +50,7 @@ struct TaskOpenResponsivenessLifecycleObserver: ViewModifier {
                     reason: "task_view_disappeared",
                     scope: scope
                 )
+                stopInitialSnapshot()
             }
     }
 }

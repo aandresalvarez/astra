@@ -573,6 +573,9 @@ struct TaskThreadSnapshot: Sendable {
     let omittedEventCount: Int
     let totalRunCount: Int
     let omittedRunCount: Int
+    /// Transcript shape computed while building the snapshot, so task-open
+    /// readiness logging never rescans user-visible content on the main actor.
+    let transcriptMetrics: TaskThreadTranscriptMetrics
 
     private let activityByRunID: [UUID: TaskRunActivity]
     private let protocolByRunID: [UUID: TaskRunProtocolState]
@@ -769,6 +772,7 @@ struct TaskThreadSnapshot: Sendable {
             activityByRunID: activity,
             protocolByRunID: protocolStatesByRunID
         )
+        transcriptMetrics = TaskThreadTranscriptMetrics(items: conversationItems)
     }
 
     func activityPresentation(for run: TaskRunSnapshot) -> RunActivityPresentation {
@@ -1010,6 +1014,54 @@ struct TaskThreadSnapshot: Sendable {
                 status: item.status
             )
         }
+    }
+}
+
+/// Privacy-safe transcript shape counts calculated off the main actor as part
+/// of snapshot construction. The values never retain or emit transcript text.
+struct TaskThreadTranscriptMetrics: Equatable, Sendable {
+    let textBytes: Int
+    let agentResponseCount: Int
+    let codeFenceCount: Int
+    let tableRowCount: Int
+
+    init(items: [TaskConversationItem]) {
+        var textBytes = 0
+        var agentResponseCount = 0
+        var codeFenceCount = 0
+        var tableRowCount = 0
+
+        for item in items {
+            let text: String
+            switch item {
+            case .userMessage(let value, _), .planUserMessage(let value, _), .planAssistantMessage(let value, _), .scheduleResult(let value, _), .systemInfo(let value, _), .recapResult(let value, _):
+                text = value
+            case .agentResponse(let run):
+                text = run.output
+                agentResponseCount += 1
+            }
+            textBytes += text.utf8.count
+            codeFenceCount += Self.occurrences(of: "```", in: text)
+            tableRowCount += text.split(separator: "\n", omittingEmptySubsequences: false).reduce(into: 0) { count, line in
+                if line.drop(while: { $0 == " " || $0 == "\t" }).first == "|" { count += 1 }
+            }
+        }
+
+        self.textBytes = textBytes
+        self.agentResponseCount = agentResponseCount
+        self.codeFenceCount = codeFenceCount
+        self.tableRowCount = tableRowCount
+    }
+
+    private static func occurrences(of needle: String, in text: String) -> Int {
+        guard !needle.isEmpty else { return 0 }
+        var count = 0
+        var searchStart = text.startIndex
+        while let range = text.range(of: needle, range: searchStart..<text.endIndex) {
+            count += 1
+            searchStart = range.upperBound
+        }
+        return count
     }
 }
 

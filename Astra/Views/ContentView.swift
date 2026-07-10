@@ -80,7 +80,7 @@ struct ContentView: View {
     @Query(sort: \Workspace.name) private var workspaces: [Workspace]
     @StateObject private var sceneSelection = SceneSelectionModel()
     @State private var taskOpenResponsivenessScope = UUID()
-    @State private var screenTransitionCoordinator = ScreenTransitionCoordinator()
+    @State var screenTransitionCoordinator = ScreenTransitionCoordinator()
     @State private var showingConfigure = false
     @State private var configureInitialTab: ConfigureTab = .capabilities
     @State private var configureFocusItemID: UUID?
@@ -192,7 +192,7 @@ struct ContentView: View {
         self.runtime = runtime
     }
 
-    private var selectedTask: AgentTask? {
+    var selectedTask: AgentTask? {
         sceneSelection.selectedTask
     }
 
@@ -211,7 +211,7 @@ struct ContentView: View {
     /// Read-only forward to `RightPanelPresentationModel`. Every write goes
     /// through the model's methods (`presentCanvas`, `setActiveCanvasItem`,
     /// etc.) — never assign this directly.
-    private var activeWorkspaceCanvasItem: WorkspaceCanvasItem? {
+    var activeWorkspaceCanvasItem: WorkspaceCanvasItem? {
         rightPanel.activeCanvasItem
     }
 
@@ -637,7 +637,7 @@ struct ContentView: View {
             onOpenPlan: openPlanCanvas,
             onToggleDone: toggleDone,
             onMoveToDraft: moveTaskToDraft,
-            onForkTask: setSelectedTask,
+            onForkTask: { setSelectedTask($0) },
             onCreateTask: startComposingTask,
             onOpenWorkspaceApp: setSelectedWorkspaceApp,
             onOpenTask: openExistingTask,
@@ -1293,23 +1293,6 @@ struct ContentView: View {
     private func setActiveWorkspaceCanvasItem(_ item: WorkspaceCanvasItem?, remember: Bool) {
         beginScreenTransitionIfNeeded(to: item, source: "shelf_state")
         rightPanel.setActiveCanvasItem(item, remember: remember, conversationID: selectedWorkspaceCanvasConversationID)
-    }
-
-    private func beginScreenTransitionIfNeeded(to item: WorkspaceCanvasItem?, source: String) {
-        guard activeWorkspaceCanvasItem != item else { return }
-        beginScreenTransition(destination: screenTransitionDestination(item), source: source)
-    }
-
-    private func beginScreenTransition(destination: String, source: String) {
-        screenTransitionCoordinator.begin(
-            destination: destination,
-            source: source,
-            taskID: selectedTask?.id
-        )
-    }
-
-    private func screenTransitionDestination(_ item: WorkspaceCanvasItem?) -> String {
-        item.map { "shelf_\($0.rawValue)" } ?? "task_chat"
     }
 
     private func restoreRememberedWorkspaceCanvasItemIfAvailable() {
@@ -2001,7 +1984,7 @@ struct ContentView: View {
 
     private func startComposingTask() {
         let wasComposingWorkspaceApp = isComposingWorkspaceApp
-        setSelectedTask(nil)
+        setSelectedTask(nil, recordsFinalHomeTransition: false)
         sceneSelection.composeTask()
         clearWorkspaceAppSurfaceSideEffects(wasComposing: wasComposingWorkspaceApp)
         presentRightRail(rememberShelfState: false)
@@ -2110,7 +2093,7 @@ struct ContentView: View {
     }
 
     private func moveTaskToDraft(_ task: AgentTask) {
-        setSelectedTask(nil)
+        setSelectedTask(nil, recordsFinalHomeTransition: false)
         DispatchQueue.main.async {
             setSelectedTask(task)
         }
@@ -2357,7 +2340,7 @@ struct ContentView: View {
 
     // MARK: - Task Actions
 
-    private func setSelectedTask(_ task: AgentTask?) {
+    private func setSelectedTask(_ task: AgentTask?, recordsFinalHomeTransition: Bool = true) {
         let previousTaskID = selectedTask?.id
         if previousTaskID != task?.id {
             TaskOpenResponsivenessTelemetry.beginForSelection(
@@ -2365,11 +2348,16 @@ struct ContentView: View {
                 source: "task_selection",
                 scope: taskOpenResponsivenessScope
             )
-            if task == nil {
-                beginScreenTransition(destination: "workspace_home", source: "task_selection_cleared")
+            if task == nil, recordsFinalHomeTransition {
+                beginScreenTransition(destination: "workspace_home", source: "task_selection_cleared",
+                                      taskID: nil, usesSelectedTask: false)
             }
         }
-        updateCanvasForTaskSelectionChange(previousTaskID: previousTaskID, nextTaskID: task?.id)
+        updateCanvasForTaskSelectionChange(
+            previousTaskID: previousTaskID,
+            nextTaskID: task?.id,
+            recordsTransition: recordsFinalHomeTransition
+        )
         let wasComposingWorkspaceApp = isComposingWorkspaceApp
         sceneSelection.openTask(task)
         clearWorkspaceAppSurfaceSideEffects(wasComposing: wasComposingWorkspaceApp)
@@ -2382,7 +2370,8 @@ struct ContentView: View {
     private func updateCanvasForTaskSelectionChange(
         previousTaskID: UUID?,
         nextTaskID: UUID?,
-        isComposingTaskForTransition: Bool? = nil
+        isComposingTaskForTransition: Bool? = nil,
+        recordsTransition: Bool = true
     ) {
         guard previousTaskID != nextTaskID else { return }
         let nextCanvasItem = WorkspaceCanvasItemSelectionTransition.itemAfterTaskSelectionChange(
@@ -2392,7 +2381,16 @@ struct ContentView: View {
             isComposingTask: isComposingTaskForTransition ?? isComposingTask
         )
         if nextCanvasItem != activeWorkspaceCanvasItem {
-            setActiveWorkspaceCanvasItem(nextCanvasItem, remember: false)
+            if recordsTransition {
+                beginScreenTransitionIfNeeded(
+                    to: nextCanvasItem,
+                    source: "task_selection_shelf_clear",
+                    baseDestination: nextTaskID == nil ? "workspace_home" : "task_chat",
+                    taskID: nextTaskID,
+                    usesSelectedTask: false
+                )
+            }
+            rightPanel.setActiveCanvasItem(nextCanvasItem, remember: false, conversationID: nextTaskID?.uuidString)
         }
     }
 

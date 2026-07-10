@@ -141,8 +141,13 @@ enum UIResponsivenessDiagnostics {
         }
     }
 
+    static func isRoutineMeasurement(_ event: String) -> Bool {
+        isResponsivenessEvent(event) && event != "task_selection_timeout"
+    }
+
     private static func isResponsivenessEvent(_ event: String) -> Bool {
-        event.hasPrefix("task_selection_to_")
+        event == "task_selection_timeout"
+            || event.hasPrefix("task_selection_to_")
             || event.hasPrefix("screen_transition_to_")
             || event.hasPrefix("task_open_")
             || event.hasPrefix("chat_stream_")
@@ -150,8 +155,13 @@ enum UIResponsivenessDiagnostics {
     }
 
     private static func displayEvent(_ event: String, fields: [String: String]) -> String {
-        guard event == "task_open_phase", let phase = fields["phase"] else { return event }
-        return "\(event):\(phase)"
+        if event == "task_open_phase", let phase = fields["phase"] {
+            return "\(event):\(phase)"
+        }
+        if event.hasPrefix("screen_transition_to_"), let destination = fields["destination"] {
+            return "\(event):\(destination)"
+        }
+        return event
     }
 
     private static func percentile(_ sortedValues: [Double], quantile: Double) -> Double {

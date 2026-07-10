@@ -6,6 +6,20 @@ import ASTRAModels
 import ASTRACore
 
 extension TaskThreadSnapshotTests {
+    @Test("Snapshot precomputes privacy-safe transcript shape metrics")
+    func snapshotPrecomputesTranscriptMetrics() {
+        let task = makeTask(goal: "Goal\n```swift\nlet value = 1\n```\n| Name |")
+        let run = TaskRun(task: task)
+        run.output = "| Result |\n| --- |\n| done |"
+
+        let snapshot = TaskThreadSnapshot(goal: task.goal, createdAt: task.createdAt, events: [], runs: [run])
+
+        #expect(snapshot.transcriptMetrics.textBytes > 0)
+        #expect(snapshot.transcriptMetrics.agentResponseCount == 1)
+        #expect(snapshot.transcriptMetrics.codeFenceCount == 2)
+        #expect(snapshot.transcriptMetrics.tableRowCount == 4)
+    }
+
     @Test("Conversation snapshot preserves chronological run and message behavior")
     func conversationSnapshotOrdering() {
         let createdAt = Date(timeIntervalSince1970: 100)

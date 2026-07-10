@@ -617,7 +617,11 @@ struct TaskMainView: View {
                 installPasteMonitor()
             }
         }
-        .modifier(TaskOpenResponsivenessLifecycleObserver(task: task, scope: taskOpenResponsivenessScope))
+        .modifier(TaskOpenResponsivenessLifecycleObserver(
+            task: task,
+            scope: taskOpenResponsivenessScope,
+            stopInitialSnapshot: { threadViewModel.cancelInitialResponsivenessSnapshot(for: task.id) }
+        ))
         .onDisappear {
             pendingPlanStateRefreshTask?.cancel()
             threadViewModel.cancelGeneratedFilesRefresh()
