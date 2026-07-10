@@ -2012,9 +2012,9 @@ private struct WorkspaceRowActions: View {
 
             if workspace.isStarred {
                 Image(systemName: "star.fill")
-                    .font(Stanford.ui(10, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 16, height: 22)
+                    .font(Stanford.ui(12, weight: .semibold))
+                    .foregroundStyle(Stanford.lagunita)
+                    .frame(width: 18, height: 22)
                     .accessibilityLabel("Starred")
             }
         }
