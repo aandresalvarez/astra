@@ -96,9 +96,9 @@ enum SidebarLeanPresentation {
     static let sidebarTaskStatusesShowExceptionsOnly = true
     // Status is a leading glyph, never a second text line: rows stay
     // single-height so the list scans as navigation, and one status
-    // vocabulary replaces the old icon-vs-subtitle split. (Pinned and
-    // Unreads rows still show a workspace-name subtitle — that's
-    // context, not status.)
+    // vocabulary replaces the old icon-vs-subtitle split. Unreads retain a
+    // workspace-name subtitle for cross-workspace context; pinned rows move
+    // that context to hover so the curated list stays compact.
     static let sidebarTaskStatusesNeverAddSecondLine = true
     // Workspace rows expose expansion with a rest-state chevron; the
     // folder icon's fill tracks selection only, so icon fill no longer
@@ -122,6 +122,18 @@ enum SidebarLeanPresentation {
     static let newTaskVerticalPadding: CGFloat = 7
     static let newTaskRestFillOpacity = 0.045
     static let newTaskHoverFillOpacity = 0.075
+}
+
+enum SidebarPinnedTaskPresentation {
+    /// The Pinned rail is intentionally single-line. Workspace identity is
+    /// still available from the task title's hover help.
+    static func workspaceHoverHelp(workspaceName: String?) -> String? {
+        guard let workspaceName,
+              !workspaceName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return nil
+        }
+        return "Workspace: \(workspaceName)"
+    }
 }
 
 enum SidebarThreadRowLayout {
@@ -273,6 +285,12 @@ private struct SidebarTopToolbar: View {
 
 enum SidebarWorkspaceTaskList {
     static let collapsedLimit = SidebarLeanPresentation.sectionPreviewLimit
+    /// Overflow controls sit with the task titles, not the full-width row
+    /// surface, so a long workspace list keeps one readable left edge.
+    static let showMoreLeadingPadding = SidebarThreadRowLayout.titleLeadingOffset(
+        childListPadding: SidebarLeanPresentation.childTaskListLeadingPadding,
+        contentLeadingPadding: SidebarLeanPresentation.childTaskContentLeadingPadding
+    )
 
     static func visibleTasks(_ tasks: [AgentTask], isShowingAll: Bool) -> [AgentTask] {
         isShowingAll ? tasks : Array(tasks.prefix(collapsedLimit))
@@ -709,6 +727,9 @@ struct TaskSidebarView: View {
     private func pinnedTaskRow(for task: AgentTask) -> some View {
         let isSelected = selectedTask?.id == task.id
         let isHovered = hoveredTaskID == task.id
+        let workspaceHoverHelp = SidebarPinnedTaskPresentation.workspaceHoverHelp(
+            workspaceName: task.workspace?.name
+        )
 
         // Was a `Button { } .overlay { unpinButton }` with `.onHover` on
         // the outer button. When the cursor crossed onto the overlay,
@@ -728,7 +749,7 @@ struct TaskSidebarView: View {
                     isSelected: isSelected,
                     isHovered: isHovered,
                     isKeyboardFocused: isKeyboardFocused,
-                    subtitle: task.workspace?.name,
+                    titleHelp: workspaceHoverHelp,
                     showsPinIndicator: false,
                     showsTimestamp: false
                 )
@@ -1219,7 +1240,7 @@ struct TaskSidebarView: View {
                                     }
                                 }
                             )
-                            .padding(.leading, 2)
+                            .padding(.leading, SidebarWorkspaceTaskList.showMoreLeadingPadding)
                         } else if isShowingAll,
                                   workspaceTasks.count > SidebarWorkspaceTaskList.collapsedLimit {
                             sidebarShowMoreButton(title: "Show less", collapses: true) {
@@ -1227,7 +1248,7 @@ struct TaskSidebarView: View {
                                     _ = expandedWorkspaceTaskLists.remove(workspace.id)
                                 }
                             }
-                            .padding(.leading, 2)
+                            .padding(.leading, SidebarWorkspaceTaskList.showMoreLeadingPadding)
                         }
                     }
                 }

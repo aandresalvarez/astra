@@ -601,6 +601,15 @@ struct SidebarGroupingTests {
         // Child content steps in 12pt so containment reads without a
         // guide rail; row surfaces still span the full rail width.
         #expect(SidebarLeanPresentation.childTaskContentLeadingPadding == 12)
+        // Workspace list overflow controls align with their task titles,
+        // instead of the full-width task row surface.
+        #expect(
+            SidebarWorkspaceTaskList.showMoreLeadingPadding
+                == SidebarThreadRowLayout.titleLeadingOffset(
+                    childListPadding: SidebarLeanPresentation.childTaskListLeadingPadding,
+                    contentLeadingPadding: SidebarLeanPresentation.childTaskContentLeadingPadding
+                )
+        )
         #expect(!SidebarThreadRowLayout.isActionableStatus(.completed))
         #expect(SidebarThreadRowLayout.isActionableStatus(.running))
         #expect(SidebarThreadRowLayout.showsStatusIcon(for: .completed, isUnread: false, isHovered: false, isSelected: false) == false)
@@ -623,6 +632,16 @@ struct SidebarGroupingTests {
             contentLeadingPadding: SidebarLeanPresentation.childTaskContentLeadingPadding
         ) == 43)
         #expect(SidebarThreadRowLayout.titleFontSize == 14)
+    }
+
+    @Test("Pinned task workspace context moves from the row to hover help")
+    func pinnedTaskWorkspaceContextUsesHoverHelp() {
+        #expect(
+            SidebarPinnedTaskPresentation.workspaceHoverHelp(workspaceName: "JSL")
+                == "Workspace: JSL"
+        )
+        #expect(SidebarPinnedTaskPresentation.workspaceHoverHelp(workspaceName: "  ") == nil)
+        #expect(SidebarPinnedTaskPresentation.workspaceHoverHelp(workspaceName: nil) == nil)
     }
 
     @Test("Task row hover is borderless while keyboard focus remains explicit")
