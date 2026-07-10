@@ -17,6 +17,72 @@ enum FeedbackPreparationStagingReconciliationError: Error, Equatable {
     case unreadablePreparationRoot
 }
 
+enum FeedbackPreparedPreviewCleanupOwnerError: Error, Equatable {
+    case anotherCapabilityIsPending
+    case capabilityMismatch
+}
+
+struct FeedbackPreparedPreviewCleanupKey: Equatable, Hashable, Sendable {
+    let reportID: UUID
+    let contextIdentity: FeedbackReportContextIdentity
+    let sourceHostID: UUID
+    let sourceLeaseID: UUID
+    let directoryURL: URL
+}
+
+/// Process-lifetime owner for the one exact staging capability whose removal
+/// failed after its sheet already stopped waiting. The app-wide router permits
+/// only one active report, so this owner is intentionally single-capability
+/// and fails closed instead of evicting private evidence.
+@MainActor
+final class FeedbackPreparedPreviewCleanupOwner {
+    static let shared = FeedbackPreparedPreviewCleanupOwner()
+
+    private struct Capability {
+        let key: FeedbackPreparedPreviewCleanupKey
+        let cleanup: @MainActor () throws -> Void
+    }
+
+    private var capability: Capability?
+    var pendingKey: FeedbackPreparedPreviewCleanupKey? { capability?.key }
+
+    func retain(
+        key: FeedbackPreparedPreviewCleanupKey,
+        cleanup: @escaping @MainActor () throws -> Void
+    ) throws {
+        if let capability {
+            guard capability.key == key else {
+                throw FeedbackPreparedPreviewCleanupOwnerError.anotherCapabilityIsPending
+            }
+            // The first exact capability is authoritative. A repeated receipt
+            // for the same key must not replace or weaken its cleanup closure.
+            return
+        }
+        capability = Capability(key: key, cleanup: cleanup)
+    }
+
+    @discardableResult
+    func retryPendingCleanup(
+        matching expectedKey: FeedbackPreparedPreviewCleanupKey? = nil,
+        willClean: @MainActor (FeedbackPreparedPreviewCleanupKey) throws -> Void = { _ in },
+        didClean: @MainActor (FeedbackPreparedPreviewCleanupKey) throws -> Void = { _ in }
+    ) throws -> Bool {
+        guard let capability else { return false }
+        if let expectedKey, capability.key != expectedKey {
+            throw FeedbackPreparedPreviewCleanupOwnerError.capabilityMismatch
+        }
+        // Validate the durable settlement before deleting evidence. All three
+        // steps are synchronous on MainActor, so no other presentation can
+        // change router ownership between validation, exact cleanup, and
+        // settlement recovery.
+        try willClean(capability.key)
+        try capability.cleanup()
+        try didClean(capability.key)
+        self.capability = nil
+        return true
+    }
+}
+
 /// Removes preview and construction packages that cannot have a live owner
 /// after process launch. Only direct, canonical ASTRA package directories are
 /// eligible; malformed entries, files, and symlinks always remain untouched.

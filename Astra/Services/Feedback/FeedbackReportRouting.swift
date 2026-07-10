@@ -86,6 +86,8 @@ enum FeedbackReportCoordinatorError: Error, Equatable {
     case activeReportConflict
     case alreadyPresented
     case hostUnavailable
+    case hostSettlementFailed
+    case hostSettlementWaiterLimitReached
     case invalidEntryPointContext
     case crashOfferNotVerified
 }
@@ -193,17 +195,20 @@ struct FeedbackReportCoordinator {
     let modelContainer: ModelContainer
     let storageRoot: URL
     let crashLedger: any FeedbackCrashOfferLedgerReading
+    let cleanupOwner: FeedbackPreparedPreviewCleanupOwner
 
     init(
         router: FeedbackReportRouter,
         modelContainer: ModelContainer,
-        storageRoot: URL = FeedbackReportStoragePaths.root
+        storageRoot: URL = FeedbackReportStoragePaths.root,
+        cleanupOwner: FeedbackPreparedPreviewCleanupOwner? = nil
     ) {
         self.init(
             router: router,
             modelContainer: modelContainer,
             crashLedger: FeedbackCrashOfferService(),
-            storageRoot: storageRoot
+            storageRoot: storageRoot,
+            cleanupOwner: cleanupOwner
         )
     }
 
@@ -211,12 +216,14 @@ struct FeedbackReportCoordinator {
         router: FeedbackReportRouter,
         modelContainer: ModelContainer,
         crashLedger: any FeedbackCrashOfferLedgerReading,
-        storageRoot: URL = FeedbackReportStoragePaths.root
+        storageRoot: URL = FeedbackReportStoragePaths.root,
+        cleanupOwner: FeedbackPreparedPreviewCleanupOwner? = nil
     ) {
         self.router = router
         self.modelContainer = modelContainer
         self.storageRoot = storageRoot
         self.crashLedger = crashLedger
+        self.cleanupOwner = cleanupOwner ?? .shared
     }
 
     func present(
@@ -237,6 +244,25 @@ struct FeedbackReportCoordinator {
         guard let hostLeaseID = router.hostLeaseID(for: hostID) else {
             throw FeedbackReportCoordinatorError.hostUnavailable
         }
+        do {
+            _ = try cleanupOwner.retryPendingCleanup(
+                willClean: { key in
+                    try router.validateFailedHostSettlement(forCleanup: key)
+                },
+                didClean: { key in
+                    try router.resolveFailedHostSettlement(afterCleanup: key)
+                }
+            )
+        } catch {
+            // One bounded attempt is made for each explicit report action.
+            // Failure retains the first cleanup authority and the failed
+            // settlement, so another action can safely retry later.
+            throw FeedbackReportCoordinatorError.hostSettlementFailed
+        }
+        try await router.waitForHostSettlement()
+        guard router.hostLeaseID(for: hostID) == hostLeaseID else {
+            throw FeedbackReportCoordinatorError.hostUnavailable
+        }
         let explicitReportID = crashOffer?.reportID
         let incomingIdentity: FeedbackReportContextIdentity = if let taskID {
             .task(taskID: taskID, runID: runID)
@@ -252,6 +278,14 @@ struct FeedbackReportCoordinator {
             guard active.hostID == hostID else {
                 throw FeedbackReportCoordinatorError.alreadyPresented
             }
+            return
+        }
+        if try router.reactivatePendingLaunch(
+            matching: incomingIdentity,
+            explicitReportID: explicitReportID,
+            hostID: hostID,
+            hostLeaseID: hostLeaseID
+        ) {
             return
         }
         let proposed = FeedbackReportLaunch(
@@ -343,17 +377,51 @@ struct FeedbackReportCoordinator {
 
 @MainActor
 final class FeedbackReportRouter: ObservableObject {
+    static let maximumHostSettlementWaiters = 8
+
+    private struct PresentationKey: Equatable {
+        let hostID: UUID
+        let reportID: UUID
+        let leaseID: UUID
+    }
+
+    private struct HostSettlement {
+        let key: PresentationKey
+        let launch: FeedbackReportLaunch
+        var failed: Bool
+    }
+
+    private struct PendingLaunchCapability {
+        let sourceKey: PresentationKey
+        let launch: FeedbackReportLaunch
+    }
+
+    private enum SettlementWaitOutcome {
+        case succeeded
+        case failed
+        case cancelled
+        case capacityExceeded
+    }
+
     @Published private(set) var launch: FeedbackReportLaunch?
     private var hostLeases: [UUID: UUID] = [:]
     private var launchLeaseID: UUID?
+    private var launchDidMount = false
+    private var pendingLaunch: PendingLaunchCapability?
+    private var hostSettlement: HostSettlement?
+    private var earlySettlement: (key: PresentationKey, succeeded: Bool)?
+    private var settlementWaiters: [UUID: CheckedContinuation<SettlementWaitOutcome, Never>] = [:]
+
+    var isSettlingHostDeactivation: Bool { hostSettlement != nil }
+    var hasHostSettlementWaiters: Bool { !settlementWaiters.isEmpty }
+    var hostSettlementWaiterCount: Int { settlementWaiters.count }
 
     func register(hostID: UUID, leaseID: UUID) {
         if let previousLease = hostLeases[hostID],
            previousLease != leaseID,
            launch?.hostID == hostID,
            launchLeaseID == previousLease {
-            launch = nil
-            launchLeaseID = nil
+            releaseActivePresentation(hostID: hostID, leaseID: previousLease)
         }
         hostLeases[hostID] = leaseID
     }
@@ -361,9 +429,7 @@ final class FeedbackReportRouter: ObservableObject {
     func unregister(hostID: UUID, leaseID: UUID) {
         guard hostLeases[hostID] == leaseID else { return }
         hostLeases.removeValue(forKey: hostID)
-        guard launch?.hostID == hostID, launchLeaseID == leaseID else { return }
-        launch = nil
-        launchLeaseID = nil
+        releaseActivePresentation(hostID: hostID, leaseID: leaseID)
     }
 
     func hostLeaseID(for hostID: UUID) -> UUID? {
@@ -380,8 +446,141 @@ final class FeedbackReportRouter: ObservableObject {
             }
             return
         }
+        guard pendingLaunch == nil, hostSettlement == nil else {
+            throw FeedbackReportCoordinatorError.activeReportConflict
+        }
         launch = incoming
         launchLeaseID = hostLeaseID
+        launchDidMount = false
+    }
+
+    /// Transfers an unmounted presentation to a live host without changing the
+    /// report identity or its prefill/evidence payload. Once a sheet mounts,
+    /// durable draft settlement owns recovery instead of this transient handoff.
+    func reactivatePendingLaunch(
+        matching contextIdentity: FeedbackReportContextIdentity,
+        explicitReportID: UUID?,
+        hostID: UUID,
+        hostLeaseID: UUID
+    ) throws -> Bool {
+        guard hostLeases[hostID] == hostLeaseID else {
+            throw FeedbackReportCoordinatorError.hostUnavailable
+        }
+        guard launch == nil else {
+            throw FeedbackReportCoordinatorError.activeReportConflict
+        }
+        guard hostSettlement == nil else {
+            throw FeedbackReportCoordinatorError.activeReportConflict
+        }
+        guard let capability = pendingLaunch else { return false }
+        guard capability.sourceKey.reportID == capability.launch.id,
+              capability.launch.contextIdentity == contextIdentity,
+              explicitReportID == nil || explicitReportID == capability.launch.id
+        else { throw FeedbackReportCoordinatorError.activeReportConflict }
+        var pending = capability.launch
+        pending.hostID = hostID
+        pendingLaunch = nil
+        launch = pending
+        launchLeaseID = hostLeaseID
+        launchDidMount = false
+        return true
+    }
+
+    func markPresentationMounted(hostID: UUID, reportID: UUID, leaseID: UUID) {
+        guard hostLeases[hostID] == leaseID,
+              launch?.hostID == hostID,
+              launch?.id == reportID,
+              launchLeaseID == leaseID
+        else { return }
+        launchDidMount = true
+    }
+
+    func waitForHostSettlement() async throws {
+        try Task.checkCancellation()
+        guard let hostSettlement else { return }
+        guard !hostSettlement.failed else {
+            throw FeedbackReportCoordinatorError.hostSettlementFailed
+        }
+        let waiterID = UUID()
+        let outcome = await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<SettlementWaitOutcome, Never>) in
+                if Task.isCancelled {
+                    continuation.resume(returning: .cancelled)
+                } else if settlementWaiters.count >= Self.maximumHostSettlementWaiters {
+                    continuation.resume(returning: .capacityExceeded)
+                } else {
+                    settlementWaiters[waiterID] = continuation
+                }
+            }
+        } onCancel: {
+            Task { @MainActor [weak self] in
+                self?.cancelSettlementWaiter(waiterID)
+            }
+        }
+        switch outcome {
+        case .succeeded:
+            try Task.checkCancellation()
+        case .failed:
+            throw FeedbackReportCoordinatorError.hostSettlementFailed
+        case .capacityExceeded:
+            throw FeedbackReportCoordinatorError.hostSettlementWaiterLimitReached
+        case .cancelled:
+            throw CancellationError()
+        }
+    }
+
+    func completeHostDeactivation(
+        hostID: UUID,
+        reportID: UUID,
+        leaseID: UUID,
+        succeeded: Bool
+    ) {
+        let key = PresentationKey(hostID: hostID, reportID: reportID, leaseID: leaseID)
+        if var settlement = hostSettlement, settlement.key == key {
+            settlement.failed = !succeeded
+            if succeeded {
+                pendingLaunch = PendingLaunchCapability(
+                    sourceKey: settlement.key,
+                    launch: settlement.launch
+                )
+                hostSettlement = nil
+            } else {
+                hostSettlement = settlement
+            }
+            let waiters = Array(settlementWaiters.values)
+            settlementWaiters.removeAll()
+            let outcome: SettlementWaitOutcome = succeeded ? .succeeded : .failed
+            waiters.forEach { $0.resume(returning: outcome) }
+            return
+        }
+        guard launch?.hostID == hostID,
+              launch?.id == reportID,
+              launchLeaseID == leaseID,
+              launchDidMount
+        else { return }
+        earlySettlement = (key, succeeded)
+    }
+
+    func validateFailedHostSettlement(
+        forCleanup key: FeedbackPreparedPreviewCleanupKey
+    ) throws {
+        guard let settlement = hostSettlement,
+              settlement.failed,
+              settlement.key.hostID == key.sourceHostID,
+              settlement.key.reportID == key.reportID,
+              settlement.key.leaseID == key.sourceLeaseID,
+              settlement.launch.contextIdentity == key.contextIdentity
+        else { throw FeedbackReportCoordinatorError.hostSettlementFailed }
+    }
+
+    func resolveFailedHostSettlement(afterCleanup key: FeedbackPreparedPreviewCleanupKey) throws {
+        try validateFailedHostSettlement(forCleanup: key)
+        completeHostDeactivation(
+            hostID: key.sourceHostID,
+            reportID: key.reportID,
+            leaseID: key.sourceLeaseID,
+            succeeded: true
+        )
     }
 
     func dismiss(hostID: UUID, reportID: UUID, leaseID: UUID) {
@@ -390,8 +589,20 @@ final class FeedbackReportRouter: ObservableObject {
               launch?.id == reportID,
               launchLeaseID == leaseID
         else { return }
+        if let earlySettlement,
+           earlySettlement.key == PresentationKey(hostID: hostID, reportID: reportID, leaseID: leaseID),
+           earlySettlement.succeeded {
+            if let launch {
+                pendingLaunch = PendingLaunchCapability(
+                    sourceKey: earlySettlement.key,
+                    launch: launch
+                )
+            }
+        }
         launch = nil
         launchLeaseID = nil
+        launchDidMount = false
+        earlySettlement = nil
     }
 
     func launch(for hostID: UUID, leaseID: UUID) -> FeedbackReportLaunch? {
@@ -400,6 +611,41 @@ final class FeedbackReportRouter: ObservableObject {
               launchLeaseID == leaseID
         else { return nil }
         return launch
+    }
+
+    private func releaseActivePresentation(hostID: UUID, leaseID: UUID) {
+        guard let active = launch,
+              active.hostID == hostID,
+              launchLeaseID == leaseID
+        else { return }
+        if launchDidMount {
+            let key = PresentationKey(hostID: hostID, reportID: active.id, leaseID: leaseID)
+            if let earlySettlement, earlySettlement.key == key {
+                if earlySettlement.succeeded {
+                    pendingLaunch = PendingLaunchCapability(
+                        sourceKey: key,
+                        launch: active
+                    )
+                } else {
+                    hostSettlement = HostSettlement(key: key, launch: active, failed: true)
+                }
+                self.earlySettlement = nil
+            } else {
+                hostSettlement = HostSettlement(key: key, launch: active, failed: false)
+            }
+        } else {
+            pendingLaunch = PendingLaunchCapability(
+                sourceKey: PresentationKey(hostID: hostID, reportID: active.id, leaseID: leaseID),
+                launch: active
+            )
+        }
+        launch = nil
+        launchLeaseID = nil
+        launchDidMount = false
+    }
+
+    private func cancelSettlementWaiter(_ waiterID: UUID) {
+        settlementWaiters.removeValue(forKey: waiterID)?.resume(returning: .cancelled)
     }
 }
 

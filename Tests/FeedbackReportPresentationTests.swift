@@ -1058,26 +1058,449 @@ struct FeedbackReportPresentationTests {
         let hostID = UUID()
         let firstLease = UUID()
         let secondLease = UUID()
-        let firstLaunch = FeedbackReportLaunch(hostID: hostID, entryPoint: .help)
-
+        let fingerprint = String(repeating: "a", count: 64)
+        let crash = CrashReportSummary(
+            url: URL(fileURLWithPath: "/tmp/astra-retained.crash"), appName: "ASTRA Dev",
+            modifiedAt: Date(timeIntervalSince1970: 1_800_000_000), sizeBytes: 512
+        )
+        let firstLaunch = FeedbackReportLaunch(
+            hostID: hostID, entryPoint: .crashRecovery,
+            prefill: FeedbackReportPrefill(
+                intendedOutcome: "Recover after the crash",
+                actualResult: "ASTRA closed",
+                expectedResult: "The report should remain available",
+                workBlocked: true
+            ),
+            crashReports: [crash], crashFingerprint: fingerprint
+        )
         router.register(hostID: hostID, leaseID: firstLease)
         try router.activate(firstLaunch, hostLeaseID: firstLease)
         #expect(router.launch(for: hostID, leaseID: firstLease)?.id == firstLaunch.id)
-
         router.register(hostID: hostID, leaseID: secondLease)
         #expect(router.launch == nil)
         #expect(router.launch(for: hostID, leaseID: firstLease) == nil)
         router.unregister(hostID: hostID, leaseID: firstLease)
         #expect(router.hostLeaseID(for: hostID) == secondLease)
-
         let secondLaunch = FeedbackReportLaunch(hostID: hostID, entryPoint: .logs)
-        try router.activate(secondLaunch, hostLeaseID: secondLease)
-        router.dismiss(hostID: hostID, reportID: secondLaunch.id, leaseID: firstLease)
-        #expect(router.launch(for: hostID, leaseID: secondLease)?.id == secondLaunch.id)
+        #expect(throws: FeedbackReportCoordinatorError.activeReportConflict) {
+            try router.activate(secondLaunch, hostLeaseID: secondLease)
+        }
+        #expect(throws: FeedbackReportCoordinatorError.activeReportConflict) {
+            _ = try router.reactivatePendingLaunch(
+                matching: .general, explicitReportID: nil,
+                hostID: hostID, hostLeaseID: secondLease
+            )
+        }
+        #expect(throws: FeedbackReportCoordinatorError.activeReportConflict) {
+            _ = try router.reactivatePendingLaunch(
+                matching: .crashRecovery(fingerprint), explicitReportID: UUID(),
+                hostID: hostID, hostLeaseID: secondLease
+            )
+        }
+        #expect(try router.reactivatePendingLaunch(
+            matching: .crashRecovery(fingerprint), explicitReportID: firstLaunch.id,
+            hostID: hostID, hostLeaseID: secondLease
+        ))
+        let retained = try #require(router.launch(for: hostID, leaseID: secondLease))
+        #expect(retained.id == firstLaunch.id)
+        #expect(retained.prefill == firstLaunch.prefill)
+        #expect(retained.crashReports == firstLaunch.crashReports)
+        #expect(retained.crashFingerprint == firstLaunch.crashFingerprint)
+        router.dismiss(hostID: hostID, reportID: firstLaunch.id, leaseID: firstLease)
+        #expect(router.launch(for: hostID, leaseID: secondLease)?.id == firstLaunch.id)
         router.dismiss(hostID: hostID, reportID: UUID(), leaseID: secondLease)
-        #expect(router.launch(for: hostID, leaseID: secondLease)?.id == secondLaunch.id)
-        router.dismiss(hostID: hostID, reportID: secondLaunch.id, leaseID: secondLease)
+        #expect(router.launch(for: hostID, leaseID: secondLease)?.id == firstLaunch.id)
+        router.dismiss(hostID: hostID, reportID: firstLaunch.id, leaseID: secondLease)
         #expect(router.launch == nil)
+    }
+
+    @Test("Host teardown before sheet mount releases the router for another window")
+    @MainActor
+    func deadHostReleaseAllowsAnotherWindow() async throws {
+        let fixture = try makeFixture()
+        defer { fixture.cleanup() }
+        let router = FeedbackReportRouter()
+        let coordinator = FeedbackReportCoordinator(
+            router: router, modelContainer: fixture.container,
+            crashLedger: EmptyCrashLedger(), storageRoot: fixture.root
+        )
+        let firstHost = UUID()
+        let firstLease = UUID()
+        let taskID = UUID()
+        let runID = UUID()
+        let runtimeEvidence = RuntimeFeedbackPersistedEvidence(
+            runtimeID: "codex",
+            providerVersion: "1.2.3",
+            executableFound: true,
+            readiness: "ready",
+            failureCategory: "provider_failed",
+            sanitizedSummary: "The provider stopped before completion.",
+            exitCode: 1,
+            stopReason: "provider_failed"
+        )
+        let prefill = FeedbackReportPrefill(
+            intendedOutcome: "Publish the reviewed workspace",
+            actualResult: "The report sheet did not mount",
+            expectedResult: "The same report should remain available",
+            workBlocked: true
+        )
+        router.register(hostID: firstHost, leaseID: firstLease)
+        try await coordinator.present(
+            from: .taskFailure, hostID: firstHost, prefill: prefill,
+            taskID: taskID, runID: runID,
+            runtimeEvidence: runtimeEvidence
+        )
+        let original = try #require(router.launch)
+        #expect(original.hostID == firstHost)
+        router.unregister(hostID: firstHost, leaseID: firstLease)
+        #expect(router.launch == nil)
+        #expect(router.hostLeaseID(for: firstHost) == nil)
+        let secondHost = UUID()
+        let secondLease = UUID()
+        router.register(hostID: secondHost, leaseID: secondLease)
+        try await coordinator.present(
+            from: .taskFailure, hostID: secondHost, taskID: taskID, runID: runID
+        )
+        let handedOff = try #require(router.launch(for: secondHost, leaseID: secondLease))
+        #expect(handedOff.id == original.id)
+        #expect(handedOff.hostID == secondHost)
+        #expect(handedOff.entryPoint == original.entryPoint)
+        #expect(handedOff.prefill == original.prefill)
+        #expect(handedOff.contextIdentity == original.contextIdentity)
+        #expect(handedOff.taskID == original.taskID)
+        #expect(handedOff.runID == original.runID)
+        #expect(handedOff.runtimeEvidence == original.runtimeEvidence)
+        #expect(handedOff.crashReports == original.crashReports)
+        #expect(handedOff.crashFingerprint == original.crashFingerprint)
+    }
+
+    @Test("Mounted host teardown blocks a second presentation until durable settlement completes")
+    @MainActor
+    func mountedHostSettlementBarrier() async throws {
+        let fixture = try makeFixture()
+        defer { fixture.cleanup() }
+        let router = FeedbackReportRouter()
+        let coordinator = FeedbackReportCoordinator(
+            router: router, modelContainer: fixture.container,
+            crashLedger: EmptyCrashLedger(), storageRoot: fixture.root
+        )
+        let firstHost = UUID()
+        let firstLease = UUID()
+        let taskID = UUID()
+        let runID = UUID()
+        let originalPrefill = FeedbackReportPrefill(
+            intendedOutcome: "Finish the provider task",
+            actualResult: "The provider stopped",
+            expectedResult: "The provider should finish",
+            workBlocked: true
+        )
+        let originalRuntime = RuntimeFeedbackPersistedEvidence(
+            runtimeID: "claude",
+            providerVersion: "9.9.9",
+            failureCategory: "provider_failed",
+            sanitizedSummary: "The persisted provider run stopped.",
+            exitCode: 2,
+            stopReason: "provider_failed"
+        )
+        let firstLaunch = FeedbackReportLaunch(
+            hostID: firstHost, entryPoint: .taskFailure, prefill: originalPrefill,
+            taskID: taskID, runID: runID,
+            runtimeEvidence: originalRuntime
+        )
+        try mountLaunch(firstLaunch, on: router, hostID: firstHost, leaseID: firstLease)
+        router.unregister(hostID: firstHost, leaseID: firstLease)
+        #expect(router.launch == nil)
+        #expect(router.isSettlingHostDeactivation)
+        let secondHost = UUID()
+        let secondLease = UUID()
+        router.register(hostID: secondHost, leaseID: secondLease)
+        let presentation = Task { @MainActor in
+            try await coordinator.present(
+                from: .taskFailure,
+                hostID: secondHost,
+                prefill: FeedbackReportPrefill(
+                    intendedOutcome: "Different caller data",
+                    actualResult: "Different caller data",
+                    expectedResult: "Different caller data",
+                    workBlocked: false
+                ),
+                taskID: taskID, runID: runID,
+                runtimeEvidence: nil
+            )
+        }
+        await waitForSettlementWaiters(on: router)
+        #expect(router.hasHostSettlementWaiters)
+        #expect(router.launch == nil)
+        let service = FeedbackReportPreparationService(
+            modelContainer: fixture.container,
+            crashOfferService: fixture.crashService,
+            storageRoot: fixture.root,
+            defaults: fixture.defaults
+        )
+        try service.saveProgress(launch: firstLaunch, form: validForm())
+        router.completeHostDeactivation(
+            hostID: firstHost, reportID: firstLaunch.id,
+            leaseID: firstLease, succeeded: true
+        )
+        try await presentation.value
+        #expect(!router.isSettlingHostDeactivation)
+        #expect(router.launch?.id == firstLaunch.id)
+        #expect(router.launch?.hostID == secondHost)
+        #expect(router.launch?.prefill == originalPrefill)
+        #expect(router.launch?.runtimeEvidence == originalRuntime)
+        #expect(router.launch?.taskID == taskID)
+        #expect(router.launch?.runID == runID)
+        #expect(try fetchReports(fixture.container).map(\.id) == [firstLaunch.id])
+    }
+
+    @Test("Mounted crash settlement preserves the exact claimed launch payload")
+    @MainActor
+    func mountedCrashSettlementPreservesPayload() async throws {
+        let fixture = try makeFixture()
+        defer { fixture.cleanup() }
+        let crashURL = fixture.root.appendingPathComponent("mounted.crash")
+        try Data("Incident Identifier: MOUNTED\nException Type: EXC_BAD_ACCESS\n".utf8)
+            .write(to: crashURL)
+        let ledger = FeedbackCrashOfferService(defaults: fixture.defaults)
+        let offer = try #require(try await ledger.claimOffer(from: [crashFileSummary(crashURL)]))
+        let router = FeedbackReportRouter()
+        let coordinator = FeedbackReportCoordinator(
+            router: router, modelContainer: fixture.container,
+            crashLedger: ledger, storageRoot: fixture.root
+        )
+        let firstHost = UUID()
+        let firstLease = UUID()
+        let originalPrefill = FeedbackReportPrefill(
+            intendedOutcome: "Recover the interrupted work",
+            actualResult: "ASTRA closed unexpectedly",
+            expectedResult: "ASTRA should remain open",
+            workBlocked: true
+        )
+        router.register(hostID: firstHost, leaseID: firstLease)
+        try await coordinator.present(
+            from: .crashRecovery, hostID: firstHost, prefill: originalPrefill,
+            crashOffer: offer
+        )
+        let firstLaunch = try #require(router.launch)
+        router.markPresentationMounted(
+            hostID: firstHost, reportID: firstLaunch.id, leaseID: firstLease
+        )
+        router.unregister(hostID: firstHost, leaseID: firstLease)
+        let secondHost = UUID()
+        router.register(hostID: secondHost, leaseID: UUID())
+        let presentation = Task { @MainActor in
+            try await coordinator.present(
+                from: .crashRecovery, hostID: secondHost, prefill: .empty,
+                runtimeEvidence: nil,
+                crashOffer: offer
+            )
+        }
+        await waitForSettlementWaiters(on: router)
+        #expect(router.hasHostSettlementWaiters)
+        let service = FeedbackReportPreparationService(
+            modelContainer: fixture.container,
+            crashOfferService: ledger,
+            storageRoot: fixture.root,
+            defaults: fixture.defaults
+        )
+        try service.saveProgress(launch: firstLaunch, form: validForm())
+        router.completeHostDeactivation(
+            hostID: firstHost, reportID: firstLaunch.id,
+            leaseID: firstLease, succeeded: true
+        )
+        try await presentation.value
+        let retained = try #require(router.launch)
+        #expect(retained.id == firstLaunch.id)
+        #expect(retained.hostID == secondHost)
+        #expect(retained.prefill == originalPrefill)
+        #expect(retained.crashReports == firstLaunch.crashReports)
+        #expect(retained.crashFingerprint == firstLaunch.crashFingerprint)
+        #expect(try fetchReports(fixture.container).map(\.id) == [firstLaunch.id])
+    }
+
+    @Test("Failed mounted settlement blocks duplicate report ownership")
+    @MainActor
+    func failedMountedSettlementBlocksPresentation() async throws {
+        let fixture = try makeFixture()
+        defer { fixture.cleanup() }
+        let router = FeedbackReportRouter()
+        let coordinator = FeedbackReportCoordinator(
+            router: router, modelContainer: fixture.container,
+            crashLedger: EmptyCrashLedger(), storageRoot: fixture.root
+        )
+        let firstHost = UUID()
+        let firstLease = UUID()
+        let firstLaunch = FeedbackReportLaunch(hostID: firstHost, entryPoint: .help)
+        try mountLaunch(firstLaunch, on: router, hostID: firstHost, leaseID: firstLease)
+        router.unregister(hostID: firstHost, leaseID: firstLease)
+        let secondHost = UUID()
+        router.register(hostID: secondHost, leaseID: UUID())
+        let presentation = Task { @MainActor in
+            try await coordinator.present(from: .logs, hostID: secondHost)
+        }
+        await waitForSettlementWaiters(on: router)
+        #expect(router.hasHostSettlementWaiters)
+        router.completeHostDeactivation(
+            hostID: firstHost, reportID: firstLaunch.id,
+            leaseID: firstLease, succeeded: false
+        )
+        await #expect(throws: FeedbackReportCoordinatorError.hostSettlementFailed) {
+            try await presentation.value
+        }
+        #expect(router.isSettlingHostDeactivation)
+        #expect(router.launch == nil)
+        #expect(try fetchReports(fixture.container).isEmpty)
+    }
+
+    @Test("Cancelled settlement waiter cannot activate after completion")
+    @MainActor
+    func cancelledMountedSettlementWaiter() async throws {
+        let fixture = try makeFixture()
+        defer { fixture.cleanup() }
+        let router = FeedbackReportRouter()
+        let coordinator = FeedbackReportCoordinator(
+            router: router, modelContainer: fixture.container,
+            crashLedger: EmptyCrashLedger(), storageRoot: fixture.root
+        )
+        let firstHost = UUID()
+        let firstLease = UUID()
+        let firstLaunch = FeedbackReportLaunch(hostID: firstHost, entryPoint: .help)
+        try mountLaunch(firstLaunch, on: router, hostID: firstHost, leaseID: firstLease)
+        router.unregister(hostID: firstHost, leaseID: firstLease)
+        let secondHost = UUID()
+        router.register(hostID: secondHost, leaseID: UUID())
+        let presentation = Task { @MainActor in
+            try await coordinator.present(from: .logs, hostID: secondHost)
+        }
+        await waitForSettlementWaiters(on: router)
+        #expect(router.hasHostSettlementWaiters)
+        presentation.cancel()
+        await #expect(throws: CancellationError.self) {
+            try await presentation.value
+        }
+        #expect(router.hostSettlementWaiterCount == 0)
+        #expect(router.isSettlingHostDeactivation)
+        #expect(router.launch == nil)
+        #expect(try fetchReports(fixture.container).isEmpty)
+        router.completeHostDeactivation(
+            hostID: firstHost, reportID: firstLaunch.id,
+            leaseID: firstLease, succeeded: true
+        )
+    }
+
+    @Test("Settlement waiters are bounded and individually removed on cancellation")
+    @MainActor
+    func settlementWaitersStayBounded() async throws {
+        let router = FeedbackReportRouter()
+        let hostID = UUID()
+        let leaseID = UUID()
+        let launch = FeedbackReportLaunch(hostID: hostID, entryPoint: .help)
+        try mountLaunch(launch, on: router, hostID: hostID, leaseID: leaseID)
+        router.unregister(hostID: hostID, leaseID: leaseID)
+        var waiters: [Task<Void, Error>] = []
+        for _ in 0..<FeedbackReportRouter.maximumHostSettlementWaiters {
+            waiters.append(Task { @MainActor in
+                try await router.waitForHostSettlement()
+            })
+        }
+        await waitForSettlementWaiters(
+            on: router, count: FeedbackReportRouter.maximumHostSettlementWaiters
+        )
+        #expect(router.hostSettlementWaiterCount == FeedbackReportRouter.maximumHostSettlementWaiters)
+        await #expect(throws: FeedbackReportCoordinatorError.hostSettlementWaiterLimitReached) {
+            try await router.waitForHostSettlement()
+        }
+        waiters.forEach { $0.cancel() }
+        var cancelled = 0
+        for waiter in waiters {
+            do { try await waiter.value }
+            catch is CancellationError { cancelled += 1 }
+        }
+        #expect(cancelled == FeedbackReportRouter.maximumHostSettlementWaiters)
+        #expect(router.hostSettlementWaiterCount == 0)
+        #expect(router.isSettlingHostDeactivation)
+        router.completeHostDeactivation(
+            hostID: hostID, reportID: launch.id, leaseID: leaseID, succeeded: true
+        )
+    }
+
+    @Test("Close policy covers unsaved, draft, prepared, and queued reports")
+    func closePolicyMatrix() {
+        func action(_ stored: Bool, _ status: FeedbackLocalStatusV1?, _ dirty: Bool) -> FeedbackReportCloseAction {
+            FeedbackReportClosePolicy.action(
+                hasStoredReport: stored, storedStatus: status, isDirty: dirty,
+                isPreparing: dirty, hasPreview: dirty, isInvalidatingPreview: dirty
+            )
+        }
+        #expect(action(false, nil, true) == .offerDraftChoices)
+        #expect(action(true, .draft, false) == .offerDraftChoices)
+        #expect(action(true, .prepared, true) == .closePresentation)
+        #expect(action(true, .queued, true) == .closePresentation)
+    }
+
+    @Test("Prepared and queued Close are presentation-only and preserve package state")
+    @MainActor
+    func closeAfterPreparationDoesNotMutate() async throws {
+        let fixture = try makeFixture()
+        defer { fixture.cleanup() }
+        let launch = launch()
+        let form = validForm()
+        let service = FeedbackReportPreparationService(
+            modelContainer: fixture.container,
+            crashOfferService: fixture.crashService,
+            storageRoot: fixture.root,
+            defaults: fixture.defaults,
+            evidenceSourceProvider: { _, _, _ in .empty }
+        )
+        let preview = try await service.preparePreview(launch: launch, form: form)
+        try service.confirmPreparedPreview(preview, launch: launch, form: form)
+        let preparedPackage = try FeedbackOutboxService(
+            modelContainer: fixture.container,
+            storageRoot: fixture.root
+        ).recoverablePreparedPackage(reportID: launch.id)
+        let adoptedReportURL = preparedPackage.directoryURL
+            .appendingPathComponent(FeedbackEvidencePolicy.reportFileName)
+        let packageBytes = try Data(contentsOf: adoptedReportURL)
+        #expect(FeedbackReportClosePolicy.action(
+            hasStoredReport: true,
+            storedStatus: .prepared,
+            isDirty: true,
+            isPreparing: false,
+            hasPreview: true,
+            isInvalidatingPreview: false
+        ) == .closePresentation)
+        #expect(try fetchReport(fixture.container, id: launch.id)?.localStatus == .prepared)
+        #expect(try Data(contentsOf: adoptedReportURL) == packageBytes)
+
+        let recovered = try service.restoredPreparedPreview(
+            reportID: launch.id,
+            launch: launch,
+            form: form
+        )
+        try service.confirmAndQueue(recovered, launch: launch, form: form)
+        let router = FeedbackReportRouter()
+        let leaseID = UUID()
+        router.register(hostID: launch.hostID, leaseID: leaseID)
+        try router.activate(launch, hostLeaseID: leaseID)
+        var offeredDraftChoices = false
+        FeedbackReportClosePolicy.perform(
+            hasStoredReport: true,
+            storedStatus: .queued,
+            isDirty: true,
+            isPreparing: false,
+            hasPreview: false,
+            isInvalidatingPreview: false,
+            offerDraftChoices: { offeredDraftChoices = true },
+            closePresentation: {
+                router.dismiss(hostID: launch.hostID, reportID: launch.id, leaseID: leaseID)
+            }
+        )
+        #expect(!offeredDraftChoices)
+        #expect(router.launch == nil)
+        let queued = try #require(try fetchReport(fixture.container, id: launch.id))
+        #expect(queued.localStatus == .queued)
+        #expect(queued.uploadAttemptCount == 0)
+        #expect(try Data(contentsOf: adoptedReportURL) == packageBytes)
     }
 
     @Test("Crash alert policy declines only an explicit Not Now action")
@@ -1338,10 +1761,28 @@ private extension FeedbackReportRequiredField {
     static let allTestCases: [Self] = [.intendedOutcome, .actualResult, .expectedResult]
 }
 
+@MainActor
+private func mountLaunch(
+    _ launch: FeedbackReportLaunch, on router: FeedbackReportRouter,
+    hostID: UUID, leaseID: UUID
+) throws {
+    router.register(hostID: hostID, leaseID: leaseID)
+    try router.activate(launch, hostLeaseID: leaseID)
+    router.markPresentationMounted(hostID: hostID, reportID: launch.id, leaseID: leaseID)
+}
+
+@MainActor
+private func waitForSettlementWaiters(
+    on router: FeedbackReportRouter, count: Int = 1
+) async {
+    for _ in 0..<100 {
+        if router.hostSettlementWaiterCount == count { return }
+        await Task.yield()
+    }
+}
 private extension Optional where Wrapped == String {
     var orEmpty: String { self ?? "" }
 }
-
 private enum FeedbackReadinessTestError: Error {
     case outboxCorrupt
 }
@@ -1353,6 +1794,7 @@ private final class LockedInt: @unchecked Sendable {
     func increment() { lock.withLock { storage += 1 } }
     func incrementAndGet() -> Int { lock.withLock { storage += 1; return storage } }
 }
+
 
 private final class LockedDateInterval: @unchecked Sendable {
     private let lock = NSLock()

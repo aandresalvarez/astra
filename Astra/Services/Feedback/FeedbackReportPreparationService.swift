@@ -101,6 +101,7 @@ enum FeedbackReportPreparationError: Error, Equatable {
     case stalePreparedPreview
     case unsafeStagingPath
     case stagingCleanupFailed(String)
+    case cancelledPreviewCleanupFailed(FeedbackReportPreparedPreview, String)
     case crashEvidenceChanged
 }
 
@@ -302,13 +303,7 @@ struct FeedbackReportPreparationService {
             worker.cancel()
             throw error
         }
-        do {
-            try Task.checkCancellation()
-        } catch {
-            try removeTrustedStagingPackage(at: package.directoryURL, reportID: reportID)
-            throw error
-        }
-        return FeedbackReportPreparedPreview(
+        let preview = FeedbackReportPreparedPreview(
             reportID: reportID,
             contextIdentity: launch.contextIdentity,
             form: form,
@@ -316,6 +311,27 @@ struct FeedbackReportPreparationService {
             package: package,
             ownership: .trustedStaging
         )
+        do {
+            try Task.checkCancellation()
+        } catch {
+            do {
+                try removeTrustedStagingPackage(at: package.directoryURL, reportID: reportID)
+            } catch FeedbackReportPreparationError.stagingCleanupFailed(let message) {
+                // Retry inside the capability-owning boundary so cleanup that
+                // finishes after a view timeout cannot strand private staging.
+                // The first failure still propagates through the typed receipt.
+                do {
+                    try removeTrustedStagingPackage(at: package.directoryURL, reportID: reportID)
+                } catch FeedbackReportPreparationError.stagingCleanupFailed(let retryMessage) {
+                    throw FeedbackReportPreparationError.cancelledPreviewCleanupFailed(
+                        preview, retryMessage
+                    )
+                }
+                throw FeedbackReportPreparationError.cancelledPreviewCleanupFailed(preview, message)
+            }
+            throw error
+        }
+        return preview
     }
 
     private func validateCrashIdentity(_ launch: FeedbackReportLaunch) async throws {

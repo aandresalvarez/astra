@@ -46,7 +46,7 @@ target_for_path() {
       add_target "FeedbackReportPresentationTests"
       add_target "FeedbackCrashRecoveryTests"
       ;;
-    Tests/FeedbackReportPresentationTests.swift|Astra/Services/Feedback/FeedbackReportPreparationService.swift|Astra/Services/Feedback/FeedbackPreparationStagingReconciler.swift|Astra/Services/Feedback/FeedbackReportRouting.swift|Astra/Views/Feedback/*)
+    Tests/FeedbackReportPresentationTests.swift|Tests/FeedbackReportPresentationLifecycleTests.swift|Astra/Services/Feedback/FeedbackReportPreparationService.swift|Astra/Services/Feedback/FeedbackPreparationStagingReconciler.swift|Astra/Services/Feedback/FeedbackReportRouting.swift|Astra/Views/Feedback/*)
       add_target "FeedbackReportPresentationTests"
       add_target "FeedbackEvidencePrivacyTests"
       add_target "RuntimeFeedbackSnapshotTests"

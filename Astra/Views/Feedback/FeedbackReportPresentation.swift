@@ -60,6 +60,250 @@ enum FeedbackReportDismissChoice: String, CaseIterable, Equatable, Sendable {
     case discard
 }
 
+enum FeedbackReportCloseAction: Equatable, Sendable {
+    case closePresentation
+    case offerDraftChoices
+}
+
+enum FeedbackReportClosePolicy {
+    static func action(
+        hasStoredReport: Bool,
+        storedStatus: FeedbackLocalStatusV1?,
+        isDirty: Bool,
+        isPreparing: Bool,
+        hasPreview: Bool,
+        isInvalidatingPreview: Bool
+    ) -> FeedbackReportCloseAction {
+        if hasStoredReport {
+            guard storedStatus == .draft else { return .closePresentation }
+            return .offerDraftChoices
+        }
+        return isDirty || isPreparing || hasPreview || isInvalidatingPreview
+            ? .offerDraftChoices
+            : .closePresentation
+    }
+
+    static func perform(
+        hasStoredReport: Bool,
+        storedStatus: FeedbackLocalStatusV1?,
+        isDirty: Bool,
+        isPreparing: Bool,
+        hasPreview: Bool,
+        isInvalidatingPreview: Bool,
+        offerDraftChoices: () -> Void,
+        closePresentation: () -> Void
+    ) {
+        switch action(
+            hasStoredReport: hasStoredReport,
+            storedStatus: storedStatus,
+            isDirty: isDirty,
+            isPreparing: isPreparing,
+            hasPreview: hasPreview,
+            isInvalidatingPreview: isInvalidatingPreview
+        ) {
+        case .offerDraftChoices:
+            offerDraftChoices()
+        case .closePresentation:
+            closePresentation()
+        }
+    }
+}
+
+enum FeedbackReportOwnedWorkFailure: Equatable, Sendable {
+    case generic
+    case retainedCleanup(FeedbackPreparedPreviewCleanupKey)
+}
+
+enum FeedbackReportOwnedWorkResult: Equatable, Sendable {
+    case succeeded
+    case failed(FeedbackReportOwnedWorkFailure)
+    case cancelled
+}
+
+/// The live sheet remains the presentation owner while Keep Draft or Discard
+/// settles its staged preview. If bounded cancellation previously transferred
+/// cleanup to the process owner, Close must consume that first exact authority
+/// instead of deleting independently and leaving a stale capability behind.
+@MainActor
+enum FeedbackReportLiveCleanupFinalizer {
+    static func invalidate(
+        _ preview: FeedbackReportPreparedPreview,
+        sourceHostID: UUID,
+        sourceLeaseID: UUID,
+        cleanupOwner: FeedbackPreparedPreviewCleanupOwner,
+        fallbackCleanup: @MainActor () throws -> Void
+    ) throws -> FeedbackPreparedPreviewCleanupKey {
+        let expectedKey = FeedbackPreparedPreviewCleanupKey(
+            reportID: preview.reportID,
+            contextIdentity: preview.contextIdentity,
+            sourceHostID: sourceHostID,
+            sourceLeaseID: sourceLeaseID,
+            directoryURL: preview.package.directoryURL
+        )
+        if cleanupOwner.pendingKey != nil {
+            guard try cleanupOwner.retryPendingCleanup(matching: expectedKey) else {
+                throw FeedbackPreparedPreviewCleanupOwnerError.capabilityMismatch
+            }
+        } else {
+            try fallbackCleanup()
+        }
+        return expectedKey
+    }
+}
+
+private final class FeedbackReportOwnedWorkReceipt: @unchecked Sendable {
+    private let lock = NSLock()
+    private var result: FeedbackReportOwnedWorkResult?
+    private var waiters: [UUID: CheckedContinuation<FeedbackReportOwnedWorkResult, Never>] = [:]
+
+    var waiterCount: Int { lock.withLock { waiters.count } }
+    var isComplete: Bool { lock.withLock { result != nil } }
+    var terminalResult: FeedbackReportOwnedWorkResult? { lock.withLock { result } }
+
+    func wait() async -> FeedbackReportOwnedWorkResult {
+        let waiterID = UUID()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                lock.lock()
+                if let result {
+                    lock.unlock()
+                    continuation.resume(returning: result)
+                } else if Task.isCancelled {
+                    lock.unlock()
+                    continuation.resume(returning: .cancelled)
+                } else {
+                    waiters[waiterID] = continuation
+                    lock.unlock()
+                }
+            }
+        } onCancel: {
+            cancel(waiterID)
+        }
+    }
+
+    func complete(_ result: FeedbackReportOwnedWorkResult) {
+        let continuations: [CheckedContinuation<FeedbackReportOwnedWorkResult, Never>] = lock.withLock {
+            guard self.result == nil else { return [] }
+            self.result = result
+            let continuations = Array(waiters.values)
+            waiters.removeAll()
+            return continuations
+        }
+        continuations.forEach { $0.resume(returning: result) }
+    }
+
+    private func cancel(_ waiterID: UUID) {
+        let continuation = lock.withLock { waiters.removeValue(forKey: waiterID) }
+        continuation?.resume(returning: .cancelled)
+    }
+}
+
+@MainActor
+final class FeedbackReportOwnedWork {
+    private let receipt: FeedbackReportOwnedWorkReceipt
+    private let task: Task<Void, Never>
+
+    private init(receipt: FeedbackReportOwnedWorkReceipt, task: Task<Void, Never>) {
+        self.receipt = receipt
+        self.task = task
+    }
+
+    static func start(
+        operation: @escaping @MainActor () async throws -> Void,
+        onFailure: @escaping @MainActor (Error) -> FeedbackReportOwnedWorkFailure = { _ in .generic }
+    ) -> FeedbackReportOwnedWork {
+        let receipt = FeedbackReportOwnedWorkReceipt()
+        let task = Task { @MainActor in
+            do {
+                try await operation()
+                receipt.complete(.succeeded)
+            } catch is CancellationError {
+                // Preparation owns cancellation cleanup. Reaching this catch
+                // means no staged capability escaped the operation.
+                receipt.complete(.succeeded)
+            } catch {
+                receipt.complete(.failed(onFailure(error)))
+            }
+        }
+        return FeedbackReportOwnedWork(receipt: receipt, task: task)
+    }
+
+    func cancel() { task.cancel() }
+    func wait() async -> FeedbackReportOwnedWorkResult { await receipt.wait() }
+    var settlementWaiterCount: Int { receipt.waiterCount }
+    var isTerminal: Bool { receipt.isComplete }
+    var terminalResult: FeedbackReportOwnedWorkResult? { receipt.terminalResult }
+}
+
+@MainActor
+enum FeedbackReportTaskSettlement {
+    static let maximumOwnedTasks = 2
+
+    static func cancelAndFinalize(
+        _ work: [FeedbackReportOwnedWork],
+        timeout: Duration = .seconds(2),
+        isResolvedRetainedCleanup: @MainActor (FeedbackPreparedPreviewCleanupKey) -> Bool = { _ in false },
+        finalize: @MainActor () throws -> Void
+    ) async -> Bool {
+        work.forEach { $0.cancel() }
+        let workSucceeded = await wait(for: work, timeout: timeout)
+        do {
+            try finalize()
+        } catch {
+            return false
+        }
+        if workSucceeded { return true }
+        // A retained-cleanup receipt describes a failure only until the exact
+        // live finalizer consumes that capability. Timeouts, generic errors,
+        // unresolved keys, and nonterminal work remain fail-closed.
+        return work.allSatisfy { item in
+            switch item.terminalResult {
+            case .succeeded:
+                return true
+            case .failed(.retainedCleanup(let key)):
+                return isResolvedRetainedCleanup(key)
+            case .failed(.generic):
+                return false
+            case .cancelled, .none:
+                return false
+            }
+        }
+    }
+
+    static func wait(
+        for work: [FeedbackReportOwnedWork],
+        timeout: Duration = .seconds(2)
+    ) async -> Bool {
+        guard !work.isEmpty else { return true }
+        guard work.count <= maximumOwnedTasks else { return false }
+        return await withTaskGroup(of: FeedbackReportOwnedWorkResult.self) { group in
+            for item in work {
+                group.addTask { await item.wait() }
+            }
+            group.addTask {
+                do { try await Task.sleep(for: timeout) }
+                catch { return .cancelled }
+                return .cancelled
+            }
+            var completed = 0
+            while let result = await group.next() {
+                switch result {
+                case .succeeded:
+                    completed += 1
+                    if completed == work.count {
+                        group.cancelAll()
+                        return true
+                    }
+                case .failed, .cancelled:
+                    group.cancelAll()
+                    return false
+                }
+            }
+            return false
+        }
+    }
+}
+
 struct FeedbackReportInteractionPolicy: Equatable, Sendable {
     let canEdit: Bool
     let canPrepare: Bool

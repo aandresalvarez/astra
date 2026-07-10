@@ -5,7 +5,9 @@ import ASTRAModels
 
 struct FeedbackReportView: View {
     let launch: FeedbackReportLaunch
+    let hostLeaseID: UUID
     let onDismiss: () -> Void
+    let onHostDeactivationSettled: (Bool) -> Void
 
     @Environment(\.modelContext) private var modelContext
     @EnvironmentObject private var crashOfferService: FeedbackCrashOfferService
@@ -16,16 +18,23 @@ struct FeedbackReportView: View {
     @State private var invalidatingPreview: FeedbackReportPreparedPreview?
     @State private var isPreparing = false
     @State private var formRevision = 0
-    @State private var preparationTask: Task<Void, Never>?
-    @State private var invalidationTask: Task<Void, Never>?
+    @State private var preparationWork: FeedbackReportOwnedWork?
+    @State private var invalidationWork: FeedbackReportOwnedWork?
     @State private var progressSaveTask: Task<Void, Never>?
     @State private var errorMessage: String?
     @State private var showDismissChoices = false
     @State private var isRestoring = false
 
-    init(launch: FeedbackReportLaunch, onDismiss: @escaping () -> Void) {
+    init(
+        launch: FeedbackReportLaunch,
+        hostLeaseID: UUID,
+        onDismiss: @escaping () -> Void,
+        onHostDeactivationSettled: @escaping (Bool) -> Void
+    ) {
         self.launch = launch
+        self.hostLeaseID = hostLeaseID
         self.onDismiss = onDismiss
+        self.onHostDeactivationSettled = onHostDeactivationSettled
         let initial = FeedbackReportFormState(launch: launch)
         _form = State(initialValue: initial)
         _initialForm = State(initialValue: initial)
@@ -77,19 +86,17 @@ struct FeedbackReportView: View {
                 self.preview = nil
                 invalidatingPreview = preview
                 let invalidationRevision = formRevision
-                invalidationTask = Task { @MainActor in
-                    do {
-                        try service.invalidatePreparedPreview(preview)
-                        if invalidatingPreview == preview {
-                            invalidatingPreview = nil
-                            invalidationTask = nil
-                            if invalidationRevision <= formRevision {
-                                scheduleProgressSave()
-                            }
+                invalidationWork = FeedbackReportOwnedWork.start {
+                    try service.invalidatePreparedPreview(preview)
+                    if invalidatingPreview == preview {
+                        invalidatingPreview = nil
+                        if invalidationRevision <= formRevision {
+                            scheduleProgressSave()
                         }
-                    } catch {
-                        errorMessage = safeMessage(error)
                     }
+                } onFailure: { error in
+                    errorMessage = safeMessage(error)
+                    return .generic
                 }
             }
             scheduleProgressSave()
@@ -112,26 +119,39 @@ struct FeedbackReportView: View {
             } catch { errorMessage = safeMessage(error) }
         }
         .onDisappear {
-            preparationTask?.cancel()
             progressSaveTask?.cancel()
-            let activePreparation = preparationTask
-            let activeInvalidation = invalidationTask
-            let stagedPreview = preview ?? invalidatingPreview
-            let formSnapshot = form
-            let shouldPersist = report != nil || hasMeaningfulProgress
+            let ownedWork = [preparationWork, invalidationWork].compactMap { $0 }
             Task { @MainActor in
-                if let activePreparation { await activePreparation.value }
-                if let activeInvalidation { await activeInvalidation.value }
-                do {
+                var resolvedCleanupKeys: Set<FeedbackPreparedPreviewCleanupKey> = []
+                let settled = await FeedbackReportTaskSettlement.cancelAndFinalize(
+                    ownedWork,
+                    isResolvedRetainedCleanup: { resolvedCleanupKeys.contains($0) }
+                ) {
+                    // Read staged ownership only after work reaches a terminal
+                    // receipt. A late invalidation failure therefore remains
+                    // visible to the trusted cleanup boundary.
+                    let stagedPreview = preview ?? invalidatingPreview
+                    if let stagedPreview {
+                        resolvedCleanupKeys.insert(try invalidateForLiveClose(stagedPreview))
+                    }
                     try service.settleForHostDeactivation(
                         launch: launch,
-                        form: formSnapshot,
-                        preview: stagedPreview,
-                        shouldPersist: shouldPersist
+                        form: form,
+                        preview: nil,
+                        shouldPersist: report != nil || hasMeaningfulProgress
                     )
-                } catch {
-                    AppLogger.error("Feedback host deactivation could not fully settle", category: "Diagnostics")
+                    preview = nil
+                    invalidatingPreview = nil
                 }
+                guard settled else {
+                    AppLogger.error(
+                        "Feedback host deactivation could not settle owned work",
+                        category: "Diagnostics"
+                    )
+                    onHostDeactivationSettled(false)
+                    return
+                }
+                onHostDeactivationSettled(true)
                 onDismiss()
             }
         }
@@ -303,24 +323,51 @@ struct FeedbackReportView: View {
     private func prepare() {
         progressSaveTask?.cancel()
         progressSaveTask = nil
-        preparationTask?.cancel()
+        preparationWork?.cancel()
         isPreparing = true
         errorMessage = nil
         let revision = formRevision
         let preparedForm = form
-        preparationTask = Task { @MainActor in
+        preparationWork = FeedbackReportOwnedWork.start {
             defer { isPreparing = false }
-            do {
-                let result = try await service.preparePreview(launch: launch, form: preparedForm)
-                if Task.isCancelled || revision != formRevision || preparedForm != form {
-                    invalidatingPreview = result
-                    try service.invalidatePreparedPreview(result)
+            let result = try await service.preparePreview(launch: launch, form: preparedForm)
+            if Task.isCancelled || revision != formRevision || preparedForm != form {
+                invalidatingPreview = result
+                try service.invalidatePreparedPreview(result)
+                if invalidatingPreview == result {
                     invalidatingPreview = nil
-                } else {
-                    preview = result
+                }
+            } else {
+                preview = result
+            }
+        } onFailure: { error in
+            isPreparing = false
+            if case FeedbackReportPreparationError.cancelledPreviewCleanupFailed(
+                let retainedPreview, _
+            ) = error {
+                invalidatingPreview = retainedPreview
+                let key = FeedbackPreparedPreviewCleanupKey(
+                    reportID: retainedPreview.reportID,
+                    contextIdentity: retainedPreview.contextIdentity,
+                    sourceHostID: launch.hostID,
+                    sourceLeaseID: hostLeaseID,
+                    directoryURL: retainedPreview.package.directoryURL
+                )
+                do {
+                    try FeedbackPreparedPreviewCleanupOwner.shared.retain(key: key) {
+                        try service.invalidatePreparedPreview(retainedPreview)
+                    }
+                    errorMessage = safeMessage(error)
+                    return .retainedCleanup(key)
+                } catch {
+                    AppLogger.error(
+                        "Feedback cleanup capability could not transfer to its lifecycle owner",
+                        category: "Diagnostics"
+                    )
                 }
             }
-            catch { errorMessage = safeMessage(error) }
+            errorMessage = safeMessage(error)
+            return .generic
         }
     }
 
@@ -337,34 +384,42 @@ struct FeedbackReportView: View {
     }
 
     private func requestDismiss() {
-        if let report {
-            guard let status = try? report.requireLocalStatus() else {
-                onDismiss()
-                return
-            }
-            guard status == .draft else {
-                onDismiss()
-                return
-            }
-        }
-        if isDirty || isPreparing || report != nil || preview != nil || invalidatingPreview != nil {
-            showDismissChoices = true
-        }
-        else { onDismiss() }
+        FeedbackReportClosePolicy.perform(
+            hasStoredReport: report != nil,
+            storedStatus: report.flatMap { try? $0.requireLocalStatus() },
+            isDirty: isDirty,
+            isPreparing: isPreparing,
+            hasPreview: preview != nil,
+            isInvalidatingPreview: invalidatingPreview != nil,
+            offerDraftChoices: { showDismissChoices = true },
+            closePresentation: onDismiss
+        )
     }
 
     private func finishDismiss(keepingDraft: Bool) {
-        preparationTask?.cancel()
         progressSaveTask?.cancel()
+        let ownedWork = [preparationWork, invalidationWork].compactMap { $0 }
         Task { @MainActor in
-            if let preparationTask { await preparationTask.value }
-            if let invalidationTask { await invalidationTask.value }
-            do {
-                if let preview { try service.invalidatePreparedPreview(preview); self.preview = nil }
+            var resolvedCleanupKeys: Set<FeedbackPreparedPreviewCleanupKey> = []
+            let settled = await FeedbackReportTaskSettlement.cancelAndFinalize(
+                ownedWork,
+                isResolvedRetainedCleanup: { resolvedCleanupKeys.contains($0) }
+            ) {
+                if let preview {
+                    resolvedCleanupKeys.insert(try invalidateForLiveClose(preview))
+                    self.preview = nil
+                }
                 if let invalidatingPreview {
-                    try service.invalidatePreparedPreview(invalidatingPreview)
+                    resolvedCleanupKeys.insert(try invalidateForLiveClose(invalidatingPreview))
                     self.invalidatingPreview = nil
                 }
+            }
+            clearTerminalOwnedWork()
+            guard settled else {
+                errorMessage = "Private evidence cleanup is still in progress. Try closing again."
+                return
+            }
+            do {
                 if keepingDraft {
                     if report != nil || hasMeaningfulProgress {
                         try service.saveProgress(launch: launch, form: form)
@@ -377,6 +432,24 @@ struct FeedbackReportView: View {
                 }
                 onDismiss()
             } catch { errorMessage = safeMessage(error) }
+        }
+    }
+
+    private func clearTerminalOwnedWork() {
+        if preparationWork?.isTerminal == true { preparationWork = nil }
+        if invalidationWork?.isTerminal == true { invalidationWork = nil }
+    }
+
+    private func invalidateForLiveClose(
+        _ stagedPreview: FeedbackReportPreparedPreview
+    ) throws -> FeedbackPreparedPreviewCleanupKey {
+        try FeedbackReportLiveCleanupFinalizer.invalidate(
+            stagedPreview,
+            sourceHostID: launch.hostID,
+            sourceLeaseID: hostLeaseID,
+            cleanupOwner: .shared
+        ) {
+            try service.invalidatePreparedPreview(stagedPreview)
         }
     }
 
@@ -410,11 +483,47 @@ struct FeedbackReportSheetHost: ViewModifier {
             get: { router.launch(for: hostID, leaseID: leaseID) },
             set: { _ in }
         )) { launch in
-            FeedbackReportView(launch: launch) {
-                router.dismiss(hostID: hostID, reportID: launch.id, leaseID: leaseID)
+            FeedbackReportView(
+                launch: launch,
+                hostLeaseID: leaseID,
+                onDismiss: {
+                    router.dismiss(hostID: hostID, reportID: launch.id, leaseID: leaseID)
+                },
+                onHostDeactivationSettled: { succeeded in
+                    router.completeHostDeactivation(
+                        hostID: hostID,
+                        reportID: launch.id,
+                        leaseID: leaseID,
+                        succeeded: succeeded
+                    )
+                }
+            )
+            .onAppear {
+                router.markPresentationMounted(
+                    hostID: hostID,
+                    reportID: launch.id,
+                    leaseID: leaseID
+                )
             }
         }
-        .onAppear { router.register(hostID: hostID, leaseID: leaseID) }
+        .onAppear {
+            do {
+                _ = try FeedbackPreparedPreviewCleanupOwner.shared.retryPendingCleanup(
+                    willClean: { key in
+                        try router.validateFailedHostSettlement(forCleanup: key)
+                    },
+                    didClean: { key in
+                        try router.resolveFailedHostSettlement(afterCleanup: key)
+                    }
+                )
+            } catch {
+                AppLogger.error(
+                    "Feedback cleanup remains pending for a prior report",
+                    category: "Diagnostics"
+                )
+            }
+            router.register(hostID: hostID, leaseID: leaseID)
+        }
         .onDisappear { router.unregister(hostID: hostID, leaseID: leaseID) }
     }
 }

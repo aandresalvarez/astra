@@ -63,7 +63,8 @@ assert_targets $'FeedbackReportPresentationTests\nFeedbackEvidencePrivacyTests\n
   "Astra/Services/Feedback/FeedbackReportPreparationService.swift" \
   "Astra/Services/Feedback/FeedbackPreparationStagingReconciler.swift" \
   "Astra/Views/Feedback/FeedbackReportView.swift" \
-  "Tests/FeedbackReportPresentationTests.swift"
+  "Tests/FeedbackReportPresentationTests.swift" \
+  "Tests/FeedbackReportPresentationLifecycleTests.swift"
 
 assert_targets $'FeedbackCrashRecoveryTests\nFeedbackReportPresentationTests' \
   "Astra/Services/Feedback/FeedbackCrashOfferService.swift" \
