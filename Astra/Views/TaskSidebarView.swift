@@ -155,22 +155,19 @@ enum SidebarThreadRowLayout {
         isActionableStatus(status) || isUnread
     }
 
-    static func restingTitleLeadingOffset(
+    /// Status-independent by design: the row always reserves the glyph
+    /// gutter, so the hover/selection reveal fades in place instead of
+    /// shoving the title sideways, and titles share one left edge whether
+    /// or not the row wears a rest-state glyph.
+    static func titleLeadingOffset(
         childListPadding: CGFloat,
-        contentLeadingPadding: CGFloat,
-        status: TaskStatus,
-        isUnread: Bool = false
+        contentLeadingPadding: CGFloat
     ) -> CGFloat {
         childListPadding
             + rowHorizontalPadding
             + contentLeadingPadding
-            + reservedStatusIconWidth(for: status, isUnread: isUnread)
-    }
-
-    private static func reservedStatusIconWidth(for status: TaskStatus, isUnread: Bool) -> CGFloat {
-        showsRestStateGlyph(for: status, isUnread: isUnread)
-            ? statusIconWidth + statusIconTitleSpacing
-            : 0
+            + statusIconWidth
+            + statusIconTitleSpacing
     }
 }
 
@@ -422,7 +419,10 @@ struct TaskSidebarView: View {
                     action: handleNewTaskButton
                 )
                 .keyboardShortcut("n", modifiers: .command)
-                .padding(.horizontal, 12)
+                // 10pt outer margin — matches the workspace list's card
+                // inset below (see workspaceListRow) so both command rows
+                // and workspace cards share one left/right edge.
+                .padding(.horizontal, 10)
                 .padding(.top, 16)
                 .padding(.bottom, 10)
                 .popover(isPresented: newTaskNudgePresentation, arrowEdge: .leading) {
@@ -431,7 +431,7 @@ struct TaskSidebarView: View {
 
                 if let onNewApp {
                     Button(action: onNewApp) {
-                        // Mirrors NewTaskButton's insets (12 outer + 12
+                        // Mirrors NewTaskButton's insets (10 outer + 12
                         // content) and 7pt glyph gap so the two commands
                         // read as one aligned column.
                         HStack(spacing: 7) {
@@ -446,7 +446,7 @@ struct TaskSidebarView: View {
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    .padding(.horizontal, 12)
+                    .padding(.horizontal, 10)
                     .padding(.bottom, 12)
                     .help("Create a Workspace App in App Studio (⌘⇧A)")
                 }
