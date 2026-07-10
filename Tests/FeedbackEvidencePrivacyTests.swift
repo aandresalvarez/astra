@@ -51,6 +51,28 @@ struct FeedbackEvidencePrivacyTests {
         #expect(result.redaction.secretPatterns >= 5)
     }
 
+    @Test("Bare Google API keys are redacted even without a key= label")
+    func bareGoogleAPIKeysAreRedacted() {
+        let key = "AIzaodJFCrnl2edlBDdz1C5Jau2RJtBRnlWmTSH"
+        let raw = "Copied from the console: \(key)"
+
+        let result = FeedbackEvidenceSanitizer.sanitize(raw, maximumBytes: 4_000)
+
+        #expect(!result.text.contains(key))
+        #expect(result.redaction.secretPatterns > 0)
+    }
+
+    @Test("Punctuated non-home paths are redacted completely, not just their prefix")
+    func punctuatedNonHomePathsAreFullyRedacted() {
+        let raw = "See /Volumes/Macintosh HD/Client (Secret)/file.txt for details"
+
+        let result = FeedbackEvidenceSanitizer.sanitize(raw, maximumBytes: 4_000)
+
+        #expect(!result.text.contains("Secret"))
+        #expect(!result.text.contains("file.txt"))
+        #expect(result.redaction.pathPatterns > 0)
+    }
+
     @Test("Browser, screenshot, and crash evidence are excluded by default")
     func sensitiveEvidenceRequiresOptIn() throws {
         let fixture = try Fixture()
@@ -227,6 +249,58 @@ struct FeedbackEvidencePrivacyTests {
         #expect(!text.contains("sk-abcdefgh"))
         #expect(!text.contains("short-secret"))
         #expect(!text.contains("errorCode"))
+        #expect(!text.contains("outcomeCode"))
+        #expect(transformed.warnings.contains { $0.code == "browser_freeform_values_omitted" })
+    }
+
+    @Test("Browser route paths survive sanitization while query secrets are stripped")
+    func browserRoutePathsAreNotTreatedAsFilesystemPaths() throws {
+        let record = FeedbackBrowserEvidenceRecord(
+            sequence: 1,
+            createdAt: Date(timeIntervalSince1970: 1_700_000_000),
+            method: "GET",
+            path: "/issues/123?token=sk-should-be-stripped-entirely",
+            statusCode: 200,
+            durationMilliseconds: 1,
+            beforeHost: "example.test",
+            afterHost: "example.test",
+            urlChanged: false,
+            succeeded: true,
+            errorCode: nil,
+            observedOutcome: nil
+        )
+
+        let transformedOrNil = try FeedbackBrowserEvidenceTransformer.transform([record])
+        let transformed = try #require(transformedOrNil)
+        let object = try #require(JSONSerialization.jsonObject(with: transformed.data) as? [String: Any])
+        let retained = try #require(object["records"] as? [[String: Any]])
+        let path = try #require(retained.first?["path"] as? String)
+
+        #expect(path == "/issues/123")
+    }
+
+    @Test("Identifier-shaped free-form outcome values are dropped, not published as outcomeCode")
+    func observedOutcomeIsRestrictedToKnownCodes() throws {
+        let record = FeedbackBrowserEvidenceRecord(
+            sequence: 1,
+            createdAt: Date(timeIntervalSince1970: 1_700_000_000),
+            method: "GET",
+            path: "/",
+            statusCode: 200,
+            durationMilliseconds: 1,
+            beforeHost: "example.test",
+            afterHost: "example.test",
+            urlChanged: false,
+            succeeded: true,
+            errorCode: nil,
+            observedOutcome: "phoenix_launch"
+        )
+
+        let transformedOrNil = try FeedbackBrowserEvidenceTransformer.transform([record])
+        let transformed = try #require(transformedOrNil)
+        let text = String(decoding: transformed.data, as: UTF8.self)
+
+        #expect(!text.contains("phoenix_launch"))
         #expect(!text.contains("outcomeCode"))
         #expect(transformed.warnings.contains { $0.code == "browser_freeform_values_omitted" })
     }

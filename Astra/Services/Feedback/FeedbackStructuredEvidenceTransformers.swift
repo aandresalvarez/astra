@@ -56,14 +56,14 @@ enum FeedbackBrowserEvidenceTransformer {
         var droppedFreeformValues = 0
         let sanitized = selected.map { record -> FeedbackBrowserArtifactRecord in
             let errorCode = safeCode(record.errorCode)
-            let outcomeCode = safeCode(record.observedOutcome)
+            let outcomeCode = safeOutcomeCode(record.observedOutcome)
             if record.errorCode != nil && errorCode == nil { droppedFreeformValues += 1 }
             if record.observedOutcome != nil && outcomeCode == nil { droppedFreeformValues += 1 }
             return FeedbackBrowserArtifactRecord(
                 sequence: max(0, record.sequence),
                 createdAt: record.createdAt,
                 method: safeMethod(record.method),
-                path: redaction.sanitize(pathWithoutQueryOrFragment(record.path), maximumBytes: 160),
+                path: redaction.sanitizeURLPath(pathWithoutQueryOrFragment(record.path), maximumBytes: 160),
                 statusCode: record.statusCode,
                 durationMilliseconds: max(0, record.durationMilliseconds),
                 beforeHost: redaction.sanitize(record.beforeHost, maximumBytes: 253),
@@ -119,6 +119,22 @@ enum FeedbackBrowserEvidenceTransformer {
             : "UNKNOWN"
     }
 
+    // The diagnostic outcome codes BrowserAnalysis.observedOutcome(...) can emit. Any
+    // other value is user/page-influenced free-form text (a search term, a slug, etc.)
+    // and must be dropped rather than published, even though it may be identifier-shaped.
+    private static let knownOutcomeCodes: Set<String> = [
+        "browseractionfailed",
+        "clickednopagechange",
+        "executednoobservedchange",
+        "githubentityopened",
+        "googleeditoropened",
+        "navigation",
+        "notexecuted",
+        "pagechanged",
+        "selectedorfocused",
+        "valuechanged"
+    ]
+
     private static func safeCode(_ value: String?) -> String? {
         guard let value else { return nil }
         let sanitized = FeedbackEvidenceSanitizer.sanitize(value, maximumBytes: 80)
@@ -131,6 +147,17 @@ enum FeedbackBrowserEvidenceTransformer {
               })
         else { return nil }
         return candidate
+    }
+
+    // observedOutcome is restricted to the known diagnostic outcome codes above (a real
+    // allowlist), not merely a character-class check, so an identifier-shaped free-form
+    // value (a search term, a project slug) can't be published as outcomeCode.
+    private static func safeOutcomeCode(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let sanitized = FeedbackEvidenceSanitizer.sanitize(value, maximumBytes: 80)
+        guard sanitized.redaction.replacements == 0, !sanitized.wasTruncated else { return nil }
+        let candidate = sanitized.text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return knownOutcomeCodes.contains(candidate) ? candidate : nil
     }
 
     private static func pathWithoutQueryOrFragment(_ value: String) -> String {
@@ -428,6 +455,12 @@ struct FeedbackRedactionAccumulator {
 
     mutating func sanitize(_ value: String, maximumBytes: Int) -> String {
         let result = FeedbackEvidenceSanitizer.sanitize(value, maximumBytes: maximumBytes)
+        add(result.redaction)
+        return result.text
+    }
+
+    mutating func sanitizeURLPath(_ value: String, maximumBytes: Int) -> String {
+        let result = FeedbackEvidenceSanitizer.sanitizeURLPath(value, maximumBytes: maximumBytes)
         add(result.redaction)
         return result.text
     }

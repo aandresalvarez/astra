@@ -28,7 +28,11 @@ enum FeedbackEvidenceSanitizer {
         }
     }
 
-    private static let rules: [Rule] = [
+    // Rules shared between free-form text sanitization and URL path sanitization.
+    // None of these assume filesystem-path shape, so they are safe to run against a
+    // URL path component (e.g. a browser evidence route) without mistaking an
+    // ordinary multi-segment route for a local file path.
+    private static let sharedRules: [Rule] = [
         Rule(
             pattern: #"(?i)\bhttps?://[^/\s:@]+:[^@\s]+@[^\s]+"#,
             replacement: "[redacted-url]",
@@ -54,7 +58,10 @@ enum FeedbackEvidenceSanitizer {
             options: []
         ),
         Rule(
-            pattern: #"(?i)\b(?:sk-[A-Za-z0-9_-]{8,}|gh[pousr]_[A-Za-z0-9_]{8,}|xox[baprs]-[A-Za-z0-9-]{8,}|AKIA[0-9A-Z]{16})\b"#,
+            // Includes bare Google API keys (AIza + 35 chars = 39 total), which are
+            // one character short of the generic 40+ char fallback below and would
+            // otherwise survive sanitization when not emitted as `api_key=...`.
+            pattern: #"(?i)\b(?:sk-[A-Za-z0-9_-]{8,}|gh[pousr]_[A-Za-z0-9_]{8,}|xox[baprs]-[A-Za-z0-9-]{8,}|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{35})\b"#,
             replacement: "[redacted-secret]",
             category: .secret,
             options: []
@@ -92,22 +99,51 @@ enum FeedbackEvidenceSanitizer {
             replacement: "[redacted-home-path]",
             category: .path,
             options: []
-        ),
-        Rule(
-            pattern: #"(?<![A-Za-z0-9_])(?:/[A-Za-z0-9._ -]+){2,}"#,
-            replacement: "[redacted-path]",
-            category: .path,
-            options: []
         )
     ]
 
+    // Matches a generic local-filesystem path by its multi-segment shape. This is a
+    // reasonable heuristic for free-form log/text content, but it also matches an
+    // ordinary URL route (e.g. "/issues/123"), so it must NOT be applied when
+    // sanitizing a URL path field — use sanitizeURLPath for that instead.
+    private static let genericFilesystemPathRule = Rule(
+        // Widen the segment charset the same way as the /Users/ rule above: allow any
+        // non-whitespace/non-quote/non-slash character, plus a single embedded space,
+        // so a punctuated component (e.g. "/Volumes/Macintosh HD/Client (Secret)")
+        // can't stop the match early and leave the remainder of the path unredacted.
+        pattern: #"(?<![A-Za-z0-9_])(?:/(?:[^\s\"'/]|[ ](?=[^\s\"'/]))+){2,}"#,
+        replacement: "[redacted-path]",
+        category: .path,
+        options: []
+    )
+
+    private static let rules: [Rule] = sharedRules + [genericFilesystemPathRule]
+
+    // Rule set for sanitizing a URL path component (e.g. a browser evidence route).
+    // Excludes genericFilesystemPathRule, whose local-file path heuristic matches any
+    // route with two or more segments and would redact the whole route, stripping the
+    // screen/route context that diagnostics need.
+    private static let urlPathRules: [Rule] = sharedRules
+
     static func sanitize(_ value: String, maximumBytes: Int) -> FeedbackSanitizationResult {
+        apply(rules, to: value, maximumBytes: maximumBytes)
+    }
+
+    /// Sanitizes a URL path component (query/fragment already stripped by the caller)
+    /// without applying the generic local-filesystem-path rule, so an ordinary
+    /// multi-segment route survives while secrets, tokens, and contact values embedded
+    /// in the path are still redacted.
+    static func sanitizeURLPath(_ value: String, maximumBytes: Int) -> FeedbackSanitizationResult {
+        apply(urlPathRules, to: value, maximumBytes: maximumBytes)
+    }
+
+    private static func apply(_ ruleSet: [Rule], to value: String, maximumBytes: Int) -> FeedbackSanitizationResult {
         var output = FeedbackContractNormalizationV1.text(value)
         var secretPatterns = 0
         var pathPatterns = 0
         var contactPatterns = 0
 
-        for rule in rules {
+        for rule in ruleSet {
             let expression = rule.expression
             let range = NSRange(output.startIndex..<output.endIndex, in: output)
             let matches = expression.numberOfMatches(in: output, range: range)
