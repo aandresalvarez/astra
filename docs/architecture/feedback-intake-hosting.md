@@ -114,9 +114,14 @@ PR 7 must own three independently authenticated surfaces:
 1. The frozen `POST /v1/feedback/reports` intake endpoint, which validates the
    exact PR 1 media types, headers, canonical envelope, digests, evidence
    inventory, and consent. It stores any separately uploaded private evidence,
-   atomically commits the installation/idempotency/digest claim, report,
-   status-read credential verifier, and outbox intent, then returns the stable
-   HTTP `202` receipt without waiting for GitHub or assessment.
+   atomically commits the installation/idempotency/digest claim, report, the
+   status-read credential's one-way verifier and its encrypted recoverable
+   representation plus expiry, and outbox intent, then returns the stable HTTP
+   `202` receipt without waiting for GitHub or assessment. The encrypted
+   recoverable credential is committed in this same transaction so a lost
+   initial `202` can still be reconstructed on an idempotent retry; the
+   verifier alone can prove the duplicate but cannot rebuild the receipt the
+   frozen schema requires the retry to return.
 2. The frozen `POST /v1/feedback/status` endpoint, which verifies the receipt
    ID, installation ID, and expiring status-read credential from the request
    body and returns only `FeedbackRemoteStatusDTOv1`. A report UUID alone is

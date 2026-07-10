@@ -149,6 +149,16 @@ and a constant safe message that does not echo the member name or value.
   the frozen typed error body.
 - Report bodies, evidence references, staff notes, and other reporters' state
   are excluded. Reporter contact is absent by construction in V1.
+- The frozen schema requires a non-null `duplicateOfReceiptID` whenever
+  `status` is `.duplicate`. The aggregate must never populate that field with
+  another installation's real `receiptID`: it is a reporter-scoped opaque
+  identifier, valid only against the polling reporter's own installation and
+  status-read credential, that the backend mints and stores alongside the
+  canonical duplicate mapping when the true duplicate target belongs to a
+  different installation or reporter. Only a duplicate within the polling
+  reporter's own receipt lineage returns that reporter's own prior
+  `receiptID` directly. This preserves the exclusion above while still
+  satisfying the frozen field's non-null requirement.
 
 ## Staff triage interfaces
 
@@ -165,6 +175,15 @@ Staff identity is separate from reporter authentication. Required roles are
   `FeedbackStaffTriageDecisionV1`/`$defs/staffTriage` body. Its
   `draftTaskRequested`, optional `priorityOverride`, reviewer, reason,
   assessment revision, and timestamp fields are not redeclared by the backend.
+  The frozen body also carries client-supplied `reviewerID` and `decidedAt`
+  fields, but the backend must never treat them as authoritative: it
+  overwrites `reviewerID` with the authenticated staff actor's identity from
+  the request's staff session/token and overwrites `decidedAt` with the
+  server's trusted clock before persisting the decision and audit event,
+  rejecting the request instead of silently substituting only when the
+  authenticated actor cannot be resolved. This stops an authenticated
+  `triage_writer` from spoofing another reviewer's identity or backdating
+  audit history through the request body alone.
 
 Every mutation requires an expected aggregate version, request idempotency key,
 role authorization, actor identity, reason, and append-only audit event. Staff
