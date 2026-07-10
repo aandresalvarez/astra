@@ -209,6 +209,11 @@ public enum MarkdownRenderPreparation {
         return chunks.isEmpty ? [line] : chunks
     }
 
+    /// A marker only counts as glued-list evidence when a substantial block
+    /// follows it; a short tail ("- macOS setup", "1. Setup") is far more
+    /// likely the heading's own punctuation than a dragged list item.
+    private static let headingRemainderCutMinimumTail = 24
+
     /// A heading recovered from mid-line glue frequently drags trailing list
     /// items with it ("### Title * Overwrote …"). Cut the heading before the
     /// first embedded list marker so the remainder renders as its own block.
@@ -225,8 +230,9 @@ public enum MarkdownRenderPreparation {
             let remainder = nsChunk.substring(from: match.range.location).trimmingCharacters(in: .whitespaces)
             // The first marker can sit inside the heading's own numbering
             // ("### 3. Title * item" matches at " 3. " first); keep scanning
-            // until the prefix is a well-formed heading.
-            guard isSpacedHeading(heading), !remainder.isEmpty else { continue }
+            // until the prefix is a well-formed heading with a real block
+            // trailing it.
+            guard isSpacedHeading(heading), remainder.count >= headingRemainderCutMinimumTail else { continue }
             return [heading, remainder]
         }
         return [chunk]
@@ -311,14 +317,33 @@ public enum MarkdownRenderPreparation {
         return lines.isEmpty ? [chunk] : lines
     }
 
-    /// A marker whose position is preceded by an odd number of backticks sits
-    /// inside an inline code span and must not be treated as list/heading glue.
+    /// A marker inside a CommonMark inline code span must not be treated as
+    /// list/heading glue. Spans are delimited by matching backtick RUNS
+    /// (`` `code` ``, ```` ``code`` ````), so simple odd/even parity fails for
+    /// double-backtick spans; walk the runs and track the open span length.
     private static func isInsideInlineCode(_ text: NSString, location: Int) -> Bool {
-        var backticks = 0
-        for index in 0..<min(location, text.length) where text.character(at: index) == 0x60 {
-            backticks += 1
+        var index = 0
+        var openRunLength = 0
+        let limit = min(location, text.length)
+        while index < limit {
+            guard text.character(at: index) == 0x60 else {
+                index += 1
+                continue
+            }
+            var runEnd = index
+            while runEnd < text.length, text.character(at: runEnd) == 0x60 {
+                runEnd += 1
+            }
+            let runLength = runEnd - index
+            if openRunLength == 0 {
+                openRunLength = runLength
+            } else if runLength == openRunLength {
+                // Only a run of the exact opening length closes the span.
+                openRunLength = 0
+            }
+            index = runEnd
         }
-        return !backticks.isMultiple(of: 2)
+        return openRunLength != 0
     }
 
     private static func firstMatchRange(_ pattern: String, in text: String) -> NSRange? {

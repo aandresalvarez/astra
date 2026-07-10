@@ -448,6 +448,34 @@ struct MarkdownTextViewTests {
         #expect(MarkdownRenderPreparation.prepareForDisplay(source) == source)
     }
 
+    @Test("Display preparation leaves double-backtick code spans alone")
+    func displayPreparationLeavesDoubleBacktickCodeSpansAlone() {
+        let source = "Use ``a: - b`` carefully in templates."
+
+        #expect(MarkdownRenderPreparation.prepareForDisplay(source) == source)
+    }
+
+    @Test("Recovered headings keep hyphen and numbered title punctuation")
+    func recoveredHeadingsKeepHyphenAndNumberedTitlePunctuation() {
+        let hyphenBlocks = MarkdownTextView.parse("Done. ### Install - macOS setup")
+        let hyphenHeadings = hyphenBlocks.compactMap { block -> String? in
+            guard case .heading = block.kind else { return nil }
+            return block.content
+        }
+        #expect(hyphenHeadings == ["Install - macOS setup"])
+        #expect(!hyphenBlocks.contains { block in
+            if case .listItem = block.kind { return true }
+            return false
+        })
+
+        let numberedBlocks = MarkdownTextView.parse("Done. ### Phase 1. Setup")
+        let numberedHeadings = numberedBlocks.compactMap { block -> String? in
+            guard case .heading = block.kind else { return nil }
+            return block.content
+        }
+        #expect(numberedHeadings == ["Phase 1. Setup"])
+    }
+
     @Test("Display preparation leaves prose hyphens and inline code markers alone")
     func displayPreparationLeavesProseHyphensAndInlineCodeMarkersAlone() {
         let hyphenated = "The state - of - the - art approach stays intact."
