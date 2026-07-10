@@ -15,8 +15,12 @@ struct AppBundlePackagingTests {
     func launcherDoesNotCreateParallelAppInstances() throws {
         let script = try String(contentsOf: repoRoot.appendingPathComponent("script/build_and_run.sh"), encoding: .utf8)
         let build = #"swift build "${SWIFT_BUILD_ARGS[@]}""#
-        let stop = #"stop_existing_app()"#
         let launch = #"/usr/bin/open "$APP_BUNDLE""#
+        let preReplacementSequence = #"""
+        stop_existing_app
+
+        rm -rf "$APP_BUNDLE"
+        """#
         let launchSequence = #"""
         open_app() {
           stop_existing_app
@@ -24,12 +28,12 @@ struct AppBundlePackagingTests {
         }
         """#
 
-        #expect(script.contains(stop))
+        #expect(script.contains(preReplacementSequence))
         #expect(script.contains(#"pkill -x "$APP_NAME""#))
         #expect(script.contains(launch))
         #expect(script.contains(launchSequence))
         #expect(!script.contains(#"/usr/bin/open -n "$APP_BUNDLE""#))
-        #expect(try index(of: build, in: script) < index(of: stop, in: script))
+        #expect(try index(of: build, in: script) < index(of: preReplacementSequence, in: script))
     }
 
     @Test("build script stages SwiftPM resources inside Contents/Resources before signing")

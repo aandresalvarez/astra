@@ -35,6 +35,14 @@ struct PersistentStoreSafetyTests {
         #expect(PersistentStoreOpenFailurePolicy.decision(for: unknown) == .blockedUnknown)
     }
 
+    @Test("Legacy migration recovery preserves every store not proven corrupt")
+    func legacyMigrationRecoveryFailsClosed() {
+        #expect(PersistentStoreOpenFailurePolicy.permitsFreshStoreForLegacyMigration(.verifiedCorruption))
+        #expect(!PersistentStoreOpenFailurePolicy.permitsFreshStoreForLegacyMigration(.incompatibleNewerSchema))
+        #expect(!PersistentStoreOpenFailurePolicy.permitsFreshStoreForLegacyMigration(.transientContention))
+        #expect(!PersistentStoreOpenFailurePolicy.permitsFreshStoreForLegacyMigration(.blockedUnknown))
+    }
+
     @Test("Store lease excludes a second owner and releases deterministically")
     func storeLeaseExcludesSecondOwner() throws {
         let root = FileManager.default.temporaryDirectory

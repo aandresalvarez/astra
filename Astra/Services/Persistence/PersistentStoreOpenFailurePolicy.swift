@@ -49,6 +49,15 @@ public enum PersistentStoreOpenFailurePolicy {
         return .blockedUnknown
     }
 
+    /// A copied legacy store may be replaced only when SQLite has positively
+    /// identified corruption. Contention, unknown failures, and schema
+    /// incompatibility must preserve the migrated store and fail closed.
+    public static func permitsFreshStoreForLegacyMigration(
+        _ decision: PersistentStoreOpenDecision
+    ) -> Bool {
+        decision == .verifiedCorruption
+    }
+
     private static func isSQLiteError(_ error: NSError, code: Int) -> Bool {
         error.domain == "NSSQLiteErrorDomain" && error.code == code
     }

@@ -137,6 +137,19 @@ APP_BINARY="$APP_MACOS/$APP_NAME"
 INFO_PLIST="$APP_CONTENTS/Info.plist"
 ENTITLEMENTS="$ROOT_DIR/script/ASTRA.entitlements"
 
+stop_existing_app() {
+  pkill -x "$APP_NAME" >/dev/null 2>&1 || true
+  local attempts=0
+  while pgrep -x "$APP_NAME" >/dev/null 2>&1; do
+    attempts=$((attempts + 1))
+    if [[ "$attempts" -ge 50 ]]; then
+      echo "FAIL: $APP_NAME did not exit before bundle replacement; refusing to stage over a running app." >&2
+      exit 4
+    fi
+    sleep 0.1
+  done
+}
+
 if [[ "$REQUIRE_ARM64" == "1" ]]; then
   HOST_ARCH="$(/usr/bin/uname -m)"
   if [[ "$HOST_ARCH" != "arm64" ]]; then
@@ -164,6 +177,8 @@ if [[ "$REQUIRE_ARM64" == "1" ]]; then
     verify_arm64_binary "$BUILD_DIR/$tool_product"
   done
 fi
+
+stop_existing_app
 
 rm -rf "$APP_BUNDLE"
 mkdir -p "$APP_MACOS" "$APP_FRAMEWORKS" "$APP_RESOURCES"
@@ -473,19 +488,6 @@ verify_app_bundle
 open_app() {
   stop_existing_app
   /usr/bin/open "$APP_BUNDLE"
-}
-
-stop_existing_app() {
-  pkill -x "$APP_NAME" >/dev/null 2>&1 || true
-  local attempts=0
-  while pgrep -x "$APP_NAME" >/dev/null 2>&1; do
-    attempts=$((attempts + 1))
-    if [[ "$attempts" -ge 50 ]]; then
-      echo "FAIL: $APP_NAME did not exit before launch; refusing to open a second instance." >&2
-      exit 4
-    fi
-    sleep 0.1
-  done
 }
 
 verify_single_launched_app() {

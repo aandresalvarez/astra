@@ -394,7 +394,8 @@ private enum AstraStoreStartupCoordinator {
             "error_type": String(describing: type(of: error))
         ], level: .warning)
 
-        if canRecoverLegacyMigration {
+        if canRecoverLegacyMigration,
+           PersistentStoreOpenFailurePolicy.permitsFreshStoreForLegacyMigration(decision) {
             AppLogger.audit(.dataStoreRecovered, category: "App", fields: [
                 "result": "legacy_store_recovered_from_workspace_mirrors",
                 "open_decision": String(describing: decision),
