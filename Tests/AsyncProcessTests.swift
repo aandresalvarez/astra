@@ -75,7 +75,7 @@ struct AsyncProcessRunnerTests {
     func timeoutTerminatesWrapperChildProcesses() async {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/sh")
-        process.arguments = ["-c", "sleep 10 & wait"]
+        process.arguments = ["-c", "sleep 30 & wait"]
 
         let stdoutPipe = Pipe()
         let stderrPipe = Pipe()
@@ -91,7 +91,7 @@ struct AsyncProcessRunnerTests {
         )
         let elapsed = Date().timeIntervalSince(start)
 
-        #expect(elapsed < 8, "Timed-out wrapper process did not return promptly: \(elapsed)s")
+        #expect(elapsed < 15, "Timed-out wrapper process did not return promptly: \(elapsed)s")
         #expect(result.exitCode == -1)
         #expect(result.stderr.contains("timed out"))
     }

@@ -311,6 +311,7 @@ struct TaskMainView: View {
     private static let viewUpdateDeferralNanoseconds: UInt64 = 1_000_000
 
     let task: AgentTask
+    let taskOpenResponsivenessScope: UUID
     var taskQueue: TaskQueue?
     var onRunTask: ((AgentTask) -> Void)?
     var onCancelTask: ((AgentTask) -> Void)?
@@ -634,6 +635,11 @@ struct TaskMainView: View {
                 installPasteMonitor()
             }
         }
+        .modifier(TaskOpenResponsivenessLifecycleObserver(
+            task: task,
+            scope: taskOpenResponsivenessScope,
+            stopInitialCorrelation: { threadViewModel.cancelInitialResponsivenessCorrelation(for: task.id) }
+        ))
         .onDisappear {
             pendingPlanStateRefreshTask?.cancel()
             threadViewModel.cancelGeneratedFilesRefresh()
@@ -726,26 +732,43 @@ struct TaskMainView: View {
     private func initializeDisplayedTaskState() async {
         guard await waitForViewUpdateBoundary() else { return }
 
-        PerformanceTelemetry.log("chat_open_selected_task", level: .info, fields: TaskMainViewPerformanceTelemetry.chatOpenFields(task: task, source: "task_lifecycle"))
-        isChatAtBottom = true
-        hasUnseenChatActivity = false
-        shouldScrollAfterUserMessage = true
-        pendingInitialChatScrollTaskID = task.id
-        isExpandingWindow = false
-        expansionAnchorItemID = nil
-        runtimeHealthNow = Date()
-        lastLoggedRuntimeHealthSignature = nil
-        alignTaskModelWithRuntime()
-        threadViewModel.reset(for: task)
-        loadSSHConnections()
-        alignTaskAfterRuntimeAvailabilityRefresh()
-        initializeTaskPolicySelection()
-        cachedVerificationRequest = nil
-        cachedVerificationPresentation = nil
-        refreshTaskContextState()
-        refreshForkSourceAvailabilityWarning()
-        refreshPlanStateCache()
-        logRuntimeHealthIfNeeded(reason: "task_lifecycle")
+        TaskOpenResponsivenessTelemetry.measurePhase(
+            "task_initialization",
+            task: task,
+            scope: taskOpenResponsivenessScope
+        ) {
+            isChatAtBottom = true
+            hasUnseenChatActivity = false
+            shouldScrollAfterUserMessage = true
+            pendingInitialChatScrollTaskID = task.id
+            isExpandingWindow = false
+            expansionAnchorItemID = nil
+            runtimeHealthNow = Date()
+            lastLoggedRuntimeHealthSignature = nil
+            alignTaskModelWithRuntime()
+            TaskOpenResponsivenessTelemetry.measurePhase(
+                "thread_reset",
+                task: task,
+                scope: taskOpenResponsivenessScope
+            ) {
+                threadViewModel.reset(
+                    for: task,
+                    responsivenessContext: TaskOpenResponsivenessTelemetry.responsivenessContext(
+                        task: task,
+                        scope: taskOpenResponsivenessScope
+                    )
+                )
+            }
+            loadSSHConnections()
+            alignTaskAfterRuntimeAvailabilityRefresh()
+            initializeTaskPolicySelection()
+            cachedVerificationRequest = nil
+            cachedVerificationPresentation = nil
+            refreshTaskContextState()
+            refreshForkSourceAvailabilityWarning()
+            refreshPlanStateCache()
+            logRuntimeHealthIfNeeded(reason: "task_lifecycle")
+        }
     }
 
     private func deferTaskViewMutation(_ operation: @escaping @MainActor () -> Void) {
@@ -779,7 +802,13 @@ struct TaskMainView: View {
     }
 
     private func refreshTaskContextState() {
-        TaskContextStateManager.refresh(task: task)
+        TaskOpenResponsivenessTelemetry.measurePhase(
+            "context_state_refresh",
+            task: task,
+            scope: taskOpenResponsivenessScope
+        ) {
+            TaskContextStateManager.refresh(task: task)
+        }
         refreshForkSourceAvailabilityWarning()
         scheduleVerificationPresentationRefresh()
     }
@@ -1652,6 +1681,7 @@ struct TaskMainView: View {
                     deferTaskViewMutation {
                         updateChatBottomState(bottomMinY: bottomMinY, viewportHeight: viewport.size.height)
                     }
+                    recordTranscriptReadinessIfAvailable()
                     // Not wrapped in deferTaskViewMutation: this only feeds the watchdog's
                     // internal (non-@State) bookkeeping, so it carries none of the
                     // AttributeGraph-cycle risk that motivates deferring the @State
@@ -1664,6 +1694,11 @@ struct TaskMainView: View {
                     deferTaskViewMutation {
                         handleChatTopPositionChange(topMinY: topMinY)
                     }
+                }
+                .task(id: threadViewModel.appliedSnapshotReadiness) {
+                    guard threadViewModel.appliedSnapshotReadiness.isReady(for: task.id),
+                          await waitForViewUpdateBoundary() else { return }
+                    recordTranscriptReadinessIfAvailable()
                 }
                 .onAppear {
                     deferTaskViewMutation {
@@ -1681,6 +1716,19 @@ struct TaskMainView: View {
                 }
             }
         }
+    }
+
+    private func recordTranscriptReadinessIfAvailable() {
+        guard threadViewModel.appliedSnapshotReadiness.isReady(for: task.id) else { return }
+        TaskOpenResponsivenessTelemetry.transcriptBecameReady(
+            task: task,
+            snapshot: currentThreadSnapshot,
+            appliedSnapshotRevision: threadViewModel.appliedSnapshotRevision,
+            cacheState: threadViewModel.lastSnapshotCacheState,
+            snapshotAppliedUptimeNanoseconds: threadViewModel.lastSnapshotAppliedUptimeNanoseconds,
+            scope: taskOpenResponsivenessScope
+        )
+        threadViewModel.completeInitialResponsivenessTrace(for: task.id)
     }
 
     @ViewBuilder
@@ -2167,6 +2215,18 @@ struct TaskMainView: View {
         AppLogger.audit(.chatScrollRecovered, category: "UI", taskID: task.id, fields: [
             "bottom_min_y": String(format: "%.1f", bottomMinY)
         ], level: .warning)
+        PerformanceTelemetry.log(
+            "chat_scroll_recovery",
+            durationMilliseconds: scrollRecoveryWatchdog.settleDelayMilliseconds,
+            level: .warning,
+            fields: [
+                "recovery": "parked_past_content",
+                "task_id": PerformanceTelemetryFields.abbreviatedID(task.id),
+                "snapshot_run_count": PerformanceTelemetryFields.count(currentThreadSnapshot.sortedRuns.count),
+                "conversation_item_count": PerformanceTelemetryFields.count(currentThreadSnapshot.conversationItems.count)
+            ],
+            taskID: task.id
+        )
         scrollChatToBottom(proxy, animated: false)
     }
 

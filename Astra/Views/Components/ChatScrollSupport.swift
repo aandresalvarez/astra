@@ -94,6 +94,13 @@ final class ChatScrollRecoveryWatchdog {
         self.settleNanoseconds = settleNanoseconds
     }
 
+    /// The minimum settled duration represented by a recovery event. Callers
+    /// use this for a bounded performance measurement rather than logging raw
+    /// scroll geometry as the only diagnostic signal.
+    var settleDelayMilliseconds: Double {
+        Double(settleNanoseconds) / 1_000_000
+    }
+
     /// Call on every bottom-sentinel reading. Arms a settle-delay timer the first
     /// time a reading looks parked; any reading — parked or healthy — cancels a
     /// still-pending timer, since `latestBottomMinY` and `armedToken` only ever

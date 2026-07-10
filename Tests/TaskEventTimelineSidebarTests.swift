@@ -606,6 +606,7 @@ struct SidebarGroupingTests {
         #expect(SidebarThreadRowLayout.showsStatusIcon(for: .completed, isUnread: false, isHovered: false, isSelected: false) == false)
         #expect(SidebarThreadRowLayout.showsStatusIcon(for: .completed, isUnread: true, isHovered: false, isSelected: false))
         #expect(SidebarThreadRowLayout.showsStatusIcon(for: .completed, isUnread: false, isHovered: true, isSelected: false))
+        #expect(SidebarThreadRowLayout.showsStatusIcon(for: .completed, isUnread: false, isHovered: false, isKeyboardFocused: true, isSelected: false))
         #expect(SidebarThreadRowLayout.showsStatusIcon(for: .completed, isUnread: false, isHovered: false, isSelected: true))
         #expect(SidebarThreadRowLayout.showsStatusIcon(for: .running, isUnread: false, isHovered: false, isSelected: false))
         // Rest-state glyphs: actionable work and unseen results only —
@@ -622,6 +623,43 @@ struct SidebarGroupingTests {
             contentLeadingPadding: SidebarLeanPresentation.childTaskContentLeadingPadding
         ) == 43)
         #expect(SidebarThreadRowLayout.titleFontSize == 14)
+    }
+
+    @Test("Task row hover is borderless while keyboard focus remains explicit")
+    func taskRowSurfaceStates() {
+        let rest = SidebarThreadRowSurfaceStyle.resolve(
+            isSelected: false,
+            isHovered: false,
+            isKeyboardFocused: false
+        )
+        #expect(rest == .init(fill: .clear, stroke: .clear, strokeWidth: 0))
+
+        let hover = SidebarThreadRowSurfaceStyle.resolve(
+            isSelected: false,
+            isHovered: true,
+            isKeyboardFocused: false
+        )
+        #expect(hover.fill == .adaptiveNeutral(opacity: 0.03))
+        #expect(hover.stroke == .clear)
+        #expect(hover.strokeWidth == 0)
+
+        let focus = SidebarThreadRowSurfaceStyle.resolve(
+            isSelected: false,
+            isHovered: false,
+            isKeyboardFocused: true
+        )
+        #expect(focus.fill == .keyboardFocus)
+        #expect(focus.stroke == .keyboardFocus)
+        #expect(focus.strokeWidth == 2)
+
+        let selectedAndFocused = SidebarThreadRowSurfaceStyle.resolve(
+            isSelected: true,
+            isHovered: true,
+            isKeyboardFocused: true
+        )
+        #expect(selectedAndFocused.fill == .selection)
+        #expect(selectedAndFocused.stroke == .keyboardFocus)
+        #expect(selectedAndFocused.strokeWidth == 2)
     }
 
     @Test("Sidebar collapses before the expanded rail can clip trailing metadata")
