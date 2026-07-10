@@ -6,6 +6,9 @@ import ASTRAModels
 struct SidebarTaskTitleText: View {
     let presentation: Formatters.SidebarTaskTitlePresentation
     let font: Font
+    /// Overrides the usual full-title tooltip when the containing row needs
+    /// to surface a more useful piece of context on hover.
+    var helpText: String?
 
     var body: some View {
         HStack(spacing: 4) {
@@ -30,7 +33,8 @@ struct SidebarTaskTitleText: View {
                 .truncationMode(.tail)
                 .layoutPriority(1)
         }
-        .help(presentation.fullTitle)
+        .help(helpText ?? presentation.fullTitle)
         .accessibilityLabel(presentation.fullTitle)
+        .accessibilityHint(helpText ?? "")
     }
 }

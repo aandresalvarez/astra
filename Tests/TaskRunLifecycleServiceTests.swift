@@ -369,6 +369,63 @@ struct TaskRunLifecycleServiceTests {
         ))
     }
 
+    @Test("Review policy requests artifact evidence only for eligible deliverable states")
+    func reviewPolicyDefersArtifactEvidenceUntilNeeded() {
+        let completedRun = PendingTaskReviewRunSnapshot(
+            id: UUID(),
+            status: .completed,
+            startedAt: Date(timeIntervalSince1970: 100),
+            completedAt: Date(timeIntervalSince1970: 110),
+            stopReason: "completed"
+        )
+        let irrelevantStatuses: [TaskStatus] = [
+            .draft, .queued, .running, .failed, .cancelled, .budgetExceeded
+        ]
+
+        for status in irrelevantStatuses {
+            #expect(!PendingTaskReviewPolicy.requiresScopedArtifactEvidence(
+                taskStatus: status,
+                isTaskDone: false,
+                requiresDeliverableArtifact: true,
+                latestRun: completedRun,
+                runs: [completedRun],
+                events: []
+            ))
+        }
+        #expect(!PendingTaskReviewPolicy.requiresScopedArtifactEvidence(
+            taskStatus: .pendingUser,
+            isTaskDone: false,
+            requiresDeliverableArtifact: false,
+            latestRun: completedRun,
+            runs: [completedRun],
+            events: []
+        ))
+        #expect(PendingTaskReviewPolicy.requiresScopedArtifactEvidence(
+            taskStatus: .pendingUser,
+            isTaskDone: false,
+            requiresDeliverableArtifact: true,
+            latestRun: completedRun,
+            runs: [completedRun],
+            events: []
+        ))
+
+        let policyBlockedRun = PendingTaskReviewRunSnapshot(
+            id: UUID(),
+            status: .failed,
+            startedAt: Date(timeIntervalSince1970: 120),
+            completedAt: Date(timeIntervalSince1970: 130),
+            stopReason: "policy_violation"
+        )
+        #expect(!PendingTaskReviewPolicy.requiresScopedArtifactEvidence(
+            taskStatus: .pendingUser,
+            isTaskDone: false,
+            requiresDeliverableArtifact: true,
+            latestRun: policyBlockedRun,
+            runs: [policyBlockedRun],
+            events: []
+        ))
+    }
+
     @Test("Pending task review policy maps legacy dismissal to original run only")
     func pendingTaskReviewPolicyMapsLegacyDismissalToOriginalRunOnly() throws {
         let container = try makeTaskRunLifecycleContainer()

@@ -58,8 +58,13 @@ enum AstraIntentDataSource {
 
     @MainActor
     private static func makeContext() throws -> ModelContext {
-        let storeURL = WorkspaceRecoveryService.preparePersistentStoreURL()
-        let config = ModelConfiguration(url: storeURL)
+        // Intent queries are readers only. They must never bootstrap a store,
+        // migrate a legacy path, or trigger the app's recovery workflow while
+        // the primary ASTRA process owns the writable store.
+        guard let storeURL = WorkspaceRecoveryService.existingPersistentStoreURL() else {
+            throw CocoaError(.fileNoSuchFile)
+        }
+        let config = ModelConfiguration(url: storeURL, allowsSave: false)
         let container = try ModelContainer(
             for: ASTRASchema.current,
             migrationPlan: ASTRAMigrationPlan.self,

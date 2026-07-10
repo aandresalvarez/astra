@@ -301,6 +301,7 @@ struct ContentView: View {
     private var currentMarkdownSession: ShelfMarkdownSession {
         markdownSessionStore.session(
             for: selectedTask?.id,
+            workspaceID: effectiveWorkspaceID,
             pinnedToTask: isMarkdownPinnedToTask
         )
     }
@@ -1338,9 +1339,7 @@ struct ContentView: View {
             currentMarkdownSession.bindToTask(selectedTask?.id)
             guard !selectedTaskPreferredMarkdownPath.isEmpty else { return }
             let url = URL(fileURLWithPath: selectedTaskPreferredMarkdownPath)
-            if currentMarkdownSession.fileURL?.path != url.path {
-                currentMarkdownSession.load(url)
-            }
+            currentMarkdownSession.loadAutomaticallyIfAllowed(url)
         case .browser:
             currentBrowserSession.bindToTask(selectedTask?.id)
             loadPreferredGeneratedHTMLForBrowserShelfIfNeeded(source: source)
@@ -1422,9 +1421,7 @@ struct ContentView: View {
         currentMarkdownSession.bindToTask(selectedTask?.id)
         if !selectedTaskPreferredMarkdownPath.isEmpty {
             let url = URL(fileURLWithPath: selectedTaskPreferredMarkdownPath)
-            if currentMarkdownSession.fileURL?.path != url.path {
-                currentMarkdownSession.load(url)
-            }
+            currentMarkdownSession.loadAutomaticallyIfAllowed(url)
         }
         if activeWorkspaceCanvasItem == .markdown {
             animatePanelChange {
@@ -1853,10 +1850,9 @@ struct ContentView: View {
                 NSWorkspace.shared.open(url)
                 return
             }
-            let taskID = selectedTask?.id
             selectedTaskPreferredMarkdownPath = path
             selectedTaskHasMarkdownShelfContent = true
-            let session = markdownSessionStore.session(for: taskID, pinnedToTask: isMarkdownPinnedToTask)
+            let session = currentMarkdownSession
             session.load(url)
             presentCanvas(.markdown)
             return
@@ -1899,7 +1895,7 @@ struct ContentView: View {
         }
         selectedTaskPreferredMarkdownPath = url.path
         selectedTaskHasMarkdownShelfContent = true
-        let session = markdownSessionStore.session(for: taskID, pinnedToTask: isMarkdownPinnedToTask)
+        let session = currentMarkdownSession
         session.load(url)
         AppLogger.audit(.gitChangedFileOpenedInShelf, category: "Git", taskID: taskID, fields: [
             "path": url.path,
@@ -2271,6 +2267,7 @@ struct ContentView: View {
     }
 
     private func deleteWorkspace(_ ws: Workspace) {
+        markdownSessionStore.releaseSession(forWorkspaceID: ws.id)
         let next = coordinator.deleteWorkspace(ws, existingWorkspaces: workspaces)
         applyWorkspaceSelectionUpdate(workspaceSelectionCoordinator.delete(workspace: ws, nextWorkspace: next))
     }

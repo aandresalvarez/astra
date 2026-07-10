@@ -11,6 +11,11 @@ import ASTRAModels
 /// working. (2) general install polish: users expect apps to live in
 /// /Applications.
 enum ApplicationsFolderMover {
+    struct RelaunchCommand: Equatable {
+        let executableURL: URL
+        let arguments: [String]
+    }
+
     struct Decision: Equatable {
         enum Action: Equatable {
             case offerMove(destination: URL)
@@ -131,17 +136,38 @@ enum ApplicationsFolderMover {
             return
         }
 
-        NSWorkspace.shared.openApplication(at: destination, configuration: NSWorkspace.OpenConfiguration()) { _, error in
-            Task { @MainActor in
-                if let error {
-                    AppLogger.audit(.appMoveToApplicationsFailed, category: "App", fields: ["error": String(describing: error)])
-                    presentMoveFailedAlert(error: error)
-                    return
-                }
-                AppLogger.audit(.appMovedToApplications, category: "App", fields: ["destination": destination.path])
-                NSApp.terminate(nil)
-            }
+        let command = relaunchCommand(
+            processID: ProcessInfo.processInfo.processIdentifier,
+            destination: destination
+        )
+        let relauncher = Process()
+        relauncher.executableURL = command.executableURL
+        relauncher.arguments = command.arguments
+        do {
+            try relauncher.run()
+        } catch {
+            AppLogger.audit(.appMoveToApplicationsFailed, category: "App", fields: ["error": String(describing: error)])
+            presentMoveFailedAlert(error: error)
+            return
         }
+        AppLogger.audit(.appMovedToApplications, category: "App", fields: ["destination": destination.path])
+        NSApp.terminate(nil)
+    }
+
+    /// The copied app is opened only after this process has fully exited. That
+    /// makes the kernel release its persistent-store lease before the new app
+    /// can attempt startup, without relying on asynchronous open completion.
+    static func relaunchCommand(processID: Int32, destination: URL) -> RelaunchCommand {
+        RelaunchCommand(
+            executableURL: URL(fileURLWithPath: "/bin/sh"),
+            arguments: [
+                "-c",
+                "while kill -0 \"$1\" 2>/dev/null; do /bin/sleep 0.05; done; exec /usr/bin/open \"$2\"",
+                "astra-relaunch",
+                String(processID),
+                destination.path
+            ]
+        )
     }
 
     @MainActor
