@@ -5,11 +5,56 @@ import ASTRAPersistence
 /// Stable correlation data supplied by the task-open trace while its initial
 /// snapshot is being prepared. It contains no user content and keeps the
 /// snapshot pipeline independent of the UI telemetry implementation.
-struct TaskThreadResponsivenessContext: Sendable, Equatable {
+private final class TaskThreadResponsivenessLifetime: @unchecked Sendable {
+    private let lock = NSLock()
+    private var active = true
+
+    func cancel() {
+        lock.lock()
+        active = false
+        lock.unlock()
+    }
+
+    var isActive: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return active
+    }
+
+    func performIfActive(_ operation: () -> Void) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard active else { return }
+        operation()
+    }
+
+    func performWithState(_ operation: (Bool) -> Void) {
+        lock.lock()
+        defer { lock.unlock() }
+        operation(active)
+    }
+}
+
+struct TaskThreadResponsivenessContext: Sendable {
     let traceID: String
+    private let lifetime = TaskThreadResponsivenessLifetime()
 
     var fields: [String: String] {
         ["trace_id": traceID]
+    }
+
+    var isActive: Bool { lifetime.isActive }
+
+    func cancel() {
+        lifetime.cancel()
+    }
+
+    func performIfActive(_ operation: ([String: String]) -> Void) {
+        lifetime.performIfActive { operation(fields) }
+    }
+
+    func performWithCorrelationFields(_ operation: ([String: String]) -> Void) {
+        lifetime.performWithState { operation($0 ? fields : [:]) }
     }
 }
 
@@ -78,6 +123,7 @@ final class TaskThreadViewModel {
         ) {
             expansionRunCount = 50
             snapshotTrigger = nil
+            self.responsivenessContext?.cancel()
             snapshotTask?.cancel()
             lastSnapshotApplyAt = .distantPast
             lastSnapshotAppliedUptimeNanoseconds = nil
@@ -169,8 +215,7 @@ final class TaskThreadViewModel {
         snapshotRevision += 1
         let revision = snapshotRevision
         let scheduledAt = DispatchTime.now().uptimeNanoseconds
-        let traceFields = responsivenessContext?.fields ?? [:]
-        let snapshotPerformanceFields = fields.merging(traceFields, uniquingKeysWith: { _, new in new })
+        let snapshotPerformanceFields = fields
         let shouldLogLiveCadence = isLive
             && Date().timeIntervalSince(lastLiveSnapshotTelemetryAt) >= 1
         if shouldLogLiveCadence {
@@ -181,25 +226,29 @@ final class TaskThreadViewModel {
                 try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
                 if Task.isCancelled { return }
             }
-            if responsivenessContext != nil {
+            responsivenessContext?.performIfActive { traceFields in
                 PerformanceTelemetry.log(
                     "task_open_snapshot_queue_wait",
                     durationMilliseconds: PerformanceTelemetry.elapsedMilliseconds(since: scheduledAt),
-                    fields: snapshotPerformanceFields,
+                    fields: snapshotPerformanceFields.merging(traceFields, uniquingKeysWith: { _, new in new }),
                     taskID: taskID
                 )
             }
             let buildStartedAt = DispatchTime.now().uptimeNanoseconds
-            let builtSnapshot = await TaskThreadSnapshot.buildAsync(input: input, fields: snapshotPerformanceFields)
+            let builtSnapshot = await TaskThreadSnapshot.buildAsync(
+                input: input,
+                fields: snapshotPerformanceFields,
+                responsivenessContext: responsivenessContext
+            )
             guard !Task.isCancelled else { return }
             let buildCompletedAt = DispatchTime.now().uptimeNanoseconds
             await MainActor.run {
                 guard !Task.isCancelled, revision == self.snapshotRevision else { return }
-                if responsivenessContext != nil {
+                responsivenessContext?.performIfActive { traceFields in
                     PerformanceTelemetry.log(
                         "task_open_snapshot_main_actor_apply_wait",
                         durationMilliseconds: PerformanceTelemetry.elapsedMilliseconds(since: buildCompletedAt),
-                        fields: snapshotPerformanceFields,
+                        fields: snapshotPerformanceFields.merging(traceFields, uniquingKeysWith: { _, new in new }),
                         taskID: taskID
                     )
                 }
@@ -212,11 +261,11 @@ final class TaskThreadViewModel {
                 }
                 self.lastSnapshotApplyAt = Date()
                 self.lastSnapshotAppliedUptimeNanoseconds = DispatchTime.now().uptimeNanoseconds
-                if responsivenessContext != nil {
+                responsivenessContext?.performIfActive { traceFields in
                     PerformanceTelemetry.log(
                         "task_open_snapshot_apply",
                         durationMilliseconds: PerformanceTelemetry.elapsedMilliseconds(since: applyStartedAt),
-                        fields: snapshotPerformanceFields,
+                        fields: snapshotPerformanceFields.merging(traceFields, uniquingKeysWith: { _, new in new }),
                         taskID: taskID
                     )
                 }
@@ -248,16 +297,16 @@ final class TaskThreadViewModel {
     /// their own bounded cadence telemetry but are not misattributed to open.
     func completeInitialResponsivenessTrace(for taskID: UUID) {
         guard appliedSnapshotTaskID == taskID else { return }
+        responsivenessContext?.cancel()
         responsivenessContext = nil
         initialSnapshotResponsivenessTraceID = nil
     }
 
-    /// Stops the initial snapshot pipeline when its task-open trace ends before
-    /// the transcript becomes ready, preventing late phases from using a stale
-    /// trace ID.
-    func cancelInitialResponsivenessSnapshot(for taskID: UUID) {
+    /// Ends only telemetry correlation when an open trace times out or its view
+    /// disappears. The user-visible snapshot build must continue to completion.
+    func cancelInitialResponsivenessCorrelation(for taskID: UUID) {
         guard snapshotTrigger?.taskID == taskID, responsivenessContext != nil else { return }
-        snapshotTask?.cancel()
+        responsivenessContext?.cancel()
         responsivenessContext = nil
         initialSnapshotResponsivenessTraceID = nil
     }

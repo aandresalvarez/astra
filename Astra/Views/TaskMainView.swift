@@ -620,7 +620,7 @@ struct TaskMainView: View {
         .modifier(TaskOpenResponsivenessLifecycleObserver(
             task: task,
             scope: taskOpenResponsivenessScope,
-            stopInitialSnapshot: { threadViewModel.cancelInitialResponsivenessSnapshot(for: task.id) }
+            stopInitialCorrelation: { threadViewModel.cancelInitialResponsivenessCorrelation(for: task.id) }
         ))
         .onDisappear {
             pendingPlanStateRefreshTask?.cancel()

@@ -600,25 +600,37 @@ struct TaskThreadSnapshot: Sendable {
 
     static func buildAsync(
         input: TaskThreadSnapshotInput,
-        fields: [String: String]
+        fields: [String: String],
+        responsivenessContext: TaskThreadResponsivenessContext? = nil
     ) async -> TaskThreadSnapshot {
         await Task.detached(priority: .userInitiated) {
-            PerformanceTelemetry.measure(
-                "thread_snapshot_build",
-                thresholdMilliseconds: 8,
-                fields: fields,
-                resultFields: { snapshot in
-                    [
-                        "conversation_item_count": PerformanceTelemetryFields.count(snapshot.conversationItems.count),
-                        "snapshot_event_count": PerformanceTelemetryFields.count(snapshot.sortedEvents.count),
-                        "snapshot_run_count": PerformanceTelemetryFields.count(snapshot.sortedRuns.count)
-                    ]
-                }
-            ) {
-                PerformanceSignposts.buildThreadSnapshot {
-                    TaskThreadSnapshot(input: input)
-                }
+            let startedAt = DispatchTime.now().uptimeNanoseconds
+            let snapshot = PerformanceSignposts.buildThreadSnapshot {
+                TaskThreadSnapshot(input: input)
             }
+            let resultFields = fields.merging([
+                "conversation_item_count": PerformanceTelemetryFields.count(snapshot.conversationItems.count),
+                "snapshot_event_count": PerformanceTelemetryFields.count(snapshot.sortedEvents.count),
+                "snapshot_run_count": PerformanceTelemetryFields.count(snapshot.sortedRuns.count)
+            ], uniquingKeysWith: { _, new in new })
+            if let responsivenessContext {
+                responsivenessContext.performWithCorrelationFields { correlationFields in
+                    PerformanceTelemetry.logIfNeeded(
+                        "thread_snapshot_build",
+                        start: startedAt,
+                        thresholdMilliseconds: 8,
+                        fields: resultFields.merging(correlationFields, uniquingKeysWith: { _, new in new })
+                    )
+                }
+            } else {
+                PerformanceTelemetry.logIfNeeded(
+                    "thread_snapshot_build",
+                    start: startedAt,
+                    thresholdMilliseconds: 8,
+                    fields: resultFields
+                )
+            }
+            return snapshot
         }.value
     }
 

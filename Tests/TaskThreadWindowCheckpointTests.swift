@@ -127,15 +127,20 @@ struct TaskThreadViewModelTests {
     }
 
     @MainActor
-    @Test("Cancelling an unfinished open trace clears its snapshot correlation")
-    func cancellationClearsInitialSnapshotCorrelation() {
+    @Test("Cancelling an unfinished open trace keeps the snapshot build alive")
+    func cancellationClearsCorrelationWithoutCancellingSnapshot() async {
         let vm = TaskThreadViewModel()
         let task = makeTask(goal: "Cancelled trace")
-        vm.reset(for: task, responsivenessContext: TaskThreadResponsivenessContext(traceID: "cancelled-trace"))
+        let context = TaskThreadResponsivenessContext(traceID: "cancelled-trace")
+        vm.reset(for: task, responsivenessContext: context)
 
-        vm.cancelInitialResponsivenessSnapshot(for: task.id)
+        vm.cancelInitialResponsivenessCorrelation(for: task.id)
+        let readiness = await awaitReadiness(vm, taskID: task.id)
 
+        #expect(!context.isActive)
         #expect(vm.initialSnapshotResponsivenessTraceID == nil)
+        #expect(readiness.isReady(for: task.id))
+        #expect(vm.appliedSnapshotTaskID == task.id)
     }
 
     @MainActor
