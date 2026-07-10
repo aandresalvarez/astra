@@ -198,6 +198,12 @@ public enum FeedbackAssessmentValidator {
         for question in assessment.missingQuestions {
             try requireSemanticText(question, field: "assessment.missingQuestions[]")
         }
+        for receiptID in assessment.duplicateCandidateReceiptIDs {
+            try requireSemanticText(
+                receiptID,
+                field: "assessment.duplicateCandidateReceiptIDs[]"
+            )
+        }
         for criterion in assessment.acceptanceCriteria {
             try requireSemanticText(criterion, field: "assessment.acceptanceCriteria[]")
         }

@@ -143,6 +143,9 @@ struct FeedbackAssessmentPolicyTests {
             ("assessment.regressionTestProposal", { $0.regressionTestProposal = " \n\t" }),
             ("assessment.acceptanceCriteria[]", { $0.acceptanceCriteria = [" \n\t"] }),
             ("assessment.missingQuestions[]", { $0.missingQuestions = [" \n\t"] }),
+            ("assessment.duplicateCandidateReceiptIDs[]", {
+                $0.duplicateCandidateReceiptIDs = [" \n\t"]
+            }),
             ("assessment.sourceRevision", { $0.sourceRevision = " \n\t" }),
             ("assessment.currentMainRevision", { $0.currentMainRevision = " \n\t" })
         ]
@@ -556,6 +559,7 @@ struct FeedbackAssessmentPolicyTests {
         #expect(!auditRegion.contains("Codable"))
         #expect(decisionRegion.contains("fileprivate init("))
         #expect(!decisionRegion.contains("public init("))
+        #expect(!decisionRegion.contains("Codable"))
     }
 
     private func assessment(
