@@ -126,7 +126,18 @@ jobs:
             echo "Pushed tag '$GITHUB_REF_NAME' doesn't match vX.Y.Z exactly; refusing to guess a version." >&2
             exit 2
           else
-            LATEST_TAG="$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=v:refname | tail -n 1)"
+            # `git tag --list` uses shell globs, not the strict regex used
+            # for VERSION validation elsewhere in this step -- the glob
+            # 'v[0-9]*.[0-9]*.[0-9]*' also matches a suffixed tag like
+            # v0.1.29-alpha (the trailing * swallows the suffix), which
+            # --sort=v:refname can rank ahead of the latest genuine
+            # vX.Y.Z release. Filter to the exact vX.Y.Z shape with the
+            # same grep -E used for HIGHEST_TAG below and in the publish
+            # step's freshness check, so a manual workflow_dispatch run
+            # that omits version falls back to the latest EXACT release
+            # tag instead of a stray non-release tag (PR #253 review
+            # comment on this step).
+            LATEST_TAG="$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | tail -n 1)"
             if [[ -z "$LATEST_TAG" ]]; then
               echo "Could not derive ASTRA_VERSION: no vX.Y.Z tags exist and no version input given." >&2
               exit 2

@@ -75,7 +75,12 @@ struct ReleaseBuildNumberDerivationTests {
         )
         #expect(initResult.exitCode == 0, "git init failed: \(initResult.output)")
         for patch in patches {
-            let tagResult = runShell("git tag v0.\(minor).\(patch)", in: path)
+            // --no-sign: on a machine with a global tag.gpgSign=true, plain
+            // `git tag <name>` would otherwise create a signed/annotated tag
+            // and can prompt for (or fail without) a GPG passphrase before
+            // this fixture even gets to the assertions under test (PR #253
+            // review thread on this file).
+            let tagResult = runShell("git tag --no-sign v0.\(minor).\(patch)", in: path)
             #expect(tagResult.exitCode == 0, "git tag failed: \(tagResult.output)")
         }
         return path
@@ -426,7 +431,18 @@ struct ReleaseBuildNumberDerivationTests {
         // above so a checkout with no release tags fetched SKIPS this test
         // instead of failing it (PR #253 review comment 3549627099).
         let repoPath = try makeTempDir("accept-historical")
-        let tagListResult = runShell("git -C \(repoRoot.path) tag -l 'v[0-9]*.[0-9]*.[0-9]*'", in: repoPath)
+        // Filter the glob-matched tag list down to the exact `vX.Y.Z` shape
+        // with the same `grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$'` the release
+        // scripts use (script/build_and_run.sh, release.yml) -- the glob
+        // alone also matches a suffixed tag like `v0.1.29-alpha`, which
+        // `runVersionStep` now intentionally rejects (PR #253 review
+        // thread on this file), so an unfiltered fetched tag like that
+        // would fail this test on incidental checkout state rather than on
+        // the build-number logic actually under test.
+        let tagListResult = runShell(
+            "git -C \(repoRoot.path) tag -l 'v[0-9]*.[0-9]*.[0-9]*' | grep -E '^v[0-9]+\\.[0-9]+\\.[0-9]+$' || true",
+            in: repoPath
+        )
         #expect(tagListResult.exitCode == 0, "failed to list existing tags: \(tagListResult.output)")
         let tags = tagListResult.output.split(separator: "\n").map(String.init).filter { $0.hasPrefix("v") }
         guard !tags.isEmpty else { return }
@@ -452,7 +468,7 @@ struct ReleaseBuildNumberDerivationTests {
             let deleteResult = runShell("git tag -d v0.1.\(patch)", in: repoPath)
             #expect(deleteResult.exitCode == 0)
         }
-        let addResult = runShell("git tag v0.1.31", in: repoPath)
+        let addResult = runShell("git tag --no-sign v0.1.31", in: repoPath)
         #expect(addResult.exitCode == 0)
 
         let after = try runVersionStep(version: "0.1.20", in: repoPath)
@@ -481,7 +497,7 @@ struct ReleaseBuildNumberDerivationTests {
         // The next ordinary release, v0.1.31, is tagged (fetch-tags:true
         // means the just-pushed tag is already local by the time this step
         // runs in the real workflow).
-        let addResult = runShell("git tag v0.1.31", in: repoPath)
+        let addResult = runShell("git tag --no-sign v0.1.31", in: repoPath)
         #expect(addResult.exitCode == 0)
 
         let latestAfter = try runVersionStep(version: "0.1.31", in: repoPath)
@@ -512,7 +528,7 @@ struct ReleaseBuildNumberDerivationTests {
         #expect(repairBefore["build"] == "10010")
 
         for patch in 21...35 {
-            let tagResult = runShell("git tag v0.1.\(patch)", in: repoPath)
+            let tagResult = runShell("git tag --no-sign v0.1.\(patch)", in: repoPath)
             #expect(tagResult.exitCode == 0)
         }
 
