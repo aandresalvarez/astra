@@ -12,9 +12,9 @@ if selected)
 
 **Primary repository:** `aandresalvarez/astra`
 
-**Program-plan draft PR:** [#255](https://github.com/aandresalvarez/astra/pull/255)
+**Program-plan PR:** [#255](https://github.com/aandresalvarez/astra/pull/255)
 
-**Backend design-only draft PR:**
+**Backend design-only PR:**
 [#256](https://github.com/aandresalvarez/astra/pull/256) (ADR/API/threat model;
 explicitly not PR 7 or PR 8)
 
@@ -231,7 +231,7 @@ changes, or a blocker appears. Use only the listed status values:
 
 ## Parallelization and Merge Order
 
-The program-plan branch is intentionally one commit ahead of `main`. Feature
+The program-plan branch is intentionally kept close to `main`. Feature
 branches are stacked only on their declared dependency, target that dependency
 for review, and are retargeted after it merges. The disposable Gate 11D branch
 is never used as a feature base and never replaces the individual PR histories.
