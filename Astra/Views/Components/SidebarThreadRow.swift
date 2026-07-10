@@ -72,6 +72,9 @@ struct SidebarThreadRow: View {
     var contentLeadingPadding: CGFloat = 0
     var attemptCount: Int = 1
     var subtitle: String?
+    /// Optional context shown when hovering the title. Pinned tasks use this
+    /// for workspace identity instead of spending a second line on it.
+    var titleHelp: String?
     /// Hidden when the row is rendered inside the Pinned section — the
     /// section already implies "pinned" and the unpin overlay button
     /// covers the same gutter on hover, so showing the glyph there
@@ -192,7 +195,8 @@ struct SidebarThreadRow: View {
                 HStack(spacing: 5) {
                     SidebarTaskTitleText(
                         presentation: titlePresentation,
-                        font: Stanford.ui(SidebarThreadRowLayout.titleFontSize, weight: titleWeight)
+                        font: Stanford.ui(SidebarThreadRowLayout.titleFontSize, weight: titleWeight),
+                        helpText: titleHelp
                     )
                     .layoutPriority(1)
 
