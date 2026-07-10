@@ -133,7 +133,7 @@ frozen profile:
 | `allow-golden-request` | No mutation; includes `redaction.contactPatterns` | allow |
 | `allow-additive-unknown` | Add `/payload/futureMetadata = {"futureFlag":true}` | allow |
 | `allow-email-diagnostic-name` | Add `/payload/futureMetadata = {"emailDeliveryFailed":true}` | allow |
-| `allow-email-word-in-statement` | Set `/payload/statement/actualResult` to `The email workflow failed.` | allow |
+| `allow-email-word-in-value` | Add `/payload/futureMetadata = {"diagnosticNote":"The email workflow failed."}` | allow |
 | `deny-top-level-reporter-email` | Add `/reporterEmail = "reporter@example.test"` | reject |
 | `deny-nested-email` | Add `/payload/futureMetadata/email = "reporter@example.test"` | reject |
 | `deny-case-separator-email` | Add `/payload/futureMetadata/Reporter_Email = "reporter@example.test"` | reject |

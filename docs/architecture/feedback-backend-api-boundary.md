@@ -40,10 +40,19 @@ configuration.
 
 One report aggregate owns idempotency, status-read authorization, remote status,
 evidence lifecycle, triage decisions, projection mapping, merge state, and
-release state. Its metadata transaction atomically claims the installation/key/
-canonical-digest tuple, stores a keyed verifier or encrypted representation of
-the status-read credential and its expiry, advances state, and inserts every
-required outbox job intent.
+release state. Its metadata transaction atomically claims uniqueness on the
+idempotency key alone, then compares the stored installation ID and canonical
+digest against the incoming request inside that same transaction: a matching
+installation and digest replays the original receipt, a changed digest is a
+permanent `idempotency_key_reuse`, and a different installation is a permanent
+`cross_installation_replay`. A claim keyed on the installation/key/digest tuple
+cannot detect either case, because a changed digest or a different installation
+simply forms a different tuple instead of colliding with the original row. On
+first acceptance the transaction also stores both a keyed one-way verifier of
+the status-read credential and an encrypted, recoverable representation of that
+same credential plus its expiry — the one-way verifier alone cannot reconstruct
+the secret the frozen receipt schema requires when a lost `202` response must be
+replayed — advances state, and inserts every required outbox job intent.
 
 Private evidence is stored separately under deterministic object keys. Evidence
 upload completes before report acceptance. GitHub and assessment are
@@ -59,7 +68,7 @@ canonical_digest_sha256
 payload_sha256
 evidence_archive_sha256
 receipt_id
-status_read_credential_verifier + expires_at
+status_read_credential_verifier + encrypted_status_read_credential + expires_at
 contract_version
 received_at
 remote_status
@@ -113,8 +122,9 @@ and a constant safe message that does not echo the member name or value.
   an upload sequence without changing envelope bytes, hash inputs, or retry
   identity. Acceptance occurs only after any declared evidence is privately
   stored, encrypted, and verified against its final archive/artifact hashes.
-- The transaction commits the report, status-read credential verifier, and
-  downstream job intents before returning the stable receipt.
+- The transaction commits the report, the status-read credential's verifier and
+  its encrypted recoverable representation, and downstream job intents before
+  returning the stable receipt.
 - GitHub and assessment are not in the acceptance path.
 - Reuse by the same installation of the same idempotency key and canonical
   digest returns the original receipt. A changed digest returns permanent
