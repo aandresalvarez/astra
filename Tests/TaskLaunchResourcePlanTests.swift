@@ -637,6 +637,70 @@ struct TaskLaunchResourcePlanTests {
         #expect(!plan.diagnostics.contains { $0.code == "ssh_proxy_command_executable_unresolved" })
     }
 
+    @Test("Resource resolver keeps nested SSH includes scoped to the triggering alias")
+    func resolverKeepsNestedSSHIncludesAliasScoped() throws {
+        let fm = FileManager.default
+        let root = try makeTempDir("resource-plan-proxy-nested-scope")
+        defer { try? fm.removeItem(atPath: root.path) }
+        let workspaceRoot = root.appendingPathComponent("workspace", isDirectory: true)
+        let home = root.appendingPathComponent("home", isDirectory: true)
+        let sshDir = home.appendingPathComponent(".ssh", isDirectory: true)
+        let configDirectory = sshDir.appendingPathComponent("config.d", isDirectory: true)
+        let proxyBin = home.appendingPathComponent("proxy-bin", isDirectory: true)
+        let fooHelper = proxyBin.appendingPathComponent("foo-helper")
+        try fm.createDirectory(at: workspaceRoot, withIntermediateDirectories: true)
+        try fm.createDirectory(at: configDirectory, withIntermediateDirectories: true)
+        try fm.createDirectory(at: proxyBin, withIntermediateDirectories: true)
+        try "#!/bin/sh\nexit 0\n".write(to: fooHelper, atomically: true, encoding: .utf8)
+
+        let sshConfig = sshDir.appendingPathComponent("config")
+        let includedConfig = configDirectory.appendingPathComponent("foo.conf")
+        try """
+        Host foo
+          Include config.d/foo.conf
+        """.write(to: sshConfig, atomically: true, encoding: .utf8)
+        try """
+        Host bar
+          ProxyCommand /missing/bar-helper %h %p
+        Host foo
+          ProxyCommand \(fooHelper.path) %h %p
+        """.write(to: includedConfig, atomically: true, encoding: .utf8)
+
+        SSHConnectionManager.save([
+            SSHConnection(name: "foo", host: "foo.internal", user: "example", configAlias: "foo"),
+            SSHConnection(name: "bar", host: "bar.internal", user: "example", configAlias: "bar")
+        ], workspacePath: workspaceRoot.path)
+
+        let workspace = Workspace(name: "Nested SSH scope", primaryPath: workspaceRoot.path)
+        let task = AgentTask(
+            title: "Use scoped SSH aliases",
+            goal: "Connect to foo and bar",
+            workspace: workspace,
+            runtime: .claudeCode
+        )
+        let plan = TaskLaunchResourceResolver.resolve(
+            task: task,
+            runID: UUID(),
+            runtime: .claudeCode,
+            phase: "run",
+            prompt: AgentPromptBuilder.buildPrompt(for: task),
+            contextText: task.goal,
+            workspacePath: workspaceRoot.path,
+            homeDirectoryPath: home.path,
+            gitCredentialContextProvider: { _, _, _, _ in .empty }
+        )
+
+        #expect(plan.hostPathGrants.contains {
+            $0.source == .remoteWorkspace && $0.path == includedConfig.standardizedFileURL.path
+        })
+        #expect(plan.hostPathGrants.contains {
+            $0.source == .remoteWorkspace && $0.path == fooHelper.standardizedFileURL.path
+        })
+        #expect(!plan.diagnostics.contains {
+            $0.code == "ssh_proxy_command_executable_unresolved" && $0.message.contains("bar-helper")
+        })
+    }
+
     @Test("Resource resolver parses env-wrapped ProxyCommand executable")
     func resolverParsesEnvWrappedProxyCommandExecutable() throws {
         let fm = FileManager.default

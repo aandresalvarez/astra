@@ -433,13 +433,18 @@ enum TaskLaunchResourceResolver {
         }
         let normalizedAliases = Set(aliases.map(normalizedSSHHostPatternComponent).filter { !$0.isEmpty })
         guard !normalizedAliases.isEmpty else { return }
-        let expandedConfig = expandedSSHConfig(
-            at: sshConfigPath,
-            aliases: normalizedAliases,
-            homeDirectoryPath: homeDirectoryPath,
-            fileManager: fileManager
-        )
-        for includedPath in expandedConfig.includedPaths {
+        let aliasConfigs = normalizedAliases.sorted().map { alias in
+            (
+                alias,
+                expandedSSHConfig(
+                    at: sshConfigPath,
+                    aliases: [alias],
+                    homeDirectoryPath: homeDirectoryPath,
+                    fileManager: fileManager
+                )
+            )
+        }
+        for includedPath in uniquePaths(aliasConfigs.flatMap { $0.1.includedPaths }) {
             hostPathGrants.append(RuntimePathGrant(
                 path: includedPath,
                 access: .read,
@@ -451,12 +456,18 @@ enum TaskLaunchResourceResolver {
             ))
         }
 
-        let executableResolutions = sshProxyCommandExecutableResolutions(
-            in: expandedConfig.text,
-            aliases: aliases,
-            homeDirectoryPath: homeDirectoryPath,
-            fileManager: fileManager
-        )
+        var seenResolutionIdentities: Set<String> = []
+        let executableResolutions = aliasConfigs.flatMap { alias, expandedConfig in
+            sshProxyCommandExecutableResolutions(
+                in: expandedConfig.text,
+                aliases: [alias],
+                homeDirectoryPath: homeDirectoryPath,
+                fileManager: fileManager
+            )
+        }.filter { resolution in
+            let identity = resolution.executablePath ?? "unresolved:\(resolution.unresolvedToken ?? "")"
+            return seenResolutionIdentities.insert(identity).inserted
+        }
         for resolution in executableResolutions {
             guard let executablePath = resolution.executablePath else {
                 diagnostics.append(RuntimeResourceDiagnostic(
@@ -584,7 +595,7 @@ enum TaskLaunchResourceResolver {
                 ) where !visited.contains(includePath) {
                     let nested = expandedSSHConfig(
                         at: includePath,
-                        aliases: aliases,
+                        aliases: matchingAliases,
                         homeDirectoryPath: homeDirectoryPath,
                         fileManager: fileManager,
                         depth: depth + 1,

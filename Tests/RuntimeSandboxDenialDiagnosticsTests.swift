@@ -33,4 +33,25 @@ struct RuntimeSandboxDenialDiagnosticsTests {
         let output = "/bin/sh: /Users/example/bin/tool: Operation not permitted; report /tmp/unrelated"
         #expect(RuntimeSandboxDenialDiagnostics.fileDenial(in: output)?.path == "/Users/example/bin/tool")
     }
+
+    @Test("Ambiguous access denial does not request an ineffective read approval")
+    func ambiguousAccessDenialIsTerminal() {
+        let decision = RuntimeSandboxDenialApproval.resolve(
+            denial: RuntimeSandboxFileDenial(
+                operation: .access,
+                path: "/tmp/astra-ambiguous-output",
+                detail: "/bin/sh: /tmp/astra-ambiguous-output: Operation not permitted"
+            ),
+            toolName: "Bash",
+            requestText: "\nRecent request: printf replacement > /tmp/astra-ambiguous-output",
+            approvalWasApplied: false
+        )
+
+        guard case .terminal(let reason, let message) = decision else {
+            Issue.record("Ambiguous access denial should be terminal")
+            return
+        }
+        #expect(reason == "os_sandbox_file_access_denied")
+        #expect(message.contains("sandbox_access_approval_not_supported"))
+    }
 }

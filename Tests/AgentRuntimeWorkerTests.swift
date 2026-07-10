@@ -96,7 +96,6 @@ struct ProviderLaunchCapabilityScopeTests {
                 .appendingPathComponent("AgentPolicyAdapters.swift"),
             encoding: .utf8
         )
-
         #expect(sourceContains(
             workerSource,
             """
@@ -153,7 +152,7 @@ struct ProviderLaunchCapabilityScopeTests {
             .appendingPathComponent("AgentRuntimeWorker.swift")
         let workerSource = try String(contentsOf: workerURL, encoding: .utf8)
         let preflight = "AgentRuntimeLaunchPreflight.preflightCredentialProjectionBeforeLaunch("
-        let promptBuild = "let prompt = promptOverride ?? buildPrompt(for: task, executionPolicy: executionPolicy)"
+        let promptBuild = "let prompt = promptOverride ?? buildPrompt("
         let providerLaunch = "processRunner.runRuntimeProcess"
         let preflightRange = try #require(workerSource.range(of: preflight))
         let promptBuildRange = try #require(workerSource.range(of: promptBuild))

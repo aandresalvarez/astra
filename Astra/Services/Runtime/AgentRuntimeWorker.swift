@@ -705,7 +705,11 @@ final class AgentRuntimeWorker {
         task.executionEnvironmentSnapshotJSON = executionEnvironmentJSON
         run.executionEnvironmentSnapshotJSON = executionEnvironmentJSON
 
-        let prompt = promptOverride ?? buildPrompt(for: task, executionPolicy: executionPolicy)
+        let prompt = promptOverride ?? buildPrompt(
+            for: task,
+            executionPolicy: executionPolicy,
+            capabilityResolutionSnapshot: capabilityResolutionSnapshot
+        )
         let launchResourcePlan = TaskLaunchResourceResolver.resolve(
             task: task,
             runID: run.id,
@@ -1961,9 +1965,14 @@ final class AgentRuntimeWorker {
     @MainActor
     func buildPrompt(
         for task: AgentTask,
-        executionPolicy: AgentRuntimeExecutionPolicy = .default
+        executionPolicy: AgentRuntimeExecutionPolicy = .default,
+        capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot? = nil
     ) -> String {
-        AgentPromptBuilder.buildPrompt(for: task, executionPolicy: executionPolicy)
+        AgentPromptBuilder.buildPrompt(
+            for: task,
+            executionPolicy: executionPolicy,
+            capabilityResolutionSnapshot: capabilityResolutionSnapshot
+        )
     }
 
     @MainActor

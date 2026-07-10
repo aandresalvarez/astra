@@ -206,6 +206,41 @@ struct RuntimeAttachmentPolicyRegressionTests {
         )) == nil)
     }
 
+    @Test("Docker broad shell guard translates container paths before checking read-only inputs")
+    func dockerBroadShellGuardTranslatesReadOnlyInputPaths() throws {
+        let workspacePath = "/tmp/astra-policy-guard"
+        let hostInputPath = "\(workspacePath)/attached.md"
+        let manifest = makeManifest(
+            allowedTools: ["*"],
+            readOnlyPaths: [hostInputPath],
+            permissionMode: .autonomous,
+            policyLevel: .autonomous,
+            usesBroadProviderPermissions: true
+        )
+        let mapper = ExecutionEnvironmentPathMapper(mounts: [
+            ExecutionEnvironmentMount(
+                hostPath: workspacePath,
+                containerPath: "/workspace",
+                access: .readWrite,
+                role: .workspace
+            )
+        ])
+        let guardUnderTest = AgentRuntimePolicyGuard(manifest: manifest, pathMapper: mapper)
+
+        let violation = try #require(guardUnderTest.violation(for: .toolUse(
+            name: "Bash",
+            id: "docker-rm",
+            input: ["command": "rm /workspace/attached.md"]
+        )))
+        #expect(violation.violationCategory == "read_only_input_mutation")
+        #expect(violation.detail == hostInputPath)
+        #expect(guardUnderTest.violation(for: .toolUse(
+            name: "Bash",
+            id: "docker-cat",
+            input: ["command": "cat /workspace/attached.md"]
+        )) == nil)
+    }
+
     @Test("Seatbelt reads external attachment without permitting mutation")
     func seatbeltKeepsExternalAttachmentReadOnly() throws {
         let fileManager = FileManager.default

@@ -12,9 +12,6 @@ enum RuntimeSandboxPathGrantPolicy {
         operation: RuntimeSandboxFileDenial.Operation,
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
     ) -> Decision {
-        guard operation != .write else {
-            return .denied(reason: "sandbox_write_approval_not_supported")
-        }
         guard let path = ExecutionSandbox.canonicalize(rawPath),
               path.hasPrefix("/"),
               !ExecutionSandbox.isOverlyBroadRoot(path) else {
@@ -36,6 +33,12 @@ enum RuntimeSandboxPathGrantPolicy {
         ]
         guard !forbiddenRoots.contains(where: { isInsideOrEqual(path, root: $0) }) else {
             return .denied(reason: "sandbox_path_security_owned")
+        }
+        guard operation == .read else {
+            let reason = operation == .write
+                ? "sandbox_write_approval_not_supported"
+                : "sandbox_access_approval_not_supported"
+            return .denied(reason: reason)
         }
         return .eligible(path: path, access: "read")
     }

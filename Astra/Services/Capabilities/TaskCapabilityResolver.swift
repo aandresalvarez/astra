@@ -36,6 +36,7 @@ struct TaskCapabilityResolutionSnapshot {
     let fullInventory: TaskCapabilityPromptScope
     let providerLaunch: TaskCapabilityPromptScope
     let providerLaunchContextText: String
+    let connectorCredentialExposurePolicy: ConnectorRuntimeProjection.CredentialExposurePolicy
 
     static func capture(
         for task: AgentTask,
@@ -51,7 +52,8 @@ struct TaskCapabilityResolutionSnapshot {
         return TaskCapabilityResolutionSnapshot(
             fullInventory: resolver.resolvedScope(.fullInventory),
             providerLaunch: resolver.resolvedScope(.providerLaunch(contextText: providerLaunchContextText)),
-            providerLaunchContextText: providerLaunchContextText
+            providerLaunchContextText: providerLaunchContextText,
+            connectorCredentialExposurePolicy: resolver.connectorCredentialExposurePolicy
         )
     }
 
@@ -105,7 +107,7 @@ struct TaskCapabilityResolver {
 
         let connEnvVars = ConnectorRuntimeProjection(
             connectors: liveConnectors,
-            credentialExposurePolicy: credentialExposurePolicy()
+            credentialExposurePolicy: connectorCredentialExposurePolicy
         )
             .environmentVariables()
 
@@ -478,7 +480,7 @@ struct TaskCapabilityResolver {
         }
     }
 
-    private func credentialExposurePolicy() -> ConnectorRuntimeProjection.CredentialExposurePolicy {
+    var connectorCredentialExposurePolicy: ConnectorRuntimeProjection.CredentialExposurePolicy {
         if exposeAllConnectorCredentials {
             return .allowAllCredentials
         }
@@ -576,7 +578,7 @@ struct TaskCapabilityResolver {
 
         let connectorEnvVars = ConnectorRuntimeProjection(
             connectors: connectors,
-            credentialExposurePolicy: credentialExposurePolicy()
+            credentialExposurePolicy: connectorCredentialExposurePolicy
         )
             .environmentVariables()
 

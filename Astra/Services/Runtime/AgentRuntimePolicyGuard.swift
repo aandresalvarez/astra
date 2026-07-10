@@ -249,8 +249,8 @@ struct AgentRuntimePolicyGuard: Sendable {
               Self.shellCommandLooksMutating(trimmedCommand) else {
             return nil
         }
-        guard let readOnlyPath = manifest.additionalReadOnlyPaths.first(where: { path in
-            !path.isEmpty && trimmedCommand.contains(path) && isReadOnlyInputPath(path)
+        guard let readOnlyPath = readOnlyInputPathRoots.first(where: { path in
+            shellCommand(trimmedCommand, referencesHostPath: path)
         }) else {
             return nil
         }
@@ -260,6 +260,17 @@ struct AgentRuntimePolicyGuard: Sendable {
             detail: readOnlyPath,
             violationCategory: "read_only_input_mutation"
         )
+    }
+
+    private func shellCommand(_ command: String, referencesHostPath hostPath: String) -> Bool {
+        if command.contains(hostPath) {
+            return true
+        }
+        guard let containerPath = pathMapper?.containerPath(forHostPath: hostPath),
+              !containerPath.isEmpty else {
+            return false
+        }
+        return command.contains(containerPath)
     }
 
     private static let mutatingShellCommandIndicators = [

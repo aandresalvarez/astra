@@ -10,8 +10,15 @@ enum RuntimeSandboxDenialApproval {
     static func resolve(
         denial: RuntimeSandboxFileDenial,
         toolName: String,
-        requestText: String
+        requestText: String,
+        approvalWasApplied: Bool
     ) -> Decision {
+        if approvalWasApplied {
+            return .terminal(
+                reason: "os_sandbox_denied_after_approval",
+                message: "ASTRA's sandbox still denied the approved path after the one-run grant was applied. The run was stopped instead of asking again."
+            )
+        }
         let pathDecision = RuntimeSandboxPathGrantPolicy.evaluate(
             path: denial.path,
             operation: denial.operation

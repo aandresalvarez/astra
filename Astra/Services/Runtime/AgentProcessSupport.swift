@@ -1695,7 +1695,10 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
         let decision = RuntimeSandboxDenialApproval.resolve(
             denial: denial,
             toolName: toolName,
-            requestText: requestText
+            requestText: requestText,
+            approvalWasApplied: policyGuard?.hasAppliedApprovalGrants([
+                .sandboxPath(path: ExecutionSandbox.canonicalize(denial.path) ?? denial.path, access: "read")
+            ]) == true
         )
         guard case .request(let request, let grants) = decision else {
             guard case .terminal(let reason, let message) = decision else { return false }
@@ -1705,12 +1708,6 @@ nonisolated final class AgentProcessMonitor: @unchecked Sendable {
             return true
         }
         let providerID = policyGuard?.providerID ?? .claudeCode
-        if policyGuard?.hasAppliedApprovalGrants(grants) == true {
-            _runtimeStopReason = "os_sandbox_denied_after_approval"
-            _runtimeStopMessage = "ASTRA's sandbox still denied the approved path after the one-run grant was applied. The run was stopped instead of asking again."
-            process?.terminate()
-            return true
-        }
         let message = PermissionBroker.approvalPayloadString(
             providerID: providerID,
             request: request,
