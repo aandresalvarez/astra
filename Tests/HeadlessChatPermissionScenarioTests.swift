@@ -358,6 +358,7 @@ extension HeadlessChatScenarioTests {
             tokenBudget: 200_000
         )
         task.status = .pendingUser
+        task.runtimePermissionOpenRequestsJSON = nil
         let blockedRun = TaskRun(task: task)
         blockedRun.status = .failed
         blockedRun.stopReason = "permission_approval_required"
@@ -450,6 +451,7 @@ extension HeadlessChatScenarioTests {
             tokenBudget: 200_000
         )
         task.status = .pendingUser
+        task.runtimePermissionOpenRequestsJSON = nil
 
         let firstMessage = TaskEvent(task: task, type: "user.message", payload: "who are you?")
         firstMessage.timestamp = Date(timeIntervalSince1970: 1)
@@ -534,6 +536,7 @@ extension HeadlessChatScenarioTests {
             tokenBudget: 200_000
         )
         task.status = .pendingUser
+        task.runtimePermissionOpenRequestsJSON = nil
         let blockedRun = TaskRun(task: task)
         blockedRun.status = .failed
         blockedRun.stopReason = "permission_approval_required"
@@ -818,6 +821,7 @@ extension HeadlessChatScenarioTests {
             tokenBudget: 200_000
         )
         task.status = .pendingUser
+        task.runtimePermissionOpenRequestsJSON = nil
         let blockedRun = TaskRun(task: task)
         blockedRun.status = .failed
         blockedRun.stopReason = "permission_approval_required"
@@ -888,6 +892,7 @@ extension HeadlessChatScenarioTests {
             tokenBudget: 200_000
         )
         task.status = .pendingUser
+        task.runtimePermissionOpenRequestsJSON = nil
         let blockedRun = TaskRun(task: task)
         blockedRun.status = .failed
         blockedRun.stopReason = "permission_approval_required"
@@ -959,6 +964,7 @@ extension HeadlessChatScenarioTests {
             tokenBudget: 200_000
         )
         task.status = .pendingUser
+        task.runtimePermissionOpenRequestsJSON = nil
 
         let oldRun = TaskRun(task: task)
         oldRun.status = .failed

@@ -36,6 +36,17 @@ enum ComposerToolbarPresentation {
     static let submitButtonSize: CGFloat = 30
     static let submitIconSize: CGFloat = 13
     static let permissionModeUsesFlatChrome = true
+
+    static func permissionModeLabel(for level: AgentPolicyLevel) -> String {
+        level.userFacingLevel.displayName
+    }
+
+    static func permissionModeHelp(for level: AgentPolicyLevel) -> String {
+        if level.userFacingLevel == .autonomous {
+            return "Auto skips provider prompts. Execution Sandbox independently controls OS isolation; ASTRA's in-app privacy checks remain active."
+        }
+        return level.userFacingLevel.shortDescription
+    }
 }
 
 /// Shared bottom toolbar for both new-task and follow-up composers.
@@ -497,7 +508,7 @@ struct ComposerToolbar: View {
                 HStack(spacing: 6) {
                     Image(systemName: currentPolicyLevel.userFacingLevel.symbolName)
                         .font(Stanford.ui(ComposerToolbarPresentation.permissionIconSize))
-                    Text(currentPolicyLevel.userFacingLevel.displayName)
+                    Text(ComposerToolbarPresentation.permissionModeLabel(for: currentPolicyLevel))
                         .font(Stanford.chatMeta(ComposerToolbarPresentation.permissionFontSize))
                         .fixedSize(horizontal: true, vertical: false)
                     Image(systemName: "chevron.down")
@@ -510,10 +521,10 @@ struct ComposerToolbar: View {
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
-        .help(currentPolicyLevel.userFacingLevel.shortDescription)
+        .help(ComposerToolbarPresentation.permissionModeHelp(for: currentPolicyLevel))
         .accessibilityIdentifier("SecurityGate")
         .accessibilityLabel("Agent Policy")
-        .accessibilityValue(currentPolicyLevel.userFacingLevel.displayName)
+        .accessibilityValue(ComposerToolbarPresentation.permissionModeLabel(for: currentPolicyLevel))
     }
 
     private var currentPolicyLevel: AgentPolicyLevel {

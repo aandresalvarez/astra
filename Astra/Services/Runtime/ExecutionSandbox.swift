@@ -52,11 +52,11 @@ enum ExecutionSandboxEnforcement: String, Codable, Sendable, CaseIterable, Ident
     var helpText: String {
         switch self {
         case .off:
-            "Agent processes run without an OS sandbox. Only ASTRA's in-app permission checks apply."
+            "Agent processes run without ASTRA's OS sandbox. ASTRA's in-app permission and privacy checks still apply."
         case .bestEffort:
             "Confine agent file writes to the workspace using macOS Seatbelt. If the sandbox can't be applied, the run continues unconfined and is logged."
         case .strict:
-            "Require the macOS Seatbelt sandbox. If it can't be applied, the run is blocked. Auto (autonomous) runs always use strict."
+            "Require the macOS Seatbelt sandbox. If it can't be applied, the run is blocked."
         }
     }
 }
@@ -107,6 +107,30 @@ enum ExecutionSandboxReadScope: String, Codable, Sendable, CaseIterable, Identif
         case .enforce:
             "Sandboxed agents can read only explicit workspace/input paths, provider state, ASTRA task folders, temporary paths, and system/toolchain roots."
         }
+    }
+}
+
+enum ExecutionSandboxResolutionReason: String, Codable, Sendable, Equatable {
+    case autonomousPrivacyBoundary = "auto_privacy_boundary"
+
+    var displayText: String {
+        switch self {
+        case .autonomousPrivacyBoundary:
+            "Auto requires ASTRA's strict privacy sandbox."
+        }
+    }
+}
+
+struct ExecutionSandboxResolution: Sendable, Equatable {
+    var storedEnforcement: ExecutionSandboxEnforcement
+    var effectiveSettings: ExecutionSandboxSettings
+    var reason: ExecutionSandboxResolutionReason?
+
+    var effectiveSummary: String {
+        if let reason {
+            return "Effective: \(effectiveSettings.enforcement.displayName). \(reason.displayText)"
+        }
+        return "Effective: \(effectiveSettings.enforcement.displayName)."
     }
 }
 
@@ -170,9 +194,8 @@ struct ExecutionSandboxSettings: Sendable, Equatable {
 
     /// Builds settings from persisted defaults.
     ///
-    /// - Enforcement defaults to best-effort; broad-permission (`autonomous`)
-    ///   runs are escalated to strict so the most dangerous mode always has a
-    ///   kernel boundary.
+    /// - Enforcement defaults to best-effort and remains independent from the
+    ///   provider permission mode. An explicit Off is never silently changed.
     /// - Network is allowed by default (the CLI needs its model API); turning it
     ///   off produces an offline profile.
     /// - Self-sandboxing providers are only wrapped when the user opts in to
@@ -181,9 +204,34 @@ struct ExecutionSandboxSettings: Sendable, Equatable {
         permissionPolicy: PermissionPolicy,
         defaults: UserDefaults = .standard
     ) -> ExecutionSandboxSettings {
-        var enforcement = ExecutionSandboxEnforcement.normalized(
-            defaults.string(forKey: AppStorageKeys.sandboxEnforcement)
+        resolve(permissionPolicy: permissionPolicy, defaults: defaults).effectiveSettings
+    }
+
+    static func resolve(
+        permissionPolicy: PermissionPolicy,
+        defaults: UserDefaults = .standard
+    ) -> ExecutionSandboxResolution {
+        resolve(
+            permissionPolicy: permissionPolicy,
+            storedEnforcement: ExecutionSandboxEnforcement.normalized(
+                defaults.string(forKey: AppStorageKeys.sandboxEnforcement)
+            ),
+            storedAllowNetwork: defaults.object(forKey: AppStorageKeys.sandboxAllowNetwork) as? Bool,
+            storedLayerNativeProviders: defaults.object(forKey: AppStorageKeys.sandboxLayerNativeProviders) as? Bool,
+            storedReadScope: ExecutionSandboxReadScope.normalized(
+                defaults.string(forKey: AppStorageKeys.sandboxReadScope)
+            )
         )
+    }
+
+    static func resolve(
+        permissionPolicy: PermissionPolicy,
+        storedEnforcement: ExecutionSandboxEnforcement,
+        storedAllowNetwork: Bool?,
+        storedLayerNativeProviders: Bool?,
+        storedReadScope: ExecutionSandboxReadScope
+    ) -> ExecutionSandboxResolution {
+        let enforcement = storedEnforcement
         // The "Allow Network In Sandbox" toggle is disabled (frozen at its last
         // value) in Settings whenever the STORED enforcement is Off — capture
         // that before any escalation below mutates `enforcement`, so a stale
@@ -193,17 +241,8 @@ struct ExecutionSandboxSettings: Sendable, Equatable {
         // `decideForCommand`, which uses this function's resolved `allowNetwork`
         // as-is). With the toggle frozen, the user would have no reachable
         // control to fix a stale `false` in that state.
-        let storedEnforcementWasOff = enforcement == .off
-        // Autonomous is the broadest-permission mode (launched with
-        // `--dangerously-skip-permissions`), so it must always run under a
-        // kernel boundary — including when the stored setting is Off. Escalating
-        // to strict (fail-closed) matches the "Auto (autonomous) runs always use
-        // strict" contract shown in Settings and this function's own doc above.
-        // Without escalating from `.off`, an Off + autonomous run would execute
-        // with no OS sandbox at all — the most dangerous mode, unconfined.
-        if permissionPolicy == .autonomous, enforcement != .strict {
-            enforcement = .strict
-        }
+        let storedEnforcementWasOff = storedEnforcement == .off
+        let resolutionReason: ExecutionSandboxResolutionReason? = nil
 
         // Network is allowed unless an explicit Bool `false` is stored AND that
         // toggle was actually reachable (stored enforcement wasn't Off). A
@@ -212,11 +251,9 @@ struct ExecutionSandboxSettings: Sendable, Equatable {
         // the CLI's model API; the offline control is a user-set Bool toggle.
         let allowNetwork = storedEnforcementWasOff
             ? defaultAllowNetwork
-            : (defaults.object(forKey: AppStorageKeys.sandboxAllowNetwork) as? Bool ?? defaultAllowNetwork)
-        let layerNative = defaults.object(forKey: AppStorageKeys.sandboxLayerNativeProviders) as? Bool ?? defaultLayerNativeProviders
-        var readScope = ExecutionSandboxReadScope.normalized(
-            defaults.string(forKey: AppStorageKeys.sandboxReadScope)
-        )
+            : (storedAllowNetwork ?? defaultAllowNetwork)
+        let layerNative = storedLayerNativeProviders ?? defaultLayerNativeProviders
+        var readScope = storedReadScope
         if enforcement == .strict {
             readScope = .enforce
         } else if enforcement == .off {
@@ -232,15 +269,19 @@ struct ExecutionSandboxSettings: Sendable, Equatable {
         // ASTRA's wrap is their only remaining boundary — force it on for them
         // regardless of the layering toggle. Claude/Copilot are already in
         // defaultWrappedRuntimes.
-        if permissionPolicy == .autonomous {
+        if permissionPolicy == .autonomous, enforcement != .off {
             wrappedRuntimes.formUnion(autonomousForcedWrapRuntimes)
         }
 
-        return ExecutionSandboxSettings(
-            enforcement: enforcement,
-            wrappedRuntimes: wrappedRuntimes,
-            allowNetwork: allowNetwork,
-            readScope: readScope
+        return ExecutionSandboxResolution(
+            storedEnforcement: storedEnforcement,
+            effectiveSettings: ExecutionSandboxSettings(
+                enforcement: enforcement,
+                wrappedRuntimes: wrappedRuntimes,
+                allowNetwork: allowNetwork,
+                readScope: readScope
+            ),
+            reason: resolutionReason
         )
     }
 
@@ -813,11 +854,8 @@ enum ExecutionSandbox: Sendable {
     ) -> [String] {
         var raw: [String] = [canonicalWorkspace]
         raw.append(contentsOf: plan.directoriesToCreate)
-        // Workspaces can span multiple paths; agents are granted (and prompted to
-        // use) the workspace's additional paths + input dirs via `--add-dir`, and
-        // the in-band policy guard treats them as write roots. Mirror that here so
-        // the kernel boundary doesn't block legitimate writes outside the primary
-        // path. Overly-broad entries are still dropped by the final filter.
+        // Workspaces can span multiple writable roots. Read-only task inputs are
+        // projected separately and must never enter this write allow-list.
         raw.append(contentsOf: additionalWritablePaths)
 
         let trimmedHome = providerHomeDirectory.trimmingCharacters(in: .whitespacesAndNewlines)

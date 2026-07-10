@@ -134,9 +134,10 @@ enum SidebarThreadRowLayout {
         for status: TaskStatus,
         isUnread: Bool,
         isHovered: Bool,
+        isKeyboardFocused: Bool = false,
         isSelected: Bool
     ) -> Bool {
-        isHovered || isSelected || showsRestStateGlyph(for: status, isUnread: isUnread)
+        isHovered || isKeyboardFocused || isSelected || showsRestStateGlyph(for: status, isUnread: isUnread)
     }
 
     static func isActionableStatus(_ status: TaskStatus) -> Bool {
@@ -718,7 +719,7 @@ struct TaskSidebarView: View {
         // on the ZStack — the same shape used by `compactTaskRow` —
         // sees a single hover region across both children, so moving
         // between them no longer toggles the state.
-        return ZStack(alignment: .trailing) {
+        return SidebarTaskFocusGroup(isHovered: isHovered) { isKeyboardFocused in
             Button {
                 selectedTask = task
             } label: {
@@ -726,13 +727,14 @@ struct TaskSidebarView: View {
                     task: task,
                     isSelected: isSelected,
                     isHovered: isHovered,
+                    isKeyboardFocused: isKeyboardFocused,
                     subtitle: task.workspace?.name,
                     showsPinIndicator: false,
                     showsTimestamp: false
                 )
             }
             .buttonStyle(.plain)
-
+        } accessory: { showsHoverChrome in
             Button {
                 withAnimation(disclosureAnimation) {
                     setPinned(false, for: task)
@@ -747,9 +749,9 @@ struct TaskSidebarView: View {
             .buttonStyle(.plain)
             .help("Unpin")
             .padding(.trailing, 8)
-            .opacity(isHovered ? 1 : 0)
-            .allowsHitTesting(isHovered)
-            .animation(hoverAnimation, value: isHovered)
+            .opacity(showsHoverChrome ? 1 : 0)
+            .allowsHitTesting(showsHoverChrome)
+            .animation(hoverAnimation, value: showsHoverChrome)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .onHover { updateTaskHover($0, id: task.id) }
@@ -840,7 +842,7 @@ struct TaskSidebarView: View {
     private func unreadTaskRow(for task: AgentTask) -> some View {
         let isHovered = hoveredTaskID == task.id
 
-        return ZStack(alignment: .trailing) {
+        return SidebarTaskFocusGroup(isHovered: isHovered) { isKeyboardFocused in
             Button {
                 selectedTask = task
             } label: {
@@ -848,12 +850,13 @@ struct TaskSidebarView: View {
                     task: task,
                     isSelected: selectedTask?.id == task.id,
                     isHovered: isHovered,
+                    isKeyboardFocused: isKeyboardFocused,
                     subtitle: task.workspace?.name
                 )
             }
             .buttonStyle(.plain)
-
-            taskOptionsMenu(for: task, isHovered: isHovered)
+        } accessory: { showsHoverChrome in
+            taskOptionsMenu(for: task, isVisible: showsHoverChrome)
                 .padding(.trailing, 8)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -1572,7 +1575,7 @@ struct TaskSidebarView: View {
     ) -> some View {
         let isHovered = hoveredTaskID == task.id
 
-        return ZStack(alignment: .trailing) {
+        return SidebarTaskFocusGroup(isHovered: isHovered) { isKeyboardFocused in
             Button {
                 selectedTask = task
             } label: {
@@ -1580,13 +1583,14 @@ struct TaskSidebarView: View {
                     task: task,
                     isSelected: selectedTask?.id == task.id,
                     isHovered: isHovered,
+                    isKeyboardFocused: isKeyboardFocused,
                     contentLeadingPadding: contentLeadingPadding,
                     attemptCount: attemptCount
                 )
             }
             .buttonStyle(.plain)
-
-            taskOptionsMenu(for: task, includePinToggle: true, isHovered: isHovered)
+        } accessory: { showsHoverChrome in
+            taskOptionsMenu(for: task, includePinToggle: true, isVisible: showsHoverChrome)
                 .padding(.trailing, 8)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -1633,7 +1637,7 @@ struct TaskSidebarView: View {
     private func taskOptionsMenu(
         for task: AgentTask,
         includePinToggle: Bool = false,
-        isHovered: Bool
+        isVisible: Bool
     ) -> some View {
         Menu {
             if includePinToggle {
@@ -1660,13 +1664,12 @@ struct TaskSidebarView: View {
         .menuIndicator(.hidden)
         .fixedSize()
         .frame(width: 24, height: 24, alignment: .center)
-        .opacity(isHovered ? 1 : 0)
-        .allowsHitTesting(isHovered)
-        // Visually hover-only, but always present to assistive tech —
-        // VoiceOver has no hover, and the context menu shouldn't be the
-        // only discoverable path to task actions.
+        .opacity(isVisible ? 1 : 0)
+        .allowsHitTesting(isVisible)
+        // Pointer hover and keyboard focus both reveal the control. It stays
+        // in the accessibility tree at rest because VoiceOver has neither.
         .accessibilityLabel("Task options")
-        .animation(hoverAnimation, value: isHovered)
+        .animation(hoverAnimation, value: isVisible)
         .help("Task options")
     }
 
@@ -1960,6 +1963,42 @@ private extension View {
     }
 }
 
+/// Keeps pointer and keyboard activation local to one rendered row. The same
+/// task can appear in several sidebar sections; per-row focus state avoids a
+/// shared id making two copies look focused at once.
+private struct SidebarTaskFocusGroup<Primary: View, Accessory: View>: View {
+    let isHovered: Bool
+    private let primary: (Bool) -> Primary
+    private let accessory: (Bool) -> Accessory
+
+    @FocusState private var isPrimaryFocused: Bool
+    @FocusState private var isAccessoryFocused: Bool
+
+    init(
+        isHovered: Bool,
+        @ViewBuilder primary: @escaping (Bool) -> Primary,
+        @ViewBuilder accessory: @escaping (Bool) -> Accessory
+    ) {
+        self.isHovered = isHovered
+        self.primary = primary
+        self.accessory = accessory
+    }
+
+    private var isKeyboardFocused: Bool {
+        isPrimaryFocused || isAccessoryFocused
+    }
+
+    var body: some View {
+        ZStack(alignment: .trailing) {
+            primary(isKeyboardFocused)
+                .focused($isPrimaryFocused)
+
+            accessory(isHovered || isKeyboardFocused)
+                .focused($isAccessoryFocused)
+        }
+    }
+}
+
 /// Trailing accessory cluster on each workspace row. At rest it shows
 /// navigational metadata (running-task signal + star). On hover that same
 /// slot becomes the row's controls, so hidden settings/new-task icons do
@@ -2010,9 +2049,9 @@ private struct WorkspaceRowActions: View {
 
             if workspace.isStarred {
                 Image(systemName: "star.fill")
-                    .font(Stanford.ui(10, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 16, height: 22)
+                    .font(Stanford.ui(12, weight: .semibold))
+                    .foregroundStyle(Stanford.lagunita)
+                    .frame(width: 18, height: 22)
                     .accessibilityLabel("Starred")
             }
         }
