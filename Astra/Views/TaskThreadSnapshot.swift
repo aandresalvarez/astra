@@ -1127,7 +1127,7 @@ struct TaskThreadTranscriptMetrics: Equatable, Sendable {
         for item in items {
             let text: String
             switch item {
-            case .userMessage(let value, _), .planUserMessage(let value, _), .planAssistantMessage(let value, _), .scheduleResult(let value, _), .systemInfo(let value, _), .recapResult(let value, _):
+            case .userMessage(let value, _), .planUserMessage(let value, _), .planAssistantMessage(let value, _), .scheduleResult(let value, _), .systemInfo(let value, _, _), .recapResult(let value, _):
                 text = value
             case .agentResponse(let run):
                 text = run.output
