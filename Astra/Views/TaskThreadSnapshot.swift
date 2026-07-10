@@ -151,7 +151,7 @@ struct TaskThreadSnapshotInput: Sendable {
     let totalRunCount: Int
     let omittedRunCount: Int
 
-    init(task: AgentTask, maxRuns: Int = 50) {
+    init(task: AgentTask, maxRuns: Int = 50, performanceFields: [String: String] = [:]) {
         let start = DispatchTime.now().uptimeNanoseconds
         let window = TaskThreadSnapshotWindow(events: task.events, runs: task.runs, maxRuns: maxRuns)
         self.init(
@@ -177,7 +177,8 @@ struct TaskThreadSnapshotInput: Sendable {
                 "omitted_events": PerformanceTelemetryFields.count(omittedEventCount),
                 "omitted_runs": PerformanceTelemetryFields.count(omittedRunCount),
                 "max_runs": PerformanceTelemetryFields.count(maxRuns)
-            ]
+            ].merging(performanceFields, uniquingKeysWith: { _, new in new }),
+            taskID: task.id
         )
     }
 
@@ -572,6 +573,9 @@ struct TaskThreadSnapshot: Sendable {
     let omittedEventCount: Int
     let totalRunCount: Int
     let omittedRunCount: Int
+    /// Transcript shape computed while building the snapshot, so task-open
+    /// readiness logging never rescans user-visible content on the main actor.
+    let transcriptMetrics: TaskThreadTranscriptMetrics
 
     private let activityByRunID: [UUID: TaskRunActivity]
     private let protocolByRunID: [UUID: TaskRunProtocolState]
@@ -596,25 +600,37 @@ struct TaskThreadSnapshot: Sendable {
 
     static func buildAsync(
         input: TaskThreadSnapshotInput,
-        fields: [String: String]
+        fields: [String: String],
+        responsivenessContext: TaskThreadResponsivenessContext? = nil
     ) async -> TaskThreadSnapshot {
         await Task.detached(priority: .userInitiated) {
-            PerformanceTelemetry.measure(
-                "thread_snapshot_build",
-                thresholdMilliseconds: 8,
-                fields: fields,
-                resultFields: { snapshot in
-                    [
-                        "conversation_item_count": PerformanceTelemetryFields.count(snapshot.conversationItems.count),
-                        "snapshot_event_count": PerformanceTelemetryFields.count(snapshot.sortedEvents.count),
-                        "snapshot_run_count": PerformanceTelemetryFields.count(snapshot.sortedRuns.count)
-                    ]
-                }
-            ) {
-                PerformanceSignposts.buildThreadSnapshot {
-                    TaskThreadSnapshot(input: input)
-                }
+            let startedAt = DispatchTime.now().uptimeNanoseconds
+            let snapshot = PerformanceSignposts.buildThreadSnapshot {
+                TaskThreadSnapshot(input: input)
             }
+            let resultFields = fields.merging([
+                "conversation_item_count": PerformanceTelemetryFields.count(snapshot.conversationItems.count),
+                "snapshot_event_count": PerformanceTelemetryFields.count(snapshot.sortedEvents.count),
+                "snapshot_run_count": PerformanceTelemetryFields.count(snapshot.sortedRuns.count)
+            ], uniquingKeysWith: { _, new in new })
+            if let responsivenessContext {
+                responsivenessContext.performWithCorrelationFields { correlationFields in
+                    PerformanceTelemetry.logIfNeeded(
+                        "thread_snapshot_build",
+                        start: startedAt,
+                        thresholdMilliseconds: 8,
+                        fields: resultFields.merging(correlationFields, uniquingKeysWith: { _, new in new })
+                    )
+                }
+            } else {
+                PerformanceTelemetry.logIfNeeded(
+                    "thread_snapshot_build",
+                    start: startedAt,
+                    thresholdMilliseconds: 8,
+                    fields: resultFields
+                )
+            }
+            return snapshot
         }.value
     }
 
@@ -768,6 +784,7 @@ struct TaskThreadSnapshot: Sendable {
             activityByRunID: activity,
             protocolByRunID: protocolStatesByRunID
         )
+        transcriptMetrics = TaskThreadTranscriptMetrics(items: conversationItems)
     }
 
     func activityPresentation(for run: TaskRunSnapshot) -> RunActivityPresentation {
@@ -1009,6 +1026,54 @@ struct TaskThreadSnapshot: Sendable {
                 status: item.status
             )
         }
+    }
+}
+
+/// Privacy-safe transcript shape counts calculated off the main actor as part
+/// of snapshot construction. The values never retain or emit transcript text.
+struct TaskThreadTranscriptMetrics: Equatable, Sendable {
+    let textBytes: Int
+    let agentResponseCount: Int
+    let codeFenceCount: Int
+    let tableRowCount: Int
+
+    init(items: [TaskConversationItem]) {
+        var textBytes = 0
+        var agentResponseCount = 0
+        var codeFenceCount = 0
+        var tableRowCount = 0
+
+        for item in items {
+            let text: String
+            switch item {
+            case .userMessage(let value, _), .planUserMessage(let value, _), .planAssistantMessage(let value, _), .scheduleResult(let value, _), .systemInfo(let value, _), .recapResult(let value, _):
+                text = value
+            case .agentResponse(let run):
+                text = run.output
+                agentResponseCount += 1
+            }
+            textBytes += text.utf8.count
+            codeFenceCount += Self.occurrences(of: "```", in: text)
+            tableRowCount += text.split(separator: "\n", omittingEmptySubsequences: false).reduce(into: 0) { count, line in
+                if line.drop(while: { $0 == " " || $0 == "\t" }).first == "|" { count += 1 }
+            }
+        }
+
+        self.textBytes = textBytes
+        self.agentResponseCount = agentResponseCount
+        self.codeFenceCount = codeFenceCount
+        self.tableRowCount = tableRowCount
+    }
+
+    private static func occurrences(of needle: String, in text: String) -> Int {
+        guard !needle.isEmpty else { return 0 }
+        var count = 0
+        var searchStart = text.startIndex
+        while let range = text.range(of: needle, range: searchStart..<text.endIndex) {
+            count += 1
+            searchStart = range.upperBound
+        }
+        return count
     }
 }
 

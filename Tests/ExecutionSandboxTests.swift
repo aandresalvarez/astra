@@ -1062,12 +1062,11 @@ struct ExecutionSandboxTests {
         #expect(base.shouldWrap(runtime: .openCodeCLI))
         #expect(!base.shouldWrap(runtime: .codexCLI))
 
-        // Autonomous escalates best-effort to strict AND force-wraps the
-        // providers that bypass their own sandbox in that mode, so none runs
-        // without a kernel boundary even with native layering off.
+        // Auto keeps best-effort but includes providers that bypass their own
+        // sandbox in that mode whenever ASTRA sandboxing is enabled.
         let auto = ExecutionSandboxSettings.current(permissionPolicy: .autonomous, defaults: defaults)
-        #expect(auto.enforcement == .strict)
-        #expect(auto.readScope == .enforce)
+        #expect(auto.enforcement == .bestEffort)
+        #expect(auto.readScope == .audit)
         #expect(auto.shouldWrap(runtime: .codexCLI))
         #expect(auto.shouldWrap(runtime: .cursorCLI))
         #expect(auto.shouldWrap(runtime: .antigravityCLI))
@@ -1089,9 +1088,7 @@ struct ExecutionSandboxTests {
         #expect(custom.shouldWrap(runtime: .antigravityCLI))
         #expect(custom.shouldWrap(runtime: .openCodeCLI))
 
-        // Off disables wrapping for every runtime — for non-autonomous policies.
-        // (Autonomous escalates Off to a strict floor; see
-        // `autonomousEscalatesOffToStrict`.)
+        // Off disables wrapping for every runtime, independent of provider mode.
         defaults.set(ExecutionSandboxEnforcement.off.rawValue, forKey: AppStorageKeys.sandboxEnforcement)
         let off = ExecutionSandboxSettings.current(permissionPolicy: .restricted, defaults: defaults)
         #expect(off.enforcement == .off)
@@ -1889,8 +1886,8 @@ struct ExecutionSandboxTests {
         #expect(resolved.enforcement == .strict)
     }
 
-    @Test("Autonomous escalates Off to a strict kernel floor (Auto is always sandboxed)")
-    func autonomousEscalatesOffToStrict() {
+    @Test("Autonomous honors explicit sandbox Off")
+    func autonomousHonorsExplicitOff() {
         let (defaults, suite) = freshDefaults()
         defer { defaults.removePersistentDomain(forName: suite) }
         defaults.set(ExecutionSandboxEnforcement.off.rawValue, forKey: AppStorageKeys.sandboxEnforcement)
@@ -1900,17 +1897,48 @@ struct ExecutionSandboxTests {
         #expect(restricted.enforcement == .off)
         #expect(!restricted.shouldWrap(runtime: .claudeCode))
 
-        // Autonomous overrides Off and forces a strict, read-enforced, fully
-        // wrapped floor so the broadest-permission mode never runs unconfined —
-        // matching the "Auto (autonomous) runs always use strict" help text.
         let auto = ExecutionSandboxSettings.current(permissionPolicy: .autonomous, defaults: defaults)
-        #expect(auto.enforcement == .strict)
-        #expect(auto.readScope == .enforce)
-        #expect(auto.shouldWrap(runtime: .claudeCode))
-        #expect(auto.shouldWrap(runtime: .codexCLI))
-        #expect(auto.shouldWrap(runtime: .cursorCLI))
-        #expect(auto.shouldWrap(runtime: .antigravityCLI))
-        #expect(auto.shouldWrap(runtime: .openCodeCLI))
+        #expect(auto.enforcement == .off)
+        #expect(auto.readScope == .open)
+        #expect(!auto.shouldWrap(runtime: .claudeCode))
+        #expect(!auto.shouldWrap(runtime: .codexCLI))
+        #expect(!auto.shouldWrap(runtime: .cursorCLI))
+        #expect(!auto.shouldWrap(runtime: .antigravityCLI))
+        #expect(!auto.shouldWrap(runtime: .openCodeCLI))
+    }
+
+    @Test("Sandbox resolution preserves stored Off in Auto")
+    func sandboxResolutionPreservesAutonomousOff() {
+        let resolution = ExecutionSandboxSettings.resolve(
+            permissionPolicy: .autonomous,
+            storedEnforcement: .off,
+            storedAllowNetwork: false,
+            storedLayerNativeProviders: false,
+            storedReadScope: .open
+        )
+
+        #expect(resolution.storedEnforcement == .off)
+        #expect(resolution.effectiveSettings.enforcement == .off)
+        #expect(resolution.effectiveSettings.readScope == .open)
+        #expect(resolution.effectiveSettings.allowNetwork)
+        #expect(resolution.reason == nil)
+        #expect(resolution.effectiveSummary.contains("Effective: Off"))
+    }
+
+    @Test("Sandbox resolution keeps stored Off effective for non-Auto runs")
+    func sandboxResolutionKeepsRestrictedOff() {
+        let resolution = ExecutionSandboxSettings.resolve(
+            permissionPolicy: .restricted,
+            storedEnforcement: .off,
+            storedAllowNetwork: false,
+            storedLayerNativeProviders: false,
+            storedReadScope: .audit
+        )
+
+        #expect(resolution.storedEnforcement == .off)
+        #expect(resolution.effectiveSettings.enforcement == .off)
+        #expect(resolution.effectiveSettings.readScope == .open)
+        #expect(resolution.reason == nil)
     }
 
     @Test("shouldWrap matrix: only no-native-sandbox runtimes wrap, and never when off")

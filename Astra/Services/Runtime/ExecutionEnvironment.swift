@@ -500,13 +500,18 @@ enum DockerExecutionPlanner {
             }
             mounts.append(mount)
         }
-        func append(_ hostPath: String, _ containerPath: String, _ role: ExecutionEnvironmentMountRole) {
+        func append(
+            _ hostPath: String,
+            _ containerPath: String,
+            _ role: ExecutionEnvironmentMountRole,
+            access: ExecutionEnvironmentMountAccess = .readWrite
+        ) {
             let standardized = WorkspacePathPresentation.standardizedPath(hostPath)
             guard !standardized.isEmpty else { return }
             appendMount(ExecutionEnvironmentMount(
                 hostPath: standardized,
                 containerPath: containerPath,
-                access: .readWrite,
+                access: access,
                 role: role
             ))
         }
@@ -515,7 +520,7 @@ enum DockerExecutionPlanner {
         let taskAccess = TaskWorkspaceAccess(task: task)
         append(taskAccess.taskFolder, "/astra/task", .taskFolder)
         var index = 1
-        for path in AgentRuntimeProcessRunner.runtimeAdditionalPaths(for: task) {
+        for path in AgentRuntimeProcessRunner.runtimeWritablePaths(for: task) {
             let standardized = WorkspacePathPresentation.standardizedPath(path)
             guard standardized != WorkspacePathPresentation.standardizedPath(currentDirectory),
                   standardized != WorkspacePathPresentation.standardizedPath(taskAccess.taskFolder) else {
@@ -523,6 +528,11 @@ enum DockerExecutionPlanner {
             }
             append(standardized, "/mnt/astra/path-\(index)", .additionalPath)
             index += 1
+        }
+        var inputIndex = 1
+        for path in taskAccess.runtimeReadOnlyInputPaths {
+            append(path, "/mnt/astra/input-\(inputIndex)", .additionalPath, access: .readOnly)
+            inputIndex += 1
         }
         for projection in environment.effectiveCredentialProjections {
             appendMount(projection.mount, avoidContainerCollision: true)

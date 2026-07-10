@@ -309,7 +309,7 @@ struct ValidationServiceTests {
                 command: "swift test --filter Focused",
                 workingDirectory: root,
                 pathContainsShellSuffix: true,
-                additionalWritablePaths: AgentRuntimeProcessRunner.runtimeAdditionalPaths(for: task)
+                additionalWritablePaths: AgentRuntimeProcessRunner.runtimeWritablePaths(for: task)
             )
         ])
     }
@@ -652,7 +652,7 @@ struct ValidationServiceTests {
                 command: "swift test --filter Focused",
                 workingDirectory: root,
                 pathContainsShellSuffix: true,
-                additionalWritablePaths: AgentRuntimeProcessRunner.runtimeAdditionalPaths(for: task)
+                additionalWritablePaths: AgentRuntimeProcessRunner.runtimeWritablePaths(for: task)
             )
         ])
         let assertionEvent = try #require(task.events.first { $0.type == TaskValidationEventTypes.assertionFailed })

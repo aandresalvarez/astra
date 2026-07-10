@@ -402,6 +402,64 @@ extension HeadlessChatScenarioTests {
         #expect(!task.events.contains { $0.type == "error" && $0.payload.contains("did not create a usable file") })
     }
 
+    @Test("Copilot streamed create deltas complete under Auto strict sandbox")
+    func copilotStreamedCreateDeltasCompleteUnderAutoStrictSandbox() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let task = harness.makeTask(
+            runtime: .copilotCLI,
+            goal: "write a report.md with this information",
+            model: "claude-sonnet-4.6",
+            tokenBudget: 50_000
+        )
+        let taskFolder = try TaskWorkspaceAccess(task: task).ensureTaskFolder()
+        let artifactURL = URL(fileURLWithPath: taskFolder).appendingPathComponent("report.md")
+        let outsideProbeURL = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".astra-strict-probe-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: outsideProbeURL) }
+        let copilotPath = try harness.writeExecutable(
+            named: "copilot",
+            script: Self.copilotScript(body: """
+            if (printf '%s\\n' 'must stay blocked' > \(Self.shQuote(outsideProbeURL.path))) 2>/dev/null; then
+              exit 91
+            fi
+            printf '%s\\n' '{"type":"assistant.tool_call_delta","data":{"toolCallId":"toolu_create_report","toolName":"create","inputDelta":"{\\"path\\":\\""}}'
+            printf '%s\\n' '{"type":"assistant.tool_call_delta","data":{"toolCallId":"toolu_create_report","toolName":"create","inputDelta":"/tmp/astra-headless"}}'
+            printf '%s\\n' '{"type":"assistant.tool_call_delta","data":{"toolCallId":"toolu_create_report","toolName":"create","inputDelta":"/.astra/tasks/"}}'
+            printf '%s\\n' '{"type":"assistant.tool_call_delta","data":{"toolCallId":"toolu_create_report","toolName":"create","inputDelta":"report.md"}}'
+            printf '%s\\n' '{"type":"assistant.tool_call_delta","data":{"toolCallId":"toolu_create_report","toolName":"create","inputDelta":"\\",\\"file_text\\":\\""}}'
+            printf '%s\\n' '{"type":"assistant.tool_call_delta","data":{"toolCallId":"toolu_create_report","toolName":"create","inputDelta":"# Jira report"}}'
+            printf '%s\\n' '{"type":"assistant.tool_call_delta","data":{"toolCallId":"toolu_create_report","toolName":"create","inputDelta":"29 open issues"}}'
+            printf '%s\\n' '{"type":"assistant.tool_call_delta","data":{"toolCallId":"toolu_create_report","toolName":"create","inputDelta":"\\"}"}}'
+            printf '%s\\n' '{"type":"assistant.message","data":{"content":"","toolRequests":[{"toolCallId":"toolu_create_report","name":"create","arguments":{"path":"report.md"}}]}}'
+            printf '%s\\n' '{"type":"tool.execution_start","data":{"toolCallId":"toolu_create_report","toolName":"create","arguments":{"path":"report.md","file_text":"# Jira report"}}}'
+            printf '%s\\n' '# Jira report' '29 open issues' > \(Self.shQuote(artifactURL.path))
+            printf '%s\\n' '{"type":"tool.execution_complete","data":{"toolCallId":"toolu_create_report","success":true,"result":{"content":"Created report.md"}}}'
+            printf '%s\\n' '{"type":"assistant.message","data":{"content":"Created report.md with the Jira summary."}}'
+            printf '%s\\n' '{"type":"result","usage":{"input_tokens":2,"output_tokens":3},"duration_ms":11,"turns":1}'
+            exit 0
+            """)
+        )
+        let worker = harness.makeWorker(
+            runtime: .copilotCLI,
+            executablePath: copilotPath,
+            permissionPolicy: .autonomous,
+            sandboxEnforcementOverride: .strict
+        )
+
+        _ = await harness.execute(task: task, worker: worker)
+
+        let run = try #require(task.runs.first)
+        #expect(FileManager.default.fileExists(atPath: artifactURL.path))
+        #expect(!FileManager.default.fileExists(atPath: outsideProbeURL.path))
+        #expect(task.status == .completed)
+        #expect(run.status == .completed)
+        #expect(run.stopReason == "completed")
+        #expect(task.events.filter { $0.type == "tool.use" }.count == 1)
+        #expect(!task.events.contains { $0.type == "error" && $0.payload.contains("Repetition loop detected") })
+    }
+
     @Test("Manual artifact completion automatically records inferred baseline verification")
     func manualArtifactCompletionAutomaticallyRecordsInferredBaselineVerification() async throws {
         let harness = try HeadlessChatHarness()

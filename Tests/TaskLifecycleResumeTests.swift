@@ -144,6 +144,7 @@ struct TaskLifecycleResumeTests {
         let task = AgentTask(title: "Approval Revert", goal: "Do the thing", workspace: workspace)
         task.status = .pendingUser
         task.sessionId = "sess-approval-revert"
+        task.runtimePermissionOpenRequestsJSON = nil
         env.context.insert(workspace)
         env.context.insert(task)
 
@@ -181,6 +182,7 @@ struct TaskLifecycleResumeTests {
         task.status = .pendingUser
         task.runtimeID = AgentRuntimeID.claudeCode.rawValue
         task.sessionId = "sess-credential-approval"
+        task.runtimePermissionOpenRequestsJSON = nil
         env.context.insert(workspace)
         env.context.insert(task)
 
