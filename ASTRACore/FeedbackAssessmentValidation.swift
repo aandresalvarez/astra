@@ -51,6 +51,7 @@ public enum FeedbackAssessmentSemanticValidationError: Error, Equatable, Sendabl
     case unsupportedConfidence(String)
     case duplicateEvidenceID(String)
     case unknownCauseRequiresQuestions
+    case missingRootCauseRequiresQuestions
     case unknownCauseCannotClaimRootCause
     case unknownCauseCannotClaimConfidence(String)
 }
@@ -206,12 +207,15 @@ public enum FeedbackAssessmentValidator {
         }
 
         let hasRootCause = assessment.rootCauseHypothesis?.isEmpty == false
-        let needsInformation = classification == .unknown || !hasRootCause
+        let isUnknownClassification = classification == .unknown
+        let needsInformation = isUnknownClassification || !hasRootCause
         if needsInformation {
             guard !assessment.missingQuestions.isEmpty else {
-                throw FeedbackAssessmentSemanticValidationError.unknownCauseRequiresQuestions
+                throw isUnknownClassification
+                    ? FeedbackAssessmentSemanticValidationError.unknownCauseRequiresQuestions
+                    : FeedbackAssessmentSemanticValidationError.missingRootCauseRequiresQuestions
             }
-            if classification == .unknown, hasRootCause {
+            if isUnknownClassification, hasRootCause {
                 throw FeedbackAssessmentSemanticValidationError.unknownCauseCannotClaimRootCause
             }
             guard confidence == .low || confidence == .unknown else {

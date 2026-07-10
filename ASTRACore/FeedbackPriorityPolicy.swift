@@ -33,13 +33,13 @@ public enum FeedbackPriorityReason: String, Codable, Equatable, Sendable {
 }
 
 public struct FeedbackPriorityOverrideAudit: Codable, Equatable, Sendable {
-    public var reportID: FeedbackReportIDV1
-    public var assessmentRevisionID: String?
-    public var reviewerID: String
-    public var decidedAt: Date
-    public var reason: String
-    public var previousPriority: FeedbackPriority
-    public var effectivePriority: FeedbackPriority
+    public let reportID: FeedbackReportIDV1
+    public let assessmentRevisionID: String?
+    public let reviewerID: String
+    public let decidedAt: Date
+    public let reason: String
+    public let previousPriority: FeedbackPriority
+    public let effectivePriority: FeedbackPriority
 
     public init(
         reportID: FeedbackReportIDV1,
@@ -61,12 +61,12 @@ public struct FeedbackPriorityOverrideAudit: Codable, Equatable, Sendable {
 }
 
 public struct FeedbackPriorityDecision: Equatable, Sendable {
-    public var reportID: FeedbackReportIDV1
-    public var basePriority: FeedbackPriority
-    public var effectivePriority: FeedbackPriority
-    public var reasons: [FeedbackPriorityReason]
-    public var assessmentRevisionID: String?
-    public var overrideAudit: FeedbackPriorityOverrideAudit?
+    public let reportID: FeedbackReportIDV1
+    public let basePriority: FeedbackPriority
+    public let effectivePriority: FeedbackPriority
+    public let reasons: [FeedbackPriorityReason]
+    public let assessmentRevisionID: String?
+    public let overrideAudit: FeedbackPriorityOverrideAudit?
 
     public init(
         reportID: FeedbackReportIDV1,
@@ -154,17 +154,21 @@ public enum FeedbackPriorityPolicy {
             throw FeedbackPriorityPolicyError.invalidOverride(rawOverride)
         }
 
-        var overridden = decision
-        overridden.effectivePriority = priority
-        overridden.overrideAudit = FeedbackPriorityOverrideAudit(
-            reportID: triage.reportID,
-            assessmentRevisionID: triage.assessmentRevisionID,
-            reviewerID: triage.reviewerID,
-            decidedAt: triage.decidedAt,
-            reason: triage.reason,
-            previousPriority: decision.effectivePriority,
-            effectivePriority: priority
+        return FeedbackPriorityDecision(
+            reportID: decision.reportID,
+            basePriority: decision.basePriority,
+            effectivePriority: priority,
+            reasons: decision.reasons,
+            assessmentRevisionID: decision.assessmentRevisionID,
+            overrideAudit: FeedbackPriorityOverrideAudit(
+                reportID: triage.reportID,
+                assessmentRevisionID: triage.assessmentRevisionID,
+                reviewerID: triage.reviewerID,
+                decidedAt: triage.decidedAt,
+                reason: triage.reason,
+                previousPriority: decision.effectivePriority,
+                effectivePriority: priority
+            )
         )
-        return overridden
     }
 }
