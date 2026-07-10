@@ -99,17 +99,27 @@ struct SidebarThreadRow: View {
 
     var body: some View {
         HStack(alignment: .center, spacing: SidebarThreadRowLayout.statusIconTitleSpacing) {
-            if showIcon {
-                statusIcon
-                    .frame(
-                        width: SidebarThreadRowLayout.statusIconWidth,
-                        height: SidebarThreadRowLayout.statusIconWidth
-                    )
-                    .opacity(isActionableStatus && !isSelected && !isHovered ? 0.6 : 1)
-                    .padding(.leading, contentLeadingPadding)
-                    .help(statusGlyphDescription)
-                    .accessibilityLabel(statusGlyphDescription)
+            // The status gutter is always laid out; only the glyph's
+            // opacity changes. Conditional insertion used to shove the
+            // title 23pt sideways when hover/selection revealed the glyph
+            // on a quiet row — same no-width-shift rule as the trailing
+            // timestamp ↔ options swap below, and it keeps titles on one
+            // left edge across glyph and bare rows.
+            ZStack {
+                if showIcon {
+                    statusIcon
+                        .opacity(isActionableStatus && !isSelected && !isHovered ? 0.6 : 1)
+                        .help(statusGlyphDescription)
+                        .accessibilityLabel(statusGlyphDescription)
+                        .transition(.opacity)
+                }
             }
+            .frame(
+                width: SidebarThreadRowLayout.statusIconWidth,
+                height: SidebarThreadRowLayout.statusIconWidth
+            )
+            .padding(.leading, contentLeadingPadding)
+            .animation(metadataAnimation, value: showIcon)
 
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 5) {
@@ -138,8 +148,6 @@ struct SidebarThreadRow: View {
                         .lineLimit(1)
                 }
             }
-            .padding(.leading, showIcon ? 0 : contentLeadingPadding)
-
             Spacer(minLength: 6)
 
             // Right-side metadata is hidden on

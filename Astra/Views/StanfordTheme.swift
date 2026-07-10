@@ -282,9 +282,26 @@ enum Stanford {
     }
 
     static var taskRowHeight: CGFloat { density(46) }
-    static var sidebarWorkspaceRowHeight: CGFloat { density(44) }
+    // 36 = exact fit for WorkspaceRowActions' always-present 24pt accessory
+    // slot + the row's 12pt vertical padding (6+6). Was 44, which centered
+    // the row's content with ~8pt of dead air above and below — that slack
+    // was what made the workspace list read as looser than the New
+    // task/New app command column above it. The floor is clamped UNSCALED:
+    // those accessory frames and paddings are fixed literals that don't
+    // follow uiScale, so a Decrease Size step below 1.0 would otherwise
+    // shrink the row's fixed frame under its own content and clip the
+    // star/ellipsis/new-task hover glyphs top and bottom.
+    static var sidebarWorkspaceRowHeight: CGFloat { max(density(36), 36) }
     static var sidebarSectionHeaderHeight: CGFloat { density(30) }
-    static var sidebarThreadRowHeight: CGFloat { density(42) }
+    // minHeight (not fixed), so this only raises the floor for single-line
+    // rows (chat threads, published apps) — two-line rows (a subtitle, or
+    // a draft/disabled/blocked app) already render taller than 34 from
+    // their own content and are unaffected.
+    static var sidebarThreadRowHeight: CGFloat { density(34) }
+    // Fixed height, and schedule rows are unconditionally two lines (name
+    // + frequency/workspace meta) — 40 is already close to that content's
+    // natural floor, so this one doesn't shrink with the rest; doing so
+    // would clip the second line.
     static var sidebarScheduleRowHeight: CGFloat { density(40) }
     static var sidebarBadgeHeight: CGFloat { density(18) }
     static var sidebarBadgeMinWidth: CGFloat { density(18) }
