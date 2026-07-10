@@ -47,8 +47,8 @@ storage, and native HTTPS transport.
 - Read-only AI assessment with a structured root-cause contract.
 - Deterministic priority policy and human triage gate.
 - Draft ASTRA implementation tasks and isolated implementation branches.
-- Mandatory regression tests, validation evidence, draft PRs, and release
-  notification.
+- Mandatory regression tests, validation evidence, draft PRs, released-status
+  projection, and optional client-local notification.
 - Regression, integration, security, and failure-injection coverage throughout.
 
 ### Out of scope for the core 14 PRs
@@ -135,7 +135,10 @@ queued | uploading
   -> retryable_failure
   -> queued
 
-draft | prepared | queued | retryable_failure | permanent_failure
+draft | prepared | queued | permanent_failure
+  -> cancelled
+
+retryable_failure[definitely_not_submitted]
   -> cancelled
 
 uploading
@@ -144,10 +147,18 @@ uploading
 
 `submitted` requires a persisted remote receipt. A report in
 `retryable_failure` remains one logical report with the same idempotency key.
-A user can explicitly cancel a report in `retryable_failure` or
+Every retryable failure durably records submission certainty as
+`definitely_not_submitted` or `acceptance_unknown`. A user can destructively
+cancel a `definitely_not_submitted` retryable failure or a
 `permanent_failure`; cancellation discards the local record and releases its
-adopted evidence package immediately, rather than leaving it to wait on
-retention cleanup.
+adopted evidence package immediately. An `acceptance_unknown` failure -- for
+example, a timeout after upload bytes may have reached the server -- cannot be
+discarded. The user may stop automatic retries, but ASTRA retains the report,
+evidence ownership, idempotency key, payload digest, and any status-read
+credential until it recovers the receipt, the server proves non-acceptance, or
+an authenticated remote cancellation/tombstone is acknowledged. This prevents
+local cancellation from erasing the only recovery handles for a report the
+server may already be processing.
 
 ### Remote engineering states
 
@@ -159,6 +170,8 @@ assessment_pending
   -> needs_information | accepted | duplicate | declined | security_private
 assessment_failed
   -> needs_information | accepted | duplicate | declined | security_private
+needs_information
+  -> assessment_pending | accepted | duplicate | declined | security_private
 accepted
   -> implementation_queued
   -> in_progress
@@ -176,6 +189,16 @@ assessment worker returns malformed or missing output, and from there it
 takes the same human-triage transitions as `assessment_pending`
 (`needs_information | accepted | duplicate | declined | security_private`),
 so a failed assessment can never leave a report stuck pending (Invariant 9).
+`needs_information` is also nonterminal. V1 exposes a receipt-scoped,
+idempotent supplemental-information action that uses the report's status-read
+credential and collects no reporter contact field. When a supplement is
+durably accepted, the server links it to the same report, advances the
+assessment revision, and returns the report to `assessment_pending`; authorized
+staff may instead make any normal triage decision directly from
+`needs_information`. Replays return the same supplement result, while stale,
+cross-report, or invalid credentials fail without changing status. PR 1 freezes
+the portable supplement request/result and transition, PR 7 owns the endpoint,
+PR 6 owns native client synchronization, and PR 10 owns the staff action.
 `duplicate` is not a terminal peer of `accepted`: PR 8 links a duplicate
 report to the canonical issue it deduplicated against, and ASTRA's local
 projection for a duplicate report mirrors that canonical issue's status
@@ -291,8 +314,9 @@ is never used as a feature base and never replaces the individual PR histories.
 
 - [ ] PR 11A adds the ASTRA root-cause and validation readiness gate.
 - [ ] PR 11B adds isolated branch/worktree and idempotent draft-PR orchestration.
-- [ ] PR 11C-server owns backend merge/release reconciliation and notification;
-  PR 11C-client owns ASTRA released-status consumption and presentation.
+- [ ] PR 11C-server owns backend merge/release reconciliation and status
+  projection only; PR 11C-client owns ASTRA released-status consumption,
+  presentation, and optional local notification.
 - [ ] Gate 11D proves the complete loop and operational failure paths on a
   disposable integration branch. The integration branch is never merged
   wholesale and is never used as a feature base.
@@ -332,7 +356,8 @@ status, consent, evidence, and idempotency.
 - `FeedbackReportEnvelopeV1`, `FeedbackReportPayloadV1`, evidence inventory,
   runtime snapshot, receipt, and status DTOs.
 - Language-neutral JSON Schema and OpenAPI definitions for request, receipt,
-  status, error, assessment, and staff-triage DTOs.
+  status, supplemental-information request/result, error, assessment, and
+  staff-triage DTOs.
 - Canonical JSON rules covering timestamp precision, UTC formatting, Unicode
   normalization, number encoding, stable enum values, artifact ordering, hash
   inputs, request framing, unknown values, and size limits.
@@ -379,6 +404,9 @@ status, consent, evidence, and idempotency.
   version, and ordered hashes of the final artifact bytes.
 - [ ] Keep receipt/status credentials out of URLs and define protected-at-rest
   server representation before backend implementation begins.
+- [ ] Define a receipt-scoped supplemental-information request/result with its
+  own idempotency key and expected assessment revision. It accepts no reporter
+  identity/contact fields and cannot mutate a different report.
 - [ ] Define backward-compatible decoding expectations for additive V1 fields.
 - [ ] Add examples containing hostile strings, malformed Unicode, and unknown
   future enum values.
@@ -395,6 +423,9 @@ status, consent, evidence, and idempotency.
 - [ ] Assert hostile strings remain inert data.
 - [ ] Assert same-key/different-digest, expired/malformed receipt,
   cross-install status read, and remote-status downgrade fail with typed errors.
+- [ ] Assert supplement replay returns the original result, while conflicting
+  replay, stale assessment revision, cross-report credential, and unexpected
+  reporter-contact fields fail before state mutation.
 
 ### Acceptance criteria
 
@@ -602,6 +633,8 @@ that a report survives relaunch, network loss, cancellation, or server failure.
   version, state, attempts, last error, receipt, and remote status.
 - [ ] Route all state changes through one service.
 - [ ] Define retryable versus permanent transport failures.
+- [ ] Persist retryable-failure submission certainty and a separate automatic-
+  retry preference; never infer `definitely_not_submitted` from a timeout.
 - [ ] Recover `uploading` reports deterministically after app termination.
 - [ ] Prevent duplicate concurrent sends for one report.
 - [ ] Bound local retention and preserve submitted receipts after artifact expiry.
@@ -619,9 +652,13 @@ that a report survives relaunch, network loss, cancellation, or server failure.
 - [ ] Prove concurrent send attempts result in one active claim.
 - [ ] Prove adoption, retention, and cancellation races never delete a package
   still owned by an active outbox record.
-- [ ] Prove a user can cancel a `retryable_failure` or `permanent_failure`
-  report, discarding its adopted evidence package without waiting on
-  retention cleanup.
+- [ ] Prove a user can cancel a definitely-not-submitted
+  `retryable_failure` or a `permanent_failure`, discarding its adopted evidence
+  package without waiting on retention cleanup.
+- [ ] Prove cancelling or pausing an `acceptance_unknown` failure preserves the
+  report, evidence package, idempotency key, digest, and receipt-recovery
+  credentials until receipt recovery, proven non-acceptance, or an
+  authenticated remote tombstone.
 - [ ] Run full `swift test --no-parallel` because this changes the SwiftData
   schema.
 
@@ -679,8 +716,10 @@ PR 6; before then, this PR is queue/preview-only.
 - [ ] Require review of sensitive evidence selections.
 - [ ] Save a draft before expensive evidence work.
 - [ ] Show queued, sending, submitted, retryable, and permanent-failure states.
-- [ ] Let the user explicitly cancel or dismiss a `retryable_failure` or
-  `permanent_failure` report from the same status surface.
+- [ ] Let the user cancel a definitely-not-submitted retryable failure or a
+  permanent failure from the same status surface. For `acceptance_unknown`,
+  offer Stop Automatic Retry and receipt recovery rather than destructive
+  discard.
 - [ ] Do not expose a live Send path on a branch without PR 6; label the action
   as queue-only in intermediate stacked review.
 - [ ] Detect only new, not-yet-offered crash reports on next launch.
@@ -692,6 +731,9 @@ PR 6; before then, this PR is queue/preview-only.
 - [ ] Test default selections exclude browser, screenshots, and crash artifacts.
 - [ ] Test submission cannot proceed without required user intent fields.
 - [ ] Test cancelling preserves or deletes a draft according to explicit choice.
+- [ ] Test an ambiguous accepted-upload timeout cannot delete the local record,
+  adopted evidence, idempotency key, digest, or status credential; stopping
+  retries remains reversible and receipt recovery resumes the same report.
 - [ ] Test all runtimes unavailable and the report UI remains enabled.
 - [ ] Test one crash prompt per crash fingerprint.
 - [ ] Test crash opt-out, corrupt crash metadata, fingerprint stability, consent
@@ -757,6 +799,9 @@ begin against the golden PR 1 fake server after PR 2 freezes package semantics.
 - [ ] Use a deterministic fake URL protocol/server for every response class.
 - [ ] Test offline queueing and later successful retry.
 - [ ] Test timeout after server acceptance followed by idempotent retry.
+- [ ] Test timeout after possible server acceptance marks submission certainty
+  unknown and blocks destructive local cancellation until receipt recovery,
+  proven non-acceptance, or acknowledged remote tombstoning.
 - [ ] Test duplicate receipt response maps to the original report.
 - [ ] Test malformed/hostile server response fails closed.
 - [ ] Test a real local server boundary, HTTPS enforcement, redirect rejection,
@@ -800,6 +845,9 @@ GitHub visibility. Production code cannot begin in the ASTRA app repository.
 - Asynchronous jobs for GitHub projection and assessment.
 - Status read endpoint scoped to the receipt.
 - Authenticated staff-triage API used by PR 10.
+- Receipt-scoped, idempotent supplemental-information endpoint that accepts no
+  reporter contact fields and can return `needs_information` to assessment or
+  authorized human triage.
 - Release/status reconciliation API used by PR 11C-server/client.
 
 ### Likely files/repository
@@ -823,6 +871,10 @@ GitHub visibility. Production code cannot begin in the ASTRA app repository.
   path, symlink, entry-count, expanded-size, compression-ratio, and time limits
   before extraction into an isolated location.
 - [ ] Store report metadata separately from encrypted evidence blobs.
+- [ ] Bind supplemental-information writes to the report's status-read
+  credential, idempotency key, and current assessment revision; reject stale,
+  replay-conflicting, cross-report, and contact-bearing requests before any
+  mutation.
 - [ ] Store evidence in private object storage with KMS-backed encryption and no
   public or issue-visible object URLs.
 - [ ] Make idempotency and accepted-report/job enqueue atomic at the datastore
@@ -848,6 +900,10 @@ GitHub visibility. Production code cannot begin in the ASTRA app repository.
 - [ ] Authorization prevents one receipt from reading another report.
 - [ ] Expired, malformed, replayed, and cross-install status credentials fail
   without leaking report existence.
+- [ ] Supplemental information is idempotent, increments the assessment
+  revision exactly once, and returns `needs_information` to
+  `assessment_pending`; stale revision, cross-report credential, conflicting
+  replay, and unexpected contact fields cause no state change.
 - [ ] Load and rate-limit tests cover expected abuse paths.
 
 ### Acceptance criteria
@@ -1047,6 +1103,9 @@ the Workspace App must not read backend storage or evidence objects directly.
 - [ ] Populate constraints, acceptance criteria, exact release/source handles,
   and proposed regression test.
 - [ ] Record duplicate, decline, needs-information, and override decisions.
+- [ ] Let authorized staff move `needs_information` directly to another triage
+  decision or request a new assessment after a receipt-scoped supplement;
+  reject stale supplement/assessment revisions.
 - [ ] Bind approval to an immutable assessment/revision and reject stale
   approvals after the underlying report, assessment, or proposed scope changes.
 
@@ -1059,6 +1118,9 @@ the Workspace App must not read backend storage or evidence objects directly.
 - [ ] Stale assessment approval is rejected and re-prompts the reviewer.
 - [ ] A later gate re-prompts rather than inheriting earlier approval.
 - [ ] Declined/duplicate/security reports follow their distinct paths.
+- [ ] A receipt-scoped supplement moves `needs_information` back to assessment
+  or explicit human triage exactly once; replay and stale-revision cases do not
+  create a task or duplicate audit entries.
 - [ ] Missing assessment still permits human triage but requires explicit scope.
 - [ ] External route `run=1` remains unable to authorize execution.
 - [ ] Run the `FeedbackTriageWorkspaceApp`, `WorkspaceAppApprovalQueue`,
@@ -1078,8 +1140,8 @@ repository-local PRs with independent ownership and regression gates.
 
 **Root cause addressed:** Creating a task is not a closed feedback loop. The
 former single PR 11 crossed validation, Git authoring, backend reconciliation,
-release, notification, and end-to-end ownership boundaries. Splitting it keeps
-each state transition deterministic and reviewable.
+release status, client-local notification, and end-to-end ownership boundaries.
+Splitting it keeps each state transition deterministic and reviewable.
 
 ### PR 11A — Root-Cause and Validation Readiness Gate
 
@@ -1133,16 +1195,20 @@ existing regression suites.
 depends on PR 6 and the frozen PR 11C-server status/release contract.
 
 **Inputs:** GitHub PR/merge events, validated fix-to-release mapping, signed
-release/appcast metadata, report receipts, and reporter notification policy.
+release/appcast metadata, report receipts, and client-local notification
+policy.
 
-**Outputs:** Backend-owned merged-versus-released reconciliation, client status
-projection, in-app `Fixed in version X`, update guidance, and idempotent reporter
-notification without exposing private reports or other reporters.
+**Outputs:** Backend-owned merged-versus-released reconciliation and status
+projection; client-side in-app `Fixed in version X`, update guidance, and an
+optional idempotent local notification without exposing private reports or
+other reporters.
 
 **Repository split:** PR 11C-server implements backend merge/release
-reconciliation and notification in the authorized backend repository. PR
-11C-client implements only status consumption and reporter presentation in
-ASTRA. They are two of the 14 core mergeable PRs.
+reconciliation and receipt-scoped status projection in the authorized backend
+repository. It stores no reporter contact address or push-notification token
+and sends no reporter message in V1. PR 11C-client implements status
+consumption, reporter presentation, and optional operating-system local
+notification in ASTRA. They are two of the 14 core mergeable PRs.
 
 **Tests and acceptance:**
 
@@ -1150,11 +1216,14 @@ ASTRA. They are two of the 14 core mergeable PRs.
 - [ ] Replayed, wrong-version, unrelated, or out-of-order release events do not
   release a report.
 - [ ] Appcast/release confirmation moves only included fixes to `released`.
-- [ ] Notification retry does not duplicate messages or reveal private data.
+- [ ] Replayed status sync or app relaunch does not duplicate the client-local
+  notification for the same receipt and released version or reveal private
+  data.
 - [ ] Reporter-visible resolution names the actual released version.
 - [ ] A report marked `duplicate` follows its canonical issue's
-  `merged`/`released` transitions, so the duplicate reporter is notified on
-  the same schedule as the canonical reporter.
+  `merged`/`released` transitions, so the duplicate reporter sees the same
+  status and optional client-local notification schedule as the canonical
+  reporter.
 
 ### Gate 11D — Disposable End-to-End Integration and Release Proof
 
@@ -1174,7 +1243,8 @@ own ancestry and review history. Gate 11D is not counted as a mergeable PR.
 - [ ] Full fake end-to-end run covers runtime outage, offline retry, duplicate
   issue, assessment outage, human approval, draft PR, merge, and release.
 - [ ] Preview-environment tests cover private GitHub projection, release-event
-  replay, status downgrade, notification retry, and evidence expiry.
+  replay, status downgrade, client-local notification replay, and evidence
+  expiry.
 - [ ] All ASTRA focused suites, `script/prepush.sh`, full non-parallel Swift
   tests, whitespace, and development build verification pass.
 - [ ] Production-channel verification runs only in a clean test account against
@@ -1220,11 +1290,13 @@ Every row must have at least one automated test before Gate 11D passes.
 | Antigravity hangs | Snapshot completes without waiting | 3 |
 | All runtimes unavailable | Report creation and transport remain enabled | 3, 5, 6 |
 | Network offline | One durable queued report | 4, 6 |
-| Server accepts then client times out | Retry returns same receipt | 6, 7 |
+| Server accepts then client times out | Retry returns same receipt; destructive cancellation cannot erase ambiguous-upload recovery handles | 4, 5, 6, 7 |
+| Definitely-not-submitted retryable failure is cancelled | Local record and adopted package are deleted exactly once | 4, 5 |
+| Report needs more information | Receipt-scoped supplement returns the same report to assessment/human triage exactly once | 1, 6, 7, 10 |
 | GitHub unavailable | Intake succeeds; projection stays pending | 7, 8 |
 | Assessment agent unavailable | Human triage remains available | 9, 10 |
 | Duplicate report | One issue, incremented occurrence | 8 |
-| Canonical issue behind a duplicate report is released | Duplicate reporter also sees released version | 8, 11C-server, 11C-client |
+| Canonical issue behind a duplicate report is released | Duplicate reporter also sees released version and optional local notification | 8, 11C-server, 11C-client |
 | Security/credential signal | Private security route, no public issue | 8 |
 | Prompt injection in user text/log | No shell/tool/write interpretation | 1, 9 |
 | Secret/path/email in evidence | Redacted or artifact omitted | 2 |
