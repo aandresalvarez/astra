@@ -72,6 +72,8 @@ struct RuntimeFeedbackSnapshotBuilder {
               let runtimeID = boundedIdentifier(evidence.runtimeID)
         else { return nil }
 
+        let providerVersion = sanitizedText(evidence.providerVersion)
+        let readiness = sanitizedText(evidence.readiness)
         let stopReason = sanitizedText(evidence.stopReason)
         let failureCategory = mappedFailureCategory(
             evidence.failureCategory,
@@ -82,19 +84,34 @@ struct RuntimeFeedbackSnapshotBuilder {
         if sanitizedSummary == nil, isRecordedStall(stopReason) {
             sanitizedSummary = "ASTRA recorded a stalled provider runtime."
         }
+        let exitCode = boundedExitCode(evidence.exitCode)
+        let stream = streamCounters(evidence.stream)
+        let sandboxState = sanitizedText(evidence.sandboxState)
+        let policyState = sanitizedText(evidence.policyState)
 
         let snapshot = FeedbackRuntimeSnapshotV1(
             runtimeID: FeedbackRuntimeIDV1(rawValue: runtimeID),
-            providerVersion: sanitizedText(evidence.providerVersion),
+            providerVersion: providerVersion,
             executableFound: evidence.executableFound,
-            readiness: sanitizedText(evidence.readiness),
+            readiness: readiness,
             failureCategory: failureCategory,
-            unavailableReason: unavailableReason(for: evidence),
-            exitCode: boundedExitCode(evidence.exitCode),
+            unavailableReason: unavailableReason(
+                executableFound: evidence.executableFound,
+                providerVersion: providerVersion,
+                readiness: readiness,
+                failureCategory: failureCategory,
+                sanitizedSummary: sanitizedSummary,
+                exitCode: exitCode,
+                stopReason: stopReason,
+                stream: stream,
+                sandboxState: sandboxState,
+                policyState: policyState
+            ),
+            exitCode: exitCode,
             stopReason: stopReason,
-            stream: streamCounters(evidence.stream),
-            sandboxState: sanitizedText(evidence.sandboxState),
-            policyState: sanitizedText(evidence.policyState),
+            stream: stream,
+            sandboxState: sandboxState,
+            policyState: policyState,
             sanitizedSummary: sanitizedSummary
         )
         guard (try? snapshot.validate()) != nil else { return nil }
@@ -142,21 +159,30 @@ struct RuntimeFeedbackSnapshotBuilder {
     }
 
     private func unavailableReason(
-        for evidence: RuntimeFeedbackPersistedEvidence
+        executableFound: Bool?,
+        providerVersion: String?,
+        readiness: String?,
+        failureCategory: FeedbackRuntimeFailureCategoryV1?,
+        sanitizedSummary: String?,
+        exitCode: Int?,
+        stopReason: String?,
+        stream: FeedbackRuntimeStreamCountersV1?,
+        sandboxState: String?,
+        policyState: String?
     ) -> FeedbackEvidenceReasonV1? {
-        if evidence.executableFound == false {
+        if executableFound == false {
             return .unavailable
         }
-        let hasRecordedDetail = evidence.providerVersion != nil
-            || evidence.executableFound != nil
-            || evidence.readiness != nil
-            || evidence.failureCategory != nil
-            || evidence.sanitizedSummary != nil
-            || evidence.exitCode != nil
-            || evidence.stopReason != nil
-            || evidence.stream != nil
-            || evidence.sandboxState != nil
-            || evidence.policyState != nil
+        let hasRecordedDetail = providerVersion != nil
+            || executableFound != nil
+            || readiness != nil
+            || failureCategory != nil
+            || sanitizedSummary != nil
+            || exitCode != nil
+            || stopReason != nil
+            || stream != nil
+            || sandboxState != nil
+            || policyState != nil
         return hasRecordedDetail ? nil : .notRecorded
     }
 
@@ -183,7 +209,12 @@ struct RuntimeFeedbackSnapshotBuilder {
 
     private func boundedIdentifier(_ value: String?) -> String? {
         guard let value else { return nil }
-        let normalized = FeedbackContractNormalizationV1.text(value)
+        let sanitized = FeedbackEvidenceSanitizer.sanitize(
+            value,
+            maximumBytes: FeedbackContractLimitsV1.identifierLength * 4
+        )
+        guard sanitized.redaction.replacements == 0, !sanitized.wasTruncated else { return nil }
+        let normalized = FeedbackContractNormalizationV1.text(sanitized.text)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !normalized.isEmpty else { return nil }
         guard normalized.count <= FeedbackContractLimitsV1.identifierLength else { return nil }
@@ -194,11 +225,36 @@ struct RuntimeFeedbackSnapshotBuilder {
 
     private func sanitizedText(_ value: String?) -> String? {
         guard let value else { return nil }
-        let sanitized = FeedbackEvidenceSanitizer.sanitize(
+        let result = FeedbackEvidenceSanitizer.sanitize(
             value,
             maximumBytes: FeedbackContractLimitsV1.shortTextLength
-        ).text.trimmingCharacters(in: .whitespacesAndNewlines)
-        return sanitized.isEmpty ? nil : sanitized
+        )
+        let sanitized = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !sanitized.isEmpty, !isRedactionOnly(sanitized) else { return nil }
+        return sanitized
+    }
+
+    private func isRedactionOnly(_ value: String) -> Bool {
+        if isRedactionPlaceholder(value) {
+            return true
+        }
+        for separator in ["=", ":"] {
+            guard let index = value.firstIndex(of: Character(separator)) else { continue }
+            let label = value[..<index].trimmingCharacters(in: .whitespacesAndNewlines)
+            let remainder = value[value.index(after: index)...]
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !label.isEmpty, isRedactionPlaceholder(remainder) {
+                return true
+            }
+        }
+        return false
+    }
+
+    private func isRedactionPlaceholder(_ value: String) -> Bool {
+        let lower = value.lowercased()
+        guard lower.hasPrefix("[redacted-"), lower.hasSuffix("]") else { return false }
+        let content = lower.dropFirst("[redacted-".count).dropLast()
+        return !content.isEmpty && content.allSatisfy { $0.isLetter || $0 == "-" }
     }
 
     private func isRecordedStall(_ stopReason: String?) -> Bool {

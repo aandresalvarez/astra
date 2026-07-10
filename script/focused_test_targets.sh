@@ -36,6 +36,7 @@ target_for_path() {
       ;;
     Tests/RuntimeFeedbackSnapshotTests.swift|Astra/Services/Feedback/RuntimeFeedbackSnapshotBuilder.swift)
       add_target "RuntimeFeedbackSnapshotTests"
+      add_target "FeedbackEvidencePrivacyTests"
       ;;
     Tests/FeedbackEvidencePrivacyTests.swift|Astra/Services/Feedback/*)
       add_target "FeedbackEvidencePrivacyTests"

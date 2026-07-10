@@ -145,6 +145,41 @@ struct RuntimeFeedbackSnapshotTests {
         #expect(snapshot.failureCategory?.rawValue == "future_provider_failure")
     }
 
+    @Test("Secret-shaped runtime identifiers are rejected before contract projection")
+    func secretShapedRuntimeIdentifiersAreRejected() {
+        for runtimeID in [
+            "ghp_abcdefgh12345678",
+            "sk-abcdefgh12345678",
+            "650-555-0123"
+        ] {
+            #expect(builder.build(from: RuntimeFeedbackPersistedEvidence(
+                runtimeID: runtimeID
+            )) == nil)
+        }
+    }
+
+    @Test("Secret-shaped failure categories are omitted while safe unknowns remain compatible")
+    func secretShapedFailureCategoriesAreOmitted() throws {
+        for failureCategory in [
+            "ghp_abcdefgh12345678",
+            "sk-abcdefgh12345678",
+            "650-555-0123"
+        ] {
+            let snapshot = try #require(builder.build(from: RuntimeFeedbackPersistedEvidence(
+                runtimeID: "future_runtime_v2",
+                failureCategory: failureCategory
+            )))
+            #expect(snapshot.failureCategory == nil)
+            #expect(snapshot.unavailableReason == .notRecorded)
+        }
+
+        let safeUnknown = try #require(builder.build(from: RuntimeFeedbackPersistedEvidence(
+            runtimeID: "future_runtime_v2",
+            failureCategory: "future_provider_failure"
+        )))
+        #expect(safeUnknown.failureCategory?.rawValue == "future_provider_failure")
+    }
+
     @Test("Runtime identity without observations uses a typed not-recorded reason")
     func runtimeOnlyIsNotRecorded() throws {
         let snapshot = try #require(builder.build(from: RuntimeFeedbackPersistedEvidence(
@@ -153,6 +188,58 @@ struct RuntimeFeedbackSnapshotTests {
 
         #expect(snapshot.unavailableReason == .notRecorded)
         #expect(snapshot.failureCategory == nil)
+    }
+
+    @Test("Whitespace-only evidence remains typed as not recorded")
+    func whitespaceOnlyEvidenceIsNotRecorded() throws {
+        let snapshot = try #require(builder.build(from: RuntimeFeedbackPersistedEvidence(
+            runtimeID: "codex_cli",
+            providerVersion: " \n ",
+            readiness: "\t",
+            failureCategory: " ",
+            sanitizedSummary: "\n",
+            stopReason: " ",
+            sandboxState: "\t",
+            policyState: "\n"
+        )))
+
+        #expect(snapshot.unavailableReason == .notRecorded)
+    }
+
+    @Test("Invalid-only evidence remains typed as not recorded")
+    func invalidOnlyEvidenceIsNotRecorded() throws {
+        let snapshot = try #require(builder.build(from: RuntimeFeedbackPersistedEvidence(
+            runtimeID: "codex_cli",
+            failureCategory: "invalid category/path",
+            exitCode: Int.max
+        )))
+
+        #expect(snapshot.failureCategory == nil)
+        #expect(snapshot.exitCode == nil)
+        #expect(snapshot.unavailableReason == .notRecorded)
+    }
+
+    @Test("Secret-only evidence remains typed as not recorded")
+    func secretOnlyEvidenceIsNotRecorded() throws {
+        let snapshot = try #require(builder.build(from: RuntimeFeedbackPersistedEvidence(
+            runtimeID: "codex_cli",
+            providerVersion: "ghp_abcdefgh12345678",
+            readiness: "sk-abcdefgh12345678",
+            failureCategory: "ghp_abcdefgh12345678",
+            sanitizedSummary: "650-555-0123",
+            stopReason: "sk-abcdefgh12345678",
+            sandboxState: "ghp_abcdefgh12345678",
+            policyState: "650-555-0123"
+        )))
+
+        #expect(snapshot.providerVersion == nil)
+        #expect(snapshot.readiness == nil)
+        #expect(snapshot.failureCategory == nil)
+        #expect(snapshot.sanitizedSummary == nil)
+        #expect(snapshot.stopReason == nil)
+        #expect(snapshot.sandboxState == nil)
+        #expect(snapshot.policyState == nil)
+        #expect(snapshot.unavailableReason == .notRecorded)
     }
 
     @Test("Persisted projection round-trips deterministically without generic provider fields")
@@ -194,9 +281,9 @@ struct RuntimeFeedbackSnapshotTests {
     func fieldsAreBoundedAndValidated() throws {
         let snapshot = try #require(builder.build(from: RuntimeFeedbackPersistedEvidence(
             runtimeID: "codex_cli",
-            providerVersion: String(repeating: "v", count: 2_000),
+            providerVersion: String(repeating: "version ", count: 300),
             failureCategory: "provider_process_failed",
-            sanitizedSummary: String(repeating: "x", count: 2_000),
+            sanitizedSummary: String(repeating: "runtime summary ", count: 200),
             exitCode: Int.max,
             stream: RuntimeFeedbackPersistedStreamCounters(
                 rawLines: -5,
@@ -208,8 +295,8 @@ struct RuntimeFeedbackSnapshotTests {
 
         #expect((snapshot.providerVersion?.utf8.count ?? 0) <= FeedbackContractLimitsV1.shortTextLength)
         #expect((snapshot.sanitizedSummary?.utf8.count ?? 0) <= FeedbackContractLimitsV1.shortTextLength)
-        #expect(snapshot.providerVersion?.contains(String(repeating: "v", count: 100)) == false)
-        #expect(snapshot.sanitizedSummary?.contains(String(repeating: "x", count: 100)) == false)
+        #expect(snapshot.providerVersion?.hasSuffix("[truncated]") == true)
+        #expect(snapshot.sanitizedSummary?.hasSuffix("[truncated]") == true)
         #expect(snapshot.exitCode == nil)
         #expect(snapshot.stream?.rawLines == 0)
         #expect(snapshot.stream?.parsedEvents == FeedbackContractLimitsV1.maximumRuntimeCounter)
