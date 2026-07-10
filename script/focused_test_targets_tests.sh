@@ -47,8 +47,10 @@ assert_targets "FeedbackEvidencePrivacyTests" \
   "Astra/Services/Feedback/FeedbackEvidenceBuilder.swift" \
   "Tests/FeedbackEvidencePrivacyTests.swift"
 
-assert_targets "RuntimeFeedbackSnapshotTests" \
-  "Astra/Services/Feedback/RuntimeFeedbackSnapshotBuilder.swift" \
+assert_targets $'RuntimeFeedbackSnapshotTests\nFeedbackEvidencePrivacyTests' \
+  "Astra/Services/Feedback/RuntimeFeedbackSnapshotBuilder.swift"
+
+assert_targets $'RuntimeFeedbackSnapshotTests\nFeedbackEvidencePrivacyTests' \
   "Tests/RuntimeFeedbackSnapshotTests.swift"
 
 assert_targets $'RuntimeFeedbackSnapshotTests\nFeedbackEvidencePrivacyTests' \
