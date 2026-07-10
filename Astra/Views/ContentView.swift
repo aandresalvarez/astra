@@ -5,37 +5,6 @@ import AppKit
 import ASTRAModels
 import ASTRAPersistence
 
-// `WorkspaceCanvasItem`, `WorkspaceRightPanel`, and the shelf-boundary metrics live in
-// WorkspaceCanvasItem.swift (extracted to keep this file within its line budget).
-
-// The shelf-boundary overlay views live in WorkspaceCanvasItem.swift (extracted for budget).
-
-private extension View {
-    func shelfBoundaryOverlay() -> some View {
-        modifier(ShelfBoundaryOverlayModifier())
-    }
-
-    // Kept as its own ViewModifier (rather than an inline `.alert` in
-    // ContentView.body) so the alert's closures type-check in this small
-    // function's own context instead of adding to body's already-at-budget
-    // expression graph — see ContentView.body's line-budget note.
-    func workspaceCapabilityEnableFailureAlert(isPresented: Binding<Bool>) -> some View {
-        modifier(WorkspaceCapabilityEnableFailureAlertModifier(isPresented: isPresented))
-    }
-}
-
-private struct WorkspaceCapabilityEnableFailureAlertModifier: ViewModifier {
-    @Binding var isPresented: Bool
-
-    func body(content: Content) -> some View {
-        content.alert("Some credentials couldn't be saved", isPresented: $isPresented) {
-            Button("OK", role: .cancel) {}
-        } message: {
-            Text("Your workspace was created, but one or more capability credentials could not be saved to Keychain. Add them later in Configure > Connectors.")
-        }
-    }
-}
-
 struct NewWorkspaceDraft: Equatable {
     var name = ""
     var instructions = ""
@@ -81,6 +50,8 @@ struct ContentView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Query(sort: \Workspace.name) private var workspaces: [Workspace]
     @StateObject private var sceneSelection = SceneSelectionModel()
+    @State private var taskOpenResponsivenessScope = UUID()
+    @State var screenTransitionCoordinator = ScreenTransitionCoordinator()
     @State private var showingConfigure = false
     @State private var configureInitialTab: ConfigureTab = .capabilities
     @State private var configureFocusItemID: UUID?
@@ -196,7 +167,7 @@ struct ContentView: View {
         self.runtime = runtime
     }
 
-    private var selectedTask: AgentTask? {
+    var selectedTask: AgentTask? {
         sceneSelection.selectedTask
     }
 
@@ -215,7 +186,7 @@ struct ContentView: View {
     /// Read-only forward to `RightPanelPresentationModel`. Every write goes
     /// through the model's methods (`presentCanvas`, `setActiveCanvasItem`,
     /// etc.) — never assign this directly.
-    private var activeWorkspaceCanvasItem: WorkspaceCanvasItem? {
+    var activeWorkspaceCanvasItem: WorkspaceCanvasItem? {
         rightPanel.activeCanvasItem
     }
 
@@ -615,6 +586,7 @@ struct ContentView: View {
     private var taskAndHomeDetailArea: some View {
         ContentDetailAreaView(
             selectedTask: selectedTask,
+            taskOpenResponsivenessScope: taskOpenResponsivenessScope,
             effectiveWorkspace: effectiveWorkspace,
             isComposingTask: isComposingTask,
             taskQueue: runtime.taskQueue,
@@ -640,7 +612,7 @@ struct ContentView: View {
             onOpenPlan: openPlanCanvas,
             onToggleDone: toggleDone,
             onMoveToDraft: moveTaskToDraft,
-            onForkTask: setSelectedTask,
+            onForkTask: { setSelectedTask($0) },
             onCreateTask: startComposingTask,
             onOpenWorkspaceApp: setSelectedWorkspaceApp,
             onOpenTask: openExistingTask,
@@ -969,6 +941,7 @@ struct ContentView: View {
 
     var body: some View {
         rootLayoutWithFeedbackChrome
+        .modifier(ScreenTransitionReadinessObserver(coordinator: screenTransitionCoordinator))
         .onChange(of: selectedTaskCanvasSignature) {
             handleSelectedTaskCanvasSignatureChanged()
         }
@@ -1119,6 +1092,7 @@ struct ContentView: View {
         }
         .onDisappear {
             sidebarTitlebarCommands.clearSidebarToggleHandler()
+            screenTransitionCoordinator.cancelForViewDisappearance()
         }
         .onChange(of: executionSettingsSignature) { applySettings() }
         .background {
@@ -1288,6 +1262,7 @@ struct ContentView: View {
 
     private func presentCanvas(_ item: WorkspaceCanvasItem) {
         guard canPresentWorkspaceCanvasItem(item) else { return }
+        beginScreenTransitionIfNeeded(to: item, source: "shelf_action")
         animatePanelChange {
             rightPanel.presentCanvas(item, conversationID: selectedWorkspaceCanvasConversationID)
         }
@@ -1308,6 +1283,7 @@ struct ContentView: View {
     }
 
     private func setActiveWorkspaceCanvasItem(_ item: WorkspaceCanvasItem?, remember: Bool) {
+        beginScreenTransitionIfNeeded(to: item, source: "shelf_state")
         rightPanel.setActiveCanvasItem(item, remember: remember, conversationID: selectedWorkspaceCanvasConversationID)
     }
 
@@ -1319,6 +1295,7 @@ struct ContentView: View {
             return
         }
 
+        beginScreenTransition(destination: screenTransitionDestination(item), source: "remembered_shelf_restore")
         prepareWorkspaceCanvasItemForPresentation(item, source: "remembered_shelf_restore")
     }
 
@@ -1999,7 +1976,7 @@ struct ContentView: View {
 
     private func startComposingTask() {
         let wasComposingWorkspaceApp = isComposingWorkspaceApp
-        setSelectedTask(nil)
+        setSelectedTask(nil, recordsFinalHomeTransition: false)
         sceneSelection.composeTask()
         clearWorkspaceAppSurfaceSideEffects(wasComposing: wasComposingWorkspaceApp)
         presentRightRail(rememberShelfState: false)
@@ -2108,7 +2085,7 @@ struct ContentView: View {
     }
 
     private func moveTaskToDraft(_ task: AgentTask) {
-        setSelectedTask(nil)
+        setSelectedTask(nil, recordsFinalHomeTransition: false)
         DispatchQueue.main.async {
             setSelectedTask(task)
         }
@@ -2311,6 +2288,13 @@ struct ContentView: View {
 
     private func applyWorkspaceSelectionUpdate(_ update: ContentWorkspaceSelectionUpdate) {
         let previousTaskID = selectedTask?.id
+        if previousTaskID != update.selectedTask?.id {
+            TaskOpenResponsivenessTelemetry.beginForSelection(
+                task: update.selectedTask,
+                source: "workspace_selection",
+                scope: taskOpenResponsivenessScope
+            )
+        }
         updateCanvasForTaskSelectionChange(previousTaskID: previousTaskID, nextTaskID: update.selectedTask?.id)
         let sceneUpdate = sceneSelection.apply(update)
         if previousTaskID != update.selectedTask?.id {
@@ -2332,6 +2316,11 @@ struct ContentView: View {
         let isComposingTaskForTransition = isComposingTask
         intent()
         guard previousTaskID != selectedTask?.id else { return }
+        TaskOpenResponsivenessTelemetry.beginForSelection(
+            task: selectedTask,
+            source: "scene_selection",
+            scope: taskOpenResponsivenessScope
+        )
         updateCanvasForTaskSelectionChange(
             previousTaskID: previousTaskID,
             nextTaskID: selectedTask?.id,
@@ -2343,9 +2332,24 @@ struct ContentView: View {
 
     // MARK: - Task Actions
 
-    private func setSelectedTask(_ task: AgentTask?) {
+    private func setSelectedTask(_ task: AgentTask?, recordsFinalHomeTransition: Bool = true) {
         let previousTaskID = selectedTask?.id
-        updateCanvasForTaskSelectionChange(previousTaskID: previousTaskID, nextTaskID: task?.id)
+        if previousTaskID != task?.id {
+            TaskOpenResponsivenessTelemetry.beginForSelection(
+                task: task,
+                source: "task_selection",
+                scope: taskOpenResponsivenessScope
+            )
+            if task == nil, recordsFinalHomeTransition {
+                beginScreenTransition(destination: "workspace_home", source: "task_selection_cleared",
+                                      taskID: nil, usesSelectedTask: false)
+            }
+        }
+        updateCanvasForTaskSelectionChange(
+            previousTaskID: previousTaskID,
+            nextTaskID: task?.id,
+            recordsTransition: recordsFinalHomeTransition
+        )
         let wasComposingWorkspaceApp = isComposingWorkspaceApp
         sceneSelection.openTask(task)
         clearWorkspaceAppSurfaceSideEffects(wasComposing: wasComposingWorkspaceApp)
@@ -2358,7 +2362,8 @@ struct ContentView: View {
     private func updateCanvasForTaskSelectionChange(
         previousTaskID: UUID?,
         nextTaskID: UUID?,
-        isComposingTaskForTransition: Bool? = nil
+        isComposingTaskForTransition: Bool? = nil,
+        recordsTransition: Bool = true
     ) {
         guard previousTaskID != nextTaskID else { return }
         let nextCanvasItem = WorkspaceCanvasItemSelectionTransition.itemAfterTaskSelectionChange(
@@ -2368,7 +2373,16 @@ struct ContentView: View {
             isComposingTask: isComposingTaskForTransition ?? isComposingTask
         )
         if nextCanvasItem != activeWorkspaceCanvasItem {
-            setActiveWorkspaceCanvasItem(nextCanvasItem, remember: false)
+            if recordsTransition {
+                beginScreenTransitionIfNeeded(
+                    to: nextCanvasItem,
+                    source: "task_selection_shelf_clear",
+                    baseDestination: nextTaskID == nil ? "workspace_home" : "task_chat",
+                    taskID: nextTaskID,
+                    usesSelectedTask: false
+                )
+            }
+            rightPanel.setActiveCanvasItem(nextCanvasItem, remember: false, conversationID: nextTaskID?.uuidString)
         }
     }
 
@@ -2394,17 +2408,23 @@ struct ContentView: View {
 
     private func markTaskRead(_ task: AgentTask?) {
         guard let task, task.unreadAt != nil else { return }
-        task.markRead()
-        do {
-            try WorkspacePersistenceCoordinator.saveAndAutoExportOrThrow(
-                workspace: task.workspace,
-                modelContext: modelContext
-            )
-        } catch {
-            AppLogger.audit(.taskFailed, category: "UI", taskID: task.id, fields: [
-                "operation": "mark_task_read",
-                "error_type": String(describing: type(of: error))
-            ], level: .error)
+        TaskOpenResponsivenessTelemetry.measurePhase(
+            "mark_task_read_persistence",
+            task: task,
+            scope: taskOpenResponsivenessScope
+        ) {
+            task.markRead()
+            do {
+                try WorkspacePersistenceCoordinator.saveAndAutoExportOrThrow(
+                    workspace: task.workspace,
+                    modelContext: modelContext
+                )
+            } catch {
+                AppLogger.audit(.taskFailed, category: "UI", taskID: task.id, fields: [
+                    "operation": "mark_task_read",
+                    "error_type": String(describing: type(of: error))
+                ], level: .error)
+            }
         }
     }
 
@@ -2772,6 +2792,7 @@ private struct ContentToolbar: ToolbarContent {
 
 private struct ContentDetailAreaView: View {
     let selectedTask: AgentTask?
+    let taskOpenResponsivenessScope: UUID
     let effectiveWorkspace: Workspace?
     let isComposingTask: Bool
     let taskQueue: TaskQueue
@@ -3177,6 +3198,7 @@ private struct ContentDetailAreaView: View {
     private var detailContent: some View {
         ContentDetailContentView(
             selectedTask: selectedTask,
+            taskOpenResponsivenessScope: taskOpenResponsivenessScope,
             effectiveWorkspace: effectiveWorkspace,
             isComposingTask: isComposingTask,
             taskQueue: taskQueue,
@@ -3276,6 +3298,7 @@ private struct ContentDetailAreaView: View {
 
 private struct ContentDetailContentView: View {
     let selectedTask: AgentTask?
+    let taskOpenResponsivenessScope: UUID
     let effectiveWorkspace: Workspace?
     let isComposingTask: Bool
     let taskQueue: TaskQueue
@@ -3346,6 +3369,7 @@ private struct ContentDetailContentView: View {
             if let task = selectedTask {
                 TaskMainView(
                     task: task,
+                    taskOpenResponsivenessScope: taskOpenResponsivenessScope,
                     taskQueue: taskQueue,
                     onRunTask: onRunTask,
                     onCancelTask: onCancelTask,
