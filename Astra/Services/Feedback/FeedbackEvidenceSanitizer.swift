@@ -15,10 +15,17 @@ enum FeedbackEvidenceSanitizer {
             case contact
         }
 
-        let pattern: String
+        let expression: NSRegularExpression
         let replacement: String
         let category: Category
-        let options: NSRegularExpression.Options
+
+        init(pattern: String, replacement: String, category: Category, options: NSRegularExpression.Options) {
+            // Patterns are fixed string literals below; compilation cannot fail at runtime.
+            // swiftlint:disable:next force_try
+            self.expression = try! NSRegularExpression(pattern: pattern, options: options)
+            self.replacement = replacement
+            self.category = category
+        }
     }
 
     private static let rules: [Rule] = [
@@ -77,7 +84,11 @@ enum FeedbackEvidenceSanitizer {
             options: []
         ),
         Rule(
-            pattern: #"(?:file://)?/Users/[^\s\"']+"#,
+            // macOS folder/file names commonly contain single spaces (e.g. "My Project").
+            // Allow one embedded space as long as it is immediately followed by another
+            // path character, so the match consumes the whole path instead of stopping
+            // at the first space and leaving the remainder unredacted.
+            pattern: #"(?:file://)?/Users/(?:[^\s\"']|[ ](?=[^\s\"']))+"#,
             replacement: "[redacted-home-path]",
             category: .path,
             options: []
@@ -97,9 +108,7 @@ enum FeedbackEvidenceSanitizer {
         var contactPatterns = 0
 
         for rule in rules {
-            guard let expression = try? NSRegularExpression(pattern: rule.pattern, options: rule.options) else {
-                continue
-            }
+            let expression = rule.expression
             let range = NSRange(output.startIndex..<output.endIndex, in: output)
             let matches = expression.numberOfMatches(in: output, range: range)
             guard matches > 0 else { continue }
