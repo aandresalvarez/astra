@@ -3367,7 +3367,9 @@ private struct ContentDetailContentView: View {
                     onNewSchedule: onNewSchedule,
                     onEditSchedule: onEditSchedule,
                     onManageCapabilities: onManageCapabilities,
-                    onOpenWorkspaceApp: onOpenWorkspaceApp
+                    onOpenWorkspaceApp: onOpenWorkspaceApp,
+                    onAddSSHConnection: onAddSSHConnection,
+                    sshReloadTrigger: sshReloadTrigger
                 )
             }
         case .workspaceApp:
