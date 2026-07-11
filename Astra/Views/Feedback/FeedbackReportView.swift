@@ -131,8 +131,9 @@ struct FeedbackReportView: View {
                     // receipt. A late invalidation failure therefore remains
                     // visible to the trusted cleanup boundary.
                     let stagedPreview = preview ?? invalidatingPreview
-                    if let stagedPreview {
-                        resolvedCleanupKeys.insert(try invalidateForLiveClose(stagedPreview))
+                    if let stagedPreview,
+                       let cleanupKey = try invalidateForLiveClose(stagedPreview) {
+                        resolvedCleanupKeys.insert(cleanupKey)
                     }
                     try service.settleForHostDeactivation(
                         launch: launch,
@@ -406,11 +407,15 @@ struct FeedbackReportView: View {
                 isResolvedRetainedCleanup: { resolvedCleanupKeys.contains($0) }
             ) {
                 if let preview {
-                    resolvedCleanupKeys.insert(try invalidateForLiveClose(preview))
+                    if let cleanupKey = try invalidateForLiveClose(preview) {
+                        resolvedCleanupKeys.insert(cleanupKey)
+                    }
                     self.preview = nil
                 }
                 if let invalidatingPreview {
-                    resolvedCleanupKeys.insert(try invalidateForLiveClose(invalidatingPreview))
+                    if let cleanupKey = try invalidateForLiveClose(invalidatingPreview) {
+                        resolvedCleanupKeys.insert(cleanupKey)
+                    }
                     self.invalidatingPreview = nil
                 }
             }
@@ -420,15 +425,17 @@ struct FeedbackReportView: View {
                 return
             }
             do {
-                if keepingDraft {
-                    if report != nil || hasMeaningfulProgress {
-                        try service.saveProgress(launch: launch, form: form)
-                    }
-                } else if report != nil || hasMeaningfulProgress {
-                    if report == nil, hasMeaningfulProgress {
-                        try service.saveProgress(launch: launch, form: form)
-                    }
+                switch FeedbackReportDismissPersistencePolicy.action(
+                    keepingDraft: keepingDraft,
+                    hasStoredReport: report != nil,
+                    hasMeaningfulProgress: hasMeaningfulProgress
+                ) {
+                case .saveDraft:
+                    try service.saveProgress(launch: launch, form: form)
+                case .discardStoredReport:
                     try service.discard(reportID: launch.id)
+                case .closeWithoutPersistence:
+                    break
                 }
                 onDismiss()
             } catch { errorMessage = safeMessage(error) }
@@ -442,8 +449,8 @@ struct FeedbackReportView: View {
 
     private func invalidateForLiveClose(
         _ stagedPreview: FeedbackReportPreparedPreview
-    ) throws -> FeedbackPreparedPreviewCleanupKey {
-        try FeedbackReportLiveCleanupFinalizer.invalidate(
+    ) throws -> FeedbackPreparedPreviewCleanupKey? {
+        try FeedbackReportLiveCleanupFinalizer.invalidateIfOwned(
             stagedPreview,
             sourceHostID: launch.hostID,
             sourceLeaseID: hostLeaseID,

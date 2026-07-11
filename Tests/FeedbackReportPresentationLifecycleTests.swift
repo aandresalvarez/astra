@@ -5,6 +5,58 @@ import ASTRACore
 @testable import ASTRA
 
 extension FeedbackReportPresentationTests {
+    @Test("Unsaved discard closes without creating a durable draft")
+    func unsavedDiscardDoesNotPersist() {
+        #expect(FeedbackReportDismissPersistencePolicy.action(
+            keepingDraft: false, hasStoredReport: false, hasMeaningfulProgress: true
+        ) == .closeWithoutPersistence)
+        #expect(FeedbackReportDismissPersistencePolicy.action(
+            keepingDraft: false, hasStoredReport: true, hasMeaningfulProgress: true
+        ) == .discardStoredReport)
+        #expect(FeedbackReportDismissPersistencePolicy.action(
+            keepingDraft: true, hasStoredReport: false, hasMeaningfulProgress: true
+        ) == .saveDraft)
+        #expect(FeedbackReportDismissPersistencePolicy.action(
+            keepingDraft: true, hasStoredReport: false, hasMeaningfulProgress: false
+        ) == .closeWithoutPersistence)
+    }
+
+    @Test("Adopted outbox previews bypass live staging cleanup")
+    @MainActor
+    func adoptedPreviewIsNotInvalidatedOnClose() throws {
+        let reportID = UUID()
+        let launch = FeedbackReportLaunch(reportID: reportID, hostID: UUID(), entryPoint: .help)
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("owned-feedback-\(reportID.uuidString)", isDirectory: true)
+        let manifest = FeedbackEvidenceManifestV1(
+            artifacts: [], redactionPolicyVersion: "feedback-redaction-v1",
+            totalByteCount: 0, archiveSHA256: nil
+        )
+        let package = FeedbackPreparedEvidencePackage(
+            reportID: reportID, reportCreatedAt: Date(), directoryURL: directory,
+            reportURL: directory.appendingPathComponent("feedback-report.json"),
+            archiveURL: directory.appendingPathComponent("evidence.zip"),
+            manifestURL: directory.appendingPathComponent("manifest.json"),
+            manifest: manifest, manifestSHA256: String(repeating: "a", count: 64),
+            reportSHA256: String(repeating: "b", count: 64),
+            archiveSHA256: String(repeating: "c", count: 64)
+        )
+        let preview = FeedbackReportPreparedPreview(
+            reportID: reportID, contextIdentity: launch.contextIdentity,
+            form: FeedbackReportFormState(launch: launch), reviewedAt: Date(),
+            package: package, ownership: .adoptedOutbox
+        )
+        var fallbackCleanupCalled = false
+
+        let cleanupKey = try FeedbackReportLiveCleanupFinalizer.invalidateIfOwned(
+            preview, sourceHostID: launch.hostID, sourceLeaseID: UUID(),
+            cleanupOwner: FeedbackPreparedPreviewCleanupOwner()
+        ) { fallbackCleanupCalled = true }
+
+        #expect(cleanupKey == nil)
+        #expect(!fallbackCleanupCalled)
+    }
+
     @Test("Old crash offers anchor the evidence window to the crash")
     func oldCrashOfferAnchorsEvidenceWindow() {
         let now = Date(timeIntervalSince1970: 1_800_000_000)

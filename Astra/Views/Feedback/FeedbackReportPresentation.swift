@@ -65,6 +65,25 @@ enum FeedbackReportCloseAction: Equatable, Sendable {
     case offerDraftChoices
 }
 
+enum FeedbackReportDismissPersistenceAction: Equatable, Sendable {
+    case closeWithoutPersistence
+    case saveDraft
+    case discardStoredReport
+}
+
+enum FeedbackReportDismissPersistencePolicy {
+    static func action(
+        keepingDraft: Bool,
+        hasStoredReport: Bool,
+        hasMeaningfulProgress: Bool
+    ) -> FeedbackReportDismissPersistenceAction {
+        if keepingDraft {
+            return hasStoredReport || hasMeaningfulProgress ? .saveDraft : .closeWithoutPersistence
+        }
+        return hasStoredReport ? .discardStoredReport : .closeWithoutPersistence
+    }
+}
+
 enum FeedbackReportClosePolicy {
     static func action(
         hasStoredReport: Bool,
@@ -126,6 +145,23 @@ enum FeedbackReportOwnedWorkResult: Equatable, Sendable {
 /// instead of deleting independently and leaving a stale capability behind.
 @MainActor
 enum FeedbackReportLiveCleanupFinalizer {
+    static func invalidateIfOwned(
+        _ preview: FeedbackReportPreparedPreview,
+        sourceHostID: UUID,
+        sourceLeaseID: UUID,
+        cleanupOwner: FeedbackPreparedPreviewCleanupOwner,
+        fallbackCleanup: @MainActor () throws -> Void
+    ) throws -> FeedbackPreparedPreviewCleanupKey? {
+        guard preview.ownership == .trustedStaging else { return nil }
+        return try invalidate(
+            preview,
+            sourceHostID: sourceHostID,
+            sourceLeaseID: sourceLeaseID,
+            cleanupOwner: cleanupOwner,
+            fallbackCleanup: fallbackCleanup
+        )
+    }
+
     static func invalidate(
         _ preview: FeedbackReportPreparedPreview,
         sourceHostID: UUID,
