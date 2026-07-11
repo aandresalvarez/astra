@@ -4316,12 +4316,20 @@ struct TaskMainView: View {
     private func openDiagnosticsInOwnView() {
         Task {
             await recomputeDiagnosticFileGroups()
-            let shelfItems = diagnosticFileGroupsCache
-                .flatMap(\.items)
-                .filter { TaskGeneratedFiles.shelfDestination(for: $0.path) == .files }
+            let allItems = diagnosticFileGroupsCache.flatMap(\.items)
+            let shelfItems = allItems.filter {
+                TaskGeneratedFiles.shelfDestination(for: $0.path) == .files
+            }
+            // Only open directly when EVERY diagnostic is a Files-shelf text
+            // file. Mixed destinations (.sql/.html route to other shelves),
+            // nothing viewable, or no shelf fall back to the index popover,
+            // which lists every diagnostic and opens each row in-app; opening
+            // only the Files subset would strand the rest with the header
+            // chip hidden.
             guard let onOpenGeneratedFile,
                   canOpenGeneratedFileInShelf(.files),
-                  !shelfItems.isEmpty else {
+                  !shelfItems.isEmpty,
+                  shelfItems.count == allItems.count else {
                 isShowingDiagnosticsPopover = true
                 return
             }

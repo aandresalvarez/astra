@@ -136,23 +136,28 @@ public enum MarkdownRenderPreparation {
     /// colon-introduced numbered sequences. Fenced code is never touched.
     static func reflowInlineBlockMarkers(in text: String) -> String {
         var output: [String] = []
-        // A fence only closes on a matching fence character (CommonMark): a
-        // "~~~" line inside a backtick block is content, not a closer, and
-        // must not drop the following code lines out of code mode.
-        var openFenceCharacter: Character?
+        // A fence only closes on a matching fence (CommonMark): same
+        // character AND a run at least as long as the opener. A "~~~" line
+        // inside a backtick block is content, and a "```" line inside a
+        // "````" block is content too — neither may drop the following code
+        // lines out of code mode.
+        var openFence: (character: Character, length: Int)?
 
         for line in text.components(separatedBy: "\n") {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             if isFenceLine(trimmed), let fenceCharacter = trimmed.first {
-                if openFenceCharacter == nil {
-                    openFenceCharacter = fenceCharacter
-                } else if openFenceCharacter == fenceCharacter {
-                    openFenceCharacter = nil
+                let runLength = trimmed.prefix(while: { $0 == fenceCharacter }).count
+                if let fence = openFence {
+                    if fence.character == fenceCharacter, runLength >= fence.length {
+                        openFence = nil
+                    }
+                } else {
+                    openFence = (fenceCharacter, runLength)
                 }
                 output.append(line)
                 continue
             }
-            if openFenceCharacter != nil {
+            if openFence != nil {
                 output.append(line)
                 continue
             }
@@ -190,10 +195,12 @@ public enum MarkdownRenderPreparation {
     }
 
     /// Splits a line before every mid-line `##`–`######` run that is preceded
-    /// by whitespace and followed by spaced content. Single `#` is left alone
-    /// ("issue # 5" must not become a heading).
+    /// by whitespace and followed by spaced, capitalized-or-numbered content.
+    /// Single `#` is left alone ("issue # 5" must not become a heading), and
+    /// the content gate keeps prose mentions of hash syntax intact ("C macros
+    /// use ## token pasting" — lowercase continuation, not a heading).
     private static func headingSplit(_ line: String) -> [String] {
-        guard let regex = try? NSRegularExpression(pattern: #"(?<=\s)#{2,6}\s+\S"#) else { return [line] }
+        guard let regex = try? NSRegularExpression(pattern: #"(?<=\s)#{2,6}\s+(?=[A-Z0-9])"#) else { return [line] }
         let nsLine = line as NSString
         let matches = regex.matches(in: line, range: NSRange(location: 0, length: nsLine.length))
             .filter { !isInsideInlineCode(nsLine, location: $0.range.location) }
@@ -261,7 +268,8 @@ public enum MarkdownRenderPreparation {
                 chunk,
                 markerPattern: #"\s-\s+"#,
                 searchStart: bulletTrigger.location + 1,
-                firstExpectedNumber: nil
+                firstExpectedNumber: nil,
+                minimumItemLength: bulletRunMinimumItemLength
             )
         }
         if let numberTrigger = firstMatchRange(#":\s+1[.)]\s"#, in: chunk),
@@ -284,11 +292,18 @@ public enum MarkdownRenderPreparation {
         return [chunk]
     }
 
+    /// A dash run only splits when every resulting item is substantial; prose
+    /// hyphens inside a genuine item ("- supports state - of - the - art
+    /// layouts") produce stub pieces and cancel the whole split rather than
+    /// corrupting the sentence.
+    private static let bulletRunMinimumItemLength = 10
+
     private static func splitMarkerRun(
         _ chunk: String,
         markerPattern: String,
         searchStart: Int,
-        firstExpectedNumber: Int?
+        firstExpectedNumber: Int?,
+        minimumItemLength: Int? = nil
     ) -> [String] {
         guard let regex = try? NSRegularExpression(pattern: markerPattern) else { return [chunk] }
         let nsChunk = chunk as NSString
@@ -325,6 +340,10 @@ public enum MarkdownRenderPreparation {
         let tail = nsChunk.substring(from: start).trimmingCharacters(in: .whitespaces)
         if !tail.isEmpty {
             lines.append(tail)
+        }
+        if let minimumItemLength,
+           lines.dropFirst().contains(where: { $0.count < minimumItemLength }) {
+            return [chunk]
         }
         return lines.isEmpty ? [chunk] : lines
     }

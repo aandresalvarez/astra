@@ -462,6 +462,32 @@ struct MarkdownTextViewTests {
         #expect(MarkdownRenderPreparation.prepareForDisplay(source) == source)
     }
 
+    @Test("Display preparation leaves prose double-hash mentions alone")
+    func displayPreparationLeavesProseDoubleHashMentionsAlone() {
+        let source = "C macros use ## token pasting rules."
+
+        #expect(MarkdownRenderPreparation.prepareForDisplay(source) == source)
+    }
+
+    @Test("Display preparation cancels bullet splits that would produce stub items")
+    func displayPreparationCancelsBulletSplitsThatWouldProduceStubItems() {
+        let source = "Changes: - supports state - of - the - art layouts."
+
+        #expect(MarkdownRenderPreparation.prepareForDisplay(source) == source)
+    }
+
+    @Test("Display preparation keeps shorter fences inside longer fences as code")
+    func displayPreparationKeepsShorterFencesInsideLongerFencesAsCode() {
+        let source = """
+        ````
+        ```
+        calls: - `alpha` → GET /v1/alpha - `beta` → POST /v1/beta
+        ````
+        """
+
+        #expect(MarkdownRenderPreparation.prepareForDisplay(source) == source)
+    }
+
     @Test("Display preparation ignores list triggers inside inline code spans")
     func displayPreparationIgnoresListTriggersInsideInlineCodeSpans() {
         let source = "Use `pattern: - x` and state - of - the - art prose."
