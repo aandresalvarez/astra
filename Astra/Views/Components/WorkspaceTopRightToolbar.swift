@@ -21,6 +21,14 @@ struct WorkspaceTopRightActions: Equatable {
     var hasShelfControls: Bool {
         canShowPlanShelf || canShowTextShelf || canShowQueryShelf || canShowBrowserShelf || canShowAppPreviewShelf
     }
+
+    /// The shelf pill is the Files shelf's only dismiss affordance (that
+    /// panel carries no in-panel close button), so the toolbar must render
+    /// whenever any shelf control is available - even in workspace-less task
+    /// contexts where the context-rail cluster hides.
+    var showsToolbar: Bool {
+        hasWorkspace || hasShelfControls
+    }
 }
 
 struct WorkspaceTopRightToolbar: View {
@@ -55,20 +63,22 @@ struct WorkspaceTopRightToolbar: View {
             .accessibilityElement(children: .contain)
             .accessibilityLabel("Shelf controls")
 
-            AstraToolbarContextCommandCluster {
-                toolbarButton(
-                    title: actions.isRightRailVisible ? "Hide Workspace Context" : "Show Workspace Context",
-                    systemImage: "sidebar.right",
-                    isActive: actions.isRightRailVisible,
-                    action: onToggleControlPanel
-                )
-                .keyboardShortcut("i", modifiers: [.command, .option])
-                .help(actions.isRightRailVisible ? "Hide Workspace Context (⌥⌘I)" : "Show Workspace Context (⌥⌘I)")
-                .accessibilityIdentifier("ControlPanelToolbarButton")
+            if actions.hasWorkspace {
+                AstraToolbarContextCommandCluster {
+                    toolbarButton(
+                        title: actions.isRightRailVisible ? "Hide Workspace Context" : "Show Workspace Context",
+                        systemImage: "sidebar.right",
+                        isActive: actions.isRightRailVisible,
+                        action: onToggleControlPanel
+                    )
+                    .keyboardShortcut("i", modifiers: [.command, .option])
+                    .help(actions.isRightRailVisible ? "Hide Workspace Context (⌥⌘I)" : "Show Workspace Context (⌥⌘I)")
+                    .accessibilityIdentifier("ControlPanelToolbarButton")
+                }
+                .fixedSize(horizontal: true, vertical: false)
+                .accessibilityElement(children: .contain)
+                .accessibilityLabel("Workspace Context")
             }
-            .fixedSize(horizontal: true, vertical: false)
-            .accessibilityElement(children: .contain)
-            .accessibilityLabel("Workspace Context")
         }
         .fixedSize(horizontal: true, vertical: false)
     }

@@ -36,6 +36,15 @@ enum ShelfFileNavigatorContentPresentation: Equatable {
     }
 }
 
+enum ShelfTabStripPolicy {
+    /// Every open file gets a tab with its own close button - even a lone
+    /// file - so the toolbar's corner X keeps a single meaning (dismiss the
+    /// shelf) and the last file is never left without a close affordance.
+    static func showsTabStrip(openDocumentCount: Int) -> Bool {
+        openDocumentCount > 0
+    }
+}
+
 struct ShelfMarkdownPanelView: View {
     private static let fileSizeFormatter: ByteCountFormatter = {
         let formatter = ByteCountFormatter()
@@ -46,7 +55,6 @@ struct ShelfMarkdownPanelView: View {
     private static let visibleNodeBatchLimit = 180
 
     @ObservedObject var session: ShelfMarkdownSession
-    @Binding var isPresented: Bool
     @Binding var isPinnedToTask: Bool
     var workspace: Workspace?
     var task: AgentTask?
@@ -259,20 +267,12 @@ struct ShelfMarkdownPanelView: View {
             }
 
             overflowMenu
-
-            Button {
-                isPresented = false
-            } label: {
-                Image(systemName: "xmark")
-            }
-            .buttonStyle(TextShelfToolbarButtonStyle())
-            .help("Close Files shelf")
         }
     }
 
     private var viewerPane: some View {
         VStack(spacing: 0) {
-            if session.documents.count > 1 {
+            if ShelfTabStripPolicy.showsTabStrip(openDocumentCount: session.documents.count) {
                 tabStrip
                 Divider()
             }
