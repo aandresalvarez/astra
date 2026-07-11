@@ -24,6 +24,7 @@ struct FeedbackReportView: View {
     @State private var errorMessage: String?
     @State private var showDismissChoices = false
     @State private var isRestoring = false
+    @State private var explicitDismissalCompleted = false
 
     init(
         launch: FeedbackReportLaunch,
@@ -139,7 +140,11 @@ struct FeedbackReportView: View {
                         launch: launch,
                         form: form,
                         preview: nil,
-                        shouldPersist: report != nil || hasMeaningfulProgress
+                        shouldPersist: FeedbackReportHostDeactivationPersistencePolicy.shouldPersist(
+                            explicitDismissalCompleted: explicitDismissalCompleted,
+                            hasStoredReport: report != nil,
+                            hasMeaningfulProgress: hasMeaningfulProgress
+                        )
                     )
                     preview = nil
                     invalidatingPreview = nil
@@ -437,6 +442,10 @@ struct FeedbackReportView: View {
                 case .closeWithoutPersistence:
                     break
                 }
+                // The explicit action above is the sole persistence owner for
+                // this dismissal. onDisappear still settles cleanup/host
+                // ownership, but must not recreate a report that was discarded.
+                explicitDismissalCompleted = true
                 onDismiss()
             } catch { errorMessage = safeMessage(error) }
         }

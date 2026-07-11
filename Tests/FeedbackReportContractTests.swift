@@ -403,6 +403,17 @@ struct FeedbackReportContractTests {
             FeedbackAssessmentV1.self,
             from: assessmentBytes
         ) == assessment.canonicalized())
+        var oversizedDuplicate = assessment
+        oversizedDuplicate.duplicateCandidateReceiptIDs = [
+            String(repeating: "d", count: FeedbackContractLimitsV1.identifierLength + 1)
+        ]
+        #expect(throws: FeedbackContractError.exceedsMaximumLength(
+            path: "assessment.duplicateCandidateReceiptIDs[]",
+            maximum: FeedbackContractLimitsV1.identifierLength,
+            actual: FeedbackContractLimitsV1.identifierLength + 1
+        )) {
+            try oversizedDuplicate.validate()
+        }
 
         let triage = FeedbackStaffTriageDecisionV1(
             reportID: payload.reportID,

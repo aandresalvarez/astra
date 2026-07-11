@@ -67,6 +67,72 @@ extension FeedbackReportPresentationTests {
         #expect(FeedbackReportDismissPersistencePolicy.action(
             keepingDraft: true, hasStoredReport: false, hasMeaningfulProgress: false
         ) == .closeWithoutPersistence)
+        #expect(!FeedbackReportHostDeactivationPersistencePolicy.shouldPersist(
+            explicitDismissalCompleted: true,
+            hasStoredReport: false,
+            hasMeaningfulProgress: true
+        ))
+        #expect(!FeedbackReportHostDeactivationPersistencePolicy.shouldPersist(
+            explicitDismissalCompleted: true,
+            hasStoredReport: true,
+            hasMeaningfulProgress: true
+        ))
+        #expect(FeedbackReportHostDeactivationPersistencePolicy.shouldPersist(
+            explicitDismissalCompleted: false,
+            hasStoredReport: false,
+            hasMeaningfulProgress: true
+        ))
+    }
+
+    @Test("Delayed task-failure reports anchor evidence to the failed run")
+    func delayedTaskFailureAnchorsEvidenceWindow() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let failureDate = now.addingTimeInterval(-3 * 60 * 60)
+        let launch = FeedbackReportLaunch(
+            hostID: UUID(),
+            entryPoint: .taskFailure,
+            taskID: UUID(),
+            runID: UUID(),
+            taskFailureOccurredAt: failureDate
+        )
+
+        let form = FeedbackReportFormState(launch: launch, now: now)
+
+        #expect(form.evidenceWindowEnd == failureDate)
+        #expect(form.evidenceWindowStart == failureDate.addingTimeInterval(
+            -FeedbackReportFormState.defaultEvidenceWindow
+        ))
+        #expect(form.evidenceWindowEnd < now.addingTimeInterval(
+            -FeedbackReportFormState.defaultEvidenceWindow
+        ))
+    }
+
+    @Test("Task failure routing retains the failed-run evidence anchor")
+    @MainActor
+    func taskFailureRoutingRetainsEvidenceAnchor() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("feedback-task-anchor-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let router = FeedbackReportRouter()
+        let hostID = UUID()
+        router.register(hostID: hostID, leaseID: UUID())
+        let failureDate = Date(timeIntervalSince1970: 1_800_000_000)
+        let coordinator = FeedbackReportCoordinator(
+            router: router,
+            modelContainer: try makeFeedbackOutboxContainer(),
+            crashLedger: LifecycleLinkedCrashLedger(reportIDs: []),
+            storageRoot: root
+        )
+
+        try await coordinator.present(
+            from: .taskFailure,
+            hostID: hostID,
+            taskID: UUID(),
+            runID: UUID(),
+            taskFailureOccurredAt: failureDate
+        )
+
+        #expect(router.launch?.taskFailureOccurredAt == failureDate)
     }
 
     @Test("Adopted outbox previews bypass live staging cleanup")
@@ -733,6 +799,7 @@ private func expectLifecyclePayload(
     #expect(actual?.id == expected.id); #expect(actual?.hostID == hostID)
     #expect(actual?.prefill == expected.prefill); #expect(actual?.taskID == expected.taskID)
     #expect(actual?.runID == expected.runID); #expect(actual?.runtimeEvidence == expected.runtimeEvidence)
+    #expect(actual?.taskFailureOccurredAt == expected.taskFailureOccurredAt)
     #expect(actual?.crashReports == expected.crashReports)
     #expect(actual?.crashFingerprint == expected.crashFingerprint)
 }

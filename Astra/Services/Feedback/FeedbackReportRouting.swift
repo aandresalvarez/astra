@@ -33,6 +33,7 @@ struct FeedbackReportLaunch: Identifiable, Equatable, Sendable {
     var prefill: FeedbackReportPrefill
     var taskID: UUID?
     var runID: UUID?
+    var taskFailureOccurredAt: Date?
     var runtimeEvidence: RuntimeFeedbackPersistedEvidence?
     var crashReports: [CrashReportSummary]
     var crashFingerprint: String?
@@ -54,6 +55,7 @@ struct FeedbackReportLaunch: Identifiable, Equatable, Sendable {
         prefill: FeedbackReportPrefill = .empty,
         taskID: UUID? = nil,
         runID: UUID? = nil,
+        taskFailureOccurredAt: Date? = nil,
         runtimeEvidence: RuntimeFeedbackPersistedEvidence? = nil,
         crashReports: [CrashReportSummary] = [],
         crashFingerprint: String? = nil
@@ -64,6 +66,7 @@ struct FeedbackReportLaunch: Identifiable, Equatable, Sendable {
         self.prefill = prefill
         self.taskID = taskID
         self.runID = runID
+        self.taskFailureOccurredAt = taskFailureOccurredAt
         self.runtimeEvidence = runtimeEvidence
         self.crashReports = crashReports
         self.crashFingerprint = crashFingerprint
@@ -172,6 +175,7 @@ struct FeedbackReportResumeService {
             ),
             taskID: proposed.taskID,
             runID: proposed.runID,
+            taskFailureOccurredAt: proposed.taskFailureOccurredAt,
             runtimeEvidence: proposed.runtimeEvidence,
             crashReports: proposed.crashReports,
             crashFingerprint: proposed.crashFingerprint
@@ -228,6 +232,7 @@ struct FeedbackReportCoordinator {
         prefill: FeedbackReportPrefill = .empty,
         taskID: UUID? = nil,
         runID: UUID? = nil,
+        taskFailureOccurredAt: Date? = nil,
         runtimeEvidence: RuntimeFeedbackPersistedEvidence? = nil,
         crashOffer: FeedbackCrashOffer? = nil
     ) async throws {
@@ -291,6 +296,7 @@ struct FeedbackReportCoordinator {
             prefill: prefill,
             taskID: taskID,
             runID: runID,
+            taskFailureOccurredAt: taskFailureOccurredAt,
             runtimeEvidence: runtimeEvidence,
             crashReports: crashOffer.map { [$0.report] } ?? [],
             crashFingerprint: crashOffer?.fingerprint
@@ -893,6 +899,7 @@ struct FeedbackTaskRunRuntimeEvidenceReader: RuntimeFeedbackPersistedEvidenceRea
 struct FeedbackTaskFailureReportContext: Equatable, Sendable {
     let prefill: FeedbackReportPrefill
     let runtimeEvidence: RuntimeFeedbackPersistedEvidence?
+    let taskFailureOccurredAt: Date?
 }
 
 enum FeedbackTaskFailureReportContextBuilder {
@@ -901,7 +908,9 @@ enum FeedbackTaskFailureReportContextBuilder {
         providerVersion: String?,
         status: RunStatus,
         exitCode: Int?,
-        stopReason: String
+        stopReason: String,
+        startedAt: Date? = nil,
+        completedAt: Date? = nil
     ) -> FeedbackTaskFailureReportContext {
         let classification = FeedbackTaskRuntimeEvidenceMapper.reportClassification(
             status: status,
@@ -923,7 +932,8 @@ enum FeedbackTaskFailureReportContextBuilder {
                 expectedResult: classification.expectedResult,
                 workBlocked: true
             ),
-            runtimeEvidence: reader.evidence
+            runtimeEvidence: reader.evidence,
+            taskFailureOccurredAt: completedAt ?? startedAt
         )
     }
 }

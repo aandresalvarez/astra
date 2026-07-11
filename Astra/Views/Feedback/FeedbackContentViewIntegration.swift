@@ -43,7 +43,8 @@ extension ContentView {
         task: AgentTask,
         prefill: FeedbackReportPrefill,
         runID: UUID?,
-        runtimeEvidence: RuntimeFeedbackPersistedEvidence?
+        runtimeEvidence: RuntimeFeedbackPersistedEvidence?,
+        taskFailureOccurredAt: Date?
     ) {
         Task { @MainActor in
             do {
@@ -53,6 +54,7 @@ extension ContentView {
                     prefill: prefill,
                     taskID: task.id,
                     runID: runID,
+                    taskFailureOccurredAt: taskFailureOccurredAt,
                     runtimeEvidence: runtimeEvidence
                 )
             } catch {

@@ -2856,7 +2856,9 @@ private struct ContentDetailAreaView: View {
     @ObservedObject var studioSession: WorkspaceAppStudioSession
     let onStartWorkspaceAppStudio: (String?) -> Void
     let onStartMCPInstallReview: (MCPInstallChatRequest) -> Void
-    let onReportProblem: (AgentTask, FeedbackReportPrefill, UUID?, RuntimeFeedbackPersistedEvidence?) -> Void
+    let onReportProblem: (
+        AgentTask, FeedbackReportPrefill, UUID?, RuntimeFeedbackPersistedEvidence?, Date?
+    ) -> Void
     let onPublishApp: (_ seedSampleData: Bool) -> Void
     let onDraftChanged: () -> Void
     let onCancelStudio: () -> Void
@@ -3333,7 +3335,9 @@ private struct ContentDetailContentView: View {
     @ObservedObject var studioSession: WorkspaceAppStudioSession
     let onStartWorkspaceAppStudio: (String?) -> Void
     let onStartMCPInstallReview: (MCPInstallChatRequest) -> Void
-    let onReportProblem: (AgentTask, FeedbackReportPrefill, UUID?, RuntimeFeedbackPersistedEvidence?) -> Void
+    let onReportProblem: (
+        AgentTask, FeedbackReportPrefill, UUID?, RuntimeFeedbackPersistedEvidence?, Date?
+    ) -> Void
     let onPublishApp: (_ seedSampleData: Bool) -> Void
     let onDraftChanged: () -> Void
     let onCancelStudio: () -> Void
@@ -3384,8 +3388,8 @@ private struct ContentDetailContentView: View {
                     onOpenGeneratedFile: onOpenGeneratedFile,
                     canOpenGeneratedFileInShelf: canOpenGeneratedFileInShelf,
                     onStartMCPInstallReview: onStartMCPInstallReview,
-                    onReportProblem: { prefill, runID, evidence in
-                        onReportProblem(task, prefill, runID, evidence)
+                    onReportProblem: { prefill, runID, evidence, failureOccurredAt in
+                        onReportProblem(task, prefill, runID, evidence, failureOccurredAt)
                     }
                 )
                 .id(task.id)

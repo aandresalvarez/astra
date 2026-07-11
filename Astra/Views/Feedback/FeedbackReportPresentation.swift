@@ -84,6 +84,16 @@ enum FeedbackReportDismissPersistencePolicy {
     }
 }
 
+enum FeedbackReportHostDeactivationPersistencePolicy {
+    static func shouldPersist(
+        explicitDismissalCompleted: Bool,
+        hasStoredReport: Bool,
+        hasMeaningfulProgress: Bool
+    ) -> Bool {
+        !explicitDismissalCompleted && (hasStoredReport || hasMeaningfulProgress)
+    }
+}
+
 enum FeedbackReportClosePolicy {
     static func action(
         hasStoredReport: Bool,

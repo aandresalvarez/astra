@@ -1577,16 +1577,16 @@ struct FeedbackReportPresentationTests {
     @Test("Task failure prefill never contains hostile event or provider output")
     func taskFailurePrefillUsesOnlyAllowlist() {
         let hostile = "Bearer ghp_super_secret provider@example.com"
+        let completedAt = Date(timeIntervalSince1970: 1_800_000_000)
         let context = FeedbackTaskFailureReportContextBuilder.make(
-            runtimeID: "codex_cli",
-            providerVersion: "1.2.3",
-            status: .failed,
-            exitCode: 1,
-            stopReason: "provider_process_failed"
+            runtimeID: "codex_cli", providerVersion: "1.2.3",
+            status: .failed, exitCode: 1,
+            stopReason: "provider_process_failed", startedAt: completedAt.addingTimeInterval(-1_000),
+            completedAt: completedAt
         )
         #expect(!context.prefill.actualResult.contains(hostile))
         #expect(context.runtimeEvidence?.sanitizedSummary.orEmpty.contains(hostile) == false)
-        #expect(context.prefill.actualResult == "The provider run stopped before completing.")
+        #expect(context.prefill.actualResult == "The provider run stopped before completing."); #expect(context.taskFailureOccurredAt == completedAt)
     }
 
     @Test("Task failure mapping preserves root-cause ownership")

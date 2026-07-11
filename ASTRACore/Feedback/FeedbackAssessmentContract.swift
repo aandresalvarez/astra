@@ -212,8 +212,14 @@ public struct FeedbackAssessmentV1: Codable, Equatable, Sendable, FeedbackContra
             throw FeedbackContractError.missingRequiredField(path: "assessment.acceptanceCriteria")
         }
         for item in evidence + counterevidence { try item.validate() }
+        for value in duplicateCandidateReceiptIDs {
+            try FeedbackContractValidationV1.required(
+                value,
+                path: "assessment.duplicateCandidateReceiptIDs[]",
+                maximum: FeedbackContractLimitsV1.identifierLength
+            )
+        }
         for (path, values) in [
-            ("duplicateCandidateReceiptIDs", duplicateCandidateReceiptIDs),
             ("missingQuestions", missingQuestions),
             ("acceptanceCriteria", acceptanceCriteria)
         ] {

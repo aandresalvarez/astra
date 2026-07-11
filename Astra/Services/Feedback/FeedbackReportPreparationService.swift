@@ -42,6 +42,16 @@ struct FeedbackReportFormState: Equatable, Sendable {
                     oldestCrashDate.addingTimeInterval(-1)
                 )
             )
+        } else if launch.entryPoint == .taskFailure,
+                  let taskFailureOccurredAt = launch.taskFailureOccurredAt {
+            // A report action can be opened well after the failed run. Anchor
+            // the default selected logs to the failure rather than sheet-open
+            // time so the run being reported remains inside its own evidence.
+            evidenceWindowEnd = min(now, taskFailureOccurredAt)
+            evidenceWindowStart = max(
+                evidenceWindowEnd.addingTimeInterval(-FeedbackContractLimitsV1.maximumEvidenceWindow),
+                evidenceWindowEnd.addingTimeInterval(-Self.defaultEvidenceWindow)
+            )
         } else {
             evidenceWindowEnd = now
             evidenceWindowStart = defaultStart

@@ -377,7 +377,7 @@ struct TaskMainView: View {
     var onOpenGeneratedFile: ((String) -> Void)?
     var canOpenGeneratedFileInShelf: (TaskGeneratedFileShelfDestination?) -> Bool = { _ in true }
     var onStartMCPInstallReview: ((MCPInstallChatRequest) -> Void)?
-    var onReportProblem: ((FeedbackReportPrefill, UUID?, RuntimeFeedbackPersistedEvidence?) -> Void)?
+    var onReportProblem: ((FeedbackReportPrefill, UUID?, RuntimeFeedbackPersistedEvidence?, Date?) -> Void)?
 
     private var availableSkills: [Skill] {
         capabilitySnapshot.availableSkills
@@ -4373,7 +4373,8 @@ struct TaskMainView: View {
                 providerVersion: $0.providerVersion,
                 status: $0.status,
                 exitCode: $0.exitCode,
-                stopReason: $0.stopReason
+                stopReason: $0.stopReason, startedAt: $0.startedAt,
+                completedAt: $0.completedAt
             )
         } ?? FeedbackTaskFailureReportContext(
             prefill: FeedbackReportPrefill(
@@ -4382,9 +4383,10 @@ struct TaskMainView: View {
                 expectedResult: "The provider run completes successfully",
                 workBlocked: true
             ),
-            runtimeEvidence: nil
+            runtimeEvidence: nil,
+            taskFailureOccurredAt: nil
         )
-        onReportProblem(context.prefill, run?.id, context.runtimeEvidence)
+        onReportProblem(context.prefill, run?.id, context.runtimeEvidence, context.taskFailureOccurredAt)
     }
 
     private var pendingReviewDecisionDock: some View {
