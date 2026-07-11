@@ -525,7 +525,7 @@ public final class FeedbackOutboxService {
         for (report, status) in reportsWithStatus {
             guard report.artifactsDeletedAt == nil,
                   report.activeClaimToken == nil,
-                  status != .uploading,
+                  [.submitted, .cancelled, .permanentFailure].contains(status),
                   report.artifactsExpireAt.map({ $0 <= cutoff }) == true else { continue }
             if report.packageRelativePath != nil,
                let packageURL = try validatedOwnedPackageURL(for: report, requireExists: false) {

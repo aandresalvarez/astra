@@ -61,7 +61,7 @@ public protocol FeedbackContractValidatableV1 {
     func validate() throws
 }
 
-public struct FeedbackReportIDV1: Codable, Equatable, Hashable, Sendable {
+public struct FeedbackReportIDV1: Codable, Equatable, Hashable, Sendable, FeedbackContractValidatableV1 {
     public let uuid: UUID
 
     public init(_ uuid: UUID) { self.uuid = uuid }
@@ -69,18 +69,37 @@ public struct FeedbackReportIDV1: Codable, Equatable, Hashable, Sendable {
     public init(from decoder: Decoder) throws {
         let container = try decoder.singleValueContainer()
         let value = try container.decode(String.self)
-        guard value == value.lowercased(), let uuid = UUID(uuidString: value) else {
+        guard value == value.lowercased(), let uuid = UUID(uuidString: value),
+              Self.isSchemaCompatible(uuid) else {
             throw DecodingError.dataCorruptedError(
                 in: container,
-                debugDescription: "Report IDs must be lowercase RFC 4122 UUID strings."
+                debugDescription: "Report IDs must be lowercase RFC 4122 version 1-5 UUID strings."
             )
         }
         self.uuid = uuid
     }
 
     public func encode(to encoder: Encoder) throws {
+        try validate()
         var container = encoder.singleValueContainer()
         try container.encode(uuid.uuidString.lowercased())
+    }
+
+    public func validate() throws {
+        guard Self.isSchemaCompatible(uuid) else {
+            throw FeedbackContractError.invalidValue(
+                path: "reportID",
+                description: "must be an RFC 4122 variant UUID with version 1 through 5"
+            )
+        }
+    }
+
+    private static func isSchemaCompatible(_ uuid: UUID) -> Bool {
+        let groups = uuid.uuidString.lowercased().split(separator: "-", omittingEmptySubsequences: false)
+        guard groups.count == 5,
+              let version = groups[2].first,
+              let variant = groups[3].first else { return false }
+        return "12345".contains(version) && "89ab".contains(variant)
     }
 }
 

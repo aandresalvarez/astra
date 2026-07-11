@@ -130,20 +130,20 @@ public struct FeedbackAssessmentV1: Codable, Equatable, Sendable, FeedbackContra
         impact = try container.decode(FeedbackAssessmentValueV1.self, forKey: .impact)
         behavioralOwner = try container.decode(String.self, forKey: .behavioralOwner)
         evidence = try container.decode([FeedbackAssessmentEvidenceV1].self, forKey: .evidence)
-        counterevidence = try container.decodeIfPresent(
+        counterevidence = try container.decode(
             [FeedbackAssessmentEvidenceV1].self,
             forKey: .counterevidence
-        ) ?? []
+        )
         rootCauseHypothesis = try container.decodeIfPresent(String.self, forKey: .rootCauseHypothesis)
         reproductionConfidence = try container.decode(
             FeedbackAssessmentValueV1.self,
             forKey: .reproductionConfidence
         )
-        duplicateCandidateReceiptIDs = try container.decodeIfPresent(
+        duplicateCandidateReceiptIDs = try container.decode(
             [String].self,
             forKey: .duplicateCandidateReceiptIDs
-        ) ?? []
-        missingQuestions = try container.decodeIfPresent([String].self, forKey: .missingQuestions) ?? []
+        )
+        missingQuestions = try container.decode([String].self, forKey: .missingQuestions)
         regressionTestProposal = try container.decode(String.self, forKey: .regressionTestProposal)
         acceptanceCriteria = try container.decode([String].self, forKey: .acceptanceCriteria)
         sourceRevision = try container.decode(String.self, forKey: .sourceRevision)
@@ -171,6 +171,7 @@ public struct FeedbackAssessmentV1: Codable, Equatable, Sendable, FeedbackContra
                 supported: Self.supportedFormatVersion
             )
         }
+        try reportID.validate()
         for (path, value, maximum) in [
             ("revisionID", revisionID, FeedbackContractLimitsV1.identifierLength),
             ("classification", classification.rawValue, FeedbackContractLimitsV1.identifierLength),
@@ -323,6 +324,7 @@ public struct FeedbackStaffTriageDecisionV1: Codable, Equatable, Sendable, Feedb
                 supported: Self.supportedFormatVersion
             )
         }
+        try reportID.validate()
         try FeedbackContractValidationV1.optional(
             assessmentRevisionID,
             path: "staffTriage.assessmentRevisionID",

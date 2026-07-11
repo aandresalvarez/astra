@@ -269,6 +269,7 @@ public struct FeedbackSubmissionReceiptV1: Codable, Equatable, Sendable, Feedbac
                 supported: Self.supportedFormatVersion
             )
         }
+        try reportID.validate()
         try FeedbackContractValidationV1.required(
             receiptID,
             path: "receipt.receiptID",
@@ -568,6 +569,7 @@ public struct FeedbackLocalStatusDTOv1: Codable, Equatable, Sendable, FeedbackCo
                 supported: Self.supportedFormatVersion
             )
         }
+        try reportID.validate()
         try FeedbackContractValidationV1.nonnegative(uploadAttemptCount, path: "status.uploadAttemptCount")
         guard uploadAttemptCount <= FeedbackContractLimitsV1.maximumUploadAttempts else {
             throw FeedbackContractError.valueOutOfRange(

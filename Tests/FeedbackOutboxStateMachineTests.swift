@@ -490,8 +490,8 @@ struct FeedbackOutboxStateMachineTests {
     }
 
     @MainActor
-    @Test("Retention rejects traversal without deleting an external sentinel")
-    func retentionRejectsUntrustedPersistedPackagePath() throws {
+    @Test("Retention skips uploadable traversal without deleting an external sentinel")
+    func retentionSkipsUploadableUntrustedPersistedPackagePath() throws {
         let fixture = try makeQueuedFixture(retention: 0)
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         let external = fixture.root.deletingLastPathComponent()
@@ -501,11 +501,10 @@ struct FeedbackOutboxStateMachineTests {
         let corruptPath = "../\(external.lastPathComponent)"
         try setPackagePath(corruptPath, reportID: fixture.reportID, container: fixture.container)
 
-        #expect(throws: FeedbackOutboxError.invalidStoredPackagePath(corruptPath)) {
-            _ = try fixture.service.purgeExpiredArtifacts()
-        }
+        #expect(try fixture.service.purgeExpiredArtifacts() == 0)
         #expect(try Data(contentsOf: external) == Data("untouched".utf8))
         let report = try fetchReport(fixture.container, id: fixture.reportID)
+        #expect(report.localStatus == .queued)
         #expect(report.packageRelativePath == corruptPath)
         #expect(report.artifactsDeletedAt == nil)
     }
@@ -522,6 +521,48 @@ struct FeedbackOutboxStateMachineTests {
         #expect(throws: FeedbackOutboxError.illegalTransition(from: "uploading", to: "cancelled")) {
             try fixture.service.cancel(reportID: fixture.reportID, deleteArtifacts: true)
         }
+        #expect(FileManager.default.fileExists(atPath: claim.packageURL.path))
+    }
+
+    @MainActor
+    @Test("Retention preserves packages for every uploadable state")
+    func retentionPreservesUploadablePackages() throws {
+        let prepared = try makeFixture(retention: 0)
+        defer { try? FileManager.default.removeItem(at: prepared.root) }
+        let preparedSource = try writeFeedbackPreparedPackage(
+            parent: prepared.root,
+            envelope: prepared.envelope
+        )
+        try prepared.service.adoptPreparedPackage(
+            reportID: prepared.reportID,
+            from: preparedSource
+        )
+        let preparedReport = try fetchReport(prepared.container, id: prepared.reportID)
+        let preparedPackage = prepared.root.appendingPathComponent(
+            try #require(preparedReport.packageRelativePath)
+        )
+        #expect(try prepared.service.purgeExpiredArtifacts() == 0)
+        #expect(try fetchReport(prepared.container, id: prepared.reportID).localStatus == .prepared)
+        #expect(FileManager.default.fileExists(atPath: preparedPackage.path))
+
+        let queued = try makeQueuedFixture(retention: 0)
+        defer { try? FileManager.default.removeItem(at: queued.root) }
+        let queuedReport = try fetchReport(queued.container, id: queued.reportID)
+        let queuedPackage = queued.root.appendingPathComponent(try #require(queuedReport.packageRelativePath))
+        #expect(try queued.service.purgeExpiredArtifacts() == 0)
+        #expect(try fetchReport(queued.container, id: queued.reportID).localStatus == .queued)
+        #expect(FileManager.default.fileExists(atPath: queuedPackage.path))
+
+        let retryable = try makeQueuedFixture(retention: 0)
+        defer { try? FileManager.default.removeItem(at: retryable.root) }
+        let claim = try retryable.service.claimUpload(reportID: retryable.reportID)
+        try retryable.service.recordRetryableFailure(
+            claim: claim,
+            code: "offline",
+            safeMessage: "Waiting for a network connection."
+        )
+        #expect(try retryable.service.purgeExpiredArtifacts() == 0)
+        #expect(try fetchReport(retryable.container, id: retryable.reportID).localStatus == .retryableFailure)
         #expect(FileManager.default.fileExists(atPath: claim.packageURL.path))
     }
 

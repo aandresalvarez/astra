@@ -171,6 +171,77 @@ struct FeedbackReportContractTests {
         }
     }
 
+    @Test("report IDs match the schema UUID version and variant")
+    func reportIDsMatchSchemaUUIDShape() throws {
+        for value in [
+            "00000000-0000-0000-0000-000000000000",
+            "11111111-1111-6111-8111-111111111111",
+            "11111111-1111-4111-7111-111111111111"
+        ] {
+            let uuid = try #require(UUID(uuidString: value))
+            var payload = samplePayload()
+            payload.reportID = FeedbackReportIDV1(uuid)
+            #expect(throws: FeedbackContractError.invalidValue(
+                path: "reportID",
+                description: "must be an RFC 4122 variant UUID with version 1 through 5"
+            )) {
+                try payload.validate()
+            }
+            #expect(throws: (any Error).self) {
+                _ = try FeedbackCanonicalJSONV1.decode(
+                    FeedbackReportIDV1.self,
+                    from: Data("\"\(value)\"".utf8)
+                )
+            }
+        }
+    }
+
+    @Test("schema-required evidence and assessment arrays cannot be repaired during decode")
+    func requiredArraysCannotBeOmitted() throws {
+        let manifestData = try FeedbackCanonicalJSONV1.encodeValidated(samplePayload().evidence)
+        let manifestObject = try #require(
+            JSONSerialization.jsonObject(with: manifestData) as? [String: Any]
+        )
+        for key in ["omissions", "warnings"] {
+            var missing = manifestObject
+            missing.removeValue(forKey: key)
+            let data = try JSONSerialization.data(withJSONObject: missing, options: [.sortedKeys])
+            #expect(throws: (any Error).self) {
+                _ = try FeedbackCanonicalJSONV1.decode(FeedbackEvidenceManifestV1.self, from: data)
+            }
+        }
+
+        let assessment = FeedbackAssessmentV1(
+            reportID: samplePayload().reportID,
+            revisionID: "assessment-1",
+            classification: FeedbackAssessmentValueV1(rawValue: "runtime_failure"),
+            impact: FeedbackAssessmentValueV1(rawValue: "blocked"),
+            behavioralOwner: "Feedback intake contract",
+            evidence: [FeedbackAssessmentEvidenceV1(evidenceID: "app-log", summary: "Failure")],
+            counterevidence: [],
+            rootCauseHypothesis: nil,
+            reproductionConfidence: FeedbackAssessmentValueV1(rawValue: "medium"),
+            duplicateCandidateReceiptIDs: [],
+            missingQuestions: [],
+            regressionTestProposal: "Replay the failure.",
+            acceptanceCriteria: ["A receipt is returned."],
+            sourceRevision: "040e80a6",
+            currentMainRevision: "67beae00"
+        )
+        let assessmentData = try assessment.canonicalData()
+        let assessmentObject = try #require(
+            JSONSerialization.jsonObject(with: assessmentData) as? [String: Any]
+        )
+        for key in ["counterevidence", "duplicateCandidateReceiptIDs", "missingQuestions"] {
+            var missing = assessmentObject
+            missing.removeValue(forKey: key)
+            let data = try JSONSerialization.data(withJSONObject: missing, options: [.sortedKeys])
+            #expect(throws: (any Error).self) {
+                _ = try FeedbackCanonicalJSONV1.decode(FeedbackAssessmentV1.self, from: data)
+            }
+        }
+    }
+
     @Test("bounds reject oversized values before canonical transport bytes exist")
     func boundsRejectOversizedValues() throws {
         var payload = samplePayload()

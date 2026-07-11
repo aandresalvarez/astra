@@ -692,8 +692,8 @@ public struct FeedbackEvidenceManifestV1: Codable, Equatable, Sendable, Feedback
         )
         let container = try decoder.container(keyedBy: CodingKeys.self)
         artifacts = try container.decode([FeedbackEvidenceArtifactV1].self, forKey: .artifacts)
-        omissions = try container.decodeIfPresent([FeedbackEvidenceOmissionV1].self, forKey: .omissions) ?? []
-        warnings = try container.decodeIfPresent([FeedbackEvidenceWarningV1].self, forKey: .warnings) ?? []
+        omissions = try container.decode([FeedbackEvidenceOmissionV1].self, forKey: .omissions)
+        warnings = try container.decode([FeedbackEvidenceWarningV1].self, forKey: .warnings)
         redactionPolicyVersion = try container.decode(String.self, forKey: .redactionPolicyVersion)
         totalByteCount = try container.decode(Int64.self, forKey: .totalByteCount)
         archiveSHA256 = try container.decodeIfPresent(String.self, forKey: .archiveSHA256)
@@ -885,6 +885,7 @@ public struct FeedbackReportPayloadV1: Codable, Equatable, Sendable, FeedbackCon
                 supported: Self.supportedFormatVersion
             )
         }
+        try reportID.validate()
         try statement.validate()
         try build.validate()
         try platform.validate()
