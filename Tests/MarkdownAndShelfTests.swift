@@ -147,6 +147,62 @@ struct MarkdownTextViewTests {
         #expect(MarkdownTextView.parse(joined).contains { $0.kind == .table })
     }
 
+    @Test("Chunk joiner glues a coalescing-cut word split without an extra space")
+    func chunkJoinerGluesACoalescingCutWordSplitWithoutAnExtraSpace() {
+        let cap = TaskRunAnswerPresentationPolicy.conversationChunkCoalescingCap
+        // A left chunk landing near the storage cap, with no trailing
+        // whitespace, mimics a TaskEvent row closed purely by the length
+        // check mid-word -- exactly the "consid" / "eration" split a
+        // subword-tokenizing provider can produce across two deltas.
+        let leftChunk = String(repeating: "a", count: cap - 40) + "consid"
+        let rightChunk = "eration of the evidence follows."
+
+        let joined = MarkdownRenderPreparation.joinChunks(
+            [leftChunk, rightChunk],
+            prepareForDisplay: false,
+            coalescingCapHint: cap
+        )
+
+        #expect(joined == leftChunk + rightChunk)
+        #expect(joined.contains("consideration of the evidence follows."))
+    }
+
+    @Test("Chunk joiner ignores the coalescing hint for chunks well short of the cap")
+    func chunkJoinerIgnoresTheCoalescingHintForChunksWellShortOfTheCap() {
+        let cap = TaskRunAnswerPresentationPolicy.conversationChunkCoalescingCap
+
+        let joined = MarkdownRenderPreparation.joinChunks(
+            ["short chunk one", "chunk two"],
+            prepareForDisplay: false,
+            coalescingCapHint: cap
+        )
+
+        #expect(joined == "short chunk one chunk two")
+    }
+
+    @Test("Chunk joiner keeps inserting a space when no coalescing hint is given")
+    func chunkJoinerKeepsInsertingASpaceWhenNoCoalescingHintIsGiven() {
+        let cap = TaskRunAnswerPresentationPolicy.conversationChunkCoalescingCap
+        let leftChunk = String(repeating: "a", count: cap - 40) + "consid"
+        let rightChunk = "eration of the evidence follows."
+
+        let joined = MarkdownRenderPreparation.joinChunks([leftChunk, rightChunk], prepareForDisplay: false)
+
+        #expect(joined == leftChunk + " " + rightChunk)
+    }
+
+    @Test("Joined response payloads glue a coalescing-cut word split without an extra space")
+    func joinedResponsePayloadsGlueACoalescingCutWordSplitWithoutAnExtraSpace() {
+        let cap = TaskRunAnswerPresentationPolicy.conversationChunkCoalescingCap
+        let leftPayload = String(repeating: "a", count: cap - 40) + "consid"
+        let rightPayload = "eration of the evidence follows."
+
+        let joined = TaskRunAnswerPresentationPolicy.joinedResponsePayloads([leftPayload, rightPayload])
+
+        #expect(joined.contains("consideration of the evidence follows."))
+        #expect(!joined.contains("consid eration"))
+    }
+
     @Test("Display preparation repairs missing blank line before table")
     func displayPreparationRepairsMissingBlankLineBeforeTable() {
         let prepared = MarkdownRenderPreparation.prepareForDisplay("""
@@ -352,28 +408,189 @@ struct MarkdownTextViewTests {
         #expect(blocks.first?.content == "First quoted paragraph.\n\nSecond quoted paragraph.")
     }
 
-    @Test("Streaming text normalizes soft wraps")
-    func streamingTextNormalizesSoftWraps() {
-        let normalized = MarkdownTextView.normalizedStreamingText("""
-        First sentence.Second sentence
-        continues here.
-        """)
+    @Test("Display preparation reflows glued mid-line headings and colon lists")
+    func displayPreparationReflowsGluedMidLineHeadingsAndColonLists() {
+        let source = "Implemented the mapping of MCP tools to REST calls: - `list_spaces` → GET /v1/spaces - `create_space` → POST /v1/spaces ### 3. Installed Package * Overwrote the previous version."
 
-        #expect(normalized == "First sentence. Second sentence continues here.")
+        let blocks = MarkdownTextView.parse(source)
+
+        let headings = blocks.compactMap { block -> String? in
+            guard case .heading = block.kind else { return nil }
+            return block.content
+        }
+        let listItems = blocks.compactMap { block -> String? in
+            guard case .listItem = block.kind else { return nil }
+            return block.content
+        }
+        #expect(headings == ["3. Installed Package"])
+        #expect(listItems.count == 3)
+        #expect(listItems.first?.contains("`list_spaces`") == true)
+        #expect(listItems.last?.contains("Overwrote the previous version.") == true)
     }
 
-    @Test("Streaming text preserves markdown tables")
-    func streamingTextPreservesMarkdownTables() {
-        let normalized = MarkdownTextView.normalizedStreamingText("""
-        Progress summary
-        | Model/Test | Status |
-        |---|---|
-        | death | PASS |
-        """)
+    @Test("Display preparation reflows glued numbered step runs")
+    func displayPreparationReflowsGluedNumberedStepRuns() {
+        let source = "To start using this capability: 1. Open ASTRA Dev.app. 2. Go to Manage Capabilities. 3. Configure the connector credentials."
 
-        #expect(normalized.contains("Progress summary\n\n| Model/Test | Status |"))
-        #expect(normalized.contains("|---|---|"))
-        #expect(normalized.contains("| death | PASS |"))
+        let blocks = MarkdownTextView.parse(source)
+
+        let markers = blocks.compactMap { block -> String? in
+            guard case .listItem(_, let marker) = block.kind else { return nil }
+            return marker
+        }
+        #expect(markers == ["1.", "2.", "3."])
+    }
+
+    @Test("Display preparation leaves indented code blocks alone")
+    func displayPreparationLeavesIndentedCodeBlocksAlone() {
+        let source = "Example output:\n\n    calls: - foo - bar\n    steps: 1. one 2. two"
+
+        #expect(MarkdownRenderPreparation.prepareForDisplay(source) == source)
+    }
+
+    @Test("Display preparation leaves double-backtick code spans alone")
+    func displayPreparationLeavesDoubleBacktickCodeSpansAlone() {
+        let source = "Use ``a: - b`` carefully in templates."
+
+        #expect(MarkdownRenderPreparation.prepareForDisplay(source) == source)
+    }
+
+    @Test("Display preparation leaves cron wildcards after a colon alone")
+    func displayPreparationLeavesCronWildcardsAfterAColonAlone() {
+        let source = "Schedule: * * * * * runs every minute."
+
+        #expect(MarkdownRenderPreparation.prepareForDisplay(source) == source)
+    }
+
+    @Test("Display preparation leaves prose double-hash mentions alone")
+    func displayPreparationLeavesProseDoubleHashMentionsAlone() {
+        let source = "C macros use ## token pasting rules."
+
+        #expect(MarkdownRenderPreparation.prepareForDisplay(source) == source)
+    }
+
+    @Test("Display preparation cancels bullet splits that would produce stub items")
+    func displayPreparationCancelsBulletSplitsThatWouldProduceStubItems() {
+        let source = "Changes: - supports state - of - the - art layouts."
+
+        #expect(MarkdownRenderPreparation.prepareForDisplay(source) == source)
+    }
+
+    @Test("Display preparation keeps shorter fences inside longer fences as code")
+    func displayPreparationKeepsShorterFencesInsideLongerFencesAsCode() {
+        let source = """
+        ````
+        ```
+        calls: - `alpha` → GET /v1/alpha - `beta` → POST /v1/beta
+        ````
+        """
+
+        #expect(MarkdownRenderPreparation.prepareForDisplay(source) == source)
+    }
+
+    @Test("Display preparation ignores list triggers inside inline code spans")
+    func displayPreparationIgnoresListTriggersInsideInlineCodeSpans() {
+        let source = "Use `pattern: - x` and state - of - the - art prose."
+
+        #expect(MarkdownRenderPreparation.prepareForDisplay(source) == source)
+    }
+
+    @Test("Display preparation keeps tilde lines inside backtick fences as code")
+    func displayPreparationKeepsTildeLinesInsideBacktickFencesAsCode() {
+        let source = """
+        ```
+        ~~~
+        calls: - foo - bar
+        ```
+        """
+
+        #expect(MarkdownRenderPreparation.prepareForDisplay(source) == source)
+    }
+
+    @Test("Answer presentation preserves code indentation in line-structured text")
+    func answerPresentationPreservesCodeIndentationInLineStructuredText() {
+        let rawText = "```python\ndef f():\n    return 1\n```\n"
+
+        let presentation = TaskRunAnswerPresentationPolicy.presentation(rawText: rawText)
+
+        #expect(presentation.answerText.contains("    return 1"))
+    }
+
+    @Test("Recovered headings keep hyphen and numbered title punctuation")
+    func recoveredHeadingsKeepHyphenAndNumberedTitlePunctuation() {
+        let hyphenBlocks = MarkdownTextView.parse("Done. ### Install - macOS setup")
+        let hyphenHeadings = hyphenBlocks.compactMap { block -> String? in
+            guard case .heading = block.kind else { return nil }
+            return block.content
+        }
+        #expect(hyphenHeadings == ["Install - macOS setup"])
+        #expect(!hyphenBlocks.contains { block in
+            if case .listItem = block.kind { return true }
+            return false
+        })
+
+        let numberedBlocks = MarkdownTextView.parse("Done. ### Phase 1. Setup")
+        let numberedHeadings = numberedBlocks.compactMap { block -> String? in
+            guard case .heading = block.kind else { return nil }
+            return block.content
+        }
+        #expect(numberedHeadings == ["Phase 1. Setup"])
+    }
+
+    @Test("Display preparation leaves prose hyphens and inline code markers alone")
+    func displayPreparationLeavesProseHyphensAndInlineCodeMarkersAlone() {
+        let hyphenated = "The state - of - the - art approach stays intact."
+        #expect(MarkdownRenderPreparation.prepareForDisplay(hyphenated) == hyphenated)
+
+        let codeSpan = "Use `### Heading` and `a - b - c: - x` syntax carefully."
+        #expect(MarkdownRenderPreparation.prepareForDisplay(codeSpan) == codeSpan)
+
+        let pristineHeading = "### Setup - Overview"
+        #expect(MarkdownRenderPreparation.prepareForDisplay(pristineHeading) == pristineHeading)
+    }
+
+    @Test("Answer presentation keeps single-newline line structure")
+    func answerPresentationKeepsSingleNewlineLineStructure() {
+        let rawText = "### Setup\n* alpha\n* beta\nDone with the sample.\n"
+
+        let presentation = TaskRunAnswerPresentationPolicy.presentation(rawText: rawText)
+
+        #expect(presentation.answerText.contains("### Setup"))
+        #expect(!presentation.answerText.contains("Setup * alpha"))
+        let blocks = MarkdownTextView.parse(presentation.answerText)
+        #expect(blocks.contains { block in
+            if case .heading = block.kind { return true }
+            return false
+        })
+        #expect(blocks.filter { block in
+            if case .listItem = block.kind { return true }
+            return false
+        }.count == 2)
+    }
+
+    @Test("Answer presentation dedupes repeated adjacent lines without flattening")
+    func answerPresentationDedupesRepeatedAdjacentLinesWithoutFlattening() {
+        let rawText = "Checking the build.\nChecking the build.\nBuild finished cleanly.\n"
+
+        let presentation = TaskRunAnswerPresentationPolicy.presentation(rawText: rawText)
+
+        #expect(presentation.answerText.components(separatedBy: "Checking the build.").count == 2)
+        #expect(presentation.answerText.contains("Build finished cleanly."))
+    }
+
+    @Test("Parser keeps sentence-per-line narration on separate lines")
+    func parserKeepsSentencePerLineNarrationOnSeparateLines() {
+        let source = """
+        I will inspect the workspace directories.
+        I will read the README in the capabilities folder.
+        I will check the JSON schema of a capability.
+        """
+
+        let blocks = MarkdownTextView.parse(source)
+
+        #expect(blocks.count == 1)
+        #expect(blocks.first?.kind == .text)
+        #expect(blocks.first?.content == source)
     }
 }
 

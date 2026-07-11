@@ -70,6 +70,14 @@ enum MarkdownLinkifier {
             attributed = AttributedString(sourceText)
         }
 
+        // Give inline code runs a subtle chip so code-dense prose stays
+        // scannable; the `.code` presentation intent already renders the
+        // run monospaced at the surrounding text size.
+        for run in attributed.runs {
+            guard let intent = run.inlinePresentationIntent, intent.contains(.code) else { continue }
+            attributed[run.range].backgroundColor = Stanford.inlineCodeBackground
+        }
+
         let plain = String(attributed.characters)
         guard let detector = linkDetector else { return attributed }
 

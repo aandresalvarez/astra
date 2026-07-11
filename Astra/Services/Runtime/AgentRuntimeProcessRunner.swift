@@ -627,7 +627,17 @@ final class AgentRuntimeProcessRunner {
 
             let handleLine: (String) -> Void = { line in
                 let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !trimmed.isEmpty else { return }
+                guard !trimmed.isEmpty else {
+                    // Plain-text providers use blank lines as paragraph
+                    // boundaries; forward them to the recording path so
+                    // transcripts keep their structure. JSON-lines providers
+                    // treat blank lines as framing noise, and the monitor
+                    // never needs them.
+                    if !plan.parsesJSONLines {
+                        onLine(line, plan.parsesJSONLines)
+                    }
+                    return
+                }
                 if plan.interactiveAsk != nil,
                    let control = ClaudeControlProtocol.controlRequest(from: trimmed) {
                     Self.answerControlRequest(
@@ -713,7 +723,14 @@ final class AgentRuntimeProcessRunner {
                     if !finalStdoutChunk.isEmpty {
                         lineBuffer.appendAndProcessLinesLocked(finalStdoutChunk, handleLine)
                     }
-                    handleLine(lineBuffer.drainRemainingLocked())
+                    // The final drain is an EOF flush, not a real stdout line;
+                    // an empty remainder must not reach handleLine's
+                    // blank-line-forwarding path (plain-text runtimes would
+                    // record it as a synthetic paragraph break).
+                    let remainder = lineBuffer.drainRemainingLocked()
+                    if !remainder.isEmpty {
+                        handleLine(remainder)
+                    }
                 }
                 errorOutput.synchronized {
                     let finalStderrChunk = String(decoding: proc.stderrFileHandle.readDataToEndOfFile(), as: UTF8.self)

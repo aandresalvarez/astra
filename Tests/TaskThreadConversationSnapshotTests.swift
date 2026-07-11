@@ -204,7 +204,7 @@ extension TaskThreadSnapshotTests {
         )
 
         #expect(snapshot.conversationItems.count == 4)
-        if case .systemInfo(let text, _) = snapshot.conversationItems[1] {
+        if case .systemInfo(let text, _, _) = snapshot.conversationItems[1] {
             #expect(text == "Plan execution stopped.")
         } else {
             Issue.record("Expected plan failure notice")
@@ -214,11 +214,74 @@ extension TaskThreadSnapshotTests {
         } else {
             Issue.record("Expected schedule failure notice")
         }
-        if case .systemInfo(let text, _) = snapshot.conversationItems[3] {
+        if case .systemInfo(let text, _, _) = snapshot.conversationItems[3] {
             #expect(text.contains("Memory saved"))
         } else {
             Issue.record("Expected memory confirmation notice")
         }
+    }
+
+    @Test("Repeated permission approvals coalesce into one counted notice")
+    func repeatedPermissionApprovalsCoalesceIntoOneCountedNotice() {
+        let task = makeTask(goal: "Original goal")
+        task.createdAt = Date(timeIntervalSince1970: 100)
+        let liveText = "Live permission approved for Bash; the provider continues in the same session."
+        let events = [
+            makeEvent(task: task, type: "system.info", payload: liveText, timestamp: Date(timeIntervalSince1970: 110)),
+            makeEvent(task: task, type: "task.approved", payload: "Runtime permission approved for Bash", timestamp: Date(timeIntervalSince1970: 111)),
+            makeEvent(task: task, type: "system.info", payload: liveText, timestamp: Date(timeIntervalSince1970: 120)),
+            makeEvent(task: task, type: "task.approved", payload: "Runtime permission approved for Bash", timestamp: Date(timeIntervalSince1970: 121))
+        ]
+
+        let snapshot = TaskThreadSnapshot(
+            goal: task.goal,
+            createdAt: task.createdAt,
+            events: events,
+            runs: []
+        )
+
+        // Two approvals used to paint four rows (live narration + generic echo,
+        // twice). They coalesce into the goal plus ONE counted notice.
+        #expect(snapshot.conversationItems.count == 2)
+        guard case .systemInfo(let text, _, let count) = snapshot.conversationItems[1] else {
+            Issue.record("Expected a coalesced system notice")
+            return
+        }
+        #expect(text == liveText)
+        #expect(count == 2)
+    }
+
+    @Test("Approval echo merges into the richer live line regardless of order")
+    func approvalEchoMergesIntoTheRicherLiveLineRegardlessOfOrder() {
+        let task = makeTask(goal: "Original goal")
+        task.createdAt = Date(timeIntervalSince1970: 100)
+        let liveText = "Live permission approved for WebFetch; the provider continues in the same session."
+        let events = [
+            makeEvent(task: task, type: "task.approved", payload: "Runtime permission approved for WebFetch", timestamp: Date(timeIntervalSince1970: 110)),
+            makeEvent(task: task, type: "system.info", payload: liveText, timestamp: Date(timeIntervalSince1970: 111)),
+            makeEvent(task: task, type: "system.info", payload: "Memory saved: keep using Python 3.11.", timestamp: Date(timeIntervalSince1970: 120))
+        ]
+
+        let snapshot = TaskThreadSnapshot(
+            goal: task.goal,
+            createdAt: task.createdAt,
+            events: events,
+            runs: []
+        )
+
+        #expect(snapshot.conversationItems.count == 3)
+        guard case .systemInfo(let text, _, let count) = snapshot.conversationItems[1] else {
+            Issue.record("Expected the merged live approval notice")
+            return
+        }
+        #expect(text == liveText)
+        #expect(count == 1)
+        guard case .systemInfo(let unrelatedText, _, let unrelatedCount) = snapshot.conversationItems[2] else {
+            Issue.record("Expected the unrelated notice to stay separate")
+            return
+        }
+        #expect(unrelatedText.contains("Memory saved"))
+        #expect(unrelatedCount == 1)
     }
 
     @Test("Task run snapshot precomputes VPN warning markers")
@@ -555,10 +618,13 @@ extension TaskThreadSnapshotTests {
             suppressedNoticeIDs: [notice.id]
         )
 
+        // The inline banner already carries the summary and raw payload;
+        // the disclosure must not repeat the notice in any form.
         #expect(presentation.issues.isEmpty)
-        #expect(presentation.technicalOutputs.count == 1)
-        #expect(presentation.technicalOutputs.first?.title == "Run stopped details")
-        #expect(presentation.technicalOutputs.first?.rawPayload.contains("raw stack output") == true)
+        #expect(presentation.technicalOutputs.isEmpty)
+
+        let issue = RunIssuePresentation(notice: notice)
+        #expect(issue.rawPayload?.contains("raw stack output") == true)
     }
 
     @Test("Run activity presentation keeps actionable notices when not rendered separately")
@@ -679,7 +745,7 @@ extension TaskThreadSnapshotTests {
         )
 
         #expect(presentation.issues.isEmpty)
-        #expect(presentation.technicalOutputs.first?.title == "Budget warning details")
+        #expect(presentation.technicalOutputs.isEmpty)
     }
 
     @Test("Inline notice rules keep warning budget visible")
@@ -816,7 +882,7 @@ extension TaskThreadSnapshotTests {
         )
 
         #expect(snapshot.conversationItems.contains {
-            if case .systemInfo(let text, _) = $0 {
+            if case .systemInfo(let text, _, _) = $0 {
                 return text == "Permission approved. Continuing."
             }
             return false
