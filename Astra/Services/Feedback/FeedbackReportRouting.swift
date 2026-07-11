@@ -148,13 +148,9 @@ struct FeedbackReportResumeService {
 
     func latest(for proposed: FeedbackReportLaunch) throws -> FeedbackReportLaunch? {
         guard proposed.entryPoint != .crashRecovery else { return nil }
-        let excluded: Set<UUID> = proposed.taskID == nil
-            ? try crashLedger.linkedReportIDs()
-            : Set<UUID>()
         guard let snapshot = try outbox().latestRecoverable(
             taskID: proposed.taskID?.uuidString.lowercased(),
-            runID: proposed.runID?.uuidString.lowercased(),
-            excluding: excluded
+            runID: proposed.runID?.uuidString.lowercased()
         ) else { return nil }
         return resumedLaunch(reportID: snapshot.reportID, proposed: proposed, progress: snapshot.progress)
     }

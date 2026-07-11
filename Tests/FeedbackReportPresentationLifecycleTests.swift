@@ -1,10 +1,58 @@
 import Foundation
 import Dispatch
+import SwiftData
 import Testing
 import ASTRACore
+import ASTRAModels
+import ASTRAPersistence
 @testable import ASTRA
 
 extension FeedbackReportPresentationTests {
+    @Test("Manual reporting can resume a saved crash-linked draft")
+    @MainActor
+    func generalEntryPointRecoversCrashLinkedDraft() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("feedback-crash-linked-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let container = try makeFeedbackOutboxContainer()
+        let outbox = try FeedbackOutboxService(modelContainer: container, storageRoot: root)
+        let reportID = UUID()
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let progress = FeedbackDraftProgress(
+            intendedOutcome: "Recover after the crash",
+            actualResult: "ASTRA closed unexpectedly",
+            expectedResult: "ASTRA should remain open",
+            workBlocked: true,
+            evidenceWindow: FeedbackEvidenceWindowV1(
+                start: now.addingTimeInterval(-900), end: now
+            ),
+            consent: FeedbackConsentV1(
+                version: FeedbackReportFormState.consentVersion,
+                evidenceSelections: []
+            )
+        )
+        _ = try outbox.createDraftProgress(
+            reportID: reportID,
+            installationID: FeedbackInstallationIDV1(rawValue: "installation-v1"),
+            progress: progress
+        )
+        let proposed = FeedbackReportLaunch(hostID: UUID(), entryPoint: .help)
+        let resolver = FeedbackReportResumeService(
+            modelContainer: container,
+            storageRoot: root,
+            crashLedger: LifecycleLinkedCrashLedger(reportIDs: [reportID])
+        )
+
+        let resumed = try #require(try resolver.latest(for: proposed))
+
+        #expect(resumed.id == reportID)
+        #expect(resumed.entryPoint == .help)
+        #expect(resumed.prefill.intendedOutcome == progress.intendedOutcome)
+        #expect(resumed.prefill.actualResult == progress.actualResult)
+        #expect(resumed.prefill.expectedResult == progress.expectedResult)
+    }
+
     @Test("Unsaved discard closes without creating a durable draft")
     func unsavedDiscardDoesNotPersist() {
         #expect(FeedbackReportDismissPersistencePolicy.action(
@@ -626,6 +674,25 @@ private actor LifecycleAsyncBlocker {
         released = true
         continuation?.resume()
         continuation = nil
+    }
+}
+
+@MainActor
+private final class LifecycleLinkedCrashLedger: FeedbackCrashOfferLedgerReading {
+    private let reportIDs: Set<UUID>
+    init(reportIDs: Set<UUID>) { self.reportIDs = reportIDs }
+    func validateOffer(_ offer: FeedbackCrashOffer) async throws -> Bool { false }
+    func verifiedLink(
+        fingerprint: String,
+        consentVersion: String
+    ) throws -> FeedbackCrashVerifiedLink? { nil }
+    func linkedReportIDs() throws -> Set<UUID> { reportIDs }
+    func reconcileOfferedReport(
+        fingerprint: String,
+        consentVersion: String,
+        reportID: UUID
+    ) throws -> FeedbackCrashVerifiedLink {
+        throw FeedbackCrashOfferError.offerNotFound
     }
 }
 
