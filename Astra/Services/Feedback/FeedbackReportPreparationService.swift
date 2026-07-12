@@ -57,6 +57,13 @@ struct FeedbackReportFormState: Equatable, Sendable {
             evidenceWindowStart = defaultStart
         }
         selections = FeedbackEvidenceSelections()
+        // A task-log selection is meaningful only when the report is bound to
+        // one exact task. General Help/Logs reports must not claim an evidence
+        // class that the source reader cannot identify without broadening the
+        // disclosure to unrelated tasks.
+        if launch.taskID == nil {
+            selections.includeTaskLogs = false
+        }
     }
 
     var hasRequiredStatement: Bool { missingRequiredField == nil }
@@ -411,6 +418,9 @@ struct FeedbackReportPreparationService {
         form.evidenceWindowStart = snapshot.progress.evidenceWindow.start
         form.evidenceWindowEnd = snapshot.progress.evidenceWindow.end
         form.selections = Self.selections(from: snapshot.progress.consent)
+        if launch.taskID == nil {
+            form.selections.includeTaskLogs = false
+        }
         return form
     }
 
@@ -824,12 +834,14 @@ private enum FeedbackReportEnvelopeFactory {
 enum FeedbackReportEvidenceSourceReader {
     private static let maximumBrowserFlightBytes = 4 * 1_024 * 1_024
     enum SelectedSource: String, Equatable, Sendable {
+        case taskLogs
         case browserEvidence
         case browserScreenshot
         case macOSDiagnostics
 
         var displayName: String {
             switch self {
+            case .taskLogs: "task logs"
             case .browserEvidence: "browser interaction details"
             case .browserScreenshot: "browser screenshots"
             case .macOSDiagnostics: "macOS diagnostics"
@@ -859,7 +871,7 @@ enum FeedbackReportEvidenceSourceReader {
         launch: FeedbackReportLaunch,
         selections: FeedbackEvidenceSelections,
         interval: DateInterval,
-        entriesProvider: EntriesProvider = { AppLogger.entries },
+        entriesProvider: EntriesProvider = { retainedLogEntries() },
         browserProvider: @escaping BrowserProvider = {
             try browserEvidence(
                 taskID: $0,
@@ -874,8 +886,13 @@ enum FeedbackReportEvidenceSourceReader {
         let needsLogs = selections.includeApplicationLogs || selections.includeTaskLogs
         let entries = needsLogs ? entriesProvider() : []
         let windowEntries = entries.filter { interval.contains($0.timestamp) }
+        if selections.includeTaskLogs && launch.taskID == nil {
+            throw SourceError.unavailable(.taskLogs)
+        }
         let taskEntries = selections.includeTaskLogs
-            ? launch.taskID.map { taskID in windowEntries.filter { $0.taskID == taskID } } ?? []
+            ? launch.taskID.map { taskID in
+                windowEntries.filter { entryBelongsToTask($0, taskID: taskID) }
+            } ?? []
             : []
         let applicationEntries = selections.includeApplicationLogs
             ? windowEntries.filter { $0.taskID == nil }
@@ -913,6 +930,23 @@ enum FeedbackReportEvidenceSourceReader {
             screenshots: browser.screenshots,
             crashReports: crashes
         )
+    }
+
+    static func retainedLogEntries(
+        inMemoryEntries: [LogEntry] = AppLogger.entries,
+        logDirectory: URL = AppLogger.mainLogFile.deletingLastPathComponent()
+    ) -> [LogEntry] {
+        LogDiagnosticsService.collectCurrentEntries(
+            inMemoryEntries: inMemoryEntries,
+            logDirectory: logDirectory,
+            includeRetainedAppLogs: true
+        )
+    }
+
+    private static func entryBelongsToTask(_ entry: LogEntry, taskID: UUID) -> Bool {
+        if entry.taskID == taskID { return true }
+        let prefix = String(taskID.uuidString.prefix(8)).uppercased()
+        return entry.message.hasPrefix("task_short=\(prefix) ")
     }
 
     private static func crashEvidence(

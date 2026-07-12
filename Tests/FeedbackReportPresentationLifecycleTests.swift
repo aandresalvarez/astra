@@ -3,11 +3,122 @@ import Dispatch
 import SwiftData
 import Testing
 import ASTRACore
+import ASTRALogging
 import ASTRAModels
 import ASTRAPersistence
 @testable import ASTRA
 
 extension FeedbackReportPresentationTests {
+    @Test("General reports default to a fifteen-minute window without unbound task logs")
+    func formDefaults() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let form = FeedbackReportFormState(
+            launch: FeedbackReportLaunch(hostID: UUID(), entryPoint: .help),
+            now: now
+        )
+        #expect(form.evidenceWindowEnd == now)
+        #expect(form.evidenceWindowStart == now.addingTimeInterval(-15 * 60))
+        #expect(form.selections.includeApplicationLogs)
+        #expect(!form.selections.includeTaskLogs)
+        #expect(!form.selections.includeBrowserEvidence)
+        #expect(!form.selections.includeScreenshots)
+        #expect(!form.selections.includeMacOSDiagnostics)
+    }
+
+    @Test("Task-bound reports default to their exact task logs")
+    func taskReportsDefaultToExactTaskLogs() {
+        let form = FeedbackReportFormState(
+            launch: FeedbackReportLaunch(
+                hostID: UUID(), entryPoint: .taskFailure, taskID: UUID()
+            )
+        )
+        #expect(form.selections.includeTaskLogs)
+    }
+
+    @Test("Unbound task-log selections fail instead of silently disclosing nothing")
+    func unboundTaskLogsFailClosed() {
+        #expect(throws: FeedbackReportEvidenceSourceReader.SourceError.unavailable(.taskLogs)) {
+            _ = try FeedbackReportEvidenceSourceReader.collect(
+                launch: FeedbackReportLaunch(hostID: UUID(), entryPoint: .logs),
+                selections: FeedbackEvidenceSelections(),
+                interval: DateInterval(start: .distantPast, end: .distantFuture),
+                entriesProvider: { [] },
+                browserProvider: { _, _, _, _ in (records: [], screenshots: []) },
+                crashProvider: { _, _ in [] }
+            )
+        }
+    }
+
+    @Test("Feedback evidence reads retained app and exact task log files")
+    func retainedLogsRemainAvailableForFeedback() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("feedback-retained-logs-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let taskID = try #require(UUID(uuidString: "0c48773f-1111-4111-8111-111111111111"))
+        let appURL = directory.appendingPathComponent("astra.log")
+        let taskURL = directory.appendingPathComponent("task-0C48773F.log")
+        try "[13:20:00.000] [INFO] [App] retained-app-entry\n"
+            .write(to: appURL, atomically: true, encoding: .utf8)
+        try "[13:20:01.000] [WARNING] [Worker task:0C48773F] retained-task-entry\n"
+            .write(to: taskURL, atomically: true, encoding: .utf8)
+        let anchor = Date(timeIntervalSince1970: 1_800_000_000)
+        try FileManager.default.setAttributes([.modificationDate: anchor], ofItemAtPath: appURL.path)
+        try FileManager.default.setAttributes([.modificationDate: anchor], ofItemAtPath: taskURL.path)
+        let retained = FeedbackReportEvidenceSourceReader.retainedLogEntries(
+            inMemoryEntries: [LogEntry(
+                level: .info, category: "App", message: "current-ring-entry", timestamp: anchor
+            )],
+            logDirectory: directory
+        )
+        let source = try FeedbackReportEvidenceSourceReader.collect(
+            launch: FeedbackReportLaunch(
+                hostID: UUID(), entryPoint: .taskFailure, taskID: taskID
+            ),
+            selections: FeedbackEvidenceSelections(),
+            interval: DateInterval(start: .distantPast, end: .distantFuture),
+            entriesProvider: { retained },
+            browserProvider: { _, _, _, _ in (records: [], screenshots: []) },
+            crashProvider: { _, _ in [] }
+        )
+        #expect(source.applicationLogEntries.contains { $0.message == "retained-app-entry" })
+        #expect(source.taskLogEntries.contains { $0.message.contains("retained-task-entry") })
+    }
+
+    @Test("Prefilled unsaved reports offer Keep or Discard even before an edit")
+    func prefilledUnsavedCloseOffersDraftChoices() {
+        #expect(FeedbackReportClosePolicy.action(
+            hasStoredReport: false,
+            storedStatus: nil,
+            hasMeaningfulProgress: true,
+            isPreparing: false,
+            hasPreview: false,
+            isInvalidatingPreview: false
+        ) == .offerDraftChoices)
+    }
+
+    @Test("Evidence window labels distinguish current and historical intervals")
+    func evidenceWindowLabelsAreAccurate() {
+        let end = Date(timeIntervalSince1970: 1_700_000_000)
+        let start = end.addingTimeInterval(-15 * 60)
+        #expect(FeedbackEvidenceWindowPresentation.label(
+            start: start, end: end, now: end
+        ) == "the last 15 minutes")
+
+        let historical = FeedbackEvidenceWindowPresentation.label(
+            start: start,
+            end: end,
+            now: end.addingTimeInterval(60 * 60),
+            locale: Locale(identifier: "en_US_POSIX"),
+            timeZone: TimeZone(secondsFromGMT: 0)!
+        )
+        #expect(historical.contains("Nov 14, 2023"))
+        let normalizedHistorical = historical.replacingOccurrences(of: "\u{202f}", with: " ")
+        #expect(normalizedHistorical.contains("9:58 PM"))
+        #expect(normalizedHistorical.contains("10:13 PM"))
+        #expect(!historical.contains("last"))
+    }
+
     @Test("Manual reporting can resume a saved crash-linked draft")
     @MainActor
     func generalEntryPointRecoversCrashLinkedDraft() throws {

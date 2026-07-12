@@ -965,7 +965,7 @@ private final class WriteGate: @unchecked Sendable {
 private final class Fixture {
     let root: URL
     let outputDirectory: URL
-    let reportID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+    let reportID = UUID(uuidString: "11111111-2222-4333-8444-555555555555")!
     let createdAt = Date(timeIntervalSince1970: 1_700_000_000)
 
     init() throws {

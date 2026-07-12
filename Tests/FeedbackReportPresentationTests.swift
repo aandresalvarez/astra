@@ -9,19 +9,6 @@ import ASTRAPersistence
 
 @Suite("Feedback Report Presentation")
 struct FeedbackReportPresentationTests {
-    @Test("Form defaults to a fifteen-minute window and privacy-sensitive opt-outs")
-    func formDefaults() {
-        let now = Date(timeIntervalSince1970: 1_800_000_000)
-        let form = FeedbackReportFormState(launch: launch(), now: now)
-        #expect(form.evidenceWindowEnd == now)
-        #expect(form.evidenceWindowStart == now.addingTimeInterval(-15 * 60))
-        #expect(form.selections.includeApplicationLogs)
-        #expect(form.selections.includeTaskLogs)
-        #expect(!form.selections.includeBrowserEvidence)
-        #expect(!form.selections.includeScreenshots)
-        #expect(!form.selections.includeMacOSDiagnostics)
-    }
-
     @Test("Startup removes only canonical abandoned feedback staging packages")
     @MainActor
     func abandonedStagingReconciliationIsContained() throws {
@@ -125,9 +112,11 @@ struct FeedbackReportPresentationTests {
     func optOutsPerformNoIO() throws {
         let browser = LockedInt()
         let crashes = LockedInt()
+        var selections = FeedbackEvidenceSelections()
+        selections.includeTaskLogs = false
         let result = try FeedbackReportEvidenceSourceReader.collect(
             launch: launch(),
-            selections: FeedbackEvidenceSelections(),
+            selections: selections,
             interval: DateInterval(start: .distantPast, end: .distantFuture),
             entriesProvider: { [] },
             browserProvider: { _, _, _, _ in
@@ -145,6 +134,7 @@ struct FeedbackReportPresentationTests {
     @Test("Selected screenshot availability is independent from browser records")
     func selectedScreenshotFailsIndependently() {
         var selections = FeedbackEvidenceSelections()
+        selections.includeTaskLogs = false
         selections.includeBrowserEvidence = true
         selections.includeScreenshots = true
         #expect(throws: FeedbackReportEvidenceSourceReader.SourceError.unavailable(.browserScreenshot)) {
@@ -165,6 +155,7 @@ struct FeedbackReportPresentationTests {
     @Test("Selected macOS diagnostics cannot silently return an empty inventory")
     func selectedCrashDiagnosticsFailWhenUnavailable() {
         var selections = FeedbackEvidenceSelections()
+        selections.includeTaskLogs = false
         selections.includeMacOSDiagnostics = true
         #expect(throws: FeedbackReportEvidenceSourceReader.SourceError.unavailable(.macOSDiagnostics)) {
             _ = try FeedbackReportEvidenceSourceReader.collect(
@@ -181,6 +172,7 @@ struct FeedbackReportPresentationTests {
     @Test("Selected browser read failures and corrupt screenshot bytes stay typed")
     func selectedSourceFailuresStayTyped() throws {
         var browserSelection = FeedbackEvidenceSelections()
+        browserSelection.includeTaskLogs = false
         browserSelection.includeBrowserEvidence = true
         #expect(throws: FeedbackReportEvidenceSourceReader.SourceError.unavailable(.browserEvidence)) {
             _ = try FeedbackReportEvidenceSourceReader.collect(
@@ -1478,10 +1470,10 @@ struct FeedbackReportPresentationTests {
 
     @Test("Close policy covers unsaved, draft, prepared, and queued reports")
     func closePolicyMatrix() {
-        func action(_ stored: Bool, _ status: FeedbackLocalStatusV1?, _ dirty: Bool) -> FeedbackReportCloseAction {
+        func action(_ stored: Bool, _ status: FeedbackLocalStatusV1?, _ meaningful: Bool) -> FeedbackReportCloseAction {
             FeedbackReportClosePolicy.action(
-                hasStoredReport: stored, storedStatus: status, isDirty: dirty,
-                isPreparing: dirty, hasPreview: dirty, isInvalidatingPreview: dirty
+                hasStoredReport: stored, storedStatus: status, hasMeaningfulProgress: meaningful,
+                isPreparing: meaningful, hasPreview: meaningful, isInvalidatingPreview: meaningful
             )
         }
         #expect(action(false, nil, true) == .offerDraftChoices)
@@ -1516,7 +1508,7 @@ struct FeedbackReportPresentationTests {
         #expect(FeedbackReportClosePolicy.action(
             hasStoredReport: true,
             storedStatus: .prepared,
-            isDirty: true,
+            hasMeaningfulProgress: true,
             isPreparing: false,
             hasPreview: true,
             isInvalidatingPreview: false
@@ -1538,7 +1530,7 @@ struct FeedbackReportPresentationTests {
         FeedbackReportClosePolicy.perform(
             hasStoredReport: true,
             storedStatus: .queued,
-            isDirty: true,
+            hasMeaningfulProgress: true,
             isPreparing: false,
             hasPreview: false,
             isInvalidatingPreview: false,

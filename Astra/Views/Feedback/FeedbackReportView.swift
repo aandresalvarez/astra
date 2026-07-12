@@ -70,7 +70,9 @@ struct FeedbackReportView: View {
         .frame(width: 680, height: 720)
         .background(Stanford.panelBackground)
         .accessibilityIdentifier(FeedbackReportAccessibilityID.sheet)
-        .interactiveDismissDisabled(isDirty || isPreparing || report != nil || preview != nil || invalidatingPreview != nil)
+        .interactiveDismissDisabled(
+            hasMeaningfulProgress || isPreparing || report != nil || preview != nil || invalidatingPreview != nil
+        )
         .confirmationDialog("Keep this report as a draft?", isPresented: $showDismissChoices) {
             Button("Keep Draft") { finishDismiss(keepingDraft: true) }
                 .accessibilityIdentifier(FeedbackReportAccessibilityID.keepDraft)
@@ -240,6 +242,7 @@ struct FeedbackReportView: View {
             Toggle("Application logs", isOn: $form.selections.includeApplicationLogs)
                 .accessibilityIdentifier(FeedbackReportAccessibilityID.applicationLogs)
             Toggle("Task logs", isOn: $form.selections.includeTaskLogs)
+                .disabled(launch.taskID == nil)
                 .accessibilityIdentifier(FeedbackReportAccessibilityID.taskLogs)
             Toggle("Browser interaction details", isOn: $form.selections.includeBrowserEvidence)
                 .accessibilityIdentifier(FeedbackReportAccessibilityID.browserEvidence)
@@ -304,19 +307,19 @@ struct FeedbackReportView: View {
         )
     }
 
-    private var isDirty: Bool { form != initialForm }
-
     private var hasMeaningfulProgress: Bool {
         !form.intendedOutcome.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             || !form.actualResult.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             || !form.expectedResult.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             || form.workBlocked
-            || form.selections != FeedbackEvidenceSelections()
+            || form.selections != initialForm.selections
     }
 
     private var evidenceWindowLabel: String {
-        let minutes = max(1, Int((form.evidenceWindowEnd.timeIntervalSince(form.evidenceWindowStart) / 60.0).rounded()))
-        return minutes == 1 ? "the last minute" : "the last \(minutes) minutes"
+        FeedbackEvidenceWindowPresentation.label(
+            start: form.evidenceWindowStart,
+            end: form.evidenceWindowEnd
+        )
     }
 
     private var service: FeedbackReportPreparationService {
@@ -393,7 +396,7 @@ struct FeedbackReportView: View {
         FeedbackReportClosePolicy.perform(
             hasStoredReport: report != nil,
             storedStatus: report.flatMap { try? $0.requireLocalStatus() },
-            isDirty: isDirty,
+            hasMeaningfulProgress: hasMeaningfulProgress,
             isPreparing: isPreparing,
             hasPreview: preview != nil,
             isInvalidatingPreview: invalidatingPreview != nil,

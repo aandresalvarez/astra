@@ -39,7 +39,7 @@ struct FeedbackReportPersistenceTests {
         let context = container.mainContext
         let createdAt = Date(timeIntervalSince1970: 1_800_000_000)
         let report = FeedbackReport(
-            id: UUID(uuidString: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")!,
+            id: UUID(uuidString: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee")!,
             installationID: "installation-v1",
             idempotencyKey: "idempotency-v1",
             intendedOutcome: "Finish work",
@@ -93,7 +93,7 @@ struct FeedbackReportPersistenceTests {
         let container = try makeFeedbackOutboxContainer()
         let context = container.mainContext
         let now = Date(timeIntervalSince1970: 1_800_000_000)
-        let reportID = UUID(uuidString: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")!
+        let reportID = UUID(uuidString: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee")!
         let receipt = FeedbackSubmissionReceiptV1(
             receiptID: "receipt-with-evidence",
             reportID: FeedbackReportIDV1(reportID),

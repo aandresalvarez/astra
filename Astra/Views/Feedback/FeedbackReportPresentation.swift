@@ -98,7 +98,7 @@ enum FeedbackReportClosePolicy {
     static func action(
         hasStoredReport: Bool,
         storedStatus: FeedbackLocalStatusV1?,
-        isDirty: Bool,
+        hasMeaningfulProgress: Bool,
         isPreparing: Bool,
         hasPreview: Bool,
         isInvalidatingPreview: Bool
@@ -107,7 +107,7 @@ enum FeedbackReportClosePolicy {
             guard storedStatus == .draft else { return .closePresentation }
             return .offerDraftChoices
         }
-        return isDirty || isPreparing || hasPreview || isInvalidatingPreview
+        return hasMeaningfulProgress || isPreparing || hasPreview || isInvalidatingPreview
             ? .offerDraftChoices
             : .closePresentation
     }
@@ -115,7 +115,7 @@ enum FeedbackReportClosePolicy {
     static func perform(
         hasStoredReport: Bool,
         storedStatus: FeedbackLocalStatusV1?,
-        isDirty: Bool,
+        hasMeaningfulProgress: Bool,
         isPreparing: Bool,
         hasPreview: Bool,
         isInvalidatingPreview: Bool,
@@ -125,7 +125,7 @@ enum FeedbackReportClosePolicy {
         switch action(
             hasStoredReport: hasStoredReport,
             storedStatus: storedStatus,
-            isDirty: isDirty,
+            hasMeaningfulProgress: hasMeaningfulProgress,
             isPreparing: isPreparing,
             hasPreview: hasPreview,
             isInvalidatingPreview: isInvalidatingPreview
@@ -135,6 +135,30 @@ enum FeedbackReportClosePolicy {
         case .closePresentation:
             closePresentation()
         }
+    }
+}
+
+enum FeedbackEvidenceWindowPresentation {
+    private static let recentTolerance: TimeInterval = 60
+
+    static func label(
+        start: Date,
+        end: Date,
+        now: Date = Date(),
+        locale: Locale = .current,
+        timeZone: TimeZone = .current
+    ) -> String {
+        let durationMinutes = max(1, Int((end.timeIntervalSince(start) / 60).rounded()))
+        if abs(now.timeIntervalSince(end)) <= recentTolerance {
+            return durationMinutes == 1 ? "the last minute" : "the last \(durationMinutes) minutes"
+        }
+
+        let formatter = DateFormatter()
+        formatter.locale = locale
+        formatter.timeZone = timeZone
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .short
+        return "\(formatter.string(from: start)) to \(formatter.string(from: end))"
     }
 }
 

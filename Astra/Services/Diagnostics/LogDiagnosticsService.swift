@@ -121,14 +121,15 @@ enum LogDiagnosticsService {
 
     static func collectCurrentEntries(
         inMemoryEntries: [LogEntry] = AppLogger.entries,
-        logDirectory: URL = AppLogger.mainLogFile.deletingLastPathComponent()
+        logDirectory: URL = AppLogger.mainLogFile.deletingLastPathComponent(),
+        includeRetainedAppLogs: Bool = false
     ) -> [LogEntry] {
         var collected = inMemoryEntries
         var seen = Set(inMemoryEntries.map(entrySignature))
 
         for file in diagnosticLogFiles(in: logDirectory) {
             let isAppLog = isAppLogFile(file)
-            if isAppLog, !inMemoryEntries.isEmpty {
+            if isAppLog, !inMemoryEntries.isEmpty, !includeRetainedAppLogs {
                 continue
             }
             let maxLines = file.lastPathComponent.hasPrefix("task-") ? maxTaskLogLines : maxMainLogLines
