@@ -242,22 +242,34 @@ enum DockerExecutionPlanningError: LocalizedError, Equatable {
 enum DockerExecutionPlanner {
     static let defaultDockerExecutable = "/usr/bin/env"
 
+    struct EnvironmentSnapshot: Equatable, Sendable {
+        let taskSnapshotJSON: String?
+        let workspaceEnvironmentJSON: String?
+        let isDraft: Bool
+        let hasRuns: Bool
+    }
+
     static func resolveEnvironment(for task: AgentTask) -> WorkspaceExecutionEnvironment {
-        if let snapshot = task.executionEnvironmentSnapshotJSON,
+        resolveEnvironment(from: EnvironmentSnapshot(
+            taskSnapshotJSON: task.executionEnvironmentSnapshotJSON,
+            workspaceEnvironmentJSON: task.workspace?.activeExecutionEnvironmentJSON,
+            isDraft: task.status == .draft,
+            hasRuns: !task.runs.isEmpty
+        ))
+    }
+
+    static func resolveEnvironment(from snapshot: EnvironmentSnapshot) -> WorkspaceExecutionEnvironment {
+        if let snapshot = snapshot.taskSnapshotJSON,
            !snapshot.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return ExecutionEnvironmentStore.decode(snapshot)
         }
-        if taskHasHistoricalSnapshotBoundary(task) {
+        if !snapshot.isDraft || snapshot.hasRuns {
             return .host
         }
-        if let workspace = task.workspace {
-            return ExecutionEnvironmentStore.decode(workspace.activeExecutionEnvironmentJSON)
+        if let workspaceEnvironmentJSON = snapshot.workspaceEnvironmentJSON {
+            return ExecutionEnvironmentStore.decode(workspaceEnvironmentJSON)
         }
         return .host
-    }
-
-    private static func taskHasHistoricalSnapshotBoundary(_ task: AgentTask) -> Bool {
-        task.status != .draft || !task.runs.isEmpty
     }
 
     static func plan(

@@ -1142,6 +1142,86 @@ struct ArchitectureFitnessTests {
         }
     }
 
+    @Test("Content view browser policy render path does not scan filesystem revisions")
+    func contentViewBrowserPolicyRenderPathDoesNotScanFilesystemRevisions() throws {
+        let root = try repositoryRoot()
+        let contentView = try String(
+            contentsOf: root.appendingPathComponent("Astra/Views/ContentView.swift"),
+            encoding: .utf8
+        )
+        let policyStart = try #require(contentView.range(of: "private var currentBrowserSessionPolicy:"))
+        let policyTail = contentView[policyStart.lowerBound...]
+        let policyEnd = try #require(policyTail.range(of: "private func normalizedEnabledCapabilityIDs"))
+        let renderPolicy = policyTail[..<policyEnd.lowerBound]
+
+        #expect(!renderPolicy.contains("revisionFingerprint()"))
+        #expect(!renderPolicy.contains("packageDefinitionsFingerprint()"))
+        #expect(!renderPolicy.contains("taskEventRevision(for:"))
+        #expect(!renderPolicy.contains("events.count"))
+        #expect(!renderPolicy.contains("events.filter"))
+        #expect(!renderPolicy.contains("BrowserSessionPolicyContext.Snapshot"))
+        #expect(!renderPolicy.contains("DockerExecutionPlanner.resolveEnvironment"))
+        #expect(renderPolicy.contains("browserSessionPolicyRefreshGate.policy"))
+    }
+
+    @Test("Browser policy performs capability and package resolution after the detached boundary")
+    func browserPolicyResolutionStaysBehindDetachedBoundary() throws {
+        let root = try repositoryRoot()
+        let contentView = try String(
+            contentsOf: root.appendingPathComponent("Astra/Views/ContentView.swift"),
+            encoding: .utf8
+        )
+        let start = try #require(contentView.range(of: "private func refreshBrowserSessionPolicy(source:"))
+        let tail = contentView[start.lowerBound...]
+        let end = try #require(tail.range(of: "private func handleBrowserPolicyTaskEventInsertion"))
+        let refresh = String(tail[..<end.lowerBound])
+        let detached = try #require(refresh.range(of: "Task.detached(priority: .userInitiated)"))
+        let beforeDetached = refresh[..<detached.lowerBound]
+
+        #expect(!beforeDetached.contains("TaskCapabilityResolutionSnapshot.capture"))
+        #expect(!beforeDetached.contains("packageDefinitions()"))
+        #expect(!beforeDetached.contains("packageDefinitionsFingerprint()"))
+        #expect(!beforeDetached.contains("CapabilityCatalogPolicyContext.workspaceUser"))
+        #expect(!beforeDetached.contains("PackWorkspacePolicyProvider.resolvedPolicy"))
+        let detachedTail = refresh[detached.lowerBound...]
+        #expect(detachedTail.contains("catalogPolicyInput?.resolve()"))
+        #expect(detachedTail.contains("hostControlInput?.resolve(packageDefinitions: packages)"))
+    }
+
+    @Test("Browser policy event context stays bounded and user messages use the typed insertion boundary")
+    func browserPolicyEventContextUsesBoundedTypedInsertion() throws {
+        let root = try repositoryRoot()
+        let cache = try String(contentsOf: root.appendingPathComponent(
+            "Astra/Views/ContentViewBrowserSessionPolicyCache.swift"
+        ), encoding: .utf8)
+        let taskMain = try String(contentsOf: root.appendingPathComponent(
+            "Astra/Views/TaskMainView.swift"
+        ), encoding: .utf8)
+
+        #expect(!cache.contains("task.events.map"))
+        #expect(cache.contains("descriptor.fetchLimit = 1"))
+        #expect(taskMain.contains("TaskEventInsertionService.insert(userEvent"))
+    }
+
+    @Test("Host-control admission does not traverse SwiftData relationships")
+    func hostControlAdmissionUsesOnlyStoredScalars() throws {
+        let root = try repositoryRoot()
+        let cache = try String(contentsOf: root.appendingPathComponent(
+            "Astra/Views/ContentViewBrowserSessionPolicyCache.swift"
+        ), encoding: .utf8)
+        let start = try #require(cache.range(of:
+            "init(task: AgentTask, enabledPackageIDs: [String], contextText: String)"))
+        let tail = cache[start.lowerBound...]
+        let end = try #require(tail.range(of: "func resolve(packageDefinitions:"))
+        let admission = tail[..<end.lowerBound]
+
+        for forbidden in ["task.events", "task.skills", "task.workspace", "task.skillSnapshots",
+                          ".connectors", ".localTools", "ModelContext", "FetchDescriptor"] {
+            #expect(!admission.contains(forbidden), "Admission must not access \(forbidden)")
+        }
+        #expect(admission.contains("task.id"))
+    }
+
     @Test("Large Swift files stay within owned debt budgets")
     func largeSwiftFilesStayWithinOwnedDebtBudgets() throws {
         let root = try repositoryRoot()

@@ -8,6 +8,10 @@ extension Notification.Name {
     /// to stay off the per-body filesystem path) can refresh instead of going
     /// stale until it is recreated.
     static let capabilityApprovalsChanged = Notification.Name("astra.capabilityApprovalsChanged")
+    /// Posted after the installed capability library changes. Consumers use
+    /// this explicit invalidation instead of fingerprinting the library from a
+    /// SwiftUI render path.
+    static let capabilityPackagesChanged = Notification.Name("astra.capabilityPackagesChanged")
 }
 
 struct CapabilityApprovalRecord: Codable, Equatable, Identifiable, Sendable {
