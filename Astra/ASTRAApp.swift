@@ -335,7 +335,7 @@ enum AstraStoreStartupCoordinator {
             )
         }
 
-        let storeURL: URL
+        var storeURL: URL
         do {
             storeURL = try WorkspaceRecoveryService.preparePersistentStoreURL()
         } catch {
@@ -347,6 +347,41 @@ enum AstraStoreStartupCoordinator {
                 title: "ASTRA could not safely prepare its store",
                 message: "The active store pointer or legacy-store migration was invalid, incomplete, or unavailable. ASTRA left existing data unchanged."
             )
+        }
+
+        if FileManager.default.fileExists(atPath: storeURL.path) {
+            do {
+                if try OrphanedV12StoreMigrator.requiresMigration(storeURL: storeURL) {
+                    let recoveryURL = try WorkspaceRecoveryService.makeRecoveryStoreURL()
+                    let report = try OrphanedV12StoreMigrator.migrateCopy(
+                        from: storeURL,
+                        to: recoveryURL
+                    )
+                    let metadata = compatibilityMetadata(appInfo: appInfo)
+                    try WorkspaceRecoveryService.activateRecoveryStore(
+                        at: report.destinationStoreURL,
+                        compatibility: metadata
+                    )
+                    storeURL = report.destinationStoreURL
+                    AppLogger.audit(.dataStoreRecovered, category: "App", fields: [
+                        "result": "orphaned_v12_migrated",
+                        "source_schema": "12",
+                        "destination_schema": String(ASTRASchema.currentVersion),
+                        "preserved_rows": String(report.preservedRowCounts.values.reduce(0, +)),
+                        "store_generation": WorkspaceRecoveryService.storeGeneration
+                    ])
+                }
+            } catch {
+                AppLogger.audit(.dataStoreRecovered, category: "App", fields: [
+                    "result": "orphaned_v12_migration_blocked",
+                    "error_type": String(describing: type(of: error)),
+                    "store_generation": WorkspaceRecoveryService.storeGeneration
+                ], level: .error)
+                return blocked(
+                    title: "ASTRA preserved an incompatible V12 store",
+                    message: "ASTRA could not validate a migrated copy, so it left the original store selected and unchanged."
+                )
+            }
         }
         let hasPendingLegacyStoreMigration = WorkspaceRecoveryService.hasPendingLegacyStoreMigration
         let compatibility = PersistentStoreCompatibilityService.assess(
