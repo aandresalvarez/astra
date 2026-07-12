@@ -94,6 +94,30 @@ struct PersistentStoreRecoveryTests {
         ) == .unknown)
     }
 
+    @Test("orphaned compatibility sidecar is ignored when its store is missing")
+    func orphanedSidecarIsIgnored() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let storeURL = root.appendingPathComponent("missing.store")
+        try PersistentStoreCompatibilityService.writeMetadata(
+            PersistentStoreCompatibilityMetadata(
+                schemaVersion: 15,
+                minimumReaderSchemaVersion: 15,
+                channel: "dev",
+                appVersion: "0.3.0",
+                appBuild: "30",
+                gitCommit: "orphan",
+                bundlePath: "/tmp/ASTRA Dev.app"
+            ),
+            for: storeURL
+        )
+
+        #expect(PersistentStoreCompatibilityService.assess(
+            storeURL: storeURL,
+            latestSupportedSchemaVersion: 12
+        ) == .unknown)
+    }
+
     @Test("development incompatibility prefers a registered compatible build")
     func developmentPolicyPrefersCompatibleBuild() {
         let blocker = PersistentStoreRecoveryPolicy.incompatibleBlocker(
@@ -154,6 +178,30 @@ struct PersistentStoreRecoveryTests {
         #expect(PersistentStoreRecoveryPolicy.storeSelectionFailureMessage(
             assessment: .compatible(storeSchemaVersion: 11),
             supportedSchemaVersion: 11
+        ) == nil)
+    }
+
+    @Test("store selection rejects compatibility metadata from another channel")
+    func storeSelectionRejectsAnotherChannel() {
+        let metadata = PersistentStoreCompatibilityMetadata(
+            schemaVersion: 12,
+            minimumReaderSchemaVersion: 12,
+            channel: "prod",
+            appVersion: "0.2.0",
+            appBuild: "20",
+            gitCommit: "prod",
+            bundlePath: "/Applications/ASTRA.app"
+        )
+        let message = PersistentStoreRecoveryPolicy.storeSelectionChannelFailureMessage(
+            metadata: metadata,
+            currentChannel: "dev"
+        )
+
+        #expect(message?.contains("prod channel") == true)
+        #expect(message?.contains("dev channel") == true)
+        #expect(PersistentStoreRecoveryPolicy.storeSelectionChannelFailureMessage(
+            metadata: metadata,
+            currentChannel: "prod"
         ) == nil)
     }
 
@@ -288,6 +336,47 @@ struct PersistentStoreRecoveryTests {
             excludingBundlePath: "/tmp/current.app",
             registryURL: registryURL
         )?.bundlePath == bundleURL.path)
+    }
+
+    @Test("registry revalidates an app updated in place before filtering schema")
+    func registryRevalidatesUpdatedBundle() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let registryURL = root.appendingPathComponent("registry.json")
+        let bundleURL = try makeBundle(
+            root: root,
+            name: "ASTRA Dev Current",
+            identifier: "com.coral.ASTRA.dev",
+            channel: "dev",
+            schemaVersion: 11
+        )
+        let oldBundle = try #require(Bundle(url: bundleURL))
+        let oldInfo = AppBuildInfo(
+            infoDictionary: oldBundle.infoDictionary ?? [:],
+            bundlePath: bundleURL.path,
+            executablePath: oldBundle.executableURL?.path ?? "unknown"
+        )
+        try CompatibleASTRABuildRegistry.registerCurrentBuild(
+            appInfo: oldInfo,
+            bundle: oldBundle,
+            registryURL: registryURL
+        )
+        _ = try makeBundle(
+            root: root,
+            name: "ASTRA Dev Current",
+            identifier: "com.coral.ASTRA.dev",
+            channel: "dev",
+            schemaVersion: 13
+        )
+
+        let candidate = CompatibleASTRABuildRegistry.compatibleBuild(
+            requiredSchemaVersion: 12,
+            channel: "dev",
+            excludingBundlePath: "/tmp/current.app",
+            registryURL: registryURL
+        )
+        #expect(candidate?.bundlePath == bundleURL.path)
+        #expect(candidate?.schemaVersion == 13)
     }
 
     private func temporaryDirectory() throws -> URL {

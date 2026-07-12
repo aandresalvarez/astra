@@ -70,6 +70,12 @@ public enum PersistentStoreCompatibilityService {
         fileManager: FileManager = .default,
         persistentStoreMetadata: ([String: Any])? = nil
     ) -> PersistentStoreCompatibilityAssessment {
+        // A sidecar describes a particular store file, not the vacant path it
+        // once occupied. Ignoring an orphan allows SwiftData to create a fresh
+        // store instead of wedging startup on stale compatibility metadata.
+        guard fileManager.fileExists(atPath: storeURL.path) else {
+            return .unknown
+        }
         if let metadata = readMetadata(for: storeURL, fileManager: fileManager) {
             if metadata.minimumReaderSchemaVersion > latestSupportedSchemaVersion {
                 return .requiresNewerReader(requiredSchemaVersion: metadata.minimumReaderSchemaVersion)

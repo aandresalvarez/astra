@@ -69,6 +69,15 @@ enum PersistentStoreRecoveryPolicy {
         }
     }
 
+    static func storeSelectionChannelFailureMessage(
+        metadata: PersistentStoreCompatibilityMetadata?,
+        currentChannel: String
+    ) -> String? {
+        guard let storeChannel = metadata?.channel,
+              storeChannel != currentChannel else { return nil }
+        return "The selected store belongs to the \(storeChannel) channel and cannot be activated in the \(currentChannel) channel. Choose a store from this ASTRA channel."
+    }
+
     static func incompatibleBlocker(
         requiredSchemaVersion: Int,
         supportedSchemaVersion: Int,

@@ -142,6 +142,13 @@ struct StoreStartupBlockedView: View {
         panel.allowsMultipleSelection = false
         panel.message = "Choose an ASTRA store. ASTRA will validate and copy it before activation."
         guard panel.runModal() == .OK, let sourceURL = panel.url else { return }
+        if let channelFailure = PersistentStoreRecoveryPolicy.storeSelectionChannelFailureMessage(
+            metadata: PersistentStoreCompatibilityService.readMetadata(for: sourceURL),
+            currentChannel: AppBuildInfo.current.channelRawValue
+        ) {
+            actionError = channelFailure
+            return
+        }
         do {
             let recoveryURL = try WorkspaceRecoveryService.makeRecoveryStoreURL()
             try WorkspaceRecoveryService.copyStoreSnapshot(from: sourceURL, to: recoveryURL)

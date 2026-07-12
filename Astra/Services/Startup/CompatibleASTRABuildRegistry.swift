@@ -71,10 +71,10 @@ enum CompatibleASTRABuildRegistry {
         load(registryURL: registryURL)
             .filter {
                 $0.channel == channel &&
-                    $0.schemaVersion >= requiredSchemaVersion &&
                     $0.bundlePath != excludingBundlePath
             }
             .compactMap { validated($0, fileManager: fileManager) }
+            .filter { $0.schemaVersion >= requiredSchemaVersion }
             .sorted {
                 if $0.schemaVersion != $1.schemaVersion { return $0.schemaVersion < $1.schemaVersion }
                 return $0.lastSuccessfulStoreOpenAt > $1.lastSuccessfulStoreOpenAt
@@ -128,20 +128,40 @@ enum CompatibleASTRABuildRegistry {
         case "prod": expectedBundleIdentifier = "com.coral.ASTRA"
         default: return nil
         }
+        let infoURL = lexicalURL
+            .appendingPathComponent("Contents", isDirectory: true)
+            .appendingPathComponent("Info.plist")
+        guard let info = NSDictionary(contentsOf: infoURL) as? [String: Any],
+              let executableName = info["CFBundleExecutable"] as? String else {
+            return nil
+        }
+        let executableURL = lexicalURL
+            .appendingPathComponent("Contents", isDirectory: true)
+            .appendingPathComponent("MacOS", isDirectory: true)
+            .appendingPathComponent(executableName)
         guard record.bundlePath.hasPrefix("/"),
               record.bundleIdentifier == expectedBundleIdentifier,
               lexicalURL.pathExtension == "app",
               lexicalURL.path == resolvedURL.path,
               fileManager.fileExists(atPath: lexicalURL.path),
-              let bundle = Bundle(url: lexicalURL),
-              bundle.bundleIdentifier == record.bundleIdentifier,
-              let info = bundle.infoDictionary,
+              (info["CFBundleIdentifier"] as? String) == record.bundleIdentifier,
               (info["ASTRAChannel"] as? String) == record.channel,
               let schemaVersion = (info["ASTRASchemaVersion"] as? NSNumber)?.intValue,
-              schemaVersion == record.schemaVersion,
-              bundle.executableURL.map({ fileManager.isExecutableFile(atPath: $0.path) }) == true else {
+              fileManager.isExecutableFile(atPath: executableURL.path) else {
             return nil
         }
-        return record
+        // The app at a stable path may have been updated since registration.
+        // Trust the currently validated bundle metadata, while retaining the
+        // last successful-open timestamp used to rank equivalent candidates.
+        return CompatibleASTRABuildRecord(
+            bundlePath: lexicalURL.path,
+            bundleIdentifier: record.bundleIdentifier,
+            channel: record.channel,
+            schemaVersion: schemaVersion,
+            version: info["CFBundleShortVersionString"] as? String ?? record.version,
+            build: info["CFBundleVersion"] as? String ?? record.build,
+            gitCommit: info["ASTRAGitCommit"] as? String ?? record.gitCommit,
+            lastSuccessfulStoreOpenAt: record.lastSuccessfulStoreOpenAt
+        )
     }
 }
