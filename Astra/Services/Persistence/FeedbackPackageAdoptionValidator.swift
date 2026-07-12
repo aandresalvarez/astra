@@ -29,6 +29,7 @@ enum FeedbackPackageValidationError: Error, Equatable {
     case archiveToolUnavailable
     case archiveContentsMismatch(String)
     case nonCanonicalEnvelope
+    case nonCanonicalManifest
     case forbiddenContactMember
 }
 
@@ -77,6 +78,9 @@ enum FeedbackPackageAdoptionValidator {
             from: manifestData
         ).canonicalized()
         try manifest.validate()
+        guard manifestData == (try FeedbackCanonicalJSONV1.encodeValidated(manifest)) else {
+            throw FeedbackPackageValidationError.nonCanonicalManifest
+        }
         guard manifest == envelope.payload.evidence.canonicalized() else {
             throw FeedbackPackageValidationError.manifestMismatch
         }

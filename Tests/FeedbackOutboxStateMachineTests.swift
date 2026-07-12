@@ -257,30 +257,40 @@ struct FeedbackOutboxStateMachineTests {
     }
 
     @MainActor
-    @Test("Additive V1 package members remain inert and their original bytes survive adoption")
+    @Test("Additive envelope members remain inert while manifests stay canonical")
     func additivePackageMembersArePreserved() throws {
         let fixture = try makeFixture()
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         let source = try writeFeedbackPreparedPackage(parent: fixture.root, envelope: fixture.envelope)
         let envelopeURL = source.appendingPathComponent(FeedbackPackageLayout.envelope)
-        let manifestURL = source.appendingPathComponent(FeedbackPackageLayout.manifest)
         let extendedEnvelope = try addingFeedbackMember(
             "futureEnvelopeMember",
             value: "inert",
             to: try Data(contentsOf: envelopeURL)
         )
-        let extendedManifest = try addingFeedbackMember(
-            "futureManifestMember",
-            value: ["ignored": true],
-            to: try Data(contentsOf: manifestURL)
-        )
         try extendedEnvelope.write(to: envelopeURL, options: .atomic)
-        try extendedManifest.write(to: manifestURL, options: .atomic)
 
         try fixture.service.adoptPreparedPackage(reportID: fixture.reportID, from: source)
         try fixture.service.queue(reportID: fixture.reportID)
         let claim = try fixture.service.claimUpload(reportID: fixture.reportID)
         #expect(claim.canonicalEnvelopeData == extendedEnvelope)
+    }
+
+    @MainActor
+    @Test("Adoption rejects non-canonical manifest bytes before ownership transfer")
+    func nonCanonicalManifestIsRejected() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let source = try writeFeedbackPreparedPackage(parent: fixture.root, envelope: fixture.envelope)
+        let manifestURL = source.appendingPathComponent(FeedbackPackageLayout.manifest)
+        let canonical = try Data(contentsOf: manifestURL)
+        try (Data(" \n".utf8) + canonical).write(to: manifestURL, options: .atomic)
+
+        #expect(throws: FeedbackPackageValidationError.nonCanonicalManifest) {
+            try fixture.service.adoptPreparedPackage(reportID: fixture.reportID, from: source)
+        }
+        #expect(FileManager.default.fileExists(atPath: source.path))
+        #expect(try fetchReport(fixture.container, id: fixture.reportID).localStatus == .draft)
     }
 
     @MainActor

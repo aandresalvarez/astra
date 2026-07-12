@@ -171,15 +171,29 @@ struct FeedbackEvidenceBuilder {
             try writeFinalBytes(manifestData, to: manifestURL, createdAt: input.reportCreatedAt)
 
             try cancellationCheck()
-            let reportData = try input.makeReportEnvelopeData(manifest)
+            let reportData: Data
+            do {
+                reportData = try input.makeReportEnvelopeData(manifest)
+            } catch is FeedbackContractError {
+                throw FeedbackEvidenceBuildError.invalidReportEnvelope(
+                    "report envelope failed contract validation"
+                )
+            }
             try cancellationCheck()
             guard FeedbackRawCanonicalJSONVerifier.isCanonicalObject(reportData) else {
                 throw FeedbackEvidenceBuildError.invalidReportEnvelope("report bytes are not canonical V1 JSON")
             }
-            let reportEnvelope = try FeedbackCanonicalJSONV1.decode(
-                FeedbackReportEnvelopeV1.self,
-                from: reportData
-            )
+            let reportEnvelope: FeedbackReportEnvelopeV1
+            do {
+                reportEnvelope = try FeedbackCanonicalJSONV1.decode(
+                    FeedbackReportEnvelopeV1.self,
+                    from: reportData
+                )
+            } catch {
+                throw FeedbackEvidenceBuildError.invalidReportEnvelope(
+                    "report envelope failed contract validation"
+                )
+            }
             guard !FeedbackContactMemberPolicy.containsForbiddenMember(in: reportData) else {
                 throw FeedbackEvidenceBuildError.invalidReportEnvelope("reporter contact members are not permitted")
             }

@@ -706,6 +706,19 @@ struct FeedbackReportContractTests {
 
     private var sampleDate: Date { Date(timeIntervalSince1970: 1_700_000_000.123) }
 
+    @Test("Included consent disclosure class must match its evidence artifact")
+    func consentDisclosureClassMustMatchArtifact() throws {
+        var payload = samplePayload()
+        payload.evidence.artifacts[0].disclosureClass = .explicitOptIn
+
+        #expect(throws: FeedbackContractError.inconsistentValue(
+            path: "payload.consent.evidenceSelections[].disclosureClass",
+            description: "must match the corresponding evidence artifact"
+        )) {
+            try payload.validate()
+        }
+    }
+
     private func samplePayload() -> FeedbackReportPayloadV1 {
         let evidenceArtifact = artifact(
             id: "app-log",

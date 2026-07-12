@@ -903,6 +903,19 @@ public struct FeedbackReportPayloadV1: Codable, Equatable, Sendable, FeedbackCon
                 description: "included selections must match evidence artifacts"
             )
         }
+        let includedSelections = Dictionary(
+            uniqueKeysWithValues: consent.evidenceSelections
+                .filter(\.included)
+                .map { ($0.artifactID, $0) }
+        )
+        for artifact in evidence.artifacts {
+            guard includedSelections[artifact.artifactID]?.disclosureClass == artifact.disclosureClass else {
+                throw FeedbackContractError.inconsistentValue(
+                    path: "payload.consent.evidenceSelections[].disclosureClass",
+                    description: "must match the corresponding evidence artifact"
+                )
+            }
+        }
     }
 }
 

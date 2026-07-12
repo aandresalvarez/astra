@@ -3962,10 +3962,39 @@ public enum ASTRASchemaV11: VersionedSchema {
     }
 }
 
-/// V12 adds `AgentTask.runtimeExplicitlySelected` and the durable feedback
-/// outbox owner. Both additions migrate from V11 through one schema boundary.
+/// V12 adds `AgentTask.runtimeExplicitlySelected`.
+///
+/// This schema shipped before the durable feedback outbox was added. Keep its
+/// model list frozen so stores already stamped V12 migrate through V13 before
+/// accessing `FeedbackReport`.
 public enum ASTRASchemaV12: VersionedSchema {
     public static var versionIdentifier = Schema.Version(12, 0, 0)
+
+    public static var models: [any PersistentModel.Type] {
+        [
+            Workspace.self,
+            AgentTask.self,
+            TaskRun.self,
+            TaskEvent.self,
+            Artifact.self,
+            Skill.self,
+            Connector.self,
+            LocalTool.self,
+            TaskTemplate.self,
+            TaskSchedule.self,
+            WorkspaceApp.self,
+            WorkspaceAppRun.self,
+            WorkspaceAppRunEvent.self,
+            WorkspaceAppDependencyBinding.self,
+            WorkspaceAppAutomationState.self,
+            GoogleOAuthAccountProfile.self
+        ]
+    }
+}
+
+/// V13 adds the durable feedback outbox owner.
+public enum ASTRASchemaV13: VersionedSchema {
+    public static var versionIdentifier = Schema.Version(13, 0, 0)
 
     public static var models: [any PersistentModel.Type] {
         [
@@ -3993,10 +4022,10 @@ public enum ASTRASchemaV12: VersionedSchema {
 public enum ASTRASchema {
     /// The newest durable store schema this binary can read and write.
     /// Keep startup compatibility checks derived from this single owner.
-    public static let currentVersion = 12
+    public static let currentVersion = 13
 
     public static var current: Schema {
-        Schema(versionedSchema: ASTRASchemaV12.self)
+        Schema(versionedSchema: ASTRASchemaV13.self)
     }
 }
 
@@ -4014,7 +4043,8 @@ public enum ASTRAMigrationPlan: SchemaMigrationPlan {
             ASTRASchemaV9.self,
             ASTRASchemaV10.self,
             ASTRASchemaV11.self,
-            ASTRASchemaV12.self
+            ASTRASchemaV12.self,
+            ASTRASchemaV13.self
         ]
     }
 
@@ -4030,7 +4060,8 @@ public enum ASTRAMigrationPlan: SchemaMigrationPlan {
             .lightweight(fromVersion: ASTRASchemaV8.self, toVersion: ASTRASchemaV9.self),
             .lightweight(fromVersion: ASTRASchemaV9.self, toVersion: ASTRASchemaV10.self),
             .lightweight(fromVersion: ASTRASchemaV10.self, toVersion: ASTRASchemaV11.self),
-            .lightweight(fromVersion: ASTRASchemaV11.self, toVersion: ASTRASchemaV12.self)
+            .lightweight(fromVersion: ASTRASchemaV11.self, toVersion: ASTRASchemaV12.self),
+            .lightweight(fromVersion: ASTRASchemaV12.self, toVersion: ASTRASchemaV13.self)
         ]
     }
 }
