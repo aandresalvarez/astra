@@ -911,6 +911,37 @@ struct AgentRuntimeRunPersistenceTests {
         #expect(task.updatedAt <= Date())
     }
 
+    @Test("Finalization phase telemetry contains only fixed operational fields")
+    func finalizationPhaseTelemetryIsPrivacySafe() {
+        let task = AgentTask(title: "Sensitive title", goal: "Sensitive goal")
+        let run = TaskRun(task: task)
+        run.output = "Sensitive provider output"
+        task.status = .completed
+        run.status = .completed
+
+        let fields = AgentRuntimeRunPersistence.finalizationPhaseFields(
+            phase: "artifact_reconciliation",
+            task: task,
+            run: run,
+            traceID: "run-finalize-safe-trace"
+        )
+        let parentFields = AgentRuntimeRunPersistence.finalizationParentFields(
+            ["task_id": fields["task_id"]!],
+            traceID: "run-finalize-safe-trace"
+        )
+
+        #expect(fields["phase"] == "artifact_reconciliation")
+        #expect(fields["task_status"] == "completed")
+        #expect(fields["run_status"] == "completed")
+        #expect(fields["task_id"]?.count == 8)
+        #expect(fields["run_id"]?.count == 8)
+        #expect(fields["trace_id"] == "run-finalize-safe-trace")
+        #expect(parentFields["trace_id"] == fields["trace_id"])
+        #expect(fields["title"] == nil)
+        #expect(fields["goal"] == nil)
+        #expect(fields["output"] == nil)
+    }
+
     @Test("Record session turn writes session history in task folder")
     func recordSessionTurnWritesHistory() throws {
         let root = NSTemporaryDirectory() + "runtime-history-\(UUID().uuidString)"

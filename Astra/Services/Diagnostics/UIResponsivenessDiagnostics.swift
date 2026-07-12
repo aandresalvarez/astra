@@ -89,7 +89,8 @@ enum UIResponsivenessDiagnostics {
         var phasesByTrace: [String: Set<String>] = [:]
         for entryAndFields in fieldsByEntry {
             let fields = entryAndFields.1
-            guard fields["event"] == "task_open_phase",
+            guard fields["event"] == "task_open_phase"
+                    || fields["event"] == "task_open_apply_to_ready",
                   let traceID = fields["trace_id"],
                   let phase = fields["phase"] else { continue }
             phasesByTrace[traceID, default: []].insert(phase)

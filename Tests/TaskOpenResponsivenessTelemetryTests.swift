@@ -3,7 +3,7 @@ import Testing
 import ASTRAModels
 @testable import ASTRA
 
-@Suite("Task open responsiveness telemetry")
+@Suite("Task open responsiveness telemetry", .serialized)
 struct TaskOpenResponsivenessTelemetryTests {
     @Test("Trace records shell and transcript durations once with safe scale fields")
     func traceRecordsEndToEndDurationsOnce() {
@@ -97,6 +97,75 @@ struct TaskOpenResponsivenessTelemetryTests {
             "trace_id": "task-open-phase",
             "phase": "context_state_refresh"
         ])
+    }
+
+    @Test("New attribution phase names do not carry user content")
+    func attributionPhaseNamesArePrivacySafe() {
+        let trace = TaskOpenResponsivenessTrace(
+            traceID: "task-open-attribution",
+            taskID: UUID(),
+            startedAtUptimeNanoseconds: 0,
+            fields: ["source": "task_selection", "task_id": "01234567"]
+        )
+
+        for name in ["pre_shell_navigation", "browser_policy_signature", "snapshot_apply_to_transcript_ready"] {
+            let fields = trace.phaseFields(name: name)
+            #expect(fields["phase"] == name)
+            #expect(fields["trace_id"] == "task-open-attribution")
+            #expect(fields["title"] == nil)
+            #expect(fields["goal"] == nil)
+            #expect(fields["output"] == nil)
+        }
+    }
+
+    @MainActor
+    @Test("Scene selection preserves the timing boundary captured before mutation")
+    func sceneSelectionUsesPreMutationTimingBoundary() {
+        let task = makeTask(goal: "Scene-selected task")
+        let scope = UUID()
+        TaskOpenResponsivenessTelemetry.resetForTesting()
+
+        let selectionStart = TaskOpenResponsivenessTelemetry.SelectionStart(uptimeNanoseconds: 123_456)
+        TaskOpenResponsivenessTelemetry.beginForSelection(
+            task: task,
+            source: "scene_selection",
+            scope: scope,
+            selectionStart: selectionStart
+        )
+
+        #expect(TaskOpenResponsivenessTelemetry.startedAtForTesting(scope: scope) == 123_456)
+        TaskOpenResponsivenessTelemetry.resetForTesting()
+    }
+
+    @MainActor
+    @Test("Snapshot apply to ready emits one correlated interval sample")
+    func snapshotApplyToReadyDoesNotEmitDuplicatePhase() {
+        let task = makeTask(goal: "Transcript telemetry")
+        let scope = UUID()
+        AppLogger.resetForTesting()
+        TaskOpenResponsivenessTelemetry.resetForTesting()
+        TaskOpenResponsivenessTelemetry.begin(task: task, source: "task_selection", scope: scope)
+        let appliedAt = DispatchTime.now().uptimeNanoseconds - 25_000_000
+
+        TaskOpenResponsivenessTelemetry.transcriptBecameReady(
+            task: task,
+            snapshot: .empty,
+            appliedSnapshotRevision: 1,
+            cacheState: "miss",
+            snapshotAppliedUptimeNanoseconds: appliedAt,
+            scope: scope
+        )
+        AppLogger.flushForTesting()
+
+        let messages = AppLogger.entries
+            .filter { $0.taskID == task.id && $0.category == "Performance" }
+            .map(\.message)
+        #expect(
+            messages.filter { $0.contains("event=task_open_apply_to_ready") }.count == 1,
+            "Performance messages: \(messages)"
+        )
+        #expect(!messages.contains { $0.contains("phase=transcript_layout_readiness") })
+        TaskOpenResponsivenessTelemetry.resetForTesting()
     }
 
     @Test("Interval cancellation only ends each OS signpost once")

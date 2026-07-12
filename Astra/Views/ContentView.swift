@@ -1780,13 +1780,15 @@ struct ContentView: View {
     }
 
     private func makeBrowserSessionPolicySignature(for task: AgentTask?) -> BrowserSessionPolicySignature {
-        BrowserSessionPolicySignature(
-            taskID: task?.id,
-            enabledCapabilityIDs: normalizedEnabledCapabilityIDs(for: task),
-            approvalRevision: CapabilityApprovalStore().revisionFingerprint(),
-            packageDefinitionFingerprint: CapabilityRuntimeResourceMatcher.packageDefinitionsFingerprint(),
-            taskEventRevision: BrowserSessionPolicyContext.taskEventRevision(for: task)
-        )
+        return TaskOpenResponsivenessTelemetry.measurePhase("browser_policy_signature", task: task, scope: taskOpenResponsivenessScope) {
+            BrowserSessionPolicySignature(
+                taskID: task?.id,
+                enabledCapabilityIDs: normalizedEnabledCapabilityIDs(for: task),
+                approvalRevision: CapabilityApprovalStore().revisionFingerprint(),
+                packageDefinitionFingerprint: CapabilityRuntimeResourceMatcher.packageDefinitionsFingerprint(),
+                taskEventRevision: BrowserSessionPolicyContext.taskEventRevision(for: task)
+            )
+        }
     }
 
     private func browserSessionPolicy(for task: AgentTask?) -> BrowserSessionPolicy {
@@ -2295,18 +2297,17 @@ struct ContentView: View {
     private func applyWorkspaceSelectionUpdate(_ update: ContentWorkspaceSelectionUpdate) {
         let previousTaskID = selectedTask?.id
         if previousTaskID != update.selectedTask?.id {
-            TaskOpenResponsivenessTelemetry.beginForSelection(
-                task: update.selectedTask,
-                source: "workspace_selection",
-                scope: taskOpenResponsivenessScope
-            )
+            TaskOpenResponsivenessTelemetry.beginForSelection(task: update.selectedTask, source: "workspace_selection", scope: taskOpenResponsivenessScope)
         }
-        updateCanvasForTaskSelectionChange(previousTaskID: previousTaskID, nextTaskID: update.selectedTask?.id)
-        let sceneUpdate = sceneSelection.apply(update)
-        if previousTaskID != update.selectedTask?.id {
-            handleSelectedTaskIdentityChanged(to: update.selectedTask)
+        let sceneUpdate = measurePreShellNavigation(for: update.selectedTask) {
+            updateCanvasForTaskSelectionChange(previousTaskID: previousTaskID, nextTaskID: update.selectedTask?.id)
+            let sceneUpdate = sceneSelection.apply(update)
+            if previousTaskID != update.selectedTask?.id {
+                handleSelectedTaskIdentityChanged(to: update.selectedTask)
+            }
+            markTaskRead(update.selectedTask)
+            return sceneUpdate
         }
-        markTaskRead(update.selectedTask)
         if sceneUpdate.clearedWorkspaceAppSurface {
             clearWorkspaceAppSurfaceSideEffects(wasComposing: sceneUpdate.cancelledWorkspaceAppComposer)
         }
@@ -2318,15 +2319,13 @@ struct ContentView: View {
     }
 
     private func applySceneSelectionIntent(_ intent: () -> Void) {
+        let selectionStart = TaskOpenResponsivenessTelemetry.captureSelectionStart()
         let previousTaskID = selectedTask?.id
         let isComposingTaskForTransition = isComposingTask
         intent()
         guard previousTaskID != selectedTask?.id else { return }
-        TaskOpenResponsivenessTelemetry.beginForSelection(
-            task: selectedTask,
-            source: "scene_selection",
-            scope: taskOpenResponsivenessScope
-        )
+        TaskOpenResponsivenessTelemetry.beginForSelection(task: selectedTask, source: "scene_selection",
+                                                          scope: taskOpenResponsivenessScope, selectionStart: selectionStart)
         updateCanvasForTaskSelectionChange(
             previousTaskID: previousTaskID,
             nextTaskID: selectedTask?.id,
@@ -2334,35 +2333,41 @@ struct ContentView: View {
         )
         handleSelectedTaskIdentityChanged(to: selectedTask)
         markTaskRead(selectedTask)
+        if let selectedTask {
+            TaskOpenResponsivenessTelemetry.recordPhase("pre_shell_navigation", task: selectedTask,
+                                                        scope: taskOpenResponsivenessScope,
+                                                        startedAtUptimeNanoseconds: selectionStart.uptimeNanoseconds)
+        }
     }
-
     // MARK: - Task Actions
 
     private func setSelectedTask(_ task: AgentTask?, recordsFinalHomeTransition: Bool = true) {
         let previousTaskID = selectedTask?.id
         if previousTaskID != task?.id {
-            TaskOpenResponsivenessTelemetry.beginForSelection(
-                task: task,
-                source: "task_selection",
-                scope: taskOpenResponsivenessScope
-            )
+            TaskOpenResponsivenessTelemetry.beginForSelection(task: task, source: "task_selection", scope: taskOpenResponsivenessScope)
             if task == nil, recordsFinalHomeTransition {
                 beginScreenTransition(destination: "workspace_home", source: "task_selection_cleared",
                                       taskID: nil, usesSelectedTask: false)
             }
         }
-        updateCanvasForTaskSelectionChange(
-            previousTaskID: previousTaskID,
-            nextTaskID: task?.id,
-            recordsTransition: recordsFinalHomeTransition
-        )
-        let wasComposingWorkspaceApp = isComposingWorkspaceApp
-        sceneSelection.openTask(task)
-        clearWorkspaceAppSurfaceSideEffects(wasComposing: wasComposingWorkspaceApp)
-        if previousTaskID != task?.id {
-            handleSelectedTaskIdentityChanged(to: task)
+        measurePreShellNavigation(for: task) {
+            updateCanvasForTaskSelectionChange(
+                previousTaskID: previousTaskID,
+                nextTaskID: task?.id,
+                recordsTransition: recordsFinalHomeTransition
+            )
+            let wasComposingWorkspaceApp = isComposingWorkspaceApp
+            sceneSelection.openTask(task)
+            clearWorkspaceAppSurfaceSideEffects(wasComposing: wasComposingWorkspaceApp)
+            if previousTaskID != task?.id {
+                handleSelectedTaskIdentityChanged(to: task)
+            }
+            markTaskRead(task)
         }
-        markTaskRead(task)
+    }
+
+    private func measurePreShellNavigation<T>(for task: AgentTask?, _ work: () -> T) -> T {
+        TaskOpenResponsivenessTelemetry.measurePhase("pre_shell_navigation", task: task, scope: taskOpenResponsivenessScope, work)
     }
 
     private func updateCanvasForTaskSelectionChange(

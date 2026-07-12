@@ -137,6 +137,10 @@ struct TaskOpenResponsivenessTrace: Equatable {
 /// `Performance` log category for the in-app Logs window and diagnostics export.
 @MainActor
 enum TaskOpenResponsivenessTelemetry {
+    struct SelectionStart: Equatable {
+        let uptimeNanoseconds: UInt64
+    }
+
     private static let slowInteractionThresholdMilliseconds: Double = 250
     private static let slowPhaseThresholdMilliseconds: Double = 50
     static let timeoutNanoseconds: UInt64 = 5_000_000_000
@@ -162,7 +166,16 @@ enum TaskOpenResponsivenessTelemetry {
     /// from cancelling measurements that are still in flight in another.
     private static var activeTraces: [UUID: ActiveTrace] = [:]
 
-    static func begin(task: AgentTask, source: String, scope: UUID) {
+    static func captureSelectionStart() -> SelectionStart {
+        SelectionStart(uptimeNanoseconds: DispatchTime.now().uptimeNanoseconds)
+    }
+
+    static func begin(
+        task: AgentTask,
+        source: String,
+        scope: UUID,
+        selectionStart: SelectionStart? = nil
+    ) {
         guard task.status != .draft else {
             cancelActiveTrace(in: scope, reason: "draft_selected")
             return
@@ -179,7 +192,8 @@ enum TaskOpenResponsivenessTelemetry {
             trace: TaskOpenResponsivenessTrace(
                 traceID: traceID,
                 taskID: task.id,
-                startedAtUptimeNanoseconds: DispatchTime.now().uptimeNanoseconds,
+                startedAtUptimeNanoseconds: selectionStart?.uptimeNanoseconds
+                    ?? DispatchTime.now().uptimeNanoseconds,
                 fields: baseFields(task: task, source: source)
             ),
             intervals: intervals
@@ -204,12 +218,17 @@ enum TaskOpenResponsivenessTelemetry {
         activeTraces[scope] = activeTrace
     }
 
-    static func beginForSelection(task: AgentTask?, source: String, scope: UUID) {
+    static func beginForSelection(
+        task: AgentTask?,
+        source: String,
+        scope: UUID,
+        selectionStart: SelectionStart? = nil
+    ) {
         guard let task else {
             cancelActiveTrace(in: scope, reason: "selection_cleared")
             return
         }
-        begin(task: task, source: source, scope: scope)
+        begin(task: task, source: source, scope: scope, selectionStart: selectionStart)
     }
 
     static func measurePhase<T>(
@@ -222,6 +241,21 @@ enum TaskOpenResponsivenessTelemetry {
         let result = work()
         recordPhase(name, task: task, scope: scope, start: start)
         return result
+    }
+
+    static func measurePhase<T>(_ name: String, task: AgentTask?, scope: UUID, _ work: () -> T) -> T {
+        guard let task else { return work() }
+        return measurePhase(name, task: task, scope: scope, work)
+    }
+
+    /// Attributes work whose start is captured by a framework callback.
+    static func recordPhase(
+        _ name: String,
+        task: AgentTask,
+        scope: UUID,
+        startedAtUptimeNanoseconds: UInt64
+    ) {
+        recordPhase(name, task: task, scope: scope, start: startedAtUptimeNanoseconds)
     }
 
     static func shellBecameVisible(task: AgentTask, scope: UUID) {
@@ -265,9 +299,9 @@ enum TaskOpenResponsivenessTelemetry {
         endTranscriptReadyInterval(&activeTrace)
         if let snapshotAppliedUptimeNanoseconds, snapshotAppliedUptimeNanoseconds <= readyAt {
             PerformanceTelemetry.log(
-                "task_open_snapshot_apply_to_transcript_ready",
+                "task_open_apply_to_ready",
                 durationMilliseconds: Double(readyAt - snapshotAppliedUptimeNanoseconds) / 1_000_000,
-                level: .debug,
+                level: .info,
                 fields: activeTrace.trace.phaseFields(name: "snapshot_apply_to_transcript_ready"),
                 taskID: task.id
             )
@@ -311,6 +345,10 @@ enum TaskOpenResponsivenessTelemetry {
         for scope in Array(activeTraces.keys) {
             cancelActiveTrace(in: scope, reason: "test_reset")
         }
+    }
+
+    static func startedAtForTesting(scope: UUID) -> UInt64? {
+        activeTraces[scope]?.trace.startedAtUptimeNanoseconds
     }
 
     private static func recordPhase(_ name: String, task: AgentTask, scope: UUID, start: UInt64) {
