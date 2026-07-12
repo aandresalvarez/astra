@@ -396,16 +396,18 @@ public enum AstraRunProtocolDisplaySanitizer {
         guard try containsProtocolLeak(text, cancellationCheck: cancellationCheck) else { return text }
 
         var filter = AstraRunProtocolTextFilter()
-        var visible = ""
+        var visibleChunks: [String] = []
+        visibleChunks.reserveCapacity(max(1, text.utf8.count / 16_384 + 1))
         var start = text.startIndex
         while start < text.endIndex {
             try cancellationCheck()
             let end = text.index(start, offsetBy: 16_384, limitedBy: text.endIndex) ?? text.endIndex
-            visible += filter.process(text: String(text[start..<end])).outputs.visibleText
+            visibleChunks.append(filter.process(text: String(text[start..<end])).outputs.visibleText)
             start = end
         }
-        visible += filter.flush().outputs.visibleText
+        visibleChunks.append(filter.flush().outputs.visibleText)
         try cancellationCheck()
+        let visible = visibleChunks.joined()
         return try removeOrphanProtocolFragments(from: visible, cancellationCheck: cancellationCheck)
     }
 

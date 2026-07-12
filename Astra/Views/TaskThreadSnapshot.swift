@@ -44,6 +44,7 @@ struct TaskEventSnapshot: Identifiable, Hashable, Sendable {
 }
 
 struct TaskRunSnapshot: Identifiable, Hashable, Sendable {
+    private static let maximumDecodedFileChangesJSONBytes = 262_144
     let id: UUID
     let status: RunStatus
     let startedAt: Date
@@ -102,7 +103,9 @@ struct TaskRunSnapshot: Identifiable, Hashable, Sendable {
             input.fileChangesJSON,
             cancellationCheck: cancellationCheck
         )
-        fileChanges = Self.decodeFileChanges(input.fileChangesJSON)
+        fileChanges = input.fileChangesJSON.utf8.count <= Self.maximumDecodedFileChangesJSONBytes
+            ? Self.decodeFileChanges(input.fileChangesJSON)
+            : []
         try cancellationCheck()
         stopReason = input.stopReason
     }
@@ -132,7 +135,8 @@ struct TaskRunSnapshot: Identifiable, Hashable, Sendable {
             try cancellationCheck()
             let end = output.index(start, offsetBy: 16_384, limitedBy: output.endIndex) ?? output.endIndex
             let candidate = carry + output[start..<end]
-            if needles.contains(where: candidate.lowercased().contains) { return true }
+            let lowercasedCandidate = candidate.lowercased()
+            if needles.contains(where: lowercasedCandidate.contains) { return true }
             carry = String(candidate.suffix(overlapCount))
             start = end
         }
@@ -485,6 +489,7 @@ struct TaskRunProgressMessage: Identifiable, Hashable, Sendable {
 }
 
 struct TaskRunOutputPresentation: Hashable, Sendable {
+    private static let maximumFinalAnswerPresentationBytes = 262_144
     let displayText: String
     let progressMessages: [TaskRunProgressMessage]
     let rawText: String
@@ -555,6 +560,17 @@ struct TaskRunOutputPresentation: Hashable, Sendable {
             return
         }
 
+        if try Self.exceedsFinalAnswerPresentationLimit(
+            finalResponseEvents,
+            cancellationCheck: cancellationCheck
+        ) {
+            displayText = "This run produced a very large final response. Open Diagnostics for the raw output."
+            let finalIDs = Set(finalResponseEvents.map(\.id))
+            progressMessages = Self.progressMessages(from: responseEvents.filter { !finalIDs.contains($0.id) })
+            return
+        }
+
+        try cancellationCheck()
         let finalText = Self.joinResponsePayloads(finalResponseEvents)
         guard !finalText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             let presentation = Self.rawOutputPresentation(for: run)
@@ -631,6 +647,28 @@ struct TaskRunOutputPresentation: Hashable, Sendable {
 
     private static func joinResponsePayloads(_ events: [TaskEventSnapshot]) -> String {
         TaskRunAnswerPresentationPolicy.joinedResponsePayloads(events.map(\.payload))
+    }
+
+    private static func exceedsFinalAnswerPresentationLimit(
+        _ events: [TaskEventSnapshot],
+        cancellationCheck: () throws -> Void
+    ) rethrows -> Bool {
+        var byteCount = 0
+        for event in events {
+            var start = event.payload.startIndex
+            while start < event.payload.endIndex {
+                try cancellationCheck()
+                let end = event.payload.index(
+                    start,
+                    offsetBy: 16_384,
+                    limitedBy: event.payload.endIndex
+                ) ?? event.payload.endIndex
+                byteCount += event.payload[start..<end].utf8.count
+                if byteCount > maximumFinalAnswerPresentationBytes { return true }
+                start = end
+            }
+        }
+        return false
     }
 }
 

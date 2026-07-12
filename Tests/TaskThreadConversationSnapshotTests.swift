@@ -313,6 +313,55 @@ extension TaskThreadSnapshotTests {
         #expect(snapshot.latestRun?.hasVPNWarning == true)
     }
 
+    @Test("Oversized file-change payload is not decoded on the serial snapshot executor")
+    func oversizedFileChangesStayBounded() throws {
+        let task = makeTask()
+        let run = TaskRun(task: task)
+        let change = StoredFileChange(
+            path: "large.txt",
+            changeType: "Write",
+            content: String(repeating: "x", count: 300_000)
+        )
+        run.fileChangesJSON = String(decoding: try JSONEncoder().encode([change]), as: UTF8.self)
+
+        let snapshot = TaskThreadSnapshot(
+            goal: task.goal,
+            createdAt: task.createdAt,
+            events: [],
+            runs: [run]
+        )
+
+        #expect(snapshot.latestRun?.fileChangesJSONLength == run.fileChangesJSON.count)
+        #expect(snapshot.latestRun?.fileChanges.isEmpty == true)
+    }
+
+    @Test("Oversized final answer skips unbounded markdown presentation")
+    func oversizedFinalAnswerUsesBoundedPresentation() {
+        let task = makeTask()
+        let run = TaskRun(task: task)
+        run.status = .completed
+        let events = [
+            makeEvent(task: task, type: "tool.result", payload: "done", timestamp: .now, run: run),
+            makeEvent(
+                task: task,
+                type: "agent.response",
+                payload: String(repeating: "# Large response\n", count: 20_000),
+                timestamp: .now.addingTimeInterval(1),
+                run: run
+            )
+        ]
+
+        let snapshot = TaskThreadSnapshot(
+            goal: task.goal,
+            createdAt: task.createdAt,
+            events: events,
+            runs: [run]
+        )
+
+        let latestRun = try! #require(snapshot.latestRun)
+        #expect(snapshot.outputPresentation(for: latestRun).displayText.contains("Open Diagnostics"))
+    }
+
     @Test("Network access technical details parse Google Cloud policy response")
     func networkAccessTechnicalDetailsParseGoogleCloudPolicyResponse() {
         let output = """

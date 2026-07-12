@@ -362,7 +362,9 @@ final class TaskThreadViewModel {
             self.snapshotWorkerID = nil
             // A request can arrive after the loop observes an empty slot but
             // before this task clears itself. Recheck to avoid stranding it.
-            self.startSnapshotWorkerIfNeeded()
+            if self.pendingSnapshotRequest != nil {
+                self.startSnapshotWorkerIfNeeded()
+            }
         }
     }
 
