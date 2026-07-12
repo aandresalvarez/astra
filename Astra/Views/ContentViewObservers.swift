@@ -48,14 +48,22 @@ struct UpdateSafetyObserver: View {
 struct BrowserSessionPolicyObserver: ViewModifier {
     let signature: String
     let onRefresh: (String) -> Void
+    let onTaskEventInserted: (DurableTaskEventInsertion) -> Void
 
     func body(content: Content) -> some View {
         content
             .task(id: signature) {
                 onRefresh("trigger_signature")
             }
-            .onReceive(NotificationCenter.default.publisher(for: .capabilityApprovalsChanged)) { _ in
+            .onReceive(NotificationCenter.default.publisher(for: .capabilityApprovalsChanged).receive(on: RunLoop.main)) { _ in
                 onRefresh("capability_approvals_changed")
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .capabilityPackagesChanged).receive(on: RunLoop.main)) { _ in
+                onRefresh("capability_packages_changed")
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .durableTaskEventInserted).receive(on: RunLoop.main)) { notification in
+                guard let insertion = notification.object as? DurableTaskEventInsertion else { return }
+                onTaskEventInserted(insertion)
             }
     }
 }

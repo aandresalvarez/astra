@@ -5466,11 +5466,11 @@ struct TaskMainView: View {
         let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
         messageText = ""
         if !trimmed.isEmpty {
-            modelContext.insert(TaskEvent(
+            TaskEventInsertionService.insert(TaskEvent(
                 task: task,
                 eventType: TaskEventTypes.Conversation.userMessage,
                 payload: trimmed
-            ))
+            ), into: modelContext)
         }
         modelContext.insert(TaskEvent(
             task: task,
@@ -5505,7 +5505,7 @@ struct TaskMainView: View {
             let systemEvent = TaskEvent(task: task, eventType: TaskEventTypes.Task.started, payload: "Moved back to draft for editing.")
             modelContext.insert(systemEvent)
             let userEvent = TaskEvent(task: task, eventType: TaskEventTypes.Conversation.userMessage, payload: msg)
-            modelContext.insert(userEvent)
+            TaskEventInsertionService.insert(userEvent, into: modelContext)
             AppLogger.audit(.taskRetried, category: "UI", taskID: task.id, fields: [
                 "status": "draft",
                 "source": "chat_message"
@@ -5532,7 +5532,7 @@ struct TaskMainView: View {
             }
         } else {
             let event = TaskEvent(task: task, eventType: TaskEventTypes.Conversation.userMessage, payload: msg)
-            modelContext.insert(event)
+            TaskEventInsertionService.insert(event, into: modelContext)
         }
     }
 
@@ -5541,7 +5541,7 @@ struct TaskMainView: View {
 
         shouldScrollAfterUserMessage = true
         let userEvent = TaskEvent(task: task, type: TaskPlanConversationEventTypes.userMessage, payload: msg)
-        modelContext.insert(userEvent)
+        TaskEventInsertionService.insert(userEvent, into: modelContext)
         task.updatedAt = Date()
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
         threadViewModel.refreshSnapshot(for: task)

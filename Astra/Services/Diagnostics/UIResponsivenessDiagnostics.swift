@@ -89,7 +89,8 @@ enum UIResponsivenessDiagnostics {
         var phasesByTrace: [String: Set<String>] = [:]
         for entryAndFields in fieldsByEntry {
             let fields = entryAndFields.1
-            guard fields["event"] == "task_open_phase",
+            guard fields["event"] == "task_open_phase"
+                    || fields["event"] == "task_open_apply_to_ready",
                   let traceID = fields["trace_id"],
                   let phase = fields["phase"] else { continue }
             phasesByTrace[traceID, default: []].insert(phase)
@@ -150,12 +151,13 @@ enum UIResponsivenessDiagnostics {
             || event.hasPrefix("task_selection_to_")
             || event.hasPrefix("screen_transition_to_")
             || event.hasPrefix("task_open_")
+            || event.hasPrefix("run_finalize_")
             || event.hasPrefix("chat_stream_")
             || event.hasPrefix("chat_scroll_")
     }
 
     private static func displayEvent(_ event: String, fields: [String: String]) -> String {
-        if event == "task_open_phase", let phase = fields["phase"] {
+        if ["task_open_phase", "run_finalize_phase"].contains(event), let phase = fields["phase"] {
             return "\(event):\(phase)"
         }
         if event.hasPrefix("screen_transition_to_"), let destination = fields["destination"] {
