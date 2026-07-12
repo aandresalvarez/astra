@@ -177,6 +177,12 @@ struct SchemaVersionTests {
         #expect(ASTRASchemaV12.versionIdentifier == Schema.Version(12, 0, 0))
     }
 
+    @Test("Advertised current schema matches the compiled current model")
+    func advertisedCurrentSchemaMatchesCompiledModel() {
+        #expect(ASTRASchema.currentVersion == 12)
+        #expect(ASTRASchemaV12.versionIdentifier == Schema.Version(ASTRASchema.currentVersion, 0, 0))
+    }
+
     @Test("Migration plan lists SchemaV1 through SchemaV12")
     func migrationPlanHasVersions() {
         #expect(ASTRAMigrationPlan.schemas.count == 12)

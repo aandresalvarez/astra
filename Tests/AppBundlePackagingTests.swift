@@ -51,6 +51,15 @@ struct AppBundlePackagingTests {
         #expect(try index(of: toolCopy, in: script) < index(of: signingCommand, in: script))
     }
 
+    @Test("build script derives and embeds the authoritative store schema version")
+    func buildScriptEmbedsStoreSchemaVersion() throws {
+        let script = try String(contentsOf: repoRoot.appendingPathComponent("script/build_and_run.sh"), encoding: .utf8)
+        #expect(script.contains("public static let currentVersion"))
+        #expect(script.contains("<key>ASTRASchemaVersion</key>"))
+        #expect(script.contains("<integer>$ASTRA_SCHEMA_VERSION</integer>"))
+        #expect(!script.contains("ASTRA_SCHEMA_VERSION:-"))
+    }
+
     @Test("build script can provision managed Google OAuth client in Info.plist")
     func buildScriptCanProvisionManagedGoogleOAuthClient() throws {
         let script = try String(contentsOf: repoRoot.appendingPathComponent("script/build_and_run.sh"), encoding: .utf8)
