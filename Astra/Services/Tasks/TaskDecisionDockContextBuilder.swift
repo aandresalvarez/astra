@@ -82,6 +82,7 @@ enum TaskDecisionDockContextBuilder {
         var canToggleDone: Bool
         var hasProviderSession: Bool
         var failureReason: String?
+        var launchBlock: TaskRunLaunchBlockPayload?
         var artifactPaths: [String]
         var extraDetails: [TaskDecisionDockDetail]
     }
@@ -146,6 +147,7 @@ enum TaskDecisionDockContextBuilder {
             canToggleDone: input.canToggleDone,
             hasProviderSession: input.hasProviderSession,
             failureReason: input.failureReason,
+            launchBlock: input.launchBlock,
             artifactPaths: input.artifactPaths,
             extraDetails: input.extraDetails,
             visibleThreadAffordances: visibleThreadAffordances(

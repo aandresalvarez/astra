@@ -206,7 +206,7 @@ enum PendingTaskReviewPolicy {
     }
 
     static func stopReasonIsPolicyBlocked(_ stopReason: String) -> Bool {
-        TaskRunStopReason(rawValue: stopReason)?.isPolicyBlocked ?? stopReason.lowercased().contains("policy")
+        TaskRunStopReason(rawValue: stopReason)?.isPolicyBlocked ?? false
     }
 
     static func stopReasonIsPolicyBlocked(_ stopReason: TaskRunStopReason?) -> Bool {

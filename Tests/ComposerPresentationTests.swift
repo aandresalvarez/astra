@@ -1,6 +1,7 @@
 import Testing
 @testable import ASTRA
 import ASTRACore
+import ASTRAModels
 import AppKit
 import SwiftUI
 
@@ -295,6 +296,38 @@ struct ComposerPresentationTests {
         #expect(update.runtime == AgentRuntimeID.copilotCLI.rawValue)
         #expect(update.resolvedModel == "gpt-5.1")
         #expect(update.modelChanged)
+    }
+
+    @Test("applyRuntimeSwitch marks the task explicitly selected so the launch resolver respects it")
+    @MainActor
+    func applyRuntimeSwitchMarksTaskExplicitlySelected() {
+        let task = AgentTask(title: "Switch target", goal: "test", runtime: .cursorCLI)
+        #expect(task.runtimeExplicitlySelected == false)
+
+        TaskComposerCoordinator.applyRuntimeSwitch(
+            to: AgentRuntimeID.codexCLI.rawValue,
+            task: task,
+            cache: RuntimeModelAvailabilityCache(cachedClaudeModelsJSON: "", cachedCopilotModelsJSON: ""),
+            source: "policy_block_switch_action"
+        )
+
+        #expect(task.runtimeID == AgentRuntimeID.codexCLI.rawValue)
+        #expect(task.runtimeExplicitlySelected == true)
+    }
+
+    @Test("explicit runtime selection is sticky-true across a draft resync")
+    func explicitRuntimeSelectionIsStickyTrueAcrossDraftResync() {
+        // ChatPanelView's inline "new task" composer has its own draft-task
+        // lifecycle distinct from TaskComposerCoordinator.applyRuntimeSwitch's
+        // single-task case: saveDraft() re-derives runtimeID from the composer's
+        // live AppStorage default on every call, so it must never let that
+        // resync silently clobber an explicit pick already recorded on the
+        // draft — a resync happening after the pick is the common case, since
+        // saveDraft() runs on nearly every subsequent composer action.
+        #expect(TaskComposerCoordinator.explicitRuntimeSelection(existing: false, composerFlagged: false) == false)
+        #expect(TaskComposerCoordinator.explicitRuntimeSelection(existing: false, composerFlagged: true) == true)
+        #expect(TaskComposerCoordinator.explicitRuntimeSelection(existing: true, composerFlagged: false) == true)
+        #expect(TaskComposerCoordinator.explicitRuntimeSelection(existing: true, composerFlagged: true) == true)
     }
 
     private func sourceFile(_ relativePath: String) throws -> String {

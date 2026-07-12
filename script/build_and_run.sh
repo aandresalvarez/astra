@@ -37,7 +37,18 @@ SIGN_IDENTITY="${SIGN_IDENTITY_RAW#"${SIGN_IDENTITY_RAW%%[![:space:]]*}"}"
 SIGN_IDENTITY="${SIGN_IDENTITY%"${SIGN_IDENTITY##*[![:space:]]}"}"
 
 latest_release_tag() {
-  git -C "$ROOT_DIR" tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=v:refname 2>/dev/null | tail -n 1 || true
+  # `git tag --list` uses shell globs, not a strict regex -- the trailing
+  # `*` in each `[0-9]*` swallows any suffix, so this glob also matches a
+  # non-release tag like v0.1.29-alpha or v0.1.28-beta1 (PR #253 review
+  # comment 3549627103). Since the result feeds APP_VERSION into
+  # default_app_build() below, which only accepts exact digit-only
+  # components, a suffixed tag would make a normal local dev build abort
+  # instead of silently skipping it and picking the true latest exact
+  # release. Filter to the strict vX.Y.Z shape with the same glob-then-grep
+  # approach release.yml's "Determine release version and build" step
+  # already uses for its own HIGHEST_TAG guard, so a local build and the
+  # release workflow agree on what counts as "the latest release tag".
+  git -C "$ROOT_DIR" tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=v:refname 2>/dev/null | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | tail -n 1 || true
 }
 
 default_app_version() {
@@ -50,18 +61,115 @@ default_app_version() {
   fi
 }
 
+# Build number is derived PURELY from the version's own MAJOR.MINOR.PATCH
+# components -- never from counting or ranking existing git tags. See
+# .github/workflows/release.yml's "Determine release version and build" step
+# for the full rationale (tag-count/rank schemes aren't append-only: deleting
+# an old tag shifts the count for every later release, which can collide two
+# different versions onto the same Sparkle CFBundleVersion). This must
+# exactly match that formula so a local/dev build of a given version number
+# lands on the same build number a real release would use for it.
+#   BUILD = MAJOR*1,000,000 + MINOR*10,000 + PATCH
+# This flat, non-dotted integer is intentionally kept as the CFBundleVersion
+# shape (not switched to a dotted MAJOR.MINOR.PATCH string): Apple's current
+# CFBundleVersion documentation describes the key as "one to three
+# period-separated integers" and explicitly treats a bare single integer as
+# shorthand for [N].0.0, so a flat integer is a legal, documented
+# CFBundleVersion value for this project's notarized-direct-download +
+# Sparkle distribution model (it does not go through App Store Connect,
+# whose stricter three-component/first-component-<=4-digit rule is a
+# separate, submission-specific constraint). This is also empirically
+# confirmed: the already-published v0.1.25-v0.1.28 releases shipped
+# flat-integer CFBundleVersion values (25, 26, 3, 4) and were signed,
+# notarized, and published without rejection. See release.yml's "Determine
+# release version and build" step and PR #253 review comment 3549454188 for
+# the full research.
+#
+# Headroom before a digit-group overflows into the next -- MINOR up to 99,
+# PATCH up to 9999 -- is enforced BELOW, before packing, not just documented:
+# without it, the packing is not one-to-one (two different version strings
+# can produce the same BUILD), e.g. "0.01.08" and "0.1.8" both pack to
+# 10008 (leading zero), "0.1.10000" and "0.2.0" both pack to 20000 (PATCH
+# overflowing into MINOR), and "0.100.0" and "1.0.0" both pack to 1000000
+# (MINOR overflowing into MAJOR). MAJOR is bounded to <=999 as a sanity
+# ceiling (nothing packs on top of it, so it can't collide, but an unbounded
+# MAJOR could still grow the build number past what's sane to
+# compare/represent). Current tags top out at v0.1.28, so these bounds leave
+# enormous headroom for this project's cadence.
 default_app_build() {
-  local count
-  count="$(git -C "$ROOT_DIR" tag --list 'v[0-9]*.[0-9]*.[0-9]*' 2>/dev/null | wc -l | tr -d ' ')"
-  if [[ "$count" =~ ^[0-9]+$ && "$count" -gt 0 ]]; then
-    printf '%s\n' "$count"
-  else
-    printf '1\n'
+  local version="$1"
+  if [[ ! "$version" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+    echo "Cannot derive a default build number from version '$version': expected X.Y.Z." >&2
+    exit 2
   fi
+  local major="${BASH_REMATCH[1]}"
+  local minor="${BASH_REMATCH[2]}"
+  local patch="${BASH_REMATCH[3]}"
+  local component_name component_value
+  # Canonical-form validation: reject leading zeros (e.g. "01", "08") so two
+  # textually different version strings can never parse to the same integer
+  # for a component.
+  for component_name in major minor patch; do
+    component_value="${!component_name}"
+    if [[ ! "$component_value" =~ ^(0|[1-9][0-9]*)$ ]]; then
+      echo "Cannot derive a default build number from version '$version': component '$component_name' ('$component_value') has a leading zero (use '1', not '01')." >&2
+      exit 2
+    fi
+  done
+  # Length validation FIRST, using pure string-length comparison -- BEFORE
+  # any arithmetic ever touches these values (PR #253 review comment
+  # 3549627096, mirrored from release.yml's identical bounds checks, which
+  # this function must stay in sync with). The canonical-form regex above
+  # accepts a string of digits of any length (e.g. a component with 50
+  # digits), and bash's `((...))` arithmetic is bounded 64-bit signed:
+  # evaluating `10#$major > 999` on a value that long overflows, and an
+  # overflowed comparison can't be trusted to reject it -- letting an
+  # absurdly long component sneak past the intended bound and then ALSO
+  # misbehave when the build number is packed below. `${#var}` is a
+  # string-length operation, not arithmetic on the numeric value, so it
+  # cannot overflow no matter how long the component is. Each bound's
+  # digit-count limit is exactly the count of digits its own numeric limit
+  # has (999 -> 3, 99 -> 2, 9999 -> 4); combined with the canonical-form
+  # check above (no leading zeros), a component within its digit-count
+  # limit is *guaranteed* within its numeric limit too, so only after this
+  # passes is it safe to also do the numeric bound check below.
+  if [[ ${#major} -gt 3 ]]; then
+    echo "Cannot derive a default build number from version '$version': MAJOR ($major) has too many digits (must be <=999, i.e. at most 3 digits)." >&2
+    exit 2
+  fi
+  if [[ ${#minor} -gt 2 ]]; then
+    echo "Cannot derive a default build number from version '$version': MINOR ($minor) has too many digits (must be <=99, i.e. at most 2 digits) -- a longer value would overflow into the MAJOR digit-group and could collide with a different version." >&2
+    exit 2
+  fi
+  if [[ ${#patch} -gt 4 ]]; then
+    echo "Cannot derive a default build number from version '$version': PATCH ($patch) has too many digits (must be <=9999, i.e. at most 4 digits) -- a longer value would overflow into the MINOR digit-group and could collide with a different version." >&2
+    exit 2
+  fi
+  # Component-bound validation: reject values that would overflow into a
+  # neighboring digit-group of the packed build number. Safe from
+  # arithmetic overflow now -- the length checks above already guarantee
+  # each component is at most a handful of digits.
+  if (( 10#$major > 999 )); then
+    echo "Cannot derive a default build number from version '$version': MAJOR ($major) must be <=999." >&2
+    exit 2
+  fi
+  if (( 10#$minor > 99 )); then
+    echo "Cannot derive a default build number from version '$version': MINOR ($minor) must be <=99 -- a larger value would overflow into the MAJOR digit-group and could collide with a different version." >&2
+    exit 2
+  fi
+  if (( 10#$patch > 9999 )); then
+    echo "Cannot derive a default build number from version '$version': PATCH ($patch) must be <=9999 -- a larger value would overflow into the MINOR digit-group and could collide with a different version." >&2
+    exit 2
+  fi
+  # 10#$x forces base-10 interpretation in arithmetic context: a component
+  # with a leading zero (e.g. "08") would otherwise be parsed as an invalid
+  # octal literal and abort the run. (The canonical-form check above already
+  # rejects genuine leading zeros; this stays as defense in depth.)
+  printf '%s\n' "$((10#$major * 1000000 + 10#$minor * 10000 + 10#$patch))"
 }
 
 APP_VERSION="${ASTRA_VERSION:-$(default_app_version)}"
-APP_BUILD="${ASTRA_BUILD:-$(default_app_build)}"
+APP_BUILD="${ASTRA_BUILD:-$(default_app_build "$APP_VERSION")}"
 ASTRA_GIT_COMMIT="${ASTRA_GIT_COMMIT:-$(git -C "$ROOT_DIR" rev-parse --short=12 HEAD 2>/dev/null || printf unknown)}"
 ASTRA_BUILD_DATE="${ASTRA_BUILD_DATE:-$(/bin/date -u '+%Y-%m-%dT%H:%M:%SZ')}"
 ASTRA_SCHEMA_VERSION="$(/usr/bin/sed -n 's/.*public static let currentVersion = \([0-9][0-9]*\).*/\1/p' "$ROOT_DIR/Astra/Models/SchemaVersions.swift" | /usr/bin/tail -n 1)"

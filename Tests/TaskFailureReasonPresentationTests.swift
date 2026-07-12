@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import ASTRAModels
 @testable import ASTRA
 
 @Suite("Task failure reason presentation")
@@ -34,5 +35,42 @@ struct TaskFailureReasonPresentationTests {
             errorPayloads: [payload],
             latestExitCode: 143
         ) == "Workspace job stopped producing heartbeats.")
+    }
+
+    @Test("TaskRunLaunchBlockPayload round-trips through JSON and preserves the suggested runtime")
+    func launchBlockPayloadRoundTripsThroughJSON() throws {
+        let payload = TaskRunLaunchBlockPayload(
+            kind: .runtimeIncompatible,
+            title: "Selected runtime is incompatible with required ASTRA capabilities",
+            message: "Cursor CLI cannot satisfy: host-control MCP server for github.",
+            remediation: "Switch to Codex CLI.",
+            missingCapabilities: ["host-control MCP server for github"],
+            suggestedRuntimeID: "codex_cli"
+        )
+        let data = try JSONEncoder().encode(payload)
+        let json = try #require(String(data: data, encoding: .utf8))
+        let decoded = try #require(TaskRunLaunchBlockPayload.decode(from: json))
+        #expect(decoded == payload)
+        #expect(decoded.suggestedRuntimeID == "codex_cli")
+    }
+
+    @Test("TaskRunLaunchBlockPayload.decode returns nil for malformed JSON")
+    func launchBlockPayloadDecodeReturnsNilForMalformedInput() {
+        #expect(TaskRunLaunchBlockPayload.decode(from: "not json") == nil)
+    }
+
+    @Test("TaskRunLaunchBlockPayload.decode round-trips a block with no suggested runtime")
+    func launchBlockPayloadDecodeHandlesMissingSuggestion() throws {
+        let payload = TaskRunLaunchBlockPayload(
+            kind: .runtimeIncompatible,
+            title: "Selected runtime is incompatible with required ASTRA capabilities",
+            message: "Cursor CLI cannot satisfy: host-control MCP server for jira.",
+            remediation: "Switch to a compatible runtime such as Codex CLI, Claude Code, or a Copilot CLI build with task-scoped MCP config support.",
+            missingCapabilities: ["host-control MCP server for jira"]
+        )
+        let data = try JSONEncoder().encode(payload)
+        let json = try #require(String(data: data, encoding: .utf8))
+        let decoded = try #require(TaskRunLaunchBlockPayload.decode(from: json))
+        #expect(decoded.suggestedRuntimeID == nil)
     }
 }
