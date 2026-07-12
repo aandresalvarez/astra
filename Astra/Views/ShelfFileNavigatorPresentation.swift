@@ -13,11 +13,31 @@ enum ShelfFileNavigatorLayout: Equatable {
         isPresented: Bool,
         isPinned: Bool,
         availableWidth: CGFloat,
-        minimumDockedWidth: CGFloat = ShelfWidthMetrics.filesMinReadableWidth
+        navigatorWidth: CGFloat = ShelfWidthMetrics.filesNavigatorDefaultWidth
     ) -> ShelfFileNavigatorLayout {
         guard isPresented else { return .hidden }
+        let minimumDockedWidth = navigatorWidth
+            + ShelfWidthMetrics.filesResizeHandleWidth
+            + ShelfWidthMetrics.filesMinimumPreviewWidth
         guard isPinned, availableWidth >= minimumDockedWidth else { return .floating }
         return .docked
+    }
+}
+
+enum ShelfFileNavigatorResizePolicy {
+    static func showsResizeHandle(layout: ShelfFileNavigatorLayout, isPinned: Bool) -> Bool {
+        isPinned && layout != .hidden
+    }
+
+    static func displayedWidth(
+        layout: ShelfFileNavigatorLayout,
+        navigatorWidth: CGFloat,
+        availableWidth: CGFloat,
+        reservesResizeHandle: Bool
+    ) -> CGFloat {
+        guard layout == .floating else { return navigatorWidth }
+        let reservedWidth = reservesResizeHandle ? ShelfWidthMetrics.filesResizeHandleWidth : 0
+        return max(0, min(navigatorWidth, availableWidth - reservedWidth))
     }
 }
 

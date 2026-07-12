@@ -67,6 +67,20 @@ private struct ImportWorkspaceMenuItem: View {
     }
 }
 
+/// Owns the main-window command instead of relying on SwiftUI's synthesized
+/// `NewItemCommands`. On macOS 26.5 that synthesized command can recursively
+/// invalidate the scene graph while restored windows are ordered on screen.
+private struct NewMainWindowMenuItem: View {
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        Button("New \(AppChannel.current.displayName) Window") {
+            openWindow(id: AppWindowIDs.main)
+        }
+        .keyboardShortcut("n", modifiers: .command)
+    }
+}
+
 private struct CheckForUpdatesMenuItem: View {
     @ObservedObject var appUpdateController: AppUpdateController
 
@@ -785,7 +799,7 @@ public struct ASTRAApp: App {
     }
 
     public var body: some Scene {
-        WindowGroup(AppChannel.current.displayName) {
+        WindowGroup(AppChannel.current.displayName, id: AppWindowIDs.main) {
             if let startupBlocker {
                 StoreStartupBlockedView(
                     blocker: startupBlocker,
@@ -806,12 +820,16 @@ public struct ASTRAApp: App {
         .modelContainer(modelContainer)
         .defaultSize(width: AppWindowLayout.mainDefaultWidth, height: AppWindowLayout.mainDefaultHeight)
         .commands {
-            // Lives in the File menu (after "New ASTRA Window"). Manual
-            // re-entry for the first-run wizard — the normal path is
+            // Replace SwiftUI's synthesized NewItemCommands. Besides giving
+            // ASTRA deterministic ownership of this menu, this avoids a
+            // macOS 26.5 restored-window recursion in scene command discovery.
+            // The first item preserves the standard Command-N behavior. Manual
+            // re-entry for the first-run wizard remains available; the normal path is
             // automatic (auto-shown once on first launch, then
             // `hasCompletedOnboarding` flips true). This item re-opens
             // the wizard on demand without touching any other app state.
-            CommandGroup(after: .newItem) {
+            CommandGroup(replacing: .newItem) {
+                NewMainWindowMenuItem()
                 Divider()
                 // Workspace creation via the File menu. The sidebar's
                 // + button in the WORKSPACES header calls the same

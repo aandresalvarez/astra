@@ -1271,7 +1271,7 @@ final class AgentRuntimeWorker {
         }
         let handoffTaskFolder = TaskWorkspaceAccess(task: task).taskFolder
         let handoffDiscoveredFiles = await TaskOutputDiscovery.filesAsync(in: handoffTaskFolder)
-        AgentRuntimeRunPersistence.finalizeAndPersist(
+        await AgentRuntimeRunPersistence.finalizeAndPersist(
             task: task,
             run: run,
             modelContext: modelContext,

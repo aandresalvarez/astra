@@ -16,7 +16,7 @@ private func makeTaskWorkerHandoffContainer() throws -> ModelContainer {
 @MainActor
 struct TaskWorkerHandoffServiceTests {
     @Test("run finalization records structured handoff in task events and context capsule")
-    func runFinalizationRecordsStructuredHandoff() throws {
+    func runFinalizationRecordsStructuredHandoff() async throws {
         let root = try temporaryRoot()
         defer { try? FileManager.default.removeItem(atPath: root) }
         let container = try makeTaskWorkerHandoffContainer()
@@ -63,7 +63,7 @@ struct TaskWorkerHandoffServiceTests {
             summary: "Report draft created"
         )
 
-        AgentRuntimeRunPersistence.finalizeAndPersist(
+        await AgentRuntimeRunPersistence.finalizeAndPersist(
             task: task,
             run: run,
             modelContext: context,
@@ -88,7 +88,7 @@ struct TaskWorkerHandoffServiceTests {
     }
 
     @Test("blocked plan steps are surfaced as handoff blockers")
-    func blockedPlanStepsSurfaceAsHandoffBlockers() throws {
+    func blockedPlanStepsSurfaceAsHandoffBlockers() async throws {
         let root = try temporaryRoot()
         defer { try? FileManager.default.removeItem(atPath: root) }
         let container = try makeTaskWorkerHandoffContainer()
@@ -127,7 +127,7 @@ struct TaskWorkerHandoffServiceTests {
             reason: "Cannot create docs/requirements.md because docs is missing"
         )
 
-        AgentRuntimeRunPersistence.finalizeAndPersist(
+        await AgentRuntimeRunPersistence.finalizeAndPersist(
             task: task,
             run: run,
             modelContext: context,
@@ -145,7 +145,7 @@ struct TaskWorkerHandoffServiceTests {
     }
 
     @Test("handoff discovers task output files when provider metadata is missing")
-    func handoffDiscoversTaskOutputFilesWhenProviderMetadataIsMissing() throws {
+    func handoffDiscoversTaskOutputFilesWhenProviderMetadataIsMissing() async throws {
         let root = try temporaryRoot()
         defer { try? FileManager.default.removeItem(atPath: root) }
         let container = try makeTaskWorkerHandoffContainer()
@@ -172,7 +172,7 @@ struct TaskWorkerHandoffServiceTests {
             encoding: .utf8
         )
 
-        AgentRuntimeRunPersistence.finalizeAndPersist(
+        await AgentRuntimeRunPersistence.finalizeAndPersist(
             task: task,
             run: run,
             modelContext: context,

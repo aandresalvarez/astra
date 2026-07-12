@@ -93,8 +93,18 @@ enum AgentRuntimeRunPersistence {
         modelContext: ModelContext,
         phase: RunPhase,
         handoffDiscoveredFiles: [TaskOutputDiscoveredFile]? = nil
-    ) {
+    ) async {
         let start = DispatchTime.now().uptimeNanoseconds
+        // File discovery is independent of SwiftData. Prepare it asynchronously
+        // before the ordered model commit so directory traversal does not
+        // monopolize the main actor. No SwiftData model crosses actors.
+        let taskFolder = TaskWorkspaceAccess(task: task).taskFolder
+        let discoveredFiles: [TaskOutputDiscoveredFile]
+        if let handoffDiscoveredFiles {
+            discoveredFiles = handoffDiscoveredFiles
+        } else {
+            discoveredFiles = await TaskOutputDiscovery.filesAsync(in: taskFolder)
+        }
         let traceID = AuditTrace.make("run-finalize")
         // Bound the inline output blob now that the run is finalized. Session
         // history already captured the full output via recordSessionTurn before
@@ -108,7 +118,8 @@ enum AgentRuntimeRunPersistence {
         }
 
         let artifactReconciliation = measureFinalizationPhase("artifact_reconciliation", task: task, run: run, traceID: traceID) {
-            TaskArtifactPersistenceService.reconcileTaskOutputArtifacts(for: task, modelContext: modelContext)
+            TaskArtifactPersistenceService.reconcileTaskOutputArtifacts(
+                discoveredFiles, for: task, modelContext: modelContext)
         }
         measureFinalizationPhase("event_compaction", task: task, run: run, traceID: traceID) {
             AgentEventCompactor.compactEvents(for: task, modelContext: modelContext)
@@ -121,7 +132,7 @@ enum AgentRuntimeRunPersistence {
                 task: task,
                 run: run,
                 modelContext: modelContext,
-                discoveredFiles: handoffDiscoveredFiles
+                discoveredFiles: discoveredFiles
             )
         }
         _ = measureFinalizationPhase("mission_checkpoint", task: task, run: run, traceID: traceID) {
