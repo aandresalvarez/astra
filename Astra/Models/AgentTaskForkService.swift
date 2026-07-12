@@ -105,6 +105,7 @@ public enum AgentTaskForkService {
         forked.skills = source.skills
         forked.skillSnapshotsJSON = source.skillSnapshotsJSON
         forked.runtimeID = source.runtimeID
+        forked.runtimeExplicitlySelected = source.runtimeExplicitlySelected
         forked.testCommand = source.testCommand
         forked.maxTurns = source.maxTurns
         forked.useAgentTeam = source.useAgentTeam
@@ -115,6 +116,8 @@ public enum AgentTaskForkService {
         // Provider sessions and permission grants intentionally reset with the
         // newly constructed task. A conversation fork must never share an
         // operational provider session or task-scoped authorization.
+        // A fork continues the source's line of work, so it stays in the same
+        // worktree the source was pinned to.
         forked.executionRootPath = source.executionRootPath
         forked.executionEnvironmentSnapshotJSON = source.executionEnvironmentSnapshotJSON
         forked.forkedAtRunIndex = cutoffIndex

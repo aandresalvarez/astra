@@ -9,6 +9,14 @@ public struct TaskRunAnswerPresentation: Hashable, Sendable {
 public enum TaskRunAnswerPresentationPolicy {
     private static let longRawOutputThreshold = 1_200
 
+    /// Conversation `TaskEvent` rows are coalesced up to this length before
+    /// storage starts a new row purely because of the length cap, not a
+    /// semantic gap in the text (see `AgentEventRecordingState`, which
+    /// defaults its own cap to this value). `joinedResponsePayloads` uses it
+    /// to recognize that seam and rejoin the row split without inserting a
+    /// space that was never in the original stream.
+    public static let conversationChunkCoalescingCap = 4_096
+
     public static func presentation(rawText: String) -> TaskRunAnswerPresentation {
         let raw = rawText
         let visible = normalizedVisibleText(raw)
@@ -43,7 +51,11 @@ public enum TaskRunAnswerPresentationPolicy {
 
     public static func joinedResponsePayloads(_ payloads: [String]) -> String {
         let visiblePayloads = payloads.map(strippingProtocolMarkerLines)
-        let joined = MarkdownRenderPreparation.joinChunks(visiblePayloads, prepareForDisplay: false)
+        let joined = MarkdownRenderPreparation.joinChunks(
+            visiblePayloads,
+            prepareForDisplay: false,
+            coalescingCapHint: conversationChunkCoalescingCap
+        )
         return normalizedVisibleText(joined)
     }
 
@@ -129,11 +141,28 @@ public enum TaskRunAnswerPresentationPolicy {
         "This run produced a long progress log. Open Diagnostics for the raw output."
     }
 
+    /// Dedupe must never change the text's structure class: paragraph text
+    /// stays paragraphs, line-structured text keeps its line breaks (they
+    /// carry markdown block boundaries such as `### `/`- ` at line starts),
+    /// and only true single-line text falls back to sentence-level joining.
     private static func dedupeAdjacentSegments(in text: String) -> String {
-        let separator = text.contains("\n\n") ? "\n\n" : " "
+        if text.contains("\n\n") {
+            return dedupedSegments(text.components(separatedBy: "\n\n"), joinedBy: "\n\n")
+        }
+        if text.contains("\n") {
+            return dedupedSegments(text.components(separatedBy: "\n"), joinedBy: "\n")
+        }
+        let repaired = replace(pattern: #"([.!?])\s+"#, in: text, template: "$1\n")
+        return dedupedSegments(repaired.components(separatedBy: "\n"), joinedBy: " ")
+    }
+
+    private static func dedupedSegments(_ rawSegments: [String], joinedBy separator: String) -> String {
         var output: [String] = []
         var previousKey: String?
-        for segment in segments(in: text) {
+        for segment in rawSegments {
+            // Key on collapsed whitespace but emit the ORIGINAL segment:
+            // trimming per line would strip significant indentation from
+            // fenced code that reaches the line tier (no blank lines).
             let key = comparisonKey(segment)
             guard !key.isEmpty, key != previousKey else { continue }
             output.append(segment)

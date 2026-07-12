@@ -217,7 +217,8 @@ struct CodexCLIRuntimeAdapter: AgentRuntimeAdapter {
             runID: context.runID,
             executionEnvironment: executionEnvironment,
             contextText: context.contextText,
-            taskEnvironment: taskEnv
+            taskEnvironment: taskEnv,
+            runtimeRequirements: context.runtimeRequirements
         )
         let launchTaskEnv = taskEnv
             .merging(mcpProjection.workspaceExecutorEnvironment) { current, _ in current }

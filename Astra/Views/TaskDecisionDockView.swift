@@ -1,9 +1,16 @@
 import SwiftUI
 
-struct TaskDecisionDockView: View {
+struct TaskDecisionDockView<ExtendedDetails: View>: View {
     let presentation: TaskDecisionDockPresentation
     @Binding var isExpanded: Bool
     var onAction: (TaskDecisionDockAction) -> Void
+    /// Opens the app-level diagnostics surface from the details footer.
+    var onOpenDiagnostics: (() -> Void)?
+    /// The full run-activity sections (tools, policy, technical output,
+    /// stats, …) injected by the owner. The dock's Details popover is the
+    /// single run inspector for the latest finished run — the thread no
+    /// longer renders a second "Details" disclosure for it.
+    @ViewBuilder var extendedDetails: () -> ExtendedDetails
 
     var body: some View {
         summaryRow
@@ -38,9 +45,16 @@ struct TaskDecisionDockView: View {
         }
     }
 
+    /// The rail must carry the Details toggle in the compact (wrapped)
+    /// layouts: the thread renders no run-details disclosure while the dock
+    /// is visible, so this toggle is the only entry point to the inspector
+    /// at narrow widths.
     private var actionRail: some View {
         ViewThatFits(in: .horizontal) {
             HStack(alignment: .center, spacing: 10) {
+                if presentation.showsDetailsToggle {
+                    detailsToggle
+                }
                 if hasUtilityActions {
                     utilityActionsView
                 }
@@ -53,6 +67,9 @@ struct TaskDecisionDockView: View {
             }
 
             VStack(alignment: .leading, spacing: 8) {
+                if presentation.showsDetailsToggle {
+                    detailsToggle
+                }
                 if hasUtilityActions {
                     utilityActionsView
                 }
@@ -78,17 +95,20 @@ struct TaskDecisionDockView: View {
         .layoutPriority(1)
     }
 
+    /// One-line status cluster per the decision-dock spec: title plus compact
+    /// evidence inline; the explanatory summary lives in `.help`, VoiceOver,
+    /// and the details popover instead of a visible second line.
     private var statusTitleCluster: some View {
         HStack(alignment: .center, spacing: 7) {
             statusIcon
-            VStack(alignment: .leading, spacing: 1) {
-                Text(presentation.title)
-                    .font(Stanford.body(TaskComposerPresentation.decisionTitleFontSize).weight(.semibold))
-                    .foregroundStyle(Stanford.black)
-                    .lineLimit(1)
-                // The one-line summary is part of the visible scan path, not only a
-                // tooltip; full text stays in .help when it truncates.
-                Text(presentation.summary)
+            Text(presentation.title)
+                .font(Stanford.body(TaskComposerPresentation.decisionTitleFontSize).weight(.semibold))
+                .foregroundStyle(Stanford.black)
+                .lineLimit(1)
+            if TaskComposerPresentation.decisionSummaryVisibleInCompactRow {
+                summaryText
+            } else if let meta = presentation.compactMeta {
+                Text("· \(meta)")
                     .font(Stanford.caption(12))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -98,7 +118,22 @@ struct TaskDecisionDockView: View {
         .help(presentation.summary)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(presentation.title)
-        .accessibilityValue(presentation.summary)
+        .accessibilityValue(accessibilitySummary)
+    }
+
+    private var summaryText: some View {
+        Text(presentation.summary)
+            .font(Stanford.caption(12))
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .truncationMode(.tail)
+    }
+
+    private var accessibilitySummary: String {
+        guard let meta = presentation.compactMeta, !meta.isEmpty else {
+            return presentation.summary
+        }
+        return "\(meta). \(presentation.summary)"
     }
 
     private var statusIcon: some View {
@@ -150,10 +185,6 @@ struct TaskDecisionDockView: View {
                     .frame(width: 11)
                 Text("Details")
                     .font(Stanford.caption(11).weight(.semibold))
-                Text(detailSummary)
-                    .font(Stanford.caption(11))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
             }
             .foregroundStyle(toneColor)
             .contentShape(Rectangle())
@@ -191,17 +222,43 @@ struct TaskDecisionDockView: View {
             Divider()
 
             ScrollView {
+                // No summary line here: for failure states the summary IS the
+                // banner text sitting right above the dock — repeating it in
+                // the inspector reads as noise. It stays in `.help` and
+                // accessibility.
                 VStack(alignment: .leading, spacing: 9) {
                     ForEach(presentation.details) { detail in
                         detailRow(detail)
                     }
+                    extendedDetails()
                 }
                 .padding(12)
             }
-            .frame(maxHeight: 260)
+            .frame(maxHeight: TaskComposerPresentation.decisionDetailsMaxHeight)
             .accessibilityIdentifier("TaskDecisionDockDetails")
+
+            if let onOpenDiagnostics {
+                Divider()
+                HStack {
+                    Spacer(minLength: 12)
+                    Button {
+                        isExpanded = false
+                        onOpenDiagnostics()
+                    } label: {
+                        Label("Open Diagnostics", systemImage: "stethoscope")
+                            .font(Stanford.caption(11).weight(.semibold))
+                            .foregroundStyle(Stanford.lagunita)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Open the task's diagnostic files for deep debugging")
+                    .accessibilityIdentifier("TaskDecisionDockOpenDiagnostics")
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+            }
         }
-        .frame(width: 360)
+        .frame(width: TaskComposerPresentation.decisionDetailsWidth)
         .accessibilityIdentifier("TaskDecisionDockDetailsPopover")
     }
 
@@ -248,11 +305,11 @@ struct TaskDecisionDockView: View {
             onAction(action)
         } label: {
             Label(action.title, systemImage: action.systemImage)
-                .font(Stanford.caption(isPrimary ? 13 : 12).weight(.semibold))
+                .font(Stanford.caption(12).weight(.semibold))
                 .labelStyle(.titleAndIcon)
                 .foregroundStyle(buttonForeground(action, isPrimary: isPrimary))
-                .padding(.horizontal, isPrimary ? 13 : (isQuiet(action) ? 4 : 10))
-                .padding(.vertical, isPrimary ? 7 : 6)
+                .padding(.horizontal, isPrimary ? 11 : (isQuiet(action) ? 4 : 9))
+                .padding(.vertical, 5)
                 .background(
                     RoundedRectangle(cornerRadius: Stanford.radiusSmall, style: .continuous)
                         .fill(buttonBackground(action, isPrimary: isPrimary))
@@ -267,21 +324,6 @@ struct TaskDecisionDockView: View {
         .help(action.help ?? action.title)
         .accessibilityIdentifier(accessibilityIdentifier(for: action))
         .accessibilityLabel(action.title)
-    }
-
-    private var detailSummary: String {
-        let titles = presentation.details.reduce(into: [String]()) { output, detail in
-            let title = compactDetailTitle(detail.title)
-            guard !output.contains(title) else { return }
-            output.append(title)
-        }
-        guard !titles.isEmpty else { return "" }
-        let visible = Array(titles.prefix(2))
-        let hiddenCount = titles.count - visible.count
-        if hiddenCount > 0 {
-            return visible.joined(separator: " · ") + " · +\(hiddenCount)"
-        }
-        return visible.joined(separator: " · ")
     }
 
     private var toneColor: Color {
@@ -341,19 +383,9 @@ struct TaskDecisionDockView: View {
              .retry,
              .resume,
              .openArtifact,
-             .reopenTask:
+             .reopenTask,
+             .switchRuntime:
             false
-        }
-    }
-
-    private func compactDetailTitle(_ title: String) -> String {
-        switch title {
-        case "Active step":
-            "Step"
-        case "Permission scope":
-            "Scope"
-        default:
-            title
         }
     }
 
@@ -402,6 +434,8 @@ struct TaskDecisionDockView: View {
             "CreateCorrectionTaskButton"
         case .dismissCorrection:
             "DismissCorrectionButton"
+        case .switchRuntime:
+            "SwitchRuntimeButton"
         }
     }
 }

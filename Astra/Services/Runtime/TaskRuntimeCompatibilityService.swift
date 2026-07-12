@@ -1,5 +1,6 @@
 import Foundation
 import ASTRACore
+import ASTRAModels
 
 enum TaskRuntimeIncompatibility: Equatable, Sendable {
     case runtimeUnavailable
@@ -27,6 +28,11 @@ struct TaskRuntimeCompatibilityLaunchBlock: Equatable, Sendable {
     var message: String
     var remediation: String
     var missingCapabilities: [String]
+    /// The first candidate runtime that WOULD satisfy every requirement, when
+    /// one exists — computed even though `respectExplicitRuntimeChoice`
+    /// suppressed the automatic reroute to it. Powers a one-click "Switch to
+    /// <runtime>" action instead of leaving the user to guess.
+    var suggestedRuntime: AgentRuntimeID?
 }
 
 struct TaskRuntimeCompatibilityResolution: Equatable, Sendable {
@@ -39,13 +45,21 @@ struct TaskRuntimeCompatibilityResolution: Equatable, Sendable {
 }
 
 enum TaskRuntimeCompatibilityService {
-    static let runtimeCapabilityIncompatibleReason = "runtime_capability_incompatible"
+    static let runtimeCapabilityIncompatibleReason = TaskRunStopReason.runtimeCapabilityIncompatible.rawValue
 
     static func resolve(
         requestedRuntime: AgentRuntimeID,
         defaultRuntime: AgentRuntimeID,
         requirements: TaskRuntimeRequirementSet,
         candidateRuntimes: [AgentRuntimeID] = AgentRuntimeAdapterRegistry.runtimeIDs,
+        // When true, an incompatible *requested* runtime is never silently
+        // rerouted to a fallback — it goes straight to `launchBlock` instead,
+        // as if no fallback existed. This is for runtimes the user explicitly
+        // picked (AgentTask.runtimeExplicitlySelected): overriding that choice
+        // without telling them is worse than a clear, actionable block. A
+        // runtime that reaches this resolver as a *default* (not explicitly
+        // chosen) keeps today's silent-reroute behavior.
+        respectExplicitRuntimeChoice: Bool = false,
         profile: (AgentRuntimeID) -> AgentRuntimeCapabilityProfile,
         isRuntimeUsable: (AgentRuntimeID) -> Bool
     ) -> TaskRuntimeCompatibilityResolution {
@@ -78,6 +92,10 @@ enum TaskRuntimeCompatibilityService {
             )
         }
 
+        // Always find the first compatible fallback (if any) so a block can
+        // still suggest it, even when respectExplicitRuntimeChoice suppresses
+        // the automatic switch.
+        var firstCompatibleFallback: AgentRuntimeID?
         for runtime in orderedFallbackRuntimes(
             requestedRuntime: requestedRuntime,
             defaultRuntime: defaultRuntime,
@@ -90,15 +108,20 @@ enum TaskRuntimeCompatibilityService {
                 isRuntimeUsable: isRuntimeUsable(runtime),
                 incompatibilities: &incompatibilities
             ) {
-                return TaskRuntimeCompatibilityResolution(
-                    requestedRuntime: requestedRuntime,
-                    selectedRuntime: runtime,
-                    reroutedFrom: requestedRuntime,
-                    requirements: requirements,
-                    incompatibilities: incompatibilities,
-                    launchBlock: nil
-                )
+                firstCompatibleFallback = runtime
+                break
             }
+        }
+
+        if let fallback = firstCompatibleFallback, !respectExplicitRuntimeChoice {
+            return TaskRuntimeCompatibilityResolution(
+                requestedRuntime: requestedRuntime,
+                selectedRuntime: fallback,
+                reroutedFrom: requestedRuntime,
+                requirements: requirements,
+                incompatibilities: incompatibilities,
+                launchBlock: nil
+            )
         }
 
         return TaskRuntimeCompatibilityResolution(
@@ -110,7 +133,8 @@ enum TaskRuntimeCompatibilityService {
             launchBlock: launchBlock(
                 for: requestedRuntime,
                 requirements: requirements,
-                incompatibilities: incompatibilities[requestedRuntime] ?? []
+                incompatibilities: incompatibilities[requestedRuntime] ?? [],
+                suggestedRuntime: firstCompatibleFallback
             )
         )
     }
@@ -140,18 +164,22 @@ enum TaskRuntimeCompatibilityService {
     static func launchBlock(
         for runtime: AgentRuntimeID,
         requirements: TaskRuntimeRequirementSet,
-        incompatibilities: [TaskRuntimeIncompatibility]
+        incompatibilities: [TaskRuntimeIncompatibility],
+        suggestedRuntime: AgentRuntimeID? = nil
     ) -> TaskRuntimeCompatibilityLaunchBlock {
         let missing = missingCapabilityNames(
             requirements: requirements,
             incompatibilities: incompatibilities
         )
+        let remediation = suggestedRuntime.map { "Switch to \($0.displayName)." }
+            ?? "Switch to a compatible runtime such as Codex CLI, Claude Code, or a Copilot CLI build with task-scoped MCP config support."
         return TaskRuntimeCompatibilityLaunchBlock(
             stopReason: runtimeCapabilityIncompatibleReason,
             title: "Selected runtime is incompatible with required ASTRA capabilities",
             message: "\(runtime.displayName) cannot satisfy: \(missing.joined(separator: ", ")).",
-            remediation: "Switch to a compatible runtime such as Codex CLI, Claude Code, or a Copilot CLI build with task-scoped MCP config support.",
-            missingCapabilities: missing
+            remediation: remediation,
+            missingCapabilities: missing,
+            suggestedRuntime: suggestedRuntime
         )
     }
 

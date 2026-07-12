@@ -15,7 +15,7 @@ final class AgentEventRecordingState {
     /// clobbering output assembled from streamed `.text` deltas.
     private var runsWithCompletedOutput: Set<UUID> = []
 
-    init(maxCoalescedPayloadLength: Int = 4_096) {
+    init(maxCoalescedPayloadLength: Int = TaskRunAnswerPresentationPolicy.conversationChunkCoalescingCap) {
         self.maxCoalescedPayloadLength = maxCoalescedPayloadLength
     }
 

@@ -48,7 +48,7 @@ struct ArchitectureFitnessTests {
             "Astra/Services/Runtime/ExecutionEnvironment.swift",
             "Astra/Services/Runtime/AgentRuntimeLaunchPreflight.swift",
             "Astra/Services/Runtime/AgentRuntimeLaunchRuntimeResolver.swift",
-            "Astra/Services/Runtime/AgentRuntimeCapabilityCompatibilityPolicy.swift"
+            "Astra/Services/Runtime/TaskRuntimeCompatibilityService.swift"
         ]
 
         for relativePath in guardedFiles {
@@ -1372,7 +1372,7 @@ struct ArchitectureFitnessTests {
 
         #expect(completedAgentMarkdownView.contains("TaskAnswerTextSelectionPolicy.completedAnswerMarkdownIsSelectable"))
         #expect(!completedAgentMarkdownView.contains(".textSelection(.enabled)"))
-        #expect(streamingAgentTextView.contains("taskAnswerTextSelection(TaskAnswerTextSelectionPolicy.liveAnswerTextIsSelectable)"))
+        #expect(streamingAgentTextView.contains("isSelectable: TaskAnswerTextSelectionPolicy.liveAnswerTextIsSelectable"))
         #expect(!streamingAgentTextView.contains(".textSelection(.enabled)"))
         #expect(listItemCase.contains("HStack(alignment: .top"))
         #expect(!listItemCase.contains("HStack(alignment: .firstTextBaseline"))
@@ -1610,8 +1610,20 @@ struct ArchitectureFitnessTests {
             "Astra/Views/TaskMainView.swift": .init(6_100, .owner("Task detail and run surface")),
             "Astra/Services/Browser/ShelfBrowserSession.swift": .init(6_000, .owner("Shelf browser session")),
             "Astra/Views/ContentView.swift": .init(4_850, .owner("Workspace shell composition")),
-            "Astra/Models/SchemaVersions.swift": .init(3_650, .owner("SwiftData schema history")),
-            "Astra/Views/ChatPanelView.swift": .init(3_050, .owner("Composer chat surface")),
+            // Budget raised for the V11 freeze / V12 mint (AgentTask.runtimeExplicitlySelected):
+            // freezing a schema version means copying every one of its ~16
+            // referenced model types into a fully self-contained nested body
+            // (957a90a8's V10 freeze is the precedent), which grows this file
+            // by ~450-500 lines every time. That growth is expected schema
+            // history, not scope creep - there's nothing to shrink here.
+            "Astra/Models/SchemaVersions.swift": .init(4_100, .owner("SwiftData schema history")),
+            // Budget raised to propagate AgentTask.runtimeExplicitlySelected through
+            // this composer's draft lifecycle: the flag has to be set/preserved at
+            // every one of its task-creation and draft-resync call sites (quickRun,
+            // createTaskFromSpec, runApprovedPlan, saveDraft's two branches) plus a
+            // couple of session-reset points, so the growth is spread thin by design
+            // rather than concentrated in one function that could be extracted.
+            "Astra/Views/ChatPanelView.swift": .init(3_075, .owner("Composer chat surface")),
             "Astra/Services/Runtime/AgentRuntimeAdapter.swift": .init(2_900, .owner("Runtime adapter registry")),
             "Astra/Views/PluginCatalogView.swift": .init(2_900, .owner("Capability catalog UI")),
             "Astra/Views/ShelfMarkdownPanelView.swift": .init(2_850, .owner("Shelf markdown panel")),
@@ -1635,7 +1647,11 @@ struct ArchitectureFitnessTests {
             "Astra/Services/Runtime/AgentProcessSupport.swift": .init(2_150, .owner("Runtime process stream support")),
             "Astra/Services/Browser/ControlledBrowserController.swift": .init(2_100, .owner("Controlled browser orchestration")),
             "Astra/Services/Git/GitService.swift": .init(2_100, .owner("Git integration")),
-            "Astra/Services/Runtime/AgentRuntimeWorker.swift": .init(2_050, .owner("Runtime worker execution")),
+            // Budget raised for the run-before-resolve reordering fix (PR #281
+            // review follow-up) - the launch-sequencing comment explaining why
+            // TaskRun must be constructed before requirements are resolved
+            // isn't safely compressible further without losing the "why".
+            "Astra/Services/Runtime/AgentRuntimeWorker.swift": .init(2_075, .owner("Runtime worker execution")),
             "Tools/WorkspaceToolSupport/WorkspaceToolSupport.swift": .init(3_450, .owner("Workspace MCP tool")),
             "Tools/HostControlToolSupport/HostControlToolSupport.swift": .init(2_250, .owner("Host-control MCP tool")),
             "Tests/ProcessMonitorTests.swift": .init(3_500, .companion(of: "Astra/Services/Runtime/AgentProcessSupport.swift")),
@@ -1649,7 +1665,10 @@ struct ArchitectureFitnessTests {
             "Tests/AgentRuntimeWorkerTests.swift": .init(2_550, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
             "Tests/AgentPolicyTests.swift": .init(2_650, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
             "Tests/WorkspaceAppActionExecutorTests.swift": .init(2_500, .companion(of: "Astra/Services/WorkspaceApps/WorkspaceAppActionExecutor.swift")),
-            "Tests/WorkspacePersistenceTests.swift": .init(2_450, .companion(of: "Astra/Services/Persistence/WorkspaceConfigManager.swift")),
+            // Budget raised for runtimeExplicitlySelected export/import round-trip
+            // coverage (PR #281 review follow-up) - two new tests matching this
+            // file's existing verbose per-field TaskConfig(...) construction style.
+            "Tests/WorkspacePersistenceTests.swift": .init(2_600, .companion(of: "Astra/Services/Persistence/WorkspaceConfigManager.swift")),
             "Tests/CopilotRuntimeTests.swift": .init(2_300, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
             "Tests/WorkspaceAppPackageTests.swift": .init(2_250, .companion(of: "Astra/Services/WorkspaceApps/WorkspaceAppActionExecutor.swift")),
             "Tests/WorkspaceToolSupportTests.swift": .init(2_150, .companion(of: "Tools/WorkspaceToolSupport/WorkspaceToolSupport.swift")),

@@ -2,6 +2,21 @@ import Foundation
 import ASTRAModels
 
 enum TaskFailureReasonPresentation {
+    /// Extracts the "Remediation: ..." clause from a policy/runtime-compatibility
+    /// block's free-text event payload (see `shouldStartProvider` and
+    /// `AgentRuntimeCapabilityBlockRecorder`). Used by the inline run-activity
+    /// issue banner (`RunIssuePresentation`), which only sees one notice's raw
+    /// payload; the decision dock reads the structured
+    /// `TaskRunLaunchBlockPayload` sibling event instead.
+    static func policyBlockRemediation(errorPayloads: [String]) -> String? {
+        guard let payload = errorPayloads.last,
+              let range = payload.range(of: "Remediation:") else { return nil }
+        let remediation = payload[range.upperBound...]
+            .prefix { $0 != "\n" }
+            .trimmingCharacters(in: .whitespaces)
+        return remediation.isEmpty ? nil : remediation
+    }
+
     static func reason(errorPayloads: [String], latestExitCode: Int?) -> String {
         guard let payload = errorPayloads.last else {
             if latestExitCode == 143 {

@@ -21,7 +21,16 @@ enum TaskLaunchResourceResolver {
         homeDirectoryPath: String = FileManager.default.homeDirectoryForCurrentUser.path,
         fileManager: FileManager = .default,
         gcloudExecutablePathProvider: GCloudExecutablePathProvider = defaultGCloudExecutablePath,
-        gitCredentialContextProvider: GitCredentialContextProvider = defaultGitCredentialContext
+        gitCredentialContextProvider: GitCredentialContextProvider = defaultGitCredentialContext,
+        // When the caller already ran this task through
+        // AgentRuntimeLaunchRuntimeResolver.resolve() (the normal launch path),
+        // pass its TaskRuntimeRequirementSet here so the GitHub
+        // host-control-routing decision below (which governs whether native
+        // git/gh credential projection is suppressed) reuses that single
+        // derivation instead of independently re-deriving it from a second,
+        // potentially different capability-scope capture. The two derivations
+        // must agree — see Tests/HostControlRequirementDerivationConsistencyTests.swift.
+        precomputedRuntimeRequirements: TaskRuntimeRequirementSet? = nil
     ) -> TaskLaunchResourcePlan {
         let environment = executionEnvironment ?? DockerExecutionPlanner.resolveEnvironment(for: task)
         var hostPathGrants: [RuntimePathGrant] = []
@@ -60,7 +69,8 @@ enum TaskLaunchResourceResolver {
             prompt: prompt,
             contextText: contextText,
             environment: environment,
-            capabilityScope: capabilityScope
+            capabilityScope: capabilityScope,
+            precomputedRuntimeRequirements: precomputedRuntimeRequirements
         )
         let gitCredentialContext = routesGitHubMetadataThroughHostControl
             ? .empty
@@ -173,13 +183,15 @@ enum TaskLaunchResourceResolver {
         prompt: String,
         contextText: String,
         environment: WorkspaceExecutionEnvironment,
-        capabilityScope: TaskCapabilityPromptScope
+        capabilityScope: TaskCapabilityPromptScope,
+        precomputedRuntimeRequirements: TaskRuntimeRequirementSet?
     ) -> Bool {
         let hostControlGitHubAvailable = HostControlPlaneMCPProjection.enabledToolNames(
             task: task,
             environment: environment,
             contextText: contextText,
-            capabilityScope: capabilityScope
+            capabilityScope: capabilityScope,
+            precomputedRuntimeRequirements: precomputedRuntimeRequirements
         ).contains("github")
         return GitOperationIntentDetector.routesGitHubMetadataThroughHostControl(
             prompt: prompt,

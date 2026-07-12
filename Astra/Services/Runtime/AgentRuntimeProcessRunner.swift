@@ -51,6 +51,7 @@ protocol AgentRuntimeProcessRunning: AnyObject {
         runID: UUID?,
         launchResourcePlan: TaskLaunchResourcePlan?,
         capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot?,
+        runtimeRequirements: TaskRuntimeRequirementSet?,
         liveApprovalsEnabled: Bool,
         noSemanticProgressTimeoutSeconds: TimeInterval?,
         onInteractiveAsk: ((AgentInteractiveAskRequest) async -> InteractiveAskOutcome)?,
@@ -131,6 +132,16 @@ final class AgentRuntimeProcessRunner {
         context: AgentRuntimeProcessLaunchContext
     ) -> SandboxedPlanOutcome {
         var plan = adapter.makeProcessLaunchPlan(context: context)
+        // In the primary launch path (AgentRuntimeWorker), context.launchResourcePlan
+        // is always already computed, so this fallback rarely runs in production —
+        // but any direct caller of runRuntimeProcess/sandboxedPlan (tests, or a
+        // future secondary launch path) that omits launchResourcePlan hits it. Pass
+        // context.runtimeRequirements through for the same reason
+        // AgentRuntimeWorker now does at its own TaskLaunchResourceResolver.resolve
+        // call site: without it, this fallback would independently re-derive GitHub
+        // host-control routing from a second capability-scope capture instead of
+        // reusing the resolver's single precomputed answer. See
+        // Tests/HostControlRequirementDerivationConsistencyTests.swift.
         let launchResourcePlan = context.launchResourcePlan ?? TaskLaunchResourceResolver.resolve(
             task: context.task,
             runID: context.runID,
@@ -143,7 +154,8 @@ final class AgentRuntimeProcessRunner {
             runtimePermissionGrants: context.executionPolicy.permissionGrantsOverride ?? [],
             gitCredentialContextProvider: { [gitCredentialContextProvider] _, _, _, _ in
                 gitCredentialContextProvider(context)
-            }
+            },
+            precomputedRuntimeRequirements: context.runtimeRequirements
         )
         let gitCredentialContext = launchResourcePlan.gitCredentialSandboxContext
         let effectivePermissionPolicy = context.executionPolicy.permissionPolicyOverride ?? context.permissionPolicy
@@ -472,6 +484,7 @@ final class AgentRuntimeProcessRunner {
         runID: UUID? = nil,
         launchResourcePlan: TaskLaunchResourcePlan? = nil,
         capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot? = nil,
+        runtimeRequirements: TaskRuntimeRequirementSet? = nil,
         liveApprovalsEnabled: Bool = false,
         noSemanticProgressTimeoutSeconds: TimeInterval? = nil,
         onInteractiveAsk: ((AgentInteractiveAskRequest) async -> InteractiveAskOutcome)? = nil,
@@ -493,7 +506,8 @@ final class AgentRuntimeProcessRunner {
             runID: runID,
             liveApprovalsEnabled: liveApprovalsEnabled && onInteractiveAsk != nil,
             launchResourcePlan: launchResourcePlan,
-            capabilityResolutionSnapshot: capabilityResolutionSnapshot
+            capabilityResolutionSnapshot: capabilityResolutionSnapshot,
+            runtimeRequirements: runtimeRequirements
         )
         if let sharedStateKey = adapter.sharedLaunchStateKey(context: launchContext) {
             do {
@@ -627,7 +641,17 @@ final class AgentRuntimeProcessRunner {
 
             let handleLine: (String) -> Void = { line in
                 let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !trimmed.isEmpty else { return }
+                guard !trimmed.isEmpty else {
+                    // Plain-text providers use blank lines as paragraph
+                    // boundaries; forward them to the recording path so
+                    // transcripts keep their structure. JSON-lines providers
+                    // treat blank lines as framing noise, and the monitor
+                    // never needs them.
+                    if !plan.parsesJSONLines {
+                        onLine(line, plan.parsesJSONLines)
+                    }
+                    return
+                }
                 if plan.interactiveAsk != nil,
                    let control = ClaudeControlProtocol.controlRequest(from: trimmed) {
                     Self.answerControlRequest(
@@ -713,7 +737,14 @@ final class AgentRuntimeProcessRunner {
                     if !finalStdoutChunk.isEmpty {
                         lineBuffer.appendAndProcessLinesLocked(finalStdoutChunk, handleLine)
                     }
-                    handleLine(lineBuffer.drainRemainingLocked())
+                    // The final drain is an EOF flush, not a real stdout line;
+                    // an empty remainder must not reach handleLine's
+                    // blank-line-forwarding path (plain-text runtimes would
+                    // record it as a synthetic paragraph break).
+                    let remainder = lineBuffer.drainRemainingLocked()
+                    if !remainder.isEmpty {
+                        handleLine(remainder)
+                    }
                 }
                 errorOutput.synchronized {
                     let finalStderrChunk = String(decoding: proc.stderrFileHandle.readDataToEndOfFile(), as: UTF8.self)
