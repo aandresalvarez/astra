@@ -2293,13 +2293,13 @@ struct ContentView: View {
         )
         applyWorkspaceSelectionUpdate(workspaceSelectionCoordinator.importWorkspace(result.selectedWorkspace))
     }
-
     private func applyWorkspaceSelectionUpdate(_ update: ContentWorkspaceSelectionUpdate) {
         let previousTaskID = selectedTask?.id
         if previousTaskID != update.selectedTask?.id {
             TaskOpenResponsivenessTelemetry.beginForSelection(task: update.selectedTask, source: "workspace_selection", scope: taskOpenResponsivenessScope)
         }
-        let sceneUpdate = measurePreShellNavigation(for: update.selectedTask) {
+        let transitionTask = TaskOpenResponsivenessTelemetry.shouldMeasureSelectionTransition(previousTaskID: previousTaskID, nextTaskID: update.selectedTask?.id) ? update.selectedTask : nil
+        let sceneUpdate = measurePreShellNavigation(for: transitionTask) {
             updateCanvasForTaskSelectionChange(previousTaskID: previousTaskID, nextTaskID: update.selectedTask?.id)
             let sceneUpdate = sceneSelection.apply(update)
             if previousTaskID != update.selectedTask?.id {
