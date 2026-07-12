@@ -31,8 +31,16 @@ enum CompatibleASTRABuildRegistry {
         now: Date = Date()
     ) throws {
         guard let bundleIdentifier = bundle.bundleIdentifier else { return }
+        // Store the same canonical path that validation requires. macOS can
+        // launch an app through a symlink (for example a stable local alias),
+        // but retaining that lexical path would create an unusable registry
+        // entry that validation correctly rejects later.
+        let canonicalBundleURL = bundle.bundleURL
+            .standardizedFileURL
+            .resolvingSymlinksInPath()
+            .standardizedFileURL
         let record = CompatibleASTRABuildRecord(
-            bundlePath: bundle.bundleURL.standardizedFileURL.path,
+            bundlePath: canonicalBundleURL.path,
             bundleIdentifier: bundleIdentifier,
             channel: appInfo.channelRawValue,
             schemaVersion: appInfo.schemaVersion,

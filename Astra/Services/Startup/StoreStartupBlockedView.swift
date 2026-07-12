@@ -139,8 +139,12 @@ struct StoreStartupBlockedView: View {
                 storeURL: recoveryURL,
                 latestSupportedSchemaVersion: ASTRASchema.currentVersion
             )
-            guard case .compatible = assessment else {
-                throw CocoaError(.fileReadUnsupportedScheme)
+            if let validationFailure = PersistentStoreRecoveryPolicy.storeSelectionFailureMessage(
+                assessment: assessment,
+                supportedSchemaVersion: ASTRASchema.currentVersion
+            ) {
+                actionError = validationFailure
+                return
             }
             _ = try ModelContainer(
                 for: ASTRASchema.current,

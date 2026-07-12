@@ -412,7 +412,18 @@ enum AstraStoreStartupCoordinator {
             let blocker: PersistentStoreRecoveryBlocker
             switch decision {
             case .incompatibleNewerSchema:
-                let requiredSchemaVersion = max(appInfo.schemaVersion + 1, ASTRASchema.currentVersion + 1)
+                // SwiftData can erase Core Data's model-version detail while
+                // wrapping the open error. Re-read the store metadata through
+                // the non-attaching compatibility boundary before falling back
+                // to the next schema version.
+                let compatibility = PersistentStoreCompatibilityService.assess(
+                    storeURL: sourceStoreURL,
+                    latestSupportedSchemaVersion: appInfo.schemaVersion
+                )
+                let requiredSchemaVersion = PersistentStoreRecoveryPolicy.requiredSchemaVersion(
+                    afterOpenFailure: compatibility,
+                    supportedSchemaVersion: appInfo.schemaVersion
+                )
                 let candidate = appInfo.channelRawValue == "dev" ? CompatibleASTRABuildRegistry.compatibleBuild(
                     requiredSchemaVersion: requiredSchemaVersion,
                     channel: appInfo.channelRawValue,

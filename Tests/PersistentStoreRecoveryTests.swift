@@ -129,6 +129,32 @@ struct PersistentStoreRecoveryTests {
         #expect(blocker.actions.first == .locateCompatibleBuild(requiredSchemaVersion: 12))
     }
 
+    @Test("post-open fallback preserves the actual required schema")
+    func postOpenFallbackPreservesRequiredSchema() {
+        #expect(PersistentStoreRecoveryPolicy.requiredSchemaVersion(
+            afterOpenFailure: .requiresNewerReader(requiredSchemaVersion: 15),
+            supportedSchemaVersion: 11
+        ) == 15)
+        #expect(PersistentStoreRecoveryPolicy.requiredSchemaVersion(
+            afterOpenFailure: .unknown,
+            supportedSchemaVersion: 11
+        ) == 12)
+    }
+
+    @Test("store selection failure preserves actionable compatibility detail")
+    func storeSelectionFailurePreservesCompatibilityDetail() {
+        let newerMessage = PersistentStoreRecoveryPolicy.storeSelectionFailureMessage(
+            assessment: .requiresNewerReader(requiredSchemaVersion: 15),
+            supportedSchemaVersion: 11
+        )
+        #expect(newerMessage?.contains("requires schema V15") == true)
+        #expect(newerMessage?.contains("supports through V11") == true)
+        #expect(PersistentStoreRecoveryPolicy.storeSelectionFailureMessage(
+            assessment: .compatible(storeSchemaVersion: 11),
+            supportedSchemaVersion: 11
+        ) == nil)
+    }
+
     @Test("contention retries are bounded")
     func contentionRetriesAreBounded() {
         #expect(PersistentStoreRetryPolicy.contentionDelays == [0.10, 0.25, 0.50])
@@ -210,6 +236,43 @@ struct PersistentStoreRecoveryTests {
             excludingBundlePath: "/tmp/current.app",
             registryURL: registryURL
         ) == nil)
+    }
+
+    @Test("registry canonicalizes a symlinked launch bundle before persisting")
+    func registryCanonicalizesSymlinkedBundle() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let registryURL = root.appendingPathComponent("registry.json")
+        let bundleURL = try makeBundle(
+            root: root,
+            name: "ASTRA Dev V12",
+            identifier: "com.coral.ASTRA.dev",
+            channel: "dev",
+            schemaVersion: 12
+        )
+        let symlinkURL = root.appendingPathComponent("Current ASTRA Dev.app")
+        try FileManager.default.createSymbolicLink(at: symlinkURL, withDestinationURL: bundleURL)
+        let symlinkedBundle = try #require(Bundle(url: symlinkURL))
+        let info = AppBuildInfo(
+            infoDictionary: symlinkedBundle.infoDictionary ?? [:],
+            bundlePath: symlinkURL.path,
+            executablePath: symlinkedBundle.executableURL?.path ?? "unknown"
+        )
+
+        try CompatibleASTRABuildRegistry.registerCurrentBuild(
+            appInfo: info,
+            bundle: symlinkedBundle,
+            registryURL: registryURL
+        )
+
+        let record = try #require(CompatibleASTRABuildRegistry.load(registryURL: registryURL).first)
+        #expect(record.bundlePath == bundleURL.resolvingSymlinksInPath().standardizedFileURL.path)
+        #expect(CompatibleASTRABuildRegistry.compatibleBuild(
+            requiredSchemaVersion: 12,
+            channel: "dev",
+            excludingBundlePath: "/tmp/current.app",
+            registryURL: registryURL
+        )?.bundlePath == bundleURL.path)
     }
 
     private func temporaryDirectory() throws -> URL {

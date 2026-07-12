@@ -1,4 +1,5 @@
 import Foundation
+import ASTRAPersistence
 
 enum PersistentStoreRecoveryAction: Equatable, Sendable {
     case openCompatibleBuild(bundlePath: String)
@@ -44,6 +45,30 @@ enum PersistentStoreRetryPolicy {
 }
 
 enum PersistentStoreRecoveryPolicy {
+    static func requiredSchemaVersion(
+        afterOpenFailure assessment: PersistentStoreCompatibilityAssessment,
+        supportedSchemaVersion: Int
+    ) -> Int {
+        if case .requiresNewerReader(let requiredSchemaVersion) = assessment {
+            return requiredSchemaVersion
+        }
+        return supportedSchemaVersion + 1
+    }
+
+    static func storeSelectionFailureMessage(
+        assessment: PersistentStoreCompatibilityAssessment,
+        supportedSchemaVersion: Int
+    ) -> String? {
+        switch assessment {
+        case .compatible:
+            return nil
+        case .requiresNewerReader(let requiredSchemaVersion):
+            return "The selected store requires schema V\(requiredSchemaVersion), but this build supports through V\(supportedSchemaVersion). Choose a newer compatible ASTRA build or a different store."
+        case .unknown:
+            return "ASTRA could not verify the selected store's schema compatibility, so it left the active store unchanged."
+        }
+    }
+
     static func incompatibleBlocker(
         requiredSchemaVersion: Int,
         supportedSchemaVersion: Int,
