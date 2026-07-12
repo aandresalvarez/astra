@@ -91,11 +91,11 @@ struct ContentExternalRouteResolver {
         modelContext.insert(task)
 
         if shouldRun {
-            modelContext.insert(TaskEvent(
+            TaskEventInsertionService.insert(TaskEvent(
                 task: task,
                 eventType: TaskEventTypes.Conversation.userMessage,
                 payload: trimmedGoal
-            ))
+            ), into: modelContext)
         } else {
             task.draftMessages = AstraTaskIntentSupport.draftMessagesJSON(for: trimmedGoal)
         }

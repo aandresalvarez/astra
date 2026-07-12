@@ -313,7 +313,7 @@ final class TaskQueue {
             payload: Self.sameThreadSchedulePrompt(schedule: schedule, fallbackGoal: scheduledTask.goal)
         )
         sourceMessage.timestamp = latestRun?.startedAt ?? Date()
-        modelContext.insert(sourceMessage)
+        TaskEventInsertionService.insert(sourceMessage, into: modelContext)
 
         if let latestRun {
             let copiedRun = TaskRun(task: sourceTask)
