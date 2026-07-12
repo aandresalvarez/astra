@@ -889,26 +889,31 @@ struct AgentRuntimeRunPersistenceTests {
     }
 
     @Test("Finalize records terminal completion and unread state")
-    func finalizePersistsTerminalState() throws {
+    func finalizePersistsTerminalState() async throws {
         let container = try makeRuntimeComponentContainer()
         let context = container.mainContext
         let task = AgentTask(title: "Task", goal: "Goal")
         let run = TaskRun(task: task)
         task.status = .completed
         run.status = .completed
+        let oversizedOutputCount = TaskRunOutputCap.headByteLimit + TaskRunOutputCap.tailByteLimit + 128
+        run.output = String(repeating: "x", count: oversizedOutputCount)
         context.insert(task)
         context.insert(run)
 
-        AgentRuntimeRunPersistence.finalizeAndPersist(
+        await AgentRuntimeRunPersistence.finalizeAndPersist(
             task: task,
             run: run,
             modelContext: context,
-            phase: "run"
+            phase: "run",
+            handoffDiscoveredFiles: []
         )
 
         #expect(task.completedAt != nil)
         #expect(task.unreadAt != nil)
         #expect(task.updatedAt <= Date())
+        #expect(run.output.count < oversizedOutputCount)
+        #expect(run.output.contains(TaskRunOutputCap.elisionMarker))
     }
 
     @Test("Record session turn writes session history in task folder")
