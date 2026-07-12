@@ -17,7 +17,7 @@ struct WorkspaceAppDraftPreviewBuilderTests {
 
         #expect(snapshot.manifest == manifest)
         #expect(snapshot.storageTables.count == (manifest.storage?.tables.count ?? 0))
-        let items = try? #require(snapshot.storageTables.first { $0.name == "items" })
+        let items = snapshot.storageTables.first { $0.name == "items" }
         #expect(items?.rowCount == 3)
         // bindings / automations / runs are empty for an un-persisted draft.
         #expect(snapshot.dependencyBindings.isEmpty)

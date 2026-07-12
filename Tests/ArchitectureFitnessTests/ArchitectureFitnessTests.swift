@@ -298,8 +298,8 @@ struct ArchitectureFitnessTests {
             "Astra/Models/SchemaVersions.swift",
             "Astra/Services/Tasks/TaskStateMachine.swift",
             // Track A2.6's `TaskForkStateInitializingSeam`: the transition
-            // decision (guard + audit) still lives entirely in
-            // `TaskStateMachine`'s `TaskForkStateInitializing` conformance;
+            // decision (guard + audit) lives entirely in the adjacent
+            // `TaskStateTransitionSeamAdapter`;
             // only the mechanical `.status =`/`.updatedAt =` write of an
             // already-decided value crossed here. `AgentTaskForkService`
             // moved into `ASTRAModels` in A3 (it needs a live `AgentTask`,
@@ -307,8 +307,8 @@ struct ArchitectureFitnessTests {
             "Astra/Models/AgentTaskForkService.swift",
             // Track A4's `TaskSessionStateApplyingSeam` (extending the same
             // pattern to `completeFromSessionRecovery`/`restoreImportedStatus`):
-            // same reasoning - the decision + audit live in `TaskStateMachine`'s
-            // conformance; only the mechanical apply crossed into
+            // same reasoning - the decision + audit live in the adjacent
+            // seam adapter; only the mechanical apply crossed into
             // `ASTRAPersistence`, which can't carry a live `AgentTask` either.
             "Astra/Services/Persistence/SessionScanner.swift",
             "Astra/Services/Persistence/WorkspaceConfigManager.swift"

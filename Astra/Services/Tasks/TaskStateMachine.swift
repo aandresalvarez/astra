@@ -775,17 +775,16 @@ enum TaskStateMachine {
     }
 }
 
-/// Registered as the `TaskForkStateInitializingSeam`
-/// (`ASTRACore/TaskForkLifecycleSeams.swift`) backing implementation.
+/// Nonisolated backing implementation for the task-transition seams declared
+/// in `ASTRACore/TaskForkLifecycleSeams.swift`.
 ///
 /// This mirrors `initializeForkAsCompleted(_:modelContext:...)`'s guard and
 /// audit shape rather than calling through to it, since that method needs a
 /// live `AgentTask`/`ModelContext` the seam boundary can't carry. This is
-/// the one piece of `TaskStateMachine`'s logic duplicated (not reused)
-/// across the seam boundary - acceptable because it has exactly one call
-/// site in the whole app (`AgentTaskForkService.fork()`) and its contract
-/// (draft/completed -> completed) is fixed.
-extension TaskStateMachine: TaskForkStateInitializing {
+/// the one piece of pure transition logic duplicated across the seam boundary.
+/// Keeping it in this nonisolated adapter prevents a `@MainActor` state-machine
+/// type from satisfying a nonisolated, `Sendable` service protocol.
+enum TaskStateTransitionSeamAdapter: TaskForkStateInitializing, TaskSessionStateApplying {
     static func initializeForkAsCompleted(
         taskID: UUID,
         statusRawValue: String,
@@ -812,9 +811,6 @@ extension TaskStateMachine: TaskForkStateInitializing {
         ], level: .debug)
         return TaskForkStateInitializationResult(statusRawValue: TaskStatus.completed.rawValue, updatedAt: date, applied: true)
     }
-}
-
-extension TaskStateMachine: TaskSessionStateApplying {
     static func completeFromSessionRecovery(
         taskID: UUID,
         currentStatusRawValue: String,
