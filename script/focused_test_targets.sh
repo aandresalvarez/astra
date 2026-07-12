@@ -91,6 +91,15 @@ target_for_path() {
       add_target "AgentRuntimeFailureDiagnosticsTests"
       add_target "FeedbackReportPresentationTests"
       ;;
+    Astra/Services/Diagnostics/LogDiagnosticsService.swift|Astra/Services/Diagnostics/PersistedLogEntryParser.swift)
+      add_target "LogDiagnosticsTests"
+      add_target "FeedbackEvidencePrivacyTests"
+      ;;
+    Astra/Services/Diagnostics/CrashDiagnosticsService.swift)
+      add_target "LogDiagnosticsTests"
+      add_target "FeedbackEvidencePrivacyTests"
+      add_target "FeedbackCrashRecoveryTests"
+      ;;
     Tests/AgentRuntimeAdapterTests.swift|Astra/Services/Runtime/ProviderMessages.swift)
       add_target "AgentRuntimeAdapterTests"
       add_target "FeedbackReportPresentationTests"

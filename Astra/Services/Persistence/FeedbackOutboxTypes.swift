@@ -175,7 +175,7 @@ public struct FeedbackPreparedPackageRecovery: Equatable, Sendable {
     public let manifest: FeedbackEvidenceManifestV1
     public let manifestSHA256: String
     public let reportSHA256: String
-    public let archiveSHA256: String
+    public let archiveSHA256: String?
 
     public init(
         reportID: UUID,
@@ -185,7 +185,7 @@ public struct FeedbackPreparedPackageRecovery: Equatable, Sendable {
         manifest: FeedbackEvidenceManifestV1,
         manifestSHA256: String,
         reportSHA256: String,
-        archiveSHA256: String
+        archiveSHA256: String?
     ) {
         self.reportID = reportID
         self.reportCreatedAt = reportCreatedAt

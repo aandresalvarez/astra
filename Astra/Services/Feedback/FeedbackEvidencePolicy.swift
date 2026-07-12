@@ -75,7 +75,7 @@ struct FeedbackPreparedEvidencePackage: Equatable, Sendable {
     let manifest: FeedbackEvidenceManifestV1
     let manifestSHA256: String
     let reportSHA256: String
-    let archiveSHA256: String
+    let archiveSHA256: String?
 }
 
 enum FeedbackEvidencePolicy {

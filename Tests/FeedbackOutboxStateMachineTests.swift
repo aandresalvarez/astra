@@ -767,6 +767,85 @@ struct FeedbackOutboxStateMachineTests {
         #expect(report.artifactsDeletedAt == cancelled.clock.current)
         #expect(report.packageRelativePath == nil)
     }
+
+    @MainActor
+    @Test("Retryable and permanent failures can be cancelled with exact package deletion")
+    func failedReportsCanBeCancelled() throws {
+        for disposition in [FeedbackFailureDispositionV1.retryable, .permanent] {
+            let fixture = try makeQueuedFixture()
+            defer { try? FileManager.default.removeItem(at: fixture.root) }
+            let claim = try fixture.service.claimUpload(reportID: fixture.reportID)
+            if disposition == .retryable {
+                try fixture.service.recordRetryableFailure(
+                    claim: claim,
+                    code: "offline",
+                    safeMessage: "Waiting for a network connection."
+                )
+            } else {
+                try fixture.service.recordPermanentFailure(
+                    claim: claim,
+                    code: "invalid_payload",
+                    safeMessage: "The report cannot be submitted."
+                )
+            }
+
+            try fixture.service.cancel(reportID: fixture.reportID, deleteArtifacts: true)
+
+            let report = try fetchReport(fixture.container, id: fixture.reportID)
+            #expect(report.localStatus == .cancelled)
+            #expect(report.artifactsDeletedAt == fixture.clock.current)
+            #expect(report.packageRelativePath == nil)
+            #expect(!FileManager.default.fileExists(atPath: claim.packageURL.path))
+        }
+    }
+
+    @MainActor
+    @Test("Queued archive-less packages remain discoverable and exportable after relaunch")
+    func queuedArchiveLessPackageRecoversAfterRelaunch() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        var generalContents = fixture.contents
+        generalContents.taskID = nil
+        generalContents.runID = nil
+        try fixture.service.updateDraft(reportID: fixture.reportID, contents: generalContents)
+        let envelope = try makeFeedbackEnvelope(
+            reportID: fixture.reportID,
+            installationID: "installation-v1",
+            idempotencyKey: "stable-idempotency-key",
+            contents: generalContents,
+            createdAt: fixture.clock.current
+        )
+        let source = try writeFeedbackPreparedPackage(parent: fixture.root, envelope: envelope)
+        try fixture.service.adoptPreparedPackage(reportID: fixture.reportID, from: source)
+
+        let prepared = try fixture.service.recoverablePreparedPackage(reportID: fixture.reportID)
+        #expect(prepared.archiveSHA256 == nil)
+        try fixture.service.queue(reportID: fixture.reportID)
+
+        let relaunched = try FeedbackOutboxService(
+            modelContainer: fixture.container,
+            storageRoot: fixture.root,
+            clock: fixture.clock,
+            policy: fixture.policy
+        )
+        let latest = try #require(try relaunched.latestRecoverable(
+            taskID: nil,
+            runID: nil
+        ))
+        #expect(latest.reportID == fixture.reportID)
+        #expect(latest.status == .queued)
+        #expect(try relaunched.recoverableSnapshot(reportID: fixture.reportID).status == .queued)
+        let resumed = try #require(try FeedbackReportResumeService(
+            modelContainer: fixture.container,
+            storageRoot: fixture.root
+        ).latest(for: FeedbackReportLaunch(hostID: UUID(), entryPoint: .help)))
+        #expect(resumed.id == fixture.reportID)
+        let exported = try relaunched.recoverablePackageForManualExport(reportID: fixture.reportID)
+        #expect(exported.archiveSHA256 == nil)
+        #expect(!FileManager.default.fileExists(
+            atPath: exported.directoryURL.appendingPathComponent(FeedbackPackageLayout.archive).path
+        ))
+    }
 }
 
 private struct FeedbackOutboxFixture {

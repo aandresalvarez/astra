@@ -168,10 +168,10 @@ public final class FeedbackOutboxService {
         let context = makeContext()
         let report = try fetch(reportID: reportID, in: context)
         let status = try storedStatus(report)
-        guard status == .draft || status == .prepared else {
+        guard status == .draft || status == .prepared || status == .queued else {
             throw illegalTransition(from: status, to: .draft)
         }
-        if status == .prepared {
+        if status == .prepared || status == .queued {
             _ = try validatedPreparedRecovery(for: report)
         }
         return try snapshot(report, status: status)
@@ -218,14 +218,14 @@ public final class FeedbackOutboxService {
         }
         let matching = try exactContext.filter {
             let status = try storedStatus($0)
-            return status == .draft || status == .prepared
+            return status == .draft || status == .prepared || status == .queued
         }.sorted {
             if $0.updatedAt != $1.updatedAt { return $0.updatedAt > $1.updatedAt }
             return $0.id.uuidString.lowercased() < $1.id.uuidString.lowercased()
         }
         guard let report = matching.first else { return nil }
         let status = try storedStatus(report)
-        if status == .prepared {
+        if status == .prepared || status == .queued {
             _ = try validatedPreparedRecovery(for: report)
         }
         return try snapshot(report, status: status)
@@ -315,7 +315,7 @@ public final class FeedbackOutboxService {
             let status = try storedStatus(report)
             if status == .draft {
                 result.insert(report.id)
-            } else if status == .prepared {
+            } else if status == .prepared || status == .queued {
                 _ = try validatedPreparedRecovery(for: report)
                 result.insert(report.id)
             }
@@ -682,8 +682,8 @@ public final class FeedbackOutboxService {
         try validate(validated.envelope, matches: report)
         guard let storedEnvelope = report.canonicalEnvelopeData,
               storedEnvelope == validated.envelopeData,
-              let storedArchiveSHA256 = report.evidenceArchiveSHA256,
-              storedArchiveSHA256 == validated.envelope.evidenceArchiveSHA256
+              report.evidenceArchiveSHA256 == validated.envelope.evidenceArchiveSHA256,
+              report.evidenceArchiveSHA256 == validated.archiveSHA256
         else { throw FeedbackOutboxError.preparedPackageDoesNotMatchDraft }
 
         let manifest = validated.envelope.payload.evidence.canonicalized()
@@ -700,7 +700,7 @@ public final class FeedbackOutboxService {
             manifest: manifest,
             manifestSHA256: FeedbackCanonicalJSONV1.sha256Hex(manifestData),
             reportSHA256: FeedbackCanonicalJSONV1.sha256Hex(storedEnvelope),
-            archiveSHA256: storedArchiveSHA256
+            archiveSHA256: report.evidenceArchiveSHA256
         )
     }
 

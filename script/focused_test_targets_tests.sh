@@ -97,6 +97,11 @@ assert_targets $'HeadlessChatScenarioTests\nFeedbackReportPresentationTests\nAge
   "Astra/Services/Runtime/ProviderMessages.swift" \
   "Tests/AgentRuntimeAdapterTests.swift"
 
+assert_targets $'LogDiagnosticsTests\nFeedbackEvidencePrivacyTests\nFeedbackCrashRecoveryTests' \
+  "Astra/Services/Diagnostics/LogDiagnosticsService.swift" \
+  "Astra/Services/Diagnostics/PersistedLogEntryParser.swift" \
+  "Astra/Services/Diagnostics/CrashDiagnosticsService.swift"
+
 assert_targets $'FeedbackReportPresentationTests\nFeedbackCrashRecoveryTests' \
   "Astra/Models/AppStorageKeys.swift"
 

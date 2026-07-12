@@ -17,7 +17,8 @@ public enum FeedbackLocalStatusV1: String, Codable, CaseIterable, Equatable, Sen
              (.queued, .uploading), (.queued, .retryableFailure), (.queued, .cancelled),
              (.uploading, .submitted), (.uploading, .retryableFailure),
              (.uploading, .permanentFailure),
-             (.retryableFailure, .queued):
+             (.retryableFailure, .queued), (.retryableFailure, .cancelled),
+             (.permanentFailure, .cancelled):
             true
         default:
             false
