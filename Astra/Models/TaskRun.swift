@@ -92,6 +92,13 @@ public final class TaskRun {
     }
 }
 
+public extension TaskRun {
+    static func isChronologicallyOrdered(_ lhs: TaskRun, _ rhs: TaskRun) -> Bool {
+        if lhs.startedAt != rhs.startedAt { return lhs.startedAt < rhs.startedAt }
+        return lhs.id.uuidString < rhs.id.uuidString
+    }
+}
+
 public enum TaskRunFileChangesDecodeError: Error, Equatable, CustomStringConvertible {
     case invalidUTF8
     case decodingFailed(String)

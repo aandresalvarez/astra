@@ -653,7 +653,7 @@ struct TaskCheckpointPresentationTests {
         #expect(comparison.laterOutputPreview.contains("restore path"))
         #expect(comparison.branchSummary == "1 later step will stay on the current task.")
         #expect(comparison.canRestore)
-        #expect(TaskCheckpointPresentation.restoreActionTitle == "Restore as New Branch")
+        #expect(TaskCheckpointPresentation.restoreActionTitle == "Fork Conversation")
     }
 
     @Test("Checkpoint file counts match deduplicated file lists")
@@ -689,6 +689,17 @@ struct TaskCheckpointPresentationTests {
         #expect(comparison.excludedFiles == ["/tmp/later.swift"])
         #expect(comparison.includedFileCount == comparison.includedFiles.count)
         #expect(comparison.excludedFileCount == comparison.excludedFiles.count)
+    }
+
+    @Test("Checkpoint browser uses deterministic UUID ordering for tied start times")
+    func checkpointBrowserUsesDeterministicTieBreak() {
+        let task = makeTask()
+        let first = makeCheckpointRun(task: task, index: 0, output: "One", tokens: 1, filePaths: [])
+        let second = makeCheckpointRun(task: task, index: 0, output: "Two", tokens: 1, filePaths: [])
+        let snapshots = [runSnapshot(second), runSnapshot(first)]
+        let expected = snapshots.sorted { $0.id.uuidString < $1.id.uuidString }.map(\.id)
+
+        #expect(TaskCheckpointPresentation.summaries(from: snapshots).map(\.id) == expected)
     }
 
     @Test("Running checkpoint cannot be restored from browser")

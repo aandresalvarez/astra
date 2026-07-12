@@ -423,6 +423,90 @@ struct QueueLockTests {
         #expect(queue.activeTasks.isEmpty)
         #expect(task.events.contains { $0.type == TaskPlanEventTypes.executionCompleted })
     }
+
+    @Test("approved plan is blocked while a Git fork shares an active worktree")
+    func approvedPlanBlockedForReadOnlyGitFork() async throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let container = try makeQueueLockContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Git fork", primaryPath: root)
+        let source = AgentTask(title: "Active source", goal: "Work", workspace: workspace)
+        context.insert(workspace)
+        context.insert(source)
+        let run = TaskRun(task: source)
+        run.status = .completed
+        context.insert(run)
+        let forked = try AgentTask.fork(
+            from: source,
+            upToRun: run,
+            options: TaskForkOptions(repository: .init(
+                rootPath: root,
+                branch: "main",
+                headSHA: "12345678",
+                isDirty: false
+            )),
+            in: context
+        )
+        source.status = .running
+        let plan = TaskPlanPayload(title: "Plan", goal: "Write", steps: [])
+
+        await TaskQueue(poolSize: 1).executeApprovedPlan(
+            task: forked,
+            plan: plan,
+            modelContext: context
+        )
+
+        #expect(forked.runs.count == 1)
+        #expect(forked.events.contains {
+            $0.type == TaskEventTypes.System.info.rawValue && $0.payload.contains("shared Git worktree")
+        })
+    }
+
+    @Test("queue does not dispatch a queued read-only Git fork")
+    func queueSkipsReadOnlyGitFork() async throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let container = try makeQueueLockContainer()
+        let context = container.mainContext
+        let workspace = Workspace(name: "Queued Git fork", primaryPath: root)
+        let source = AgentTask(title: "Active source", goal: "Work", workspace: workspace)
+        context.insert(workspace)
+        context.insert(source)
+        let run = TaskRun(task: source)
+        run.status = .completed
+        context.insert(run)
+        let forked = try AgentTask.fork(
+            from: source,
+            upToRun: run,
+            options: TaskForkOptions(repository: .init(
+                rootPath: root,
+                branch: "main",
+                headSHA: "12345678",
+                isDirty: false
+            )),
+            in: context
+        )
+        source.status = .running
+        forked.status = .queued
+        try context.save()
+
+        let queue = TaskQueue(poolSize: 1)
+        let processing = Task { @MainActor in
+            await queue.processQueue(modelContext: context)
+        }
+        try await Task.sleep(for: .milliseconds(250))
+
+        #expect(forked.status == .queued)
+        #expect(forked.runs.count == 1)
+        #expect(!forked.events.contains {
+            $0.type == TaskEventTypes.System.info.rawValue && $0.payload.contains("shared Git worktree")
+        })
+        #expect(queue.activeTasks.isEmpty)
+
+        queue.cancelAll()
+        await processing.value
+    }
 }
 
 private func temporaryRoot() throws -> String {

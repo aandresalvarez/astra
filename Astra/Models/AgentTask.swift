@@ -178,8 +178,13 @@ public final class AgentTask {
     }
 
     @MainActor
-    public static func fork(from source: AgentTask, upToRun targetRun: TaskRun, in context: ModelContext) -> AgentTask {
-        AgentTaskForkService.fork(from: source, upToRun: targetRun, in: context)
+    public static func fork(
+        from source: AgentTask,
+        upToRun targetRun: TaskRun,
+        options: TaskForkOptions = TaskForkOptions(),
+        in context: ModelContext
+    ) throws -> AgentTask {
+        try AgentTaskForkService.fork(from: source, upToRun: targetRun, options: options, in: context)
     }
 
     public var isTerminal: Bool {

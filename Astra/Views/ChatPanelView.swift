@@ -1765,6 +1765,17 @@ struct ChatPanelView: View {
         guard let task = draftTask,
               task.status != .running else { return }
 
+        // Admission precedes approval/enqueue mutations. If a sibling is
+        // running in this Git worktree, leave the plan and task state intact.
+        if let readOnlyReason = TaskForkPolicyService.readOnlyReason(for: task) {
+            TaskForkPolicyService.recordReadOnlyBlock(
+                readOnlyReason,
+                for: task,
+                modelContext: modelContext
+            )
+            return
+        }
+
         TaskPlanService.recordApproved(plan, task: task, modelContext: modelContext)
         task.title = plan.title
         task.goal = plan.goal.isEmpty ? plan.title : plan.goal

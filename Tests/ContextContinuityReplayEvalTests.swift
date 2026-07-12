@@ -142,7 +142,7 @@ struct ContextContinuityReplayEvalTests {
         context.insert(secondRun)
         try context.save()
 
-        let forked = AgentTask.fork(from: source, upToRun: firstRun, in: context)
+        let forked = try AgentTask.fork(from: source, upToRun: firstRun, in: context)
         try context.save()
 
         let prompt = AgentPromptBuilder.buildFreshFollowUpPrompt(
