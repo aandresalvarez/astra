@@ -108,12 +108,15 @@ struct FeedbackReportPresentationTests {
         }
     }
 
-    @Test("Default opt-outs perform zero browser screenshot and crash I/O")
+    @Test("Explicit opt-outs perform zero browser screenshot and crash I/O")
     func optOutsPerformNoIO() throws {
         let browser = LockedInt()
         let crashes = LockedInt()
         var selections = FeedbackEvidenceSelections()
         selections.includeTaskLogs = false
+        selections.includeBrowserEvidence = false
+        selections.includeScreenshots = false
+        selections.includeMacOSDiagnostics = false
         let result = try FeedbackReportEvidenceSourceReader.collect(
             launch: launch(),
             selections: selections,
@@ -131,61 +134,72 @@ struct FeedbackReportPresentationTests {
         #expect(crashes.value == 0)
     }
 
-    @Test("Selected screenshot availability is independent from browser records")
-    func selectedScreenshotFailsIndependently() {
+    @Test("Unavailable screenshots do not discard available browser records")
+    func unavailableScreenshotKeepsBrowserRecords() throws {
         var selections = FeedbackEvidenceSelections()
         selections.includeTaskLogs = false
         selections.includeBrowserEvidence = true
         selections.includeScreenshots = true
-        #expect(throws: FeedbackReportEvidenceSourceReader.SourceError.unavailable(.browserScreenshot)) {
-            _ = try FeedbackReportEvidenceSourceReader.collect(
-                launch: launch(),
-                selections: selections,
-                interval: DateInterval(start: .distantPast, end: .distantFuture),
-                entriesProvider: { [] },
-                browserProvider: { _, _, _, _ in
-                    (records: [browserRecord()], screenshots: [])
-                },
-                crashProvider: { _, _ in [] }
-            )
-        }
+        selections.includeMacOSDiagnostics = false
+        let result = try FeedbackReportEvidenceSourceReader.collect(
+            launch: launch(),
+            selections: selections,
+            interval: DateInterval(start: .distantPast, end: .distantFuture),
+            entriesProvider: { [] },
+            browserProvider: { _, _, _, _ in
+                (records: [browserRecord()], screenshots: [])
+            },
+            crashProvider: { _, _ in [] }
+        )
+        #expect(result.browserRecords.map(\.sequence) == [1])
+        #expect(result.omissions.contains {
+            $0.artifactID == "browser-screenshot" && $0.reason == .unavailable
+        })
+        #expect(!result.omissions.contains { $0.artifactID == "browser-evidence" })
         #expect(FeedbackReportEvidenceSourceReader.browserReadFailureSource(includeRecords: false) == .browserScreenshot)
     }
 
-    @Test("Selected macOS diagnostics cannot silently return an empty inventory")
-    func selectedCrashDiagnosticsFailWhenUnavailable() {
+    @Test("Unavailable macOS diagnostics become a typed omission")
+    func unavailableCrashDiagnosticsAreOmitted() throws {
         var selections = FeedbackEvidenceSelections()
         selections.includeTaskLogs = false
         selections.includeMacOSDiagnostics = true
-        #expect(throws: FeedbackReportEvidenceSourceReader.SourceError.unavailable(.macOSDiagnostics)) {
-            _ = try FeedbackReportEvidenceSourceReader.collect(
-                launch: launch(),
-                selections: selections,
-                interval: DateInterval(start: .distantPast, end: .distantFuture),
-                entriesProvider: { [] },
-                browserProvider: { _, _, _, _ in (records: [], screenshots: []) },
-                crashProvider: { _, _ in [] }
-            )
-        }
+        selections.includeBrowserEvidence = false
+        selections.includeScreenshots = false
+        let result = try FeedbackReportEvidenceSourceReader.collect(
+            launch: launch(),
+            selections: selections,
+            interval: DateInterval(start: .distantPast, end: .distantFuture),
+            entriesProvider: { [] },
+            browserProvider: { _, _, _, _ in (records: [], screenshots: []) },
+            crashProvider: { _, _ in [] }
+        )
+        #expect(result.crashReports.isEmpty)
+        #expect(result.omissions.contains {
+            $0.artifactID == "macos-diagnostics" && $0.reason == .unavailable
+        })
     }
 
-    @Test("Selected browser read failures and corrupt screenshot bytes stay typed")
-    func selectedSourceFailuresStayTyped() throws {
+    @Test("Selected browser read failures are omitted while corrupt parser bytes stay typed")
+    func selectedSourceFailuresStaySafe() throws {
         var browserSelection = FeedbackEvidenceSelections()
         browserSelection.includeTaskLogs = false
         browserSelection.includeBrowserEvidence = true
-        #expect(throws: FeedbackReportEvidenceSourceReader.SourceError.unavailable(.browserEvidence)) {
-            _ = try FeedbackReportEvidenceSourceReader.collect(
-                launch: launch(),
-                selections: browserSelection,
-                interval: DateInterval(start: .distantPast, end: .distantFuture),
-                entriesProvider: { [] },
-                browserProvider: { _, _, _, _ in
-                    throw FeedbackReportEvidenceSourceReader.SourceError.unavailable(.browserEvidence)
-                },
-                crashProvider: { _, _ in [] }
-            )
-        }
+        browserSelection.includeScreenshots = false
+        browserSelection.includeMacOSDiagnostics = false
+        let source = try FeedbackReportEvidenceSourceReader.collect(
+            launch: launch(),
+            selections: browserSelection,
+            interval: DateInterval(start: .distantPast, end: .distantFuture),
+            entriesProvider: { [] },
+            browserProvider: { _, _, _, _ in
+                throw FeedbackReportEvidenceSourceReader.SourceError.unavailable(.browserEvidence)
+            },
+            crashProvider: { _, _ in [] }
+        )
+        #expect(source.omissions.contains {
+            $0.artifactID == "browser-evidence" && $0.reason == .unavailable
+        })
 
         let timestamp = "2027-01-15T08:00:00.000Z"
         let corruptScreenshot = try JSONSerialization.data(withJSONObject: [
@@ -201,18 +215,6 @@ struct FeedbackReportPresentationTests {
                 includeScreenshots: true
             )
         }
-    }
-
-    @Test("Selected source errors expose only bounded actionable descriptions")
-    func selectedSourceErrorsAreActionable() {
-        #expect(
-            FeedbackReportEvidenceSourceReader.SourceError.unavailable(.browserScreenshot).localizedDescription
-                == "The selected browser screenshots are unavailable. Retry or deselect that evidence."
-        )
-        #expect(
-            FeedbackReportEvidenceSourceReader.SourceError.corrupt(.macOSDiagnostics).localizedDescription
-                == "The selected macOS diagnostics could not be read safely. Retry or deselect that evidence."
-        )
     }
 
     @Test("Capped browser suffix ignores only its first truncated fragment")

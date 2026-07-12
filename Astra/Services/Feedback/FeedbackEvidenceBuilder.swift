@@ -80,7 +80,10 @@ struct FeedbackEvidenceBuilder {
             )
 
             var artifacts: [FeedbackEvidenceArtifactV1] = []
-            var omissions: [FeedbackEvidenceOmissionV1] = []
+            // Source availability is resolved before transformation. Preserve
+            // those typed omissions in the exact reviewed manifest while still
+            // failing hard on sanitization, canonicalization, or package errors.
+            var omissions = input.sourceOmissions
             var warnings: [FeedbackEvidenceWarningV1] = []
 
             try appendLogArtifact(

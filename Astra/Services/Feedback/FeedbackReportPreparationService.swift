@@ -92,13 +92,31 @@ struct FeedbackReportEvidenceSource: Sendable {
     var browserRecords: [FeedbackBrowserEvidenceRecord]
     var screenshots: [FeedbackScreenshotCandidate]
     var crashReports: [CrashReportSummary]
+    var omissions: [FeedbackEvidenceOmissionV1]
+
+    init(
+        applicationLogEntries: [LogEntry],
+        taskLogEntries: [LogEntry],
+        browserRecords: [FeedbackBrowserEvidenceRecord],
+        screenshots: [FeedbackScreenshotCandidate],
+        crashReports: [CrashReportSummary],
+        omissions: [FeedbackEvidenceOmissionV1] = []
+    ) {
+        self.applicationLogEntries = applicationLogEntries
+        self.taskLogEntries = taskLogEntries
+        self.browserRecords = browserRecords
+        self.screenshots = screenshots
+        self.crashReports = crashReports
+        self.omissions = omissions
+    }
 
     static let empty = FeedbackReportEvidenceSource(
         applicationLogEntries: [],
         taskLogEntries: [],
         browserRecords: [],
         screenshots: [],
-        crashReports: []
+        crashReports: [],
+        omissions: []
     )
 }
 
@@ -286,6 +304,13 @@ struct FeedbackReportPreparationService {
         let worker = Task.detached(priority: .userInitiated) {
             let source = try provider(launch, form.selections, interval)
             try Task.checkCancellation()
+            if !source.omissions.isEmpty {
+                AppLogger.warning(
+                    "feedback.evidence_sources_omitted count=\(source.omissions.count)",
+                    category: "Diagnostics",
+                    taskID: launch.taskID
+                )
+            }
             let runtimeSnapshot = RuntimeFeedbackSnapshotBuilder().build(from: launch.runtimeEvidence)
             let envelopeData: @Sendable (FeedbackEvidenceManifestV1) throws -> Data = { manifest in
                 let consent = Self.exactConsent(
@@ -314,6 +339,7 @@ struct FeedbackReportPreparationService {
                 browserRecords: source.browserRecords,
                 screenshots: source.screenshots,
                 crashReports: source.crashReports,
+                sourceOmissions: source.omissions,
                 makeReportEnvelopeData: envelopeData
             )
             return try builder(input, form.selections, preparationRoot)
@@ -937,6 +963,7 @@ private enum FeedbackReportEnvelopeFactory {
 enum FeedbackReportEvidenceSourceReader {
     private static let maximumBrowserFlightBytes = 4 * 1_024 * 1_024
     enum SelectedSource: String, Equatable, Sendable {
+        case applicationLogs
         case taskLogs
         case browserEvidence
         case browserScreenshot
@@ -944,6 +971,7 @@ enum FeedbackReportEvidenceSourceReader {
 
         var displayName: String {
             switch self {
+            case .applicationLogs: "application logs"
             case .taskLogs: "task logs"
             case .browserEvidence: "browser interaction details"
             case .browserScreenshot: "browser screenshots"
@@ -958,9 +986,18 @@ enum FeedbackReportEvidenceSourceReader {
         var errorDescription: String? {
             switch self {
             case .unavailable(let source):
-                "The selected \(source.displayName) are unavailable. Retry or deselect that evidence."
+                "The selected \(source.displayName) are unavailable and will be skipped."
             case .corrupt(let source):
-                "The selected \(source.displayName) could not be read safely. Retry or deselect that evidence."
+                "The selected \(source.displayName) could not be read safely and will be skipped."
+            }
+        }
+
+        func reason(for requestedSource: SelectedSource) -> FeedbackEvidenceReasonV1 {
+            switch self {
+            case .unavailable:
+                .unavailable
+            case .corrupt(let failedSource):
+                failedSource == requestedSource ? .unsupported : .unavailable
             }
         }
     }
@@ -986,12 +1023,10 @@ enum FeedbackReportEvidenceSourceReader {
         crashProvider: @escaping CrashProvider = { try crashEvidence(launch: $0, interval: $1) }
     ) throws -> FeedbackReportEvidenceSource {
         try Task.checkCancellation()
+        var omissions: [FeedbackEvidenceOmissionV1] = []
         let needsLogs = selections.includeApplicationLogs || selections.includeTaskLogs
         let entries = needsLogs ? entriesProvider() : []
         let windowEntries = entries.filter { interval.contains($0.timestamp) }
-        if selections.includeTaskLogs && launch.taskID == nil {
-            throw SourceError.unavailable(.taskLogs)
-        }
         let taskEntries = selections.includeTaskLogs
             ? launch.taskID.map { taskID in
                 windowEntries.filter { entryBelongsToTask($0, taskID: taskID) }
@@ -1000,39 +1035,95 @@ enum FeedbackReportEvidenceSourceReader {
         let applicationEntries = selections.includeApplicationLogs
             ? windowEntries.filter { $0.taskID == nil }
             : []
-        try Task.checkCancellation()
-        let browser: (
-            records: [FeedbackBrowserEvidenceRecord],
-            screenshots: [FeedbackScreenshotCandidate]
-        )
-        if selections.includeBrowserEvidence || selections.includeScreenshots {
-            browser = try browserProvider(
-                launch.taskID,
-                interval,
-                selections.includeBrowserEvidence,
-                selections.includeScreenshots
-            )
-            if selections.includeBrowserEvidence && browser.records.isEmpty {
-                throw SourceError.unavailable(.browserEvidence)
-            }
-            if selections.includeScreenshots && browser.screenshots.isEmpty {
-                throw SourceError.unavailable(.browserScreenshot)
-            }
-        } else {
-            browser = (records: [], screenshots: [])
+        if selections.includeApplicationLogs && applicationEntries.isEmpty {
+            appendOmission(.applicationLogs, reason: .unavailable, to: &omissions)
+        }
+        if selections.includeTaskLogs && taskEntries.isEmpty {
+            appendOmission(.taskLogs, reason: .unavailable, to: &omissions)
         }
         try Task.checkCancellation()
-        let crashes = selections.includeMacOSDiagnostics ? try crashProvider(launch, interval) : []
+        var browser: (
+            records: [FeedbackBrowserEvidenceRecord],
+            screenshots: [FeedbackScreenshotCandidate]
+        ) = (records: [], screenshots: [])
+        if selections.includeBrowserEvidence || selections.includeScreenshots {
+            do {
+                browser = try browserProvider(
+                    launch.taskID,
+                    interval,
+                    selections.includeBrowserEvidence,
+                    selections.includeScreenshots
+                )
+            } catch let error as SourceError {
+                if selections.includeBrowserEvidence {
+                    appendOmission(
+                        .browserEvidence,
+                        reason: error.reason(for: .browserEvidence),
+                        to: &omissions
+                    )
+                }
+                if selections.includeScreenshots {
+                    appendOmission(
+                        .browserScreenshot,
+                        reason: error.reason(for: .browserScreenshot),
+                        to: &omissions
+                    )
+                }
+            }
+            if selections.includeBrowserEvidence && browser.records.isEmpty {
+                appendOmission(.browserEvidence, reason: .unavailable, to: &omissions)
+            }
+            if selections.includeScreenshots && browser.screenshots.isEmpty {
+                appendOmission(.browserScreenshot, reason: .unavailable, to: &omissions)
+            }
+        }
+        try Task.checkCancellation()
+        var crashes: [CrashReportSummary] = []
+        if selections.includeMacOSDiagnostics {
+            do {
+                crashes = try crashProvider(launch, interval)
+            } catch let error as SourceError {
+                appendOmission(
+                    .macOSDiagnostics,
+                    reason: error.reason(for: .macOSDiagnostics),
+                    to: &omissions
+                )
+            }
+        }
         if selections.includeMacOSDiagnostics && crashes.isEmpty {
-            throw SourceError.unavailable(.macOSDiagnostics)
+            appendOmission(.macOSDiagnostics, reason: .unavailable, to: &omissions)
         }
         return FeedbackReportEvidenceSource(
             applicationLogEntries: applicationEntries,
             taskLogEntries: taskEntries,
             browserRecords: browser.records,
             screenshots: browser.screenshots,
-            crashReports: crashes
+            crashReports: crashes,
+            omissions: omissions
         )
+    }
+
+    private static func appendOmission(
+        _ source: SelectedSource,
+        reason: FeedbackEvidenceReasonV1,
+        to omissions: inout [FeedbackEvidenceOmissionV1]
+    ) {
+        let descriptor: (artifactID: String, kind: FeedbackEvidenceArtifactKindV1) = switch source {
+        case .applicationLogs: ("application-log", .applicationLog)
+        case .taskLogs: ("task-log", .taskLog)
+        case .browserEvidence: ("browser-evidence", .browserEvidence)
+        case .browserScreenshot: ("browser-screenshot", .screenshot)
+        case .macOSDiagnostics: ("macos-diagnostics", .macOSDiagnostic)
+        }
+        guard !omissions.contains(where: { $0.artifactID == descriptor.artifactID }) else { return }
+        omissions.append(FeedbackEvidenceOmissionV1(
+            artifactID: descriptor.artifactID,
+            kind: descriptor.kind,
+            reason: reason,
+            detail: reason == .unsupported
+                ? "This source could not be read safely and was omitted."
+                : "No matching evidence was available in the selected time window."
+        ))
     }
 
     static func retainedLogEntries(
@@ -1148,12 +1239,6 @@ enum FeedbackReportEvidenceSourceReader {
                     height: int(screenshot["height"])
                 ))
             }
-        }
-        if includeRecords && records.isEmpty {
-            throw SourceError.unavailable(.browserEvidence)
-        }
-        if includeScreenshots && screenshots.isEmpty {
-            throw SourceError.unavailable(.browserScreenshot)
         }
         return (records, screenshots)
     }

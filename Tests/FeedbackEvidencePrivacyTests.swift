@@ -106,8 +106,8 @@ struct FeedbackEvidencePrivacyTests {
         #expect(applicationLog.contains("then preserved safe context"))
     }
 
-    @Test("Browser, screenshot, and crash evidence are excluded by default")
-    func sensitiveEvidenceRequiresOptIn() throws {
+    @Test("Unchecked browser, screenshot, and crash evidence perform no disclosure")
+    func sensitiveEvidenceHonorsExplicitOptOut() throws {
         let fixture = try Fixture()
         defer { fixture.remove() }
         let crash = try fixture.crashReport(contents: "Process: ASTRA Dev\nprivate raw line")
@@ -117,9 +117,13 @@ struct FeedbackEvidencePrivacyTests {
             crashReports: [crash]
         )
 
+        var selections = FeedbackEvidenceSelections()
+        selections.includeBrowserEvidence = false
+        selections.includeScreenshots = false
+        selections.includeMacOSDiagnostics = false
         let package = try FeedbackEvidenceBuilder().prepare(
             input: input,
-            selections: FeedbackEvidenceSelections(),
+            selections: selections,
             directory: fixture.outputDirectory
         )
 
@@ -137,7 +141,7 @@ struct FeedbackEvidencePrivacyTests {
         let fixture = try Fixture()
         defer { fixture.remove() }
         let crash = try fixture.crashReport(contents: "Process: ASTRA Dev")
-        let screenshots = (0..<FeedbackContractLimitsV1.maximumOmissions).map { index in
+        let screenshots = (0..<(FeedbackContractLimitsV1.maximumOmissions + 20)).map { index in
             FeedbackScreenshotCandidate(
                 jpegData: fixture.jpegScreenshot.jpegData,
                 source: String(format: "browser-%03d", index),
@@ -145,6 +149,9 @@ struct FeedbackEvidencePrivacyTests {
                 height: 2
             )
         }
+        var selections = FeedbackEvidenceSelections()
+        selections.includeBrowserEvidence = false
+        selections.includeMacOSDiagnostics = false
 
         let first = try FeedbackEvidenceBuilder().prepare(
             input: fixture.input(
@@ -152,7 +159,7 @@ struct FeedbackEvidencePrivacyTests {
                 screenshots: screenshots,
                 crashReports: [crash]
             ),
-            selections: FeedbackEvidenceSelections(),
+            selections: selections,
             directory: fixture.root.appendingPathComponent("omissions-first", isDirectory: true)
         )
         let second = try FeedbackEvidenceBuilder().prepare(
@@ -161,7 +168,7 @@ struct FeedbackEvidencePrivacyTests {
                 screenshots: Array(screenshots.reversed()),
                 crashReports: [crash]
             ),
-            selections: FeedbackEvidenceSelections(),
+            selections: selections,
             directory: fixture.root.appendingPathComponent("omissions-second", isDirectory: true)
         )
         let omissionKinds = Set(first.manifest.omissions.map(\.kind))

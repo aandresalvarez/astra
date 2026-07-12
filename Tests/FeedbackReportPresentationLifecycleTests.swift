@@ -9,7 +9,7 @@ import ASTRAPersistence
 @testable import ASTRA
 
 extension FeedbackReportPresentationTests {
-    @Test("General reports default to a fifteen-minute window without unbound task logs")
+    @Test("General reports select every applicable evidence type by default")
     func formDefaults() {
         let now = Date(timeIntervalSince1970: 1_800_000_000)
         let form = FeedbackReportFormState(
@@ -20,9 +20,9 @@ extension FeedbackReportPresentationTests {
         #expect(form.evidenceWindowStart == now.addingTimeInterval(-15 * 60))
         #expect(form.selections.includeApplicationLogs)
         #expect(!form.selections.includeTaskLogs)
-        #expect(!form.selections.includeBrowserEvidence)
-        #expect(!form.selections.includeScreenshots)
-        #expect(!form.selections.includeMacOSDiagnostics)
+        #expect(form.selections.includeBrowserEvidence)
+        #expect(form.selections.includeScreenshots)
+        #expect(form.selections.includeMacOSDiagnostics)
     }
 
     @Test("Task-bound reports default to their exact task logs")
@@ -32,21 +32,97 @@ extension FeedbackReportPresentationTests {
                 hostID: UUID(), entryPoint: .taskFailure, taskID: UUID()
             )
         )
-        #expect(form.selections.includeTaskLogs)
+        #expect(form.selections == FeedbackEvidenceSelections())
     }
 
-    @Test("Unbound task-log selections fail instead of silently disclosing nothing")
-    func unboundTaskLogsFailClosed() {
-        #expect(throws: FeedbackReportEvidenceSourceReader.SourceError.unavailable(.taskLogs)) {
-            _ = try FeedbackReportEvidenceSourceReader.collect(
-                launch: FeedbackReportLaunch(hostID: UUID(), entryPoint: .logs),
-                selections: FeedbackEvidenceSelections(),
-                interval: DateInterval(start: .distantPast, end: .distantFuture),
-                entriesProvider: { [] },
-                browserProvider: { _, _, _, _ in (records: [], screenshots: []) },
-                crashProvider: { _, _ in [] }
-            )
+    @Test("Unavailable selected sources become reviewable omissions")
+    func unavailableSelectedSourcesAreOmitted() throws {
+        let source = try FeedbackReportEvidenceSourceReader.collect(
+            launch: FeedbackReportLaunch(hostID: UUID(), entryPoint: .logs),
+            selections: FeedbackEvidenceSelections(),
+            interval: DateInterval(start: .distantPast, end: .distantFuture),
+            entriesProvider: { [] },
+            browserProvider: { _, _, _, _ in (records: [], screenshots: []) },
+            crashProvider: { _, _ in [] }
+        )
+        #expect(source.applicationLogEntries.isEmpty)
+        #expect(source.taskLogEntries.isEmpty)
+        #expect(source.browserRecords.isEmpty)
+        #expect(source.screenshots.isEmpty)
+        #expect(source.crashReports.isEmpty)
+        #expect(Set(source.omissions.map(\.artifactID)) == [
+            "application-log", "task-log", "browser-evidence", "browser-screenshot", "macos-diagnostics"
+        ])
+        #expect(source.omissions.allSatisfy { $0.reason == .unavailable })
+    }
+
+    @Test("Available evidence prepares even when every optional source is unavailable")
+    @MainActor
+    func partialEvidenceStillProducesReviewablePackage() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "feedback-partial-evidence-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let defaultsName = "feedback-partial-evidence-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: defaultsName))
+        defer {
+            try? FileManager.default.removeItem(at: root)
+            defaults.removePersistentDomain(forName: defaultsName)
         }
+        let container = try makeFeedbackOutboxContainer()
+        let crashService = FeedbackCrashOfferService(defaults: defaults)
+        let reportLaunch = FeedbackReportLaunch(hostID: UUID(), entryPoint: .help)
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        var form = FeedbackReportFormState(launch: reportLaunch, now: now)
+        form.intendedOutcome = "Continue using ASTRA"
+        form.actualResult = "ASTRA closed unexpectedly"
+        form.expectedResult = "ASTRA stays open"
+        let appEntry = LogEntry(
+            level: .error,
+            category: "App",
+            message: "safe failure context",
+            timestamp: now.addingTimeInterval(-1)
+        )
+        let service = FeedbackReportPreparationService(
+            modelContainer: container,
+            crashOfferService: crashService,
+            storageRoot: root,
+            defaults: defaults,
+            evidenceSourceProvider: { launch, selections, interval in
+                try FeedbackReportEvidenceSourceReader.collect(
+                    launch: launch,
+                    selections: selections,
+                    interval: interval,
+                    entriesProvider: { [appEntry] },
+                    browserProvider: { _, _, _, _ in (records: [], screenshots: []) },
+                    crashProvider: { _, _ in [] }
+                )
+            }
+        )
+
+        let preview = try await service.preparePreview(launch: reportLaunch, form: form)
+
+        #expect(preview.manifest.artifacts.map(\.artifactID) == ["application-log"])
+        #expect(Set(preview.manifest.omissions.map(\.artifactID)) == [
+            "browser-evidence", "browser-screenshot", "macos-diagnostics"
+        ])
+        #expect(preview.manifest.omissions.allSatisfy { $0.reason == .unavailable })
+        #expect(FeedbackEvidencePreviewPresentation(preview: preview).rows.contains {
+            $0.id == "omitted-browser-evidence" && !$0.included
+        })
+    }
+
+    @Test("Selected source errors expose only bounded actionable descriptions")
+    func selectedSourceErrorsAreActionable() {
+        #expect(
+            FeedbackReportEvidenceSourceReader.SourceError.unavailable(.browserScreenshot).localizedDescription
+                == "The selected browser screenshots are unavailable and will be skipped."
+        )
+        #expect(
+            FeedbackReportEvidenceSourceReader.SourceError.corrupt(.macOSDiagnostics).localizedDescription
+                == "The selected macOS diagnostics could not be read safely and will be skipped."
+        )
     }
 
     @Test("Feedback evidence reads retained app and exact task log files")

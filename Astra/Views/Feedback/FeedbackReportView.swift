@@ -29,6 +29,7 @@ struct FeedbackReportView: View {
     @State private var explicitDismissalCompleted = false
     @State private var isExporting = false
     @State private var manualExportMessage: String?
+    @State private var showsEvidenceChoices = false
 
     init(
         launch: FeedbackReportLaunch,
@@ -267,19 +268,28 @@ struct FeedbackReportView: View {
     private var evidenceCard: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Evidence from \(evidenceWindowLabel)").font(Stanford.heading(16))
-            Text("Logs are sanitized before preview. Browser details, screenshots, and macOS diagnostics require explicit opt-in.")
+            Text("ASTRA includes every available evidence type, sanitizes it, and safely skips anything missing. You can review the exact files before sharing.")
                 .font(Stanford.caption(12)).foregroundStyle(.secondary)
-            Toggle("Application logs", isOn: $form.selections.includeApplicationLogs)
-                .accessibilityIdentifier(FeedbackReportAccessibilityID.applicationLogs)
-            Toggle("Task logs", isOn: $form.selections.includeTaskLogs)
-                .disabled(launch.taskID == nil)
-                .accessibilityIdentifier(FeedbackReportAccessibilityID.taskLogs)
-            Toggle("Browser interaction details", isOn: $form.selections.includeBrowserEvidence)
-                .accessibilityIdentifier(FeedbackReportAccessibilityID.browserEvidence)
-            Toggle("Browser screenshots", isOn: $form.selections.includeScreenshots)
-                .accessibilityIdentifier(FeedbackReportAccessibilityID.screenshots)
-            Toggle("macOS crash diagnostics", isOn: $form.selections.includeMacOSDiagnostics)
-                .accessibilityIdentifier(FeedbackReportAccessibilityID.macOSDiagnostics)
+            DisclosureGroup("Change included evidence", isExpanded: $showsEvidenceChoices) {
+                VStack(alignment: .leading, spacing: 10) {
+                    Toggle("Application logs", isOn: $form.selections.includeApplicationLogs)
+                        .accessibilityIdentifier(FeedbackReportAccessibilityID.applicationLogs)
+                    if launch.taskID != nil {
+                        Toggle("Task logs", isOn: $form.selections.includeTaskLogs)
+                            .accessibilityIdentifier(FeedbackReportAccessibilityID.taskLogs)
+                    }
+                    Toggle("Browser interaction details", isOn: $form.selections.includeBrowserEvidence)
+                        .accessibilityIdentifier(FeedbackReportAccessibilityID.browserEvidence)
+                    Toggle("Browser screenshots", isOn: $form.selections.includeScreenshots)
+                        .accessibilityIdentifier(FeedbackReportAccessibilityID.screenshots)
+                    Toggle("macOS crash diagnostics", isOn: $form.selections.includeMacOSDiagnostics)
+                        .accessibilityIdentifier(FeedbackReportAccessibilityID.macOSDiagnostics)
+                    Text("Browser screenshots can contain visible page content. Uncheck any evidence you do not want to share.")
+                        .font(Stanford.caption(11))
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.top, 8)
+            }
         }
     }
 

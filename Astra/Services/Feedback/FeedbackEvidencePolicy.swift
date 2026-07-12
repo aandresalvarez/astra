@@ -4,9 +4,9 @@ import ASTRACore
 struct FeedbackEvidenceSelections: Equatable, Sendable {
     var includeApplicationLogs = true
     var includeTaskLogs = true
-    var includeBrowserEvidence = false
-    var includeScreenshots = false
-    var includeMacOSDiagnostics = false
+    var includeBrowserEvidence = true
+    var includeScreenshots = true
+    var includeMacOSDiagnostics = true
 }
 
 struct FeedbackBrowserEvidenceRecord: Codable, Equatable, Sendable {
@@ -39,6 +39,7 @@ struct FeedbackEvidenceInput: Sendable {
     let browserRecords: [FeedbackBrowserEvidenceRecord]
     let screenshots: [FeedbackScreenshotCandidate]
     let crashReports: [CrashReportSummary]
+    let sourceOmissions: [FeedbackEvidenceOmissionV1]
     let makeReportEnvelopeData: @Sendable (FeedbackEvidenceManifestV1) throws -> Data
 
     init(
@@ -49,6 +50,7 @@ struct FeedbackEvidenceInput: Sendable {
         browserRecords: [FeedbackBrowserEvidenceRecord],
         screenshots: [FeedbackScreenshotCandidate],
         crashReports: [CrashReportSummary],
+        sourceOmissions: [FeedbackEvidenceOmissionV1] = [],
         makeReportEnvelopeData: @escaping @Sendable (FeedbackEvidenceManifestV1) throws -> Data
     ) {
         self.reportID = reportID
@@ -58,6 +60,7 @@ struct FeedbackEvidenceInput: Sendable {
         self.browserRecords = browserRecords
         self.screenshots = screenshots
         self.crashReports = crashReports
+        self.sourceOmissions = sourceOmissions
         self.makeReportEnvelopeData = makeReportEnvelopeData
     }
 }
