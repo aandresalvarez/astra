@@ -273,7 +273,7 @@ enum TaskForkManifestService: Sendable {
             in: kindRoot,
             fileManager: fileManager
         )
-        try fileManager.copyItem(atPath: reference.sourcePath, toPath: destination)
+        try fileManager.copyItem(atPath: resolvedCopySource(for: reference.sourcePath), toPath: destination)
 
         if let outputIndex = manifest.sourceOutputFiles.firstIndex(where: { $0.sourcePath == sourcePath }) {
             manifest.sourceOutputFiles[outputIndex].localCopyPath = destination
@@ -404,7 +404,11 @@ enum TaskForkManifestService: Sendable {
             localCopyPath: nil,
             size: (attrs?[.size] as? NSNumber)?.intValue,
             modifiedAt: attrs?[.modificationDate] as? Date,
-            sha256: sha256(path: path, fileManager: fileManager),
+            // Hashing every referenced file would read it fully into memory on
+            // the main actor even in shared-files mode, where nothing consumes
+            // the digest. `snapshotReferences` hashes the fork-local copy when
+            // file-copy mode actually materializes one.
+            sha256: nil,
             originatingRunID: nil,
             logicalPath: (path as NSString).lastPathComponent
         )
@@ -441,10 +445,19 @@ enum TaskForkManifestService: Sendable {
             let kindRoot = (copyRoot as NSString).appendingPathComponent(references[index].kind)
             try fileManager.createDirectory(atPath: kindRoot, withIntermediateDirectories: true)
             let destination = uniqueDestination(for: sourcePath, in: kindRoot, fileManager: fileManager)
-            try fileManager.copyItem(atPath: sourcePath, toPath: destination)
+            try fileManager.copyItem(atPath: resolvedCopySource(for: sourcePath), toPath: destination)
             references[index].localCopyPath = destination
             references[index].sha256 = sha256(path: destination, managedRoot: forkFolder, fileManager: fileManager)
         }
+    }
+
+    /// `FileManager.copyItem` reproduces a symlink as a symlink, which would
+    /// leave an "independent copy" aliased to the live original. Resolving
+    /// first snapshots the target's content instead. Symlinked directories
+    /// never reach the copy calls (the `fileExists(isDirectory:)` guards
+    /// traverse links, so they take the shared-reference path).
+    private static func resolvedCopySource(for sourcePath: String) -> String {
+        URL(fileURLWithPath: sourcePath).resolvingSymlinksInPath().path
     }
 
     private static func sha256(path: String, managedRoot: String? = nil, fileManager: FileManager) -> String? {

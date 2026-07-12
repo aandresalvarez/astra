@@ -140,7 +140,8 @@ struct TaskForkConfirmationSheet: View {
                 title: "Create independent file copies",
                 detail: policy.allowsIndependentCopies
                     ? "Copies explicit files, attachments, and checkpoint artifacts. Folders remain shared and are never copied automatically."
-                    : "Available only from the latest step because files changed by later steps cannot be reconstructed safely.",
+                    : policy.independentCopiesUnavailableDetail
+                        ?? "Available only from the latest step because files changed by later steps cannot be reconstructed safely.",
                 systemImage: "doc.on.doc"
             )
             .disabled(!policy.allowsIndependentCopies)

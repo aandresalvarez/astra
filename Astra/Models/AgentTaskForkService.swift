@@ -39,6 +39,7 @@ public enum AgentTaskForkError: LocalizedError, Equatable {
     case targetRunStillRunning
     case repositoryFileCopyDenied
     case historicalFileCopyUnavailable
+    case fileCopiesRequireWorkspace
     case manifestWriteFailed
 
     public var errorDescription: String? {
@@ -51,6 +52,8 @@ public enum AgentTaskForkError: LocalizedError, Equatable {
             "Git repository files cannot be copied by conversation forking. Use the Git workspace controls for code isolation."
         case .historicalFileCopyUnavailable:
             "Independent file copies are only available from the latest checkpoint because ASTRA cannot reconstruct earlier versions of files that were later changed. Use shared files or fork from the latest step."
+        case .fileCopiesRequireWorkspace:
+            "Independent file copies need a workspace folder to copy into. Use shared files for this conversation."
         case .manifestWriteFailed:
             "ASTRA could not prepare the conversation checkpoint. No fork was created."
         }
@@ -75,6 +78,14 @@ public enum AgentTaskForkService {
     ) throws -> AgentTask {
         if options.repository != nil, options.mode == .conversationWithFileCopies {
             throw AgentTaskForkError.repositoryFileCopyDenied
+        }
+        // Without a workspace folder there is nowhere to copy into: the
+        // manifest-writing branch below is skipped and `sourceToLocalPaths`
+        // stays empty, so file-copy mode would silently degrade to shared
+        // references. Fail instead of pretending to isolate.
+        if options.mode == .conversationWithFileCopies,
+           (source.workspace?.primaryPath ?? "").isEmpty {
+            throw AgentTaskForkError.fileCopiesRequireWorkspace
         }
 
         let sortedRuns = source.runs.sorted(by: runOrdering)

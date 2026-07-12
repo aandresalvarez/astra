@@ -20,7 +20,15 @@ extension TaskMainView {
             if let repositorySummary = cachedForkRepositorySummary {
                 Text(repositorySummary).foregroundStyle(Stanford.coolGrey)
             }
-            if let readOnlyReason = TaskForkPolicyService.readOnlyReason(for: task) {
+            // Only the cheap running-sibling scan runs per body evaluation
+            // (reading sibling `status` here also keeps the banner reactive
+            // to runs finishing); the manifest disk read behind the git-fork
+            // gate is cached alongside the other fork banner fields.
+            if let sharedWorktreeRoot = cachedForkSharedWorktreeRoot,
+               let readOnlyReason = TaskForkPolicyService.readOnlyReason(
+                for: task,
+                sharedWorktreeRoot: sharedWorktreeRoot
+               ) {
                 Text(readOnlyReason).foregroundStyle(Stanford.poppy)
             }
             if let warning = cachedForkSourceAvailabilityWarning {
@@ -48,6 +56,10 @@ extension TaskMainView {
             let name = URL(fileURLWithPath: repository.rootPath).lastPathComponent
             return "\(name) · \(repository.branch) · \(repository.headSHA)"
         }
+        cachedForkSharedWorktreeRoot = TaskForkPolicyService.sharedWorktreeReadOnlyRoot(
+            for: task,
+            manifest: manifest
+        )
     }
 
     func presentForkConfirmation(from run: TaskRunSnapshot) {

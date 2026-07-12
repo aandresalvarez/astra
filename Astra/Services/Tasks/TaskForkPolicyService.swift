@@ -7,6 +7,9 @@ struct TaskForkPolicy: Sendable, Equatable {
     let repository: TaskForkRepositorySnapshot?
     let eligibleFileCount: Int
     var allowsIndependentCopies: Bool = true
+    /// Overrides the confirmation sheet's default (latest-checkpoint)
+    /// explanation when copies are withheld for a different reason.
+    var independentCopiesUnavailableDetail: String?
 
     var isGitBacked: Bool { repository != nil }
     var allowedModes: [TaskForkMode] {
@@ -33,10 +36,17 @@ enum TaskForkPolicyService {
     ) -> TaskForkPolicy {
         let workingPath = TaskWorkspaceAccess(task: task).codeWorkingDirectory
         let repository = repositorySnapshot(workingPath: workingPath, gitRunner: gitRunner)
+        // Workspace-less tasks have no task folder to copy into, so the fork
+        // path cannot materialize independent copies (AgentTaskForkService
+        // throws `fileCopiesRequireWorkspace`). Don't offer the mode.
+        let hasWorkspaceFolder = !(task.workspace?.primaryPath ?? "").isEmpty
         return TaskForkPolicy(
             repository: repository,
             eligibleFileCount: eligibleFilePaths(for: task, fileManager: fileManager).count,
-            allowsIndependentCopies: isLatestCheckpoint(targetRunID, in: task)
+            allowsIndependentCopies: hasWorkspaceFolder && isLatestCheckpoint(targetRunID, in: task),
+            independentCopiesUnavailableDetail: hasWorkspaceFolder
+                ? nil
+                : "This conversation has no workspace folder to copy files into."
         )
     }
 
@@ -49,15 +59,30 @@ enum TaskForkPolicyService {
         return latest?.id == targetRunID
     }
 
+    /// Non-nil iff `task` is a git-backed conversation fork: the standardized
+    /// worktree root the read-only sibling scan compares against. Reading the
+    /// manifest hits disk, so render paths cache this and pass it to
+    /// `readOnlyReason(for:sharedWorktreeRoot:)` instead of calling the
+    /// uncached overload per body evaluation.
+    @MainActor
+    static func sharedWorktreeReadOnlyRoot(for task: AgentTask, manifest: TaskForkManifest?) -> String? {
+        guard task.isForked, manifest?.repository != nil else { return nil }
+        let root = standardized(TaskWorkspaceAccess(task: task).codeWorkingDirectory)
+        return root.isEmpty ? nil : root
+    }
+
     @MainActor
     static func activeSharedWorktreeBlocker(for task: AgentTask) -> AgentTask? {
-        guard task.isForked,
-              TaskForkManifestService.load(for: task)?.repository != nil,
-              let workspace = task.workspace else {
-            return nil
-        }
-        let taskRoot = standardized(TaskWorkspaceAccess(task: task).codeWorkingDirectory)
-        guard !taskRoot.isEmpty else { return nil }
+        guard let taskRoot = sharedWorktreeReadOnlyRoot(
+            for: task,
+            manifest: TaskForkManifestService.load(for: task)
+        ) else { return nil }
+        return activeSharedWorktreeBlocker(for: task, sharedWorktreeRoot: taskRoot)
+    }
+
+    @MainActor
+    static func activeSharedWorktreeBlocker(for task: AgentTask, sharedWorktreeRoot taskRoot: String) -> AgentTask? {
+        guard !taskRoot.isEmpty, let workspace = task.workspace else { return nil }
         return workspace.tasks.first { candidate in
             candidate.id != task.id
                 && candidate.status == .running
@@ -68,7 +93,19 @@ enum TaskForkPolicyService {
     @MainActor
     static func readOnlyReason(for task: AgentTask) -> String? {
         guard let blocker = activeSharedWorktreeBlocker(for: task) else { return nil }
-        return "This conversation is read-only while \"\(blocker.title)\" is using the shared Git worktree. Wait for that run to finish or select another worktree in Git."
+        return readOnlyMessage(blocker: blocker)
+    }
+
+    @MainActor
+    static func readOnlyReason(for task: AgentTask, sharedWorktreeRoot: String) -> String? {
+        guard let blocker = activeSharedWorktreeBlocker(for: task, sharedWorktreeRoot: sharedWorktreeRoot) else {
+            return nil
+        }
+        return readOnlyMessage(blocker: blocker)
+    }
+
+    private static func readOnlyMessage(blocker: AgentTask) -> String {
+        "This conversation is read-only while \"\(blocker.title)\" is using the shared Git worktree. Wait for that run to finish or select another worktree in Git."
     }
 
     private static func repositorySnapshot(

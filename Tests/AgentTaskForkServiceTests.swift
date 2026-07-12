@@ -391,6 +391,16 @@ struct AgentTaskForkServiceTests {
         let reason = try #require(TaskForkPolicyService.readOnlyReason(for: forked))
         #expect(reason.contains("Original conversation"))
         #expect(reason.contains("shared Git worktree"))
+
+        // The render path caches the manifest gate and passes the root in;
+        // it must agree with the uncached enforcement path.
+        let cachedRoot = try #require(TaskForkPolicyService.sharedWorktreeReadOnlyRoot(
+            for: forked,
+            manifest: TaskForkManifestService.load(for: forked)
+        ))
+        #expect(TaskForkPolicyService.readOnlyReason(for: forked, sharedWorktreeRoot: cachedRoot) == reason)
+        source.status = .completed
+        #expect(TaskForkPolicyService.readOnlyReason(for: forked, sharedWorktreeRoot: cachedRoot) == nil)
     }
 
     @Test("workspace-less conversation still forks history without a manifest")
@@ -410,6 +420,88 @@ struct AgentTaskForkServiceTests {
         #expect(forked.runs.first?.output == "Checkpoint answer")
         #expect(forked.events.contains { $0.type == TaskEventTypes.Task.checkpoint.rawValue })
         #expect(!forked.events.contains { $0.type == "task.fork_manifest.created" })
+    }
+
+    @Test("workspace-less conversations reject independent copies instead of silently sharing")
+    func workspaceLessForkRejectsIndependentCopies() throws {
+        let container = try makeAgentTaskForkContainer()
+        let context = ModelContext(container)
+        let source = AgentTask(title: "Standalone", goal: "Discuss an idea")
+        context.insert(source)
+        let run = TaskRun(task: source)
+        run.status = .completed
+        context.insert(run)
+
+        #expect(throws: AgentTaskForkError.fileCopiesRequireWorkspace) {
+            try AgentTask.fork(
+                from: source,
+                upToRun: run,
+                options: TaskForkOptions(mode: .conversationWithFileCopies),
+                in: context
+            )
+        }
+    }
+
+    @Test("shared-files forks record references without content hashes")
+    func sharedFilesForkSkipsContentHashing() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let inputPath = (root as NSString).appendingPathComponent("report.md")
+        try "checkpoint report".write(toFile: inputPath, atomically: true, encoding: .utf8)
+
+        let container = try makeAgentTaskForkContainer()
+        let context = ModelContext(container)
+        let workspace = Workspace(name: "Shared Files", primaryPath: root)
+        let source = AgentTask(title: "Source", goal: "Revise the report", workspace: workspace)
+        source.inputs = [inputPath]
+        context.insert(workspace)
+        context.insert(source)
+        let run = TaskRun(task: source)
+        run.status = .completed
+        context.insert(run)
+
+        let forked = try AgentTask.fork(from: source, upToRun: run, in: context)
+        try context.save()
+
+        let manifest = try #require(TaskForkManifestService.load(for: forked))
+        let reference = try #require(manifest.sourceInputs?.first { $0.sourcePath == inputPath })
+        #expect(reference.localCopyPath == nil)
+        #expect(reference.sha256 == nil)
+    }
+
+    @Test("independent copies snapshot symlinked file content instead of aliasing the original")
+    func independentCopiesResolveSymlinkedInputs() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let targetPath = (root as NSString).appendingPathComponent("target.md")
+        let linkPath = (root as NSString).appendingPathComponent("linked.md")
+        try "checkpoint content".write(toFile: targetPath, atomically: true, encoding: .utf8)
+        try FileManager.default.createSymbolicLink(atPath: linkPath, withDestinationPath: targetPath)
+
+        let container = try makeAgentTaskForkContainer()
+        let context = ModelContext(container)
+        let workspace = Workspace(name: "Symlinked", primaryPath: root)
+        let source = AgentTask(title: "Source", goal: "Revise", workspace: workspace)
+        source.inputs = [linkPath]
+        context.insert(workspace)
+        context.insert(source)
+        let run = TaskRun(task: source)
+        run.status = .completed
+        context.insert(run)
+
+        let forked = try AgentTask.fork(
+            from: source,
+            upToRun: run,
+            options: TaskForkOptions(mode: .conversationWithFileCopies),
+            in: context
+        )
+        try context.save()
+
+        let copiedPath = try #require(forked.inputs.first)
+        let copyAttributes = try FileManager.default.attributesOfItem(atPath: copiedPath)
+        #expect(copyAttributes[.type] as? FileAttributeType == .typeRegular)
+        try "changed after fork".write(toFile: targetPath, atomically: true, encoding: .utf8)
+        #expect(try String(contentsOfFile: copiedPath, encoding: .utf8) == "checkpoint content")
     }
 
     @Test("historical checkpoints reject file copies whose earlier bytes cannot be reconstructed")

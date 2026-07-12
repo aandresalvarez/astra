@@ -62,6 +62,19 @@ struct TaskForkPolicyServiceTests {
         #expect(policy.allowedModes == [.conversationSharedFiles, .conversationWithFileCopies])
     }
 
+    @Test("workspace-less task offers shared files only")
+    func workspaceLessTaskOffersSharedFilesOnly() {
+        let task = AgentTask(title: "Standalone", goal: "Discuss an idea")
+        let policy = TaskForkPolicyService.resolve(for: task) { _, _ in
+            .init(output: "", exitCode: 128)
+        }
+
+        #expect(policy.repository == nil)
+        #expect(!policy.allowsIndependentCopies)
+        #expect(policy.allowedModes == [.conversationSharedFiles])
+        #expect(policy.independentCopiesUnavailableDetail?.contains("no workspace folder") == true)
+    }
+
     @Test("historical checkpoint offers shared files only")
     func historicalCheckpointOffersSharedFilesOnly() {
         let workspace = Workspace(name: "Documents", primaryPath: "/tmp/documents")

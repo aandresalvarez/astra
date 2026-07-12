@@ -357,6 +357,7 @@ struct TaskMainView: View {
     @State var cachedForkSourceAvailabilityWarning: String?
     @State var cachedForkModeLabel: String?
     @State var cachedForkRepositorySummary: String?
+    @State var cachedForkSharedWorktreeRoot: String?
     @State var pendingForkRequest: PendingTaskForkRequest?
     @State var forkCreationError: String?
     @FocusState private var isComposerFocused: Bool
@@ -5510,15 +5511,24 @@ struct TaskMainView: View {
         threadViewModel.refreshSnapshot(for: task)
     }
 
+    /// Mirrors `TaskQueue.recordForkReadOnlyBlock`: repeated sends while the
+    /// fork stays read-only must not append duplicate system notes.
+    private func recordForkReadOnlyBlock(_ reason: String) {
+        guard !task.events.contains(where: {
+            $0.type == TaskEventTypes.System.info.rawValue && $0.payload == reason
+        }) else { return }
+        modelContext.insert(TaskEvent(
+            task: task,
+            eventType: TaskEventTypes.System.info,
+            payload: reason
+        ))
+        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
+        threadViewModel.refreshSnapshot(for: task)
+    }
+
     private func sendConversationMessage(_ msg: String) {
         if let readOnlyReason = TaskForkPolicyService.readOnlyReason(for: task) {
-            modelContext.insert(TaskEvent(
-                task: task,
-                eventType: TaskEventTypes.System.info,
-                payload: readOnlyReason
-            ))
-            WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
-            threadViewModel.refreshSnapshot(for: task)
+            recordForkReadOnlyBlock(readOnlyReason)
             return
         }
         if !attachedFiles.isEmpty { attachedFiles = [] }
@@ -5577,13 +5587,7 @@ struct TaskMainView: View {
     private func sendPlanningMessage(_ msg: String, traceID: String = AuditTrace.make("task-plan-chat")) {
         guard !isPlanning else { return }
         if let readOnlyReason = TaskForkPolicyService.readOnlyReason(for: task) {
-            modelContext.insert(TaskEvent(
-                task: task,
-                eventType: TaskEventTypes.System.info,
-                payload: readOnlyReason
-            ))
-            WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
-            threadViewModel.refreshSnapshot(for: task)
+            recordForkReadOnlyBlock(readOnlyReason)
             return
         }
 
