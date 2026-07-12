@@ -742,6 +742,92 @@ struct ShelfMarkdownSessionTests {
     }
 
     @MainActor
+    @Test("Closing a task's last file does not suppress the next task's preferred document")
+    func closingLastFileOnlySuppressesPreferredDocumentForCurrentTask() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-markdown-task-scoped-close-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let firstPreferred = root.appendingPathComponent("first.md")
+        let secondPreferred = root.appendingPathComponent("second.md")
+        try "First".write(to: firstPreferred, atomically: true, encoding: .utf8)
+        try "Second".write(to: secondPreferred, atomically: true, encoding: .utf8)
+
+        let session = ShelfMarkdownSession()
+        session.bindToTask(UUID())
+        #expect(session.loadAutomaticallyIfAllowed(firstPreferred))
+        session.closeSelectedDocument()
+        #expect(!session.loadAutomaticallyIfAllowed(firstPreferred))
+
+        session.bindToTask(UUID())
+
+        #expect(session.loadAutomaticallyIfAllowed(secondPreferred))
+        #expect(session.fileURL == secondPreferred)
+    }
+
+    @MainActor
+    @Test("Returning to a task preserves its preferred document suppression")
+    func returningToTaskPreservesPreferredDocumentSuppression() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-markdown-return-to-task-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let firstPreferred = root.appendingPathComponent("first.md")
+        let secondPreferred = root.appendingPathComponent("second.md")
+        try "First".write(to: firstPreferred, atomically: true, encoding: .utf8)
+        try "Second".write(to: secondPreferred, atomically: true, encoding: .utf8)
+
+        let firstTaskID = UUID()
+        let secondTaskID = UUID()
+        let session = ShelfMarkdownSession()
+        session.bindToTask(firstTaskID)
+        #expect(session.loadAutomaticallyIfAllowed(firstPreferred))
+        session.closeSelectedDocument()
+
+        session.bindToTask(secondTaskID)
+        #expect(session.loadAutomaticallyIfAllowed(secondPreferred))
+        session.closeSelectedDocument()
+
+        session.bindToTask(firstTaskID)
+
+        #expect(!session.loadAutomaticallyIfAllowed(firstPreferred))
+        #expect(session.fileURL == nil)
+    }
+
+    @MainActor
+    @Test("Returning to a suppressed task clears another task's selected document")
+    func returningToSuppressedTaskClearsAnotherTaskSelection() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-markdown-suppressed-task-selection-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let firstPreferred = root.appendingPathComponent("first.md")
+        let secondPreferred = root.appendingPathComponent("second.md")
+        try "First".write(to: firstPreferred, atomically: true, encoding: .utf8)
+        try "Second".write(to: secondPreferred, atomically: true, encoding: .utf8)
+
+        let firstTaskID = UUID()
+        let secondTaskID = UUID()
+        let session = ShelfMarkdownSession()
+        session.bindToTask(firstTaskID)
+        #expect(session.loadAutomaticallyIfAllowed(firstPreferred))
+        session.closeSelectedDocument()
+
+        session.bindToTask(secondTaskID)
+        #expect(session.loadAutomaticallyIfAllowed(secondPreferred))
+        #expect(session.fileURL == secondPreferred)
+
+        session.bindToTask(firstTaskID)
+
+        #expect(!session.loadAutomaticallyIfAllowed(firstPreferred))
+        #expect(session.fileURL == nil)
+        #expect(session.documents.map(\.fileURL) == [secondPreferred])
+    }
+
+    @MainActor
     @Test("Copying selected Markdown tab writes content to pasteboard")
     func copyingSelectedMarkdownTabWritesContentToPasteboard() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
