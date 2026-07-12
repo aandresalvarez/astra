@@ -49,6 +49,51 @@ struct ShelfMarkdownPanelLayoutTests {
         #expect(layout == .floating)
     }
 
+    @Test("resized pinned navigator floats when the preview no longer fits")
+    func resizedPinnedNavigatorFloatsWhenPreviewDoesNotFit() {
+        let resizedNavigatorWidth = ShelfWidthMetrics.filesNavigatorDefaultWidth + 120
+        let requiredWidth = resizedNavigatorWidth
+            + ShelfWidthMetrics.filesResizeHandleWidth
+            + ShelfWidthMetrics.filesMinimumPreviewWidth
+
+        let layout = ShelfFileNavigatorLayout.resolve(
+            isPresented: true,
+            isPinned: true,
+            availableWidth: requiredWidth - 1,
+            navigatorWidth: resizedNavigatorWidth
+        )
+
+        #expect(layout == .floating)
+    }
+
+    @Test("pinned floating navigator keeps a resize handle for recovery")
+    func pinnedFloatingNavigatorKeepsResizeHandleForRecovery() {
+        #expect(ShelfFileNavigatorResizePolicy.showsResizeHandle(layout: .floating, isPinned: true))
+        #expect(!ShelfFileNavigatorResizePolicy.showsResizeHandle(layout: .floating, isPinned: false))
+    }
+
+    @Test("floating navigator preserves its resized width when space permits")
+    func floatingNavigatorPreservesResizedWidth() {
+        let resizedWidth = ShelfWidthMetrics.filesNavigatorDefaultWidth + 80
+
+        #expect(ShelfFileNavigatorResizePolicy.displayedWidth(
+            layout: .floating,
+            navigatorWidth: resizedWidth,
+            availableWidth: 700,
+            reservesResizeHandle: true
+        ) == resizedWidth)
+    }
+
+    @Test("unpinned floating navigator uses width not occupied by a resize handle")
+    func unpinnedFloatingNavigatorUsesFullAvailableWidth() {
+        #expect(ShelfFileNavigatorResizePolicy.displayedWidth(
+            layout: .floating,
+            navigatorWidth: 400,
+            availableWidth: 300,
+            reservesResizeHandle: false
+        ) == 300)
+    }
+
     @Test("temporary browser closes after selection while pinned browser remains")
     func selectionRespectsPinnedBrowserIntent() {
         #expect(ShelfFileNavigatorSelectionPolicy.isPresentedAfterSelectingFile(isPinned: false) == false)
