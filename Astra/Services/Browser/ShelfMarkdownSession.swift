@@ -100,7 +100,7 @@ final class ShelfMarkdownSession: ObservableObject {
     @Published private(set) var documents: [ShelfMarkdownDocument] = []
     @Published private(set) var selectedDocumentID: String?
     @Published private(set) var boundTaskID: UUID?
-    private var allowsPreferredDocumentAutoLoad = true
+    private var preferredDocumentAutoLoadSuppressions: Set<UUID?> = []
 
     var selectedDocument: ShelfMarkdownDocument? {
         guard let selectedDocumentID else { return nil }
@@ -154,11 +154,10 @@ final class ShelfMarkdownSession: ObservableObject {
     func bindToTask(_ taskID: UUID?) {
         guard boundTaskID != taskID else { return }
         boundTaskID = taskID
-        allowsPreferredDocumentAutoLoad = true
     }
 
     func load(_ url: URL) {
-        allowsPreferredDocumentAutoLoad = true
+        preferredDocumentAutoLoadSuppressions.remove(boundTaskID)
         let documentID = url.path
         if let index = documents.firstIndex(where: { $0.id == documentID }),
            Self.reuseUnchangedImageDocument(documents[index], for: url) {
@@ -183,7 +182,8 @@ final class ShelfMarkdownSession: ObservableObject {
 
     @discardableResult
     func loadAutomaticallyIfAllowed(_ url: URL) -> Bool {
-        guard allowsPreferredDocumentAutoLoad, fileURL?.path != url.path else { return false }
+        guard !preferredDocumentAutoLoadSuppressions.contains(boundTaskID),
+              fileURL?.path != url.path else { return false }
         load(url)
         return true
     }
@@ -201,7 +201,7 @@ final class ShelfMarkdownSession: ObservableObject {
         guard wasSelected else { return }
         if documents.isEmpty {
             selectedDocumentID = nil
-            allowsPreferredDocumentAutoLoad = false
+            preferredDocumentAutoLoadSuppressions.insert(boundTaskID)
         } else {
             let nextIndex = min(index, documents.count - 1)
             selectedDocumentID = documents[nextIndex].id

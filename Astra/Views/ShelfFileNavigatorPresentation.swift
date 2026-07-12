@@ -24,6 +24,21 @@ enum ShelfFileNavigatorLayout: Equatable {
     }
 }
 
+enum ShelfFileNavigatorResizePolicy {
+    static func showsResizeHandle(layout: ShelfFileNavigatorLayout, isPinned: Bool) -> Bool {
+        isPinned && layout != .hidden
+    }
+
+    static func displayedWidth(
+        layout: ShelfFileNavigatorLayout,
+        navigatorWidth: CGFloat,
+        availableWidth: CGFloat
+    ) -> CGFloat {
+        guard layout == .floating else { return navigatorWidth }
+        return max(0, min(navigatorWidth, availableWidth - ShelfWidthMetrics.filesResizeHandleWidth))
+    }
+}
+
 enum ShelfFileNavigatorSelectionPolicy {
     /// Temporary browsing ends after a selection. A pinned navigator stays open
     /// because the user has explicitly chosen sustained file work.
