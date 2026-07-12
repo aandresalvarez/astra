@@ -181,15 +181,32 @@ public enum WorkspaceRecoveryService {
 
     /// Atomically selects a validated recovery store. The previous active
     /// store stays in place for forensic recovery and rollback.
-    public static func activateRecoveryStore(at url: URL) throws {
+    public static func activateRecoveryStore(
+        at url: URL,
+        compatibility: PersistentStoreCompatibilityMetadata? = nil
+    ) throws {
         let standardizedRoot = storeGenerationDirectory.standardizedFileURL.path
         let standardizedURL = url.standardizedFileURL
         guard standardizedURL.path.hasPrefix(standardizedRoot + "/"),
               FileManager.default.fileExists(atPath: standardizedURL.path) else {
             throw CocoaError(.fileNoSuchFile)
         }
+        let resolvedRoot = storeGenerationDirectory.resolvingSymlinksInPath().standardizedFileURL
+        let resolvedURL = standardizedURL.resolvingSymlinksInPath().standardizedFileURL
+        guard resolvedURL.path.hasPrefix(resolvedRoot.path + "/") else {
+            throw CocoaError(.fileReadNoPermission)
+        }
         let relativePath = String(standardizedURL.path.dropFirst(standardizedRoot.count + 1))
-        let data = try JSONEncoder().encode(ActiveStorePointer(relativePath: relativePath))
+        let data = try JSONEncoder().encode(ActiveStorePointer(
+            relativePath: relativePath,
+            compatibility: compatibility
+        ))
+        if let compatibility {
+            try PersistentStoreCompatibilityService.writeMetadata(compatibility, for: standardizedURL)
+        }
+        // The pointer is the final commit record. A failed sidecar write leaves
+        // the old active store selected; a failed pointer write may leave only
+        // an unreferenced recovery copy, which is safe to inspect or remove.
         try data.write(to: activeStorePointerURL, options: .atomic)
         markStoreGenerationEstablished()
         AuditLoggingSeam.required.audit(.dataStoreRecovered, category: "Persistence", fields: [
@@ -688,6 +705,12 @@ public enum WorkspaceRecoveryService {
 
     private struct ActiveStorePointer: Codable {
         let relativePath: String
+        let compatibility: PersistentStoreCompatibilityMetadata?
+
+        init(relativePath: String, compatibility: PersistentStoreCompatibilityMetadata? = nil) {
+            self.relativePath = relativePath
+            self.compatibility = compatibility
+        }
     }
 
     public static func activeStorePointerState(
