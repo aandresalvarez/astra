@@ -4,6 +4,36 @@ import ASTRAModels
 import ASTRAPersistence
 
 enum HostControlPlaneMCPProjection {
+    struct CapabilitySnapshot: Sendable {
+        struct BehaviorSkill: Sendable {
+            let originPackageID: String?
+        }
+
+        let enabledPackageIDs: Set<String>
+        let behaviorSkills: [BehaviorSkill]
+        let effectiveBehaviorInstructions: [String]
+        let resolutionIsComplete: Bool
+
+        init(capabilityScope: TaskCapabilityPromptScope) {
+            enabledPackageIDs = Set(capabilityScope.enabledPackageIDs)
+            behaviorSkills = capabilityScope.behaviorSkills.map { BehaviorSkill(originPackageID: $0.originPackageID) }
+            effectiveBehaviorInstructions = capabilityScope.resolver.effectiveSnapshots.map(\.behaviorInstructions)
+            resolutionIsComplete = true
+        }
+
+        init(
+            enabledPackageIDs: Set<String>,
+            behaviorSkillOriginPackageIDs: [String?],
+            effectiveBehaviorInstructions: [String],
+            resolutionIsComplete: Bool = true
+        ) {
+            self.enabledPackageIDs = enabledPackageIDs
+            behaviorSkills = behaviorSkillOriginPackageIDs.map { BehaviorSkill(originPackageID: $0) }
+            self.effectiveBehaviorInstructions = effectiveBehaviorInstructions
+            self.resolutionIsComplete = resolutionIsComplete
+        }
+    }
+
     static let serverID = "astra_host"
     static let toolNames = ["github", "gcloud", "bq", "ssh", "jira"]
     static let githubPackageID = "github-workflow"
@@ -41,14 +71,27 @@ enum HostControlPlaneMCPProjection {
     }
 
     static func requiredToolNames(capabilityScope: TaskCapabilityPromptScope) -> [String] {
+        requiredToolNames(capabilitySnapshot: CapabilitySnapshot(capabilityScope: capabilityScope))
+    }
+
+    static func requiredToolNames(capabilitySnapshot: CapabilitySnapshot) -> [String] {
         var required = Set<String>()
-        if githubCapabilityIsInScope(capabilityScope) {
+        if githubCapabilityIsInScope(capabilitySnapshot) {
             required.insert("github")
         }
-        for snapshot in capabilityScope.resolver.effectiveSnapshots {
-            required.formUnion(requiredToolNames(inBehaviorText: snapshot.behaviorInstructions))
+        for instructions in capabilitySnapshot.effectiveBehaviorInstructions {
+            required.formUnion(requiredToolNames(inBehaviorText: instructions))
         }
         return orderedToolNames(required)
+    }
+
+    static func githubIsEnabled(
+        for environment: WorkspaceExecutionEnvironment,
+        capabilitySnapshot: CapabilitySnapshot
+    ) -> Bool {
+        isEnabled(for: environment)
+            || !capabilitySnapshot.resolutionIsComplete
+            || requiredToolNames(capabilitySnapshot: capabilitySnapshot).contains("github")
     }
 
     static func requiresNativeShellDenial(
@@ -353,11 +396,11 @@ enum HostControlPlaneMCPProjection {
         toolNames.filter { required.contains($0) }
     }
 
-    private static func githubCapabilityIsInScope(_ scope: TaskCapabilityPromptScope) -> Bool {
-        if scope.enabledPackageIDs.contains(githubPackageID) {
+    private static func githubCapabilityIsInScope(_ snapshot: CapabilitySnapshot) -> Bool {
+        if snapshot.enabledPackageIDs.contains(githubPackageID) {
             return true
         }
-        return scope.behaviorSkills.contains { skill in
+        return snapshot.behaviorSkills.contains { skill in
             if skill.originPackageID == githubPackageID {
                 return true
             }

@@ -548,7 +548,7 @@ final class AgentRuntimeWorker {
 
         let startPayload = startEventPayload ?? runtimeAdapter.defaultStartEventPayload(task: task)
         let startEvent = TaskEvent(task: task, type: startEventType, payload: startPayload, run: run)
-        modelContext.insert(startEvent)
+        TaskEventInsertionService.insert(startEvent, into: modelContext)
         AgentRuntimeLaunchRuntimeResolver.insertRerouteEventIfNeeded(
             appliedRuntime,
             task: task,
