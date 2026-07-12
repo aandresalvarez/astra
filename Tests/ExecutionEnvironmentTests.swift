@@ -1008,6 +1008,46 @@ struct ExecutionEnvironmentTests {
         #expect(!viewModel.canSwitchPinnedTaskToWorkspaceEnvironment)
     }
 
+    @Test("settling a historical task's environment snapshot before resolving requirements keeps them consistent")
+    func settlingHistoricalTaskEnvironmentBeforeRequirementResolutionKeepsThemConsistent() throws {
+        let root = try makeTempDir("docker-historical-run-ordering")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let workspace = Workspace(name: "Docker", primaryPath: root)
+        let environment = WorkspaceExecutionEnvironment(
+            id: "image:test",
+            kind: .dockerImage,
+            displayName: "Test Image",
+            sourcePath: root,
+            image: "astra/test:latest"
+        )
+        workspace.activeExecutionEnvironmentJSON = ExecutionEnvironmentStore.encode(environment)
+
+        let task = AgentTask(title: "Historical Host", goal: "Run dbt", workspace: workspace)
+        task.status = .completed
+        task.executionEnvironmentSnapshotJSON = nil
+
+        // Before the snapshot is settled, the resolver's own fallback
+        // (DockerExecutionPlanner.resolveEnvironment) is deliberately
+        // conservative for historical tasks: assume host rather than
+        // retroactively reassigning a snapshot-less legacy task to whatever
+        // the workspace's environment happens to be right now.
+        #expect(DockerExecutionPlanner.resolveEnvironment(for: task).isHost)
+
+        // AgentRuntimeWorker.execute settles task.executionEnvironmentSnapshotJSON
+        // (same encode/decode of workspace.activeExecutionEnvironmentJSON that
+        // TaskRun.init would otherwise settle) BEFORE calling
+        // AgentRuntimeLaunchRuntimeResolver.resolve — see the ordering comment
+        // at that call site. Once settled, resolution must reflect the SAME
+        // environment the run actually executes under, not the stale
+        // host-conservative default, or an incompatible runtime's requirements
+        // get computed against the wrong environment and skip the up-front
+        // structured block.
+        task.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encodeSnapshot(
+            ExecutionEnvironmentStore.decode(workspace.activeExecutionEnvironmentJSON)
+        )
+        #expect(DockerExecutionPlanner.resolveEnvironment(for: task).id == "image:test")
+    }
+
     @MainActor
     @Test("Docker view model connects and disconnects GCP ADC projections")
     func dockerViewModelTogglesGCPADCProjection() async throws {

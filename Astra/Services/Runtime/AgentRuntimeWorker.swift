@@ -497,6 +497,24 @@ final class AgentRuntimeWorker {
             task.runtimeID = selectedRuntime.rawValue
         }
 
+        // Settle executionEnvironmentSnapshotJSON before resolving
+        // requirements, not the whole TaskRun: the resolver's own
+        // DockerExecutionPlanner.resolveEnvironment fallback disagrees with
+        // TaskRun.init's for historical tasks with no snapshot yet, so
+        // resolving first risked stale requirements. An earlier version of
+        // this fix constructed TaskRun itself early, which fixed that but
+        // broke two other things that depend on TaskRun NOT existing yet at
+        // this point: clearMismatchedProviderSessionIfNeeded's "latest run"
+        // lookup (task.runs would include the new, not-yet-started run) and
+        // run.providerSessionId (would capture task.sessionId before a
+        // reroute clears it). Settling just the field TaskRun.init would
+        // otherwise settle avoids both.
+        if task.executionEnvironmentSnapshotJSON == nil {
+            task.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encodeSnapshot(
+                ExecutionEnvironmentStore.decode(task.workspace?.activeExecutionEnvironmentJSON)
+            )
+        }
+
         let runtimeResolution = AgentRuntimeLaunchRuntimeResolver.resolve(
             task: task,
             requestedRuntime: selectedRuntime,
@@ -608,6 +626,7 @@ final class AgentRuntimeWorker {
             permissionPolicy: launchPermissionPolicy,
             executionPolicy: executionPolicy,
             capabilityResolutionSnapshot: capabilityResolutionSnapshot,
+            precomputedRuntimeRequirements: appliedRuntime.requirements,
             runtimeConfiguration: runtimeConfiguration,
             preflightCache: PreflightCache(checker: environmentHealthChecker),
             mcpDetectExecutable: mcpServerExecutableDetector,
@@ -720,7 +739,12 @@ final class AgentRuntimeWorker {
             workspacePath: executionPath,
             executionEnvironment: executionEnvironment,
             capabilityResolutionSnapshot: capabilityResolutionSnapshot,
-            runtimePermissionGrants: executionPolicy.permissionGrantsOverride ?? []
+            runtimePermissionGrants: executionPolicy.permissionGrantsOverride ?? [],
+            // appliedRuntime.requirements is already resolved above (~line 528),
+            // so no reordering was needed here — closes the last spot that
+            // independently re-derived GitHub host-control routing instead of
+            // reusing the resolver's single precomputed answer.
+            precomputedRuntimeRequirements: appliedRuntime.requirements
         )
         TaskLaunchResourceManifestStore.persist(launchResourcePlan, task: task)
         logContextPromptDiagnostics(for: task, prompt: prompt, phase: auditPhase)
@@ -770,6 +794,7 @@ final class AgentRuntimeWorker {
             contextText: providerLaunchContextText,
             capabilityResolutionSnapshot: capabilityResolutionSnapshot,
             launchResourcePlan: launchResourcePlan,
+            precomputedRuntimeRequirements: appliedRuntime.requirements,
             modelContext: modelContext
         )
         guard shouldStartProvider(with: manifest, task: task, run: run, modelContext: modelContext, phase: auditPhase) else {
@@ -861,6 +886,7 @@ final class AgentRuntimeWorker {
             runID: run.id,
             launchResourcePlan: launchResourcePlan,
             capabilityResolutionSnapshot: capabilityResolutionSnapshot,
+            runtimeRequirements: appliedRuntime.requirements,
             liveApprovalsEnabled: liveApprovalsEnabled,
             noSemanticProgressTimeoutSeconds: semanticProgressTimeout,
             onInteractiveAsk: Self.interactiveAskHandler(
@@ -1542,6 +1568,7 @@ final class AgentRuntimeWorker {
         TaskStateMachine.enqueueChainedFollowUp(nextTask, modelContext: modelContext)
         nextTask.chainedFromID = task.id
         nextTask.runtimeID = task.runtimeID
+        nextTask.runtimeExplicitlySelected = task.runtimeExplicitlySelected
         // A chained follow-up continues in the same checkout and execution
         // environment as its parent.
         nextTask.executionRootPath = task.executionRootPath
@@ -1641,6 +1668,12 @@ final class AgentRuntimeWorker {
             task: task,
             type: "error",
             payload: "Provider policy blocked this run before launch.\n\(details)",
+            run: run
+        ))
+        modelContext.insert(TaskEvent.structuredPayloadEvent(
+            task: task,
+            eventType: TaskEventTypes.System.runtimeLaunchBlocked,
+            payload: TaskRunLaunchBlockPayload.forPolicyDiagnostics(blockedDiagnostics),
             run: run
         ))
         AgentPolicyManifestService.recordPostRunSummary(task: task, run: run, modelContext: modelContext)

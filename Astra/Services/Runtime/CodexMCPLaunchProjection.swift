@@ -18,7 +18,14 @@ struct CodexMCPLaunchProjection {
         runID: UUID?,
         executionEnvironment: WorkspaceExecutionEnvironment,
         contextText: String,
-        taskEnvironment: [String: String] = [:]
+        taskEnvironment: [String: String] = [:],
+        // When the caller already ran this task through
+        // AgentRuntimeLaunchRuntimeResolver.resolve(), pass its
+        // TaskRuntimeRequirementSet here so the MCP server this projection
+        // actually attaches reuses that single derivation instead of
+        // independently re-deriving it. See
+        // Tests/HostControlRequirementDerivationConsistencyTests.swift.
+        runtimeRequirements: TaskRuntimeRequirementSet? = nil
     ) -> CodexMCPLaunchProjection {
         let usesDockerWorkspaceExecutor = DockerWorkspaceMCPProjection.isEnabled(for: executionEnvironment)
         var browserServerProjected = false
@@ -41,7 +48,8 @@ struct CodexMCPLaunchProjection {
             currentDirectory: workspacePath,
             runID: runID,
             taskEnvironment: taskEnvironment,
-            contextText: contextText
+            contextText: contextText,
+            precomputedRuntimeRequirements: runtimeRequirements
         )
         if let hostControlServer = HostControlPlaneMCPProjection.resolvedServer(
             task: task,
@@ -49,7 +57,8 @@ struct CodexMCPLaunchProjection {
             currentDirectory: workspacePath,
             runID: runID,
             taskEnvironment: taskEnvironment.merging(hostControlEnvironment) { current, _ in current },
-            contextText: contextText
+            contextText: contextText,
+            precomputedRuntimeRequirements: runtimeRequirements
         ) {
             servers.append(hostControlServer)
         }

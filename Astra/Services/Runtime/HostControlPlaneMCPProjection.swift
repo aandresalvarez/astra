@@ -16,8 +16,20 @@ enum HostControlPlaneMCPProjection {
         task: AgentTask,
         environment: WorkspaceExecutionEnvironment,
         contextText: String = "",
-        capabilityScope: TaskCapabilityPromptScope? = nil
+        capabilityScope: TaskCapabilityPromptScope? = nil,
+        // When the caller already ran this task through
+        // AgentRuntimeLaunchRuntimeResolver.resolve() (the normal launch path),
+        // pass its TaskRuntimeRequirementSet here so the actual MCP-server
+        // attachment reuses that single derivation instead of independently
+        // re-deriving it from a second, potentially different capability-scope
+        // capture (or a different WorkspaceExecutionEnvironment snapshot). The
+        // two derivations must agree — see
+        // Tests/HostControlRequirementDerivationConsistencyTests.swift.
+        precomputedRuntimeRequirements: TaskRuntimeRequirementSet? = nil
     ) -> [String] {
+        if let precomputedRuntimeRequirements {
+            return precomputedRuntimeRequirements.hostControlTools
+        }
         if isEnabled(for: environment) {
             return toolNames
         }
@@ -42,9 +54,17 @@ enum HostControlPlaneMCPProjection {
     static func requiresNativeShellDenial(
         task: AgentTask,
         environment: WorkspaceExecutionEnvironment,
-        contextText: String = ""
+        contextText: String = "",
+        capabilityScope: TaskCapabilityPromptScope? = nil,
+        precomputedRuntimeRequirements: TaskRuntimeRequirementSet? = nil
     ) -> Bool {
-        !enabledToolNames(task: task, environment: environment, contextText: contextText).isEmpty
+        !enabledToolNames(
+            task: task,
+            environment: environment,
+            contextText: contextText,
+            capabilityScope: capabilityScope,
+            precomputedRuntimeRequirements: precomputedRuntimeRequirements
+        ).isEmpty
     }
 
     static func packageUsesHostControlRuntime(_ package: PluginPackage) -> Bool {
@@ -123,13 +143,15 @@ enum HostControlPlaneMCPProjection {
         runID: UUID?,
         taskEnvironment: [String: String] = [:],
         contextText: String = "",
-        capabilityScope: TaskCapabilityPromptScope? = nil
+        capabilityScope: TaskCapabilityPromptScope? = nil,
+        precomputedRuntimeRequirements: TaskRuntimeRequirementSet? = nil
     ) -> MCPRuntimeProjection.ResolvedServer? {
         let allowedTools = enabledToolNames(
             task: task,
             environment: environment,
             contextText: contextText,
-            capabilityScope: capabilityScope
+            capabilityScope: capabilityScope,
+            precomputedRuntimeRequirements: precomputedRuntimeRequirements
         )
         guard !allowedTools.isEmpty else { return nil }
         let envKeys = environmentKeys(taskEnvironment: taskEnvironment)
@@ -156,13 +178,15 @@ enum HostControlPlaneMCPProjection {
         runID: UUID?,
         taskEnvironment: [String: String] = [:],
         contextText: String = "",
-        capabilityScope: TaskCapabilityPromptScope? = nil
+        capabilityScope: TaskCapabilityPromptScope? = nil,
+        precomputedRuntimeRequirements: TaskRuntimeRequirementSet? = nil
     ) -> [String: String] {
         let allowedTools = enabledToolNames(
             task: task,
             environment: environment,
             contextText: contextText,
-            capabilityScope: capabilityScope
+            capabilityScope: capabilityScope,
+            precomputedRuntimeRequirements: precomputedRuntimeRequirements
         )
         guard !allowedTools.isEmpty else { return [:] }
         var output: [String: String] = [

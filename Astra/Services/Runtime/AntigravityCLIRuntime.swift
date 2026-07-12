@@ -309,7 +309,12 @@ enum AntigravityCLIRuntime {
 
     static func parsePlainTextAgentEvents(line: String, appendingNewline: Bool = false) -> [AgentEvent] {
         let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return [] }
+        guard !trimmed.isEmpty else {
+            // agy separates paragraphs with blank lines; preserve the boundary
+            // in the recorded stream so answers keep their paragraph breaks
+            // instead of collapsing into one wall of text.
+            return appendingNewline ? [.text(text: "\n")] : []
+        }
         if let prompt = plainTextPermissionPrompt(line: trimmed) {
             return [.permissionRequested(tool: prompt.tool, reason: prompt.reason)]
         }

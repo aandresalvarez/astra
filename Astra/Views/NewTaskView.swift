@@ -13,6 +13,17 @@ struct NewTaskView: View {
     @State private var title = ""
     @State private var goal = ""
     @State private var runtimeID = TaskExecutionDefaults.runtime.rawValue
+    /// True only when the user picks a runtime through `runtimeIDSelection`
+    /// (the Picker's binding) — never when `onAppear` applies the
+    /// workspace/app default. Mirrors `TaskComposerCoordinator
+    /// .applyRuntimeSwitch`'s "explicit pick" semantics for a task that
+    /// doesn't exist yet. Deliberately NOT derived from `.onChange(of:
+    /// runtimeID)`: SwiftUI coalesces every `@State` write inside one
+    /// `onAppear` closure into a single update, so a guard flag flipped at
+    /// the end of that same closure is already true by the time the
+    /// resulting onChange fires — routing only genuine picker selections
+    /// through a dedicated Binding sidesteps that ordering entirely.
+    @State private var runtimeExplicitlySelected = false
     @State private var model = TaskExecutionDefaults.model
     @State private var tokenBudget = TaskExecutionDefaults.tokenBudget
     @State private var policyLevelRaw = AgentPolicyLevel.review.rawValue
@@ -72,7 +83,7 @@ struct NewTaskView: View {
                 }
 
                 Section("Execution") {
-                    Picker("Provider", selection: $runtimeID) {
+                    Picker("Provider", selection: runtimeIDSelection) {
                         ForEach(AgentRuntimeAdapterRegistry.runtimeIDs) { runtime in
                             Text(runtime.displayName).tag(runtime.rawValue)
                         }
@@ -200,6 +211,21 @@ struct NewTaskView: View {
         }
     }
 
+    /// The Picker's selection binding. Setting it (i.e. the user picking a
+    /// runtime) is the ONLY path that marks `runtimeExplicitlySelected` —
+    /// `onAppear`'s default application writes to the underlying `runtimeID`
+    /// `@State` directly, bypassing this binding entirely, so it can never be
+    /// mistaken for a genuine pick regardless of SwiftUI's update timing.
+    private var runtimeIDSelection: Binding<String> {
+        Binding(
+            get: { runtimeID },
+            set: { newValue in
+                runtimeID = newValue
+                runtimeExplicitlySelected = true
+            }
+        )
+    }
+
     private var runtimeModels: [String] {
         RuntimeModelAvailability.models(
             for: AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: runtimeID),
@@ -285,6 +311,7 @@ struct NewTaskView: View {
             isolationStrategy: isolationStrategy,
             validationStrategy: validationStrategy
         )
+        task.runtimeExplicitlySelected = runtimeExplicitlySelected
 
         if !constraintsText.isEmpty {
             task.constraints = constraintsText
