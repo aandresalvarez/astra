@@ -723,7 +723,6 @@ enum PluginCatalogPresentation {
 /// controls and explicit durable-source revisions only. SwiftUI body
 /// evaluation never fingerprints, sorts, serializes, or registers observers.
 @MainActor
-@Observable
 final class PluginCatalogPresentationCache {
     struct Key: Equatable {
         let focus: CatalogFocus

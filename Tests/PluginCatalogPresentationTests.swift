@@ -6,6 +6,14 @@ import ASTRACore
 
 @Suite("Plugin Catalog Presentation")
 struct PluginCatalogPresentationTests {
+    @Test("resource editor mutations retain workspace or global event scope")
+    @MainActor
+    func resourceEditorMutationScopeIsTyped() {
+        let workspace = Workspace(name: "Scoped", primaryPath: "/tmp/scoped")
+        #expect(CapabilityPersistence.resourceChange(for: workspace) == .workspace(workspace.id))
+        #expect(CapabilityPersistence.resourceChange(for: nil) == .global)
+    }
+
     @Test("production source revisions invalidate cached catalog projection")
     @MainActor
     func productionSourceRevisionsInvalidateProjection() {

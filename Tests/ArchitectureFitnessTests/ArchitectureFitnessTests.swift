@@ -1127,6 +1127,18 @@ struct ArchitectureFitnessTests {
         #expect(view.contains("let state = cachedPresentationState"))
         #expect(!view.contains("let state = presentationState"))
         #expect(view.contains("PluginCatalogPresentationCache"))
+        let presentation = try String(
+            contentsOf: root.appendingPathComponent("Astra/Services/Capabilities/PluginCatalogPresentation.swift"),
+            encoding: .utf8
+        )
+        #expect(!presentation.contains("@Observable\nfinal class PluginCatalogPresentationCache"))
+        for resourceView in ["ConnectorsManagerView.swift", "SkillsManagerView.swift", "ToolsManagerView.swift"] {
+            let source = try String(
+                contentsOf: root.appendingPathComponent("Astra/Views/\(resourceView)"),
+                encoding: .utf8
+            )
+            #expect(source.contains("CapabilityPersistence.saveResourceMutation"))
+        }
         #expect(!view.contains("JSONEncoder().encode(catalog.packages)"))
         #expect(!view.contains("catalogResourceRevision"))
     }

@@ -88,7 +88,7 @@ struct ToolsManagerView: View {
         tool.workspace = workspace
         modelContext.insert(tool)
         selectedTool = tool
-        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
+        CapabilityPersistence.saveResourceMutation(workspace: workspace, modelContext: modelContext)
     }
 
     private func deleteTool(_ tool: LocalTool) {
@@ -97,7 +97,7 @@ struct ToolsManagerView: View {
         }
         workspace.enabledGlobalToolIDs.removeAll { $0 == tool.id.uuidString }
         modelContext.delete(tool)
-        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
+        CapabilityPersistence.saveResourceMutation(workspace: workspace, modelContext: modelContext)
     }
 }
 
@@ -356,7 +356,7 @@ struct LocalToolEditorView: View {
     }
 
     private func saveSharingChange() {
-        WorkspacePersistenceCoordinator.saveAndAutoExport(
+        CapabilityPersistence.saveResourceMutation(
             workspace: workspace ?? tool.workspace,
             modelContext: modelContext
         )
