@@ -12,6 +12,7 @@ struct PluginCatalogPresentationTests {
         let workspace = Workspace(name: "Scoped", primaryPath: "/tmp/scoped")
         #expect(CapabilityPersistence.resourceChange(for: workspace) == .workspace(workspace.id))
         #expect(CapabilityPersistence.resourceChange(for: nil) == .global)
+        #expect(CapabilityPersistence.resourceChange(for: workspace, isGlobal: true) == .global)
     }
 
     @Test("production source revisions invalidate cached catalog projection")

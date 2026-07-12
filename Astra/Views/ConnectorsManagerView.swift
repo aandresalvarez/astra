@@ -1175,6 +1175,7 @@ struct ConnectorEditorView: View {
     private func saveSharingChange() {
         CapabilityPersistence.saveResourceMutation(
             workspace: workspace ?? connector.workspace,
+            isGlobal: connector.isGlobal,
             modelContext: modelContext
         )
     }

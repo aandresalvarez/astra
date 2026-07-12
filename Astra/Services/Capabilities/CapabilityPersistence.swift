@@ -22,14 +22,23 @@ enum CapabilityPersistence {
     /// of relying on broad SwiftData save observation.
     @MainActor
     @discardableResult
-    static func saveResourceMutation(workspace: Workspace?, modelContext: ModelContext) -> Bool {
+    static func saveResourceMutation(
+        workspace: Workspace?,
+        isGlobal: Bool = false,
+        modelContext: ModelContext
+    ) -> Bool {
         guard defaultPersist(workspace, modelContext) else { return false }
-        CapabilityCatalogPersistenceEvents.post(resourceChange(for: workspace))
+        CapabilityCatalogPersistenceEvents.post(resourceChange(for: workspace, isGlobal: isGlobal))
         return true
     }
 
-    static func resourceChange(for workspace: Workspace?) -> CapabilityCatalogPersistenceChange {
-        workspace.map { .workspace($0.id) } ?? .global
+    static func resourceChange(
+        for workspace: Workspace?,
+        isGlobal: Bool = false
+    ) -> CapabilityCatalogPersistenceChange {
+        if isGlobal { return .global }
+        guard let workspace else { return .global }
+        return .workspace(workspace.id)
     }
 }
 
