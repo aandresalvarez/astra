@@ -6,11 +6,18 @@ import ASTRAModels
 @Suite("Conversation fork policy")
 @MainActor
 struct TaskForkPolicyServiceTests {
+    @Test("provider-launching composer actions are identified before dispatch")
+    func providerLaunchingComposerActionsAreIdentified() {
+        #expect(TaskComposerSendAction.recap.launchesProviderWork)
+        #expect(TaskComposerSendAction.routine(instructions: "daily").launchesProviderWork)
+        #expect(TaskComposerSendAction.message("continue").launchesProviderWork)
+        #expect(!TaskComposerSendAction.remember("fact").launchesProviderWork)
+    }
     @Test("Git repository only permits conversation-only forks")
-    func gitRepositoryOnlyPermitsConversationForks() {
+    func gitRepositoryOnlyPermitsConversationForks() async {
         let workspace = Workspace(name: "Repo", primaryPath: "/tmp/project")
         let task = AgentTask(title: "Task", goal: "Work", workspace: workspace)
-        let policy = TaskForkPolicyService.resolve(for: task) { _, arguments in
+        let policy = await TaskForkPolicyService.resolve(for: task) { _, arguments in
             switch arguments {
             case ["rev-parse", "--show-toplevel"]:
                 return .init(output: "/tmp/project\n", exitCode: 0)
@@ -51,10 +58,10 @@ struct TaskForkPolicyServiceTests {
     }
 
     @Test("non-Git workspace offers shared and independent file modes")
-    func nonGitWorkspaceOffersBothModes() {
+    func nonGitWorkspaceOffersBothModes() async {
         let workspace = Workspace(name: "Documents", primaryPath: "/tmp/documents")
         let task = AgentTask(title: "Task", goal: "Write", workspace: workspace)
-        let policy = TaskForkPolicyService.resolve(for: task) { _, _ in
+        let policy = await TaskForkPolicyService.resolve(for: task) { _, _ in
             .init(output: "", exitCode: 128)
         }
 
@@ -63,9 +70,9 @@ struct TaskForkPolicyServiceTests {
     }
 
     @Test("workspace-less task offers shared files only")
-    func workspaceLessTaskOffersSharedFilesOnly() {
+    func workspaceLessTaskOffersSharedFilesOnly() async {
         let task = AgentTask(title: "Standalone", goal: "Discuss an idea")
-        let policy = TaskForkPolicyService.resolve(for: task) { _, _ in
+        let policy = await TaskForkPolicyService.resolve(for: task) { _, _ in
             .init(output: "", exitCode: 128)
         }
 
@@ -76,7 +83,7 @@ struct TaskForkPolicyServiceTests {
     }
 
     @Test("historical checkpoint offers shared files only")
-    func historicalCheckpointOffersSharedFilesOnly() {
+    func historicalCheckpointOffersSharedFilesOnly() async {
         let workspace = Workspace(name: "Documents", primaryPath: "/tmp/documents")
         let task = AgentTask(title: "Task", goal: "Write", workspace: workspace)
         let checkpoint = TaskRun(task: task)
@@ -84,7 +91,7 @@ struct TaskForkPolicyServiceTests {
         let latest = TaskRun(task: task)
         latest.startedAt = Date(timeIntervalSince1970: 200)
 
-        let policy = TaskForkPolicyService.resolve(for: task, upToRunID: checkpoint.id) { _, _ in
+        let policy = await TaskForkPolicyService.resolve(for: task, upToRunID: checkpoint.id) { _, _ in
             .init(output: "", exitCode: 128)
         }
 

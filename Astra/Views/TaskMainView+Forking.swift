@@ -63,16 +63,17 @@ extension TaskMainView {
     }
 
     func presentForkConfirmation(from run: TaskRunSnapshot) {
-        Task { @MainActor in
-            let policy = await TaskForkPolicyService.resolveDetachingGitWork(for: task, upToRunID: run.id)
-            let sortedRuns = task.runs.sorted {
-                if $0.startedAt != $1.startedAt { return $0.startedAt < $1.startedAt }
-                return $0.id.uuidString < $1.id.uuidString
-            }
+        let sortedRuns = task.runs.sorted {
+            if $0.startedAt != $1.startedAt { return $0.startedAt < $1.startedAt }
+            return $0.id.uuidString < $1.id.uuidString
+        }
+        let checkpointStep = (sortedRuns.firstIndex { $0.id == run.id } ?? 0) + 1
+        Task {
+            let policy = await TaskForkPolicyService.resolve(for: task, upToRunID: run.id)
             pendingForkRequest = PendingTaskForkRequest(
                 run: run,
                 policy: policy,
-                checkpointStep: (sortedRuns.firstIndex { $0.id == run.id } ?? 0) + 1
+                checkpointStep: checkpointStep
             )
         }
     }

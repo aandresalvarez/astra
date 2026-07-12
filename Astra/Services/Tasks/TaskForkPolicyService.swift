@@ -25,74 +25,33 @@ enum TaskForkPolicyService {
         let exitCode: Int32
     }
 
-    typealias GitRunner = (_ workingPath: String, _ arguments: [String]) -> GitCommandResult
-
-    private struct PolicyModelInputs {
-        let workingPath: String
-        let eligibleFileCount: Int
-        let hasWorkspaceFolder: Bool
-        let isLatestCheckpoint: Bool
-    }
+    typealias GitRunner = @Sendable (_ workingPath: String, _ arguments: [String]) -> GitCommandResult
 
     @MainActor
     static func resolve(
         for task: AgentTask,
         upToRunID targetRunID: UUID? = nil,
         fileManager: FileManager = .default,
-        gitRunner: GitRunner = runGit
-    ) -> TaskForkPolicy {
-        let inputs = policyModelInputs(for: task, upToRunID: targetRunID, fileManager: fileManager)
-        return assemblePolicy(
-            inputs: inputs,
-            repository: repositorySnapshot(workingPath: inputs.workingPath, gitRunner: gitRunner)
-        )
-    }
-
-    /// UI presentation variant: the git subprocess work (`waitUntilExit` on up
-    /// to four commands) runs off the main actor so opening the fork sheet
-    /// cannot freeze rendering on slow repositories. Model-derived values are
-    /// still read on the main actor before suspending.
-    @MainActor
-    static func resolveDetachingGitWork(
-        for task: AgentTask,
-        upToRunID targetRunID: UUID? = nil,
-        fileManager: FileManager = .default
+        gitRunner: @escaping GitRunner = { workingPath, arguments in
+            runGit(workingPath: workingPath, arguments: arguments)
+        }
     ) async -> TaskForkPolicy {
-        let inputs = policyModelInputs(for: task, upToRunID: targetRunID, fileManager: fileManager)
-        let workingPath = inputs.workingPath
-        let repository = await Task.detached(priority: .userInitiated) {
-            repositorySnapshot(workingPath: workingPath, gitRunner: runGit)
+        let workingPath = TaskWorkspaceAccess(task: task).codeWorkingDirectory
+        // The git subprocess work (`waitUntilExit` on up to four commands)
+        // runs off the main actor so opening the fork sheet cannot freeze
+        // rendering on slow repositories.
+        let repository = await Task.detached {
+            repositorySnapshot(workingPath: workingPath, gitRunner: gitRunner)
         }.value
-        return assemblePolicy(inputs: inputs, repository: repository)
-    }
-
-    @MainActor
-    private static func policyModelInputs(
-        for task: AgentTask,
-        upToRunID targetRunID: UUID?,
-        fileManager: FileManager
-    ) -> PolicyModelInputs {
-        PolicyModelInputs(
-            workingPath: TaskWorkspaceAccess(task: task).codeWorkingDirectory,
-            eligibleFileCount: eligibleFilePaths(for: task, fileManager: fileManager).count,
-            // Workspace-less tasks have no task folder to copy into, so the
-            // fork path cannot materialize independent copies
-            // (AgentTaskForkService throws `fileCopiesRequireWorkspace`).
-            // Don't offer the mode.
-            hasWorkspaceFolder: !(task.workspace?.primaryPath ?? "").isEmpty,
-            isLatestCheckpoint: isLatestCheckpoint(targetRunID, in: task)
-        )
-    }
-
-    private static func assemblePolicy(
-        inputs: PolicyModelInputs,
-        repository: TaskForkRepositorySnapshot?
-    ) -> TaskForkPolicy {
-        TaskForkPolicy(
+        // Workspace-less tasks have no task folder to copy into, so the fork
+        // path cannot materialize independent copies (AgentTaskForkService
+        // throws `fileCopiesRequireWorkspace`). Don't offer the mode.
+        let hasWorkspaceFolder = !(task.workspace?.primaryPath ?? "").isEmpty
+        return TaskForkPolicy(
             repository: repository,
-            eligibleFileCount: inputs.eligibleFileCount,
-            allowsIndependentCopies: inputs.hasWorkspaceFolder && inputs.isLatestCheckpoint,
-            independentCopiesUnavailableDetail: inputs.hasWorkspaceFolder
+            eligibleFileCount: eligibleFilePaths(for: task, fileManager: fileManager).count,
+            allowsIndependentCopies: hasWorkspaceFolder && isLatestCheckpoint(targetRunID, in: task),
+            independentCopiesUnavailableDetail: hasWorkspaceFolder
                 ? nil
                 : "This conversation has no workspace folder to copy files into."
         )

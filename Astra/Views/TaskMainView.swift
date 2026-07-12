@@ -5464,6 +5464,12 @@ struct TaskMainView: View {
         )
         guard sendAction != .none else { return }
 
+        if let readOnlyReason = TaskForkPolicyService.readOnlyReason(for: task),
+           sendAction.launchesProviderWork {
+            recordForkReadOnlyBlock(readOnlyReason)
+            return
+        }
+
         shouldScrollAfterUserMessage = true
 
         switch sendAction {

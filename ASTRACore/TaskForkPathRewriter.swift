@@ -15,10 +15,9 @@ public enum TaskForkPathRewriter {
                 if beforeIsBoundary && afterIsBoundary {
                     // Indices are invalidated by the mutation; resume from a
                     // character offset computed before it.
-                    let resumeOffset = result.distance(from: result.startIndex, to: range.lowerBound)
-                        + replacement.count
+                    let lowerOffset = result.distance(from: result.startIndex, to: range.lowerBound)
                     result.replaceSubrange(range, with: replacement)
-                    searchStart = result.index(result.startIndex, offsetBy: resumeOffset)
+                    searchStart = result.index(result.startIndex, offsetBy: lowerOffset + replacement.count)
                 } else {
                     searchStart = range.upperBound
                 }

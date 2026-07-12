@@ -26,6 +26,15 @@ enum TaskComposerSendAction: Equatable, Sendable {
     case mcpInstall(MCPInstallChatRequest)
     case mcpInstallFailure(String)
     case message(String)
+
+    var launchesProviderWork: Bool {
+        switch self {
+        case .recap, .routine, .message:
+            true
+        case .none, .remember, .mcpInstall, .mcpInstallFailure:
+            false
+        }
+    }
 }
 
 struct TaskComposerRuntimeUpdate: Equatable, Sendable {
