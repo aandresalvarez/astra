@@ -176,14 +176,16 @@ struct TaskOpenResponsivenessTelemetryTests {
         AppLogger.resetForTesting()
         TaskOpenResponsivenessTelemetry.resetForTesting()
         TaskOpenResponsivenessTelemetry.begin(task: task, source: "task_selection", scope: scope)
+        let readyAt = DispatchTime.now().uptimeNanoseconds
 
         TaskOpenResponsivenessTelemetry.transcriptBecameReady(
             task: task,
             snapshot: .empty,
             appliedSnapshotRevision: 1,
             cacheState: "hit",
-            snapshotAppliedUptimeNanoseconds: DispatchTime.now().uptimeNanoseconds,
-            scope: scope
+            snapshotAppliedUptimeNanoseconds: readyAt - 4_000_000,
+            scope: scope,
+            readyAtUptimeNanoseconds: readyAt
         )
         AppLogger.flushForTesting()
 

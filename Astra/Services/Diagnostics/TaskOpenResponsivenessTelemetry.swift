@@ -274,7 +274,8 @@ enum TaskOpenResponsivenessTelemetry {
         appliedSnapshotRevision: Int,
         cacheState: String,
         snapshotAppliedUptimeNanoseconds: UInt64?,
-        scope: UUID
+        scope: UUID,
+        readyAtUptimeNanoseconds: UInt64? = nil
     ) {
         guard var activeTrace = activeTraces[scope], activeTrace.trace.taskID == task.id,
               appliedSnapshotRevision > 0 else { return }
@@ -285,7 +286,7 @@ enum TaskOpenResponsivenessTelemetry {
             log(shellResult, taskID: task.id)
         }
 
-        let readyAt = DispatchTime.now().uptimeNanoseconds
+        let readyAt = readyAtUptimeNanoseconds ?? DispatchTime.now().uptimeNanoseconds
         guard let result = activeTrace.trace.markTranscriptReady(
             at: readyAt,
             snapshotFields: snapshotFields(

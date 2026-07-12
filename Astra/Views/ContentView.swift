@@ -2340,7 +2340,6 @@ struct ContentView: View {
         }
     }
     // MARK: - Task Actions
-
     private func setSelectedTask(_ task: AgentTask?, recordsFinalHomeTransition: Bool = true) {
         let previousTaskID = selectedTask?.id
         if previousTaskID != task?.id {
@@ -2350,7 +2349,9 @@ struct ContentView: View {
                                       taskID: nil, usesSelectedTask: false)
             }
         }
-        measurePreShellNavigation(for: task) {
+        let transitionTask = TaskOpenResponsivenessTelemetry.shouldMeasureSelectionTransition(
+            previousTaskID: previousTaskID, nextTaskID: task?.id) ? task : nil
+        measurePreShellNavigation(for: transitionTask) {
             updateCanvasForTaskSelectionChange(
                 previousTaskID: previousTaskID,
                 nextTaskID: task?.id,
@@ -2365,7 +2366,6 @@ struct ContentView: View {
             markTaskRead(task)
         }
     }
-
     private func measurePreShellNavigation<T>(for task: AgentTask?, _ work: () -> T) -> T {
         TaskOpenResponsivenessTelemetry.measurePhase("pre_shell_navigation", task: task, scope: taskOpenResponsivenessScope, work)
     }
