@@ -17,8 +17,27 @@ struct AppAccessPresentationTests {
 
     @Test("App utility windows use stable scene identifiers")
     func appUtilityWindowsUseStableSceneIdentifiers() {
+        #expect(AppWindowIDs.main == "astra-main")
         #expect(AppWindowIDs.logs == "astra-logs")
         #expect(AppWindowIDs.usage == "astra-usage")
+    }
+
+    @Test("Main window commands replace SwiftUI new-item scene discovery")
+    func mainWindowCommandsReplaceSwiftUINewItemSceneDiscovery() throws {
+        let sourceURL = URL(filePath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appending(path: "Astra/ASTRAApp.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+        func matches(_ pattern: String) -> Bool {
+            source.range(of: pattern, options: .regularExpression) != nil
+        }
+
+        #expect(matches(#"WindowGroup\s*\(\s*AppChannel\.current\.displayName\s*,\s*id:\s*AppWindowIDs\.main\s*\)"#))
+        #expect(matches(#"CommandGroup\s*\(\s*replacing:\s*\.newItem\s*\)"#))
+        #expect(!matches(#"CommandGroup\s*\(\s*after:\s*\.newItem\s*\)"#))
+        #expect(matches(#"openWindow\s*\(\s*id:\s*AppWindowIDs\.main\s*\)"#))
     }
 
     @Test("Sidebar app access footer remains a bottom anchored custom menu")
