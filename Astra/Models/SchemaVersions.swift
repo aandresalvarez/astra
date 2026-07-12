@@ -3993,7 +3993,7 @@ public enum ASTRASchemaV12: VersionedSchema {
 public enum ASTRASchema {
     /// The newest durable store schema this binary can read and write.
     /// Keep startup compatibility checks derived from this single owner.
-    public static let currentVersion = 11
+    public static let currentVersion = 12
 
     public static var current: Schema {
         Schema(versionedSchema: ASTRASchemaV12.self)
