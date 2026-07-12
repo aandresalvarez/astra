@@ -1371,13 +1371,18 @@ enum AgentPromptBuilder {
     }
 
     private static func activeFollowUpRuns(for task: AgentTask) -> [TaskRun] {
-        let sortedRuns = task.runs.sorted { $0.startedAt < $1.startedAt }
+        let sortedRuns = task.runs.sorted(by: TaskRun.isChronologicallyOrdered)
         guard !sortedRuns.isEmpty else { return [] }
 
         if task.forkedFromID != nil,
-           task.forkedAtRunIndex > 0,
-           task.forkedAtRunIndex < sortedRuns.count {
-            return Array(sortedRuns.suffix(sortedRuns.count - task.forkedAtRunIndex))
+           let checkpointEvent = task.events.first(where: {
+               $0.type == TaskEventTypes.Task.checkpoint.rawValue && $0.run != nil
+           }),
+           let checkpointRun = checkpointEvent.run {
+            let postForkRuns = sortedRuns.filter {
+                $0.id != checkpointRun.id && $0.startedAt >= checkpointEvent.timestamp
+            }
+            return [checkpointRun] + postForkRuns
         }
         return sortedRuns
     }

@@ -123,6 +123,7 @@ enum TaskForkManifestService: Sendable {
         )
         if mode == .conversationWithFileCopies {
             try snapshotFiles(in: &manifest, forkFolder: forkFolder, fileManager: fileManager)
+            try rewriteCopiedOutputFiles(in: &manifest, forkFolder: forkFolder, fileManager: fileManager)
         }
         try save(manifest, taskFolder: forkFolder, fileManager: fileManager)
         return manifest
@@ -396,8 +397,9 @@ enum TaskForkManifestService: Sendable {
         path: String,
         fileManager: FileManager
     ) -> TaskForkManifest.FileReference? {
-        guard !path.isEmpty, fileManager.fileExists(atPath: path) else { return nil }
-        let attrs = try? fileManager.attributesOfItem(atPath: path)
+        let resolvedPath = (path as NSString).expandingTildeInPath
+        guard !path.isEmpty, fileManager.fileExists(atPath: resolvedPath) else { return nil }
+        let attrs = try? fileManager.attributesOfItem(atPath: resolvedPath)
         return TaskForkManifest.FileReference(
             kind: kind,
             sourcePath: path,
@@ -436,16 +438,17 @@ enum TaskForkManifestService: Sendable {
     ) throws {
         for index in references.indices {
             let sourcePath = references[index].sourcePath
+            let resolvedSourcePath = (sourcePath as NSString).expandingTildeInPath
             var isDirectory: ObjCBool = false
-            guard fileManager.fileExists(atPath: sourcePath, isDirectory: &isDirectory),
+            guard fileManager.fileExists(atPath: resolvedSourcePath, isDirectory: &isDirectory),
                   !isDirectory.boolValue else {
                 continue
             }
             let copyRoot = (forkFolder as NSString).appendingPathComponent("fork_sources")
             let kindRoot = (copyRoot as NSString).appendingPathComponent(references[index].kind)
             try fileManager.createDirectory(atPath: kindRoot, withIntermediateDirectories: true)
-            let destination = uniqueDestination(for: sourcePath, in: kindRoot, fileManager: fileManager)
-            try fileManager.copyItem(atPath: resolvedCopySource(for: sourcePath), toPath: destination)
+            let destination = uniqueDestination(for: resolvedSourcePath, in: kindRoot, fileManager: fileManager)
+            try fileManager.copyItem(atPath: resolvedCopySource(for: resolvedSourcePath), toPath: destination)
             references[index].localCopyPath = destination
             references[index].sha256 = sha256(path: destination, managedRoot: forkFolder, fileManager: fileManager)
         }
@@ -458,6 +461,40 @@ enum TaskForkManifestService: Sendable {
     /// traverse links, so they take the shared-reference path).
     private static func resolvedCopySource(for sourcePath: String) -> String {
         URL(fileURLWithPath: sourcePath).resolvingSymlinksInPath().path
+    }
+
+    private static func rewriteCopiedOutputFiles(
+        in manifest: inout TaskForkManifest,
+        forkFolder: String,
+        fileManager: FileManager
+    ) throws {
+        let mapping = manifest.allFileReferences.reduce(into: [String: String]()) { result, reference in
+            guard let localCopyPath = reference.localCopyPath else { return }
+            result[reference.sourcePath] = localCopyPath
+            result[(reference.sourcePath as NSString).expandingTildeInPath] = localCopyPath
+        }
+        let broker = HostFileAccessBroker(fileManager: fileManager)
+        let accessIntent = HostFileAccessIntent.astraManagedStorage(
+            root: URL(fileURLWithPath: forkFolder, isDirectory: true)
+        )
+        for index in manifest.sourceOutputFiles.indices {
+            guard let path = manifest.sourceOutputFiles[index].localCopyPath,
+                  let text = try? broker.readString(
+                      at: URL(fileURLWithPath: path),
+                      encoding: .utf8,
+                      intent: accessIntent
+                  ) else { continue }
+            let rewritten = TaskForkPathRewriter.rewrite(text, using: mapping)
+            if rewritten != text {
+                try rewritten.write(toFile: path, atomically: true, encoding: .utf8)
+                manifest.sourceOutputFiles[index].size = rewritten.utf8.count
+                manifest.sourceOutputFiles[index].sha256 = sha256(
+                    path: path,
+                    managedRoot: forkFolder,
+                    fileManager: fileManager
+                )
+            }
+    }
     }
 
     private static func sha256(path: String, managedRoot: String? = nil, fileManager: FileManager) -> String? {
@@ -561,6 +598,7 @@ enum TaskForkManifestWritingAdapter: TaskForkManifestWriting {
         let sourceToLocalPaths = manifest.allFileReferences.reduce(into: [String: String]()) { mapping, reference in
             if let localCopyPath = reference.localCopyPath {
                 mapping[reference.sourcePath] = localCopyPath
+                mapping[(reference.sourcePath as NSString).expandingTildeInPath] = localCopyPath
             }
         }
         return TaskForkManifestSummary(

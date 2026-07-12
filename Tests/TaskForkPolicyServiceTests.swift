@@ -91,4 +91,15 @@ struct TaskForkPolicyServiceTests {
         #expect(!policy.allowsIndependentCopies)
         #expect(policy.allowedModes == [.conversationSharedFiles])
     }
+
+    @Test("workspace-less conversation offers shared files only")
+    func workspaceLessConversationOffersSharedFilesOnly() {
+        let task = AgentTask(title: "Standalone", goal: "Discuss")
+        let policy = TaskForkPolicyService.resolve(for: task) { _, _ in
+            .init(output: "", exitCode: 128)
+        }
+
+        #expect(!policy.allowsIndependentCopies)
+        #expect(policy.allowedModes == [.conversationSharedFiles])
+    }
 }

@@ -66,10 +66,12 @@ enum TaskForkPolicyService {
     /// uncached overload per body evaluation.
     @MainActor
     static func sharedWorktreeReadOnlyRoot(for task: AgentTask, manifest: TaskForkManifest?) -> String? {
-        guard task.isForked, manifest?.repository != nil else { return nil }
-        let root = standardized(TaskWorkspaceAccess(task: task).codeWorkingDirectory)
+        guard task.isForked, let repository = manifest?.repository else { return nil }
+        let root = standardized(repository.rootPath)
         return root.isEmpty ? nil : root
     }
+
+    typealias RepositoryRootResolver = (_ workingPath: String) -> String?
 
     @MainActor
     static func activeSharedWorktreeBlocker(for task: AgentTask) -> AgentTask? {
@@ -81,12 +83,18 @@ enum TaskForkPolicyService {
     }
 
     @MainActor
-    static func activeSharedWorktreeBlocker(for task: AgentTask, sharedWorktreeRoot taskRoot: String) -> AgentTask? {
+    static func activeSharedWorktreeBlocker(
+        for task: AgentTask,
+        sharedWorktreeRoot taskRoot: String,
+        repositoryRootResolver: RepositoryRootResolver = repositoryRoot
+    ) -> AgentTask? {
         guard !taskRoot.isEmpty, let workspace = task.workspace else { return nil }
         return workspace.tasks.first { candidate in
-            candidate.id != task.id
-                && candidate.status == .running
-                && standardized(TaskWorkspaceAccess(task: candidate).codeWorkingDirectory) == taskRoot
+            guard candidate.id != task.id, candidate.status == .running else { return false }
+            let workingPath = TaskWorkspaceAccess(task: candidate).codeWorkingDirectory
+            let candidateRoot = repositoryRootResolver(workingPath).map(standardized)
+                ?? standardized(workingPath)
+            return candidateRoot == taskRoot
         }
     }
 
@@ -127,6 +135,13 @@ enum TaskForkPolicyService {
             isDirty: statusResult.exitCode == 0
                 && !statusResult.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         )
+    }
+
+    private static func repositoryRoot(workingPath: String) -> String? {
+        let result = runGit(workingPath: workingPath, arguments: ["rev-parse", "--show-toplevel"])
+        guard result.exitCode == 0 else { return nil }
+        let root = result.output.trimmingCharacters(in: .whitespacesAndNewlines)
+        return root.isEmpty ? nil : root
     }
 
     private static func eligibleFilePaths(for task: AgentTask, fileManager: FileManager) -> [String] {

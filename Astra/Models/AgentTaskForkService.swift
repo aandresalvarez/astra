@@ -88,7 +88,7 @@ public enum AgentTaskForkService {
             throw AgentTaskForkError.fileCopiesRequireWorkspace
         }
 
-        let sortedRuns = source.runs.sorted(by: runOrdering)
+        let sortedRuns = source.runs.sorted(by: TaskRun.isChronologicallyOrdered)
         guard let cutoffIndex = sortedRuns.firstIndex(where: { $0.id == targetRun.id }) else {
             throw AgentTaskForkError.targetRunMissing
         }
@@ -98,7 +98,6 @@ public enum AgentTaskForkService {
         if options.mode == .conversationWithFileCopies, cutoffIndex != sortedRuns.indices.last {
             throw AgentTaskForkError.historicalFileCopyUnavailable
         }
-
         let forked = AgentTask(
             title: "Fork of \(source.title)",
             goal: source.goal,
@@ -209,7 +208,7 @@ public enum AgentTaskForkService {
                 sourceTaskID: source.id,
                 sourceWorkspacePath: source.workspace?.primaryPath ?? "",
                 sourceArtifacts: source.artifacts.map { TaskForkArtifactFacts(createdAt: $0.createdAt, path: $0.path) },
-                sourceInputs: source.inputs.map(normalizedInputPath),
+                sourceInputs: source.inputs,
                 sourceAttachments: attachments,
                 forkedTaskID: forked.id,
                 forkedWorkspacePath: forkedWorkspacePath,
@@ -238,20 +237,32 @@ public enum AgentTaskForkService {
             }
         }
 
+        var manifestPathMapping = manifest.sourceToLocalPaths
         if options.mode == .conversationWithFileCopies {
+            var pathMapping = manifest.sourceToLocalPaths
+            for rawPath in source.inputs {
+                if let localPath = pathMapping[normalizedInputPath(rawPath)] {
+                    pathMapping[rawPath] = localPath
+                }
+            }
             forked.inputs = source.inputs.map {
                 let normalized = normalizedInputPath($0)
-                return manifest.sourceToLocalPaths[normalized] ?? normalized
+                return pathMapping[$0] ?? pathMapping[normalized] ?? normalized
             }
+            forked.goal = TaskForkPathRewriter.rewrite(forked.goal, using: pathMapping)
+            forked.constraints = forked.constraints.map { TaskForkPathRewriter.rewrite($0, using: pathMapping) }
+            forked.acceptanceCriteria = forked.acceptanceCriteria.map { TaskForkPathRewriter.rewrite($0, using: pathMapping) }
+            forked.teamInstructions = TaskForkPathRewriter.rewrite(forked.teamInstructions, using: pathMapping)
             for run in copiedRuns {
-                run.output = replacingPaths(in: run.output, using: manifest.sourceToLocalPaths)
-                rewriteFileChanges(in: run, using: manifest.sourceToLocalPaths)
+                run.output = TaskForkPathRewriter.rewrite(run.output, using: pathMapping)
+                rewriteFileChanges(in: run, using: pathMapping)
             }
+            manifestPathMapping = pathMapping
         }
 
         var copiedEvents: [TaskEvent] = eventsToFork.map { sourceEvent in
             let copiedRun = sourceEvent.run.flatMap { forkedRunsBySourceID[$0.id] }
-            let rewrittenPayload = replacingPaths(in: sourceEvent.payload, using: manifest.sourceToLocalPaths)
+            let rewrittenPayload = TaskForkPathRewriter.rewrite(sourceEvent.payload, using: manifestPathMapping)
             let newEvent = TaskEvent(
                 task: forked,
                 type: sourceEvent.type,
@@ -299,11 +310,6 @@ public enum AgentTaskForkService {
         return forked
     }
 
-    private static func runOrdering(_ lhs: TaskRun, _ rhs: TaskRun) -> Bool {
-        if lhs.startedAt != rhs.startedAt { return lhs.startedAt < rhs.startedAt }
-        return lhs.id.uuidString < rhs.id.uuidString
-    }
-
     private static func eventOrdering(_ lhs: TaskEvent, _ rhs: TaskEvent) -> Bool {
         if lhs.timestamp != rhs.timestamp { return lhs.timestamp < rhs.timestamp }
         return lhs.id.uuidString < rhs.id.uuidString
@@ -323,31 +329,6 @@ public enum AgentTaskForkService {
                     return path
                 }
         }
-    }
-
-    private static func replacingPaths(in payload: String, using mapping: [String: String]) -> String {
-        mapping.keys.sorted { $0.count > $1.count }.reduce(payload) { value, sourcePath in
-            guard let replacement = mapping[sourcePath], !sourcePath.isEmpty else { return value }
-            var result = value
-            var searchStart = result.startIndex
-            while let range = result.range(of: sourcePath, range: searchStart..<result.endIndex) {
-                let beforeIsBoundary = range.lowerBound == result.startIndex
-                    || !isPathTokenCharacter(result[result.index(before: range.lowerBound)])
-                let afterIsBoundary = range.upperBound == result.endIndex
-                    || !isPathTokenCharacter(result[range.upperBound])
-                if beforeIsBoundary && afterIsBoundary {
-                    result.replaceSubrange(range, with: replacement)
-                    searchStart = result.index(range.lowerBound, offsetBy: replacement.count)
-                } else {
-                    searchStart = range.upperBound
-                }
-            }
-            return result
-        }
-    }
-
-    private static func isPathTokenCharacter(_ character: Character) -> Bool {
-        character.isLetter || character.isNumber || "._-/~".contains(character)
     }
 
     private static func normalizedInputPath(_ path: String) -> String {
