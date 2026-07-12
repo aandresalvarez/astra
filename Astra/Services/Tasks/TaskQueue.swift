@@ -667,13 +667,21 @@ final class TaskQueue {
                 continue
             }
 
+            // Read-only Git conversation forks must remain queued without
+            // entering executeTask. Otherwise executeTask's admission guard
+            // returns immediately and this loop repeatedly redispatches the
+            // same task while its sibling still owns the shared worktree.
+            let dispatchableTasks = tasks.filter {
+                TaskForkPolicyService.readOnlyReason(for: $0) == nil
+            }
+
             // Skip tasks already dispatched and tasks waiting on an exclusive
             // resource lock. Later tasks in different roots may still run.
-            guard let next = tasks.first(where: {
+            guard let next = dispatchableTasks.first(where: {
                 !dispatchedTasks.contains($0.id)
                     && canAcquireResourceLock(for: $0, accessMode: resourceAccess(for: $0))
             }) else {
-                if let blocked = tasks.first(where: { !dispatchedTasks.contains($0.id) }) {
+                if let blocked = dispatchableTasks.first(where: { !dispatchedTasks.contains($0.id) }) {
                     let accessMode = resourceAccess(for: blocked)
                     let claim = TaskResourceLockClaim(
                         taskID: blocked.id,
@@ -691,7 +699,7 @@ final class TaskQueue {
                         ], level: .warning)
                     }
                 }
-                do { try await Task.sleep(for: .milliseconds(200)) }
+                do { try await Task.sleep(for: .milliseconds(500)) }
                 catch { break }
                 continue
             }

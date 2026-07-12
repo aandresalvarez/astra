@@ -28,6 +28,26 @@ enum TaskForkPolicyService {
     typealias GitRunner = @Sendable (_ workingPath: String, _ arguments: [String]) -> GitCommandResult
 
     @MainActor
+    static func recordReadOnlyBlock(
+        _ reason: String,
+        for task: AgentTask,
+        modelContext: ModelContext
+    ) {
+        guard !task.events.contains(where: {
+            $0.type == TaskEventTypes.System.info.rawValue && $0.payload == reason
+        }) else { return }
+        modelContext.insert(TaskEvent(
+            task: task,
+            eventType: TaskEventTypes.System.info,
+            payload: reason
+        ))
+        WorkspacePersistenceCoordinator.saveAndAutoExport(
+            workspace: task.workspace,
+            modelContext: modelContext
+        )
+    }
+
+    @MainActor
     static func resolve(
         for task: AgentTask,
         upToRunID targetRunID: UUID? = nil,

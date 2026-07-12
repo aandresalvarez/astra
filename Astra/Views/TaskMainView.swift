@@ -5435,6 +5435,14 @@ struct TaskMainView: View {
               task.status != .queued,
               task.status != .running else { return }
 
+        // Check before recording approval or enqueueing. A read-only fork must
+        // preserve its completed/pending state so the general queue cannot
+        // later reinterpret an approved-plan launch as a normal task run.
+        if let readOnlyReason = TaskForkPolicyService.readOnlyReason(for: task) {
+            recordForkReadOnlyBlock(readOnlyReason)
+            return
+        }
+
         recordCurrentTaskPolicyIfNeeded(source: "approved_plan_run")
         TaskPlanService.recordApproved(plan, task: task, modelContext: modelContext)
         showPlanCanvasIfNeeded()

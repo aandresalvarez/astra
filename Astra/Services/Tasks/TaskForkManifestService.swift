@@ -237,10 +237,21 @@ enum TaskForkManifestService: Sendable {
     ) -> String? {
         let references = manifest.allFileReferences
         let missing = references.contains { ref in
-            if let local = ref.localCopyPath, fileManager.fileExists(atPath: local) {
+            if let local = ref.localCopyPath {
+                // Independent forks advertise the fork-local path. Falling
+                // back to the source would hide a broken snapshot and leave
+                // the prompt pointing at a file that no longer exists.
+                return !fileManager.fileExists(atPath: expandedPath(local))
+            }
+            let sourcePath = expandedPath(ref.sourcePath)
+            // Inputs can also be free-form context (for example, "Use
+            // TypeScript style"). Only filesystem-shaped declarations belong
+            // in source availability diagnostics.
+            guard fileManager.fileExists(atPath: sourcePath)
+                    || isLikelyFilePath(ref.sourcePath) else {
                 return false
             }
-            return !fileManager.fileExists(atPath: ref.sourcePath)
+            return !fileManager.fileExists(atPath: sourcePath)
         }
         guard missing else { return nil }
 
@@ -249,6 +260,23 @@ enum TaskForkManifestService: Sendable {
             return "Checkpoint files are unavailable; using saved task history."
         }
         return "Some checkpoint files are unavailable; using saved task history for missing files."
+    }
+
+    private static func expandedPath(_ path: String) -> String {
+        (path as NSString).expandingTildeInPath
+    }
+
+    private static func isLikelyFilePath(_ value: String) -> Bool {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, !trimmed.contains("\n") else { return false }
+        if trimmed.hasPrefix("/") || trimmed.hasPrefix("~/") || trimmed.hasPrefix("./") || trimmed.hasPrefix("../") {
+            return true
+        }
+        if trimmed.contains("/") || trimmed.contains("\\") { return true }
+        // A missing relative filename is still actionable. Avoid classifying
+        // prose containing whitespace as a path merely because it has a dot.
+        return !trimmed.contains(where: { $0.isWhitespace })
+            && !(trimmed as NSString).pathExtension.isEmpty
     }
 
     @discardableResult

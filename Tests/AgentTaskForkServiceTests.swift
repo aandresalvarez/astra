@@ -249,6 +249,64 @@ struct AgentTaskForkServiceTests {
         #expect(prompt.contains("Checkpoint files are unavailable"))
     }
 
+    @Test("fork availability ignores prose, expands home paths, and requires local snapshots")
+    func forkAvailabilityUsesAdvertisedFileSemantics() throws {
+        let homeRelativeName = ".astra-fork-availability-\(UUID().uuidString).txt"
+        let homePath = (FileManager.default.homeDirectoryForCurrentUser.path as NSString)
+            .appendingPathComponent(homeRelativeName)
+        try "available".write(toFile: homePath, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(atPath: homePath) }
+
+        let originalPath = (NSTemporaryDirectory() as NSString)
+            .appendingPathComponent("astra-fork-original-\(UUID().uuidString).txt")
+        try "original remains".write(toFile: originalPath, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(atPath: originalPath) }
+
+        let missingLocalPath = originalPath + ".fork-copy"
+        let reference: (String, String?) -> TaskForkManifest.FileReference = { source, local in
+            .init(
+                kind: "input",
+                sourcePath: source,
+                localCopyPath: local,
+                size: nil,
+                modifiedAt: nil,
+                sha256: nil,
+                originatingRunID: nil,
+                logicalPath: nil
+            )
+        }
+        func manifest(_ refs: [TaskForkManifest.FileReference]) -> TaskForkManifest {
+            TaskForkManifest(
+                schemaVersion: 2,
+                sourceTaskID: UUID(),
+                forkedTaskID: UUID(),
+                checkpointRunID: UUID(),
+                checkpointRunIndex: 0,
+                copiedRunIDs: [],
+                sourceTaskFolder: NSTemporaryDirectory(),
+                sourceSessionHistoryPath: nil,
+                checkpointSessionHistoryPath: nil,
+                sourceOutputFiles: [],
+                sourceArtifacts: [],
+                sourceInputs: refs,
+                sourceAttachments: [],
+                forkMode: TaskForkMode.conversationSharedFiles.rawValue,
+                repository: nil,
+                createdAt: Date()
+            )
+        }
+
+        #expect(TaskForkManifestService.sourceAvailabilityWarning(
+            for: manifest([reference("Use TypeScript style", nil)])
+        ) == nil)
+        #expect(TaskForkManifestService.sourceAvailabilityWarning(
+            for: manifest([reference("~/\(homeRelativeName)", nil)])
+        ) == nil)
+        #expect(TaskForkManifestService.sourceAvailabilityWarning(
+            for: manifest([reference(originalPath, missingLocalPath)])
+        ) != nil)
+    }
+
     @Test("independent fork snapshots explicit files and rewrites attachment references")
     func independentForkSnapshotsExplicitFiles() throws {
         let root = try temporaryRoot()

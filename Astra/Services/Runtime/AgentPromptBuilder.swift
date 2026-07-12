@@ -1388,6 +1388,14 @@ enum AgentPromptBuilder {
             }
             return [checkpointRun] + postForkRuns
         }
+        // Backward compatibility for fork records created before checkpoint
+        // events were persisted (and imported task data that lacks them).
+        // `forkedAtRunIndex` historically stored the copied-run count for this
+        // prompt boundary, so exclude that prefix from active follow-up work.
+        if task.forkedFromID != nil {
+            let copiedRunCount = task.forkedAtRunIndex
+            return Array(sortedRuns.dropFirst(max(0, copiedRunCount)))
+        }
         return sortedRuns
     }
 
