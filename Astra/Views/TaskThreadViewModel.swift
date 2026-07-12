@@ -37,7 +37,16 @@ private final class TaskThreadResponsivenessLifetime: @unchecked Sendable {
 
 struct TaskThreadResponsivenessContext: Sendable {
     let traceID: String
+    let telemetryObserver: (@Sendable (String, Double) -> Void)?
     private let lifetime = TaskThreadResponsivenessLifetime()
+
+    init(
+        traceID: String,
+        telemetryObserver: (@Sendable (String, Double) -> Void)? = nil
+    ) {
+        self.traceID = traceID
+        self.telemetryObserver = telemetryObserver
+    }
 
     var fields: [String: String] {
         ["trace_id": traceID]
@@ -69,6 +78,26 @@ struct TaskThreadSnapshotReadiness: Equatable, Sendable {
 
 @Observable @MainActor
 final class TaskThreadViewModel {
+    typealias SnapshotBuilder = @Sendable (
+        TaskThreadSnapshotInput,
+        [String: String],
+        TaskThreadResponsivenessContext?
+    ) async throws -> TaskThreadSnapshot
+
+    private struct SnapshotRequest: Sendable {
+        let input: TaskThreadSnapshotInput
+        let trigger: TaskThreadSnapshotTrigger
+        let cacheKey: TaskThreadSnapshotCacheKey?
+        let taskID: UUID
+        let workspaceID: UUID?
+        let revision: Int
+        let scheduledAt: UInt64
+        let delay: TimeInterval
+        let fields: [String: String]
+        let responsivenessContext: TaskThreadResponsivenessContext?
+        let shouldLogLiveCadence: Bool
+    }
+
     private(set) var snapshot: TaskThreadSnapshot?
     private(set) var generatedFilePaths: [String] = []
     /// Advances only when a non-placeholder snapshot has been applied. Views use
@@ -99,6 +128,11 @@ final class TaskThreadViewModel {
 
     private var snapshotTrigger: TaskThreadSnapshotTrigger?
     private var snapshotTask: Task<Void, Never>?
+    private var snapshotWorkerID: UUID?
+    /// Only the newest request is retained. A superseded detached CPU build may
+    /// finish synchronously after cancellation, but its coordinator generation
+    /// can no longer apply or disturb the single active worker reference.
+    private var pendingSnapshotRequest: SnapshotRequest?
     private var generatedFilesTask: Task<Void, Never>?
     private var expansionRunCount: Int = 50
     private var lastSnapshotApplyAt: Date = .distantPast
@@ -111,9 +145,16 @@ final class TaskThreadViewModel {
     private var responsivenessContext: TaskThreadResponsivenessContext?
     private var deferredLiveSnapshotCount = 0
     private var lastLiveSnapshotTelemetryAt: Date = .distantPast
+    private(set) var snapshotBuildCountForTesting = 0
+    private let snapshotBuilder: SnapshotBuilder?
+    private let snapshotBuildExecutor = TaskThreadSnapshotBuildExecutor()
 
     private static let liveSnapshotMinimumInterval: TimeInterval = 0.120
     private static var terminalSnapshotCache = TaskThreadSnapshotCache()
+
+    init(snapshotBuilder: SnapshotBuilder? = nil) {
+        self.snapshotBuilder = snapshotBuilder
+    }
 
     func reset(for task: AgentTask, responsivenessContext: TaskThreadResponsivenessContext? = nil) {
         PerformanceTelemetry.measure(
@@ -124,7 +165,8 @@ final class TaskThreadViewModel {
             expansionRunCount = 50
             snapshotTrigger = nil
             self.responsivenessContext?.cancel()
-            snapshotTask?.cancel()
+            pendingSnapshotRequest = nil
+            supersedeSnapshotWorker()
             lastSnapshotApplyAt = .distantPast
             lastSnapshotAppliedUptimeNanoseconds = nil
             initialSnapshotResponsivenessTraceID = responsivenessContext?.traceID
@@ -150,7 +192,9 @@ final class TaskThreadViewModel {
         let cacheKey = TaskThreadSnapshotCacheKey(task: task, maxRuns: expansionRunCount)
         if let cacheKey,
            let cachedSnapshot = Self.terminalSnapshotCache.snapshot(for: cacheKey) {
-            snapshotTask?.cancel()
+            snapshotRevision += 1
+            pendingSnapshotRequest = nil
+            supersedeSnapshotWorker()
             let cacheApplyStart = DispatchTime.now().uptimeNanoseconds
             snapshot = cachedSnapshot
             appliedSnapshotRevision += 1
@@ -181,8 +225,6 @@ final class TaskThreadViewModel {
             "status": trigger.status.rawValue,
             "latest_run_status": trigger.latestRunStatus?.rawValue ?? "none"
         ], uniquingKeysWith: { _, new in new })
-
-        snapshotTask?.cancel()
 
         let inputStart = DispatchTime.now().uptimeNanoseconds
         let input = TaskThreadSnapshotInput(
@@ -221,75 +263,165 @@ final class TaskThreadViewModel {
         if shouldLogLiveCadence {
             lastLiveSnapshotTelemetryAt = Date()
         }
-        snapshotTask = Task.detached(priority: .userInitiated) { [self] in
-            if delay > 0 {
-                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
-                if Task.isCancelled { return }
-            }
-            responsivenessContext?.performIfActive { traceFields in
-                PerformanceTelemetry.log(
-                    "task_open_snapshot_queue_wait",
-                    durationMilliseconds: PerformanceTelemetry.elapsedMilliseconds(since: scheduledAt),
-                    fields: snapshotPerformanceFields.merging(traceFields, uniquingKeysWith: { _, new in new }),
-                    taskID: taskID
+        pendingSnapshotRequest = SnapshotRequest(
+            input: input,
+            trigger: trigger,
+            cacheKey: cacheKey,
+            taskID: taskID,
+            workspaceID: workspaceID,
+            revision: revision,
+            scheduledAt: scheduledAt,
+            delay: delay,
+            fields: snapshotPerformanceFields,
+            responsivenessContext: responsivenessContext,
+            shouldLogLiveCadence: shouldLogLiveCadence
+        )
+        // A request that arrives during either the throttle sleep or detached
+        // CPU build must not wait behind obsolete work. Cancellation prevents
+        // the old generation from applying, while the identity guard in the
+        // worker's cleanup prevents it from clearing this replacement.
+        supersedeSnapshotWorker()
+        startSnapshotWorkerIfNeeded()
+    }
+
+    private func supersedeSnapshotWorker() {
+        snapshotTask?.cancel()
+        snapshotTask = nil
+        snapshotWorkerID = nil
+    }
+
+    private func startSnapshotWorkerIfNeeded() {
+        guard snapshotTask == nil else { return }
+        let workerID = UUID()
+        snapshotWorkerID = workerID
+        snapshotTask = Task { [weak self] in
+            guard let self else { return }
+            while !Task.isCancelled, let request = self.takePendingSnapshotRequest() {
+                if request.delay > 0 {
+                    try? await Task.sleep(nanoseconds: UInt64(request.delay * 1_000_000_000))
+                }
+                guard !Task.isCancelled else { break }
+                request.responsivenessContext?.performIfActive { traceFields in
+                    let queueWait = PerformanceTelemetry.elapsedMilliseconds(since: request.scheduledAt)
+                    PerformanceTelemetry.log(
+                        "task_open_snapshot_queue_wait",
+                        durationMilliseconds: queueWait,
+                        fields: request.fields.merging(traceFields, uniquingKeysWith: { _, new in new }),
+                        taskID: request.taskID
+                    )
+                    request.responsivenessContext?.telemetryObserver?("task_open_snapshot_queue_wait", queueWait)
+                }
+                let buildStartedAt = DispatchTime.now().uptimeNanoseconds
+                self.snapshotBuildCountForTesting += 1
+                let builtSnapshot: TaskThreadSnapshot
+                do {
+                    if let snapshotBuilder = self.snapshotBuilder {
+                        builtSnapshot = try await snapshotBuilder(
+                            request.input,
+                            request.fields,
+                            request.responsivenessContext
+                        )
+                    } else {
+                        // Capture executor admission immediately before the
+                        // actor await. Request scheduling and live throttling
+                        // belong to task_open_snapshot_queue_wait instead.
+                        let executorAdmissionStartedAt = DispatchTime.now().uptimeNanoseconds
+                        request.responsivenessContext?.telemetryObserver?(
+                            "thread_snapshot_executor_admission_started",
+                            0
+                        )
+                        builtSnapshot = try await self.snapshotBuildExecutor.build(
+                            input: request.input,
+                            fields: request.fields,
+                            responsivenessContext: request.responsivenessContext,
+                            admittedAt: executorAdmissionStartedAt
+                        )
+                    }
+                } catch is CancellationError {
+                    break
+                } catch {
+                    PerformanceTelemetry.log(
+                        "thread_snapshot_build_failed",
+                        level: .error,
+                        fields: request.fields.merging(["error": String(describing: error)], uniquingKeysWith: { _, new in new }),
+                        taskID: request.taskID
+                    )
+                    continue
+                }
+                let buildCompletedAt = DispatchTime.now().uptimeNanoseconds
+                guard !Task.isCancelled else { break }
+                self.applySnapshotIfCurrent(
+                    builtSnapshot,
+                    request: request,
+                    buildStartedAt: buildStartedAt,
+                    buildCompletedAt: buildCompletedAt
                 )
             }
-            let buildStartedAt = DispatchTime.now().uptimeNanoseconds
-            let builtSnapshot = await TaskThreadSnapshot.buildAsync(
-                input: input,
-                fields: snapshotPerformanceFields,
-                responsivenessContext: responsivenessContext
-            )
-            guard !Task.isCancelled else { return }
-            let buildCompletedAt = DispatchTime.now().uptimeNanoseconds
-            await MainActor.run {
-                guard !Task.isCancelled, revision == self.snapshotRevision else { return }
-                responsivenessContext?.performIfActive { traceFields in
-                    PerformanceTelemetry.log(
-                        "task_open_snapshot_main_actor_apply_wait",
-                        durationMilliseconds: PerformanceTelemetry.elapsedMilliseconds(since: buildCompletedAt),
-                        fields: snapshotPerformanceFields.merging(traceFields, uniquingKeysWith: { _, new in new }),
-                        taskID: taskID
-                    )
-                }
-                let applyStartedAt = DispatchTime.now().uptimeNanoseconds
-                self.snapshot = builtSnapshot
-                self.appliedSnapshotRevision += 1
-                self.appliedSnapshotTaskID = taskID
-                if let cacheKey {
-                    Self.terminalSnapshotCache.store(builtSnapshot, for: cacheKey)
-                }
-                self.lastSnapshotApplyAt = Date()
-                self.lastSnapshotAppliedUptimeNanoseconds = DispatchTime.now().uptimeNanoseconds
-                responsivenessContext?.performIfActive { traceFields in
-                    PerformanceTelemetry.log(
-                        "task_open_snapshot_apply",
-                        durationMilliseconds: PerformanceTelemetry.elapsedMilliseconds(since: applyStartedAt),
-                        fields: snapshotPerformanceFields.merging(traceFields, uniquingKeysWith: { _, new in new }),
-                        taskID: taskID
-                    )
-                }
-                if shouldLogLiveCadence {
-                    PerformanceTelemetry.log(
-                        "chat_stream_snapshot_cadence",
-                        durationMilliseconds: PerformanceTelemetry.elapsedMilliseconds(since: buildStartedAt),
-                        level: .debug,
-                        fields: fields.merging([
-                            "throttle_delay_ms": String(format: "%.2f", delay * 1_000),
-                            "deferred_snapshot_count": PerformanceTelemetryFields.count(self.deferredLiveSnapshotCount)
-                        ], uniquingKeysWith: { _, new in new }),
-                        taskID: taskID
-                    )
-                    self.deferredLiveSnapshotCount = 0
-                }
-                Self.logSnapshotState(
-                    snapshot: builtSnapshot,
-                    trigger: trigger,
-                    taskID: taskID,
-                    workspaceID: workspaceID
-                )
-            }
+            guard self.snapshotWorkerID == workerID else { return }
+            self.snapshotTask = nil
+            self.snapshotWorkerID = nil
+            // A request can arrive after the loop observes an empty slot but
+            // before this task clears itself. Recheck to avoid stranding it.
+            self.startSnapshotWorkerIfNeeded()
         }
+    }
+
+    private func takePendingSnapshotRequest() -> SnapshotRequest? {
+        defer { pendingSnapshotRequest = nil }
+        return pendingSnapshotRequest
+    }
+
+    private func applySnapshotIfCurrent(
+        _ builtSnapshot: TaskThreadSnapshot,
+        request: SnapshotRequest,
+        buildStartedAt: UInt64,
+        buildCompletedAt: UInt64
+    ) {
+        guard request.revision == snapshotRevision else { return }
+        request.responsivenessContext?.performIfActive { traceFields in
+            PerformanceTelemetry.log(
+                "task_open_snapshot_main_actor_apply_wait",
+                durationMilliseconds: PerformanceTelemetry.elapsedMilliseconds(since: buildCompletedAt),
+                fields: request.fields.merging(traceFields, uniquingKeysWith: { _, new in new }),
+                taskID: request.taskID
+            )
+        }
+        let applyStartedAt = DispatchTime.now().uptimeNanoseconds
+        snapshot = builtSnapshot
+        appliedSnapshotRevision += 1
+        appliedSnapshotTaskID = request.taskID
+        if let cacheKey = request.cacheKey {
+            Self.terminalSnapshotCache.store(builtSnapshot, for: cacheKey)
+        }
+        lastSnapshotApplyAt = Date()
+        lastSnapshotAppliedUptimeNanoseconds = DispatchTime.now().uptimeNanoseconds
+        request.responsivenessContext?.performIfActive { traceFields in
+            PerformanceTelemetry.log(
+                "task_open_snapshot_apply",
+                durationMilliseconds: PerformanceTelemetry.elapsedMilliseconds(since: applyStartedAt),
+                fields: request.fields.merging(traceFields, uniquingKeysWith: { _, new in new }),
+                taskID: request.taskID
+            )
+        }
+        if request.shouldLogLiveCadence {
+            PerformanceTelemetry.log(
+                "chat_stream_snapshot_cadence",
+                durationMilliseconds: PerformanceTelemetry.elapsedMilliseconds(since: buildStartedAt),
+                level: .debug,
+                fields: request.fields.merging([
+                    "throttle_delay_ms": String(format: "%.2f", request.delay * 1_000),
+                    "deferred_snapshot_count": PerformanceTelemetryFields.count(deferredLiveSnapshotCount)
+                ], uniquingKeysWith: { _, new in new }),
+                taskID: request.taskID
+            )
+            deferredLiveSnapshotCount = 0
+        }
+        Self.logSnapshotState(
+            snapshot: builtSnapshot,
+            trigger: request.trigger,
+            taskID: request.taskID,
+            workspaceID: request.workspaceID
+        )
     }
 
     /// Ends correlation for the initial task-open snapshot after the view has

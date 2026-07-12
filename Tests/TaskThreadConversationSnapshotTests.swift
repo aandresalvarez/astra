@@ -5,6 +5,19 @@ import ASTRAModels
 @testable import ASTRA
 import ASTRACore
 
+private final class SnapshotBuildCancellationBarrier: @unchecked Sendable {
+    private let entered = DispatchSemaphore(value: 0)
+    private let release = DispatchSemaphore(value: 0)
+
+    func checkpoint() {
+        entered.signal()
+        release.wait()
+    }
+
+    func waitUntilEntered() { entered.wait() }
+    func releaseBuild() { release.signal() }
+}
+
 extension TaskThreadSnapshotTests {
     @Test("Snapshot precomputes privacy-safe transcript shape metrics")
     func snapshotPrecomputesTranscriptMetrics() {
@@ -1435,7 +1448,7 @@ extension TaskThreadSnapshotTests {
     }
 
     @Test("Async snapshot builder preserves conversation and activity")
-    func asyncSnapshotBuilder() async {
+    func asyncSnapshotBuilder() async throws {
         let task = makeTask(goal: "Original goal")
         let run = TaskRun(task: task)
         run.startedAt = Date(timeIntervalSince1970: 10)
@@ -1459,7 +1472,7 @@ extension TaskThreadSnapshotTests {
             )
         ]
 
-        let snapshot = await TaskThreadSnapshot.buildAsync(
+        let snapshot = try await TaskThreadSnapshot.buildAsync(
             input: TaskThreadSnapshotInput(
                 goal: task.goal,
                 createdAt: task.createdAt,
@@ -1479,6 +1492,138 @@ extension TaskThreadSnapshotTests {
             TaskToolSummary(name: "Read", count: 1)
         ])
         #expect(snapshot.activity(for: responseRun).toolResults.first?.payload == "read result")
+    }
+
+    @Test("Production snapshot builder cancels obsolete CPU work before serial replacement")
+    func productionSnapshotBuilderCancellationIsBounded() async throws {
+        await TaskThreadSnapshot.resetBuildConcurrencyStatsForTesting()
+        let task = makeTask(goal: "Obsolete transcript")
+        let payload = String(repeating: "streaming markdown | value | ```swift\n", count: 1_024)
+        let events = (0..<1_200).map { index in
+            makeEvent(
+                task: task,
+                type: "user.message",
+                payload: "\(index) \(payload)",
+                timestamp: Date(timeIntervalSince1970: Double(index)),
+                run: nil
+            )
+        }
+        let obsoleteInput = TaskThreadSnapshotInput(
+            goal: task.goal,
+            createdAt: task.createdAt,
+            events: events,
+            runs: []
+        )
+        let obsolete = Task {
+            try await TaskThreadSnapshot.buildAsync(input: obsoleteInput, fields: [:])
+        }
+
+        try await Task.sleep(for: .milliseconds(2))
+        obsolete.cancel()
+        let replacement = try await TaskThreadSnapshot.buildAsync(
+            input: TaskThreadSnapshotInput(goal: "Latest", createdAt: .now, events: [], runs: []),
+            fields: [:]
+        )
+
+        do {
+            _ = try await obsolete.value
+            Issue.record("The obsolete production snapshot build should terminate with cancellation")
+        } catch is CancellationError {
+            // Expected: the coordinator's cancellation reached CPU construction.
+        }
+        let stats = await TaskThreadSnapshot.buildConcurrencyStatsForTesting()
+        #expect(replacement.conversationItems.count == 1)
+        #expect(stats.active == 0)
+        #expect(stats.maximum == 1)
+        #expect(stats.cancelled == 1)
+    }
+
+    @Test("Huge single item in one window does not block another window executor")
+    func productionSnapshotExecutorsAreWindowIsolated() async throws {
+        let barrier = SnapshotBuildCancellationBarrier()
+        let blockedWindow = TaskThreadSnapshotBuildExecutor {
+            barrier.checkpoint()
+        }
+        let otherWindow = TaskThreadSnapshotBuildExecutor()
+        let task = makeTask(goal: "Huge transcript")
+        let hugePayload = String(repeating: "| cell | ```swift\n", count: 1_000_000)
+        let hugeEvent = makeEvent(
+            task: task,
+            type: "user.message",
+            payload: hugePayload,
+            timestamp: .now,
+            run: nil
+        )
+        let obsolete = Task {
+            try await blockedWindow.build(
+                input: TaskThreadSnapshotInput(
+                    goal: task.goal,
+                    createdAt: task.createdAt,
+                    events: [hugeEvent],
+                    runs: []
+                ),
+                fields: [:],
+                responsivenessContext: nil,
+                admittedAt: DispatchTime.now().uptimeNanoseconds
+            )
+        }
+
+        await Task.detached { barrier.waitUntilEntered() }.value
+        // Executor A is synchronously held inside its admitted build. Executor
+        // B must remain independently runnable while A cannot make progress.
+        let replacement = try await otherWindow.build(
+            input: TaskThreadSnapshotInput(goal: "Other window", createdAt: .now, events: [], runs: []),
+            fields: [:],
+            responsivenessContext: nil,
+            admittedAt: DispatchTime.now().uptimeNanoseconds
+        )
+
+        #expect(replacement.conversationItems.count == 1)
+        obsolete.cancel()
+        barrier.releaseBuild()
+        do {
+            _ = try await obsolete.value
+            Issue.record("The obsolete huge-item build should observe cancellation")
+        } catch is CancellationError {
+            // Expected.
+        }
+    }
+
+    @Test("Huge obsolete run output yields promptly to its serial replacement")
+    func hugeRunOutputCancellationYieldsToReplacement() async throws {
+        let executor = TaskThreadSnapshotBuildExecutor()
+        let task = makeTask(goal: "Huge run output")
+        let run = TaskRun(task: task)
+        run.output = String(repeating: "ordinary streamed output without protocol markers\n", count: 1_000_000)
+        task.runs.append(run)
+        let obsolete = Task {
+            try await executor.build(
+                input: TaskThreadSnapshotInput(task: task),
+                fields: [:],
+                responsivenessContext: nil,
+                admittedAt: DispatchTime.now().uptimeNanoseconds
+            )
+        }
+
+        try await Task.sleep(for: .milliseconds(2))
+        obsolete.cancel()
+        let replacementStartedAt = ContinuousClock.now
+        let replacement = try await executor.build(
+            input: TaskThreadSnapshotInput(goal: "Latest", createdAt: .now, events: [], runs: []),
+            fields: [:],
+            responsivenessContext: nil,
+            admittedAt: DispatchTime.now().uptimeNanoseconds
+        )
+        let replacementDuration = replacementStartedAt.duration(to: .now)
+
+        #expect(replacement.conversationItems.count == 1)
+        #expect(replacementDuration < .milliseconds(250))
+        do {
+            _ = try await obsolete.value
+            Issue.record("The obsolete huge run-output build should observe cancellation")
+        } catch is CancellationError {
+            // Expected.
+        }
     }
 
     @Test("Task snapshot input windows long histories for app rendering")

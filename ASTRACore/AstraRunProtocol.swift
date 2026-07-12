@@ -385,6 +385,61 @@ public enum AstraRunProtocolDisplaySanitizer {
         return removeOrphanProtocolFragments(from: visible)
     }
 
+    /// Cancellation-aware equivalent used by background transcript builds.
+    /// Feeding the existing streaming filter bounded chunks preserves the
+    /// exact display result while letting a superseded build stop between
+    /// chunks of a very large run output.
+    public static func clean(
+        _ text: String,
+        cancellationCheck: () throws -> Void
+    ) rethrows -> String {
+        guard try containsProtocolLeak(text, cancellationCheck: cancellationCheck) else { return text }
+
+        var filter = AstraRunProtocolTextFilter()
+        var visible = ""
+        var start = text.startIndex
+        while start < text.endIndex {
+            try cancellationCheck()
+            let end = text.index(start, offsetBy: 16_384, limitedBy: text.endIndex) ?? text.endIndex
+            visible += filter.process(text: String(text[start..<end])).outputs.visibleText
+            start = end
+        }
+        visible += filter.flush().outputs.visibleText
+        try cancellationCheck()
+        return try removeOrphanProtocolFragments(from: visible, cancellationCheck: cancellationCheck)
+    }
+
+    private static func containsProtocolLeak(
+        _ text: String,
+        cancellationCheck: () throws -> Void
+    ) rethrows -> Bool {
+        try containsAny(
+            ["ASTRA_EVENT", #"tepID":"#, "\"stepID\":", "\"planID\":", "\"verifiedBy\":"],
+            in: text,
+            cancellationCheck: cancellationCheck
+        )
+    }
+
+    private static func containsAny(
+        _ needles: [String],
+        in text: String,
+        cancellationCheck: () throws -> Void
+    ) rethrows -> Bool {
+        let overlapCount = max(0, (needles.map(\.count).max() ?? 1) - 1)
+        var carry = ""
+        var start = text.startIndex
+        while start < text.endIndex {
+            try cancellationCheck()
+            let end = text.index(start, offsetBy: 16_384, limitedBy: text.endIndex) ?? text.endIndex
+            let candidate = carry + text[start..<end]
+            if needles.contains(where: candidate.contains) { return true }
+            carry = String(candidate.suffix(overlapCount))
+            start = end
+        }
+        try cancellationCheck()
+        return false
+    }
+
     private static func removeOrphanProtocolFragments(from text: String) -> String {
         guard text.mayContainRunProtocolLeak else { return text }
 
@@ -417,6 +472,36 @@ public enum AstraRunProtocolDisplaySanitizer {
         if hadTrailingNewline, !cleaned.hasSuffix("\n") {
             cleaned += "\n"
         }
+        return cleaned
+    }
+
+    private static func removeOrphanProtocolFragments(
+        from text: String,
+        cancellationCheck: () throws -> Void
+    ) rethrows -> String {
+        guard try containsProtocolLeak(text, cancellationCheck: cancellationCheck) else { return text }
+
+        let hadTrailingNewline = text.hasSuffix("\n")
+        var kept: [Substring] = []
+        var isDroppingContinuation = false
+        for (index, line) in text.split(separator: "\n", omittingEmptySubsequences: false).enumerated() {
+            if index.isMultiple(of: 64) { try cancellationCheck() }
+            let trimmed = String(line).protocolDisplayCandidate
+            if isDroppingContinuation {
+                if trimmed.contains("}") { isDroppingContinuation = false }
+                continue
+            }
+            let dropReason = orphanProtocolDropReason(for: trimmed)
+            guard dropReason.shouldDrop else {
+                kept.append(line)
+                continue
+            }
+            if !dropReason.isComplete { isDroppingContinuation = true }
+        }
+
+        var cleaned = kept.map(String.init).joined(separator: "\n")
+        if hadTrailingNewline, !cleaned.hasSuffix("\n") { cleaned += "\n" }
+        try cancellationCheck()
         return cleaned
     }
 
