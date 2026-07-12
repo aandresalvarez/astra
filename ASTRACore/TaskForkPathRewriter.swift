@@ -13,8 +13,9 @@ public enum TaskForkPathRewriter {
                 let afterIsBoundary = range.upperBound == result.endIndex
                     || !isPathTokenCharacter(result[range.upperBound])
                 if beforeIsBoundary && afterIsBoundary {
+                    let lowerOffset = result.distance(from: result.startIndex, to: range.lowerBound)
                     result.replaceSubrange(range, with: replacement)
-                    searchStart = result.index(range.lowerBound, offsetBy: replacement.count)
+                    searchStart = result.index(result.startIndex, offsetBy: lowerOffset + replacement.count)
                 } else {
                     searchStart = range.upperBound
                 }

@@ -25,17 +25,21 @@ enum TaskForkPolicyService {
         let exitCode: Int32
     }
 
-    typealias GitRunner = (_ workingPath: String, _ arguments: [String]) -> GitCommandResult
+    typealias GitRunner = @Sendable (_ workingPath: String, _ arguments: [String]) -> GitCommandResult
 
     @MainActor
     static func resolve(
         for task: AgentTask,
         upToRunID targetRunID: UUID? = nil,
         fileManager: FileManager = .default,
-        gitRunner: GitRunner = runGit
-    ) -> TaskForkPolicy {
+        gitRunner: @escaping GitRunner = { workingPath, arguments in
+            runGit(workingPath: workingPath, arguments: arguments)
+        }
+    ) async -> TaskForkPolicy {
         let workingPath = TaskWorkspaceAccess(task: task).codeWorkingDirectory
-        let repository = repositorySnapshot(workingPath: workingPath, gitRunner: gitRunner)
+        let repository = await Task.detached {
+            repositorySnapshot(workingPath: workingPath, gitRunner: gitRunner)
+        }.value
         // Workspace-less tasks have no task folder to copy into, so the fork
         // path cannot materialize independent copies (AgentTaskForkService
         // throws `fileCopiesRequireWorkspace`). Don't offer the mode.

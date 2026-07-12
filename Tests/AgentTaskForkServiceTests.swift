@@ -266,7 +266,7 @@ struct AgentTaskForkServiceTests {
         let context = ModelContext(container)
         let workspace = Workspace(name: "Independent Files", primaryPath: root)
         let source = AgentTask(title: "Source", goal: "Revise the report", workspace: workspace)
-        source.inputs = [inputPath, directoryPath]
+        source.inputs = [inputPath, attachmentPath, directoryPath]
         source.goal = "Revise \(inputPath)"
         source.constraints = ["Preserve \(inputPath)"]
         source.acceptanceCriteria = ["Verify \(inputPath)"]
@@ -319,6 +319,7 @@ struct AgentTaskForkServiceTests {
         #expect(manifest.sourceInputs?.first { $0.sourcePath == inputPath }?.sha256 != nil)
         #expect(manifest.sourceAttachments?.contains { $0.sourcePath == providerSuggestedPath } == false)
         #expect(forked.inputs.contains(copiedInput))
+        #expect(manifest.sourceInputs?.first { $0.sourcePath == attachmentPath }?.localCopyPath == copiedAttachment)
         #expect(forked.inputs.contains(directoryPath))
         #expect(forked.goal.contains(copiedInput))
         #expect(forked.constraints.first?.contains(copiedInput) == true)
@@ -577,7 +578,7 @@ struct AgentTaskForkServiceTests {
         run.status = .completed
         run.output = "Read \(tildePath)"
         context.insert(run)
-        let event = TaskEvent(task: source, type: "user.message", payload: "Open \(tildePath)", run: run)
+        let event = TaskEvent(task: source, type: TaskPlanConversationEventTypes.userMessage, payload: "Attached files:\n- \(tildePath)", run: run)
         context.insert(event)
 
         let forked = try AgentTask.fork(

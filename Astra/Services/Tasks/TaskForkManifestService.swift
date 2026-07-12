@@ -104,11 +104,11 @@ enum TaskForkManifestService: Sendable {
                 cutoffDate: cutoffDate,
                 fileManager: fileManager
             ),
-            sourceInputs: source.inputs.compactMap {
-                fileReference(kind: "input", path: $0, fileManager: fileManager)
+            sourceInputs: source.inputs.map {
+                declaredFileReference(kind: "input", path: $0, fileManager: fileManager)
             },
-            sourceAttachments: dedupe(sourceAttachments).compactMap {
-                fileReference(kind: "attachment", path: $0, fileManager: fileManager)
+            sourceAttachments: dedupe(sourceAttachments).map {
+                declaredFileReference(kind: "attachment", path: $0, fileManager: fileManager)
             },
             forkMode: mode.rawValue,
             repository: repository.map {
@@ -416,24 +416,44 @@ enum TaskForkManifestService: Sendable {
         )
     }
 
+    private static func declaredFileReference(
+        kind: String,
+        path: String,
+        fileManager: FileManager
+    ) -> TaskForkManifest.FileReference {
+        fileReference(kind: kind, path: path, fileManager: fileManager)
+            ?? TaskForkManifest.FileReference(
+                kind: kind,
+                sourcePath: path,
+                localCopyPath: nil,
+                size: nil,
+                modifiedAt: nil,
+                sha256: nil,
+                originatingRunID: nil,
+                logicalPath: (path as NSString).lastPathComponent
+            )
+    }
+
     private static func snapshotFiles(
         in manifest: inout TaskForkManifest,
         forkFolder: String,
         fileManager: FileManager
     ) throws {
-        try snapshotReferences(&manifest.sourceOutputFiles, forkFolder: forkFolder, fileManager: fileManager)
-        try snapshotReferences(&manifest.sourceArtifacts, forkFolder: forkFolder, fileManager: fileManager)
+        var copiedPaths: [String: String] = [:]
+        try snapshotReferences(&manifest.sourceOutputFiles, forkFolder: forkFolder, copiedPaths: &copiedPaths, fileManager: fileManager)
+        try snapshotReferences(&manifest.sourceArtifacts, forkFolder: forkFolder, copiedPaths: &copiedPaths, fileManager: fileManager)
         var inputs = manifest.sourceInputs ?? []
-        try snapshotReferences(&inputs, forkFolder: forkFolder, fileManager: fileManager)
+        try snapshotReferences(&inputs, forkFolder: forkFolder, copiedPaths: &copiedPaths, fileManager: fileManager)
         manifest.sourceInputs = inputs
         var attachments = manifest.sourceAttachments ?? []
-        try snapshotReferences(&attachments, forkFolder: forkFolder, fileManager: fileManager)
+        try snapshotReferences(&attachments, forkFolder: forkFolder, copiedPaths: &copiedPaths, fileManager: fileManager)
         manifest.sourceAttachments = attachments
     }
 
     private static func snapshotReferences(
         _ references: inout [TaskForkManifest.FileReference],
         forkFolder: String,
+        copiedPaths: inout [String: String],
         fileManager: FileManager
     ) throws {
         for index in references.indices {
@@ -444,11 +464,18 @@ enum TaskForkManifestService: Sendable {
                   !isDirectory.boolValue else {
                 continue
             }
+            let copyKey = resolvedCopySource(for: resolvedSourcePath)
+            if let existingCopy = copiedPaths[copyKey] {
+                references[index].localCopyPath = existingCopy
+                references[index].sha256 = sha256(path: existingCopy, managedRoot: forkFolder, fileManager: fileManager)
+                continue
+            }
             let copyRoot = (forkFolder as NSString).appendingPathComponent("fork_sources")
             let kindRoot = (copyRoot as NSString).appendingPathComponent(references[index].kind)
             try fileManager.createDirectory(atPath: kindRoot, withIntermediateDirectories: true)
             let destination = uniqueDestination(for: resolvedSourcePath, in: kindRoot, fileManager: fileManager)
             try fileManager.copyItem(atPath: resolvedCopySource(for: resolvedSourcePath), toPath: destination)
+            copiedPaths[copyKey] = destination
             references[index].localCopyPath = destination
             references[index].sha256 = sha256(path: destination, managedRoot: forkFolder, fileManager: fileManager)
         }
@@ -494,7 +521,18 @@ enum TaskForkManifestService: Sendable {
                     fileManager: fileManager
                 )
             }
-    }
+        }
+        if let historyPath = manifest.checkpointSessionHistoryPath,
+           let history = try? broker.readString(
+               at: URL(fileURLWithPath: historyPath),
+               encoding: .utf8,
+               intent: accessIntent
+           ) {
+            let rewritten = TaskForkPathRewriter.rewrite(history, using: mapping)
+            if rewritten != history {
+                try rewritten.write(toFile: historyPath, atomically: true, encoding: .utf8)
+            }
+        }
     }
 
     private static func sha256(path: String, managedRoot: String? = nil, fileManager: FileManager) -> String? {

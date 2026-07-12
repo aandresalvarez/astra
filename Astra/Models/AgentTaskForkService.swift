@@ -188,6 +188,7 @@ public enum AgentTaskForkService {
             .sorted(by: eventOrdering)
         let attachments = attachmentPaths(in: eventsToFork.filter {
             $0.type == TaskEventTypes.Conversation.userMessage.rawValue
+                || $0.type == TaskPlanConversationEventTypes.userMessage
         })
         let forkedWorkspacePath = forked.workspace?.primaryPath ?? ""
         let forkFolder = TaskFolderResolvingSeam.required.taskFolder(
@@ -258,6 +259,11 @@ public enum AgentTaskForkService {
                 rewriteFileChanges(in: run, using: pathMapping)
             }
             manifestPathMapping = pathMapping
+            forked.inputs = deduplicatedPaths(forked.inputs + attachments.map {
+                pathMapping[$0] ?? pathMapping[normalizedInputPath($0)] ?? normalizedInputPath($0)
+            })
+        } else {
+            forked.inputs = deduplicatedPaths(forked.inputs + attachments)
         }
 
         var copiedEvents: [TaskEvent] = eventsToFork.map { sourceEvent in
@@ -333,6 +339,11 @@ public enum AgentTaskForkService {
 
     private static func normalizedInputPath(_ path: String) -> String {
         (path as NSString).expandingTildeInPath
+    }
+
+    private static func deduplicatedPaths(_ paths: [String]) -> [String] {
+        var seen: Set<String> = []
+        return paths.filter { seen.insert($0).inserted }
     }
 
     private static func rewriteFileChanges(in run: TaskRun, using mapping: [String: String]) {
