@@ -2399,6 +2399,7 @@ struct ContentView: View {
 
     private func handleSelectedTaskIdentityChanged(to task: AgentTask?) {
         clearGeneratedHTMLDiscoveryState()
+        browserSessionPolicyRefreshTask?.cancel(); browserSessionPolicyRefreshGate.begin()
         bindTaskScopedSessions(to: task?.id)
         syncBrowserPresentation()
         refreshMarkdownShelfAvailabilityForSelectedTask()
@@ -2406,7 +2407,6 @@ struct ContentView: View {
         refreshGeneratedHTMLAvailabilityForSelectedTask()
         restoreRememberedWorkspaceCanvasItemIfAvailable()
     }
-
     private func bindTaskScopedSessions(to taskID: UUID?) {
         currentBrowserSession.bindToTask(taskID)
         currentMarkdownSession.bindToTask(taskID)

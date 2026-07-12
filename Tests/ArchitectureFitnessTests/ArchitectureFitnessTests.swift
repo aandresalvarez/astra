@@ -1184,6 +1184,19 @@ struct ArchitectureFitnessTests {
         #expect(renderPolicy.contains("browserSessionPolicyRefreshGate.policy"))
     }
 
+    @Test("Task switches fail browser policy closed before session binding")
+    func taskSwitchInvalidatesBrowserPolicyBeforeBinding() throws {
+        let source = try String(
+            contentsOf: repositoryRoot().appendingPathComponent("Astra/Views/ContentView.swift"),
+            encoding: .utf8
+        )
+        let start = try #require(source.range(of: "private func handleSelectedTaskIdentityChanged"))
+        let body = source[start.lowerBound...]
+        let begin = try #require(body.range(of: "browserSessionPolicyRefreshGate.begin()"))
+        let bind = try #require(body.range(of: "bindTaskScopedSessions"))
+        #expect(begin.lowerBound < bind.lowerBound)
+    }
+
     @Test("Browser policy performs capability and package resolution after the detached boundary")
     func browserPolicyResolutionStaysBehindDetachedBoundary() throws {
         let root = try repositoryRoot()
