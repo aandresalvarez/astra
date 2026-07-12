@@ -747,7 +747,7 @@ private struct NormalizedInvalid: Encodable {
 }
 
 private extension [AstraRunProtocolTextFilterOutput] {
-    public var visibleText: String {
+    var visibleText: String {
         compactMap { output -> String? in
             guard case .text(let text) = output else { return nil }
             return text
@@ -756,7 +756,7 @@ private extension [AstraRunProtocolTextFilterOutput] {
 }
 
 private extension String {
-    public var mayContainRunProtocolLeak: Bool {
+    var mayContainRunProtocolLeak: Bool {
         contains("ASTRA_EVENT") ||
             contains(#"tepID":"#) ||
             contains("\"stepID\":") ||
@@ -764,7 +764,7 @@ private extension String {
             contains("\"verifiedBy\":")
     }
 
-    public var protocolDisplayCandidate: String {
+    var protocolDisplayCandidate: String {
         var candidate = trimmingCharacters(in: .whitespacesAndNewlines)
         for prefix in ["- ", "* ", "• ", "● ", "◦ ", "▪ ", "> "] {
             if candidate.hasPrefix(prefix) {
@@ -776,11 +776,11 @@ private extension String {
         return candidate
     }
 
-    public var nilIfEmpty: String? {
+    var nilIfEmpty: String? {
         isEmpty ? nil : self
     }
 
-    public var boundedPlanText: String? {
+    var boundedPlanText: String? {
         let trimmed = trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
         return String(trimmed.prefix(AstraRunProtocolLimits.maxPlanStepTextCharacters))

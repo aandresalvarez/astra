@@ -101,6 +101,17 @@ private enum ShelfMarkdownTaskBinding: Hashable {
     }
 }
 
+/// What a task binding wants the shelf to show when it becomes active again.
+/// Absence from the intent map means the binding never engaged with the
+/// shelf, so automatic content is welcome to fill the vacuum.
+private enum ShelfMarkdownSelectionIntent: Equatable {
+    /// The user was last looking at this document under the binding.
+    case document(String)
+    /// The user explicitly emptied the shelf under the binding; nothing loads
+    /// automatically for it until the user opens or selects a document.
+    case cleared
+}
+
 @MainActor
 final class ShelfMarkdownSession: ObservableObject {
     static let largeTextPreviewBytes: Int64 = 300_000
@@ -109,8 +120,12 @@ final class ShelfMarkdownSession: ObservableObject {
     @Published private(set) var documents: [ShelfMarkdownDocument] = []
     @Published private(set) var selectedDocumentID: String?
     @Published private(set) var boundTaskID: UUID?
-    private var preferredDocumentAutoLoadSuppressions: Set<ShelfMarkdownTaskBinding> = []
-    private var selectedDocumentIDsByTask: [ShelfMarkdownTaskBinding: String] = [:]
+    /// Paths the user explicitly closed. A dismissed document never comes back
+    /// through `loadAutomaticallyIfAllowed` — under any task binding — until a
+    /// manual `load(_:)` re-legitimizes it: closing a tab is a statement about
+    /// the document, not about whichever task happened to be bound.
+    private var dismissedDocumentPaths: Set<String> = []
+    private var selectionIntentsByTask: [ShelfMarkdownTaskBinding: ShelfMarkdownSelectionIntent] = [:]
 
     var selectedDocument: ShelfMarkdownDocument? {
         guard let selectedDocumentID else { return nil }
@@ -164,14 +179,16 @@ final class ShelfMarkdownSession: ObservableObject {
     func bindToTask(_ taskID: UUID?) {
         guard boundTaskID != taskID else { return }
         boundTaskID = taskID
-        let binding = ShelfMarkdownTaskBinding(taskID: taskID)
-        let restoredID = selectedDocumentIDsByTask[binding]
-        selectedDocumentID = documents.contains(where: { $0.id == restoredID }) ? restoredID : nil
+        if case .document(let restoredID)? = selectionIntentsByTask[ShelfMarkdownTaskBinding(taskID: taskID)],
+           documents.contains(where: { $0.id == restoredID }) {
+            selectedDocumentID = restoredID
+        } else {
+            selectedDocumentID = nil
+        }
     }
 
     func load(_ url: URL) {
-        let binding = ShelfMarkdownTaskBinding(taskID: boundTaskID)
-        preferredDocumentAutoLoadSuppressions.remove(binding)
+        dismissedDocumentPaths.remove(url.path)
         let documentID = url.path
         if let index = documents.firstIndex(where: { $0.id == documentID }),
            Self.reuseUnchangedImageDocument(documents[index], for: url) {
@@ -196,9 +213,17 @@ final class ShelfMarkdownSession: ObservableObject {
 
     @discardableResult
     func loadAutomaticallyIfAllowed(_ url: URL) -> Bool {
-        let binding = ShelfMarkdownTaskBinding(taskID: boundTaskID)
-        guard !preferredDocumentAutoLoadSuppressions.contains(binding),
-              fileURL?.path != url.path else { return false }
+        guard !dismissedDocumentPaths.contains(url.path) else { return false }
+        let intent = selectionIntentsByTask[ShelfMarkdownTaskBinding(taskID: boundTaskID)]
+        guard intent != .cleared, fileURL?.path != url.path else { return false }
+        if case .document(let chosenID)? = intent,
+           documents.contains(where: { $0.id == chosenID }),
+           documents.contains(where: { $0.id == url.path }) {
+            // Both the user's chosen document and the candidate are open tabs:
+            // re-selecting the candidate would override an explicit choice.
+            // A candidate that is not open yet is new content and may load.
+            return false
+        }
         load(url)
         return true
     }
@@ -210,23 +235,27 @@ final class ShelfMarkdownSession: ObservableObject {
 
     func closeDocument(_ id: String) {
         guard let index = documents.firstIndex(where: { $0.id == id }) else { return }
+        dismissedDocumentPaths.insert(id)
         let wasSelected = selectedDocumentID == id
         documents.remove(at: index)
 
         guard wasSelected else { return }
         if documents.isEmpty {
             selectDocumentID(nil)
-            preferredDocumentAutoLoadSuppressions.insert(ShelfMarkdownTaskBinding(taskID: boundTaskID))
         } else {
             let nextIndex = min(index, documents.count - 1)
             selectDocumentID(documents[nextIndex].id)
         }
     }
 
+    /// Single write point for selection: keeps the visible selection and the
+    /// bound task's intent in step. `nil` records an explicit clear, not a
+    /// missing value — only `closeDocument` passes it, when the user closes
+    /// the last open tab.
     private func selectDocumentID(_ id: String?) {
         selectedDocumentID = id
         let binding = ShelfMarkdownTaskBinding(taskID: boundTaskID)
-        selectedDocumentIDsByTask[binding] = id
+        selectionIntentsByTask[binding] = id.map(ShelfMarkdownSelectionIntent.document) ?? .cleared
     }
 
     func closeSelectedDocument() {
