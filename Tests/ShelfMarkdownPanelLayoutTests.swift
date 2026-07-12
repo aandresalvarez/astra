@@ -153,4 +153,43 @@ struct ShelfMarkdownPanelLayoutTests {
         #expect(presentation == .noWorkspacePaths)
         #expect(presentation.usesListSurface)
     }
+
+    @Test("a lone open file still shows its tab so it keeps a per-file close button")
+    func loneOpenFileShowsTabStrip() {
+        #expect(ShelfTabStripPolicy.showsTabStrip(openDocumentCount: 1))
+    }
+
+    @Test("the empty shelf shows no tab strip")
+    func emptyShelfShowsNoTabStrip() {
+        #expect(!ShelfTabStripPolicy.showsTabStrip(openDocumentCount: 0))
+    }
+
+    @Test("multiple open files keep the tab strip")
+    func multipleOpenFilesKeepTabStrip() {
+        #expect(ShelfTabStripPolicy.showsTabStrip(openDocumentCount: 2))
+    }
+
+    @Test("top-right toolbar stays visible for shelf controls without a workspace")
+    func topRightToolbarStaysVisibleForShelfControlsWithoutWorkspace() {
+        // The shelf pill is the Files shelf's only dismiss control, so the
+        // toolbar must not disappear while a shelf is open in a
+        // workspace-less task context.
+        #expect(topRightActions(hasWorkspace: false, canShowTextShelf: true).showsToolbar)
+        #expect(topRightActions(hasWorkspace: true, canShowTextShelf: false).showsToolbar)
+        #expect(!topRightActions(hasWorkspace: false, canShowTextShelf: false).showsToolbar)
+    }
+
+    private func topRightActions(hasWorkspace: Bool, canShowTextShelf: Bool) -> WorkspaceTopRightActions {
+        WorkspaceTopRightActions(
+            hasWorkspace: hasWorkspace,
+            canShowPlanShelf: false,
+            canShowTextShelf: canShowTextShelf,
+            canShowBrowserShelf: false,
+            canShowQueryShelf: false,
+            canShowAppPreviewShelf: false,
+            activeCanvasItem: canShowTextShelf ? .markdown : nil,
+            browserEngine: .embedded,
+            isRightRailVisible: false
+        )
+    }
 }

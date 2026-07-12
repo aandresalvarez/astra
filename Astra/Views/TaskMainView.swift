@@ -15,17 +15,19 @@ enum TaskComposerPresentation {
     static let decisionUtilitiesStayLeftAligned = true
     static let decisionSummaryVisibleInCompactRow = false
     static let decisionDockHorizontalPadding: CGFloat = 14
-    static let decisionDockTopPadding: CGFloat = 12
-    static let decisionDockBottomPadding: CGFloat = 8
+    static let decisionDockTopPadding: CGFloat = 8
+    static let decisionDockBottomPadding: CGFloat = 6
     static let decisionRowHorizontalPadding: CGFloat = 12
-    static let decisionRowVerticalPadding: CGFloat = 10
+    static let decisionRowVerticalPadding: CGFloat = 7
     static let decisionRowSpacing: CGFloat = 12
     static let decisionAccentWidth: CGFloat = 3
-    static let decisionAccentVerticalInset: CGFloat = 10
-    static let decisionIconFrame: CGFloat = 24
-    static let decisionIconFontSize: CGFloat = 20
-    static let decisionTitleFontSize: CGFloat = 14
+    static let decisionAccentVerticalInset: CGFloat = 5
+    static let decisionIconFrame: CGFloat = 16
+    static let decisionIconFontSize: CGFloat = 12
+    static let decisionTitleFontSize: CGFloat = 13
     static let decisionDetailFontSize: CGFloat = 12
+    static let decisionDetailsWidth: CGFloat = 540
+    static let decisionDetailsMaxHeight: CGFloat = 460
     static let inputHorizontalPadding: CGFloat = 14
     static let inputTopPadding: CGFloat = 12
     static let inputTopPaddingWithAttachments: CGFloat = 8
@@ -74,20 +76,22 @@ private extension View {
     }
 }
 
-/// Streaming agent text rendered as plain `Text` while the run is live. Isolated
-/// into its own `View` so SwiftUI can diff this subtree independently from the
-/// rest of the agent bubble — the bubble re-evaluates often as bucketed snapshot
-/// updates flow in, but only this view's body actually depends on `displayText`.
+/// Streaming agent text rendered through the shared markdown block pipeline so
+/// headings, lists, and code style while the run is live instead of popping in
+/// at completion. Isolated into its own `View` so SwiftUI can diff this subtree
+/// independently from the rest of the agent bubble — the bubble re-evaluates
+/// often as bucketed snapshot updates flow in, but only this view's body
+/// actually depends on `displayText`. Suggestion chips stay disabled until the
+/// turn completes.
 private struct StreamingAgentTextView: View {
     let displayText: String
 
     var body: some View {
-        Text(MarkdownTextView.normalizedStreamingText(displayText))
-            .font(Stanford.chatBody())
-            .foregroundStyle(Stanford.readingText)
-            .taskAnswerTextSelection(TaskAnswerTextSelectionPolicy.liveAnswerTextIsSelectable)
-            .lineSpacing(Stanford.chatBodyLineSpacing)
-            .frame(maxWidth: .infinity, alignment: .leading)
+        MarkdownTextView(
+            text: displayText,
+            isSelectable: TaskAnswerTextSelectionPolicy.liveAnswerTextIsSelectable
+        )
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -858,7 +862,10 @@ struct TaskMainView: View {
     private var taskControlBar: some View {
         HStack(spacing: 6) {
             filesButton
-            if diagnosticFileCount > 0 {
+            // While the dock is visible its Details inspector owns the
+            // diagnostics entry ("Open Diagnostics"); showing the header chip
+            // too reads as a second diagnostics button.
+            if diagnosticFileCount > 0, !shouldShowTaskDecisionDock {
                 diagnosticsButton
             }
             if task.status != .draft {
@@ -867,6 +874,12 @@ struct TaskMainView: View {
         }
         .controlSize(.small)
         .frame(height: 30, alignment: .center)
+        // Anchored here (not on the chip): the diagnostics index must still be
+        // able to present as the fallback surface when the chip is hidden.
+        .popover(isPresented: $isShowingDiagnosticsPopover, arrowEdge: .top) {
+            taskDiagnosticsPopover
+                .frame(width: 380)
+        }
     }
 
     private var filesButton: some View {
@@ -926,10 +939,6 @@ struct TaskMainView: View {
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
-        .popover(isPresented: $isShowingDiagnosticsPopover, arrowEdge: .top) {
-            taskDiagnosticsPopover
-                .frame(width: 380)
-        }
         .help("\(diagnosticFileCount) diagnostic file\(diagnosticFileCount == 1 ? "" : "s")")
         .accessibilityLabel("\(diagnosticFileCount) diagnostic files")
     }
@@ -1260,7 +1269,14 @@ struct TaskMainView: View {
 
                             ForEach(group.items) { item in
                                 Button {
-                                    NSWorkspace.shared.open(URL(fileURLWithPath: item.path))
+                                    // In-app first: text diagnostics open in the
+                                    // Files shelf viewer; only genuinely
+                                    // unviewable files leave the app.
+                                    isShowingDiagnosticsPopover = false
+                                    openGeneratedFile(
+                                        path: item.path,
+                                        destination: TaskGeneratedFiles.shelfDestination(for: item.path)
+                                    )
                                 } label: {
                                     HStack(spacing: 9) {
                                         Image(systemName: Formatters.fileIcon(for: item.path))
@@ -1407,7 +1423,7 @@ struct TaskMainView: View {
                 return "Planning assistant: \(text)"
             case .scheduleResult(let text, _):
                 return "Routine result: \(text)"
-            case .systemInfo(let text, _):
+            case .systemInfo(let text, _, _):
                 return "System: \(text)"
             case .recapResult(let text, _):
                 return "Recap: \(text)"
@@ -1444,7 +1460,7 @@ struct TaskMainView: View {
                 if includePlanningAndSystem {
                     lines.append("Routine result: \(text)")
                 }
-            case .systemInfo(let text, _):
+            case .systemInfo(let text, _, _):
                 if includePlanningAndSystem {
                     lines.append("System: \(text)")
                 }
@@ -2138,8 +2154,8 @@ struct TaskMainView: View {
             chatAgentBubble(run: run)
         case .scheduleResult(let text, let timestamp):
             scheduleResultBubble(text: text, timestamp: timestamp)
-        case .systemInfo(let text, let timestamp):
-            systemInfoBubble(text: text, timestamp: timestamp)
+        case .systemInfo(let text, let timestamp, let count):
+            systemInfoBubble(text: text, timestamp: timestamp, count: count)
         case .recapResult(let text, let timestamp):
             recapBubble(text: text, timestamp: timestamp)
         }
@@ -2325,52 +2341,56 @@ struct TaskMainView: View {
         .accessibilityLabel("Routine result: \(text)")
     }
 
-    private func systemInfoBubble(text: String, timestamp _: Date) -> some View {
+    private func systemInfoBubble(text: String, timestamp _: Date, count: Int = 1) -> some View {
         timelineEventRow(
             text: text,
             icon: "info.circle",
-            tint: Stanford.coolGrey
+            tint: Stanford.coolGrey,
+            count: count
         )
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("System notice: \(text)")
+        .accessibilityLabel(count > 1 ? "System notice, repeated \(count) times: \(text)" : "System notice: \(text)")
     }
 
+    /// System notes render as quiet, left-aligned metadata lines in the
+    /// content column - no flanking rules, no truncation - so they read as
+    /// part of the conversation flow instead of interrupting it.
     private func timelineEventRow(
         text: String,
         icon: String,
-        tint: Color
+        tint: Color,
+        count: Int = 1
     ) -> some View {
-        HStack(alignment: .center, spacing: 9) {
-            Rectangle()
-                .fill(Stanford.sandstone.opacity(0.36))
-                .frame(height: 1)
-                .frame(maxWidth: 60)
-
-            // `.top`, not `.firstTextBaseline`: the label is selectable, so a
-            // baseline-aligned HStack would live-lock the layout engine on the
-            // hosted SelectionOverlay's baseline query. See the list-item case in
-            // MarkdownTextView for the full explanation.
-            HStack(alignment: .top, spacing: 6) {
-                Image(systemName: icon)
-                    .font(Stanford.ui(11, weight: .medium))
-                    .foregroundStyle(tint)
-                Text(MarkdownTextView.markdownAttributed(text))
-                    .font(Stanford.chatMeta(12))
+        // `.top`, not `.firstTextBaseline`: the label is selectable, so a
+        // baseline-aligned HStack would live-lock the layout engine on the
+        // hosted SelectionOverlay's baseline query. See the list-item case in
+        // MarkdownTextView for the full explanation.
+        HStack(alignment: .top, spacing: 7) {
+            Image(systemName: icon)
+                .font(Stanford.ui(11, weight: .medium))
+                .foregroundStyle(tint)
+                .frame(width: 14)
+                .padding(.top, 2)
+            Text(MarkdownTextView.markdownAttributed(text))
+                .font(Stanford.chatMeta(12))
+                .foregroundStyle(Stanford.coolGrey)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+                .tint(Stanford.link)
+            if count > 1 {
+                Text("\u{00D7}\(count)")
+                    .font(Stanford.caption(10).weight(.semibold))
                     .foregroundStyle(Stanford.coolGrey)
-                    .lineLimit(2)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .textSelection(.enabled)
-                    .tint(Stanford.link)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 1)
+                    .background(Color.primary.opacity(0.05))
+                    .clipShape(Capsule())
+                    .padding(.top, 1)
             }
-            .padding(.horizontal, 9)
-            .padding(.vertical, 5)
-
-            Rectangle()
-                .fill(Stanford.sandstone.opacity(0.36))
-                .frame(height: 1)
-                .frame(maxWidth: .infinity)
+            Spacer(minLength: 0)
         }
-        .padding(.horizontal, 14)
+        .padding(.vertical, 2)
+        .frame(maxWidth: Stanford.chatParagraphMaxWidth, alignment: .leading)
     }
 
     private func recapBubble(text: String, timestamp _: Date) -> some View {
@@ -2548,7 +2568,7 @@ struct TaskMainView: View {
                 .padding(.top, 2)
             }
 
-            if shouldShowRunActivityDisclosure(runActivityPresentation) {
+            if shouldShowRunActivityDisclosure(runActivityPresentation), !runDetailsLiveInDock(run) {
                 runActivityDisclosure(
                     run: run,
                     presentation: runActivityPresentation,
@@ -2722,19 +2742,26 @@ struct TaskMainView: View {
                     runActivityDisclosureState.toggle(runID: run.id, presentation: presentation)
                 }
             } label: {
-                HStack(spacing: 7) {
+                HStack(alignment: .top, spacing: 7) {
                     Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
                         .font(Stanford.ui(10))
                         .frame(width: 12)
+                        .padding(.top, 2)
                     if run.status != .running {
                         Image(systemName: runActivitySummaryIcon(run: run, notices: notices))
                             .font(Stanford.ui(12))
+                            .padding(.top, 1)
                     }
                     VStack(alignment: .leading, spacing: 2) {
-                        HStack(spacing: 6) {
+                        HStack(alignment: .top, spacing: 6) {
+                            // Live status messages must stay readable in full;
+                            // truncating "Running github_search_prs…" hides the
+                            // one thing the user is watching for.
                             Text(title)
                                 .font(Stanford.chatSection())
-                                .lineLimit(1)
+                                .lineLimit(run.status == .running ? 3 : 1)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .multilineTextAlignment(.leading)
                                 .layoutPriority(1)
                             if run.status == .running {
                                 TimelineView(.periodic(from: .now, by: 1)) { context in
@@ -2748,6 +2775,20 @@ struct TaskMainView: View {
                             presentation: presentation,
                             notices: notices
                         )
+                        // The agent's newest narration, in full, while the run
+                        // is live and the disclosure is collapsed. Expanding
+                        // shows the complete Progress updates list instead.
+                        if run.status == .running,
+                           !isExpanded,
+                           let latestUpdate = presentation.progressMessages.last {
+                            Text(latestUpdate.text)
+                                .font(Stanford.chatMeta())
+                                .foregroundStyle(.secondary)
+                                .lineLimit(4)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .multilineTextAlignment(.leading)
+                                .padding(.top, 1)
+                        }
                     }
                     Spacer(minLength: 8)
                 }
@@ -2765,10 +2806,6 @@ struct TaskMainView: View {
         .padding(.vertical, 5)
         .background(Color.primary.opacity(TaskThreadStatusChrome.runActivityBackgroundOpacity))
         .clipShape(RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: Stanford.radiusMedium, style: .continuous)
-                .stroke(Color.primary.opacity(0.055), lineWidth: 1)
-        )
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(title). \(accessibilityParts.joined(separator: ", "))")
         .transition(chatStatusBlockTransition)
@@ -3088,12 +3125,7 @@ struct TaskMainView: View {
     }
 
     private func runNoticeLooksPolicyBlocked(_ notice: TaskRunNotice) -> Bool {
-        guard notice.type == "error" else { return false }
-        let payload = notice.payload.lowercased()
-        return payload.contains("violated the run policy") ||
-            payload.contains("provider allow-list") ||
-            payload.contains("policy violation") ||
-            payload.contains("not in the provider allow-list")
+        notice.type == "error" && RunIssuePresentation.looksPolicyBlocked(notice.payload)
     }
 
     private func runPolicySummaryView(_ policy: PolicySummaryPresentation, for run: TaskRunSnapshot) -> some View {
@@ -3304,10 +3336,16 @@ struct TaskMainView: View {
         prominence: RunNoticeProminence
     ) -> some View {
         let presentation = runNoticePresentation(for: notice)
-        let body = runNoticeBody(for: notice)
-        let isCollapsible = prominence == .actionable
+        // Single source of truth with the run-details disclosure: the banner
+        // shows the issue's summary and raw payload, and the disclosure no
+        // longer repeats them.
+        let issue = RunIssuePresentation(notice: notice)
+        let body = issue.summary
+        // Error banners are the run's only visible explanation; they stay
+        // expanded with no collapse affordance. Warnings remain collapsible.
+        let isCollapsible = prominence == .actionable && !TaskRunNoticePresentationRules.rendersFixedExpanded(notice)
         let isExpanded = !isCollapsible || expandedRunNotices.contains(notice.id)
-        let rawDetail = isExpanded ? runNoticeRawDetail(for: notice, body: body) : nil
+        let rawDetail = isExpanded ? issue.rawPayload : nil
         let strokeOpacity = prominence == .actionable ? 0.12 : 0.08
 
         return VStack(alignment: .leading, spacing: isExpanded ? 6 : 0) {
@@ -3596,103 +3634,11 @@ struct TaskMainView: View {
         }
     }
 
-    private func runNoticeBody(for notice: TaskRunNotice) -> String {
-        switch notice.type {
-        case "budget.warning":
-            return budgetWarningBody(for: notice.payload)
-        case "budget.exceeded":
-            return "This task exceeded its budget. Resume with a higher budget or retry with a narrower request."
-        case "permission.approval.requested":
-            return permissionApprovalBody(for: notice.payload)
-        case "error" where runNoticeLooksPolicyBlocked(notice):
-            return "ASTRA stopped this run because the requested action is outside the current policy. Review the policy or retry with broader permissions."
-        case "error":
-            return providerErrorBody(for: notice.payload)
-        default:
-            break
-        }
-
-        guard notice.type == "astra.permission_summary",
-              let data = notice.payload.data(using: .utf8),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return notice.payload
-        }
-
-        let status = json["status"] as? String ?? "unknown"
-        let stopReason = json["stopReason"] as? String ?? "unknown"
-        let tools = json["toolUseCount"] as? Int ?? 0
-        let denied = json["deniedCount"] as? Int ?? 0
-        let files = json["fileChangeCount"] as? Int ?? 0
-        let toolsUsed = (json["toolsUsed"] as? [String] ?? []).prefix(6).joined(separator: ", ")
-        let commands = (json["commandsRun"] as? [String] ?? []).prefix(3).joined(separator: " | ")
-        let domains = (json["externalDomains"] as? [String] ?? []).prefix(4).joined(separator: ", ")
-        let envKeys = (json["environmentKeyNames"] as? [String] ?? []).prefix(6).joined(separator: ", ")
-        let approvals = (json["approvalsGranted"] as? [String] ?? []).prefix(3).joined(separator: ", ")
-        let broad = (json["usedBroadProviderPermissions"] as? Bool ?? false) ? "yes" : "no"
-        let escalated = (json["exceededInitialPermissionLevel"] as? Bool ?? false) ? "yes" : "no"
-
-        var parts = [
-            "Status: \(status)",
-            "Stop reason: \(stopReason)",
-            "Tools used: \(tools)",
-            "Permission denials/requests: \(denied)",
-            "Files changed: \(files)",
-            "Broad provider permissions: \(broad)",
-            "Exceeded initial permission level: \(escalated)"
-        ]
-        if !toolsUsed.isEmpty { parts.append("Observed tools: \(toolsUsed)") }
-        if !commands.isEmpty { parts.append("Commands: \(commands)") }
-        if !domains.isEmpty { parts.append("External domains: \(domains)") }
-        if !envKeys.isEmpty { parts.append("Env keys: \(envKeys)") }
-        if !approvals.isEmpty { parts.append("Approvals: \(approvals)") }
-        return parts.joined(separator: ". ") + "."
-    }
-
-    private func permissionApprovalBody(for payload: String) -> String {
-        RuntimePermissionApprovalText(payload: payload).noticeBody
-    }
-
     private var pendingApprovalSurfaceSummary: String {
         if let payload = latestRuntimePermissionRequestPayload {
             return RuntimePermissionApprovalText(payload: payload).compactSummary
         }
         return "\(task.resolvedRuntimeID.displayName) needs one-time permission before it can continue."
-    }
-
-    private func budgetWarningBody(for payload: String) -> String {
-        let lower = payload.lowercased()
-        if lower.contains("launch estimate") {
-            return "This task may use more budget than expected. ASTRA continued because budget enforcement is set to warning mode."
-        }
-        if lower.contains("warning mode") || lower.contains("warning only") {
-            return "This task has used more budget than expected. ASTRA kept it running because budget enforcement is set to warning mode."
-        }
-        return "This task may use more budget than expected. ASTRA continued because budget enforcement is set to warning mode."
-    }
-
-    private func providerErrorBody(for payload: String) -> String {
-        let lower = payload.lowercased()
-        if lower.contains("exited with code") || lower.contains("failed before astra received") {
-            return "The provider stopped before returning a visible response. Retry the task or open run details for the technical output."
-        }
-        if payload.isEmpty {
-            return "The provider stopped unexpectedly. Retry the task or open run details for diagnostics."
-        }
-        return String(payload.prefix(220))
-    }
-
-    private func runNoticeRawDetail(for notice: TaskRunNotice, body: String) -> String? {
-        guard !notice.payload.isEmpty,
-              notice.payload != body else {
-            return nil
-        }
-
-        switch notice.type {
-        case "budget.warning", "budget.exceeded", "error", "permission.approval.requested":
-            return notice.payload
-        default:
-            return nil
-        }
     }
 
     private func forkTask(from run: TaskRunSnapshot) {
@@ -4314,7 +4260,9 @@ struct TaskMainView: View {
             TaskDecisionDockView(
                 presentation: presentation,
                 isExpanded: $isTaskDecisionDetailsExpanded,
-                onAction: handleTaskDecisionDockAction
+                onAction: handleTaskDecisionDockAction,
+                onOpenDiagnostics: diagnosticFileCount > 0 ? { openDiagnosticsInOwnView() } : nil,
+                extendedDetails: { dockExtendedRunDetails }
             )
             .onAppear {
                 deferTaskViewMutation {
@@ -4325,6 +4273,70 @@ struct TaskMainView: View {
                 deferTaskViewMutation {
                     isTaskDecisionDetailsExpanded = false
                 }
+            }
+        }
+    }
+
+    /// The full run-activity sections for EVERY run, newest first, shown
+    /// inside the dock's Details popover — the single run inspector. Multi-run
+    /// threads get a compact header above each run so an older blocked run's
+    /// policy/stats stay reachable after a retry completes.
+    @ViewBuilder
+    private var dockExtendedRunDetails: some View {
+        let inspectableRuns = currentThreadSnapshot.sortedRuns
+            .enumerated()
+            .filter { currentThreadSnapshot.activityPresentation(for: $0.element).hasVisibleDetails }
+            .reversed()
+        ForEach(Array(inspectableRuns), id: \.element.id) { entry in
+            VStack(alignment: .leading, spacing: 6) {
+                if inspectableRuns.count > 1 {
+                    Label(
+                        "Run \(entry.offset + 1) · \(runStatusLabel(entry.element))",
+                        systemImage: "arrow.triangle.2.circlepath"
+                    )
+                    .font(Stanford.caption(11).weight(.semibold))
+                    .foregroundStyle(.secondary)
+                }
+                runActivityDetails(
+                    run: entry.element,
+                    presentation: currentThreadSnapshot.activityPresentation(for: entry.element)
+                )
+            }
+        }
+    }
+
+    private func runDetailsLiveInDock(_ run: TaskRunSnapshot) -> Bool {
+        TaskRunNoticePresentationRules.detailsLiveInDock(
+            runStatus: run.status,
+            dockVisible: shouldShowTaskDecisionDock
+        )
+    }
+
+    /// Diagnostics open inside ASTRA: every text diagnostic loads as a tab in
+    /// the Files shelf viewer. The header index popover is only the fallback
+    /// when no shelf-viewable diagnostics exist (or the shelf is unavailable).
+    private func openDiagnosticsInOwnView() {
+        Task {
+            await recomputeDiagnosticFileGroups()
+            let allItems = diagnosticFileGroupsCache.flatMap(\.items)
+            let shelfItems = allItems.filter {
+                TaskGeneratedFiles.shelfDestination(for: $0.path) == .files
+            }
+            // Only open directly when EVERY diagnostic is a Files-shelf text
+            // file. Mixed destinations (.sql/.html route to other shelves),
+            // nothing viewable, or no shelf fall back to the index popover,
+            // which lists every diagnostic and opens each row in-app; opening
+            // only the Files subset would strand the rest with the header
+            // chip hidden.
+            guard let onOpenGeneratedFile,
+                  canOpenGeneratedFileInShelf(.files),
+                  !shelfItems.isEmpty,
+                  shelfItems.count == allItems.count else {
+                isShowingDiagnosticsPopover = true
+                return
+            }
+            for item in shelfItems {
+                onOpenGeneratedFile(item.path)
             }
         }
     }
@@ -4367,25 +4379,7 @@ struct TaskMainView: View {
     private func reportCurrentFailure() {
         guard let onReportProblem else { return }
         let run = latestRun
-        let context = run.map {
-            FeedbackTaskFailureReportContextBuilder.make(
-                runtimeID: $0.runtimeID,
-                providerVersion: $0.providerVersion,
-                status: $0.status,
-                exitCode: $0.exitCode,
-                stopReason: $0.stopReason, startedAt: $0.startedAt,
-                completedAt: $0.completedAt
-            )
-        } ?? FeedbackTaskFailureReportContext(
-            prefill: FeedbackReportPrefill(
-                intendedOutcome: "Complete the task",
-                actualResult: "The provider run stopped before completing.",
-                expectedResult: "The provider run completes successfully",
-                workBlocked: true
-            ),
-            runtimeEvidence: nil,
-            taskFailureOccurredAt: nil
-        )
+        let context = FeedbackTaskFailureSnapshotContextBuilder.make(run: run)
         onReportProblem(context.prefill, run?.id, context.runtimeEvidence, context.taskFailureOccurredAt)
     }
 
@@ -4963,6 +4957,7 @@ struct TaskMainView: View {
                     runtimeReadinessStates: runtimeReadinessStates,
                     taskStatus: task.status,
                     taskStatusOverride: composerTaskStatusOverride,
+                    showsTaskStatusPill: !shouldShowTaskDecisionDock,
                     isRunning: task.status == .running || isPlanning,
                     hasInput: hasInput,
                     onAttachFile: { attachFile() },

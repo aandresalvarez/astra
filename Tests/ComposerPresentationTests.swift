@@ -24,10 +24,10 @@ struct ComposerPresentationTests {
         #expect(TaskComposerPresentation.decisionUtilitiesStayLeftAligned == true)
         #expect(TaskComposerPresentation.decisionSummaryVisibleInCompactRow == false)
         #expect(TaskComposerPresentation.decisionRowHorizontalPadding == 12)
-        #expect(TaskComposerPresentation.decisionRowVerticalPadding == 10)
+        #expect(TaskComposerPresentation.decisionRowVerticalPadding == 7)
         #expect(TaskComposerPresentation.decisionAccentWidth == 3)
-        #expect(TaskComposerPresentation.decisionIconFrame == 24)
-        #expect(TaskComposerPresentation.decisionDockBottomPadding == 8)
+        #expect(TaskComposerPresentation.decisionIconFrame == 16)
+        #expect(TaskComposerPresentation.decisionDockBottomPadding == 6)
     }
 
     @Test("bottom toolbar adds borders without expanding control scale")

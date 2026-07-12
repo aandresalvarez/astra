@@ -5,6 +5,16 @@ of a task conversation. It translates the HTML mockup in
 `docs/design-system/task-decision-placement-mockup.html` into ASTRA's SwiftUI
 implementation rules.
 
+> Amendment (2026-07-10): the dock's `Details` popover is now the single run
+> inspector for the latest finished run. It hosts the full run-activity
+> sections (permissions, issues, progress, tools, files, policy, technical
+> output, stats — injected by `TaskMainView`) plus an `Open Diagnostics`
+> footer, and the thread suppresses its own run-details disclosure for that
+> run (`TaskRunNoticePresentationRules.detailsLiveInDock`). Older runs and
+> live runs keep their inline disclosures. This inverts the original
+> "suppress the dock Details when the thread shows run details" rule — the
+> no-duplication goal is unchanged; ownership moved to the dock.
+
 The dock is not a replacement for the conversation, run details, Mission
 Control, artifact cards, or task state evidence. It is the final decision
 surface for the current task state.

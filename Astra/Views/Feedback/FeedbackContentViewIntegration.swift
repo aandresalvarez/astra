@@ -25,6 +25,34 @@ enum FeedbackCrashOfferReadiness {
     }
 }
 
+/// Adapts the immutable task-thread projection to the provider-neutral
+/// feedback context without making the large task view own mapping policy.
+enum FeedbackTaskFailureSnapshotContextBuilder {
+    static func make(run: TaskRunSnapshot?) -> FeedbackTaskFailureReportContext {
+        guard let run else {
+            return FeedbackTaskFailureReportContext(
+                prefill: FeedbackReportPrefill(
+                    intendedOutcome: "Complete the task",
+                    actualResult: "The provider run stopped before completing.",
+                    expectedResult: "The provider run completes successfully",
+                    workBlocked: true
+                ),
+                runtimeEvidence: nil,
+                taskFailureOccurredAt: nil
+            )
+        }
+        return FeedbackTaskFailureReportContextBuilder.make(
+            runtimeID: run.runtimeID,
+            providerVersion: run.providerVersion,
+            status: run.status,
+            exitCode: run.exitCode,
+            stopReason: run.stopReason,
+            startedAt: run.startedAt,
+            completedAt: run.completedAt
+        )
+    }
+}
+
 extension ContentView {
     func presentGeneralFeedback(from entryPoint: FeedbackReportEntryPoint) {
         Task { @MainActor in

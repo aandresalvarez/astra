@@ -159,6 +159,18 @@ struct AntigravityCLIRuntimeTests {
         ) != nil)
     }
 
+    @Test("Plain text parser preserves blank lines as paragraph boundaries")
+    func plainTextParserPreservesBlankLinesAsParagraphBoundaries() {
+        let recordingEvents = AntigravityCLIRuntime.parsePlainTextAgentEvents(
+            line: "",
+            appendingNewline: true
+        )
+        #expect(recordingEvents == [.text(text: "\n")])
+
+        // The monitor path never appends newlines and must keep ignoring blanks.
+        #expect(AntigravityCLIRuntime.parsePlainTextAgentEvents(line: "   ") == [])
+    }
+
     @Test("Model list parser keeps agy models lines verbatim")
     func modelListParserKeepsAgyModelsLinesVerbatim() {
         let output = """

@@ -876,7 +876,7 @@ struct ContentView: View {
                 onCheckForUpdates: appUpdateController.checkForUpdatesFromButton
             )
 
-            if topRightActions.hasWorkspace {
+            if topRightActions.showsToolbar {
                 ToolbarItem(placement: .primaryAction) {
                     WorkspaceTopRightToolbar(
                         actions: topRightActions,
@@ -3254,7 +3254,6 @@ private struct ContentDetailAreaView: View {
         case .markdown:
             ShelfMarkdownPanelView(
                 session: markdownSession,
-                isPresented: canvasPresentedBinding(for: .markdown),
                 isPinnedToTask: $isMarkdownPinnedToTask,
                 workspace: effectiveWorkspace,
                 task: selectedTask,

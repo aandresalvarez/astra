@@ -1373,7 +1373,7 @@ struct ArchitectureFitnessTests {
 
         #expect(completedAgentMarkdownView.contains("TaskAnswerTextSelectionPolicy.completedAnswerMarkdownIsSelectable"))
         #expect(!completedAgentMarkdownView.contains(".textSelection(.enabled)"))
-        #expect(streamingAgentTextView.contains("taskAnswerTextSelection(TaskAnswerTextSelectionPolicy.liveAnswerTextIsSelectable)"))
+        #expect(streamingAgentTextView.contains("isSelectable: TaskAnswerTextSelectionPolicy.liveAnswerTextIsSelectable"))
         #expect(!streamingAgentTextView.contains(".textSelection(.enabled)"))
         #expect(listItemCase.contains("HStack(alignment: .top"))
         #expect(!listItemCase.contains("HStack(alignment: .firstTextBaseline"))
