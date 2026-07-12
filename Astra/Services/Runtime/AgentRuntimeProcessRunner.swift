@@ -51,6 +51,7 @@ protocol AgentRuntimeProcessRunning: AnyObject {
         runID: UUID?,
         launchResourcePlan: TaskLaunchResourcePlan?,
         capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot?,
+        runtimeRequirements: TaskRuntimeRequirementSet?,
         liveApprovalsEnabled: Bool,
         noSemanticProgressTimeoutSeconds: TimeInterval?,
         onInteractiveAsk: ((AgentInteractiveAskRequest) async -> InteractiveAskOutcome)?,
@@ -472,6 +473,7 @@ final class AgentRuntimeProcessRunner {
         runID: UUID? = nil,
         launchResourcePlan: TaskLaunchResourcePlan? = nil,
         capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot? = nil,
+        runtimeRequirements: TaskRuntimeRequirementSet? = nil,
         liveApprovalsEnabled: Bool = false,
         noSemanticProgressTimeoutSeconds: TimeInterval? = nil,
         onInteractiveAsk: ((AgentInteractiveAskRequest) async -> InteractiveAskOutcome)? = nil,
@@ -493,7 +495,8 @@ final class AgentRuntimeProcessRunner {
             runID: runID,
             liveApprovalsEnabled: liveApprovalsEnabled && onInteractiveAsk != nil,
             launchResourcePlan: launchResourcePlan,
-            capabilityResolutionSnapshot: capabilityResolutionSnapshot
+            capabilityResolutionSnapshot: capabilityResolutionSnapshot,
+            runtimeRequirements: runtimeRequirements
         )
         if let sharedStateKey = adapter.sharedLaunchStateKey(context: launchContext) {
             do {

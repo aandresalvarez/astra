@@ -26,7 +26,15 @@ struct CopilotMCPLaunchProjection {
         executionEnvironment: WorkspaceExecutionEnvironment,
         contextText: String,
         taskEnvironment: [String: String] = [:],
-        capabilities: CopilotCLICapabilities
+        capabilities: CopilotCLICapabilities,
+        // When the caller already ran this task through
+        // AgentRuntimeLaunchRuntimeResolver.resolve(), pass its
+        // TaskRuntimeRequirementSet here so the MCP server this projection
+        // actually attaches (and the host-control-tool list Copilot's launch
+        // guard reads back out of hostControlEnvironment) reuses that single
+        // derivation instead of independently re-deriving it. See
+        // Tests/HostControlRequirementDerivationConsistencyTests.swift.
+        runtimeRequirements: TaskRuntimeRequirementSet? = nil
     ) -> CopilotMCPLaunchProjection {
         let usesDockerWorkspaceExecutor = DockerWorkspaceMCPProjection.isEnabled(for: executionEnvironment)
         var browserServerProjected = false
@@ -51,7 +59,8 @@ struct CopilotMCPLaunchProjection {
                 currentDirectory: workspacePath,
                 runID: runID,
                 taskEnvironment: taskEnvironment,
-                contextText: contextText
+                contextText: contextText,
+                precomputedRuntimeRequirements: runtimeRequirements
             )
             if let hostControlServer = HostControlPlaneMCPProjection.resolvedServer(
                 task: task,
@@ -59,7 +68,8 @@ struct CopilotMCPLaunchProjection {
                 currentDirectory: workspacePath,
                 runID: runID,
                 taskEnvironment: taskEnvironment.merging(hostControlEnvironment) { current, _ in current },
-                contextText: contextText
+                contextText: contextText,
+                precomputedRuntimeRequirements: runtimeRequirements
             ) {
                 servers.append(hostControlServer)
             }
@@ -84,7 +94,8 @@ struct CopilotMCPLaunchProjection {
             currentDirectory: workspacePath,
             runID: runID,
             taskEnvironment: taskEnvironment,
-            contextText: contextText
+            contextText: contextText,
+            precomputedRuntimeRequirements: runtimeRequirements
         )
         let explicitMCPEnvironment = taskEnvironment
             .merging(workspaceExecutorEnvironment) { current, _ in current }

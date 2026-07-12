@@ -608,6 +608,7 @@ final class AgentRuntimeWorker {
             permissionPolicy: launchPermissionPolicy,
             executionPolicy: executionPolicy,
             capabilityResolutionSnapshot: capabilityResolutionSnapshot,
+            precomputedRuntimeRequirements: appliedRuntime.requirements,
             runtimeConfiguration: runtimeConfiguration,
             preflightCache: PreflightCache(checker: environmentHealthChecker),
             mcpDetectExecutable: mcpServerExecutableDetector,
@@ -862,6 +863,7 @@ final class AgentRuntimeWorker {
             runID: run.id,
             launchResourcePlan: launchResourcePlan,
             capabilityResolutionSnapshot: capabilityResolutionSnapshot,
+            runtimeRequirements: appliedRuntime.requirements,
             liveApprovalsEnabled: liveApprovalsEnabled,
             noSemanticProgressTimeoutSeconds: semanticProgressTimeout,
             onInteractiveAsk: Self.interactiveAskHandler(

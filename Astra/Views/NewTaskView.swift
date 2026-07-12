@@ -13,6 +13,14 @@ struct NewTaskView: View {
     @State private var title = ""
     @State private var goal = ""
     @State private var runtimeID = TaskExecutionDefaults.runtime.rawValue
+    /// True once the user has changed the runtime picker themselves during
+    /// this sheet's lifetime (as opposed to `onAppear` applying the
+    /// workspace/app default) — mirrors `TaskComposerCoordinator
+    /// .applyRuntimeSwitch`'s "explicit pick" semantics for a task that
+    /// doesn't exist yet. Gated on `hasAppliedInitialRuntimeDefault` so the
+    /// `onAppear` default application itself never counts as explicit.
+    @State private var runtimeExplicitlySelected = false
+    @State private var hasAppliedInitialRuntimeDefault = false
     @State private var model = TaskExecutionDefaults.model
     @State private var tokenBudget = TaskExecutionDefaults.tokenBudget
     @State private var policyLevelRaw = AgentPolicyLevel.review.rawValue
@@ -86,6 +94,9 @@ struct NewTaskView: View {
                             cache: runtimeModelCache
                         )
                         model = resolvedModel
+                        if hasAppliedInitialRuntimeDefault {
+                            runtimeExplicitlySelected = true
+                        }
                         AppLogger.breadcrumb(action: "new_task_runtime_changed", category: "UI", fields: [
                             "source": "new_task_sheet",
                             "runtime": runtime.rawValue,
@@ -194,6 +205,7 @@ struct NewTaskView: View {
                 workspace: workspace,
                 globalDefaultRaw: settings.defaultPolicyLevelRaw
             ).userFacingLevel.rawValue
+            hasAppliedInitialRuntimeDefault = true
         }
         .onChange(of: appSettings.runtimeSettings.modelCacheSignature) {
             alignModelWithRuntimeCache()
@@ -285,6 +297,7 @@ struct NewTaskView: View {
             isolationStrategy: isolationStrategy,
             validationStrategy: validationStrategy
         )
+        task.runtimeExplicitlySelected = runtimeExplicitlySelected
 
         if !constraintsText.isEmpty {
             task.constraints = constraintsText

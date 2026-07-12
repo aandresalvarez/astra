@@ -678,6 +678,16 @@ struct AgentRuntimeProcessLaunchContext {
     let liveApprovalsEnabled: Bool
     let launchResourcePlan: TaskLaunchResourcePlan?
     let capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot
+    // The AgentRuntimeLaunchRuntimeResolver.resolve() requirement set for this
+    // same launch attempt, threaded in by AgentRuntimeWorker so runtime
+    // adapters can attach the exact host-control MCP tools (and related
+    // Docker workspace / browser-control requirements) the resolver already
+    // decided this task needs, instead of re-deriving the answer from a
+    // second, independently-captured TaskCapabilityResolutionSnapshot. Nil for
+    // any caller that hasn't run the resolver (falls back to today's
+    // independent-derivation behavior). See
+    // Tests/HostControlRequirementDerivationConsistencyTests.swift.
+    let runtimeRequirements: TaskRuntimeRequirementSet?
 
     init(
         prompt: String,
@@ -695,7 +705,8 @@ struct AgentRuntimeProcessLaunchContext {
         runID: UUID? = nil,
         liveApprovalsEnabled: Bool = false,
         launchResourcePlan: TaskLaunchResourcePlan? = nil,
-        capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot? = nil
+        capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot? = nil,
+        runtimeRequirements: TaskRuntimeRequirementSet? = nil
     ) {
         self.prompt = prompt
         self.task = task
@@ -718,6 +729,7 @@ struct AgentRuntimeProcessLaunchContext {
             providerLaunchContextText: contextText,
             additionalCredentialGrants: executionPolicy.permissionGrantsOverride ?? []
         )
+        self.runtimeRequirements = runtimeRequirements
     }
 }
 
@@ -1266,7 +1278,8 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
             runID: context.runID,
             taskEnvironment: taskEnv,
             contextText: context.contextText,
-            capabilityScope: context.capabilityResolutionSnapshot.providerLaunch
+            capabilityScope: context.capabilityResolutionSnapshot.providerLaunch,
+            precomputedRuntimeRequirements: context.runtimeRequirements
         )
         if let hostControlServer = HostControlPlaneMCPProjection.resolvedServer(
             task: context.task,
@@ -1275,7 +1288,8 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
             runID: context.runID,
             taskEnvironment: taskEnv.merging(hostControlEnvironment) { current, _ in current },
             contextText: context.contextText,
-            capabilityScope: context.capabilityResolutionSnapshot.providerLaunch
+            capabilityScope: context.capabilityResolutionSnapshot.providerLaunch,
+            precomputedRuntimeRequirements: context.runtimeRequirements
         ) {
             mcpServers.append(hostControlServer)
         }
@@ -1315,7 +1329,9 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
         let deniesNativeShellForHostControl = HostControlPlaneMCPProjection.requiresNativeShellDenial(
             task: context.task,
             environment: executionEnvironment,
-            contextText: context.contextText
+            contextText: context.contextText,
+            capabilityScope: context.capabilityResolutionSnapshot.providerLaunch,
+            precomputedRuntimeRequirements: context.runtimeRequirements
         )
         let nativeDeniedTools = Array(Set(mcpDeniedTools + (deniesNativeShellForHostControl ? ["Bash"] : []))).sorted()
         // Live approvals use the stdio control protocol (stream-json input, so
@@ -1865,7 +1881,8 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             executionEnvironment: executionEnvironment,
             contextText: context.contextText,
             taskEnvironment: taskEnv,
-            capabilities: capabilities
+            capabilities: capabilities,
+            runtimeRequirements: context.runtimeRequirements
         )
         let hostControlTools = HostControlPlaneRuntimeLaunchGuard.requiredTools(from: mcpProjection.hostControlEnvironment)
         let routesControlPlaneThroughMCP = usesDockerWorkspaceExecutor || !hostControlTools.isEmpty
@@ -2479,7 +2496,8 @@ struct AntigravityCLIRuntimeAdapter: AgentRuntimeAdapter {
             task: context.task,
             environment: executionEnvironment,
             contextText: context.contextText,
-            capabilityScope: context.capabilityResolutionSnapshot.providerLaunch
+            capabilityScope: context.capabilityResolutionSnapshot.providerLaunch,
+            precomputedRuntimeRequirements: context.runtimeRequirements
         )
         let plan = AntigravityCLIRuntime.buildCommand(
             executablePath: executable,

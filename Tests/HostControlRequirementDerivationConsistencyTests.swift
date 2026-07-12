@@ -206,6 +206,202 @@ struct HostControlRequirementDerivationConsistencyTests {
         )
     }
 
+    /// Extends the resolver-vs-render parity check above one layer deeper: the
+    /// actual RUNTIME LAUNCH PROJECTION that builds the real MCP-server-
+    /// attachment config passed to the provider process. A Codex-review
+    /// follow-up on this PR found that `recordPreflightManifest`'s
+    /// `precomputedRuntimeRequirements` plumbing only reached the *manifest*
+    /// (which decides whether to raise a `.blocked` diagnostic) — the actual
+    /// Copilot launch path (`CopilotMCPLaunchProjection.resolve` /
+    /// `CopilotRuntimeLaunchSupport.HostControlPlaneRuntimeLaunchGuard`) still
+    /// independently re-derived its own host-control tool list from a second
+    /// capability-scope capture. That reintroduces the exact "two independent
+    /// captures can disagree" risk one layer deeper: the manifest could
+    /// conclude "compatible, no block" while the actual launch attaches a
+    /// different tool set — or hard-blocks with
+    /// `host_control_plane_unsupported_runtime` anyway — losing the structured
+    /// `runtime.launch_blocked` remediation the manifest path already computed.
+    @Test("resolver's TaskRuntimeRequirementSet and Copilot's actual launch projection agree on host-control tool attachment")
+    @MainActor
+    func resolverAndCopilotLaunchProjectionAgreeOnHostControlRequirement() throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let task = harness.makeTask(
+            runtime: .copilotCLI,
+            goal: "List my open PRs in the astra repo and summarize CI status",
+            model: "gpt-5"
+        )
+        task.workspace?.enabledCapabilityIDs = [HostControlPlaneMCPProjection.githubPackageID]
+        let githubSkill = Skill(
+            name: "GitHub Agent",
+            allowedTools: ["Read", "Glob", "Grep"],
+            behaviorInstructions: """
+            Use ASTRA's host-control GitHub MCP tool mcp__astra_host__github for GitHub \
+            operations. Always use ASTRA MCP tools for GitHub; do not use bash gh or git \
+            push directly for GitHub API work.
+            """
+        )
+        githubSkill.skillDescription = "Inspect issues, PRs, and CI via ASTRA host-control GitHub"
+        githubSkill.originPackageID = HostControlPlaneMCPProjection.githubPackageID
+        githubSkill.workspace = task.workspace
+        task.skills = [githubSkill]
+        harness.context.insert(githubSkill)
+
+        // Multi-turn resumed-task shape, mirroring
+        // resolverAndRenderAgreeOnHostControlRequirement above.
+        for index in 0..<5 {
+            let priorRun = TaskRun(task: task)
+            priorRun.runtimeID = index.isMultiple(of: 2)
+                ? AgentRuntimeID.codexCLI.rawValue
+                : AgentRuntimeID.copilotCLI.rawValue
+            priorRun.status = .completed
+            priorRun.output = "Prior turn \(index) output"
+            harness.context.insert(priorRun)
+        }
+        task.skillSnapshots = [SkillSnapshotConfig(skill: githubSkill)]
+        task.status = .completed
+        task.runtimeID = AgentRuntimeID.copilotCLI.rawValue
+
+        let executionPolicy = AgentRuntimeExecutionPolicy.default
+        let followUpMessage = "please go ahead and merge it"
+
+        let adapter = AgentRuntimeAdapterRegistry.adapter(for: .copilotCLI)
+        let promptOverride = AgentPromptBuilder.buildFreshFollowUpPrompt(
+            message: followUpMessage,
+            task: task,
+            executionPolicy: executionPolicy
+        )
+        let startPayload = adapter.defaultStartEventPayload(task: task)
+        let contextText = adapter.connectorPreflightContextText(
+            task: task,
+            promptOverride: promptOverride,
+            startPayload: startPayload,
+            sessionMessage: followUpMessage,
+            phase: .resume
+        )
+        let executionEnvironment = DockerExecutionPlanner.resolveEnvironment(for: task)
+
+        // Mirrors AgentRuntimeLaunchRuntimeResolver.resolve's internal capture
+        // and derivation exactly
+        // (Astra/Services/Runtime/AgentRuntimeLaunchRuntimeResolver.swift).
+        let resolverSnapshot = TaskCapabilityResolutionSnapshot.capture(
+            for: task,
+            providerLaunchContextText: contextText,
+            additionalCredentialGrants: executionPolicy.permissionGrantsOverride ?? []
+        )
+        let resolverRequirements = TaskRuntimeRequirementSet.derive(
+            task: task,
+            capabilityResolutionSnapshot: resolverSnapshot,
+            executionEnvironment: executionEnvironment,
+            browserBridgeAttached: false
+        )
+        #expect(resolverRequirements.hostControlTools == ["github"])
+
+        // Feed the resolver's own answer into the ACTUAL Copilot launch
+        // projection, exactly as production code
+        // (CopilotCLIRuntimeAdapter.makeProcessLaunchPlan, via
+        // AgentRuntimeProcessLaunchContext.runtimeRequirements) now does. Use
+        // .conservative capabilities (no --additional-mcp-config support) to
+        // reproduce the reviewer-cited failure mode: a Copilot CLI build that
+        // cannot attach ASTRA's host-control MCP server at all.
+        let mcpProjection = CopilotMCPLaunchProjection.resolve(
+            task: task,
+            workspacePath: task.workspace?.primaryPath ?? "",
+            runID: nil,
+            executionEnvironment: executionEnvironment,
+            contextText: contextText,
+            capabilities: .conservative,
+            runtimeRequirements: resolverRequirements
+        )
+        let launchAttachedTools = HostControlPlaneRuntimeLaunchGuard.requiredTools(
+            from: mcpProjection.hostControlEnvironment
+        )
+
+        #expect(
+            launchAttachedTools == resolverRequirements.hostControlTools,
+            """
+            resolver derived hostControlTools=\(resolverRequirements.hostControlTools) but Copilot's \
+            actual launch projection attached hostControlEnvironment tools=\(launchAttachedTools) for \
+            the identical task/turn. AgentRuntimeLaunchRuntimeResolver (which decides reroute-vs-block \
+            before launch) and CopilotMCPLaunchProjection (which builds the real MCP-server-attachment \
+            config passed to the Copilot CLI process) must agree, or the manifest can suppress its \
+            blocked diagnostic while the actual launch's HostControlPlaneRuntimeLaunchGuard still stops \
+            the run with host_control_plane_unsupported_runtime, losing the structured \
+            runtime.launch_blocked remediation.
+            """
+        )
+        // With .conservative (no --additional-mcp-config) capabilities and a
+        // non-empty required-tool list, the actual launch must report the
+        // exact block reason the reviewer's incident lost.
+        #expect(mcpProjection.hostControlPlaneSupported == false)
+        #expect(mcpProjection.hostControlPlaneLaunchBlockReason == HostControlPlaneRuntimeLaunchGuard.missingHostControlMCPReason)
+    }
+
+    /// Proves the launch-projection plumbing above is real wiring, not
+    /// coincidental agreement: a deliberately different precomputed
+    /// `TaskRuntimeRequirementSet` must be authoritative over independent
+    /// re-derivation, exactly mirroring
+    /// `precomputedRequirementsAreAuthoritativeInPolicyRender` above but one
+    /// layer deeper — at the actual MCP-server-attachment call site instead of
+    /// the manifest. Without the fix (`CopilotMCPLaunchProjection.resolve`
+    /// accepting and honoring `runtimeRequirements`), this test does not even
+    /// compile.
+    @Test("a precomputed requirement set overrides independent re-derivation in Copilot's actual launch projection")
+    @MainActor
+    func precomputedRequirementsAreAuthoritativeInCopilotLaunchProjection() throws {
+        let container = try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+        )
+        let context = container.mainContext
+        let package = try #require(PluginCatalog.builtInPackages.first {
+            $0.id == HostControlPlaneMCPProjection.githubPackageID
+        })
+        let workspace = Workspace(name: "Copilot GitHub Metadata", primaryPath: "/tmp/astra-copilot-github-metadata")
+        workspace.enabledCapabilityIDs = [package.id]
+        let task = AgentTask(
+            title: "Copilot launch-projection authority check",
+            goal: "Use GitHub to find the pull request and issue metadata for this task",
+            workspace: workspace,
+            runtime: .copilotCLI
+        )
+        context.insert(workspace)
+        context.insert(task)
+
+        let executionEnvironment = DockerExecutionPlanner.resolveEnvironment(for: task)
+        let contextText = "Use GitHub to inspect PR metadata, issue links, and checks for this task."
+
+        func launchBlockReason(precomputed: TaskRuntimeRequirementSet?) -> String {
+            let mcpProjection = CopilotMCPLaunchProjection.resolve(
+                task: task,
+                workspacePath: workspace.primaryPath,
+                runID: nil,
+                executionEnvironment: executionEnvironment,
+                contextText: contextText,
+                capabilities: .conservative,
+                runtimeRequirements: precomputed
+            )
+            return mcpProjection.hostControlPlaneLaunchBlockReason
+        }
+
+        // Baseline: without an override, the launch projection independently
+        // derives the requirement from the task's own capability scope and
+        // blocks — same as the always-live capability-scope-driven behavior.
+        #expect(launchBlockReason(precomputed: nil) == HostControlPlaneRuntimeLaunchGuard.missingHostControlMCPReason)
+
+        // With an explicit (deliberately empty) precomputed requirement set —
+        // as if the launch resolver had already determined no host-control
+        // MCP is needed — the actual launch projection must defer to it
+        // instead of re-deriving its own, contradicting answer.
+        #expect(launchBlockReason(precomputed: TaskRuntimeRequirementSet(
+            hostControlTools: [],
+            requiresDockerWorkspaceShell: false,
+            requiresBrowserControl: false
+        )) == "none")
+    }
+
     /// Phase 2 (D1): when the user explicitly pinned Cursor for this task
     /// (`runtimeExplicitlySelected`), an incompatible requirement must not be
     /// silently overridden by rerouting to Codex — it must block up front

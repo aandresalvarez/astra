@@ -1040,6 +1040,90 @@ struct WorkspacePersistenceTests {
         #expect(importedTask.resolvedRuntimeID == .copilotCLI)
     }
 
+    @Test("explicit runtime selection round-trips through export and import")
+    @MainActor
+    func runtimeExplicitlySelectedRoundTripsThroughExportAndImport() throws {
+        let tempRoot = "/tmp/astra_persistence_\(UUID().uuidString)"
+        let sourceContainer = try makeWorkspacePersistenceContainer()
+        let sourceContext = sourceContainer.mainContext
+        let workspace = try makeRichWorkspace(in: sourceContext, root: tempRoot)
+        let sourceTask = try #require(workspace.tasks.first)
+        // The exact flag that AgentRuntimeLaunchRuntimeResolver reads to decide
+        // whether an incompatible runtime blocks up front instead of silently
+        // rerouting — losing it on import means an explicitly-pinned task
+        // silently reverts to auto-reroute behavior after a workspace round-trip.
+        sourceTask.runtimeExplicitlySelected = true
+        try sourceContext.save()
+
+        let config = try #require(WorkspaceConfigManager.export(workspace: workspace, modelContext: sourceContext))
+        #expect(config.tasks?.first?.runtimeExplicitlySelected == true)
+
+        let importContainer = try makeWorkspacePersistenceContainer()
+        let importContext = importContainer.mainContext
+        let imported = WorkspaceConfigManager.importWorkspace(from: config, modelContext: importContext)
+        let importedTask = try #require(imported.tasks.first)
+
+        #expect(importedTask.runtimeExplicitlySelected == true)
+    }
+
+    @Test("task import without a persisted explicit-selection flag defaults to false")
+    @MainActor
+    func taskImportWithoutExplicitSelectionFlagDefaultsToFalse() throws {
+        let container = try makeWorkspacePersistenceContainer()
+        let context = container.mainContext
+        var config = minimalWorkspaceConfig(
+            name: "Imported Default Runtime",
+            path: "/tmp/astra_import_default_runtime_\(UUID().uuidString)",
+            skillID: UUID().uuidString
+        )
+        config.tasks = [
+            WorkspaceConfigManager.TaskConfig(
+                id: UUID().uuidString,
+                title: "Legacy export",
+                goal: "Predates runtimeExplicitlySelected",
+                status: TaskStatus.completed.rawValue,
+                isPinned: nil,
+                isDone: nil,
+                inputs: [],
+                constraints: [],
+                acceptanceCriteria: [],
+                tokenBudget: 25_000,
+                tokensUsed: 0,
+                model: AgentRuntimeAdapterRegistry.defaultModel(for: .cursorCLI),
+                runtimeID: AgentRuntimeID.cursorCLI.rawValue,
+                costUSD: 0,
+                sessionId: nil,
+                maxTurns: 25,
+                createdAt: Date(timeIntervalSince1970: 1_777_002_000),
+                updatedAt: Date(timeIntervalSince1970: 1_777_002_000),
+                completedAt: nil,
+                unreadAt: nil,
+                isolationStrategy: nil,
+                validationStrategy: nil,
+                testCommand: nil,
+                draftMessages: nil,
+                chainedGoal: nil,
+                chainedFromID: nil,
+                useAgentTeam: nil,
+                teamSize: nil,
+                teamInstructions: nil,
+                templateID: nil,
+                templateHooksJSON: nil,
+                runs: [],
+                events: [],
+                artifacts: nil,
+                skillIDs: nil,
+                skillNames: [],
+                skillSnapshots: nil
+            )
+        ]
+
+        let imported = WorkspaceConfigManager.importWorkspace(from: config, modelContext: context)
+        let importedTask = try #require(imported.tasks.first)
+
+        #expect(importedTask.runtimeExplicitlySelected == false)
+    }
+
     @Test("imported task shell validation commands keep run-tests intent before durable storage")
     @MainActor
     func importedTaskShellValidationCommandsKeepRunTestsIntent() throws {
