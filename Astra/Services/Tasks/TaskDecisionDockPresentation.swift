@@ -26,6 +26,7 @@ enum TaskDecisionDockActionKind: String, Equatable {
     case runTask
     case retry
     case resume
+    case reportProblem
     case openArtifact
     case closeTask
     case closeAnyway
@@ -96,6 +97,7 @@ struct TaskDecisionDockPresentation: Equatable {
         var canApprove: Bool
         var canRetry: Bool
         var canResume: Bool
+        var canReportProblem: Bool = false
         var canToggleDone: Bool
         var hasProviderSession: Bool
         var failureReason: String?
@@ -425,6 +427,9 @@ struct TaskDecisionDockPresentation: Equatable {
             secondaryActions: [
                 context.canResume && context.hasProviderSession && context.canRetry
                     ? action(.retry, title: "Retry", systemImage: "arrow.clockwise")
+                    : nil,
+                context.canReportProblem
+                    ? action(.reportProblem, title: "Report a Problem", systemImage: "exclamationmark.bubble")
                     : nil,
                 firstArtifactAction(context)
             ].compactMap { $0 },
@@ -945,7 +950,7 @@ struct TaskDecisionDockPresentation: Equatable {
 private extension TaskDecisionDockActionKind {
     var isDecisionDockUtility: Bool {
         switch self {
-        case .openArtifact, .openPlan:
+        case .openArtifact, .openPlan, .reportProblem:
             true
         case .stop,
              .allowOnce,

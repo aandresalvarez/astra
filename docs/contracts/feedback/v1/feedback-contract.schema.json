@@ -1,0 +1,426 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:astra:feedback:v1",
+  "title": "ASTRA Feedback Contract V1",
+  "anyOf": [
+    { "$ref": "#/$defs/request" },
+    { "$ref": "#/$defs/receipt" },
+    { "$ref": "#/$defs/localStatus" },
+    { "$ref": "#/$defs/remoteStatus" },
+    { "$ref": "#/$defs/statusReadRequest" },
+    { "$ref": "#/$defs/error" },
+    { "$ref": "#/$defs/assessment" },
+    { "$ref": "#/$defs/staffTriage" }
+  ],
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "shortText": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024
+    },
+    "hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "reportID": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "timestamp": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$"
+    },
+    "disclosureClass": {
+      "type": "string",
+      "enum": ["standard", "sensitive", "explicit_opt_in"]
+    },
+    "statement": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["actualResult", "expectedResult", "intendedOutcome", "workBlocked"],
+      "properties": {
+        "actualResult": { "type": "string", "minLength": 1, "maxLength": 8000 },
+        "expectedResult": { "type": "string", "minLength": 1, "maxLength": 8000 },
+        "intendedOutcome": { "type": "string", "minLength": 1, "maxLength": 8000 },
+        "workBlocked": { "type": "boolean" }
+      }
+    },
+    "build": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["build", "buildDate", "channel", "gitCommit", "source", "version"],
+      "properties": {
+        "build": { "$ref": "#/$defs/shortText" },
+        "buildDate": { "$ref": "#/$defs/shortText" },
+        "channel": { "$ref": "#/$defs/shortText" },
+        "gitCommit": { "$ref": "#/$defs/shortText" },
+        "source": { "$ref": "#/$defs/shortText" },
+        "version": { "$ref": "#/$defs/shortText" }
+      }
+    },
+    "platform": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["architecture", "macOSVersion"],
+      "properties": {
+        "architecture": { "$ref": "#/$defs/shortText" },
+        "macOSVersion": { "$ref": "#/$defs/shortText" }
+      }
+    },
+    "evidenceWindow": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["end", "start"],
+      "properties": {
+        "end": { "$ref": "#/$defs/timestamp" },
+        "start": { "$ref": "#/$defs/timestamp" }
+      }
+    },
+    "evidenceSelection": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["artifactID", "disclosureClass", "included"],
+      "properties": {
+        "artifactID": { "$ref": "#/$defs/identifier" },
+        "disclosureClass": { "$ref": "#/$defs/disclosureClass" },
+        "included": { "type": "boolean" },
+        "reviewedAt": { "$ref": "#/$defs/timestamp" }
+      }
+    },
+    "consent": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["evidenceSelections", "version"],
+      "properties": {
+        "evidenceSelections": {
+          "type": "array",
+          "maxItems": 128,
+          "items": { "$ref": "#/$defs/evidenceSelection" }
+        },
+        "version": { "$ref": "#/$defs/identifier" }
+      }
+    },
+    "streamCounters": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["failedEvents", "parsedEvents", "rawLines", "textEvents"],
+      "properties": {
+        "failedEvents": { "type": "integer", "minimum": 0, "maximum": 1000000 },
+        "parsedEvents": { "type": "integer", "minimum": 0, "maximum": 1000000 },
+        "rawLines": { "type": "integer", "minimum": 0, "maximum": 1000000 },
+        "textEvents": { "type": "integer", "minimum": 0, "maximum": 1000000 }
+      }
+    },
+    "runtimeSnapshot": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["runtimeID"],
+      "properties": {
+        "executableFound": { "type": "boolean" },
+        "exitCode": { "type": "integer", "minimum": -2147483648, "maximum": 2147483647 },
+        "failureCategory": { "$ref": "#/$defs/identifier" },
+        "policyState": { "$ref": "#/$defs/shortText" },
+        "providerVersion": { "$ref": "#/$defs/shortText" },
+        "readiness": { "$ref": "#/$defs/shortText" },
+        "runtimeID": { "$ref": "#/$defs/identifier" },
+        "sandboxState": { "$ref": "#/$defs/shortText" },
+        "sanitizedSummary": { "$ref": "#/$defs/shortText" },
+        "stopReason": { "$ref": "#/$defs/shortText" },
+        "stream": { "$ref": "#/$defs/streamCounters" },
+        "unavailableReason": { "$ref": "#/$defs/identifier" }
+      }
+    },
+    "redaction": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["contactPatterns", "pathPatterns", "replacements", "secretPatterns"],
+      "properties": {
+        "contactPatterns": { "type": "integer", "minimum": 0, "maximum": 1000000 },
+        "pathPatterns": { "type": "integer", "minimum": 0, "maximum": 1000000 },
+        "replacements": { "type": "integer", "minimum": 0, "maximum": 1000000 },
+        "secretPatterns": { "type": "integer", "minimum": 0, "maximum": 1000000 }
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["artifactID", "byteCount", "disclosureClass", "kind", "mediaType", "redaction", "relativePath", "sha256"],
+      "properties": {
+        "artifactID": { "$ref": "#/$defs/identifier" },
+        "byteCount": { "type": "integer", "minimum": 0, "maximum": 20971520 },
+        "disclosureClass": { "$ref": "#/$defs/disclosureClass" },
+        "kind": { "$ref": "#/$defs/identifier" },
+        "mediaType": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "redaction": { "$ref": "#/$defs/redaction" },
+        "relativePath": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"
+        },
+        "sha256": { "$ref": "#/$defs/hash" }
+      }
+    },
+    "omission": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["artifactID", "kind", "reason"],
+      "properties": {
+        "artifactID": { "$ref": "#/$defs/identifier" },
+        "detail": { "$ref": "#/$defs/shortText" },
+        "kind": { "$ref": "#/$defs/identifier" },
+        "reason": { "$ref": "#/$defs/identifier" }
+      }
+    },
+    "warning": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["code", "message"],
+      "properties": {
+        "artifactID": { "$ref": "#/$defs/identifier" },
+        "code": { "$ref": "#/$defs/identifier" },
+        "message": { "$ref": "#/$defs/shortText" }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["artifacts", "formatVersion", "omissions", "redactionPolicyVersion", "totalByteCount", "warnings"],
+      "properties": {
+        "archiveSHA256": { "$ref": "#/$defs/hash" },
+        "artifacts": {
+          "type": "array",
+          "maxItems": 128,
+          "items": { "$ref": "#/$defs/artifact" }
+        },
+        "formatVersion": { "const": 1 },
+        "omissions": {
+          "type": "array",
+          "maxItems": 128,
+          "items": { "$ref": "#/$defs/omission" }
+        },
+        "redactionPolicyVersion": { "$ref": "#/$defs/identifier" },
+        "totalByteCount": { "type": "integer", "minimum": 0, "maximum": 52428800 },
+        "warnings": {
+          "type": "array",
+          "maxItems": 128,
+          "items": { "$ref": "#/$defs/warning" }
+        }
+      }
+    },
+    "payload": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["build", "consent", "createdAt", "evidence", "evidenceWindow", "formatVersion", "platform", "reportID", "statement"],
+      "properties": {
+        "build": { "$ref": "#/$defs/build" },
+        "consent": { "$ref": "#/$defs/consent" },
+        "createdAt": { "$ref": "#/$defs/timestamp" },
+        "evidence": { "$ref": "#/$defs/evidence" },
+        "evidenceWindow": { "$ref": "#/$defs/evidenceWindow" },
+        "formatVersion": { "const": 1 },
+        "platform": { "$ref": "#/$defs/platform" },
+        "reportID": { "$ref": "#/$defs/reportID" },
+        "runID": { "$ref": "#/$defs/identifier" },
+        "runtimeSnapshot": { "$ref": "#/$defs/runtimeSnapshot" },
+        "statement": { "$ref": "#/$defs/statement" },
+        "taskID": { "$ref": "#/$defs/identifier" }
+      }
+    },
+    "request": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["canonicalDigestSHA256", "formatVersion", "idempotencyKey", "installationID", "payload", "payloadSHA256"],
+      "properties": {
+        "canonicalDigestSHA256": { "$ref": "#/$defs/hash" },
+        "evidenceArchiveSHA256": { "$ref": "#/$defs/hash" },
+        "formatVersion": { "const": 1 },
+        "idempotencyKey": { "$ref": "#/$defs/identifier" },
+        "installationID": { "$ref": "#/$defs/identifier" },
+        "payload": { "$ref": "#/$defs/payload" },
+        "payloadSHA256": { "$ref": "#/$defs/hash" }
+      }
+    },
+    "receipt": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["disposition", "formatVersion", "idempotencyKey", "installationID", "payloadSHA256", "receivedAt", "receiptID", "remoteStatus", "reportID", "statusCredentialExpiresAt", "statusReadCredential"],
+      "properties": {
+        "disposition": { "$ref": "#/$defs/identifier" },
+        "evidenceArchiveSHA256": { "$ref": "#/$defs/hash" },
+        "formatVersion": { "const": 1 },
+        "idempotencyKey": { "$ref": "#/$defs/identifier" },
+        "installationID": { "$ref": "#/$defs/identifier" },
+        "payloadSHA256": { "$ref": "#/$defs/hash" },
+        "receivedAt": { "$ref": "#/$defs/timestamp" },
+        "receiptID": { "$ref": "#/$defs/identifier" },
+        "remoteStatus": { "$ref": "#/$defs/identifier" },
+        "reportID": { "$ref": "#/$defs/reportID" },
+        "statusCredentialExpiresAt": { "$ref": "#/$defs/timestamp" },
+        "statusReadCredential": {
+          "type": "string",
+          "minLength": 32,
+          "maxLength": 512,
+          "pattern": "^[A-Za-z0-9_-]+$"
+        }
+      }
+    },
+    "statusFailure": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["code", "disposition", "safeMessage"],
+      "properties": {
+        "code": { "$ref": "#/$defs/identifier" },
+        "disposition": { "type": "string", "enum": ["retryable", "permanent"] },
+        "safeMessage": { "$ref": "#/$defs/shortText" }
+      }
+    },
+    "localStatus": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["formatVersion", "reportID", "status", "updatedAt", "uploadAttemptCount"],
+      "properties": {
+        "formatVersion": { "const": 1 },
+        "lastFailure": { "$ref": "#/$defs/statusFailure" },
+        "nextRetryAt": { "$ref": "#/$defs/timestamp" },
+        "receipt": { "$ref": "#/$defs/receipt" },
+        "reportID": { "$ref": "#/$defs/reportID" },
+        "status": {
+          "type": "string",
+          "enum": ["draft", "prepared", "queued", "uploading", "submitted", "retryable_failure", "cancelled", "permanent_failure"]
+        },
+        "updatedAt": { "$ref": "#/$defs/timestamp" },
+        "uploadAttemptCount": { "type": "integer", "minimum": 0, "maximum": 1000 }
+      }
+    },
+    "issue": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["number", "url"],
+      "properties": {
+        "number": { "type": "integer", "minimum": 1, "maximum": 2147483647 },
+        "url": { "type": "string", "format": "uri", "pattern": "^https://" }
+      }
+    },
+    "remoteStatus": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["formatVersion", "receiptID", "status", "updatedAt"],
+      "properties": {
+        "duplicateOfReceiptID": { "$ref": "#/$defs/identifier" },
+        "formatVersion": { "const": 1 },
+        "issue": { "$ref": "#/$defs/issue" },
+        "receiptID": { "$ref": "#/$defs/identifier" },
+        "releasedVersion": { "$ref": "#/$defs/shortText" },
+        "status": { "$ref": "#/$defs/identifier" },
+        "updatedAt": { "$ref": "#/$defs/timestamp" }
+      }
+    },
+    "statusReadRequest": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["formatVersion", "installationID", "receiptID", "statusReadCredential"],
+      "properties": {
+        "formatVersion": { "const": 1 },
+        "installationID": { "$ref": "#/$defs/identifier" },
+        "receiptID": { "$ref": "#/$defs/identifier" },
+        "statusReadCredential": {
+          "type": "string",
+          "minLength": 32,
+          "maxLength": 512,
+          "pattern": "^[A-Za-z0-9_-]+$"
+        }
+      }
+    },
+    "error": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["code", "formatVersion", "retryable", "safeMessage"],
+      "properties": {
+        "code": { "$ref": "#/$defs/identifier" },
+        "formatVersion": { "const": 1 },
+        "requestID": { "$ref": "#/$defs/identifier" },
+        "retryable": { "type": "boolean" },
+        "safeMessage": { "$ref": "#/$defs/shortText" }
+      }
+    },
+    "assessmentEvidence": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["evidenceID", "summary"],
+      "properties": {
+        "evidenceID": { "$ref": "#/$defs/identifier" },
+        "summary": { "$ref": "#/$defs/shortText" }
+      }
+    },
+    "assessment": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["acceptanceCriteria", "behavioralOwner", "classification", "counterevidence", "currentMainRevision", "duplicateCandidateReceiptIDs", "evidence", "formatVersion", "impact", "missingQuestions", "regressionTestProposal", "reportID", "reproductionConfidence", "revisionID", "sourceRevision"],
+      "properties": {
+        "acceptanceCriteria": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "items": { "$ref": "#/$defs/shortText" }
+        },
+        "behavioralOwner": { "$ref": "#/$defs/shortText" },
+        "classification": { "$ref": "#/$defs/identifier" },
+        "counterevidence": {
+          "type": "array",
+          "maxItems": 64,
+          "items": { "$ref": "#/$defs/assessmentEvidence" }
+        },
+        "currentMainRevision": { "$ref": "#/$defs/identifier" },
+        "duplicateCandidateReceiptIDs": {
+          "type": "array",
+          "maxItems": 64,
+          "items": { "$ref": "#/$defs/identifier" }
+        },
+        "evidence": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "items": { "$ref": "#/$defs/assessmentEvidence" }
+        },
+        "formatVersion": { "const": 1 },
+        "impact": { "$ref": "#/$defs/identifier" },
+        "missingQuestions": {
+          "type": "array",
+          "maxItems": 64,
+          "items": { "$ref": "#/$defs/shortText" }
+        },
+        "regressionTestProposal": { "$ref": "#/$defs/shortText" },
+        "reportID": { "$ref": "#/$defs/reportID" },
+        "reproductionConfidence": { "$ref": "#/$defs/identifier" },
+        "revisionID": { "$ref": "#/$defs/identifier" },
+        "rootCauseHypothesis": { "type": "string", "minLength": 1, "maxLength": 8000 },
+        "sourceRevision": { "$ref": "#/$defs/identifier" }
+      }
+    },
+    "staffTriage": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["decidedAt", "decision", "draftTaskRequested", "formatVersion", "reason", "reportID", "reviewerID"],
+      "properties": {
+        "assessmentRevisionID": { "$ref": "#/$defs/identifier" },
+        "decidedAt": { "$ref": "#/$defs/timestamp" },
+        "decision": {
+          "type": "string",
+          "enum": ["needs_information", "accepted", "duplicate", "declined", "security_private"]
+        },
+        "draftTaskRequested": { "type": "boolean" },
+        "formatVersion": { "const": 1 },
+        "priorityOverride": { "$ref": "#/$defs/identifier" },
+        "reason": { "$ref": "#/$defs/shortText" },
+        "reportID": { "$ref": "#/$defs/reportID" },
+        "reviewerID": { "$ref": "#/$defs/identifier" }
+      }
+    }
+  }
+}

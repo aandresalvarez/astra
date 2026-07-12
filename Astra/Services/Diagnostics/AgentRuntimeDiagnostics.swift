@@ -3,7 +3,7 @@ import ASTRACore
 import ASTRAPersistence
 import ASTRAModels
 
-enum AgentRuntimeFailureCategory: String, Sendable {
+enum AgentRuntimeFailureCategory: String, CaseIterable, Sendable {
     case authenticationFailed = "authentication_failed"
     case modelUnavailable = "model_unavailable"
     case quotaExceeded = "quota_exceeded"

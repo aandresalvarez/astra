@@ -256,7 +256,7 @@ changes, or a blocker appears. Use only the listed status values:
 
 | PR | Status | Owner | Branch | PR link | Depends on | Wave | Last validation | Blocker/notes |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 1. Feedback contract | in_progress | Task `019f4890-bde1-7793-8b4a-10be3eb4bf21` | `alvaro/feedback-contract-v1` | — | — | 0 | Discovery complete | Hard language-neutral contract gate |
+| 1. Feedback contract | in_review | Task `019f4890-bde1-7793-8b4a-10be3eb4bf21` | `alvaro/feedback-contract-v1` | [#257](https://github.com/aandresalvarez/astra/pull/257) | — | 0 | 19/19 focused; 4,625/4,625 full; 500/500 pre-push; schema/fixtures pass | Hard language-neutral contract gate; stacked on program PR #255 |
 | 2. Diagnostics privacy | blocked | Task `019f4890-bdd6-71a2-ac82-42aab7b8cd18` | TBD after PR 1 | — | 1 | 1 | Baseline `LogDiagnosticsTests` 49/49 pass | Wait for golden contract |
 | 3. Runtime evidence | blocked | Task `019f4890-bdd6-71a2-ac82-42aab7b8cd18` | Mapping branch after PR 1; integration stack after PR 2 | — | 1 for development; 2 for integration | 2 | Baseline diagnostics 49/49 pass | May map fixtures after PR 1; integrates PR 2 policy |
 | 4. Durable outbox | blocked | Task `019f4890-c2e8-7543-8fcd-f149f4ba7c75` | TBD after PR 1 | — | 1 | 1 | Discovery active | Owns V12 migration and prepared-package adoption |

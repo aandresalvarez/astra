@@ -6,6 +6,69 @@ import ASTRAModels
 import ASTRACore
 
 extension HeadlessChatScenarioTests {
+    @Test("Provider auth classification survives the durable run-to-feedback path")
+    func providerAuthClassificationReachesFeedback() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let copilotPath = try harness.writeExecutable(
+            named: "copilot",
+            script: Self.copilotScript(body: """
+            printf '%s\n' 'Error: authentication failed; login required' >&2
+            exit 1
+            """)
+        )
+        let task = harness.makeTask(runtime: .copilotCLI, goal: "Task that needs login", model: "gpt-5")
+        let worker = harness.makeWorker(runtime: .copilotCLI, executablePath: copilotPath)
+
+        _ = await harness.execute(task: task, worker: worker)
+
+        let run = try #require(task.runs.first)
+        #expect(run.status == .failed)
+        #expect(run.stopReason == AgentRuntimeFailureCategory.authenticationFailed.rawValue)
+        let report = FeedbackTaskFailureReportContextBuilder.make(
+            runtimeID: run.runtimeID,
+            providerVersion: run.providerVersion,
+            status: run.status,
+            exitCode: run.exitCode,
+            stopReason: run.stopReason
+        )
+        #expect(report.runtimeEvidence?.failureCategory == "unauthenticated")
+        #expect(report.prefill.actualResult == "The run could not authenticate with the selected provider or connector.")
+        let snapshot = try #require(RuntimeFeedbackSnapshotBuilder().build(from: report.runtimeEvidence))
+        #expect(snapshot.failureCategory == .unauthenticated)
+        #expect(snapshot.stopReason == AgentRuntimeFailureCategory.authenticationFailed.rawValue)
+    }
+
+    @Test("Missing Codex executable survives the durable run-to-feedback path")
+    func missingCodexExecutableReachesFeedback() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let missingPath = harness.rootURL.appendingPathComponent("missing-codex").path
+        let task = harness.makeTask(runtime: .codexCLI, goal: "Task that needs Codex", model: "gpt-5")
+        let worker = harness.makeWorker(runtime: .codexCLI, executablePath: missingPath)
+
+        _ = await harness.execute(task: task, worker: worker)
+
+        let run = try #require(task.runs.first)
+        #expect(run.status == .failed)
+        #expect(run.stopReason == "missing_codex")
+        let report = FeedbackTaskFailureReportContextBuilder.make(
+            runtimeID: run.runtimeID,
+            providerVersion: run.providerVersion,
+            status: run.status,
+            exitCode: run.exitCode,
+            stopReason: run.stopReason
+        )
+        #expect(report.runtimeEvidence?.executableFound == false)
+        let snapshot = try #require(RuntimeFeedbackSnapshotBuilder().build(from: report.runtimeEvidence))
+        #expect(snapshot.runtimeID == .codexCLI)
+        #expect(snapshot.executableFound == false)
+        #expect(snapshot.failureCategory == .missing)
+        #expect(snapshot.unavailableReason == .unavailable)
+    }
+
     @Test("Copilot process crash sets failed status and records error event")
     func copilotProcessCrashSetsFailedStatus() async throws {
         let harness = try HeadlessChatHarness()

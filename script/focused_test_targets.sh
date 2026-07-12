@@ -34,6 +34,79 @@ target_for_path() {
     Tests/AppSemanticFitnessTests.swift)
       add_target "AppSemanticFitnessTests"
       ;;
+    Tests/RuntimeFeedbackSnapshotTests.swift|Astra/Services/Feedback/RuntimeFeedbackSnapshotBuilder.swift)
+      add_target "RuntimeFeedbackSnapshotTests"
+      add_target "FeedbackEvidencePrivacyTests"
+      ;;
+    Tests/FeedbackCrashRecoveryTests.swift|Astra/Services/Feedback/FeedbackCrashOfferService.swift|Astra/Services/Feedback/FeedbackCrashLaunchMonitor.swift)
+      add_target "FeedbackCrashRecoveryTests"
+      add_target "FeedbackReportPresentationTests"
+      ;;
+    Astra/Models/AppStorageKeys.swift)
+      add_target "FeedbackReportPresentationTests"
+      add_target "FeedbackCrashRecoveryTests"
+      ;;
+    Tests/FeedbackReportPresentationTests.swift|Tests/FeedbackReportPresentationLifecycleTests.swift|Astra/Services/Feedback/FeedbackReportPreparationService.swift|Astra/Services/Feedback/FeedbackPreparationStagingReconciler.swift|Astra/Services/Feedback/FeedbackReportRouting.swift|Astra/Views/Feedback/*)
+      add_target "FeedbackReportPresentationTests"
+      add_target "FeedbackEvidencePrivacyTests"
+      add_target "RuntimeFeedbackSnapshotTests"
+      add_target "FeedbackOutboxStateMachineTests"
+      add_target "FeedbackManualExportTests"
+      ;;
+    Tests/FeedbackReportContractTests.swift|ASTRACore/Feedback/FeedbackReportContract.swift|ASTRACore/Feedback/FeedbackReportStatus.swift|ASTRACore/Feedback/FeedbackContractSupport.swift)
+      add_target "FeedbackReportContractTests"
+      add_target "FeedbackEvidencePrivacyTests"
+      add_target "FeedbackOutboxStateMachineTests"
+      ;;
+    Tests/FeedbackAssessmentPolicyTests.swift|ASTRACore/Feedback/FeedbackAssessmentContract.swift|ASTRACore/FeedbackAssessmentValidation.swift|ASTRACore/FeedbackPriorityPolicy.swift)
+      add_target "FeedbackReportContractTests"
+      add_target "FeedbackAssessmentPolicyTests"
+      ;;
+    Astra/Services/Persistence/FeedbackPackageAdoptionValidator.swift|Astra/Services/Persistence/FeedbackEvidenceArchiveValidator.swift|Astra/Services/Persistence/FeedbackPackageRemoval.swift)
+      add_target "FeedbackOutboxStateMachineTests"
+      add_target "FeedbackEvidencePrivacyTests"
+      add_target "FeedbackReportPresentationTests"
+      ;;
+    Astra/Services/Persistence/FeedbackOutboxService.swift|Astra/Services/Persistence/FeedbackOutboxTypes.swift)
+      add_target "FeedbackReportPresentationTests"
+      add_target "FeedbackOutboxStateMachineTests"
+      add_target "FeedbackManualExportTests"
+      ;;
+    Tests/FeedbackManualExportTests.swift|Astra/Services/Feedback/FeedbackManualExportService.swift)
+      add_target "FeedbackManualExportTests"
+      ;;
+    Astra/ASTRAApp.swift|Astra/Views/ContentView.swift|Astra/Views/LogViewerView.swift)
+      add_target "FeedbackReportPresentationTests"
+      add_target "FeedbackCrashRecoveryTests"
+      ;;
+    Tests/TaskDecisionDockPresentationTests.swift|Astra/Services/Tasks/TaskDecisionDockContextBuilder.swift|Astra/Services/Tasks/TaskDecisionDockPresentation.swift|Astra/Views/TaskDecisionDockView.swift|Astra/Views/TaskMainView.swift)
+      add_target "TaskDecisionDockPresentationTests"
+      add_target "FeedbackReportPresentationTests"
+      ;;
+    Tests/HeadlessChatProcessScenarioTests.swift|Astra/Services/Runtime/AgentRuntimeWorker.swift)
+      add_target "HeadlessChatScenarioTests"
+      add_target "FeedbackReportPresentationTests"
+      ;;
+    Astra/Services/Diagnostics/AgentRuntimeDiagnostics.swift)
+      add_target "AgentRuntimeFailureDiagnosticsTests"
+      add_target "FeedbackReportPresentationTests"
+      ;;
+    Astra/Services/Diagnostics/LogDiagnosticsService.swift|Astra/Services/Diagnostics/PersistedLogEntryParser.swift)
+      add_target "LogDiagnosticsTests"
+      add_target "FeedbackEvidencePrivacyTests"
+      ;;
+    Astra/Services/Diagnostics/CrashDiagnosticsService.swift)
+      add_target "LogDiagnosticsTests"
+      add_target "FeedbackEvidencePrivacyTests"
+      add_target "FeedbackCrashRecoveryTests"
+      ;;
+    Tests/AgentRuntimeAdapterTests.swift|Astra/Services/Runtime/ProviderMessages.swift)
+      add_target "AgentRuntimeAdapterTests"
+      add_target "FeedbackReportPresentationTests"
+      ;;
+    Tests/FeedbackEvidencePrivacyTests.swift|Astra/Services/Feedback/*)
+      add_target "FeedbackEvidencePrivacyTests"
+      ;;
     Tests/MCPGatewaySupportTests/*|Tools/AstraMCPGatewayTool/*|Tools/MCPGatewaySupport/*)
       add_target "MCPGatewaySupportTests"
       ;;

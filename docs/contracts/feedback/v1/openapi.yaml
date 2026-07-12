@@ -1,0 +1,120 @@
+openapi: 3.1.0
+info:
+  title: ASTRA Feedback Contract
+  version: 1.0.0
+  description: >-
+    Language-neutral V1 intake and status contract. Authentication is intentionally
+    unspecified until the backend authorization decision is approved.
+paths:
+  /v1/feedback/reports:
+    post:
+      operationId: submitFeedbackReportV1
+      summary: Submit one canonical feedback report envelope
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/InstallationID'
+        - $ref: '#/components/parameters/PayloadSHA256'
+        - $ref: '#/components/parameters/RequestDigestSHA256'
+        - $ref: '#/components/parameters/EvidenceSHA256'
+      requestBody:
+        required: true
+        content:
+          application/vnd.astra.feedback.v1+json:
+            schema:
+              $ref: './feedback-contract.schema.json#/$defs/request'
+      responses:
+        '202':
+          description: Report accepted or an idempotent retry resolved
+          content:
+            application/vnd.astra.feedback.receipt.v1+json:
+              schema:
+                $ref: './feedback-contract.schema.json#/$defs/receipt'
+        '400':
+          $ref: '#/components/responses/ContractError'
+        '409':
+          $ref: '#/components/responses/ContractError'
+        '413':
+          $ref: '#/components/responses/ContractError'
+  /v1/feedback/status:
+    post:
+      operationId: readFeedbackStatusV1
+      summary: Read status with the receipt-scoped credential
+      requestBody:
+        required: true
+        content:
+          application/vnd.astra.feedback.status-read.v1+json:
+            schema:
+              $ref: './feedback-contract.schema.json#/$defs/statusReadRequest'
+      responses:
+        '200':
+          description: Latest server-owned engineering status
+          content:
+            application/vnd.astra.feedback.status.v1+json:
+              schema:
+                $ref: './feedback-contract.schema.json#/$defs/remoteStatus'
+        '400':
+          $ref: '#/components/responses/ContractError'
+        '401':
+          $ref: '#/components/responses/ContractError'
+        '410':
+          $ref: '#/components/responses/ContractError'
+components:
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 128
+    InstallationID:
+      name: ASTRA-Installation-ID
+      in: header
+      required: true
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 128
+    PayloadSHA256:
+      name: ASTRA-Payload-SHA256
+      in: header
+      required: true
+      schema:
+        $ref: './feedback-contract.schema.json#/$defs/hash'
+    RequestDigestSHA256:
+      name: ASTRA-Request-Digest-SHA256
+      in: header
+      required: true
+      schema:
+        $ref: './feedback-contract.schema.json#/$defs/hash'
+    EvidenceSHA256:
+      name: ASTRA-Evidence-SHA256
+      in: header
+      required: false
+      schema:
+        $ref: './feedback-contract.schema.json#/$defs/hash'
+  responses:
+    ContractError:
+      description: Typed V1 contract error
+      content:
+        application/vnd.astra.feedback.error.v1+json:
+          schema:
+            $ref: './feedback-contract.schema.json#/$defs/error'
+  schemas:
+    FeedbackReportEnvelopeV1:
+      $ref: './feedback-contract.schema.json#/$defs/request'
+    FeedbackSubmissionReceiptV1:
+      $ref: './feedback-contract.schema.json#/$defs/receipt'
+    FeedbackLocalStatusDTOv1:
+      $ref: './feedback-contract.schema.json#/$defs/localStatus'
+    FeedbackRemoteStatusDTOv1:
+      $ref: './feedback-contract.schema.json#/$defs/remoteStatus'
+    FeedbackStatusReadRequestV1:
+      $ref: './feedback-contract.schema.json#/$defs/statusReadRequest'
+    FeedbackAPIErrorV1:
+      $ref: './feedback-contract.schema.json#/$defs/error'
+    FeedbackAssessmentV1:
+      $ref: './feedback-contract.schema.json#/$defs/assessment'
+    FeedbackStaffTriageDecisionV1:
+      $ref: './feedback-contract.schema.json#/$defs/staffTriage'

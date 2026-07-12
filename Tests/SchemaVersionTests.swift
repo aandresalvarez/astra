@@ -149,7 +149,7 @@ struct SchemaVersionTests {
     @MainActor
     @Test("SchemaV12 declares current model types and explicit-runtime-selection field")
     func v12ModelCountAndExplicitRuntimeSelectionField() throws {
-        #expect(ASTRASchemaV12.models.count == 16)
+        #expect(ASTRASchemaV12.models.count == 17)
         #expect(ASTRASchemaV12.models.contains { $0 == AgentTask.self })
         #expect(ASTRASchemaV12.models.contains { $0 == TaskRun.self })
 
@@ -177,6 +177,12 @@ struct SchemaVersionTests {
         #expect(ASTRASchemaV12.versionIdentifier == Schema.Version(12, 0, 0))
     }
 
+    @Test("SchemaV12 adds only the durable feedback report entity")
+    func v12ModelCount() {
+        #expect(ASTRASchemaV12.models.count == 17)
+        #expect(ASTRASchemaV12.models.contains { $0 == FeedbackReport.self })
+    }
+
     @Test("Advertised current schema matches the compiled current model")
     func advertisedCurrentSchemaMatchesCompiledModel() {
         #expect(ASTRASchema.currentVersion == 12)
@@ -201,7 +207,7 @@ struct SchemaVersionTests {
             migrationPlan: ASTRAMigrationPlan.self,
             configurations: [config]
         )
-        #expect(container.schema.entities.count == 16)
+        #expect(container.schema.entities.count == 17)
     }
 
     @MainActor
@@ -345,6 +351,62 @@ struct SchemaVersionTests {
         let schedules = try context.fetch(FetchDescriptor<TaskSchedule>())
         let migratedSchedule = try #require(schedules.first)
         #expect(migratedSchedule.resolvedRuntimeID == .claudeCode)
+    }
+
+    @MainActor
+    @Test("Populated SchemaV11 store migrates to V12 without disturbing existing relationships")
+    func v11StoreMigratesToFeedbackReportTable() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-schema-v11-feedback-migration-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let storeURL = root.appendingPathComponent("store.store")
+        var oldContainer: ModelContainer? = try ModelContainer(
+            for: Schema(versionedSchema: ASTRASchemaV11.self),
+            configurations: [ModelConfiguration(url: storeURL)]
+        )
+        let oldContext = try #require(oldContainer?.mainContext)
+        let workspace = ASTRASchemaV11.Workspace()
+        workspace.name = "V11 Workspace"
+        workspace.primaryPath = "/tmp/v11-feedback"
+        oldContext.insert(workspace)
+        let task = ASTRASchemaV11.AgentTask()
+        task.title = "V11 Task"
+        task.goal = "Preserve me"
+        task.workspace = workspace
+        oldContext.insert(task)
+        let run = ASTRASchemaV11.TaskRun()
+        run.task = task
+        oldContext.insert(run)
+        try oldContext.save()
+        let workspaceID = workspace.id
+        let taskID = task.id
+        oldContainer = nil
+
+        let migratedContainer = try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(url: storeURL)]
+        )
+        let context = migratedContainer.mainContext
+        let migratedWorkspace = try #require(try context.fetch(FetchDescriptor<Workspace>()).first)
+        let migratedTask = try #require(try context.fetch(FetchDescriptor<AgentTask>()).first)
+        #expect(migratedWorkspace.id == workspaceID)
+        #expect(migratedTask.id == taskID)
+        #expect(migratedTask.workspace?.id == workspaceID)
+        #expect(migratedTask.runs.count == 1)
+        #expect(try context.fetch(FetchDescriptor<FeedbackReport>()).isEmpty)
+
+        let feedback = FeedbackReport(
+            installationID: "installation-v1",
+            evidenceWindowStart: Date(timeIntervalSince1970: 1_000),
+            evidenceWindowEnd: Date(timeIntervalSince1970: 1_900),
+            consentVersion: "consent-v1"
+        )
+        context.insert(feedback)
+        try context.save()
+        #expect(try context.fetch(FetchDescriptor<FeedbackReport>()).count == 1)
     }
 
     @MainActor

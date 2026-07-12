@@ -368,7 +368,7 @@ struct TaskDecisionDockView<ExtendedDetails: View>: View {
 
     private func isQuiet(_ action: TaskDecisionDockAction) -> Bool {
         switch action.kind {
-        case .closeTask, .closeAnyway, .closeWithoutRunningPlan, .dismissCorrection:
+        case .closeTask, .closeAnyway, .closeWithoutRunningPlan, .dismissCorrection, .reportProblem:
             true
         case .stop,
              .allowOnce,
@@ -422,6 +422,8 @@ struct TaskDecisionDockView<ExtendedDetails: View>: View {
             "RetryTaskButton"
         case .resume:
             "ResumeTaskButton"
+        case .reportProblem:
+            FeedbackReportAccessibilityID.reportProblem
         case .openArtifact:
             "OpenArtifactButton"
         case .closeTask, .closeAnyway, .closeWithoutRunningPlan:

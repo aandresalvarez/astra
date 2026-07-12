@@ -1,0 +1,1 @@
+{"formatVersion":1,"idempotencyKey":"bad-unicode","payload":{"statement":{"actualResult":"\uD800"}}}

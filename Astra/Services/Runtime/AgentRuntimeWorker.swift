@@ -1218,7 +1218,7 @@ final class AgentRuntimeWorker {
             modelContext.insert(event)
         } else {
             run.status = .failed
-            run.typedStopReason = .failed
+            run.typedStopReason = Self.durableFailureStopReason(category: failureDiagnostic?.category)
             if runtimeAdapter.shouldClearStaleSessionOnFailure(phase: auditPhase, result: result) {
                 task.sessionId = nil
                 let event = TaskEvent(task: task, eventType: TaskEventTypes.System.error,
@@ -1280,13 +1280,17 @@ final class AgentRuntimeWorker {
         )
         isRunning = false
     }
-
+    nonisolated static func durableFailureStopReason(category: AgentRuntimeFailureCategory?) -> TaskRunStopReason {
+        guard let category,
+              category != .providerProcessFailed,
+              let reason = TaskRunStopReason.custom(category.rawValue) else { return .failed }
+        return reason
+    }
     @MainActor
     func cancel() {
         cancellationRequested = true
         processRunner.cancel()
     }
-
     // MARK: - Private
 
     private func runtimeReadinessConfiguration(for runtime: AgentRuntimeID) -> RuntimeReadinessConfiguration {

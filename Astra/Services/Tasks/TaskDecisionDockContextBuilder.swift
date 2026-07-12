@@ -79,6 +79,7 @@ enum TaskDecisionDockContextBuilder {
         var canApprove: Bool
         var canRetry: Bool
         var canResume: Bool
+        var canReportProblem: Bool = false
         var canToggleDone: Bool
         var hasProviderSession: Bool
         var failureReason: String?
@@ -144,6 +145,7 @@ enum TaskDecisionDockContextBuilder {
             canApprove: input.canApprove,
             canRetry: input.canRetry,
             canResume: input.canResume,
+            canReportProblem: input.canReportProblem,
             canToggleDone: input.canToggleDone,
             hasProviderSession: input.hasProviderSession,
             failureReason: input.failureReason,

@@ -446,7 +446,7 @@ struct AgentRuntimeAdapterTests {
         // phase, and reports the resolved executable path (unlike the
         // install/auth hint every CLI-style adapter below reports).
         #expect(claude.missingExecutableAuditReason() == "provider_cli_not_found")
-        #expect(claude.missingExecutableStopReason() == nil)
+        #expect(claude.missingExecutableStopReason() == "missing_claude")
         #expect(claude.missingExecutableMessage(executablePath: "/tmp/claude") == "Claude Code CLI not found at '/tmp/claude'. Check Settings.")
         #expect(claude.manualCompletionPayload(phase: "run") == "Agent finished.")
         #expect(claude.manualCompletionPayload(phase: "resume") == "Follow-up completed.")

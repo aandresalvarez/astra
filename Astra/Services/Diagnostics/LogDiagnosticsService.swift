@@ -121,19 +121,20 @@ enum LogDiagnosticsService {
 
     static func collectCurrentEntries(
         inMemoryEntries: [LogEntry] = AppLogger.entries,
-        logDirectory: URL = AppLogger.mainLogFile.deletingLastPathComponent()
+        logDirectory: URL = AppLogger.mainLogFile.deletingLastPathComponent(),
+        includeRetainedAppLogs: Bool = false
     ) -> [LogEntry] {
         var collected = inMemoryEntries
         var seen = Set(inMemoryEntries.map(entrySignature))
 
         for file in diagnosticLogFiles(in: logDirectory) {
             let isAppLog = isAppLogFile(file)
-            if isAppLog, !inMemoryEntries.isEmpty {
+            if isAppLog, !inMemoryEntries.isEmpty, !includeRetainedAppLogs {
                 continue
             }
             let maxLines = file.lastPathComponent.hasPrefix("task-") ? maxTaskLogLines : maxMainLogLines
-            for line in tailLines(from: file, maxLines: maxLines) {
-                guard let entry = parseLogLine(line, dateAnchor: modificationDate(file)) else { continue }
+            let lines = tailLines(from: file, maxLines: maxLines)
+            for entry in parsePersistedLogLines(lines, dateAnchor: modificationDate(file)) {
                 let signature = entrySignature(entry)
                 guard !seen.contains(signature) else { continue }
                 seen.insert(signature)
@@ -2428,35 +2429,23 @@ enum LogDiagnosticsService {
         return first.map(String.init) ?? "unknown"
     }
 
-    static func parseLogLine(_ line: String, dateAnchor: Date = Date()) -> LogEntry? {
-        let pattern = #"^\[([0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,3})?)\]\s+\[([A-Z]+)\]\s+\[([^\]]+)\]\s+(.*)$"#
-        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
-        let nsRange = NSRange(line.startIndex..<line.endIndex, in: line)
-        guard let match = regex.firstMatch(in: line, range: nsRange),
-              match.numberOfRanges == 5,
-              let timestampRange = Range(match.range(at: 1), in: line),
-              let levelRange = Range(match.range(at: 2), in: line),
-              let categoryRange = Range(match.range(at: 3), in: line),
-              let messageRange = Range(match.range(at: 4), in: line) else {
-            return nil
-        }
+    static func parseLogLine(
+        _ line: String,
+        dateAnchor: Date = Date(),
+        calendar: Calendar = .current
+    ) -> LogEntry? {
+        PersistedLogEntryParser.parse(line, dateAnchor: dateAnchor, calendar: calendar)
+    }
 
-        let timestamp = logTimestamp(String(line[timestampRange]), anchoredTo: dateAnchor)
-        let levelText = String(line[levelRange]).lowercased()
-        let level = LogLevel(rawValue: levelText) ?? .info
-        let categoryParts = String(line[categoryRange]).split(separator: " ")
-        let category = categoryParts.first.map(String.init) ?? "General"
-        let taskShort = categoryParts
-            .first { $0.hasPrefix("task:") }
-            .map { String($0.dropFirst("task:".count)) }
-        let message = String(line[messageRange])
-        let messageWithTask = taskShort.map { "task_short=\($0) \(message)" } ?? message
-        return LogEntry(
-            level: level,
-            category: category,
-            message: messageWithTask,
-            timestamp: timestamp
-        )
+    /// Parses legacy time-only lines from newest to oldest so a midnight
+    /// rollover is assigned to the preceding calendar day. New lines carry an
+    /// absolute ISO-8601 timestamp and never depend on file metadata.
+    static func parsePersistedLogLines(
+        _ lines: [String],
+        dateAnchor: Date,
+        calendar: Calendar = .current
+    ) -> [LogEntry] {
+        PersistedLogEntryParser.parseLines(lines, dateAnchor: dateAnchor, calendar: calendar)
     }
 
     private static func diagnosticLogFiles(in directory: URL) -> [URL] {
@@ -2527,26 +2516,6 @@ enum LogDiagnosticsService {
             return size.int64Value
         }
         return 0
-    }
-
-    private static func logTimestamp(_ timeText: String, anchoredTo date: Date) -> Date {
-        let pieces = timeText.split(separator: ":")
-        guard pieces.count == 3,
-              let hour = Int(pieces[0]),
-              let minute = Int(pieces[1]) else {
-            return date
-        }
-
-        let secondPieces = pieces[2].split(separator: ".", maxSplits: 1, omittingEmptySubsequences: false)
-        guard let second = Int(secondPieces[0]) else { return date }
-        let milliseconds = secondPieces.count > 1 ? Int(secondPieces[1].prefix(3)) ?? 0 : 0
-
-        var components = Calendar.current.dateComponents([.year, .month, .day], from: date)
-        components.hour = hour
-        components.minute = minute
-        components.second = second
-        components.nanosecond = milliseconds * 1_000_000
-        return Calendar.current.date(from: components) ?? date
     }
 
     private static func sanitizedLine(_ entry: LogEntry) -> String {

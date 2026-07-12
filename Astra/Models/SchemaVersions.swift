@@ -3962,9 +3962,8 @@ public enum ASTRASchemaV11: VersionedSchema {
     }
 }
 
-/// V12 adds `AgentTask.runtimeExplicitlySelected`, tracking whether the
-/// current runtime was picked explicitly by the user rather than assigned
-/// automatically.
+/// V12 adds `AgentTask.runtimeExplicitlySelected` and the durable feedback
+/// outbox owner. Both additions migrate from V11 through one schema boundary.
 public enum ASTRASchemaV12: VersionedSchema {
     public static var versionIdentifier = Schema.Version(12, 0, 0)
 
@@ -3985,7 +3984,8 @@ public enum ASTRASchemaV12: VersionedSchema {
             WorkspaceAppRunEvent.self,
             WorkspaceAppDependencyBinding.self,
             WorkspaceAppAutomationState.self,
-            GoogleOAuthAccountProfile.self
+            GoogleOAuthAccountProfile.self,
+            FeedbackReport.self
         ]
     }
 }

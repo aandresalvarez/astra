@@ -125,6 +125,38 @@ struct TaskDecisionDockPresentationTests {
         #expect(dock.showsDetailsToggle)
     }
 
+    @Test("failed live dock exposes the shared report action only when routed")
+    func failedDockExposesReportProblemAction() throws {
+        let disabled = try #require(TaskDecisionDockPresentation.build(context(status: .failed)))
+        #expect(!disabled.utilityActions.contains { $0.kind == .reportProblem })
+
+        let enabled = try #require(TaskDecisionDockPresentation.build(context(
+            status: .failed,
+            canReportProblem: true
+        )))
+        let report = try #require(enabled.utilityActions.first { $0.kind == .reportProblem })
+        #expect(report.title == "Report a Problem")
+        #expect(report.systemImage == "exclamationmark.bubble")
+    }
+
+    @Test("task feedback path never reads generic event payloads or run output")
+    func feedbackSourceUsesPersistedAllowlistOnly() throws {
+        let root = try TestRepositoryRoot.resolve()
+        let source = try String(
+            contentsOf: root.appendingPathComponent("Astra/Views/TaskMainView.swift"),
+            encoding: .utf8
+        )
+        let start = try #require(source.range(of: "private func reportCurrentFailure()"))
+        let end = try #require(source.range(
+            of: "private func approveSimilarRuntimePermissionForTask",
+            range: start.upperBound..<source.endIndex
+        ))
+        let feedbackPath = String(source[start.lowerBound..<end.lowerBound])
+        #expect(!feedbackPath.contains("failureReason"))
+        #expect(!feedbackPath.contains(".payload"))
+        #expect(!feedbackPath.contains(".output"))
+    }
+
     @Test("details toggle is hidden when there are no run details")
     func detailsToggleIsHiddenWhenThereAreNoRunDetails() throws {
         let dock = TaskDecisionDockPresentation(
@@ -355,6 +387,7 @@ struct TaskDecisionDockPresentationTests {
         mission: MissionControlPresentation? = nil,
         verification: TaskVerificationPresentation? = nil,
         artifactPaths: [String] = [],
+        canReportProblem: Bool = false,
         visibleThreadAffordances: Set<TaskThreadAffordance>? = nil,
         pendingReviewState: PendingTaskReviewState = .none,
         canRetry: Bool = true,
@@ -392,6 +425,7 @@ struct TaskDecisionDockPresentationTests {
             canApprove: true,
             canRetry: canRetry,
             canResume: false,
+            canReportProblem: canReportProblem,
             canToggleDone: true,
             hasProviderSession: false,
             failureReason: nil,

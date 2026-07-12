@@ -4,37 +4,6 @@ import ASTRACore
 import AppKit
 import ASTRAModels
 import ASTRAPersistence
-
-// `WorkspaceCanvasItem`, `WorkspaceRightPanel`, and the shelf-boundary metrics live in
-// WorkspaceCanvasItem.swift (extracted to keep this file within its line budget).
-// The shelf-boundary overlay views live in WorkspaceCanvasItem.swift (extracted for budget).
-
-private extension View {
-    func shelfBoundaryOverlay() -> some View {
-        modifier(ShelfBoundaryOverlayModifier())
-    }
-
-    // Kept as its own ViewModifier (rather than an inline `.alert` in
-    // ContentView.body) so the alert's closures type-check in this small
-    // function's own context instead of adding to body's already-at-budget
-    // expression graph — see ContentView.body's line-budget note.
-    func workspaceCapabilityEnableFailureAlert(isPresented: Binding<Bool>) -> some View {
-        modifier(WorkspaceCapabilityEnableFailureAlertModifier(isPresented: isPresented))
-    }
-}
-
-private struct WorkspaceCapabilityEnableFailureAlertModifier: ViewModifier {
-    @Binding var isPresented: Bool
-
-    func body(content: Content) -> some View {
-        content.alert("Some credentials couldn't be saved", isPresented: $isPresented) {
-            Button("OK", role: .cancel) {}
-        } message: {
-            Text("Your workspace was created, but one or more capability credentials could not be saved to Keychain. Add them later in Configure > Connectors.")
-        }
-    }
-}
-
 struct NewWorkspaceDraft: Equatable {
     var name = ""
     var instructions = ""
@@ -46,11 +15,9 @@ struct NewWorkspaceDraft: Equatable {
     var trimmedInstructions: String {
         instructions.trimmingCharacters(in: .whitespacesAndNewlines)
     }
-
     var canCreate: Bool {
         !trimmedName.isEmpty && capabilitySetupIssues(githubCLIReady: true).isEmpty
     }
-
     func capabilitySetupIssues(githubCLIReady: Bool) -> [String] {
         OnboardingCapabilitySetup.configurableOptions.flatMap { option -> [String] in
             guard let packageID = option.packageID,
@@ -74,7 +41,9 @@ struct NewWorkspaceDraft: Equatable {
 struct ContentView: View {
     @ObservedObject var appUpdateController: AppUpdateController
     let runtime: AppRuntimeController
-    @Environment(\.modelContext) private var modelContext
+    @Environment(\.modelContext) var modelContext
+    @EnvironmentObject var feedbackRouter: FeedbackReportRouter
+    @EnvironmentObject var crashOfferService: FeedbackCrashOfferService
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Query(sort: \Workspace.name) private var workspaces: [Workspace]
     @StateObject private var sceneSelection = SceneSelectionModel()
@@ -158,6 +127,10 @@ struct ContentView: View {
     /// actual probe via hasProbedForUpdates, so this is belt-and-suspenders.)
     @State private var didScheduleUpdateProbe = false
     @State private var didLogStoreScaleSnapshot = false
+    @State var didCheckCrashFeedback = false
+    @State var pendingCrashFeedbackOffer: FeedbackCrashOffer?
+    @State var feedbackErrorMessage: String?
+    @State var feedbackHostID = UUID()
     @State private var generatedHTMLDiscoveryTask: Task<Void, Never>?
     @State private var markdownAvailabilityTask: Task<Void, Never>?
     @State private var queryAvailabilityTask: Task<Void, Never>?
@@ -665,6 +638,7 @@ struct ContentView: View {
             studioSession: workspaceAppStudioSession,
             onStartWorkspaceAppStudio: { prompt in startWorkspaceAppStudio(initialPrompt: prompt) },
             onStartMCPInstallReview: { request in pendingMCPInstallRequest = request },
+            onReportProblem: presentTaskFeedback,
             onPublishApp: { seed in publishWorkspaceAppFromStudio(seedSampleData: seed) },
             onDraftChanged: { WorkspaceAppStudioDraftAutosaveCoordinator.autosave(session: workspaceAppStudioSession, preferredWorkspace: effectiveWorkspace, modelContext: modelContext) },
             onCancelStudio: { cancelWorkspaceAppStudio() }
@@ -952,8 +926,22 @@ struct ContentView: View {
         }
     }
 
-    var body: some View {
+    private var rootLayoutWithFeedbackChrome: some View {
         rootLayoutWithChrome
+            .focusedSceneValue(\.reportProblemAction, { presentGeneralFeedback(from: .help) })
+            .feedbackReportSheetHost(feedbackHostID)
+            .modifier(ContentFeedbackAlertsModifier(
+                hasCompletedOnboarding: hasCompletedOnboarding,
+                offer: $pendingCrashFeedbackOffer,
+                errorMessage: $feedbackErrorMessage,
+                checkForOffer: checkForCrashFeedbackOffer,
+                presentOffer: presentCrashFeedback,
+                declineOffer: declineCrashFeedback
+            ))
+    }
+
+    var body: some View {
+        rootLayoutWithFeedbackChrome
         .modifier(ScreenTransitionReadinessObserver(coordinator: screenTransitionCoordinator))
         .onChange(of: selectedTaskCanvasSignature) {
             handleSelectedTaskCanvasSignatureChanged()
@@ -1115,10 +1103,7 @@ struct ContentView: View {
             UpdateSafetyObserver(
                 taskQueue: runtime.taskQueue,
                 runningTaskCount: runningTaskCount,
-                onChange: {
-                    refreshRunningTaskCount()
-                    refreshUpdateSafetyHooks()
-                }
+                onChange: handleUpdateSafetyChange
             )
         }
         .onChange(of: workspaceSelectionSignature) {
@@ -1167,6 +1152,11 @@ struct ContentView: View {
     }
 
     // MARK: - UI Actions
+
+    private func handleUpdateSafetyChange() {
+        refreshRunningTaskCount()
+        refreshUpdateSafetyHooks()
+    }
 
     private func openCapabilitiesManager() {
         configureInitialTab = .capabilities
@@ -2399,7 +2389,7 @@ struct ContentView: View {
 
     private func handleSelectedTaskIdentityChanged(to task: AgentTask?) {
         clearGeneratedHTMLDiscoveryState()
-        browserSessionPolicyRefreshTask?.cancel(); browserSessionPolicyRefreshGate.begin()
+        browserSessionPolicyRefreshTask?.cancel(); _ = browserSessionPolicyRefreshGate.begin()
         bindTaskScopedSessions(to: task?.id)
         syncBrowserPresentation()
         refreshMarkdownShelfAvailabilityForSelectedTask()
@@ -2869,6 +2859,9 @@ private struct ContentDetailAreaView: View {
     @ObservedObject var studioSession: WorkspaceAppStudioSession
     let onStartWorkspaceAppStudio: (String?) -> Void
     let onStartMCPInstallReview: (MCPInstallChatRequest) -> Void
+    let onReportProblem: (
+        AgentTask, FeedbackReportPrefill, UUID?, RuntimeFeedbackPersistedEvidence?, Date?
+    ) -> Void
     let onPublishApp: (_ seedSampleData: Bool) -> Void
     let onDraftChanged: () -> Void
     let onCancelStudio: () -> Void
@@ -3245,6 +3238,7 @@ private struct ContentDetailAreaView: View {
             studioSession: studioSession,
             onStartWorkspaceAppStudio: onStartWorkspaceAppStudio,
             onStartMCPInstallReview: onStartMCPInstallReview,
+            onReportProblem: onReportProblem,
             onPublishApp: onPublishApp,
             onDraftChanged: onDraftChanged,
             onCancelStudio: onCancelStudio
@@ -3343,6 +3337,9 @@ private struct ContentDetailContentView: View {
     @ObservedObject var studioSession: WorkspaceAppStudioSession
     let onStartWorkspaceAppStudio: (String?) -> Void
     let onStartMCPInstallReview: (MCPInstallChatRequest) -> Void
+    let onReportProblem: (
+        AgentTask, FeedbackReportPrefill, UUID?, RuntimeFeedbackPersistedEvidence?, Date?
+    ) -> Void
     let onPublishApp: (_ seedSampleData: Bool) -> Void
     let onDraftChanged: () -> Void
     let onCancelStudio: () -> Void
@@ -3392,7 +3389,10 @@ private struct ContentDetailContentView: View {
                     onForkTask: onForkTask,
                     onOpenGeneratedFile: onOpenGeneratedFile,
                     canOpenGeneratedFileInShelf: canOpenGeneratedFileInShelf,
-                    onStartMCPInstallReview: onStartMCPInstallReview
+                    onStartMCPInstallReview: onStartMCPInstallReview,
+                    onReportProblem: { prefill, runID, evidence, failureOccurredAt in
+                        onReportProblem(task, prefill, runID, evidence, failureOccurredAt)
+                    }
                 )
                 .id(task.id)
             }

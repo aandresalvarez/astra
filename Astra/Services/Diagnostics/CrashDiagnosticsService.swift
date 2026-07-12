@@ -21,7 +21,7 @@ enum CrashReportKind: String, Equatable, Codable {
     }
 }
 
-struct CrashReportSummary: Equatable, Identifiable {
+struct CrashReportSummary: Equatable, Identifiable, Sendable {
     let url: URL
     let appName: String
     let modifiedAt: Date

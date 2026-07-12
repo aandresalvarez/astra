@@ -386,6 +386,7 @@ struct TaskMainView: View {
     var onOpenGeneratedFile: ((String) -> Void)?
     var canOpenGeneratedFileInShelf: (TaskGeneratedFileShelfDestination?) -> Bool = { _ in true }
     var onStartMCPInstallReview: ((MCPInstallChatRequest) -> Void)?
+    var onReportProblem: ((FeedbackReportPrefill, UUID?, RuntimeFeedbackPersistedEvidence?, Date?) -> Void)?
 
     private var availableSkills: [Skill] {
         capabilitySnapshot.availableSkills
@@ -3947,6 +3948,7 @@ struct TaskMainView: View {
             canApprove: onApproveTask != nil,
             canRetry: onRetryTask != nil,
             canResume: task.hasProviderSession && onResumeTask != nil,
+            canReportProblem: onReportProblem != nil,
             canToggleDone: canToggleTaskDoneFromDecisionDock,
             hasProviderSession: task.hasProviderSession,
             failureReason: failureReason,
@@ -4359,6 +4361,8 @@ struct TaskMainView: View {
             onRetryTask?(task)
         case .resume:
             onResumeTask?(task)
+        case .reportProblem:
+            reportCurrentFailure()
         case .openArtifact:
             guard let path = action.payload else { return }
             openGeneratedFile(path: path, destination: TaskGeneratedFiles.shelfDestination(for: path))
@@ -4369,6 +4373,13 @@ struct TaskMainView: View {
             TaskComposerCoordinator.applyRuntimeSwitch(to: runtime, task: task, cache: runtimeModelCache, source: "policy_block_switch_action")
             onRetryTask?(task)
         }
+    }
+
+    private func reportCurrentFailure() {
+        guard let onReportProblem else { return }
+        let run = latestRun
+        let context = FeedbackTaskFailureSnapshotContextBuilder.make(run: run)
+        onReportProblem(context.prefill, run?.id, context.runtimeEvidence, context.taskFailureOccurredAt)
     }
 
     private func approveSimilarRuntimePermissionForTask() {
