@@ -15,6 +15,31 @@ enum CapabilityPersistence {
     static let defaultPersist: @MainActor (Workspace?, ModelContext) -> Bool = { workspace, context in
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: context)
     }
+
+    /// Resource editors sit outside the catalog lifecycle services, but their
+    /// successful saves still change catalog projections in every open window.
+    /// Publish the same typed event used by install/enable workflows instead
+    /// of relying on broad SwiftData save observation.
+    @MainActor
+    @discardableResult
+    static func saveResourceMutation(
+        workspace: Workspace?,
+        isGlobal: Bool = false,
+        modelContext: ModelContext
+    ) -> Bool {
+        guard defaultPersist(workspace, modelContext) else { return false }
+        CapabilityCatalogPersistenceEvents.post(resourceChange(for: workspace, isGlobal: isGlobal))
+        return true
+    }
+
+    static func resourceChange(
+        for workspace: Workspace?,
+        isGlobal: Bool = false
+    ) -> CapabilityCatalogPersistenceChange {
+        if isGlobal { return .global }
+        guard let workspace else { return .global }
+        return .workspace(workspace.id)
+    }
 }
 
 /// Snapshot of a workspace's capability-membership arrays. `ModelContext`

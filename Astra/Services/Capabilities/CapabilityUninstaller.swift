@@ -223,6 +223,7 @@ struct CapabilityUninstaller {
             "removed_templates_count": String(result.removedTemplateIDs.count)
         ])
 
+        CapabilityCatalogPersistenceEvents.post(.global)
         return result
     }
 

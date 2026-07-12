@@ -197,9 +197,11 @@ struct CapabilityLibrary {
         NotificationCenter.default.post(name: .capabilityPackagesChanged, object: nil)
     }
 
-    func seedApprovedPackages(_ packages: [PluginPackage]) throws {
+    @discardableResult
+    func seedApprovedPackages(_ packages: [PluginPackage]) throws -> Bool {
         try ensureDirectoryExists()
         let decoder = JSONDecoder()
+        var changed = false
         for package in packages {
             let approved = approvedPackage(package)
             let url = packageStorageURL(for: package.id)
@@ -210,11 +212,14 @@ struct CapabilityLibrary {
             }
 
             try install(approved, sourceMetadata: approved.sourceMetadata)
+            changed = true
         }
+        return changed
     }
 
-    func syncApprovedPackages(_ packages: [PluginPackage]) throws {
-        try seedApprovedPackages(packages)
+    @discardableResult
+    func syncApprovedPackages(_ packages: [PluginPackage]) throws -> Bool {
+        var changed = try seedApprovedPackages(packages)
 
         let approvedIDs = Set(packages.map(\.id))
         let decoder = JSONDecoder()
@@ -244,11 +249,13 @@ struct CapabilityLibrary {
                 continue
             }
             try fileManager.removeItem(at: storageURL)
+            changed = true
             removedPackage = true
         }
         if removedPackage {
             NotificationCenter.default.post(name: .capabilityPackagesChanged, object: nil)
         }
+        return changed
     }
 
     @discardableResult

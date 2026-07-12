@@ -3,6 +3,64 @@ import Foundation
 @testable import ASTRA
 import ASTRACore
 
+private final class CatalogLoadEventRecorder: @unchecked Sendable {
+    private(set) var changes: [CapabilityCatalogPersistenceChange] = []
+    private var token: NSObjectProtocol?
+
+    func start() {
+        token = NotificationCenter.default.addObserver(
+            forName: .capabilityCatalogPersistenceChanged,
+            object: nil,
+            queue: nil
+        ) { [weak self] notification in
+            guard let change = notification.object as? CapabilityCatalogPersistenceChange else { return }
+            self?.changes.append(change)
+        }
+    }
+
+    deinit {
+        if let token { NotificationCenter.default.removeObserver(token) }
+    }
+}
+
+@MainActor
+private final class ProductionCatalogReloadHandler: @unchecked Sendable {
+    let catalog: PluginCatalog
+    let library: CapabilityLibrary
+    let workspaceID: UUID
+    let sourceRevision = PluginCatalogPresentationSourceRevision()
+    private var token: NSObjectProtocol?
+
+    init(catalog: PluginCatalog, library: CapabilityLibrary, workspaceID: UUID = UUID()) {
+        self.catalog = catalog
+        self.library = library
+        self.workspaceID = workspaceID
+    }
+
+    func start() {
+        token = NotificationCenter.default.addObserver(
+            forName: .capabilityCatalogPersistenceChanged,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            MainActor.assumeIsolated {
+                guard let self,
+                      let change = notification.object as? CapabilityCatalogPersistenceChange else { return }
+                self.sourceRevision.receive(change, workspaceID: self.workspaceID) {
+                    self.catalog.loadApprovedCapabilities(
+                        library: self.library,
+                        announceLibraryMutations: false
+                    )
+                }
+            }
+        }
+    }
+
+    deinit {
+        if let token { NotificationCenter.default.removeObserver(token) }
+    }
+}
+
 // Mutation flows (enable/disable/remove/update) are covered on the live path
 // in CapabilityInstallerTests, CapabilityLibraryTests, and
 // CapabilityCatalogActionServiceTests. This file covers the read-side
@@ -74,6 +132,72 @@ struct PluginCatalogLoadTests {
         catalog.loadApprovedCapabilities(library: library)
         #expect(catalog.packages.map(\.id).contains("approved-only"))
         #expect(catalog.packages.allSatisfy { FileManager.default.fileExists(atPath: library.packageStorageURL(for: $0.id).path) })
+    }
+
+    @Test("approved catalog repair and stale built-in prune emit one global mutation")
+    func approvedCatalogPruneEmitsGlobalMutation() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-approved-prune-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let library = CapabilityLibrary(directory: root)
+        var stale = PluginPackage(
+            id: "retired-built-in-test",
+            name: "Retired Built-in",
+            icon: "archivebox",
+            description: "Stale curated capability",
+            author: "ASTRA",
+            category: "Tests",
+            tags: [],
+            version: "1.0.0",
+            skills: [],
+            connectors: [],
+            localTools: [],
+            templates: []
+        )
+        stale.sourceMetadata = .builtIn()
+        try library.install(stale, sourceMetadata: .builtIn())
+        let recorder = CatalogLoadEventRecorder()
+        recorder.start()
+        let catalog = PluginCatalog()
+        let reloadHandler = ProductionCatalogReloadHandler(catalog: catalog, library: library)
+        reloadHandler.start()
+
+        catalog.loadApprovedCapabilities(library: library)
+
+        #expect(library.installedPackage(id: stale.id) == nil)
+        #expect(recorder.changes == [.global])
+        // The repair event is delivered synchronously while the original load
+        // is active. Its centralized handler must not assign a second snapshot.
+        #expect(catalog.revision == 1)
+        #expect(reloadHandler.sourceRevision.persistenceRevision == 1)
+    }
+
+    @Test("typed persistence handler reloads once globally and never for workspace-only changes")
+    func typedPersistenceHandlerOwnsReloadScope() {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("astra-approved-handler-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let library = CapabilityLibrary(directory: root)
+        let catalog = PluginCatalog()
+        let workspaceID = UUID()
+        let handler = ProductionCatalogReloadHandler(
+            catalog: catalog,
+            library: library,
+            workspaceID: workspaceID
+        )
+        handler.start()
+
+        CapabilityCatalogPersistenceEvents.post(.global)
+        #expect(catalog.revision == 1)
+        #expect(handler.sourceRevision.persistenceRevision == 1)
+
+        CapabilityCatalogPersistenceEvents.post(.workspace(workspaceID))
+        #expect(catalog.revision == 1)
+        #expect(handler.sourceRevision.persistenceRevision == 2)
+
+        CapabilityCatalogPersistenceEvents.post(.workspace(UUID()))
+        #expect(catalog.revision == 1)
+        #expect(handler.sourceRevision.persistenceRevision == 2)
     }
 }
 

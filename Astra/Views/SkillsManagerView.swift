@@ -146,7 +146,7 @@ struct SkillsManagerView: View {
         skill.workspace = workspace
         modelContext.insert(skill)
         selectedSkill = skill
-        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
+        CapabilityPersistence.saveResourceMutation(workspace: workspace, modelContext: modelContext)
         AppLogger.audit(.skillCreated, category: "UI", fields: [
             "skill_id": skill.id.uuidString,
             "workspace_id": workspace.id.uuidString,
@@ -162,7 +162,7 @@ struct SkillsManagerView: View {
             workspace.enabledGlobalSkillIDs.append(idString)
         }
         workspace.updatedAt = Date()
-        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
+        CapabilityPersistence.saveResourceMutation(workspace: workspace, modelContext: modelContext)
         AppLogger.audit(.skillToolPermissionChanged, category: "UI", fields: [
             "skill_id": skill.id.uuidString,
             "workspace_id": workspace.id.uuidString,
@@ -176,7 +176,7 @@ struct SkillsManagerView: View {
         }
         skill.cleanupKeychain()
         modelContext.delete(skill)
-        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
+        CapabilityPersistence.saveResourceMutation(workspace: workspace, modelContext: modelContext)
     }
 
 }
@@ -315,8 +315,9 @@ struct SkillEditorView: View {
                                     ws.updatedAt = Date()
                                 }
                                 skill.updatedAt = Date()
-                                WorkspacePersistenceCoordinator.saveAndAutoExport(
+                                CapabilityPersistence.saveResourceMutation(
                                     workspace: workspace ?? skill.workspace,
+                                    isGlobal: skill.isGlobal,
                                     modelContext: modelContext
                                 )
                             }

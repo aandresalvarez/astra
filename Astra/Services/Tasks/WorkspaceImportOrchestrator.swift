@@ -96,6 +96,7 @@ struct ContentWorkspaceActionCoordinator {
             approvalRecords: CapabilityApprovalStore().records()
         )
         var hasFailure = false
+        var enabledAnyCapability = false
         for package in packages {
             let inputs = draft.capabilityConfiguration.installationInputs(for: package.id)
             let traceID = AuditTrace.make("workspace-capability")
@@ -120,6 +121,7 @@ struct ContentWorkspaceActionCoordinator {
                     policyContext: policyContext,
                     traceID: traceID
                 )
+                enabledAnyCapability = true
             } catch {
                 hasFailure = true
                 AppLogger.audit(.capabilityEnableFailed, category: "Capabilities", fields: [
@@ -132,6 +134,12 @@ struct ContentWorkspaceActionCoordinator {
                     "error_type": String(describing: type(of: error))
                 ], level: .error)
             }
+        }
+        if enabledAnyCapability {
+            // Each installer call owns its global library mutation event. The
+            // workspace projection changed as one onboarding action, so emit a
+            // single scoped invalidation after the batch completes.
+            CapabilityCatalogPersistenceEvents.post(.workspace(workspace.id))
         }
         return hasFailure
     }
