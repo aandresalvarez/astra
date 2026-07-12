@@ -1528,6 +1528,16 @@ struct ArchitectureFitnessTests {
         #expect(!policy.contains("public var excludedTools"))
     }
 
+    @Test("Transcript worker idles without respawning an empty task loop")
+    func transcriptWorkerRestartRequiresPendingWork() throws {
+        let root = try repositoryRoot()
+        let source = try fileText("Astra/Views/TaskThreadViewModel.swift", root: root)
+        #expect(source.contains("if self.pendingSnapshotRequest != nil"))
+        let protocolSource = try fileText("ASTRACore/AstraRunProtocol.swift", root: root)
+        #expect(protocolSource.contains("visibleChunks.append"))
+        #expect(!protocolSource.contains("visible += filter.process"))
+    }
+
     private func taskStatusWriteViolations(
         in text: String,
         relativePath: String,
