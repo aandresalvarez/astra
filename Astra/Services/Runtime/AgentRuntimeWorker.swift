@@ -497,11 +497,23 @@ final class AgentRuntimeWorker {
             task.runtimeID = selectedRuntime.rawValue
         }
 
-        // Construct the run before resolving requirements: TaskRun.init settles
-        // executionEnvironmentSnapshotJSON when nil, but the resolver's own
-        // fallback disagrees for historical tasks — resolving first risked stale requirements.
-        let run = TaskRun(task: task)
-        modelContext.insert(run)
+        // Settle executionEnvironmentSnapshotJSON before resolving
+        // requirements, not the whole TaskRun: the resolver's own
+        // DockerExecutionPlanner.resolveEnvironment fallback disagrees with
+        // TaskRun.init's for historical tasks with no snapshot yet, so
+        // resolving first risked stale requirements. An earlier version of
+        // this fix constructed TaskRun itself early, which fixed that but
+        // broke two other things that depend on TaskRun NOT existing yet at
+        // this point: clearMismatchedProviderSessionIfNeeded's "latest run"
+        // lookup (task.runs would include the new, not-yet-started run) and
+        // run.providerSessionId (would capture task.sessionId before a
+        // reroute clears it). Settling just the field TaskRun.init would
+        // otherwise settle avoids both.
+        if task.executionEnvironmentSnapshotJSON == nil {
+            task.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encodeSnapshot(
+                ExecutionEnvironmentStore.decode(task.workspace?.activeExecutionEnvironmentJSON)
+            )
+        }
 
         let runtimeResolution = AgentRuntimeLaunchRuntimeResolver.resolve(
             task: task,
@@ -529,7 +541,10 @@ final class AgentRuntimeWorker {
             runtimeAdapter = AgentRuntimeAdapterRegistry.adapter(for: selectedRuntime)
             launchSettings = runtimeAdapter.launchSettings(configuration: runtimeConfiguration)
         }
+
+        let run = TaskRun(task: task)
         run.runtimeID = selectedRuntime.rawValue
+        modelContext.insert(run)
 
         let startPayload = startEventPayload ?? runtimeAdapter.defaultStartEventPayload(task: task)
         let startEvent = TaskEvent(task: task, type: startEventType, payload: startPayload, run: run)
@@ -724,7 +739,12 @@ final class AgentRuntimeWorker {
             workspacePath: executionPath,
             executionEnvironment: executionEnvironment,
             capabilityResolutionSnapshot: capabilityResolutionSnapshot,
-            runtimePermissionGrants: executionPolicy.permissionGrantsOverride ?? []
+            runtimePermissionGrants: executionPolicy.permissionGrantsOverride ?? [],
+            // appliedRuntime.requirements is already resolved above (~line 528),
+            // so no reordering was needed here — closes the last spot that
+            // independently re-derived GitHub host-control routing instead of
+            // reusing the resolver's single precomputed answer.
+            precomputedRuntimeRequirements: appliedRuntime.requirements
         )
         TaskLaunchResourceManifestStore.persist(launchResourcePlan, task: task)
         logContextPromptDiagnostics(for: task, prompt: prompt, phase: auditPhase)

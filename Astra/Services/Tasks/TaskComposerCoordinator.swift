@@ -166,4 +166,14 @@ enum TaskComposerCoordinator {
             "workspace_id": task.workspace?.id.uuidString ?? "none"
         ])
     }
+
+    /// Combines a task/draft's already-persisted explicit-pick flag with the
+    /// composer's session-scoped "did the user just touch the runtime picker"
+    /// signal. Sticky-true: once either side has recorded an explicit pick, a
+    /// later resync (e.g. ChatPanelView.saveDraft() copying the composer's
+    /// live selection onto an already-created draft) must never clobber it
+    /// back to false.
+    static func explicitRuntimeSelection(existing: Bool, composerFlagged: Bool) -> Bool {
+        existing || composerFlagged
+    }
 }

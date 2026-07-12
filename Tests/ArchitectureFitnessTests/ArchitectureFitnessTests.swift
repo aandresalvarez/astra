@@ -1617,7 +1617,13 @@ struct ArchitectureFitnessTests {
             // by ~450-500 lines every time. That growth is expected schema
             // history, not scope creep - there's nothing to shrink here.
             "Astra/Models/SchemaVersions.swift": .init(4_100, .owner("SwiftData schema history")),
-            "Astra/Views/ChatPanelView.swift": .init(3_050, .owner("Composer chat surface")),
+            // Budget raised to propagate AgentTask.runtimeExplicitlySelected through
+            // this composer's draft lifecycle: the flag has to be set/preserved at
+            // every one of its task-creation and draft-resync call sites (quickRun,
+            // createTaskFromSpec, runApprovedPlan, saveDraft's two branches) plus a
+            // couple of session-reset points, so the growth is spread thin by design
+            // rather than concentrated in one function that could be extracted.
+            "Astra/Views/ChatPanelView.swift": .init(3_075, .owner("Composer chat surface")),
             "Astra/Services/Runtime/AgentRuntimeAdapter.swift": .init(2_900, .owner("Runtime adapter registry")),
             "Astra/Views/PluginCatalogView.swift": .init(2_900, .owner("Capability catalog UI")),
             "Astra/Views/ShelfMarkdownPanelView.swift": .init(2_850, .owner("Shelf markdown panel")),

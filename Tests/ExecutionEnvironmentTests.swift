@@ -1008,8 +1008,8 @@ struct ExecutionEnvironmentTests {
         #expect(!viewModel.canSwitchPinnedTaskToWorkspaceEnvironment)
     }
 
-    @Test("constructing a TaskRun before resolving requirements settles a historical task's environment consistently")
-    func taskRunConstructionSettlesHistoricalTaskEnvironmentBeforeRequirementResolution() throws {
+    @Test("settling a historical task's environment snapshot before resolving requirements keeps them consistent")
+    func settlingHistoricalTaskEnvironmentBeforeRequirementResolutionKeepsThemConsistent() throws {
         let root = try makeTempDir("docker-historical-run-ordering")
         defer { try? FileManager.default.removeItem(atPath: root) }
         let workspace = Workspace(name: "Docker", primaryPath: root)
@@ -1026,22 +1026,25 @@ struct ExecutionEnvironmentTests {
         task.status = .completed
         task.executionEnvironmentSnapshotJSON = nil
 
-        // Before any TaskRun exists, the resolver's own fallback
+        // Before the snapshot is settled, the resolver's own fallback
         // (DockerExecutionPlanner.resolveEnvironment) is deliberately
         // conservative for historical tasks: assume host rather than
         // retroactively reassigning a snapshot-less legacy task to whatever
         // the workspace's environment happens to be right now.
         #expect(DockerExecutionPlanner.resolveEnvironment(for: task).isHost)
 
-        // AgentRuntimeWorker.execute constructs the TaskRun (which settles
-        // task.executionEnvironmentSnapshotJSON as a side effect) BEFORE
-        // calling AgentRuntimeLaunchRuntimeResolver.resolve — see the
-        // ordering comment at that call site. Once a run exists, resolution
-        // must reflect the SAME environment the run actually executes under,
-        // not the stale host-conservative default, or an incompatible
-        // runtime's requirements get computed against the wrong environment
-        // and skip the up-front structured block.
-        _ = TaskRun(task: task)
+        // AgentRuntimeWorker.execute settles task.executionEnvironmentSnapshotJSON
+        // (same encode/decode of workspace.activeExecutionEnvironmentJSON that
+        // TaskRun.init would otherwise settle) BEFORE calling
+        // AgentRuntimeLaunchRuntimeResolver.resolve — see the ordering comment
+        // at that call site. Once settled, resolution must reflect the SAME
+        // environment the run actually executes under, not the stale
+        // host-conservative default, or an incompatible runtime's requirements
+        // get computed against the wrong environment and skip the up-front
+        // structured block.
+        task.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encodeSnapshot(
+            ExecutionEnvironmentStore.decode(workspace.activeExecutionEnvironmentJSON)
+        )
         #expect(DockerExecutionPlanner.resolveEnvironment(for: task).id == "image:test")
     }
 

@@ -315,6 +315,21 @@ struct ComposerPresentationTests {
         #expect(task.runtimeExplicitlySelected == true)
     }
 
+    @Test("explicit runtime selection is sticky-true across a draft resync")
+    func explicitRuntimeSelectionIsStickyTrueAcrossDraftResync() {
+        // ChatPanelView's inline "new task" composer has its own draft-task
+        // lifecycle distinct from TaskComposerCoordinator.applyRuntimeSwitch's
+        // single-task case: saveDraft() re-derives runtimeID from the composer's
+        // live AppStorage default on every call, so it must never let that
+        // resync silently clobber an explicit pick already recorded on the
+        // draft — a resync happening after the pick is the common case, since
+        // saveDraft() runs on nearly every subsequent composer action.
+        #expect(TaskComposerCoordinator.explicitRuntimeSelection(existing: false, composerFlagged: false) == false)
+        #expect(TaskComposerCoordinator.explicitRuntimeSelection(existing: false, composerFlagged: true) == true)
+        #expect(TaskComposerCoordinator.explicitRuntimeSelection(existing: true, composerFlagged: false) == true)
+        #expect(TaskComposerCoordinator.explicitRuntimeSelection(existing: true, composerFlagged: true) == true)
+    }
+
     private func sourceFile(_ relativePath: String) throws -> String {
         let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()

@@ -1084,6 +1084,82 @@ extension HeadlessChatScenarioTests {
         })
     }
 
+    @Test("Explicitly selected Cursor blocks instead of rerouting to a compatible Codex fallback")
+    func explicitlySelectedCursorHostControlTaskBlocksInsteadOfReroutingToCodex() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let cursorPath = try harness.writeExecutable(
+            named: "cursor-agent",
+            script: """
+            printf '%s\\n' 'Cursor provider should not launch for GitHub host-control work'
+            exit 0
+            """
+        )
+        let codexPath = try harness.writeExecutable(
+            named: "codex",
+            script: """
+            #!/bin/sh
+            printf '%s\\n' '{"type":"thread.started","thread_id":"codex-explicit-thread"}'
+            printf '%s\\n' '{"type":"item.completed","item":{"type":"agent_message","text":"Codex should not run either"}}'
+            printf '%s\\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'
+            exit 0
+            """
+        )
+
+        let task = harness.makeTask(
+            runtime: .cursorCLI,
+            goal: "List my open PRs in the astra repo",
+            model: "composer-2.5-fast"
+        )
+        // Mirrors what ChatPanelView's composer now does when the user picks
+        // Cursor CLI via ComposerToolbar's runtime picker before this task is
+        // created/enqueued (quickRun / runApprovedPlan / createTaskFromSpec).
+        task.runtimeExplicitlySelected = true
+        task.workspace?.enabledCapabilityIDs = [HostControlPlaneMCPProjection.githubPackageID]
+        let githubSkill = Skill(
+            name: "GitHub Agent",
+            allowedTools: ["Read", "Glob", "Grep"],
+            behaviorInstructions: "Use ASTRA's host-control GitHub MCP tool mcp__astra_host__github for GitHub operations."
+        )
+        githubSkill.skillDescription = "Inspect issues, PRs, and CI via ASTRA host-control GitHub"
+        githubSkill.originPackageID = HostControlPlaneMCPProjection.githubPackageID
+        githubSkill.workspace = task.workspace
+        task.skills = [githubSkill]
+        harness.context.insert(githubSkill)
+
+        // Codex is a fully compatible, available fallback - if the explicit pick
+        // were ignored, the resolver would silently reroute to it exactly like
+        // githubHostControlRetryReroutesFromCursorToConfiguredCompatibleRuntime.
+        let worker = harness.makeWorker(
+            runtime: .cursorCLI,
+            executablePath: cursorPath,
+            permissionPolicy: .autonomous
+        )
+        worker.defaultRuntimeID = .codexCLI
+        worker.setExecutablePath(codexPath, for: .codexCLI)
+        worker.setHomeDirectory(
+            harness.rootURL.appendingPathComponent("codex-home", isDirectory: true).path,
+            for: .codexCLI
+        )
+
+        _ = await harness.execute(task: task, worker: worker)
+
+        let run = try #require(task.runs.sorted { $0.startedAt < $1.startedAt }.last)
+        #expect(run.status == .failed)
+        #expect(run.runtimeID == AgentRuntimeID.cursorCLI.rawValue)
+        #expect(run.typedStopReason == TaskRunStopReason.custom(TaskRuntimeCompatibilityService.runtimeCapabilityIncompatibleReason))
+        #expect(task.runtimeID == AgentRuntimeID.cursorCLI.rawValue)
+        #expect(task.status == .pendingUser)
+        #expect(run.output.isEmpty)
+        #expect(!task.events.contains { $0.payload.contains("Runtime changed from Cursor CLI to Codex CLI") })
+        #expect(task.events.contains { event in
+            event.run?.id == run.id &&
+            event.type == TaskEventTypes.System.error.rawValue &&
+            event.payload.contains("Selected runtime is incompatible with required ASTRA capabilities")
+        })
+    }
+
     // MARK: - Permission mode passed to CLI (Claude & Antigravity)
 
     @Test("Claude restricted mode passes no skip flag but autonomous does")

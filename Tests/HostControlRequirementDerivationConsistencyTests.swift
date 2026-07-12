@@ -402,6 +402,107 @@ struct HostControlRequirementDerivationConsistencyTests {
         )) == "none")
     }
 
+    /// Extends the resolver-vs-render parity guarantee one layer deeper
+    /// still: `TaskLaunchResourceResolver`, which independently decides —
+    /// via its private `routesGitHubMetadataThroughHostControl` — whether
+    /// GitHub work should route through ASTRA's host-control MCP
+    /// (suppressing native git/gh credential projection) or fall back to
+    /// native git/gh credentials instead. A Codex-review follow-up on this
+    /// PR found this was the one remaining consumer `AgentRuntimeWorker`
+    /// never threaded `appliedRuntime.requirements` into:
+    /// `TaskLaunchResourceResolver.resolve` built `launchResourcePlan` using
+    /// its own second, independently-captured capability-scope derivation of
+    /// GitHub host-control availability
+    /// (`Astra/Services/Runtime/TaskLaunchResourceResolver.swift`). If that
+    /// independent derivation disagrees with the actual
+    /// `TaskRuntimeRequirementSet` (e.g. the real resolved requirements omit
+    /// "github" from `hostControlTools` while the resource resolver's own
+    /// capability-scope-based check says GitHub host-control is available),
+    /// the resource resolver suppresses native git/gh credential projection
+    /// assuming host control will cover it — while nothing downstream
+    /// actually attaches that host-control route, since the rest of the
+    /// launch pipeline follows the real (disagreeing) requirement set. Net
+    /// effect: neither credential path is active for that run.
+    @Test("a precomputed requirement set overrides independent re-derivation in TaskLaunchResourceResolver's GitHub routing")
+    @MainActor
+    func precomputedRequirementsAreAuthoritativeInResourceResolver() throws {
+        let workspaceRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("resource-resolver-precomputed-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: workspaceRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: workspaceRoot) }
+
+        let gitCredentialPath = workspaceRoot.appendingPathComponent("host-gitconfig")
+        try "[credential]\nhelper = osxkeychain\n".write(to: gitCredentialPath, atomically: true, encoding: .utf8)
+
+        // Mirrors githubMetadataRoutesThroughHostControlWithoutGitCredentialProjection
+        // in Tests/TaskLaunchResourcePlanTests.swift: a task whose own
+        // capability scope (enabledCapabilityIDs includes the GitHub
+        // package) makes the resolver's independent derivation say "route
+        // through host control" for this prompt/context.
+        let workspace = Workspace(name: "GitHub Metadata Precomputed", primaryPath: workspaceRoot.path)
+        workspace.enabledCapabilityIDs = [HostControlPlaneMCPProjection.githubPackageID]
+        let task = AgentTask(
+            title: "Review PR metadata",
+            goal: "Use GitHub to inspect pull request metadata and checks",
+            workspace: workspace
+        )
+        let snapshot = TaskCapabilityResolutionSnapshot.capture(
+            for: task,
+            providerLaunchContextText: "Use GitHub to list open pull requests and check statuses."
+        )
+
+        func resolve(
+            precomputed: TaskRuntimeRequirementSet?
+        ) -> (plan: TaskLaunchResourcePlan, gitCredentialProviderWasCalled: Bool) {
+            var gitCredentialProviderWasCalled = false
+            let plan = TaskLaunchResourceResolver.resolve(
+                task: task,
+                runID: UUID(),
+                runtime: .claudeCode,
+                phase: "resume",
+                prompt: "Review PR metadata",
+                contextText: "Use GitHub to list open pull requests and check statuses.",
+                workspacePath: workspaceRoot.path,
+                capabilityResolutionSnapshot: snapshot,
+                gitCredentialContextProvider: { _, _, _, _ in
+                    gitCredentialProviderWasCalled = true
+                    return GitCredentialSandboxContext(
+                        readablePaths: [gitCredentialPath.path],
+                        writablePaths: [],
+                        transports: [.https],
+                        diagnostics: []
+                    )
+                },
+                precomputedRuntimeRequirements: precomputed
+            )
+            return (plan, gitCredentialProviderWasCalled)
+        }
+
+        // Baseline: without an override, the resolver independently derives
+        // "github routes through host control" from the task's own
+        // capability scope and suppresses native git credential projection —
+        // same as the always-live
+        // githubMetadataRoutesThroughHostControlWithoutGitCredentialProjection.
+        let baseline = resolve(precomputed: nil)
+        #expect(!baseline.gitCredentialProviderWasCalled)
+        #expect(baseline.plan.gitCredential == nil)
+
+        // With an explicit precomputed requirement set whose hostControlTools
+        // omits "github" — as if AgentRuntimeLaunchRuntimeResolver had
+        // already determined the actual launch will NOT attach a GitHub
+        // host-control route — the resource resolver must defer to it
+        // instead of re-deriving its own, contradicting answer that would
+        // otherwise leave neither credential path active for the run.
+        let overridden = resolve(precomputed: TaskRuntimeRequirementSet(
+            hostControlTools: [],
+            requiresDockerWorkspaceShell: false,
+            requiresBrowserControl: false
+        ))
+        #expect(overridden.gitCredentialProviderWasCalled)
+        #expect(overridden.plan.gitCredential != nil)
+        #expect(overridden.plan.credentialGrants.contains { $0.source == .gitCredential })
+    }
+
     /// Phase 2 (D1): when the user explicitly pinned Cursor for this task
     /// (`runtimeExplicitlySelected`), an incompatible requirement must not be
     /// silently overridden by rerouting to Codex — it must block up front
