@@ -177,6 +177,17 @@ public final class FeedbackOutboxService {
         return try snapshot(report, status: status)
     }
 
+    public func manualExportSnapshot(reportID: UUID) throws -> FeedbackDraftSnapshot {
+        let context = makeContext()
+        let report = try fetch(reportID: reportID, in: context)
+        let status = try storedStatus(report)
+        guard status == .prepared || status == .queued else {
+            throw illegalTransition(from: status, to: .prepared)
+        }
+        _ = try validatedPreparedRecovery(for: report)
+        return try snapshot(report, status: status)
+    }
+
     public func latestDraft(
         taskID: String?,
         runID: String?,
@@ -230,6 +241,70 @@ public final class FeedbackOutboxService {
             )
         }
         return try validatedPreparedRecovery(for: report)
+    }
+
+    /// Returns a fully revalidated owned package for explicit manual export.
+    /// Queued reports remain eligible because local queueing is not submission
+    /// and the remote sender may not be available yet.
+    public func recoverablePackageForManualExport(
+        reportID: UUID
+    ) throws -> FeedbackPreparedPackageRecovery {
+        let context = makeContext()
+        let report = try fetch(reportID: reportID, in: context)
+        let status = try storedStatus(report)
+        guard status == .prepared || status == .queued else {
+            throw FeedbackOutboxError.illegalTransition(
+                from: report.localStatusRaw,
+                to: FeedbackLocalStatusV1.queued.rawValue
+            )
+        }
+        return try validatedPreparedRecovery(for: report)
+    }
+
+    /// Revalidates the exact package shown at the review boundary without
+    /// adopting, queueing, or otherwise mutating durable state. Manual export
+    /// uses this read-only boundary so it can never bypass the same package,
+    /// report-binding, inventory, byte-count, and hash checks used by adoption.
+    public func validatedReviewedPackageFiles(
+        reportID: UUID,
+        directory: URL,
+        matching review: FeedbackPreparedPackageReview,
+        expectedContents: FeedbackDraftContents
+    ) throws -> [String] {
+        let context = makeContext()
+        let report = try fetch(reportID: reportID, in: context)
+        let status = try storedStatus(report)
+        guard status == .draft || status == .prepared || status == .queued else {
+            throw illegalTransition(from: status, to: .prepared)
+        }
+
+        if status != .draft {
+            guard let ownedDirectory = try validatedOwnedPackageURL(
+                for: report,
+                requireExists: true
+            ), ownedDirectory == directory.standardizedFileURL else {
+                throw FeedbackOutboxError.invalidStoredPackagePath(directory.lastPathComponent)
+            }
+        }
+
+        let validated = try FeedbackPackageAdoptionValidator.validate(
+            directory: directory,
+            fileManager: fileManager
+        )
+        try validate(validated.envelope, matches: report, expectedContents: expectedContents)
+        guard validated.manifest == review.manifest.canonicalized(),
+              validated.manifestSHA256 == review.manifestSHA256,
+              validated.reportSHA256 == review.reportSHA256,
+              validated.archiveSHA256 == review.archiveSHA256 else {
+            throw FeedbackOutboxError.preparedPackageChangedAfterReview
+        }
+
+        var files = [FeedbackPackageLayout.envelope, FeedbackPackageLayout.manifest]
+        if validated.archiveSHA256 != nil {
+            files.append(FeedbackPackageLayout.archive)
+        }
+        files.append(contentsOf: validated.manifest.artifacts.map(\.relativePath))
+        return Array(Set(files)).sorted()
     }
 
     public func recoverableReportIDs() throws -> Set<UUID> {
@@ -673,6 +748,34 @@ public final class FeedbackOutboxService {
               payload.evidenceWindow.end == report.evidenceWindowEnd,
               payload.consent.version == report.consentVersion,
               envelopeSelections == storedSelections else {
+            throw FeedbackOutboxError.preparedPackageDoesNotMatchDraft
+        }
+    }
+
+    private func validate(
+        _ envelope: FeedbackReportEnvelopeV1,
+        matches report: FeedbackReport,
+        expectedContents: FeedbackDraftContents
+    ) throws {
+        try expectedContents.validate()
+        try envelope.validate()
+        let payload = envelope.payload
+        let expectedSelections = expectedContents.consent.evidenceSelections
+            .sorted { $0.artifactID < $1.artifactID }
+        let envelopeSelections = payload.consent.evidenceSelections
+            .sorted { $0.artifactID < $1.artifactID }
+        guard payload.reportID.uuid == report.id,
+              envelope.installationID.rawValue == report.installationID,
+              envelope.idempotencyKey == report.idempotencyKey,
+              payload.statement.intendedOutcome == expectedContents.intendedOutcome,
+              payload.statement.actualResult == expectedContents.actualResult,
+              payload.statement.expectedResult == expectedContents.expectedResult,
+              payload.statement.workBlocked == expectedContents.workBlocked,
+              payload.taskID == expectedContents.taskID,
+              payload.runID == expectedContents.runID,
+              payload.evidenceWindow == expectedContents.evidenceWindow,
+              payload.consent.version == expectedContents.consent.version,
+              envelopeSelections == expectedSelections else {
             throw FeedbackOutboxError.preparedPackageDoesNotMatchDraft
         }
     }

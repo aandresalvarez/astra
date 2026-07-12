@@ -407,6 +407,21 @@ struct FeedbackReportPreparationService {
 
     func restoredForm(reportID: UUID, launch: FeedbackReportLaunch) throws -> FeedbackReportFormState {
         let snapshot = try makeOutbox().recoverableSnapshot(reportID: reportID)
+        return try restoredForm(snapshot: snapshot, launch: launch)
+    }
+
+    func restoredManualExportForm(
+        reportID: UUID,
+        launch: FeedbackReportLaunch
+    ) throws -> FeedbackReportFormState {
+        let snapshot = try makeOutbox().manualExportSnapshot(reportID: reportID)
+        return try restoredForm(snapshot: snapshot, launch: launch)
+    }
+
+    private func restoredForm(
+        snapshot: FeedbackDraftSnapshot,
+        launch: FeedbackReportLaunch
+    ) throws -> FeedbackReportFormState {
         guard snapshot.progress.taskID == launch.taskID?.uuidString.lowercased(),
               snapshot.progress.runID == launch.runID?.uuidString.lowercased()
         else { throw FeedbackReportResumeError.contextMismatch }
@@ -433,6 +448,27 @@ struct FeedbackReportPreparationService {
             throw FeedbackReportPreparationError.stalePreparedPreview
         }
         let recovery = try makeOutbox().recoverablePreparedPackage(reportID: reportID)
+        return try restoredPreview(recovery: recovery, launch: launch, form: form)
+    }
+
+    func restoredManualExportPreview(
+        reportID: UUID,
+        launch: FeedbackReportLaunch,
+        form: FeedbackReportFormState
+    ) throws -> FeedbackReportPreparedPreview {
+        guard reportID == launch.id else {
+            throw FeedbackReportPreparationError.stalePreparedPreview
+        }
+        let recovery = try makeOutbox().recoverablePackageForManualExport(reportID: reportID)
+        return try restoredPreview(recovery: recovery, launch: launch, form: form)
+    }
+
+    private func restoredPreview(
+        recovery: FeedbackPreparedPackageRecovery,
+        launch: FeedbackReportLaunch,
+        form: FeedbackReportFormState
+    ) throws -> FeedbackReportPreparedPreview {
+        let reportID = recovery.reportID
         let package = FeedbackPreparedEvidencePackage(
             reportID: reportID,
             reportCreatedAt: recovery.reportCreatedAt,
@@ -544,6 +580,73 @@ struct FeedbackReportPreparationService {
                 to: FeedbackLocalStatusV1.queued.rawValue
             )
         }
+    }
+
+    func confirmQueueAndRestoreManualExport(
+        _ preview: FeedbackReportPreparedPreview,
+        launch: FeedbackReportLaunch,
+        form: FeedbackReportFormState
+    ) throws -> FeedbackReportPreparedPreview {
+        try confirmAndQueue(preview, launch: launch, form: form)
+        return try restoredManualExportPreview(
+            reportID: launch.id,
+            launch: launch,
+            form: form
+        )
+    }
+
+    /// Exports the exact reviewed package for manual delivery while the remote
+    /// sender is unavailable. Validation is read-only and the report remains in
+    /// its current local state so exporting never pretends to submit or queue it.
+    func exportForManualDelivery(
+        _ preview: FeedbackReportPreparedPreview,
+        launch: FeedbackReportLaunch,
+        form: FeedbackReportFormState,
+        destinationURL: URL
+    ) throws -> FeedbackManualExportReceipt {
+        guard preview.reportID == launch.id,
+              preview.contextIdentity == launch.contextIdentity,
+              preview.form == form else {
+            throw FeedbackReportPreparationError.stalePreparedPreview
+        }
+
+        let outbox = try makeOutbox()
+        switch preview.ownership {
+        case .trustedStaging:
+            try validateStagingURL(preview.package.directoryURL, reportID: launch.id)
+        case .adoptedOutbox:
+            let recovered = try outbox.recoverablePackageForManualExport(reportID: launch.id)
+            guard recovered.directoryURL == preview.package.directoryURL.standardizedFileURL else {
+                throw FeedbackReportPreparationError.stalePreparedPreview
+            }
+        }
+
+        let exactContents = contents(
+            form: form,
+            launch: launch,
+            consent: Self.exactConsent(
+                manifest: preview.manifest,
+                version: FeedbackReportFormState.consentVersion,
+                reviewedAt: preview.reviewedAt
+            )
+        )
+        let relativePaths = try outbox.validatedReviewedPackageFiles(
+            reportID: launch.id,
+            directory: preview.package.directoryURL,
+            matching: FeedbackPreparedPackageReview(
+                manifest: preview.package.manifest,
+                manifestSHA256: preview.package.manifestSHA256,
+                reportSHA256: preview.package.reportSHA256,
+                archiveSHA256: preview.package.archiveSHA256
+            ),
+            expectedContents: exactContents
+        )
+        return try FeedbackManualExportService.export(
+            packageDirectory: preview.package.directoryURL,
+            relativePaths: relativePaths,
+            destinationURL: destinationURL,
+            fileManager: fileManager
+        )
     }
 
     func invalidatePreparedPreview(_ preview: FeedbackReportPreparedPreview) throws {

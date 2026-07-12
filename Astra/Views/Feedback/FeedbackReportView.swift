@@ -1,5 +1,7 @@
 import SwiftUI
 import SwiftData
+import AppKit
+import UniformTypeIdentifiers
 import ASTRACore
 import ASTRAModels
 
@@ -25,6 +27,8 @@ struct FeedbackReportView: View {
     @State private var showDismissChoices = false
     @State private var isRestoring = false
     @State private var explicitDismissalCompleted = false
+    @State private var isExporting = false
+    @State private var manualExportMessage: String?
 
     init(
         launch: FeedbackReportLaunch,
@@ -52,14 +56,19 @@ struct FeedbackReportView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
                     if let report { statusCard(report) }
-                    statementCard.disabled(!interactionPolicy.canEdit)
-                    evidenceCard.disabled(!interactionPolicy.canEdit)
+                    statementCard.disabled(!interactionPolicy.canEdit || isExporting)
+                    evidenceCard.disabled(!interactionPolicy.canEdit || isExporting)
                     if let preview { disclosureCard(preview) }
                     if let errorMessage {
                         Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
                             .font(Stanford.caption(12))
                             .foregroundStyle(Stanford.failed)
                             .accessibilityLabel("Report error: \(errorMessage)")
+                    }
+                    if let manualExportMessage {
+                        Label(manualExportMessage, systemImage: "checkmark.circle.fill")
+                            .font(Stanford.caption(12))
+                            .foregroundStyle(Stanford.paloAltoGreen)
                     }
                 }
                 .padding(24)
@@ -71,7 +80,7 @@ struct FeedbackReportView: View {
         .background(Stanford.panelBackground)
         .accessibilityIdentifier(FeedbackReportAccessibilityID.sheet)
         .interactiveDismissDisabled(
-            hasMeaningfulProgress || isPreparing || report != nil || preview != nil || invalidatingPreview != nil
+            hasMeaningfulProgress || isPreparing || isExporting || report != nil || preview != nil || invalidatingPreview != nil
         )
         .confirmationDialog("Keep this report as a draft?", isPresented: $showDismissChoices) {
             Button("Keep Draft") { finishDismiss(keepingDraft: true) }
@@ -85,6 +94,7 @@ struct FeedbackReportView: View {
         .onChange(of: form) { _, _ in
             guard !isRestoring else { return }
             formRevision += 1
+            manualExportMessage = nil
             if let preview {
                 self.preview = nil
                 invalidatingPreview = preview
@@ -109,11 +119,16 @@ struct FeedbackReportView: View {
             do {
                 isRestoring = true
                 defer { isRestoring = false }
-                let restored = try service.restoredForm(reportID: launch.id, launch: launch)
+                let status = try report?.requireLocalStatus()
+                let restored = if status == .queued {
+                    try service.restoredManualExportForm(reportID: launch.id, launch: launch)
+                } else {
+                    try service.restoredForm(reportID: launch.id, launch: launch)
+                }
                 form = restored
                 initialForm = restored
-                if try report?.requireLocalStatus() == .prepared {
-                    preview = try service.restoredPreparedPreview(
+                if status == .prepared || status == .queued {
+                    preview = try service.restoredManualExportPreview(
                         reportID: launch.id,
                         launch: launch,
                         form: restored
@@ -189,12 +204,13 @@ struct FeedbackReportView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             VStack(alignment: .leading, spacing: 2) {
                 Text("Report a Problem").font(Stanford.heading(22))
-                Text("Review exactly what will be queued from this Mac.")
+                Text("Review exactly what will be queued or exported from this Mac.")
                     .font(Stanford.caption(12)).foregroundStyle(.secondary)
             }
             Spacer()
             Button("Close") { requestDismiss() }
                 .keyboardShortcut(.cancelAction)
+                .disabled(isExporting)
                 .accessibilityIdentifier(FeedbackReportAccessibilityID.close)
         }
         .padding(18)
@@ -295,7 +311,9 @@ struct FeedbackReportView: View {
 
     private var footer: some View {
         HStack {
-            Text("Follow-up defaults to in-app status.")
+            Text(preview == nil
+                ? "Review the sanitized evidence before sharing."
+                : "Export saves a ZIP you can email; it does not upload anything.")
                 .font(Stanford.caption(11)).foregroundStyle(.secondary)
             Spacer()
             if preview == nil {
@@ -303,10 +321,23 @@ struct FeedbackReportView: View {
                     .disabled(isPreparing || invalidatingPreview != nil || !form.hasRequiredStatement || !interactionPolicy.canPrepare)
                     .accessibilityIdentifier(FeedbackReportAccessibilityID.reviewEvidence)
             } else {
-                Button("Queue Report") { queue() }
-                    .disabled(isPreparing || invalidatingPreview != nil || !interactionPolicy.canQueue)
-                    .buttonStyle(StanfordButtonStyle(isPrimary: true, color: Stanford.lagunita))
-                    .accessibilityIdentifier(FeedbackReportAccessibilityID.queue)
+                Button {
+                    exportForManualDelivery()
+                } label: {
+                    Label(
+                        isExporting ? "Exporting…" : "Export for Email…",
+                        systemImage: "square.and.arrow.up"
+                    )
+                }
+                .disabled(isPreparing || isExporting || invalidatingPreview != nil)
+                .accessibilityIdentifier(FeedbackReportAccessibilityID.manualExport)
+
+                if interactionPolicy.canQueue {
+                    Button("Queue Report") { queue() }
+                        .disabled(isPreparing || isExporting || invalidatingPreview != nil)
+                        .buttonStyle(StanfordButtonStyle(isPrimary: true, color: Stanford.lagunita))
+                        .accessibilityIdentifier(FeedbackReportAccessibilityID.queue)
+                }
             }
         }
         .padding(18)
@@ -399,9 +430,52 @@ struct FeedbackReportView: View {
         progressSaveTask?.cancel()
         progressSaveTask = nil
         do {
-            try service.confirmAndQueue(preview, launch: launch, form: form)
-            self.preview = nil
+            self.preview = try service.confirmQueueAndRestoreManualExport(
+                preview,
+                launch: launch,
+                form: form
+            )
         } catch {
+            errorMessage = safeMessage(error)
+        }
+    }
+
+    private func exportForManualDelivery() {
+        guard let preview else { return }
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.zip]
+        panel.canCreateDirectories = true
+        panel.isExtensionHidden = false
+        panel.nameFieldStringValue = FeedbackManualExportService.suggestedFileName(
+            reportID: preview.reportID
+        )
+        panel.title = "Export Sanitized Feedback"
+        panel.message = "Save the exact reviewed package as one ZIP file to attach to an email."
+        guard panel.runModal() == .OK, let destinationURL = panel.url else { return }
+
+        isExporting = true
+        errorMessage = nil
+        manualExportMessage = nil
+        defer { isExporting = false }
+        do {
+            let receipt = try service.exportForManualDelivery(
+                preview,
+                launch: launch,
+                form: form,
+                destinationURL: destinationURL
+            )
+            let size = ByteCountFormatter.string(
+                fromByteCount: receipt.byteCount,
+                countStyle: .file
+            )
+            manualExportMessage = "Saved \(receipt.url.lastPathComponent) (\(size)). Nothing was uploaded; attach this ZIP to your email."
+            AppLogger.info(
+                "Exported reviewed feedback package for manual delivery files=\(receipt.fileCount) bytes=\(receipt.byteCount)",
+                category: "Diagnostics"
+            )
+            NSWorkspace.shared.activateFileViewerSelecting([receipt.url])
+        } catch {
+            AppLogger.error("Manual feedback export failed", category: "Diagnostics")
             errorMessage = safeMessage(error)
         }
     }

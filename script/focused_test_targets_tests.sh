@@ -59,7 +59,7 @@ assert_targets $'RuntimeFeedbackSnapshotTests\nFeedbackEvidencePrivacyTests' \
   "Astra/Services/Feedback/FeedbackEvidenceBuilder.swift" \
   "Tests/FeedbackEvidencePrivacyTests.swift"
 
-assert_targets $'FeedbackReportPresentationTests\nFeedbackEvidencePrivacyTests\nRuntimeFeedbackSnapshotTests\nFeedbackOutboxStateMachineTests' \
+assert_targets $'FeedbackReportPresentationTests\nFeedbackEvidencePrivacyTests\nRuntimeFeedbackSnapshotTests\nFeedbackOutboxStateMachineTests\nFeedbackManualExportTests' \
   "Astra/Services/Feedback/FeedbackReportPreparationService.swift" \
   "Astra/Services/Feedback/FeedbackPreparationStagingReconciler.swift" \
   "Astra/Views/Feedback/FeedbackReportView.swift" \
@@ -71,8 +71,12 @@ assert_targets $'FeedbackCrashRecoveryTests\nFeedbackReportPresentationTests' \
   "Astra/Services/Feedback/FeedbackCrashLaunchMonitor.swift" \
   "Tests/FeedbackCrashRecoveryTests.swift"
 
-assert_targets $'FeedbackReportPresentationTests\nFeedbackOutboxStateMachineTests' \
+assert_targets $'FeedbackReportPresentationTests\nFeedbackOutboxStateMachineTests\nFeedbackManualExportTests' \
   "Astra/Services/Persistence/FeedbackOutboxService.swift"
+
+assert_targets "FeedbackManualExportTests" \
+  "Astra/Services/Feedback/FeedbackManualExportService.swift" \
+  "Tests/FeedbackManualExportTests.swift"
 
 assert_targets $'FeedbackReportContractTests\nFeedbackEvidencePrivacyTests\nFeedbackOutboxStateMachineTests\nFeedbackAssessmentPolicyTests\nFeedbackReportPresentationTests' \
   "ASTRACore/Feedback/FeedbackReportContract.swift" \

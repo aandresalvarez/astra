@@ -38,6 +38,7 @@ enum FeedbackReportAccessibilityID {
     static let workBlocked = "feedback.report.workBlocked"
     static let reviewEvidence = "feedback.report.reviewEvidence"
     static let disclosurePreview = "feedback.report.disclosurePreview"
+    static let manualExport = "feedback.report.manualExport"
     static let queue = "feedback.report.queue"
     static let reportProblem = "feedback.report.action"
     static let close = "feedback.report.close"
