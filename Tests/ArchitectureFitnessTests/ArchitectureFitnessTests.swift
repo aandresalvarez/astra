@@ -1017,6 +1017,11 @@ struct ArchitectureFitnessTests {
         #expect(!view.contains("CapabilityUninstaller("))
         #expect(!view.contains("CapabilityPackageCreationService("))
         #expect(view.contains("CapabilityCatalogActionService("))
+        // Catalog reload ownership is limited to initial population and the
+        // centralized typed persistence-event handler. Mutation callbacks
+        // must not add post-action reloads of their own.
+        #expect(view.components(separatedBy: "catalog.loadApprovedCapabilities(").count - 1 == 2)
+        #expect(view.contains("catalog.loadApprovedCapabilities(announceLibraryMutations: false)"))
     }
 
     @Test("Plugin catalog approval refresh cancels stale loads")
@@ -1089,6 +1094,21 @@ struct ArchitectureFitnessTests {
 
         #expect(!view.contains("enum CapabilityImportPresentation"))
         #expect(presentation.contains("enum CapabilityImportPresentation"))
+    }
+
+    @Test("Plugin catalog body uses cached presentation projection")
+    func pluginCatalogBodyUsesCachedPresentationProjection() throws {
+        let root = try repositoryRoot()
+        let view = try String(
+            contentsOf: root.appendingPathComponent("Astra/Views/PluginCatalogView.swift"),
+            encoding: .utf8
+        )
+
+        #expect(view.contains("let state = cachedPresentationState"))
+        #expect(!view.contains("let state = presentationState"))
+        #expect(view.contains("PluginCatalogPresentationCache"))
+        #expect(!view.contains("JSONEncoder().encode(catalog.packages)"))
+        #expect(!view.contains("catalogResourceRevision"))
     }
 
     @Test("Workspace rail view keeps pure presentation contracts extracted")

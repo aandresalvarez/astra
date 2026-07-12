@@ -109,6 +109,7 @@ struct CapabilityPackageCreationService {
         }
 
         try library.install(validatedPackage)
+        CapabilityCatalogPersistenceEvents.post(.global)
         return CapabilityPackageCreationResult(
             package: validatedPackage,
             sourceURL: writtenSourceURL,

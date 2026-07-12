@@ -1,5 +1,6 @@
 import Foundation
 import ASTRACore
+import ASTRAModels
 
 enum CatalogFocus: String {
     case all
@@ -714,5 +715,128 @@ enum PluginCatalogPresentation {
             guard let packages = buckets[kind], !packages.isEmpty else { return nil }
             return CapabilityCatalogPackageGroup(kind: kind, packages: packages)
         }
+    }
+}
+
+/// Memoizes the pure catalog presentation projection without becoming another
+/// owner of catalog or workspace state. The small key contains presentation
+/// controls and explicit durable-source revisions only. SwiftUI body
+/// evaluation never fingerprints, sorts, serializes, or registers observers.
+@MainActor
+@Observable
+final class PluginCatalogPresentationCache {
+    struct Key: Equatable {
+        let focus: CatalogFocus
+        let selectedCategory: String?
+        let approvalFilter: CapabilityCatalogApprovalFilter
+        let riskFilter: CapabilityCatalogRiskFilter
+        let showsNeedsAttentionOnly: Bool
+        let showsEnabledOnly: Bool
+        let searchText: String
+        let source: SourceKey
+    }
+
+    /// Allocation-free identity and revision inputs owned by the production
+    /// view. These cover state wrappers and replaceable references that cannot
+    /// participate in the cache's Observation registration.
+    struct SourceKey: Equatable {
+        let workspaceIdentity: ObjectIdentifier
+        let catalogIdentity: ObjectIdentifier
+        let catalogRevision: Int
+        let approvalRevision: Int
+        let persistenceRevision: Int
+    }
+
+    private var cachedKey: Key?
+    private var cachedState: PluginCatalogPresentationState?
+    private(set) var buildCount = 0
+
+    func state(
+        for key: Key,
+        build: () -> PluginCatalogPresentationState
+    ) -> PluginCatalogPresentationState {
+        if cachedKey == key, let cachedState {
+            return cachedState
+        }
+        let state = build()
+        cachedKey = key
+        cachedState = state
+        buildCount += 1
+        return state
+    }
+
+    func invalidate() {
+        cachedKey = nil
+        cachedState = nil
+    }
+}
+
+/// Typed scope for durable capability-resource mutations. A workspace-scoped
+/// change must not invalidate another window; global resource changes affect
+/// every workspace because global skills/connectors/tools participate in each
+/// catalog projection.
+struct CapabilityCatalogPersistenceChange: Equatable, Sendable {
+    let workspaceID: UUID?
+
+    static func workspace(_ id: UUID) -> Self { Self(workspaceID: id) }
+    static let global = Self(workspaceID: nil)
+}
+
+extension Notification.Name {
+    static let capabilityCatalogPersistenceChanged = Notification.Name("astra.capabilityCatalogPersistenceChanged")
+}
+
+enum CapabilityCatalogPersistenceEvents {
+    @MainActor
+    static func post(_ change: CapabilityCatalogPersistenceChange) {
+        NotificationCenter.default.post(name: .capabilityCatalogPersistenceChanged, object: change)
+    }
+}
+
+/// Bridges production lifecycle boundaries that do not participate in Swift
+/// Observation into the catalog cache's scalar source key.
+@MainActor
+@Observable
+final class PluginCatalogPresentationSourceRevision {
+    private(set) var approvalRevision = 0
+    private(set) var persistenceRevision = 0
+
+    func approvalRecordsDidRefresh() {
+        approvalRevision &+= 1
+    }
+
+    func persistenceDidSave() {
+        persistenceRevision &+= 1
+    }
+
+    @discardableResult
+    func receive(
+        _ change: CapabilityCatalogPersistenceChange,
+        workspaceID: UUID,
+        reloadGlobal: () -> Void = {}
+    ) -> Bool {
+        guard change.workspaceID == nil || change.workspaceID == workspaceID else { return false }
+        // Every window owns an independent catalog. A global library mutation
+        // must refresh that read-side snapshot before its projection key is
+        // invalidated, otherwise the rebuild deterministically reuses stale
+        // packages until a later lifecycle refresh.
+        if change.workspaceID == nil {
+            reloadGlobal()
+        }
+        persistenceDidSave()
+        return true
+    }
+
+    func key(
+        workspace: Workspace,
+        catalog: PluginCatalog
+    ) -> PluginCatalogPresentationCache.SourceKey {
+        PluginCatalogPresentationCache.SourceKey(
+            workspaceIdentity: ObjectIdentifier(workspace),
+            catalogIdentity: ObjectIdentifier(catalog),
+            catalogRevision: catalog.revision,
+            approvalRevision: approvalRevision,
+            persistenceRevision: persistenceRevision
+        )
     }
 }

@@ -6,6 +6,202 @@ import ASTRACore
 
 @Suite("Plugin Catalog Presentation")
 struct PluginCatalogPresentationTests {
+    @Test("production source revisions invalidate cached catalog projection")
+    @MainActor
+    func productionSourceRevisionsInvalidateProjection() {
+        let cache = PluginCatalogPresentationCache()
+        var builds = 0
+        func resolve(_ key: PluginCatalogPresentationCache.Key) {
+            _ = cache.state(for: key) {
+                builds += 1
+                return emptyCatalogPresentationState()
+            }
+        }
+
+        let workspaceReplacement = Workspace(name: "Replacement", primaryPath: "/tmp/replacement")
+        let catalogReplacement = PluginCatalog()
+        let keys = [
+            makeCatalogPresentationCacheKey(),
+            makeCatalogPresentationCacheKey(catalogRevision: 1),
+            makeCatalogPresentationCacheKey(approvalRevision: 1),
+            makeCatalogPresentationCacheKey(persistenceRevision: 1),
+            makeCatalogPresentationCacheKey(workspaceIdentity: ObjectIdentifier(workspaceReplacement)),
+            makeCatalogPresentationCacheKey(catalogIdentity: ObjectIdentifier(catalogReplacement))
+        ]
+
+        for key in keys {
+            resolve(key)
+            resolve(key)
+        }
+        #expect(builds == keys.count)
+    }
+
+    @Test("production source revision follows approval persistence and replaceable inputs")
+    @MainActor
+    func productionSourceRevisionFollowsLifecycleBoundaries() {
+        let revisions = PluginCatalogPresentationSourceRevision()
+        let firstWorkspace = Workspace(name: "First", primaryPath: "/tmp/first")
+        let secondWorkspace = Workspace(name: "Second", primaryPath: "/tmp/second")
+        let firstCatalog = PluginCatalog()
+        let secondCatalog = PluginCatalog()
+
+        let baseline = revisions.key(workspace: firstWorkspace, catalog: firstCatalog)
+        revisions.approvalRecordsDidRefresh()
+        let afterApproval = revisions.key(workspace: firstWorkspace, catalog: firstCatalog)
+        #expect(afterApproval != baseline)
+
+        revisions.persistenceDidSave()
+        let afterPersistence = revisions.key(workspace: firstWorkspace, catalog: firstCatalog)
+        #expect(afterPersistence != afterApproval)
+
+        firstCatalog.packages = [makePresentationPackage(id: "new", name: "New", category: "Tests")]
+        let afterCatalogChange = revisions.key(workspace: firstWorkspace, catalog: firstCatalog)
+        #expect(afterCatalogChange != afterPersistence)
+        #expect(revisions.key(workspace: secondWorkspace, catalog: firstCatalog) != afterCatalogChange)
+        #expect(revisions.key(workspace: firstWorkspace, catalog: secondCatalog) != afterCatalogChange)
+    }
+
+    @Test("catalog revision advances for every package replacement")
+    @MainActor
+    func catalogRevisionTracksSameCountAndContentReplacement() {
+        let catalog = PluginCatalog()
+        let initialRevision = catalog.revision
+        catalog.packages = [makePresentationPackage(id: "one", name: "One", category: "Tests")]
+        #expect(catalog.revision == initialRevision + 1)
+
+        catalog.packages = [makePresentationPackage(id: "two", name: "Two", category: "Tests")]
+        #expect(catalog.revision == initialRevision + 2)
+
+        catalog.packages[0].description = "Changed in place"
+        #expect(catalog.revision == initialRevision + 3)
+    }
+
+    @Test("presentation cache reuses state and rebuilds for presentation controls")
+    @MainActor
+    func presentationCacheReusesStateAndInvalidatesAllInputs() {
+        let cache = PluginCatalogPresentationCache()
+        var builds = 0
+        func resolve(_ key: PluginCatalogPresentationCache.Key) {
+            _ = cache.state(for: key) {
+                builds += 1
+                return emptyCatalogPresentationState()
+            }
+        }
+
+        let baseline = makeCatalogPresentationCacheKey()
+        resolve(baseline)
+        resolve(baseline)
+        #expect(builds == 1)
+
+        let changedKeys = [
+            makeCatalogPresentationCacheKey(focus: .skills),
+            makeCatalogPresentationCacheKey(selectedCategory: "Security"),
+            makeCatalogPresentationCacheKey(approvalFilter: .approved),
+            makeCatalogPresentationCacheKey(riskFilter: .high),
+            makeCatalogPresentationCacheKey(showsNeedsAttentionOnly: true),
+            makeCatalogPresentationCacheKey(showsEnabledOnly: true),
+            makeCatalogPresentationCacheKey(searchText: "jira")
+        ]
+        for key in changedKeys { resolve(key) }
+
+        #expect(builds == changedKeys.count + 1)
+        cache.invalidate()
+        resolve(changedKeys.last!)
+        #expect(builds == changedKeys.count + 2)
+    }
+
+    @Test("unrelated saves and other workspace changes do not invalidate a catalog window")
+    @MainActor
+    func scopedPersistenceInvalidationIsWindowIsolated() {
+        let revisions = PluginCatalogPresentationSourceRevision()
+        let workspaceID = UUID()
+        let baseline = revisions.persistenceRevision
+
+        // An unrelated task/event save produces no typed capability event.
+        #expect(revisions.persistenceRevision == baseline)
+        #expect(!revisions.receive(.workspace(UUID()), workspaceID: workspaceID))
+        #expect(revisions.persistenceRevision == baseline)
+
+        #expect(revisions.receive(.workspace(workspaceID), workspaceID: workspaceID))
+        #expect(revisions.persistenceRevision == baseline + 1)
+        #expect(revisions.receive(.global, workspaceID: workspaceID))
+        #expect(revisions.persistenceRevision == baseline + 2)
+    }
+
+    @Test("global mutation reloads every independent catalog before invalidating its projection")
+    @MainActor
+    func globalMutationReloadsEveryCatalogBeforeInvalidation() {
+        let first = PluginCatalogPresentationSourceRevision()
+        let second = PluginCatalogPresentationSourceRevision()
+        var firstReloads = 0
+        var secondReloads = 0
+        var firstRevisionObservedDuringReload: Int?
+        var secondRevisionObservedDuringReload: Int?
+
+        #expect(first.receive(.global, workspaceID: UUID()) {
+            firstReloads += 1
+            firstRevisionObservedDuringReload = first.persistenceRevision
+        })
+        #expect(second.receive(.global, workspaceID: UUID()) {
+            secondReloads += 1
+            secondRevisionObservedDuringReload = second.persistenceRevision
+        })
+
+        #expect(firstReloads == 1)
+        #expect(secondReloads == 1)
+        #expect(firstRevisionObservedDuringReload == 0)
+        #expect(secondRevisionObservedDuringReload == 0)
+        #expect(first.persistenceRevision == 1)
+        #expect(second.persistenceRevision == 1)
+    }
+
+    @Test("workspace-only mutation never reloads global catalog and stays scoped")
+    @MainActor
+    func workspaceMutationDoesNotReloadGlobalCatalog() {
+        let matching = PluginCatalogPresentationSourceRevision()
+        let independent = PluginCatalogPresentationSourceRevision()
+        let workspaceID = UUID()
+        var reloads = 0
+
+        #expect(matching.receive(.workspace(workspaceID), workspaceID: workspaceID) { reloads += 1 })
+        #expect(!independent.receive(.workspace(workspaceID), workspaceID: UUID()) { reloads += 1 })
+        #expect(reloads == 0)
+        #expect(matching.persistenceRevision == 1)
+        #expect(independent.persistenceRevision == 0)
+    }
+
+    @Test("many key-only misses install no observers and one source mutation invalidates once")
+    @MainActor
+    func keyMissesDoNotAccumulateSourceObservers() {
+        let cache = PluginCatalogPresentationCache()
+        let revisions = PluginCatalogPresentationSourceRevision()
+        let workspace = Workspace(name: "Isolated", primaryPath: "/tmp/isolated")
+        let catalog = PluginCatalog()
+
+        for index in 0..<100 {
+            let key = makeCatalogPresentationCacheKey(
+                searchText: "query-\(index)",
+                workspaceIdentity: ObjectIdentifier(workspace),
+                catalogIdentity: ObjectIdentifier(catalog),
+                persistenceRevision: revisions.persistenceRevision
+            )
+            _ = cache.state(for: key) { emptyCatalogPresentationState() }
+        }
+        #expect(cache.buildCount == 100)
+
+        #expect(revisions.receive(.workspace(workspace.id), workspaceID: workspace.id))
+        #expect(revisions.persistenceRevision == 1)
+        let changedKey = makeCatalogPresentationCacheKey(
+            searchText: "query-99",
+            workspaceIdentity: ObjectIdentifier(workspace),
+            catalogIdentity: ObjectIdentifier(catalog),
+            persistenceRevision: revisions.persistenceRevision
+        )
+        _ = cache.state(for: changedKey) { emptyCatalogPresentationState() }
+        _ = cache.state(for: changedKey) { emptyCatalogPresentationState() }
+        #expect(cache.buildCount == 101)
+    }
+
     @Test("state preserves focused category order and counts before filtering")
     func statePreservesFocusedCategoryOrderAndCountsBeforeFiltering() {
         let packages = [
@@ -462,6 +658,53 @@ struct PluginCatalogPresentationTests {
         #expect(reviewState?.digestLabel == "Digest current")
         #expect(reviewState?.shouldShow == true)
     }
+}
+
+@MainActor
+private func makeCatalogPresentationCacheKey(
+    focus: CatalogFocus = .all,
+    selectedCategory: String? = nil,
+    approvalFilter: CapabilityCatalogApprovalFilter = .all,
+    riskFilter: CapabilityCatalogRiskFilter = .all,
+    showsNeedsAttentionOnly: Bool = false,
+    showsEnabledOnly: Bool = false,
+    searchText: String = "",
+    workspaceIdentity: ObjectIdentifier = ObjectIdentifier(CatalogPresentationTestIdentity.workspace),
+    catalogIdentity: ObjectIdentifier = ObjectIdentifier(CatalogPresentationTestIdentity.catalog),
+    catalogRevision: Int = 0,
+    approvalRevision: Int = 0,
+    persistenceRevision: Int = 0
+) -> PluginCatalogPresentationCache.Key {
+    PluginCatalogPresentationCache.Key(
+        focus: focus,
+        selectedCategory: selectedCategory,
+        approvalFilter: approvalFilter,
+        riskFilter: riskFilter,
+        showsNeedsAttentionOnly: showsNeedsAttentionOnly,
+        showsEnabledOnly: showsEnabledOnly,
+        searchText: searchText,
+        source: PluginCatalogPresentationCache.SourceKey(
+            workspaceIdentity: workspaceIdentity,
+            catalogIdentity: catalogIdentity,
+            catalogRevision: catalogRevision,
+            approvalRevision: approvalRevision,
+            persistenceRevision: persistenceRevision
+        )
+    )
+}
+
+private enum CatalogPresentationTestIdentity {
+    static let workspace = CatalogPresentationIdentityToken()
+    static let catalog = CatalogPresentationIdentityToken()
+}
+
+private final class CatalogPresentationIdentityToken: @unchecked Sendable {}
+
+private func emptyCatalogPresentationState() -> PluginCatalogPresentationState {
+    PluginCatalogPresentationState(
+        focusedPackages: [], filteredPackages: [], groupedPackages: [],
+        categorySections: [], enabledCount: 0, categoryCounts: [:], visibleCategories: []
+    )
 }
 
 private func assertIconPresentation(

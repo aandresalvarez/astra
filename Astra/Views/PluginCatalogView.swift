@@ -83,6 +83,8 @@ struct PluginCatalogView: View {
     @State private var mcpInstallRequest: MCPInstallChatRequest?
     @State private var approvalRecordsRefreshTask: Task<Void, Never>?
     @State private var approvalRecordsRefreshGeneration = 0
+    @State private var presentationCache = PluginCatalogPresentationCache()
+    @State private var presentationSourceRevision = PluginCatalogPresentationSourceRevision()
 
     private var capabilities: WorkspaceCapabilities {
         WorkspaceCapabilities(
@@ -114,30 +116,45 @@ struct PluginCatalogView: View {
         )
     }
 
-    private var presentationState: PluginCatalogPresentationState {
-        PerformanceTelemetry.measure(
-            "catalog_state_build",
-            thresholdMilliseconds: 15,
-            fields: [
-                "catalog_count": String(catalog.packages.count),
-                "focus": focus.rawValue,
-                "has_query": String(!searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty),
-                "category_filter": selectedCategory ?? "none"
-            ]
-        ) {
-            PluginCatalogPresentation.makeState(
-                packages: capabilityInventoryPackages,
-                focus: focus,
-                selectedCategory: selectedCategory,
-                approvalFilter: selectedApprovalFilter,
-                riskFilter: selectedRiskFilter,
-                showsNeedsAttentionOnly: showNeedsAttentionOnly,
-                showsEnabledOnly: showEnabledOnly,
-                searchText: searchText,
-                policyContext: catalogPolicyContext,
-                isEnabled: { packageState($0).isEnabled },
-                requiresSetup: { requiresSetupFlow($0) }
-            )
+    private var presentationCacheKey: PluginCatalogPresentationCache.Key {
+        PluginCatalogPresentationCache.Key(
+            focus: focus,
+            selectedCategory: selectedCategory,
+            approvalFilter: selectedApprovalFilter,
+            riskFilter: selectedRiskFilter,
+            showsNeedsAttentionOnly: showNeedsAttentionOnly,
+            showsEnabledOnly: showEnabledOnly,
+            searchText: searchText,
+            source: presentationSourceRevision.key(workspace: workspace, catalog: catalog)
+        )
+    }
+
+    private var cachedPresentationState: PluginCatalogPresentationState {
+        presentationCache.state(for: presentationCacheKey) {
+            PerformanceTelemetry.measure(
+                "catalog_state_build",
+                thresholdMilliseconds: 15,
+                fields: [
+                    "catalog_count": String(catalog.packages.count),
+                    "focus": focus.rawValue,
+                    "has_query": String(!searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty),
+                    "category_filter": selectedCategory ?? "none"
+                ]
+            ) {
+                PluginCatalogPresentation.makeState(
+                    packages: capabilityInventoryPackages,
+                    focus: focus,
+                    selectedCategory: selectedCategory,
+                    approvalFilter: selectedApprovalFilter,
+                    riskFilter: selectedRiskFilter,
+                    showsNeedsAttentionOnly: showNeedsAttentionOnly,
+                    showsEnabledOnly: showEnabledOnly,
+                    searchText: searchText,
+                    policyContext: catalogPolicyContext,
+                    isEnabled: { packageState($0).isEnabled },
+                    requiresSetup: { requiresSetupFlow($0) }
+                )
+            }
         }
     }
 
@@ -161,7 +178,7 @@ struct PluginCatalogView: View {
     }
 
     var body: some View {
-        let state = presentationState
+        let state = cachedPresentationState
 
         VStack(spacing: 0) {
             if let package = focusedPackage(in: state.focusedPackages) {
@@ -219,6 +236,16 @@ struct PluginCatalogView: View {
         .onReceive(NotificationCenter.default.publisher(for: .capabilityApprovalsChanged)) { _ in
             refreshApprovalRecords()
         }
+        .onReceive(NotificationCenter.default.publisher(for: .capabilityCatalogPersistenceChanged)) { notification in
+            guard let change = notification.object as? CapabilityCatalogPersistenceChange else { return }
+            presentationSourceRevision.receive(change, workspaceID: workspace.id) {
+                // The originating service already announced this mutation;
+                // suppress another event if refresh also repairs/prunes the
+                // approved built-in set.
+                catalog.loadApprovedCapabilities(announceLibraryMutations: false)
+                onCatalogChanged?()
+            }
+        }
         .onDisappear {
             cancelApprovalRecordsRefresh()
         }
@@ -255,8 +282,6 @@ struct PluginCatalogView: View {
                     mcpInstallRequest = nil
                     selectedPackageID = package.id
                     onPackageFocusChanged?(package.id)
-                    catalog.loadApprovedCapabilities()
-                    onCatalogChanged?()
                 }
             )
         }
@@ -269,8 +294,6 @@ struct PluginCatalogView: View {
                 onInstalled: { pkg in
                     installingPackage = nil
                     onInstall?(pkg)
-                    catalog.loadApprovedCapabilities()
-                    onCatalogChanged?()
                 }
             )
         }
@@ -899,6 +922,7 @@ struct PluginCatalogView: View {
         )
         workspace.updatedAt = Date()
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
+        CapabilityCatalogPersistenceEvents.post(.workspace(workspace.id))
         AppLogger.audit(.capabilityDisabled, category: "Capabilities", fields: [
             "source": "configure",
             "trace_id": traceID,
@@ -913,8 +937,6 @@ struct PluginCatalogView: View {
             "removed_workspace_connectors_count": String(result.removedWorkspaceConnectorIDs.count),
             "enabled_capability_ids": CapabilityAudit.compactNames(workspace.enabledCapabilityIDs)
         ])
-        catalog.loadApprovedCapabilities()
-        onCatalogChanged?()
     }
 
     private func installButton(for package: PluginPackage) -> some View {
@@ -979,8 +1001,6 @@ struct PluginCatalogView: View {
                 traceID: traceID
             )
             onInstall?(package)
-            catalog.loadApprovedCapabilities()
-            onCatalogChanged?()
         } catch {
             installError = error.localizedDescription
         }
@@ -1046,8 +1066,6 @@ struct PluginCatalogView: View {
             selectedPackageID = result.package.id
             onPackageFocusChanged?(result.package.id)
             importReview = nil
-            catalog.loadApprovedCapabilities()
-            onCatalogChanged?()
             AppLogger.audit(.capabilityInstalled, category: "Capabilities", fields: [
                 "source": "import_json",
                 "trace_id": traceID,
@@ -1097,8 +1115,6 @@ struct PluginCatalogView: View {
             if let installedPackage = result.installedPackage {
                 onInstall?(installedPackage)
             }
-            catalog.loadApprovedCapabilities()
-            onCatalogChanged?()
         } catch {
             installError = error.localizedDescription
         }
@@ -1110,8 +1126,6 @@ struct PluginCatalogView: View {
             if activeFocusedPackageID == package.id {
                 closePackageEditor()
             }
-            catalog.loadApprovedCapabilities()
-            onCatalogChanged?()
         } catch {
             removalError = error.localizedDescription
         }
@@ -1152,9 +1166,7 @@ struct PluginCatalogView: View {
                 reviewNotes: "Updated from the local catalog review controls."
             )
             refreshApprovalRecords()
-            catalog.loadApprovedCapabilities()
             refreshEnabledDefinitionsAfterApproval(package, status: status, traceID: traceID)
-            onCatalogChanged?()
             AppLogger.audit(.capabilityApprovalChanged, category: "Capabilities", fields: [
                 "source": "catalog_review",
                 "trace_id": traceID,
@@ -1191,6 +1203,7 @@ struct PluginCatalogView: View {
             await MainActor.run {
                 guard approvalRecordsRefreshGeneration == refreshGeneration else { return }
                 approvalRecords = records
+                presentationSourceRevision.approvalRecordsDidRefresh()
                 approvalRecordsRefreshTask = nil
             }
         }

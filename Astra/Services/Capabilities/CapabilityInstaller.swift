@@ -111,6 +111,12 @@ struct CapabilityInstaller {
         installedFields.merge(CapabilityAudit.governanceFields(package.governance), uniquingKeysWith: { _, new in new })
         if let traceID { installedFields["trace_id"] = traceID }
         AppLogger.audit(.capabilityInstalled, category: "Capabilities", fields: installedFields)
+        // Installing changes the process-wide package library, so every open
+        // catalog must reload even when the workspace enable was initiated by
+        // a lifecycle path that has no catalog view (for example onboarding).
+        // Keep this at the complete mutation boundary so callers cannot omit
+        // it and failed/rolled-back installs never publish a stale change.
+        CapabilityCatalogPersistenceEvents.post(.global)
         return result
     }
 
