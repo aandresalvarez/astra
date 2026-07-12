@@ -15,6 +15,7 @@ struct CapabilityPackageImportError: LocalizedError {
     }
 }
 
+@MainActor
 struct CapabilityPackageImporter {
     let library: CapabilityLibrary
     let fileManager: FileManager
@@ -73,6 +74,7 @@ struct CapabilityPackageImporter {
         } else {
             try library.install(package, sourceMetadata: .localLibrary())
         }
+        CapabilityCatalogPersistenceEvents.post(.global)
         return CapabilityPackageImportResult(
             package: package,
             report: report,

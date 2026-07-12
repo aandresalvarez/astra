@@ -6,6 +6,27 @@ import ASTRAPersistence
 import ASTRACore
 @testable import ASTRA
 
+private final class WorkspaceCapabilityEventRecorder: @unchecked Sendable {
+    private(set) var changes: [CapabilityCatalogPersistenceChange] = []
+    private var token: NSObjectProtocol?
+
+    @MainActor
+    func start() {
+        token = NotificationCenter.default.addObserver(
+            forName: .capabilityCatalogPersistenceChanged,
+            object: nil,
+            queue: nil
+        ) { [weak self] notification in
+            guard let change = notification.object as? CapabilityCatalogPersistenceChange else { return }
+            self?.changes.append(change)
+        }
+    }
+
+    deinit {
+        if let token { NotificationCenter.default.removeObserver(token) }
+    }
+}
+
 @Suite("Workspace Import Discovery")
 struct WorkspaceImportDiscoveryTests {
     @Test("Workspaces parent expands to direct child directories")
@@ -176,6 +197,43 @@ struct WorkspaceImportOrchestratorTests {
         #expect(result?.workspace.primaryPath == root.appendingPathComponent("research-hub").path)
         #expect(FileManager.default.fileExists(atPath: result?.workspace.primaryPath ?? ""))
         #expect(result?.hasCapabilityEnableFailures == false)
+    }
+
+    @Test("workspace creation capability batch emits one global mutation and one scoped reload")
+    @MainActor
+    func workspaceCreationCapabilityBatchEmitsExactlyOnceAndReloadsCatalogs() throws {
+        let root = try makeTemporaryDirectory(named: "ActionRootCapabilityEvents")
+        defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
+
+        let container = try makeWorkspaceImportContainer()
+        let context = container.mainContext
+        let coordinator = ContentWorkspaceActionCoordinator(
+            modelContext: context,
+            taskQueue: TaskQueue(),
+            workspacesRoot: root.path
+        )
+        var draft = NewWorkspaceDraft(name: "Catalog Events")
+        draft.selectedCapabilityIDs = [OnboardingCapabilitySetup.githubPackageID]
+        let recorder = WorkspaceCapabilityEventRecorder()
+        recorder.start()
+
+        let result = coordinator.createWorkspace(from: draft, source: "test")
+
+        let workspace = try #require(result?.workspace)
+        #expect(result?.hasCapabilityEnableFailures == false)
+        #expect(recorder.changes == [.global, .workspace(workspace.id)])
+        let importingWindow = PluginCatalogPresentationSourceRevision()
+        let otherWindow = PluginCatalogPresentationSourceRevision()
+        var importingReloads = 0
+        var otherReloads = 0
+        for change in recorder.changes {
+            _ = importingWindow.receive(change, workspaceID: workspace.id) { importingReloads += 1 }
+            _ = otherWindow.receive(change, workspaceID: UUID()) { otherReloads += 1 }
+        }
+        #expect(importingReloads == 1)
+        #expect(otherReloads == 1)
+        #expect(importingWindow.persistenceRevision == 2)
+        #expect(otherWindow.persistenceRevision == 1)
     }
 
     @Test("workspace action coordinator flags a failed quick-start capability credential save")

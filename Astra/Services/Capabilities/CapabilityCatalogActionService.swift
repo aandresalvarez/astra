@@ -53,7 +53,7 @@ struct CapabilityCatalogActionService {
         traceID: String
     ) throws -> CapabilityInstaller.InstallationResult {
         do {
-            return try installer.install(
+            let result = try installer.install(
                 package,
                 into: workspace,
                 modelContext: modelContext,
@@ -64,6 +64,8 @@ struct CapabilityCatalogActionService {
                 policyContext: policyContext,
                 traceID: traceID
             )
+            CapabilityCatalogPersistenceEvents.post(.workspace(workspace.id))
+            return result
         } catch {
             AppLogger.audit(.capabilityEnableFailed, category: "Capabilities", fields: failureFields(
                 package: package,
@@ -98,6 +100,12 @@ struct CapabilityCatalogActionService {
                 policyContext: policyContext,
                 traceID: traceID
             )
+            // Creation always changes the global library. The creation service
+            // owns that event; this additional scoped event represents only
+            // the optional workspace enablement.
+            if enableHere {
+                CapabilityCatalogPersistenceEvents.post(.workspace(workspace.id))
+            }
             return CapabilityCatalogCreateActionResult(
                 package: result.package,
                 approvalRecordChanged: result.approvalRecord != nil,

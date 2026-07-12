@@ -1037,6 +1037,35 @@ struct ArchitectureFitnessTests {
         #expect(!view.contains("CapabilityUninstaller("))
         #expect(!view.contains("CapabilityPackageCreationService("))
         #expect(view.contains("CapabilityCatalogActionService("))
+        // Catalog reload ownership is limited to initial population and the
+        // centralized typed persistence-event handler. Mutation callbacks
+        // must not add post-action reloads of their own.
+        #expect(view.components(separatedBy: "catalog.loadApprovedCapabilities(").count - 1 == 2)
+        #expect(view.contains("catalog.loadApprovedCapabilities(announceLibraryMutations: false)"))
+    }
+
+    @Test("Catalog invalidations follow durable capability mutations")
+    func catalogInvalidationsFollowDurableMutations() throws {
+        let root = try repositoryRoot()
+        let configure = try String(
+            contentsOf: root.appendingPathComponent("Astra/Views/ConfigureView.swift"), encoding: .utf8)
+        let creation = try String(
+            contentsOf: root.appendingPathComponent("Astra/Services/Capabilities/CapabilityPackageCreationService.swift"),
+            encoding: .utf8)
+        let catalogView = try String(
+            contentsOf: root.appendingPathComponent("Astra/Views/PluginCatalogView.swift"), encoding: .utf8)
+
+        #expect(configure.contains("CapabilityPersistence.saveResourceMutation"))
+        let resourcesStart = try #require(configure.range(of: "struct ConnectorsTabContent"))
+        let resourcesEnd = try #require(configure.range(of: "// MARK: - Templates Tab"))
+        #expect(!configure[resourcesStart.lowerBound..<resourcesEnd.lowerBound].contains(
+            "WorkspacePersistenceCoordinator.saveAndAutoExport"))
+        let suppressedInstall = try #require(creation.range(of: "announceCatalogMutation: false"))
+        let approvalSave = try #require(creation.range(of: "let approvalRecord = try saveApprovalRecordIfNeeded"))
+        let globalPost = try #require(creation.range(of: "CapabilityCatalogPersistenceEvents.post(.global)", range: approvalSave.lowerBound..<creation.endIndex))
+        #expect(suppressedInstall.lowerBound < approvalSave.lowerBound)
+        #expect(approvalSave.lowerBound < globalPost.lowerBound)
+        #expect(catalogView.contains("CapabilityPersistence.saveResourceMutation(workspace: workspace"))
     }
 
     @Test("Plugin catalog approval refresh cancels stale loads")
@@ -1109,6 +1138,33 @@ struct ArchitectureFitnessTests {
 
         #expect(!view.contains("enum CapabilityImportPresentation"))
         #expect(presentation.contains("enum CapabilityImportPresentation"))
+    }
+
+    @Test("Plugin catalog body uses cached presentation projection")
+    func pluginCatalogBodyUsesCachedPresentationProjection() throws {
+        let root = try repositoryRoot()
+        let view = try String(
+            contentsOf: root.appendingPathComponent("Astra/Views/PluginCatalogView.swift"),
+            encoding: .utf8
+        )
+
+        #expect(view.contains("let state = cachedPresentationState"))
+        #expect(!view.contains("let state = presentationState"))
+        #expect(view.contains("PluginCatalogPresentationCache"))
+        let presentation = try String(
+            contentsOf: root.appendingPathComponent("Astra/Services/Capabilities/PluginCatalogPresentation.swift"),
+            encoding: .utf8
+        )
+        #expect(!presentation.contains("@Observable\nfinal class PluginCatalogPresentationCache"))
+        for resourceView in ["ConnectorsManagerView.swift", "SkillsManagerView.swift", "ToolsManagerView.swift"] {
+            let source = try String(
+                contentsOf: root.appendingPathComponent("Astra/Views/\(resourceView)"),
+                encoding: .utf8
+            )
+            #expect(source.contains("CapabilityPersistence.saveResourceMutation"))
+        }
+        #expect(!view.contains("JSONEncoder().encode(catalog.packages)"))
+        #expect(!view.contains("catalogResourceRevision"))
     }
 
     @Test("Workspace rail view keeps pure presentation contracts extracted")
