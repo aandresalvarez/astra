@@ -1,6 +1,7 @@
 import CoreGraphics
 
 enum AppWindowIDs {
+    static let main = "astra-main"
     static let logs = "astra-logs"
     static let usage = "astra-usage"
 }

@@ -58,6 +58,16 @@ public enum PersistentStoreOpenFailurePolicy {
         decision == .verifiedCorruption
     }
 
+    /// Privacy-safe diagnostics retain only error domains and numeric codes;
+    /// localized descriptions can contain filesystem paths or store details.
+    public static func diagnosticFields(for error: Error) -> [String: String] {
+        let errors = flattenedErrors(from: error)
+        return [
+            "error_domains": errors.map(\.domain).joined(separator: ","),
+            "error_codes": errors.map { String($0.code) }.joined(separator: ",")
+        ]
+    }
+
     private static func isSQLiteError(_ error: NSError, code: Int) -> Bool {
         error.domain == "NSSQLiteErrorDomain" && error.code == code
     }
