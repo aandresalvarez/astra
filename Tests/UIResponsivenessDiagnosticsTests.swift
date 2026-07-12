@@ -46,6 +46,15 @@ struct UIResponsivenessDiagnosticsTests {
         #expect(!report.markdown.contains("Sensitive task goal"))
     }
 
+    @Test("Run finalization phases appear in responsiveness diagnostics")
+    func runFinalizationPhasesAreIncluded() {
+        let report = UIResponsivenessDiagnostics.makeReport(entries: [
+            measurement("run_finalize_phase", 42, traceID: "finalize", cacheState: "none", suffix: " phase=event_compaction")
+        ])
+
+        #expect(report.eventSummaries.map(\.event) == ["run_finalize_phase:event_compaction"])
+    }
+
     @Test("Separates destinations and retains task-open timeouts")
     func separatesDestinationsAndRetainsTimeouts() {
         let entries = [
