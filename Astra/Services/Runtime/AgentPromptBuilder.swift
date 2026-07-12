@@ -1371,7 +1371,12 @@ enum AgentPromptBuilder {
     }
 
     private static func activeFollowUpRuns(for task: AgentTask) -> [TaskRun] {
-        let sortedRuns = task.runs.sorted { $0.startedAt < $1.startedAt }
+        // Same tie-breaker as AgentTaskForkService.runOrdering: forkedAtRunIndex
+        // was computed under it, so the suffix below must slice the same order.
+        let sortedRuns = task.runs.sorted {
+            if $0.startedAt != $1.startedAt { return $0.startedAt < $1.startedAt }
+            return $0.id.uuidString < $1.id.uuidString
+        }
         guard !sortedRuns.isEmpty else { return [] }
 
         if task.forkedFromID != nil,

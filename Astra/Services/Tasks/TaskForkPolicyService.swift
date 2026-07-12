@@ -27,6 +27,13 @@ enum TaskForkPolicyService {
 
     typealias GitRunner = (_ workingPath: String, _ arguments: [String]) -> GitCommandResult
 
+    private struct PolicyModelInputs {
+        let workingPath: String
+        let eligibleFileCount: Int
+        let hasWorkspaceFolder: Bool
+        let isLatestCheckpoint: Bool
+    }
+
     @MainActor
     static func resolve(
         for task: AgentTask,
@@ -34,17 +41,58 @@ enum TaskForkPolicyService {
         fileManager: FileManager = .default,
         gitRunner: GitRunner = runGit
     ) -> TaskForkPolicy {
-        let workingPath = TaskWorkspaceAccess(task: task).codeWorkingDirectory
-        let repository = repositorySnapshot(workingPath: workingPath, gitRunner: gitRunner)
-        // Workspace-less tasks have no task folder to copy into, so the fork
-        // path cannot materialize independent copies (AgentTaskForkService
-        // throws `fileCopiesRequireWorkspace`). Don't offer the mode.
-        let hasWorkspaceFolder = !(task.workspace?.primaryPath ?? "").isEmpty
-        return TaskForkPolicy(
-            repository: repository,
+        let inputs = policyModelInputs(for: task, upToRunID: targetRunID, fileManager: fileManager)
+        return assemblePolicy(
+            inputs: inputs,
+            repository: repositorySnapshot(workingPath: inputs.workingPath, gitRunner: gitRunner)
+        )
+    }
+
+    /// UI presentation variant: the git subprocess work (`waitUntilExit` on up
+    /// to four commands) runs off the main actor so opening the fork sheet
+    /// cannot freeze rendering on slow repositories. Model-derived values are
+    /// still read on the main actor before suspending.
+    @MainActor
+    static func resolveDetachingGitWork(
+        for task: AgentTask,
+        upToRunID targetRunID: UUID? = nil,
+        fileManager: FileManager = .default
+    ) async -> TaskForkPolicy {
+        let inputs = policyModelInputs(for: task, upToRunID: targetRunID, fileManager: fileManager)
+        let workingPath = inputs.workingPath
+        let repository = await Task.detached(priority: .userInitiated) {
+            repositorySnapshot(workingPath: workingPath, gitRunner: runGit)
+        }.value
+        return assemblePolicy(inputs: inputs, repository: repository)
+    }
+
+    @MainActor
+    private static func policyModelInputs(
+        for task: AgentTask,
+        upToRunID targetRunID: UUID?,
+        fileManager: FileManager
+    ) -> PolicyModelInputs {
+        PolicyModelInputs(
+            workingPath: TaskWorkspaceAccess(task: task).codeWorkingDirectory,
             eligibleFileCount: eligibleFilePaths(for: task, fileManager: fileManager).count,
-            allowsIndependentCopies: hasWorkspaceFolder && isLatestCheckpoint(targetRunID, in: task),
-            independentCopiesUnavailableDetail: hasWorkspaceFolder
+            // Workspace-less tasks have no task folder to copy into, so the
+            // fork path cannot materialize independent copies
+            // (AgentTaskForkService throws `fileCopiesRequireWorkspace`).
+            // Don't offer the mode.
+            hasWorkspaceFolder: !(task.workspace?.primaryPath ?? "").isEmpty,
+            isLatestCheckpoint: isLatestCheckpoint(targetRunID, in: task)
+        )
+    }
+
+    private static func assemblePolicy(
+        inputs: PolicyModelInputs,
+        repository: TaskForkRepositorySnapshot?
+    ) -> TaskForkPolicy {
+        TaskForkPolicy(
+            repository: repository,
+            eligibleFileCount: inputs.eligibleFileCount,
+            allowsIndependentCopies: inputs.hasWorkspaceFolder && inputs.isLatestCheckpoint,
+            independentCopiesUnavailableDetail: inputs.hasWorkspaceFolder
                 ? nil
                 : "This conversation has no workspace folder to copy files into."
         )
@@ -66,9 +114,14 @@ enum TaskForkPolicyService {
     /// uncached overload per body evaluation.
     @MainActor
     static func sharedWorktreeReadOnlyRoot(for task: AgentTask, manifest: TaskForkManifest?) -> String? {
-        guard task.isForked, manifest?.repository != nil else { return nil }
-        let root = standardized(TaskWorkspaceAccess(task: task).codeWorkingDirectory)
-        return root.isEmpty ? nil : root
+        guard task.isForked, let repository = manifest?.repository else { return nil }
+        // The recorded repository root, not the fork's own working directory:
+        // tasks pinned to different subdirectories of one worktree still
+        // share its files.
+        let root = standardized(repository.rootPath)
+        if !root.isEmpty { return root }
+        let fallback = standardized(TaskWorkspaceAccess(task: task).codeWorkingDirectory)
+        return fallback.isEmpty ? nil : fallback
     }
 
     @MainActor
@@ -86,8 +139,19 @@ enum TaskForkPolicyService {
         return workspace.tasks.first { candidate in
             candidate.id != task.id
                 && candidate.status == .running
-                && standardized(TaskWorkspaceAccess(task: candidate).codeWorkingDirectory) == taskRoot
+                && isPath(
+                    standardized(TaskWorkspaceAccess(task: candidate).codeWorkingDirectory),
+                    containedIn: taskRoot
+                )
         }
+    }
+
+    /// Subdirectory pins share the worktree: `/repo/packages/api` conflicts
+    /// with a fork rooted at `/repo`.
+    private static func isPath(_ path: String, containedIn root: String) -> Bool {
+        guard !path.isEmpty else { return false }
+        if path == root { return true }
+        return path.hasPrefix(root.hasSuffix("/") ? root : root + "/")
     }
 
     @MainActor

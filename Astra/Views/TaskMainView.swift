@@ -5152,6 +5152,12 @@ struct TaskMainView: View {
     /// Ask the selected utility runtime to summarize the task conversation so the user can resume later.
     /// Response is plain markdown (no JSON), inserted as a recap.result event.
     private func generateRecapAgentically() {
+        // Utility-provider work counts as provider work: read-only forks
+        // block it the same way as conversation continuations.
+        if let readOnlyReason = TaskForkPolicyService.readOnlyReason(for: task) {
+            recordForkReadOnlyBlock(readOnlyReason)
+            return
+        }
         let conversationSnapshot = scheduleConversationContext
         guard !conversationSnapshot.isEmpty else {
             recapStatusMessage = "Nothing to recap yet — this task has no conversation."
@@ -5236,6 +5242,10 @@ struct TaskMainView: View {
     }
 
     private func createScheduleAgentically(instruction: String) {
+        if let readOnlyReason = TaskForkPolicyService.readOnlyReason(for: task) {
+            recordForkReadOnlyBlock(readOnlyReason)
+            return
+        }
         guard let ws = task.workspace else {
             setScheduleStatusMessage("No workspace found for this task.")
             return

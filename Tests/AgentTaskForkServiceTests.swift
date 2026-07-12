@@ -469,6 +469,174 @@ struct AgentTaskForkServiceTests {
         #expect(reference.sha256 == nil)
     }
 
+    @Test("file-copy forks rewrite tilde spellings, task text, and fork-local text, sharing one copy per source")
+    func fileCopyForkRewritesAllSpellingsAndForkLocalText() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let tildePath = "~/astra-fork-tilde-\(UUID().uuidString).md"
+        let expandedPath = (tildePath as NSString).expandingTildeInPath
+        defer { try? FileManager.default.removeItem(atPath: expandedPath) }
+        try "tilde doc".write(toFile: expandedPath, atomically: true, encoding: .utf8)
+        let planAttachmentPath = (root as NSString).appendingPathComponent("plan-notes.md")
+        try "plan notes".write(toFile: planAttachmentPath, atomically: true, encoding: .utf8)
+
+        let container = try makeAgentTaskForkContainer()
+        let context = ModelContext(container)
+        let workspace = Workspace(name: "Rewrite Fidelity", primaryPath: root)
+        let source = AgentTask(title: "Source", goal: "Edit \(tildePath) carefully", workspace: workspace)
+        source.inputs = [tildePath]
+        source.constraints = ["Keep \(expandedPath) intact"]
+        source.acceptanceCriteria = ["\(expandedPath) reviewed"]
+        source.teamInstructions = "Split work on \(expandedPath)"
+        context.insert(workspace)
+        context.insert(source)
+
+        let sourceFolder = try TaskWorkspaceAccess(task: source).ensureTaskFolder()
+        let turnOutputPath = ((sourceFolder as NSString).appendingPathComponent("outputs") as NSString)
+            .appendingPathComponent("turn_001.md")
+        try "Edited \(expandedPath), also spelled \(tildePath)".write(
+            toFile: turnOutputPath, atomically: true, encoding: .utf8
+        )
+        try """
+        # Session History
+
+        ## Turn 1
+        touched \(expandedPath) in the first turn
+        """.write(
+            toFile: SessionHistoryManager.historyPath(taskFolder: sourceFolder),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let run = TaskRun(task: source)
+        run.status = .completed
+        run.startedAt = Date(timeIntervalSince1970: 100)
+        run.completedAt = Date(timeIntervalSince1970: 110)
+        run.output = "Read \(expandedPath) then wrote \(expandedPath) again, or \(tildePath)"
+        context.insert(run)
+        let attachmentEvent = TaskEvent(
+            task: source,
+            type: TaskEventTypes.Conversation.userMessage.rawValue,
+            payload: "Check this.\n\nAttached files:\n- \(expandedPath)",
+            run: run
+        )
+        attachmentEvent.timestamp = Date(timeIntervalSince1970: 104)
+        context.insert(attachmentEvent)
+        let planAttachmentEvent = TaskEvent(
+            task: source,
+            type: TaskPlanConversationEventTypes.userMessage,
+            payload: "Plan around this.\n\nAttached files:\n- \(planAttachmentPath)",
+            run: run
+        )
+        planAttachmentEvent.timestamp = Date(timeIntervalSince1970: 105)
+        context.insert(planAttachmentEvent)
+
+        let forked = try AgentTask.fork(
+            from: source,
+            upToRun: run,
+            options: TaskForkOptions(mode: .conversationWithFileCopies),
+            in: context
+        )
+        try context.save()
+
+        let manifest = try #require(TaskForkManifestService.load(for: forked))
+        let inputCopy = try #require(manifest.sourceInputs?.first { $0.sourcePath == expandedPath }?.localCopyPath)
+        let attachmentCopy = try #require(manifest.sourceAttachments?.first { $0.sourcePath == expandedPath }?.localCopyPath)
+        // One local copy per distinct source file, shared across classes.
+        #expect(inputCopy == attachmentCopy)
+        #expect(forked.inputs == [inputCopy])
+
+        // Plan-mode attachments are discovered and copied too.
+        let planCopy = try #require(manifest.sourceAttachments?.first { $0.sourcePath == planAttachmentPath }?.localCopyPath)
+        #expect(forked.events.contains { $0.payload.contains(planCopy) && !$0.payload.contains(planAttachmentPath) })
+
+        // Task text is rewritten, including the original tilde spelling.
+        #expect(forked.goal == "Edit \(inputCopy) carefully")
+        #expect(forked.constraints == ["Keep \(inputCopy) intact"])
+        #expect(forked.acceptanceCriteria == ["\(inputCopy) reviewed"])
+        #expect(forked.teamInstructions == "Split work on \(inputCopy)")
+
+        // Copied run output: both absolute occurrences and the tilde spelling.
+        let forkedRun = try #require(forked.runs.first)
+        #expect(forkedRun.output == "Read \(inputCopy) then wrote \(inputCopy) again, or \(inputCopy)")
+
+        // Fork-local ASTRA-generated text is rewritten on disk.
+        let outputCopy = try #require(manifest.sourceOutputFiles.first?.localCopyPath)
+        let outputContents = try String(contentsOfFile: outputCopy, encoding: .utf8)
+        #expect(outputContents.contains(inputCopy))
+        #expect(!outputContents.contains(expandedPath))
+        #expect(!outputContents.contains(tildePath))
+        let historyPath = try #require(manifest.checkpointSessionHistoryPath)
+        let historyContents = try String(contentsOfFile: historyPath, encoding: .utf8)
+        #expect(historyContents.contains(inputCopy))
+        #expect(!historyContents.contains(expandedPath))
+    }
+
+    @Test("manifest records declared inputs that are already missing so the warning can fire")
+    func manifestRecordsMissingDeclaredInputs() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let missingPath = (root as NSString).appendingPathComponent("missing.md")
+
+        let container = try makeAgentTaskForkContainer()
+        let context = ModelContext(container)
+        let workspace = Workspace(name: "Missing Input", primaryPath: root)
+        let source = AgentTask(title: "Source", goal: "Revise", workspace: workspace)
+        source.inputs = [missingPath]
+        context.insert(workspace)
+        context.insert(source)
+        let run = TaskRun(task: source)
+        run.status = .completed
+        context.insert(run)
+
+        let forked = try AgentTask.fork(from: source, upToRun: run, in: context)
+        try context.save()
+
+        let manifest = try #require(TaskForkManifestService.load(for: forked))
+        let reference = try #require(manifest.sourceInputs?.first { $0.sourcePath == missingPath })
+        #expect(reference.localCopyPath == nil)
+        #expect(TaskForkManifestService.sourceAvailabilityWarning(for: forked) != nil)
+    }
+
+    @Test("running sibling pinned to a subdirectory of the shared worktree blocks the fork")
+    func subdirectoryPinnedSiblingBlocksGitFork() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let subdirectory = (root as NSString).appendingPathComponent("packages/api")
+        try FileManager.default.createDirectory(atPath: subdirectory, withIntermediateDirectories: true)
+        let container = try makeAgentTaskForkContainer()
+        let context = ModelContext(container)
+        let workspace = Workspace(name: "Repository", primaryPath: root)
+        let source = AgentTask(title: "Original conversation", goal: "Continue", workspace: workspace)
+        context.insert(workspace)
+        context.insert(source)
+        let run = TaskRun(task: source)
+        run.status = .completed
+        context.insert(run)
+        let forked = try AgentTask.fork(
+            from: source,
+            upToRun: run,
+            options: TaskForkOptions(
+                repository: TaskForkRepositorySnapshot(
+                    rootPath: root,
+                    branch: "main",
+                    headSHA: "12345678",
+                    isDirty: false
+                )
+            ),
+            in: context
+        )
+        try context.save()
+
+        let sibling = AgentTask(title: "Subdirectory task", goal: "Work", workspace: workspace)
+        sibling.executionRootPath = subdirectory
+        context.insert(sibling)
+        #expect(TaskForkPolicyService.readOnlyReason(for: forked) == nil)
+        sibling.status = .running
+        let reason = try #require(TaskForkPolicyService.readOnlyReason(for: forked))
+        #expect(reason.contains("Subdirectory task"))
+    }
+
     @Test("independent copies snapshot symlinked file content instead of aliasing the original")
     func independentCopiesResolveSymlinkedInputs() throws {
         let root = try temporaryRoot()

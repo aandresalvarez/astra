@@ -105,10 +105,10 @@ enum TaskForkManifestService: Sendable {
                 fileManager: fileManager
             ),
             sourceInputs: source.inputs.compactMap {
-                fileReference(kind: "input", path: $0, fileManager: fileManager)
+                fileReference(kind: "input", path: $0, requireExists: false, fileManager: fileManager)
             },
             sourceAttachments: dedupe(sourceAttachments).compactMap {
-                fileReference(kind: "attachment", path: $0, fileManager: fileManager)
+                fileReference(kind: "attachment", path: $0, requireExists: false, fileManager: fileManager)
             },
             forkMode: mode.rawValue,
             repository: repository.map {
@@ -123,9 +123,49 @@ enum TaskForkManifestService: Sendable {
         )
         if mode == .conversationWithFileCopies {
             try snapshotFiles(in: &manifest, forkFolder: forkFolder, fileManager: fileManager)
+            rewriteForkLocalTextFiles(in: manifest, forkFolder: forkFolder, fileManager: fileManager)
         }
         try save(manifest, taskFolder: forkFolder, fileManager: fileManager)
         return manifest
+    }
+
+    /// ASTRA-generated fork-local text (the checkpoint history snapshot and
+    /// copied `turn_*.md` outputs) is advertised to follow-up prompts, so
+    /// mentions of copied source paths inside it must point at the fork-local
+    /// copies or the agent gets sent back to the shared originals despite
+    /// file-copy mode. Copies of user files (inputs, attachments) are never
+    /// content-rewritten.
+    private static func rewriteForkLocalTextFiles(
+        in manifest: TaskForkManifest,
+        forkFolder: String,
+        fileManager: FileManager
+    ) {
+        let baseMapping = manifest.allFileReferences.reduce(into: [String: String]()) { mapping, reference in
+            if let local = reference.localCopyPath {
+                mapping[reference.sourcePath] = local
+            }
+        }
+        let mapping = AgentTaskForkService.expandedRewriteMapping(baseMapping, originalSpellings: [])
+        guard !mapping.isEmpty else { return }
+        var targets = manifest.sourceOutputFiles.compactMap(\.localCopyPath)
+        if let historyPath = manifest.checkpointSessionHistoryPath {
+            targets.append(historyPath)
+        }
+        let hostFileAccess = HostFileAccessBroker(fileManager: fileManager)
+        let accessIntent = HostFileAccessIntent.astraManagedStorage(
+            root: URL(fileURLWithPath: forkFolder, isDirectory: true)
+        )
+        for path in targets {
+            guard let contents = try? hostFileAccess.readString(
+                at: URL(fileURLWithPath: path),
+                encoding: .utf8,
+                intent: accessIntent
+            ) else { continue }
+            let rewritten = AgentTaskForkService.replacingPaths(in: contents, using: mapping)
+            if rewritten != contents {
+                try? rewritten.write(toFile: path, atomically: true, encoding: .utf8)
+            }
+        }
     }
 
     static func load(for task: AgentTask, fileManager: FileManager = .default) -> TaskForkManifest? {
@@ -391,12 +431,17 @@ enum TaskForkManifestService: Sendable {
             }
     }
 
+    /// `requireExists: false` records declared-but-missing files (inputs and
+    /// attachments) so `sourceAvailabilityWarning` can report them; discovered
+    /// files (outputs, artifacts) keep requiring existence.
     private static func fileReference(
         kind: String,
         path: String,
+        requireExists: Bool = true,
         fileManager: FileManager
     ) -> TaskForkManifest.FileReference? {
-        guard !path.isEmpty, fileManager.fileExists(atPath: path) else { return nil }
+        guard !path.isEmpty else { return nil }
+        guard fileManager.fileExists(atPath: path) || !requireExists else { return nil }
         let attrs = try? fileManager.attributesOfItem(atPath: path)
         return TaskForkManifest.FileReference(
             kind: kind,
@@ -419,19 +464,24 @@ enum TaskForkManifestService: Sendable {
         forkFolder: String,
         fileManager: FileManager
     ) throws {
-        try snapshotReferences(&manifest.sourceOutputFiles, forkFolder: forkFolder, fileManager: fileManager)
-        try snapshotReferences(&manifest.sourceArtifacts, forkFolder: forkFolder, fileManager: fileManager)
+        // One local copy per distinct source file, shared across reference
+        // classes: a file that is both an input and an attachment must map to
+        // a single copy or fork edits diverge between the two "copies".
+        var copiesBySource: [String: (path: String, sha256: String?)] = [:]
+        try snapshotReferences(&manifest.sourceOutputFiles, forkFolder: forkFolder, copiesBySource: &copiesBySource, fileManager: fileManager)
+        try snapshotReferences(&manifest.sourceArtifacts, forkFolder: forkFolder, copiesBySource: &copiesBySource, fileManager: fileManager)
         var inputs = manifest.sourceInputs ?? []
-        try snapshotReferences(&inputs, forkFolder: forkFolder, fileManager: fileManager)
+        try snapshotReferences(&inputs, forkFolder: forkFolder, copiesBySource: &copiesBySource, fileManager: fileManager)
         manifest.sourceInputs = inputs
         var attachments = manifest.sourceAttachments ?? []
-        try snapshotReferences(&attachments, forkFolder: forkFolder, fileManager: fileManager)
+        try snapshotReferences(&attachments, forkFolder: forkFolder, copiesBySource: &copiesBySource, fileManager: fileManager)
         manifest.sourceAttachments = attachments
     }
 
     private static func snapshotReferences(
         _ references: inout [TaskForkManifest.FileReference],
         forkFolder: String,
+        copiesBySource: inout [String: (path: String, sha256: String?)],
         fileManager: FileManager
     ) throws {
         for index in references.indices {
@@ -441,6 +491,12 @@ enum TaskForkManifestService: Sendable {
                   !isDirectory.boolValue else {
                 continue
             }
+            let canonicalKey = canonicalPathKey(sourcePath)
+            if let existing = copiesBySource[canonicalKey] {
+                references[index].localCopyPath = existing.path
+                references[index].sha256 = existing.sha256
+                continue
+            }
             let copyRoot = (forkFolder as NSString).appendingPathComponent("fork_sources")
             let kindRoot = (copyRoot as NSString).appendingPathComponent(references[index].kind)
             try fileManager.createDirectory(atPath: kindRoot, withIntermediateDirectories: true)
@@ -448,6 +504,7 @@ enum TaskForkManifestService: Sendable {
             try fileManager.copyItem(atPath: resolvedCopySource(for: sourcePath), toPath: destination)
             references[index].localCopyPath = destination
             references[index].sha256 = sha256(path: destination, managedRoot: forkFolder, fileManager: fileManager)
+            copiesBySource[canonicalKey] = (destination, references[index].sha256)
         }
     }
 
@@ -484,12 +541,14 @@ enum TaskForkManifestService: Sendable {
         TaskContextSourcePointer(kind: kind, id: id, path: path, summary: summary)
     }
 
+    private static func canonicalPathKey(_ path: String) -> String {
+        URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL.path
+    }
+
     private static func dedupe(_ paths: [String]) -> [String] {
         var seen: Set<String> = []
         return paths.compactMap { path in
-            let key = URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL.path
-            guard !seen.contains(key) else { return nil }
-            seen.insert(key)
+            guard seen.insert(canonicalPathKey(path)).inserted else { return nil }
             return path
         }
     }
