@@ -1203,9 +1203,22 @@ struct ArchitectureFitnessTests {
         #expect(!beforeDetached.contains("packageDefinitionsFingerprint()"))
         #expect(!beforeDetached.contains("CapabilityCatalogPolicyContext.workspaceUser"))
         #expect(!beforeDetached.contains("PackWorkspacePolicyProvider.resolvedPolicy"))
+        #expect(!beforeDetached.contains("$0.runs"))
+        let begin = try #require(beforeDetached.range(of: "browserSessionPolicyRefreshGate.begin()"))
+        let failClosedSync = try #require(beforeDetached.range(of: "syncBrowserPresentation()"))
+        #expect(begin.upperBound <= failClosedSync.lowerBound)
         let detachedTail = refresh[detached.lowerBound...]
         #expect(detachedTail.contains("catalogPolicyInput?.resolve()"))
         #expect(detachedTail.contains("hostControlInput?.resolve(packageDefinitions: packages)"))
+
+        let environmentSource = try String(contentsOf: root.appendingPathComponent(
+            "Astra/Services/Runtime/ExecutionEnvironment.swift"
+        ), encoding: .utf8)
+        let resolverStart = try #require(environmentSource.range(of: "static func resolveEnvironment(for task:"))
+        let resolverTail = environmentSource[resolverStart.lowerBound...]
+        let historicalReturn = try #require(resolverTail.range(of: "task.status != .draft"))
+        let workspaceRead = try #require(resolverTail.range(of: "task.workspace?.activeExecutionEnvironmentJSON"))
+        #expect(historicalReturn.lowerBound < workspaceRead.lowerBound)
     }
 
     @Test("Browser policy event context stays bounded and user messages use the typed insertion boundary")

@@ -21,6 +21,7 @@ struct BrowserSessionPolicySignature: Equatable {
     var approvalRevision: String
     var packageDefinitionFingerprint: String
     var taskEventRevision: String
+    var catalogPolicyRevision: String
 
     init(
         taskID: UUID?,
@@ -29,7 +30,8 @@ struct BrowserSessionPolicySignature: Equatable {
         enabledCapabilityIDs: [String],
         approvalRevision: String,
         packageDefinitionFingerprint: String,
-        taskEventRevision: String
+        taskEventRevision: String,
+        catalogPolicyRevision: String = ""
     ) {
         self.taskID = taskID
         self.workspaceID = workspaceID
@@ -41,6 +43,7 @@ struct BrowserSessionPolicySignature: Equatable {
         self.approvalRevision = approvalRevision
         self.packageDefinitionFingerprint = packageDefinitionFingerprint
         self.taskEventRevision = taskEventRevision
+        self.catalogPolicyRevision = catalogPolicyRevision
     }
 
     var refreshKey: String {
@@ -51,7 +54,8 @@ struct BrowserSessionPolicySignature: Equatable {
             enabledCapabilityIDs.joined(separator: ","),
             approvalRevision,
             packageDefinitionFingerprint,
-            taskEventRevision
+            taskEventRevision,
+            catalogPolicyRevision
         ].joined(separator: "|")
     }
 }
@@ -239,6 +243,14 @@ enum BrowserSessionPolicyContext {
                 packPolicy: PackWorkspacePolicyProvider.resolvedPolicy(enabledPackIDs: enabledPackIDs)
             )
         }
+
+        var signature: String {
+            [
+                installedPackageIDs.sorted().joined(separator: ","),
+                enabledPackageIDs.sorted().joined(separator: ","),
+                enabledPackIDs.sorted().joined(separator: ",")
+            ].joined(separator: "|")
+        }
     }
 
     struct UserMessage: Equatable {
@@ -296,6 +308,15 @@ enum BrowserSessionPolicyContext {
             task.id.uuidString,
             String(task.updatedAt.timeIntervalSince1970)
         ].joined(separator: "|")
+    }
+
+    @MainActor
+    static func hasRuns(taskID: UUID, modelContext: ModelContext) -> Bool {
+        var descriptor = FetchDescriptor<TaskRun>(
+            predicate: #Predicate<TaskRun> { run in run.task?.id == taskID }
+        )
+        descriptor.fetchLimit = 1
+        return (try? modelContext.fetch(descriptor).isEmpty == false) ?? false
     }
 }
 

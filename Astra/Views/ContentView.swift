@@ -1732,7 +1732,6 @@ struct ContentView: View {
         }
         syncBrowserPresentation()
     }
-
     private func logGeneratedHTMLDiscovery(
         taskID: UUID,
         event: String,
@@ -1762,7 +1761,7 @@ struct ContentView: View {
     }
     private func refreshBrowserSessionPolicy(source: String) {
         browserSessionPolicyRefreshTask?.cancel()
-        let token = browserSessionPolicyRefreshGate.begin(), task = selectedTask
+        let token = browserSessionPolicyRefreshGate.begin(), task = selectedTask; syncBrowserPresentation()
         let taskID = task?.id, workspace = task?.workspace ?? effectiveWorkspace
         let workspaceID = workspace?.id, enabledCapabilityIDs = normalizedEnabledCapabilityIDs(for: task)
         let taskEventRevision = browserSessionPolicyTaskProjection.revision(for: task)
@@ -1772,10 +1771,10 @@ struct ContentView: View {
         let contextText = contextSnapshot.map(BrowserSessionPolicyContext.latestContextText(in:)) ?? ""
         let hostControlInput = task.map { BrowserSessionPolicyContext.HostControlInput(task: $0,
             enabledPackageIDs: enabledCapabilityIDs, contextText: contextText) }
-        let environmentSnapshot = DockerExecutionPlanner.EnvironmentSnapshot(
-            taskSnapshotJSON: task?.executionEnvironmentSnapshotJSON,
-            workspaceEnvironmentJSON: workspace?.activeExecutionEnvironmentJSON, isDraft: task?.status == .draft,
-            hasRuns: task.map { !$0.runs.isEmpty } ?? false)
+        let isDraft = task?.status == .draft
+        let hasRuns = isDraft && task.map { BrowserSessionPolicyContext.hasRuns(taskID: $0.id, modelContext: modelContext) } == true
+        let environmentSnapshot = DockerExecutionPlanner.EnvironmentSnapshot(taskSnapshotJSON: task?.executionEnvironmentSnapshotJSON,
+            workspaceEnvironmentJSON: isDraft && !hasRuns ? workspace?.activeExecutionEnvironmentJSON : nil, isDraft: isDraft, hasRuns: hasRuns)
         let catalogPolicyInput = workspace.map(BrowserSessionPolicyContext.CatalogPolicyInput.init(workspace:))
         browserSessionPolicyRefreshTask = Task { @MainActor in
             let diskSnapshot = await Task.detached(priority: .userInitiated) {
@@ -1794,7 +1793,8 @@ struct ContentView: View {
             let signature = BrowserSessionPolicySignature(
                 taskID: taskID, workspaceID: workspaceID, environmentRevision: environmentRevision,
                 enabledCapabilityIDs: enabledCapabilityIDs, approvalRevision: diskSnapshot.approvalRevision,
-                packageDefinitionFingerprint: diskSnapshot.packageFingerprint, taskEventRevision: taskEventRevision)
+                packageDefinitionFingerprint: diskSnapshot.packageFingerprint, taskEventRevision: taskEventRevision,
+                catalogPolicyRevision: catalogPolicyInput?.signature ?? "no-policy")
             let policy = browserSessionPolicyCache.policy(
                 for: signature,
                 source: BrowserSessionPolicySource(

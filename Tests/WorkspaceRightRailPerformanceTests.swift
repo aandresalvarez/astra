@@ -227,6 +227,22 @@ struct WorkspaceRightRailPerformanceTests {
         #expect(task.updatedAt == originalUpdatedAt)
     }
 
+    @Test("Browser policy run existence query is bounded to one row")
+    @MainActor
+    func browserPolicyRunExistenceQueryIsBounded() throws {
+        let container = try ModelContainer(
+            for: Workspace.self, AgentTask.self, TaskEvent.self, TaskRun.self,
+            configurations: ModelConfiguration(isStoredInMemoryOnly: true)
+        )
+        let context = container.mainContext
+        let task = AgentTask(title: "Draft", goal: "Draft")
+        context.insert(task)
+        #expect(!BrowserSessionPolicyContext.hasRuns(taskID: task.id, modelContext: context))
+        context.insert(TaskRun(task: task))
+        try context.save()
+        #expect(BrowserSessionPolicyContext.hasRuns(taskID: task.id, modelContext: context))
+    }
+
     @Test("Browser policy task projection keeps the newest durable user event")
     @MainActor
     func browserPolicyTaskProjectionRejectsLaterInsertionOfOlderEvent() throws {
@@ -281,7 +297,7 @@ struct WorkspaceRightRailPerformanceTests {
         #expect(gate.policy == permissive)
     }
 
-    @Test("Browser policy invalidations fail closed for approvals packages events and workspace switches")
+    @Test("Browser policy invalidations fail closed for approvals, packages, events, and workspace switches")
     func browserPolicyInvalidationsFailClosed() {
         var gate = BrowserSessionPolicyRefreshGate()
         let permissive = BrowserSessionPolicy(
@@ -450,6 +466,19 @@ struct WorkspaceRightRailPerformanceTests {
         #expect(packageLoadCount == 4)
         #expect(approvalLoadCount == 4)
         #expect(eventContextLoadCount == 4)
+
+        _ = cache.policy(
+            for: BrowserSessionPolicySignature(
+                taskID: taskID,
+                enabledCapabilityIDs: ["github-workflow"],
+                approvalRevision: "approval:2",
+                packageDefinitionFingerprint: "packages:v2",
+                taskEventRevision: "events:v1",
+                catalogPolicyRevision: "packs:v2"
+            ),
+            source: source
+        )
+        #expect(packageLoadCount == 5)
     }
 
     @Test("Browser session policy cache fails closed when refresh throws")

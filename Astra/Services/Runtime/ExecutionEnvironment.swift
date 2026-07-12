@@ -250,11 +250,16 @@ enum DockerExecutionPlanner {
     }
 
     static func resolveEnvironment(for task: AgentTask) -> WorkspaceExecutionEnvironment {
-        resolveEnvironment(from: EnvironmentSnapshot(
-            taskSnapshotJSON: task.executionEnvironmentSnapshotJSON,
+        if let snapshot = task.executionEnvironmentSnapshotJSON,
+           !snapshot.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return ExecutionEnvironmentStore.decode(snapshot)
+        }
+        if task.status != .draft || !task.runs.isEmpty { return .host }
+        return resolveEnvironment(from: EnvironmentSnapshot(
+            taskSnapshotJSON: nil,
             workspaceEnvironmentJSON: task.workspace?.activeExecutionEnvironmentJSON,
-            isDraft: task.status == .draft,
-            hasRuns: !task.runs.isEmpty
+            isDraft: true,
+            hasRuns: false
         ))
     }
 
