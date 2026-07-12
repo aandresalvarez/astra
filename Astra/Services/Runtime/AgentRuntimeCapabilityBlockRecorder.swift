@@ -7,40 +7,6 @@ import ASTRAPersistence
 enum AgentRuntimeCapabilityBlockRecorder {
     @MainActor
     static func apply(
-        _ block: AgentRuntimeCapabilityCompatibilityPolicy.LaunchBlock,
-        runtime: AgentRuntimeID,
-        task: AgentTask,
-        run: TaskRun,
-        modelContext: ModelContext,
-        phase: RunPhase
-    ) {
-        run.status = .failed
-        run.completedAt = Date()
-        run.typedStopReason = block.stopReason
-        TaskStateMachine.pauseForRuntimeReview(task, modelContext: modelContext, at: run.completedAt ?? Date())
-        modelContext.insert(TaskEvent(
-            task: task,
-            type: TaskEventTypes.System.error.rawValue,
-            payload: block.eventPayload,
-            run: run
-        ))
-        AgentPolicyManifestService.recordPostRunSummary(task: task, run: run, modelContext: modelContext)
-        WorkspacePersistenceCoordinator.saveAndAutoExport(
-            workspace: task.workspace,
-            modelContext: modelContext,
-            taskID: task.id,
-            auditFields: AgentRuntimeRunPersistence.fields(task: task, run: run, phase: phase)
-        )
-        AppLogger.audit(.workerBlocked, category: "Worker", taskID: task.id, fields: [
-            "reason": block.stopReason.rawValue,
-            "phase": phase.rawValue,
-            "runtime": runtime.rawValue,
-            "required_host_control_tools": block.requiredTools.joined(separator: ",")
-        ], level: .warning)
-    }
-
-    @MainActor
-    static func apply(
         _ block: TaskRuntimeCompatibilityLaunchBlock,
         runtime: AgentRuntimeID,
         task: AgentTask,
@@ -57,6 +23,19 @@ enum AgentRuntimeCapabilityBlockRecorder {
             task: task,
             type: TaskEventTypes.System.error.rawValue,
             payload: compatibilityEventPayload(block, runtime: runtime, evidence: selectedRuntimeEvidence),
+            run: run
+        ))
+        modelContext.insert(TaskEvent.structuredPayloadEvent(
+            task: task,
+            eventType: TaskEventTypes.System.runtimeLaunchBlocked,
+            payload: TaskRunLaunchBlockPayload(
+                kind: .runtimeIncompatible,
+                title: block.title,
+                message: block.message,
+                remediation: block.remediation,
+                missingCapabilities: block.missingCapabilities,
+                suggestedRuntimeID: block.suggestedRuntime?.rawValue
+            ),
             run: run
         ))
         AgentPolicyManifestService.recordPostRunSummary(task: task, run: run, modelContext: modelContext)
@@ -83,11 +62,14 @@ enum AgentRuntimeCapabilityBlockRecorder {
         let evidenceLine = evidence.isEmpty
             ? ""
             : "\n- Selected runtime evidence: \(evidence.joined(separator: ", "))"
+        // Human-readable only — the dock reads the structured
+        // TaskEventTypes.System.runtimeLaunchBlocked sibling event instead.
+        let suggestedRuntimeLine = block.suggestedRuntime.map { "\n- Suggested runtime: \($0.rawValue)" } ?? ""
         return """
         Selected runtime is incompatible with required ASTRA capabilities.
         - \(block.title): \(block.message) Remediation: \(block.remediation)
         - Runtime: \(runtime.displayName)
-        - Missing capabilities: \(block.missingCapabilities.joined(separator: ", "))\(evidenceLine)
+        - Missing capabilities: \(block.missingCapabilities.joined(separator: ", "))\(evidenceLine)\(suggestedRuntimeLine)
         """
     }
 }

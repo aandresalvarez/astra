@@ -770,6 +770,7 @@ final class AgentRuntimeWorker {
             contextText: providerLaunchContextText,
             capabilityResolutionSnapshot: capabilityResolutionSnapshot,
             launchResourcePlan: launchResourcePlan,
+            precomputedRuntimeRequirements: appliedRuntime.requirements,
             modelContext: modelContext
         )
         guard shouldStartProvider(with: manifest, task: task, run: run, modelContext: modelContext, phase: auditPhase) else {
@@ -1542,6 +1543,7 @@ final class AgentRuntimeWorker {
         TaskStateMachine.enqueueChainedFollowUp(nextTask, modelContext: modelContext)
         nextTask.chainedFromID = task.id
         nextTask.runtimeID = task.runtimeID
+        nextTask.runtimeExplicitlySelected = task.runtimeExplicitlySelected
         // A chained follow-up continues in the same checkout and execution
         // environment as its parent.
         nextTask.executionRootPath = task.executionRootPath
@@ -1641,6 +1643,12 @@ final class AgentRuntimeWorker {
             task: task,
             type: "error",
             payload: "Provider policy blocked this run before launch.\n\(details)",
+            run: run
+        ))
+        modelContext.insert(TaskEvent.structuredPayloadEvent(
+            task: task,
+            eventType: TaskEventTypes.System.runtimeLaunchBlocked,
+            payload: TaskRunLaunchBlockPayload.forPolicyDiagnostics(blockedDiagnostics),
             run: run
         ))
         AgentPolicyManifestService.recordPostRunSummary(task: task, run: run, modelContext: modelContext)

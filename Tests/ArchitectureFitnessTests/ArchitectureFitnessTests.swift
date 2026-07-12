@@ -48,7 +48,7 @@ struct ArchitectureFitnessTests {
             "Astra/Services/Runtime/ExecutionEnvironment.swift",
             "Astra/Services/Runtime/AgentRuntimeLaunchPreflight.swift",
             "Astra/Services/Runtime/AgentRuntimeLaunchRuntimeResolver.swift",
-            "Astra/Services/Runtime/AgentRuntimeCapabilityCompatibilityPolicy.swift"
+            "Astra/Services/Runtime/TaskRuntimeCompatibilityService.swift"
         ]
 
         for relativePath in guardedFiles {
@@ -1610,7 +1610,13 @@ struct ArchitectureFitnessTests {
             "Astra/Views/TaskMainView.swift": .init(6_100, .owner("Task detail and run surface")),
             "Astra/Services/Browser/ShelfBrowserSession.swift": .init(6_000, .owner("Shelf browser session")),
             "Astra/Views/ContentView.swift": .init(4_850, .owner("Workspace shell composition")),
-            "Astra/Models/SchemaVersions.swift": .init(3_650, .owner("SwiftData schema history")),
+            // Budget raised for the V11 freeze / V12 mint (AgentTask.runtimeExplicitlySelected):
+            // freezing a schema version means copying every one of its ~16
+            // referenced model types into a fully self-contained nested body
+            // (957a90a8's V10 freeze is the precedent), which grows this file
+            // by ~450-500 lines every time. That growth is expected schema
+            // history, not scope creep - there's nothing to shrink here.
+            "Astra/Models/SchemaVersions.swift": .init(4_100, .owner("SwiftData schema history")),
             "Astra/Views/ChatPanelView.swift": .init(3_050, .owner("Composer chat surface")),
             "Astra/Services/Runtime/AgentRuntimeAdapter.swift": .init(2_900, .owner("Runtime adapter registry")),
             "Astra/Views/PluginCatalogView.swift": .init(2_900, .owner("Capability catalog UI")),

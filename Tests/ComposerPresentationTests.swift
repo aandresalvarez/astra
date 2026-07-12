@@ -1,6 +1,7 @@
 import Testing
 @testable import ASTRA
 import ASTRACore
+import ASTRAModels
 import AppKit
 import SwiftUI
 
@@ -295,6 +296,23 @@ struct ComposerPresentationTests {
         #expect(update.runtime == AgentRuntimeID.copilotCLI.rawValue)
         #expect(update.resolvedModel == "gpt-5.1")
         #expect(update.modelChanged)
+    }
+
+    @Test("applyRuntimeSwitch marks the task explicitly selected so the launch resolver respects it")
+    @MainActor
+    func applyRuntimeSwitchMarksTaskExplicitlySelected() {
+        let task = AgentTask(title: "Switch target", goal: "test", runtime: .cursorCLI)
+        #expect(task.runtimeExplicitlySelected == false)
+
+        TaskComposerCoordinator.applyRuntimeSwitch(
+            to: AgentRuntimeID.codexCLI.rawValue,
+            task: task,
+            cache: RuntimeModelAvailabilityCache(cachedClaudeModelsJSON: "", cachedCopilotModelsJSON: ""),
+            source: "policy_block_switch_action"
+        )
+
+        #expect(task.runtimeID == AgentRuntimeID.codexCLI.rawValue)
+        #expect(task.runtimeExplicitlySelected == true)
     }
 
     private func sourceFile(_ relativePath: String) throws -> String {

@@ -1,5 +1,6 @@
 import Foundation
 import ASTRACore
+import ASTRAModels
 
 enum TaskComposerSlashCommandID: String, CaseIterable, Sendable {
     case remember
@@ -130,5 +131,39 @@ enum TaskComposerCoordinator {
             previousModel: currentModel,
             resolvedModel: resolvedModel
         )
+    }
+
+    /// Applies a user-driven runtime switch to `task` (composer picker or a
+    /// dock action like "Switch to Codex CLI") and logs the same
+    /// `task_runtime_changed` breadcrumb shape from both call sites, varying
+    /// only by `source`. Marks `runtimeExplicitlySelected` so the launch
+    /// resolver respects this pick instead of silently rerouting it away
+    /// (see AgentRuntimeLaunchRuntimeResolver / TaskRuntimeCompatibilityService).
+    @MainActor
+    static func applyRuntimeSwitch(
+        to runtime: String,
+        task: AgentTask,
+        cache: RuntimeModelAvailabilityCache,
+        source: String
+    ) {
+        let update = runtimeUpdate(
+            previousRuntime: task.runtimeID,
+            selectedRuntime: runtime,
+            currentModel: task.model,
+            cache: cache
+        )
+        task.runtimeID = runtime
+        task.runtimeExplicitlySelected = true
+        task.model = update.resolvedModel
+        task.updatedAt = Date()
+        AppLogger.breadcrumb(action: "task_runtime_changed", category: "UI", taskID: task.id, fields: [
+            "source": source,
+            "previous_runtime": update.previousRuntime ?? "none",
+            "runtime": update.runtime,
+            "previous_model": update.previousModel,
+            "model": update.resolvedModel,
+            "model_changed": String(update.modelChanged),
+            "workspace_id": task.workspace?.id.uuidString ?? "none"
+        ])
     }
 }

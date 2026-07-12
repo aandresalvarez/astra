@@ -1319,4 +1319,37 @@ extension HeadlessChatScenarioTests {
     }
 
     // MARK: - Crash and timeout recovery
+
+    @Test("A chained follow-up task inherits the parent's explicit runtime pick")
+    func chainedFollowUpTaskInheritsExplicitRuntimeSelection() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let claudePath = try harness.writeExecutable(
+            named: "claude",
+            script: Self.claudeScript(body: """
+            printf '%s\\n' '{"type":"system","subtype":"init","session_id":"claude-chain-session","model":"claude-sonnet-4-6"}'
+            printf '%s\\n' '{"type":"assistant","message":{"model":"claude-sonnet-4-6","content":[{"type":"text","text":"Done, chaining to the next step"}]}}'
+            printf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"duration_ms":10,"num_turns":1,"result":"Done, chaining to the next step","usage":{"input_tokens":3,"output_tokens":5}}'
+            exit 0
+            """)
+        )
+
+        let task = harness.makeTask(runtime: .claudeCode, goal: "First step", model: "claude-sonnet-4-6")
+        // The same explicit-pick marker AgentRuntimeLaunchRuntimeResolver reads
+        // (see TaskComposerCoordinator.applyRuntimeSwitch) — a chained
+        // follow-up should carry it forward exactly like a fork already does
+        // (AgentTaskForkService.fork), not silently reset to the default.
+        task.runtimeExplicitlySelected = true
+        task.chainedGoal = "Second step"
+        let worker = harness.makeWorker(runtime: .claudeCode, executablePath: claudePath)
+
+        _ = await harness.execute(task: task, worker: worker)
+        #expect(task.status == .completed)
+
+        let allTasks = try harness.context.fetch(FetchDescriptor<AgentTask>())
+        let chained = try #require(allTasks.first { $0.chainedFromID == task.id })
+        #expect(chained.runtimeID == AgentRuntimeID.claudeCode.rawValue)
+        #expect(chained.runtimeExplicitlySelected == true)
+    }
 }
