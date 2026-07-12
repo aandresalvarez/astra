@@ -298,13 +298,16 @@ enum TaskOpenResponsivenessTelemetry {
         ) else { return }
         endTranscriptReadyInterval(&activeTrace)
         if let snapshotAppliedUptimeNanoseconds, snapshotAppliedUptimeNanoseconds <= readyAt {
+            let applyToReadyMilliseconds = Double(readyAt - snapshotAppliedUptimeNanoseconds) / 1_000_000
+            if applyToReadyMilliseconds >= PerformanceTelemetry.uiFrameThresholdMilliseconds {
             PerformanceTelemetry.log(
                 "task_open_apply_to_ready",
-                durationMilliseconds: Double(readyAt - snapshotAppliedUptimeNanoseconds) / 1_000_000,
+                durationMilliseconds: applyToReadyMilliseconds,
                 level: .info,
                 fields: activeTrace.trace.phaseFields(name: "snapshot_apply_to_transcript_ready"),
                 taskID: task.id
             )
+            }
         }
         log(result, taskID: task.id)
         activeTraces[scope] = nil
@@ -349,6 +352,10 @@ enum TaskOpenResponsivenessTelemetry {
 
     static func startedAtForTesting(scope: UUID) -> UInt64? {
         activeTraces[scope]?.trace.startedAtUptimeNanoseconds
+    }
+
+    static func shouldMeasureSelectionTransition(previousTaskID: UUID?, nextTaskID: UUID?) -> Bool {
+        previousTaskID != nextTaskID
     }
 
     private static func recordPhase(_ name: String, task: AgentTask, scope: UUID, start: UInt64) {

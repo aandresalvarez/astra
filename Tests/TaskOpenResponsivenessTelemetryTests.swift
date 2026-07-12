@@ -168,6 +168,45 @@ struct TaskOpenResponsivenessTelemetryTests {
         TaskOpenResponsivenessTelemetry.resetForTesting()
     }
 
+    @MainActor
+    @Test("Sub-frame snapshot apply to ready does not emit a production interval")
+    func subFrameSnapshotApplyToReadyIsNotLogged() {
+        let task = makeTask(goal: "Fast transcript telemetry")
+        let scope = UUID()
+        AppLogger.resetForTesting()
+        TaskOpenResponsivenessTelemetry.resetForTesting()
+        TaskOpenResponsivenessTelemetry.begin(task: task, source: "task_selection", scope: scope)
+
+        TaskOpenResponsivenessTelemetry.transcriptBecameReady(
+            task: task,
+            snapshot: .empty,
+            appliedSnapshotRevision: 1,
+            cacheState: "hit",
+            snapshotAppliedUptimeNanoseconds: DispatchTime.now().uptimeNanoseconds,
+            scope: scope
+        )
+        AppLogger.flushForTesting()
+
+        #expect(!AppLogger.entries.contains {
+            $0.taskID == task.id && $0.message.contains("event=task_open_apply_to_ready")
+        })
+        TaskOpenResponsivenessTelemetry.resetForTesting()
+    }
+
+    @MainActor
+    @Test("Pre-shell attribution runs only when selected task identity changes")
+    func preShellAttributionRequiresTaskIdentityChange() {
+        let taskID = UUID()
+        #expect(!TaskOpenResponsivenessTelemetry.shouldMeasureSelectionTransition(
+            previousTaskID: taskID,
+            nextTaskID: taskID
+        ))
+        #expect(TaskOpenResponsivenessTelemetry.shouldMeasureSelectionTransition(
+            previousTaskID: taskID,
+            nextTaskID: UUID()
+        ))
+    }
+
     @Test("Interval cancellation only ends each OS signpost once")
     func intervalLifecyclePreventsDoubleEnd() {
         var lifecycle = TaskOpenResponsivenessIntervalLifecycle()
