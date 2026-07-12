@@ -497,6 +497,12 @@ final class AgentRuntimeWorker {
             task.runtimeID = selectedRuntime.rawValue
         }
 
+        // Construct the run before resolving requirements: TaskRun.init settles
+        // executionEnvironmentSnapshotJSON when nil, but the resolver's own
+        // fallback disagrees for historical tasks — resolving first risked stale requirements.
+        let run = TaskRun(task: task)
+        modelContext.insert(run)
+
         let runtimeResolution = AgentRuntimeLaunchRuntimeResolver.resolve(
             task: task,
             requestedRuntime: selectedRuntime,
@@ -523,10 +529,7 @@ final class AgentRuntimeWorker {
             runtimeAdapter = AgentRuntimeAdapterRegistry.adapter(for: selectedRuntime)
             launchSettings = runtimeAdapter.launchSettings(configuration: runtimeConfiguration)
         }
-
-        let run = TaskRun(task: task)
         run.runtimeID = selectedRuntime.rawValue
-        modelContext.insert(run)
 
         let startPayload = startEventPayload ?? runtimeAdapter.defaultStartEventPayload(task: task)
         let startEvent = TaskEvent(task: task, type: startEventType, payload: startPayload, run: run)

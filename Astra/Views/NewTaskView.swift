@@ -13,14 +13,17 @@ struct NewTaskView: View {
     @State private var title = ""
     @State private var goal = ""
     @State private var runtimeID = TaskExecutionDefaults.runtime.rawValue
-    /// True once the user has changed the runtime picker themselves during
-    /// this sheet's lifetime (as opposed to `onAppear` applying the
-    /// workspace/app default) — mirrors `TaskComposerCoordinator
+    /// True only when the user picks a runtime through `runtimeIDSelection`
+    /// (the Picker's binding) — never when `onAppear` applies the
+    /// workspace/app default. Mirrors `TaskComposerCoordinator
     /// .applyRuntimeSwitch`'s "explicit pick" semantics for a task that
-    /// doesn't exist yet. Gated on `hasAppliedInitialRuntimeDefault` so the
-    /// `onAppear` default application itself never counts as explicit.
+    /// doesn't exist yet. Deliberately NOT derived from `.onChange(of:
+    /// runtimeID)`: SwiftUI coalesces every `@State` write inside one
+    /// `onAppear` closure into a single update, so a guard flag flipped at
+    /// the end of that same closure is already true by the time the
+    /// resulting onChange fires — routing only genuine picker selections
+    /// through a dedicated Binding sidesteps that ordering entirely.
     @State private var runtimeExplicitlySelected = false
-    @State private var hasAppliedInitialRuntimeDefault = false
     @State private var model = TaskExecutionDefaults.model
     @State private var tokenBudget = TaskExecutionDefaults.tokenBudget
     @State private var policyLevelRaw = AgentPolicyLevel.review.rawValue
@@ -80,7 +83,7 @@ struct NewTaskView: View {
                 }
 
                 Section("Execution") {
-                    Picker("Provider", selection: $runtimeID) {
+                    Picker("Provider", selection: runtimeIDSelection) {
                         ForEach(AgentRuntimeAdapterRegistry.runtimeIDs) { runtime in
                             Text(runtime.displayName).tag(runtime.rawValue)
                         }
@@ -94,9 +97,6 @@ struct NewTaskView: View {
                             cache: runtimeModelCache
                         )
                         model = resolvedModel
-                        if hasAppliedInitialRuntimeDefault {
-                            runtimeExplicitlySelected = true
-                        }
                         AppLogger.breadcrumb(action: "new_task_runtime_changed", category: "UI", fields: [
                             "source": "new_task_sheet",
                             "runtime": runtime.rawValue,
@@ -205,11 +205,25 @@ struct NewTaskView: View {
                 workspace: workspace,
                 globalDefaultRaw: settings.defaultPolicyLevelRaw
             ).userFacingLevel.rawValue
-            hasAppliedInitialRuntimeDefault = true
         }
         .onChange(of: appSettings.runtimeSettings.modelCacheSignature) {
             alignModelWithRuntimeCache()
         }
+    }
+
+    /// The Picker's selection binding. Setting it (i.e. the user picking a
+    /// runtime) is the ONLY path that marks `runtimeExplicitlySelected` —
+    /// `onAppear`'s default application writes to the underlying `runtimeID`
+    /// `@State` directly, bypassing this binding entirely, so it can never be
+    /// mistaken for a genuine pick regardless of SwiftUI's update timing.
+    private var runtimeIDSelection: Binding<String> {
+        Binding(
+            get: { runtimeID },
+            set: { newValue in
+                runtimeID = newValue
+                runtimeExplicitlySelected = true
+            }
+        )
     }
 
     private var runtimeModels: [String] {
