@@ -1,6 +1,8 @@
 import CoreData
 import Foundation
+import AppKit
 import Testing
+import UniformTypeIdentifiers
 import ASTRAModels
 import ASTRAPersistence
 @testable import ASTRA
@@ -153,6 +155,19 @@ struct PersistentStoreRecoveryTests {
             assessment: .compatible(storeSchemaVersion: 11),
             supportedSchemaVersion: 11
         ) == nil)
+    }
+
+    @MainActor
+    @Test("compatible build picker permits selecting app bundles")
+    func compatibleBuildPickerPermitsApplicationBundles() {
+        let panel = NSOpenPanel()
+        StoreStartupBlockedView.configureCompatibleBuildPanel(panel, requiredSchemaVersion: 15)
+
+        #expect(panel.canChooseFiles)
+        #expect(!panel.canChooseDirectories)
+        #expect(!panel.allowsMultipleSelection)
+        #expect(panel.allowedContentTypes == [.applicationBundle])
+        #expect(panel.message?.contains("schema V15") == true)
     }
 
     @Test("contention retries are bounded")

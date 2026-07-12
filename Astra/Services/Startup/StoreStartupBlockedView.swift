@@ -105,11 +105,7 @@ struct StoreStartupBlockedView: View {
 
     private func locateCompatibleBuild(requiredSchemaVersion: Int) {
         let panel = NSOpenPanel()
-        panel.canChooseFiles = false
-        panel.canChooseDirectories = true
-        panel.allowsMultipleSelection = false
-        panel.allowedContentTypes = [.applicationBundle]
-        panel.message = "Choose an ASTRA Dev build that supports schema V\(requiredSchemaVersion) or newer."
+        Self.configureCompatibleBuildPanel(panel, requiredSchemaVersion: requiredSchemaVersion)
         guard panel.runModal() == .OK, let bundleURL = panel.url else { return }
         guard let candidate = CompatibleASTRABuildRegistry.compatibleBuild(
             at: bundleURL,
@@ -123,6 +119,20 @@ struct StoreStartupBlockedView: View {
             bundleURL: URL(fileURLWithPath: candidate.bundlePath),
             auditResult: "located_compatible_build_relaunch_scheduled"
         )
+    }
+
+    static func configureCompatibleBuildPanel(
+        _ panel: NSOpenPanel,
+        requiredSchemaVersion: Int
+    ) {
+        // Application bundles are packages presented as selectable files by
+        // NSOpenPanel. Treating them as directories leaves the requested
+        // ASTRA.app bundle disabled in the picker.
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [.applicationBundle]
+        panel.message = "Choose an ASTRA Dev build that supports schema V\(requiredSchemaVersion) or newer."
     }
 
     private func chooseStore() {
