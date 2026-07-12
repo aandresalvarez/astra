@@ -61,12 +61,13 @@ struct TaskRunSnapshot: Identifiable, Hashable, Sendable {
     let costUSD: Double
     let fileChangesJSONLength: Int
     let fileChanges: [StoredFileChange]
+    let hasOmittedFileChanges: Bool
     let stopReason: String
 
     var completedWithoutUserFacingResult: Bool {
         status == .completed &&
             output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
-            fileChanges.isEmpty
+            fileChanges.isEmpty && !hasOmittedFileChanges
     }
 
     init(input: TaskRunSnapshotInput) {
@@ -103,9 +104,8 @@ struct TaskRunSnapshot: Identifiable, Hashable, Sendable {
             input.fileChangesJSON,
             cancellationCheck: cancellationCheck
         )
-        fileChanges = input.fileChangesJSON.utf8.count <= Self.maximumDecodedFileChangesJSONBytes
-            ? Self.decodeFileChanges(input.fileChangesJSON)
-            : []
+        hasOmittedFileChanges = input.fileChangesJSON.utf8.count > Self.maximumDecodedFileChangesJSONBytes
+        fileChanges = hasOmittedFileChanges ? [] : Self.decodeFileChanges(input.fileChangesJSON)
         try cancellationCheck()
         stopReason = input.stopReason
     }
@@ -596,6 +596,12 @@ struct TaskRunOutputPresentation: Hashable, Sendable {
     }
 
     private static func rawOutputPresentation(for run: TaskRunSnapshot) -> TaskRunOutputPresentation {
+        guard run.output.utf8.count <= maximumFinalAnswerPresentationBytes else {
+            return TaskRunOutputPresentation(
+                displayText: "This run produced very large raw output. Open Diagnostics for the full output.",
+                progressMessages: [], rawText: run.output
+            )
+        }
         let presentation = TaskRunAnswerPresentationPolicy.presentation(rawText: run.output)
         return TaskRunOutputPresentation(
             displayText: presentation.answerText,
@@ -678,12 +684,13 @@ struct TaskRunActivity: Sendable {
     let toolResults: [TaskToolResult]
     let notices: [TaskRunNotice]
     let fileChanges: [StoredFileChange]
+    let hasOmittedFileChanges: Bool
     let permissionManifest: RunPermissionManifest?
 
-    static let empty = TaskRunActivity(tools: [], toolCalls: [], toolResults: [], notices: [], fileChanges: [], permissionManifest: nil)
+    static let empty = TaskRunActivity(tools: [], toolCalls: [], toolResults: [], notices: [], fileChanges: [], hasOmittedFileChanges: false, permissionManifest: nil)
 
     var hasVisibleActivity: Bool {
-        !tools.isEmpty || !toolResults.isEmpty || !notices.isEmpty || !fileChanges.isEmpty || permissionManifest != nil
+        !tools.isEmpty || !toolResults.isEmpty || !notices.isEmpty || !fileChanges.isEmpty || hasOmittedFileChanges || permissionManifest != nil
     }
 }
 
@@ -927,6 +934,7 @@ struct TaskThreadSnapshot: Sendable {
                 toolResults: resultsByRunID[run.id] ?? [],
                 notices: noticesByRunID[run.id] ?? [],
                 fileChanges: run.fileChanges,
+                hasOmittedFileChanges: run.hasOmittedFileChanges,
                 permissionManifest: permissionManifestByRunID[run.id]
             )
         }

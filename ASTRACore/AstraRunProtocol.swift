@@ -376,6 +376,7 @@ public struct AstraRunProtocolTextFilter: Sendable {
 }
 
 public enum AstraRunProtocolDisplaySanitizer {
+    private static let maximumSanitizedDisplayBytes = 262_144
     public static func clean(_ text: String) -> String {
         guard text.mayContainRunProtocolLeak else { return text }
 
@@ -394,6 +395,9 @@ public enum AstraRunProtocolDisplaySanitizer {
         cancellationCheck: () throws -> Void
     ) rethrows -> String {
         guard try containsProtocolLeak(text, cancellationCheck: cancellationCheck) else { return text }
+        guard text.utf8.count <= maximumSanitizedDisplayBytes else {
+            return "Protocol-bearing output was too large to present safely. Open Diagnostics for the raw output."
+        }
 
         var filter = AstraRunProtocolTextFilter()
         var visibleChunks: [String] = []

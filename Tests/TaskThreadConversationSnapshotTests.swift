@@ -333,6 +333,9 @@ extension TaskThreadSnapshotTests {
 
         #expect(snapshot.latestRun?.fileChangesJSONLength == run.fileChangesJSON.count)
         #expect(snapshot.latestRun?.fileChanges.isEmpty == true)
+        #expect(snapshot.latestRun?.hasOmittedFileChanges == true)
+        let latestRun = try #require(snapshot.latestRun)
+        #expect(snapshot.activity(for: latestRun).hasVisibleActivity == true)
     }
 
     @Test("Oversized final answer skips unbounded markdown presentation")
