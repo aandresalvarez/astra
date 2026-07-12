@@ -35,6 +35,19 @@ struct PersistentStoreSafetyTests {
         #expect(PersistentStoreOpenFailurePolicy.decision(for: unknown) == .blockedUnknown)
     }
 
+    @Test("Store open diagnostics contain codes but not localized descriptions")
+    func storeOpenDiagnosticsArePrivacySafe() {
+        let error = NSError(
+            domain: NSCocoaErrorDomain,
+            code: 134_504,
+            userInfo: [NSLocalizedDescriptionKey: "/Users/private/store contents"]
+        )
+        let fields = PersistentStoreOpenFailurePolicy.diagnosticFields(for: error)
+        #expect(fields["error_domains"] == NSCocoaErrorDomain)
+        #expect(fields["error_codes"] == "134504")
+        #expect(!fields.values.joined().contains("/Users/private"))
+    }
+
     @Test("Legacy migration recovery preserves every store not proven corrupt")
     func legacyMigrationRecoveryFailsClosed() {
         #expect(PersistentStoreOpenFailurePolicy.permitsFreshStoreForLegacyMigration(.verifiedCorruption))
