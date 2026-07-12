@@ -29,6 +29,7 @@ public enum AgentTaskForkService {
         forked.skills = source.skills
         forked.skillSnapshotsJSON = source.skillSnapshotsJSON
         forked.runtimeID = source.runtimeID
+        forked.runtimeExplicitlySelected = source.runtimeExplicitlySelected
         // A fork continues the source's line of work, so it stays in the same
         // worktree the source was pinned to.
         forked.executionRootPath = source.executionRootPath

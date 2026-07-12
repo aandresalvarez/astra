@@ -49,13 +49,24 @@ public struct TaskRunStopReason: RawRepresentable, Codable, Sendable, Hashable, 
     public static let providerPermissionDeniedBroadPermissions: TaskRunStopReason = "provider_permission_denied_broad_permissions"
     public static let providerPermissionUnresumable: TaskRunStopReason = "provider_permission_unresumable"
     public static let repetitionDetected: TaskRunStopReason = "repetition_detected"
+    /// Set by `TaskRuntimeCompatibilityService.launchBlock` when a task's
+    /// explicitly-selected runtime can't satisfy its required ASTRA
+    /// capabilities (host-control MCP, Docker workspace shell, browser
+    /// control) and there's no automatic fallback to reroute to silently.
+    public static let runtimeCapabilityIncompatible: TaskRunStopReason = "runtime_capability_incompatible"
     public static let superseded: TaskRunStopReason = "superseded"
     public static let timeout: TaskRunStopReason = "timeout"
     public static let validationContractFailed: TaskRunStopReason = "validation_contract_failed"
     public static let workspaceNotFound: TaskRunStopReason = "workspace_not_found"
 
+    /// True for stop reasons where the run was blocked before completing —
+    /// either an explicit policy diagnostic or a pre-launch runtime
+    /// incompatibility — as opposed to a run that started and then failed,
+    /// timed out, or was cancelled. A closed set rather than a substring
+    /// match on `rawValue`, so a new stop reason must opt in explicitly
+    /// instead of silently matching (or missing) based on its spelling.
     public var isPolicyBlocked: Bool {
-        rawValue.lowercased().contains("policy")
+        self == .policyBlocked || self == .policyViolation || self == .runtimeCapabilityIncompatible
     }
 
     public var isDockerRuntimeBlocked: Bool {

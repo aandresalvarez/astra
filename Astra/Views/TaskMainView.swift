@@ -3882,6 +3882,16 @@ struct TaskMainView: View {
         currentThreadSnapshot.latestRun
     }
 
+    /// The structured launch-block payload for the latest run, if any was
+    /// recorded — scoped to that specific run via `TaskEventSnapshot.runID`,
+    /// not the whole thread's error history.
+    private var latestRunLaunchBlock: TaskRunLaunchBlockPayload? {
+        guard let runID = latestRun?.id else { return nil }
+        return sortedEvents
+            .last { $0.runID == runID && $0.type == TaskEventTypes.System.runtimeLaunchBlocked.rawValue }
+            .flatMap { TaskRunLaunchBlockPayload.decode(from: $0.payload) }
+    }
+
     private var taskReviewPresentation: TaskReviewPresentation {
         TaskPresentationState.reviewPresentation(status: task.status, isClosed: task.isDone)
     }
@@ -3911,6 +3921,7 @@ struct TaskMainView: View {
             canToggleDone: canToggleTaskDoneFromDecisionDock,
             hasProviderSession: task.hasProviderSession,
             failureReason: failureReason,
+            launchBlock: latestRunLaunchBlock,
             artifactPaths: taskDecisionArtifactPaths,
             extraDetails: taskDecisionExtraDetails
         ))
@@ -4198,51 +4209,6 @@ struct TaskMainView: View {
         PendingTaskReviewSnapshotInput(task: task, snapshot: currentThreadSnapshot)
     }
 
-    private var pendingDecisionTitle: String {
-        if hasOpenRuntimePermissionApprovalRequest {
-            return pendingRuntimePermissionDecision?.title ?? "Permission needed"
-        }
-        if latestRunHasNoUsableResult {
-            return "No usable result"
-        }
-        return pendingTaskDismissalReason == .policyBlocked ? "Policy blocked" : "Needs your review"
-    }
-
-    private var pendingDecisionDetail: String {
-        if hasOpenRuntimePermissionApprovalRequest {
-            let fallback = "\(task.resolvedRuntimeID.displayName) needs one-time permission before it can continue."
-            return pendingRuntimePermissionDecision?.summary ?? fallback
-        }
-        if pendingTaskDismissalReason == .policyBlocked {
-            return "The run stopped before completion. Retry with broader policy permissions; dismissing will not mark it completed."
-        }
-        if latestRunHasNoUsableResult {
-            return "The task did not create the expected artifact. Retry or dismiss without marking it completed."
-        }
-        return "Review the latest output, then approve it or retry the task."
-    }
-
-    private var pendingDecisionPrimaryLabel: String {
-        if hasOpenRuntimePermissionApprovalRequest {
-            return "Allow once & continue"
-        }
-        return pendingTaskDismissalReason != nil ? "Dismiss" : "Approve result"
-    }
-
-    private var pendingDecisionPrimaryIcon: String {
-        hasOpenRuntimePermissionApprovalRequest ? "lock.open.fill" : "checkmark"
-    }
-
-    private var pendingDecisionIcon: String {
-        if hasOpenRuntimePermissionApprovalRequest {
-            return "hand.raised.fill"
-        }
-        if pendingTaskDismissalReason == .policyBlocked {
-            return "shield.slash.fill"
-        }
-        return latestRunHasNoUsableResult ? "doc.badge.exclamationmark" : "person.crop.circle.badge.questionmark"
-    }
-
     private var composerPlaceholder: String {
         switch task.status {
         case .queued: return "Type to refine this task (moves back to draft)..."
@@ -4369,61 +4335,10 @@ struct TaskMainView: View {
             openGeneratedFile(path: path, destination: TaskGeneratedFiles.shelfDestination(for: path))
         case .closeTask, .closeAnyway, .closeWithoutRunningPlan, .reopenTask:
             toggleTaskDoneFromDecisionDock()
-        }
-    }
-
-    private var pendingReviewDecisionDock: some View {
-        let primaryColor = hasOpenRuntimePermissionApprovalRequest ? Stanford.poppy : Stanford.paloAltoGreen
-
-        return taskDecisionSurface(
-            icon: pendingDecisionIcon,
-            color: primaryColor,
-            title: pendingDecisionTitle,
-            detail: pendingDecisionDetail,
-            detailLineLimit: hasOpenRuntimePermissionApprovalRequest ? 2 : 3,
-            scope: hasOpenRuntimePermissionApprovalRequest ? pendingRuntimePermissionDecision?.scope : nil,
-            commandPreview: hasOpenRuntimePermissionApprovalRequest ? pendingRuntimePermissionDecision?.commandPreview : nil
-        ) {
-            VStack(alignment: .trailing, spacing: 8) {
-                if let onRetry = onRetryTask {
-                    Button("Retry") {
-                        onRetry(task)
-                    }
-                    .buttonStyle(StanfordButtonStyle(isPrimary: false))
-                    .controlSize(.small)
-                    .accessibilityLabel("Retry task")
-                }
-
-                if hasOpenRuntimePermissionApprovalRequest,
-                   canApproveSimilarRuntimePermissionForTask {
-                    Button {
-                        approveSimilarRuntimePermissionForTask()
-                    } label: {
-                        Label("Allow similar", systemImage: "checkmark.shield")
-                            .labelStyle(.titleAndIcon)
-                    }
-                    .buttonStyle(StanfordButtonStyle(isPrimary: false))
-                    .controlSize(.small)
-                    .help((pendingRuntimePermissionDecision?.allowSimilarLabel ?? "Allow similar requests") + " for this task.")
-                    .accessibilityIdentifier("ApproveSimilarTaskButton")
-                    .accessibilityLabel("Allow similar for this task")
-                }
-
-                if let onApprove = onApproveTask {
-                    Button {
-                        onApprove(task)
-                    } label: {
-                        Label(pendingDecisionPrimaryLabel, systemImage: pendingDecisionPrimaryIcon)
-                            .labelStyle(.titleAndIcon)
-                    }
-                    .buttonStyle(StanfordButtonStyle(isPrimary: true, color: primaryColor))
-                    .controlSize(.small)
-                    .accessibilityIdentifier("ApproveTaskButton")
-                    .accessibilityLabel(pendingDecisionPrimaryLabel)
-                }
-
-                taskDecisionOverflowMenu(doneLabelOverride: latestRunHasNoUsableResult ? TaskPresentationState.closeAnywayActionTitle : nil)
-            }
+        case .switchRuntime:
+            guard let runtime = action.payload else { return }
+            TaskComposerCoordinator.applyRuntimeSwitch(to: runtime, task: task, cache: runtimeModelCache, source: "policy_block_switch_action")
+            onRetryTask?(task)
         }
     }
 
@@ -4869,6 +4784,83 @@ struct TaskMainView: View {
         isDragOver || isComposerFocused ? 1.5 : 1
     }
 
+    @ViewBuilder
+    private var slashCommandMenuOverlay: some View {
+        if showSlashMenu && !visibleSlashOptions.isEmpty {
+            let opts = visibleSlashOptions
+            VStack(spacing: 0) {
+                ForEach(Array(opts.enumerated()), id: \.element.id) { index, opt in
+                    let isSelected = index == min(slashSelectedIndex, opts.count - 1)
+                    let meta = Self.slashOptionMeta(opt.id)
+                    Button {
+                        selectSlashOption(opt)
+                    } label: {
+                        HStack(spacing: 9) {
+                            Image(systemName: meta.icon)
+                                .font(Stanford.ui(SlashCommandMenuPresentation.iconSize, weight: .semibold))
+                                .foregroundStyle(meta.color)
+                                .frame(width: SlashCommandMenuPresentation.iconFrame)
+                            VStack(alignment: .leading, spacing: 2) {
+                                HStack(spacing: 6) {
+                                    Text(opt.command.trimmingCharacters(in: .whitespaces))
+                                        .font(Stanford.ui(SlashCommandMenuPresentation.commandFontSize, weight: .semibold, design: .monospaced))
+                                    Text(meta.title)
+                                        .font(Stanford.caption(SlashCommandMenuPresentation.titleFontSize))
+                                        .foregroundStyle(Stanford.coolGrey)
+                                        .lineLimit(1)
+                                }
+                                Text(meta.subtitle)
+                                    .font(Stanford.caption(SlashCommandMenuPresentation.descriptionFontSize))
+                                    .foregroundStyle(Stanford.coolGrey)
+                                    .lineLimit(SlashCommandMenuPresentation.descriptionLineLimit)
+                                    .truncationMode(.tail)
+                                    .help(meta.subtitle)
+                            }
+                            Spacer()
+                            if isSelected {
+                                Image(systemName: "return")
+                                    .font(Stanford.ui(SlashCommandMenuPresentation.returnIconSize))
+                                    .foregroundStyle(.tertiary)
+                            }
+                        }
+                        .padding(.horizontal, SlashCommandMenuPresentation.horizontalPadding)
+                        .frame(height: SlashCommandMenuPresentation.rowHeight)
+                        .background {
+                            if isSelected {
+                                RoundedRectangle(cornerRadius: SlashCommandMenuPresentation.rowCornerRadius, style: .continuous)
+                                    .fill(Stanford.lagunita.opacity(SlashCommandMenuPresentation.selectedBackgroundOpacity))
+                            }
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+
+                    if SlashCommandMenuPresentation.usesIconColumnDividers && index < opts.count - 1 {
+                        Divider()
+                            .opacity(SlashCommandMenuPresentation.dividerOpacity)
+                            .padding(.leading, SlashCommandMenuPresentation.dividerLeadingPadding)
+                            .padding(.trailing, SlashCommandMenuPresentation.dividerTrailingPadding)
+                    }
+                }
+            }
+            .padding(.vertical, SlashCommandMenuPresentation.menuVerticalPadding)
+            .frame(maxWidth: SlashCommandMenuPresentation.maxWidth)
+            .background(.regularMaterial)
+            .clipShape(RoundedRectangle(cornerRadius: SlashCommandMenuPresentation.menuCornerRadius, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: SlashCommandMenuPresentation.menuCornerRadius, style: .continuous)
+                    .stroke(Color.primary.opacity(SlashCommandMenuPresentation.borderOpacity), lineWidth: 1)
+            )
+            .shadow(
+                color: .black.opacity(SlashCommandMenuPresentation.shadowOpacity),
+                radius: SlashCommandMenuPresentation.shadowRadius,
+                y: SlashCommandMenuPresentation.shadowYOffset
+            )
+            .offset(y: -SlashCommandMenuPresentation.menuHeight(rowCount: visibleSlashOptions.count) - 8)
+            .padding(.leading, 4)
+        }
+    }
+
     private var composerView: some View {
         let composerShape = RoundedRectangle(cornerRadius: Stanford.radiusLarge, style: .continuous)
 
@@ -4955,24 +4947,12 @@ struct TaskMainView: View {
                     onStop: (shouldShowTaskDecisionDock || onCancelTask == nil) ? nil : { onCancelTask?(task) },
                     onModelChange: { task.model = $0 },
                     onRuntimeChange: { runtime in
-                        let update = TaskComposerCoordinator.runtimeUpdate(
-                            previousRuntime: task.runtimeID,
-                            selectedRuntime: runtime,
-                            currentModel: task.model,
-                            cache: runtimeModelCache
+                        TaskComposerCoordinator.applyRuntimeSwitch(
+                            to: runtime,
+                            task: task,
+                            cache: runtimeModelCache,
+                            source: "task_composer"
                         )
-                        task.runtimeID = runtime
-                        task.model = update.resolvedModel
-                        task.updatedAt = Date()
-                        AppLogger.breadcrumb(action: "task_runtime_changed", category: "UI", taskID: task.id, fields: [
-                            "source": "task_composer",
-                            "previous_runtime": update.previousRuntime ?? "none",
-                            "runtime": update.runtime,
-                            "previous_model": update.previousModel,
-                            "model": update.resolvedModel,
-                            "model_changed": String(update.modelChanged),
-                            "workspace_id": task.workspace?.id.uuidString ?? "none"
-                        ])
                     },
                     onBudgetChange: { task.tokenBudget = $0 },
                     onRemoveSkill: { skill in
@@ -5040,79 +5020,7 @@ struct TaskMainView: View {
             )
             .shadow(color: Color.black.opacity(isComposerFocused ? 0.08 : 0.045), radius: isComposerFocused ? 12 : 8, y: 3)
             .overlay(alignment: .topLeading) {
-                if showSlashMenu && !visibleSlashOptions.isEmpty {
-                    let opts = visibleSlashOptions
-                    VStack(spacing: 0) {
-                        ForEach(Array(opts.enumerated()), id: \.element.id) { index, opt in
-                            let isSelected = index == min(slashSelectedIndex, opts.count - 1)
-                            let meta = Self.slashOptionMeta(opt.id)
-                            Button {
-                                selectSlashOption(opt)
-                            } label: {
-                                HStack(spacing: 9) {
-                                    Image(systemName: meta.icon)
-                                        .font(Stanford.ui(SlashCommandMenuPresentation.iconSize, weight: .semibold))
-                                        .foregroundStyle(meta.color)
-                                        .frame(width: SlashCommandMenuPresentation.iconFrame)
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        HStack(spacing: 6) {
-                                            Text(opt.command.trimmingCharacters(in: .whitespaces))
-                                                .font(Stanford.ui(SlashCommandMenuPresentation.commandFontSize, weight: .semibold, design: .monospaced))
-                                            Text(meta.title)
-                                                .font(Stanford.caption(SlashCommandMenuPresentation.titleFontSize))
-                                                .foregroundStyle(Stanford.coolGrey)
-                                                .lineLimit(1)
-                                        }
-                                        Text(meta.subtitle)
-                                            .font(Stanford.caption(SlashCommandMenuPresentation.descriptionFontSize))
-                                            .foregroundStyle(Stanford.coolGrey)
-                                            .lineLimit(SlashCommandMenuPresentation.descriptionLineLimit)
-                                            .truncationMode(.tail)
-                                            .help(meta.subtitle)
-                                    }
-                                    Spacer()
-                                    if isSelected {
-                                        Image(systemName: "return")
-                                            .font(Stanford.ui(SlashCommandMenuPresentation.returnIconSize))
-                                            .foregroundStyle(.tertiary)
-                                    }
-                                }
-                                .padding(.horizontal, SlashCommandMenuPresentation.horizontalPadding)
-                                .frame(height: SlashCommandMenuPresentation.rowHeight)
-                                .background {
-                                    if isSelected {
-                                        RoundedRectangle(cornerRadius: SlashCommandMenuPresentation.rowCornerRadius, style: .continuous)
-                                            .fill(Stanford.lagunita.opacity(SlashCommandMenuPresentation.selectedBackgroundOpacity))
-                                    }
-                                }
-                                .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
-
-                            if SlashCommandMenuPresentation.usesIconColumnDividers && index < opts.count - 1 {
-                                Divider()
-                                    .opacity(SlashCommandMenuPresentation.dividerOpacity)
-                                    .padding(.leading, SlashCommandMenuPresentation.dividerLeadingPadding)
-                                    .padding(.trailing, SlashCommandMenuPresentation.dividerTrailingPadding)
-                            }
-                        }
-                    }
-                    .padding(.vertical, SlashCommandMenuPresentation.menuVerticalPadding)
-                    .frame(maxWidth: SlashCommandMenuPresentation.maxWidth)
-                    .background(.regularMaterial)
-                    .clipShape(RoundedRectangle(cornerRadius: SlashCommandMenuPresentation.menuCornerRadius, style: .continuous))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: SlashCommandMenuPresentation.menuCornerRadius, style: .continuous)
-                            .stroke(Color.primary.opacity(SlashCommandMenuPresentation.borderOpacity), lineWidth: 1)
-                    )
-                    .shadow(
-                        color: .black.opacity(SlashCommandMenuPresentation.shadowOpacity),
-                        radius: SlashCommandMenuPresentation.shadowRadius,
-                        y: SlashCommandMenuPresentation.shadowYOffset
-                    )
-                    .offset(y: -SlashCommandMenuPresentation.menuHeight(rowCount: visibleSlashOptions.count) - 8)
-                    .padding(.leading, 4)
-                }
+                slashCommandMenuOverlay
             }
             .padding(.horizontal, 20)
             .padding(.vertical, 11)

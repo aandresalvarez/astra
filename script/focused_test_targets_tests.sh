@@ -47,3 +47,8 @@ assert_targets ""
 
 assert_targets "" \
   "Astra/Services/Runtime/AgentRuntimeAdapter.swift"
+
+assert_targets $'ReleaseBuildNumberDerivationTests\nReleaseUpdateScriptTests\nAppBundlePackagingTests' \
+  ".github/workflows/release.yml" \
+  "script/build_and_run.sh" \
+  "Tests/ReleaseBuildNumberDerivationTests.swift"

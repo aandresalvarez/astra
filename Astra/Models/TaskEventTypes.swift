@@ -185,6 +185,10 @@ public enum TaskEventTypes {
         public static let recapResult: TaskEventType = "recap.result"
         public static let scheduleResult: TaskEventType = "schedule.result"
         public static let astraArtifactPreflight: TaskEventType = "astra.artifact_preflight"
+        /// Structured `TaskRunLaunchBlockPayload` JSON, run-scoped, emitted
+        /// alongside the free-text `error` event whenever a run is blocked
+        /// before or without launching a provider process.
+        public static let runtimeLaunchBlocked: TaskEventType = "runtime.launch_blocked"
     }
 
     private static let lifecycleTypes: Set<TaskEventType> = [
@@ -278,7 +282,8 @@ public enum TaskEventTypes {
         Tool.permissionGrantTask,
         System.skillActive,
         System.recapResult,
-        System.scheduleResult
+        System.scheduleResult,
+        System.runtimeLaunchBlocked
     ]
 
     public static func category(for eventType: TaskEventType) -> TaskEventCategory {

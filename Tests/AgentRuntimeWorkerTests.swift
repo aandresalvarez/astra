@@ -2486,6 +2486,7 @@ private final class FakeAgentProcessRunner: AgentRuntimeProcessRunning {
         runID: UUID?,
         launchResourcePlan: TaskLaunchResourcePlan?,
         capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot?,
+        runtimeRequirements: TaskRuntimeRequirementSet?,
         liveApprovalsEnabled: Bool,
         noSemanticProgressTimeoutSeconds: TimeInterval?,
         onInteractiveAsk: ((AgentInteractiveAskRequest) async -> InteractiveAskOutcome)?,

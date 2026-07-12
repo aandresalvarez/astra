@@ -79,6 +79,44 @@ struct TaskRuntimeRequirementSetTests {
         #expect(requirements.missingCapabilityNames.contains("Docker workspace shell MCP"))
     }
 
+    @Test("Docker mode grants all host-control tools, matching launch-time enabledToolNames")
+    func dockerModeGrantsAllHostControlToolsMatchingLaunchTimeProjection() {
+        let task = AgentTask(
+            title: "Build",
+            goal: "Run tests",
+            workspace: Workspace(name: "Repo", primaryPath: NSTemporaryDirectory())
+        )
+        let environment = WorkspaceExecutionEnvironment(
+            id: "image:test",
+            kind: .dockerImage,
+            displayName: "Image",
+            image: "swift:latest",
+            providerPlacement: .host
+        )
+        let snapshot = TaskCapabilityResolutionSnapshot.capture(for: task, providerLaunchContextText: "Run tests")
+
+        let requirements = TaskRuntimeRequirementSet.derive(
+            task: task,
+            capabilityResolutionSnapshot: snapshot,
+            executionEnvironment: environment,
+            browserBridgeAttached: false
+        )
+
+        // Before this fix, derive() called requiredToolNames(capabilityScope:)
+        // directly and never accounted for Docker mode's all-tools grant, so a
+        // task with no host-control-declaring capability scope produced an
+        // EMPTY hostControlTools here while HostControlPlaneMCPProjection's
+        // launch-time resolvedServer/enabledToolNames still attached the
+        // server with all 5 tools — render and launch silently disagreeing in
+        // Docker mode specifically.
+        #expect(requirements.hostControlTools == HostControlPlaneMCPProjection.toolNames)
+        #expect(requirements.hostControlTools == HostControlPlaneMCPProjection.enabledToolNames(
+            task: task,
+            environment: environment,
+            contextText: "Run tests"
+        ))
+    }
+
     @Test("Browser attachment creates browser-control requirement")
     func browserAttachmentCreatesBrowserRequirement() {
         let task = AgentTask(

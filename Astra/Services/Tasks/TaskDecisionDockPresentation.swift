@@ -1,4 +1,5 @@
 import Foundation
+import ASTRACore
 import ASTRAModels
 
 enum TaskDecisionDockTone: String, Equatable {
@@ -30,6 +31,7 @@ enum TaskDecisionDockActionKind: String, Equatable {
     case closeAnyway
     case closeWithoutRunningPlan
     case reopenTask
+    case switchRuntime
 }
 
 enum TaskThreadAffordance: Hashable {
@@ -97,6 +99,7 @@ struct TaskDecisionDockPresentation: Equatable {
         var canToggleDone: Bool
         var hasProviderSession: Bool
         var failureReason: String?
+        var launchBlock: TaskRunLaunchBlockPayload?
         var artifactPaths: [String]
         var extraDetails: [TaskDecisionDockDetail] = []
         var visibleThreadAffordances: Set<TaskThreadAffordance> = []
@@ -331,10 +334,13 @@ struct TaskDecisionDockPresentation: Equatable {
         let dismissalReason = context.pendingReviewState.dismissalReason
         let isBlocked = dismissalReason == .policyBlocked
         let isMissingArtifact = dismissalReason == .noUsableResult || dismissalReason == .missingRequiredArtifact
-        let title = isMissingArtifact ? "No usable result" : (isBlocked ? "Policy blocked" : "Needs your review")
+        let title = isMissingArtifact
+            ? "No usable result"
+            : (isBlocked ? (context.launchBlock?.title ?? "Policy blocked") : "Needs your review")
         let summary: String
         if isBlocked {
-            summary = "The run stopped before completion. Retry with broader policy permissions; dismissing will not mark it completed."
+            summary = context.launchBlock?.remediation.map { "The run stopped before completion. \($0) Dismissing will not mark it completed." }
+                ?? "The run stopped before completion. Retry with broader policy permissions; dismissing will not mark it completed."
         } else if isMissingArtifact {
             summary = "The task did not create the expected artifact. Retry or dismiss without marking it completed."
         } else {
@@ -357,6 +363,7 @@ struct TaskDecisionDockPresentation: Equatable {
                 )
                 : nil,
             secondaryActions: [
+                isBlocked ? suggestedRuntimeSwitchAction(context) : nil,
                 context.canRetry ? action(.retry, title: "Retry", systemImage: "arrow.clockwise") : nil,
                 firstArtifactAction(context)
             ].compactMap { $0 },
@@ -365,6 +372,22 @@ struct TaskDecisionDockPresentation: Equatable {
                 closeTitle: isMissingArtifact ? TaskPresentationState.closeAnywayActionTitle : nil
             ),
             prefersExpandedDetails: isBlocked || isMissingArtifact
+        )
+    }
+
+    private static func suggestedRuntimeSwitchAction(_ context: Context) -> TaskDecisionDockAction? {
+        // Gated on canRetry like the adjacent .retry action — without a
+        // handler to actually run the switched task, offering this button
+        // would silently no-op when tapped.
+        guard context.canRetry,
+              let rawID = context.launchBlock?.suggestedRuntimeID,
+              let runtime = AgentRuntimeID(rawValue: rawID) else { return nil }
+        return action(
+            .switchRuntime,
+            title: "Switch to \(runtime.displayName)",
+            systemImage: "arrow.triangle.2.circlepath",
+            payload: rawID,
+            help: "Switch this task to \(runtime.displayName) and retry."
         )
     }
 
@@ -939,7 +962,8 @@ private extension TaskDecisionDockActionKind {
              .closeTask,
              .closeAnyway,
              .closeWithoutRunningPlan,
-             .reopenTask:
+             .reopenTask,
+             .switchRuntime:
             false
         }
     }
