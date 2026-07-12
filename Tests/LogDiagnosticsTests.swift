@@ -389,6 +389,37 @@ struct LogDiagnosticsTests {
         #expect(report.issues.contains { $0.affectedTasks == ["0C48773F"] })
     }
 
+    @Test("Persisted timestamps retain absolute dates and legacy midnight order")
+    func persistedLogDatesRemainAccurate() throws {
+        let exactTimestamp = Date(timeIntervalSince1970: 1_752_278_340.123)
+        let persisted = LogEntry(
+            level: .info,
+            category: "App",
+            message: "absolute-date",
+            timestamp: exactTimestamp
+        ).persistedFormatted
+        let parsed = try #require(LogDiagnosticsService.parseLogLine(
+            persisted,
+            dateAnchor: Date(timeIntervalSince1970: 0)
+        ))
+        #expect(abs(parsed.timestamp.timeIntervalSince(exactTimestamp)) < 0.001)
+
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try #require(TimeZone(secondsFromGMT: 0))
+        let anchor = try #require(calendar.date(from: DateComponents(
+            year: 2026, month: 7, day: 12, hour: 0, minute: 2
+        )))
+        let legacy = LogDiagnosticsService.parsePersistedLogLines([
+            "[23:59:59.000] [INFO] [App] before-midnight",
+            "[00:01:00.000] [INFO] [App] after-midnight"
+        ], dateAnchor: anchor, calendar: calendar)
+
+        #expect(legacy.count == 2)
+        #expect(calendar.component(.day, from: legacy[0].timestamp) == 11)
+        #expect(calendar.component(.day, from: legacy[1].timestamp) == 12)
+        #expect(legacy[0].timestamp < legacy[1].timestamp)
+    }
+
     @Test("Current in-memory entries ignore persisted app logs but keep task logs")
     func currentEntriesIgnorePersistedAppLogsButKeepTaskLogs() throws {
         let directory = URL(fileURLWithPath: NSTemporaryDirectory())

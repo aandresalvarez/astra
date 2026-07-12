@@ -549,6 +549,39 @@ struct FeedbackReportContractTests {
         #expect(throws: FeedbackStatusCredentialError.installationMismatch) {
             try read.validate(against: receipt, now: sampleDate)
         }
+
+        read.formatVersion = 2
+        #expect(throws: FeedbackContractError.unsupportedVersion(
+            document: "FeedbackStatusReadRequestV1",
+            actual: 2,
+            supported: 1
+        )) {
+            try read.validate()
+        }
+    }
+
+    @Test("Issue references require the schema's exact lowercase HTTPS prefix")
+    func issueReferenceHTTPSPrefixMatchesSchema() throws {
+        try FeedbackIssueReferenceV1(
+            number: 253,
+            url: try #require(URL(string: "https://github.com/aandresalvarez/astra/issues/253"))
+        ).validate()
+
+        for value in [
+            "HTTPS://github.com/aandresalvarez/astra/issues/253",
+            "Https://github.com/aandresalvarez/astra/issues/253"
+        ] {
+            let reference = FeedbackIssueReferenceV1(
+                number: 253,
+                url: try #require(URL(string: value))
+            )
+            #expect(throws: FeedbackContractError.invalidValue(
+                path: "remoteStatus.issue.url",
+                description: "must be an absolute HTTPS URL"
+            )) {
+                try reference.validate()
+            }
+        }
     }
 
     @Test("remote status downgrade and illegal jumps fail with typed errors")

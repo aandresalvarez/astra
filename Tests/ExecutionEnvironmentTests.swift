@@ -8,6 +8,24 @@ import ASTRACore
 
 @Suite("Execution Environments")
 struct ExecutionEnvironmentTests {
+    @Test("Immutable environment snapshot keeps legacy historical tasks on host")
+    func immutableEnvironmentSnapshotKeepsLegacyHistoryOnHost() {
+        let docker = WorkspaceExecutionEnvironment(
+            id: "image:current", kind: .dockerImage, displayName: "Current", image: "astra/current:latest"
+        )
+        let workspaceJSON = ExecutionEnvironmentStore.encode(docker)
+
+        let nonDraft = DockerExecutionPlanner.EnvironmentSnapshot(
+            taskSnapshotJSON: nil, workspaceEnvironmentJSON: workspaceJSON, isDraft: false, hasRuns: false
+        )
+        let draftWithRun = DockerExecutionPlanner.EnvironmentSnapshot(
+            taskSnapshotJSON: nil, workspaceEnvironmentJSON: workspaceJSON, isDraft: true, hasRuns: true
+        )
+
+        #expect(DockerExecutionPlanner.resolveEnvironment(from: nonDraft).isHost)
+        #expect(DockerExecutionPlanner.resolveEnvironment(from: draftWithRun).isHost)
+    }
+
     @Test("Docker mount plan keeps input directories read-only")
     func dockerMountPlanKeepsInputDirectoriesReadOnly() throws {
         let root = try makeTempDir("docker-input-mount")
@@ -1006,6 +1024,46 @@ struct ExecutionEnvironmentTests {
         #expect(viewModel.selectedEnvironment.id == "image:test")
         #expect(viewModel.statusMessage == "Next retry will use Test Image")
         #expect(!viewModel.canSwitchPinnedTaskToWorkspaceEnvironment)
+    }
+
+    @Test("settling a historical task's environment snapshot before resolving requirements keeps them consistent")
+    func settlingHistoricalTaskEnvironmentBeforeRequirementResolutionKeepsThemConsistent() throws {
+        let root = try makeTempDir("docker-historical-run-ordering")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let workspace = Workspace(name: "Docker", primaryPath: root)
+        let environment = WorkspaceExecutionEnvironment(
+            id: "image:test",
+            kind: .dockerImage,
+            displayName: "Test Image",
+            sourcePath: root,
+            image: "astra/test:latest"
+        )
+        workspace.activeExecutionEnvironmentJSON = ExecutionEnvironmentStore.encode(environment)
+
+        let task = AgentTask(title: "Historical Host", goal: "Run dbt", workspace: workspace)
+        task.status = .completed
+        task.executionEnvironmentSnapshotJSON = nil
+
+        // Before the snapshot is settled, the resolver's own fallback
+        // (DockerExecutionPlanner.resolveEnvironment) is deliberately
+        // conservative for historical tasks: assume host rather than
+        // retroactively reassigning a snapshot-less legacy task to whatever
+        // the workspace's environment happens to be right now.
+        #expect(DockerExecutionPlanner.resolveEnvironment(for: task).isHost)
+
+        // AgentRuntimeWorker.execute settles task.executionEnvironmentSnapshotJSON
+        // (same encode/decode of workspace.activeExecutionEnvironmentJSON that
+        // TaskRun.init would otherwise settle) BEFORE calling
+        // AgentRuntimeLaunchRuntimeResolver.resolve — see the ordering comment
+        // at that call site. Once settled, resolution must reflect the SAME
+        // environment the run actually executes under, not the stale
+        // host-conservative default, or an incompatible runtime's requirements
+        // get computed against the wrong environment and skip the up-front
+        // structured block.
+        task.executionEnvironmentSnapshotJSON = ExecutionEnvironmentStore.encodeSnapshot(
+            ExecutionEnvironmentStore.decode(workspace.activeExecutionEnvironmentJSON)
+        )
+        #expect(DockerExecutionPlanner.resolveEnvironment(for: task).id == "image:test")
     }
 
     @MainActor

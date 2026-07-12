@@ -35,6 +35,7 @@ struct ArchitectureFitnessTests {
             "Runtime",
             "Settings",
             "Shelves",
+            "Startup",
             "Tasks",
             "Validation",
             "WorkspaceApps"
@@ -49,7 +50,7 @@ struct ArchitectureFitnessTests {
             "Astra/Services/Runtime/ExecutionEnvironment.swift",
             "Astra/Services/Runtime/AgentRuntimeLaunchPreflight.swift",
             "Astra/Services/Runtime/AgentRuntimeLaunchRuntimeResolver.swift",
-            "Astra/Services/Runtime/AgentRuntimeCapabilityCompatibilityPolicy.swift"
+            "Astra/Services/Runtime/TaskRuntimeCompatibilityService.swift"
         ]
 
         for relativePath in guardedFiles {
@@ -298,8 +299,8 @@ struct ArchitectureFitnessTests {
             "Astra/Models/SchemaVersions.swift",
             "Astra/Services/Tasks/TaskStateMachine.swift",
             // Track A2.6's `TaskForkStateInitializingSeam`: the transition
-            // decision (guard + audit) still lives entirely in
-            // `TaskStateMachine`'s `TaskForkStateInitializing` conformance;
+            // decision (guard + audit) lives entirely in the adjacent
+            // `TaskStateTransitionSeamAdapter`;
             // only the mechanical `.status =`/`.updatedAt =` write of an
             // already-decided value crossed here. `AgentTaskForkService`
             // moved into `ASTRAModels` in A3 (it needs a live `AgentTask`,
@@ -307,8 +308,8 @@ struct ArchitectureFitnessTests {
             "Astra/Models/AgentTaskForkService.swift",
             // Track A4's `TaskSessionStateApplyingSeam` (extending the same
             // pattern to `completeFromSessionRecovery`/`restoreImportedStatus`):
-            // same reasoning - the decision + audit live in `TaskStateMachine`'s
-            // conformance; only the mechanical apply crossed into
+            // same reasoning - the decision + audit live in the adjacent
+            // seam adapter; only the mechanical apply crossed into
             // `ASTRAPersistence`, which can't carry a live `AgentTask` either.
             "Astra/Services/Persistence/SessionScanner.swift",
             "Astra/Services/Persistence/WorkspaceConfigManager.swift"
@@ -991,6 +992,25 @@ struct ArchitectureFitnessTests {
         #expect(matches.isEmpty, "Recovered config loads should preserve implicit scan intent: \(matches)")
     }
 
+    @Test("Persistent store recovery keeps policy, persistence, and UI boundaries separate")
+    func persistentStoreRecoveryKeepsLayerBoundaries() throws {
+        let root = try repositoryRoot()
+        let policyPath = "Astra/Services/Startup/PersistentStoreRecoveryPolicy.swift"
+        let viewPath = "Astra/Services/Startup/StoreStartupBlockedView.swift"
+        let persistencePath = "Astra/Services/Persistence/PersistentStoreCompatibility.swift"
+        let appPath = "Astra/ASTRAApp.swift"
+        let policy = try String(contentsOf: root.appendingPathComponent(policyPath), encoding: .utf8)
+        let persistence = try String(contentsOf: root.appendingPathComponent(persistencePath), encoding: .utf8)
+        let app = try String(contentsOf: root.appendingPathComponent(appPath), encoding: .utf8)
+
+        #expect(FileManager.default.fileExists(atPath: root.appendingPathComponent(viewPath).path))
+        #expect(!policy.contains("import SwiftUI"))
+        #expect(!policy.contains("NSOpenPanel"))
+        #expect(!persistence.contains("import SwiftUI"))
+        #expect(!persistence.contains("import AppKit"))
+        #expect(!app.contains("struct StoreStartupBlockedView"))
+    }
+
     @Test("Git status parsing lives behind its SwiftPM contract target")
     func gitStatusParsingLivesBehindContractTarget() throws {
         let root = try repositoryRoot()
@@ -1018,6 +1038,35 @@ struct ArchitectureFitnessTests {
         #expect(!view.contains("CapabilityUninstaller("))
         #expect(!view.contains("CapabilityPackageCreationService("))
         #expect(view.contains("CapabilityCatalogActionService("))
+        // Catalog reload ownership is limited to initial population and the
+        // centralized typed persistence-event handler. Mutation callbacks
+        // must not add post-action reloads of their own.
+        #expect(view.components(separatedBy: "catalog.loadApprovedCapabilities(").count - 1 == 2)
+        #expect(view.contains("catalog.loadApprovedCapabilities(announceLibraryMutations: false)"))
+    }
+
+    @Test("Catalog invalidations follow durable capability mutations")
+    func catalogInvalidationsFollowDurableMutations() throws {
+        let root = try repositoryRoot()
+        let configure = try String(
+            contentsOf: root.appendingPathComponent("Astra/Views/ConfigureView.swift"), encoding: .utf8)
+        let creation = try String(
+            contentsOf: root.appendingPathComponent("Astra/Services/Capabilities/CapabilityPackageCreationService.swift"),
+            encoding: .utf8)
+        let catalogView = try String(
+            contentsOf: root.appendingPathComponent("Astra/Views/PluginCatalogView.swift"), encoding: .utf8)
+
+        #expect(configure.contains("CapabilityPersistence.saveResourceMutation"))
+        let resourcesStart = try #require(configure.range(of: "struct ConnectorsTabContent"))
+        let resourcesEnd = try #require(configure.range(of: "// MARK: - Templates Tab"))
+        #expect(!configure[resourcesStart.lowerBound..<resourcesEnd.lowerBound].contains(
+            "WorkspacePersistenceCoordinator.saveAndAutoExport"))
+        let suppressedInstall = try #require(creation.range(of: "announceCatalogMutation: false"))
+        let approvalSave = try #require(creation.range(of: "let approvalRecord = try saveApprovalRecordIfNeeded"))
+        let globalPost = try #require(creation.range(of: "CapabilityCatalogPersistenceEvents.post(.global)", range: approvalSave.lowerBound..<creation.endIndex))
+        #expect(suppressedInstall.lowerBound < approvalSave.lowerBound)
+        #expect(approvalSave.lowerBound < globalPost.lowerBound)
+        #expect(catalogView.contains("CapabilityPersistence.saveResourceMutation(workspace: workspace"))
     }
 
     @Test("Plugin catalog approval refresh cancels stale loads")
@@ -1092,6 +1141,33 @@ struct ArchitectureFitnessTests {
         #expect(presentation.contains("enum CapabilityImportPresentation"))
     }
 
+    @Test("Plugin catalog body uses cached presentation projection")
+    func pluginCatalogBodyUsesCachedPresentationProjection() throws {
+        let root = try repositoryRoot()
+        let view = try String(
+            contentsOf: root.appendingPathComponent("Astra/Views/PluginCatalogView.swift"),
+            encoding: .utf8
+        )
+
+        #expect(view.contains("let state = cachedPresentationState"))
+        #expect(!view.contains("let state = presentationState"))
+        #expect(view.contains("PluginCatalogPresentationCache"))
+        let presentation = try String(
+            contentsOf: root.appendingPathComponent("Astra/Services/Capabilities/PluginCatalogPresentation.swift"),
+            encoding: .utf8
+        )
+        #expect(!presentation.contains("@Observable\nfinal class PluginCatalogPresentationCache"))
+        for resourceView in ["ConnectorsManagerView.swift", "SkillsManagerView.swift", "ToolsManagerView.swift"] {
+            let source = try String(
+                contentsOf: root.appendingPathComponent("Astra/Views/\(resourceView)"),
+                encoding: .utf8
+            )
+            #expect(source.contains("CapabilityPersistence.saveResourceMutation"))
+        }
+        #expect(!view.contains("JSONEncoder().encode(catalog.packages)"))
+        #expect(!view.contains("catalogResourceRevision"))
+    }
+
     @Test("Workspace rail view keeps pure presentation contracts extracted")
     func workspaceRailViewKeepsPurePresentationContractsExtracted() throws {
         let root = try repositoryRoot()
@@ -1141,6 +1217,112 @@ struct ArchitectureFitnessTests {
                 "\(wrapper) must be applied before .navigationSplitViewColumnWidth so the width spec stays outermost."
             )
         }
+    }
+
+    @Test("Content view browser policy render path does not scan filesystem revisions")
+    func contentViewBrowserPolicyRenderPathDoesNotScanFilesystemRevisions() throws {
+        let root = try repositoryRoot()
+        let contentView = try String(
+            contentsOf: root.appendingPathComponent("Astra/Views/ContentView.swift"),
+            encoding: .utf8
+        )
+        let policyStart = try #require(contentView.range(of: "private var currentBrowserSessionPolicy:"))
+        let policyTail = contentView[policyStart.lowerBound...]
+        let policyEnd = try #require(policyTail.range(of: "private func normalizedEnabledCapabilityIDs"))
+        let renderPolicy = policyTail[..<policyEnd.lowerBound]
+
+        #expect(!renderPolicy.contains("revisionFingerprint()"))
+        #expect(!renderPolicy.contains("packageDefinitionsFingerprint()"))
+        #expect(!renderPolicy.contains("taskEventRevision(for:"))
+        #expect(!renderPolicy.contains("events.count"))
+        #expect(!renderPolicy.contains("events.filter"))
+        #expect(!renderPolicy.contains("BrowserSessionPolicyContext.Snapshot"))
+        #expect(!renderPolicy.contains("DockerExecutionPlanner.resolveEnvironment"))
+        #expect(renderPolicy.contains("browserSessionPolicyRefreshGate.policy"))
+    }
+
+    @Test("Task switches fail browser policy closed before session binding")
+    func taskSwitchInvalidatesBrowserPolicyBeforeBinding() throws {
+        let source = try String(
+            contentsOf: repositoryRoot().appendingPathComponent("Astra/Views/ContentView.swift"),
+            encoding: .utf8
+        )
+        let start = try #require(source.range(of: "private func handleSelectedTaskIdentityChanged"))
+        let body = source[start.lowerBound...]
+        let begin = try #require(body.range(of: "browserSessionPolicyRefreshGate.begin()"))
+        let bind = try #require(body.range(of: "bindTaskScopedSessions"))
+        #expect(begin.lowerBound < bind.lowerBound)
+    }
+
+    @Test("Browser policy performs capability and package resolution after the detached boundary")
+    func browserPolicyResolutionStaysBehindDetachedBoundary() throws {
+        let root = try repositoryRoot()
+        let contentView = try String(
+            contentsOf: root.appendingPathComponent("Astra/Views/ContentView.swift"),
+            encoding: .utf8
+        )
+        let start = try #require(contentView.range(of: "private func refreshBrowserSessionPolicy(source:"))
+        let tail = contentView[start.lowerBound...]
+        let end = try #require(tail.range(of: "private func handleBrowserPolicyTaskEventInsertion"))
+        let refresh = String(tail[..<end.lowerBound])
+        let detached = try #require(refresh.range(of: "Task.detached(priority: .userInitiated)"))
+        let beforeDetached = refresh[..<detached.lowerBound]
+
+        #expect(!beforeDetached.contains("TaskCapabilityResolutionSnapshot.capture"))
+        #expect(!beforeDetached.contains("packageDefinitions()"))
+        #expect(!beforeDetached.contains("packageDefinitionsFingerprint()"))
+        #expect(!beforeDetached.contains("CapabilityCatalogPolicyContext.workspaceUser"))
+        #expect(!beforeDetached.contains("PackWorkspacePolicyProvider.resolvedPolicy"))
+        #expect(!beforeDetached.contains("$0.runs"))
+        let begin = try #require(beforeDetached.range(of: "browserSessionPolicyRefreshGate.begin()"))
+        let failClosedSync = try #require(beforeDetached.range(of: "syncBrowserPresentation()"))
+        #expect(begin.upperBound <= failClosedSync.lowerBound)
+        let detachedTail = refresh[detached.lowerBound...]
+        #expect(detachedTail.contains("catalogPolicyInput?.resolve()"))
+        #expect(detachedTail.contains("hostControlInput?.resolve(packageDefinitions: packages)"))
+
+        let environmentSource = try String(contentsOf: root.appendingPathComponent(
+            "Astra/Services/Runtime/ExecutionEnvironment.swift"
+        ), encoding: .utf8)
+        let resolverStart = try #require(environmentSource.range(of: "static func resolveEnvironment(for task:"))
+        let resolverTail = environmentSource[resolverStart.lowerBound...]
+        let historicalReturn = try #require(resolverTail.range(of: "task.status != .draft"))
+        let workspaceRead = try #require(resolverTail.range(of: "task.workspace?.activeExecutionEnvironmentJSON"))
+        #expect(historicalReturn.lowerBound < workspaceRead.lowerBound)
+    }
+
+    @Test("Browser policy event context stays bounded and user messages use the typed insertion boundary")
+    func browserPolicyEventContextUsesBoundedTypedInsertion() throws {
+        let root = try repositoryRoot()
+        let cache = try String(contentsOf: root.appendingPathComponent(
+            "Astra/Views/ContentViewBrowserSessionPolicyCache.swift"
+        ), encoding: .utf8)
+        let taskMain = try String(contentsOf: root.appendingPathComponent(
+            "Astra/Views/TaskMainView.swift"
+        ), encoding: .utf8)
+
+        #expect(!cache.contains("task.events.map"))
+        #expect(cache.contains("descriptor.fetchLimit = 1"))
+        #expect(taskMain.contains("TaskEventInsertionService.insert(userEvent"))
+    }
+
+    @Test("Host-control admission does not traverse SwiftData relationships")
+    func hostControlAdmissionUsesOnlyStoredScalars() throws {
+        let root = try repositoryRoot()
+        let cache = try String(contentsOf: root.appendingPathComponent(
+            "Astra/Views/ContentViewBrowserSessionPolicyCache.swift"
+        ), encoding: .utf8)
+        let start = try #require(cache.range(of:
+            "init(task: AgentTask, enabledPackageIDs: [String], contextText: String)"))
+        let tail = cache[start.lowerBound...]
+        let end = try #require(tail.range(of: "func resolve(packageDefinitions:"))
+        let admission = tail[..<end.lowerBound]
+
+        for forbidden in ["task.events", "task.skills", "task.workspace", "task.skillSnapshots",
+                          ".connectors", ".localTools", "ModelContext", "FetchDescriptor"] {
+            #expect(!admission.contains(forbidden), "Admission must not access \(forbidden)")
+        }
+        #expect(admission.contains("task.id"))
     }
 
     @Test("Large Swift files stay within owned debt budgets")
@@ -1509,6 +1691,16 @@ struct ArchitectureFitnessTests {
         #expect(!policy.contains("public var excludedTools"))
     }
 
+    @Test("Transcript worker idles without respawning an empty task loop")
+    func transcriptWorkerRestartRequiresPendingWork() throws {
+        let root = try repositoryRoot()
+        let source = try fileText("Astra/Views/TaskThreadViewModel.swift", root: root)
+        #expect(source.contains("if self.pendingSnapshotRequest != nil"))
+        let protocolSource = try fileText("ASTRACore/AstraRunProtocol.swift", root: root)
+        #expect(protocolSource.contains("visibleChunks.append"))
+        #expect(!protocolSource.contains("visible += filter.process"))
+    }
+
     private func taskStatusWriteViolations(
         in text: String,
         relativePath: String,
@@ -1611,8 +1803,20 @@ struct ArchitectureFitnessTests {
             "Astra/Views/TaskMainView.swift": .init(6_100, .owner("Task detail and run surface")),
             "Astra/Services/Browser/ShelfBrowserSession.swift": .init(6_000, .owner("Shelf browser session")),
             "Astra/Views/ContentView.swift": .init(4_850, .owner("Workspace shell composition")),
-            "Astra/Models/SchemaVersions.swift": .init(3_650, .owner("SwiftData schema history")),
-            "Astra/Views/ChatPanelView.swift": .init(3_050, .owner("Composer chat surface")),
+            // Budget raised for the V11 freeze / V12 mint (AgentTask.runtimeExplicitlySelected):
+            // freezing a schema version means copying every one of its ~16
+            // referenced model types into a fully self-contained nested body
+            // (957a90a8's V10 freeze is the precedent), which grows this file
+            // by ~450-500 lines every time. That growth is expected schema
+            // history, not scope creep - there's nothing to shrink here.
+            "Astra/Models/SchemaVersions.swift": .init(4_100, .owner("SwiftData schema history")),
+            // Budget raised to propagate AgentTask.runtimeExplicitlySelected through
+            // this composer's draft lifecycle: the flag has to be set/preserved at
+            // every one of its task-creation and draft-resync call sites (quickRun,
+            // createTaskFromSpec, runApprovedPlan, saveDraft's two branches) plus a
+            // couple of session-reset points, so the growth is spread thin by design
+            // rather than concentrated in one function that could be extracted.
+            "Astra/Views/ChatPanelView.swift": .init(3_075, .owner("Composer chat surface")),
             "Astra/Services/Runtime/AgentRuntimeAdapter.swift": .init(2_900, .owner("Runtime adapter registry")),
             "Astra/Views/PluginCatalogView.swift": .init(2_900, .owner("Capability catalog UI")),
             "Astra/Views/ShelfMarkdownPanelView.swift": .init(2_850, .owner("Shelf markdown panel")),
@@ -1636,7 +1840,11 @@ struct ArchitectureFitnessTests {
             "Astra/Services/Runtime/AgentProcessSupport.swift": .init(2_150, .owner("Runtime process stream support")),
             "Astra/Services/Browser/ControlledBrowserController.swift": .init(2_100, .owner("Controlled browser orchestration")),
             "Astra/Services/Git/GitService.swift": .init(2_100, .owner("Git integration")),
-            "Astra/Services/Runtime/AgentRuntimeWorker.swift": .init(2_050, .owner("Runtime worker execution")),
+            // Budget raised for the run-before-resolve reordering fix (PR #281
+            // review follow-up) - the launch-sequencing comment explaining why
+            // TaskRun must be constructed before requirements are resolved
+            // isn't safely compressible further without losing the "why".
+            "Astra/Services/Runtime/AgentRuntimeWorker.swift": .init(2_075, .owner("Runtime worker execution")),
             "Tools/WorkspaceToolSupport/WorkspaceToolSupport.swift": .init(3_450, .owner("Workspace MCP tool")),
             "Tools/HostControlToolSupport/HostControlToolSupport.swift": .init(2_250, .owner("Host-control MCP tool")),
             "Tests/ProcessMonitorTests.swift": .init(3_500, .companion(of: "Astra/Services/Runtime/AgentProcessSupport.swift")),
@@ -1650,7 +1858,10 @@ struct ArchitectureFitnessTests {
             "Tests/AgentRuntimeWorkerTests.swift": .init(2_550, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
             "Tests/AgentPolicyTests.swift": .init(2_650, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
             "Tests/WorkspaceAppActionExecutorTests.swift": .init(2_500, .companion(of: "Astra/Services/WorkspaceApps/WorkspaceAppActionExecutor.swift")),
-            "Tests/WorkspacePersistenceTests.swift": .init(2_450, .companion(of: "Astra/Services/Persistence/WorkspaceConfigManager.swift")),
+            // Budget raised for runtimeExplicitlySelected export/import round-trip
+            // coverage (PR #281 review follow-up) - two new tests matching this
+            // file's existing verbose per-field TaskConfig(...) construction style.
+            "Tests/WorkspacePersistenceTests.swift": .init(2_600, .companion(of: "Astra/Services/Persistence/WorkspaceConfigManager.swift")),
             "Tests/CopilotRuntimeTests.swift": .init(2_300, .companion(of: "Astra/Services/Runtime/AgentRuntimeAdapter.swift")),
             "Tests/WorkspaceAppPackageTests.swift": .init(2_250, .companion(of: "Astra/Services/WorkspaceApps/WorkspaceAppActionExecutor.swift")),
             "Tests/WorkspaceToolSupportTests.swift": .init(2_150, .companion(of: "Tools/WorkspaceToolSupport/WorkspaceToolSupport.swift")),

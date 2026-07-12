@@ -31,6 +31,7 @@ public struct TaskForkStateInitializationResult: Sendable {
     }
 }
 
+@MainActor
 public protocol TaskForkStateInitializing: Sendable {
     /// `statusRawValue` is `forked.status.rawValue` at the point of the call
     /// (always `.draft` in practice, since `forked` was just constructed).
@@ -185,10 +186,26 @@ public struct TaskForkArtifactFacts: Sendable {
     }
 }
 
+public struct TaskForkRepositoryFacts: Sendable, Equatable {
+    public let rootPath: String
+    public let branch: String
+    public let headSHA: String
+    public let isDirty: Bool
+
+    public init(rootPath: String, branch: String, headSHA: String, isDirty: Bool) {
+        self.rootPath = rootPath
+        self.branch = branch
+        self.headSHA = headSHA
+        self.isDirty = isDirty
+    }
+}
+
 public struct TaskForkManifestRequest: Sendable {
     public let sourceTaskID: UUID
     public let sourceWorkspacePath: String
     public let sourceArtifacts: [TaskForkArtifactFacts]
+    public let sourceInputs: [String]
+    public let sourceAttachments: [String]
     public let forkedTaskID: UUID
     public let forkedWorkspacePath: String
     public let checkpointRunID: UUID
@@ -196,22 +213,30 @@ public struct TaskForkManifestRequest: Sendable {
     public let checkpointRunCompletedAt: Date?
     public let checkpointRunIndex: Int
     public let copiedRunIDs: [UUID]
+    public let forkModeRawValue: String
+    public let repository: TaskForkRepositoryFacts?
 
     public init(
         sourceTaskID: UUID,
         sourceWorkspacePath: String,
         sourceArtifacts: [TaskForkArtifactFacts],
+        sourceInputs: [String],
+        sourceAttachments: [String],
         forkedTaskID: UUID,
         forkedWorkspacePath: String,
         checkpointRunID: UUID,
         checkpointRunStartedAt: Date,
         checkpointRunCompletedAt: Date?,
         checkpointRunIndex: Int,
-        copiedRunIDs: [UUID]
+        copiedRunIDs: [UUID],
+        forkModeRawValue: String,
+        repository: TaskForkRepositoryFacts?
     ) {
         self.sourceTaskID = sourceTaskID
         self.sourceWorkspacePath = sourceWorkspacePath
         self.sourceArtifacts = sourceArtifacts
+        self.sourceInputs = sourceInputs
+        self.sourceAttachments = sourceAttachments
         self.forkedTaskID = forkedTaskID
         self.forkedWorkspacePath = forkedWorkspacePath
         self.checkpointRunID = checkpointRunID
@@ -219,6 +244,8 @@ public struct TaskForkManifestRequest: Sendable {
         self.checkpointRunCompletedAt = checkpointRunCompletedAt
         self.checkpointRunIndex = checkpointRunIndex
         self.copiedRunIDs = copiedRunIDs
+        self.forkModeRawValue = forkModeRawValue
+        self.repository = repository
     }
 }
 
@@ -226,11 +253,18 @@ public struct TaskForkManifestSummary: Sendable {
     public let sourceTaskID: UUID
     public let checkpointRunID: UUID
     public let checkpointRunIndex: Int
+    public let sourceToLocalPaths: [String: String]
 
-    public init(sourceTaskID: UUID, checkpointRunID: UUID, checkpointRunIndex: Int) {
+    public init(
+        sourceTaskID: UUID,
+        checkpointRunID: UUID,
+        checkpointRunIndex: Int,
+        sourceToLocalPaths: [String: String] = [:]
+    ) {
         self.sourceTaskID = sourceTaskID
         self.checkpointRunID = checkpointRunID
         self.checkpointRunIndex = checkpointRunIndex
+        self.sourceToLocalPaths = sourceToLocalPaths
     }
 }
 
@@ -239,6 +273,7 @@ public protocol TaskForkManifestWriting: Sendable {
     /// Matches `TaskForkManifestService.manifestPath(taskFolder:)`, already
     /// primitive (`String`-only) in its real form.
     static func manifestPath(taskFolder: String) -> String
+    static func removePreparedFork(taskFolder: String)
 }
 
 public enum TaskForkManifestWritingSeam {

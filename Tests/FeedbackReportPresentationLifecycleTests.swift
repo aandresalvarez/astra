@@ -9,6 +9,38 @@ import ASTRAPersistence
 @testable import ASTRA
 
 extension FeedbackReportPresentationTests {
+    @Test("Prepared discard cancels the report and removes its adopted evidence")
+    @MainActor
+    func preparedDiscardRemovesAdoptedEvidence() async throws {
+        let fixture = try makePresentationFixture()
+        defer { fixture.cleanup() }
+        let reportLaunch = presentationLaunch()
+        let form = validPresentationForm()
+        let service = FeedbackReportPreparationService(
+            modelContainer: fixture.container,
+            crashOfferService: fixture.crashService,
+            storageRoot: fixture.root,
+            defaults: fixture.defaults,
+            evidenceSourceProvider: { _, _, _ in .empty }
+        )
+        let preview = try await service.preparePreview(launch: reportLaunch, form: form)
+        try service.confirmPreparedPreview(preview, launch: reportLaunch, form: form)
+        let adoptedDirectory = fixture.root
+            .appendingPathComponent("packages", isDirectory: true)
+            .appendingPathComponent(reportLaunch.id.uuidString.lowercased(), isDirectory: true)
+
+        #expect(FileManager.default.fileExists(atPath: adoptedDirectory.path))
+        #expect(FeedbackReportClosePolicy.action(
+            hasStoredReport: true, storedStatus: .prepared, hasMeaningfulProgress: true,
+            isPreparing: false, hasPreview: true, isInvalidatingPreview: false
+        ) == .offerPreparedDiscard)
+
+        try service.discard(reportID: reportLaunch.id)
+
+        #expect(try fetchPresentationReport(fixture.container, id: reportLaunch.id)?.localStatus == .cancelled)
+        #expect(!FileManager.default.fileExists(atPath: adoptedDirectory.path))
+    }
+
     @Test("General reports select every applicable evidence type by default")
     func formDefaults() {
         let now = Date(timeIntervalSince1970: 1_800_000_000)
@@ -134,13 +166,17 @@ extension FeedbackReportPresentationTests {
         let taskID = try #require(UUID(uuidString: "0c48773f-1111-4111-8111-111111111111"))
         let appURL = directory.appendingPathComponent("astra.log")
         let taskURL = directory.appendingPathComponent("task-0C48773F.log")
+        let unrelatedTaskURL = directory.appendingPathComponent("task-DEADBEEF.log")
         try "[13:20:00.000] [INFO] [App] retained-app-entry\n"
             .write(to: appURL, atomically: true, encoding: .utf8)
         try "[13:20:01.000] [WARNING] [Worker task:0C48773F] retained-task-entry\n"
             .write(to: taskURL, atomically: true, encoding: .utf8)
+        try "[13:20:02.000] [WARNING] [Worker task:DEADBEEF] unrelated-task-entry\n"
+            .write(to: unrelatedTaskURL, atomically: true, encoding: .utf8)
         let anchor = Date(timeIntervalSince1970: 1_800_000_000)
         try FileManager.default.setAttributes([.modificationDate: anchor], ofItemAtPath: appURL.path)
         try FileManager.default.setAttributes([.modificationDate: anchor], ofItemAtPath: taskURL.path)
+        try FileManager.default.setAttributes([.modificationDate: anchor], ofItemAtPath: unrelatedTaskURL.path)
         let retained = FeedbackReportEvidenceSourceReader.retainedLogEntries(
             inMemoryEntries: [LogEntry(
                 level: .info, category: "App", message: "current-ring-entry", timestamp: anchor
@@ -158,7 +194,9 @@ extension FeedbackReportPresentationTests {
             crashProvider: { _, _ in [] }
         )
         #expect(source.applicationLogEntries.contains { $0.message == "retained-app-entry" })
+        #expect(!source.applicationLogEntries.contains { $0.message.hasPrefix("task_short=") })
         #expect(source.taskLogEntries.contains { $0.message.contains("retained-task-entry") })
+        #expect(!source.taskLogEntries.contains { $0.message.contains("unrelated-task-entry") })
     }
 
     @Test("Prefilled unsaved reports offer Keep or Discard even before an edit")
@@ -171,6 +209,21 @@ extension FeedbackReportPresentationTests {
             hasPreview: false,
             isInvalidatingPreview: false
         ) == .offerDraftChoices)
+    }
+
+    @Test("Terminal generic preparation failure does not block later dismissal")
+    @MainActor
+    func terminalGenericFailureDoesNotBlockDismissal() async {
+        struct ExpectedFailure: Error {}
+        let work = FeedbackReportOwnedWork.start {
+            throw ExpectedFailure()
+        }
+        while !work.isTerminal { await Task.yield() }
+
+        #expect(work.terminalResult == .failed(.generic))
+        #expect(!work.requiresDismissalSettlement)
+        let dismissalWork = [work].filter(\.requiresDismissalSettlement)
+        #expect(await FeedbackReportTaskSettlement.cancelAndFinalize(dismissalWork) {})
     }
 
     @Test("Evidence window labels distinguish current and historical intervals")

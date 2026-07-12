@@ -1371,13 +1371,30 @@ enum AgentPromptBuilder {
     }
 
     private static func activeFollowUpRuns(for task: AgentTask) -> [TaskRun] {
-        let sortedRuns = task.runs.sorted { $0.startedAt < $1.startedAt }
+        let sortedRuns = task.runs.sorted(by: TaskRun.isChronologicallyOrdered)
         guard !sortedRuns.isEmpty else { return [] }
 
+        // Anchor on the checkpoint event's run, not forkedAtRunIndex: copied
+        // runs get fresh UUIDs, so index arithmetic over a re-sorted list
+        // cannot reproduce the source ordering when timestamps tie. A fork of
+        // a fork carries copied checkpoint events too — its own is the latest.
         if task.forkedFromID != nil,
-           task.forkedAtRunIndex > 0,
-           task.forkedAtRunIndex < sortedRuns.count {
-            return Array(sortedRuns.suffix(sortedRuns.count - task.forkedAtRunIndex))
+           let checkpointEvent = task.events
+               .filter({ $0.type == TaskEventTypes.Task.checkpoint.rawValue && $0.run != nil })
+               .max(by: { $0.timestamp < $1.timestamp }),
+           let checkpointRun = checkpointEvent.run {
+            let postForkRuns = sortedRuns.filter {
+                $0.id != checkpointRun.id && $0.startedAt >= checkpointEvent.timestamp
+            }
+            return [checkpointRun] + postForkRuns
+        }
+        // Backward compatibility for fork records created before checkpoint
+        // events were persisted (and imported task data that lacks them).
+        // `forkedAtRunIndex` historically stored the copied-run count for this
+        // prompt boundary, so exclude that prefix from active follow-up work.
+        if task.forkedFromID != nil {
+            let copiedRunCount = task.forkedAtRunIndex
+            return Array(sortedRuns.dropFirst(max(0, copiedRunCount)))
         }
         return sortedRuns
     }
@@ -1536,6 +1553,12 @@ enum AgentPromptBuilder {
                 lines.append("- Fork manifest: \(forkManifestPath)")
                 lines.append("  - Source task: \(forkManifest.sourceTaskID.uuidString)")
                 lines.append("  - Checkpoint run: \(forkManifest.checkpointRunID.uuidString)")
+                lines.append("  - Conversation fork mode: \(forkManifest.resolvedForkMode.rawValue)")
+                if let repository = forkManifest.repository {
+                    lines.append("  - Shared Git repository: \(repository.rootPath)")
+                    lines.append("  - Git context at fork: \(repository.branch) @ \(repository.headSHA)\(repository.isDirty ? " (uncommitted changes present)" : "")")
+                    lines.append("  - This conversation fork did not create, switch, commit, push, or publish a Git branch.")
+                }
                 if let warning = TaskForkManifestService.sourceAvailabilityWarning(for: forkManifest) {
                     lines.append("  - Warning: \(warning)")
                 }
@@ -1556,6 +1579,20 @@ enum AgentPromptBuilder {
                     for ref in forkManifest.sourceArtifacts.suffix(contextSourceIndexArtifactLimit) {
                         lines.append("    - \((ref.sourcePath as NSString).lastPathComponent): \(ref.localCopyPath ?? ref.sourcePath)")
                         pointers.append(sourcePointer(label: "source checkpoint artifact", target: ref.localCopyPath ?? ref.sourcePath))
+                    }
+                }
+                if !(forkManifest.sourceInputs ?? []).isEmpty {
+                    lines.append("  - Conversation fork inputs:")
+                    for ref in (forkManifest.sourceInputs ?? []).suffix(contextSourceIndexArtifactLimit) {
+                        lines.append("    - \((ref.sourcePath as NSString).lastPathComponent): \(ref.localCopyPath ?? ref.sourcePath)")
+                        pointers.append(sourcePointer(label: "conversation fork input", target: ref.localCopyPath ?? ref.sourcePath))
+                    }
+                }
+                if !(forkManifest.sourceAttachments ?? []).isEmpty {
+                    lines.append("  - Conversation fork attachments:")
+                    for ref in (forkManifest.sourceAttachments ?? []).suffix(contextSourceIndexArtifactLimit) {
+                        lines.append("    - \((ref.sourcePath as NSString).lastPathComponent): \(ref.localCopyPath ?? ref.sourcePath)")
+                        pointers.append(sourcePointer(label: "conversation fork attachment", target: ref.localCopyPath ?? ref.sourcePath))
                     }
                 }
             }

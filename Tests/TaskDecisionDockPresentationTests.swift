@@ -1,4 +1,5 @@
 import Testing
+import ASTRACore
 import ASTRAModels
 @testable import ASTRA
 
@@ -146,7 +147,10 @@ struct TaskDecisionDockPresentationTests {
             encoding: .utf8
         )
         let start = try #require(source.range(of: "private func reportCurrentFailure()"))
-        let end = try #require(source.range(of: "private var pendingReviewDecisionDock", range: start.upperBound..<source.endIndex))
+        let end = try #require(source.range(
+            of: "private func approveSimilarRuntimePermissionForTask",
+            range: start.upperBound..<source.endIndex
+        ))
         let feedbackPath = String(source[start.lowerBound..<end.lowerBound])
         #expect(!feedbackPath.contains("failureReason"))
         #expect(!feedbackPath.contains(".payload"))
@@ -299,13 +303,95 @@ struct TaskDecisionDockPresentationTests {
         })
     }
 
+    @Test("policy-blocked pending review shows the real diagnostic remediation, not generic broader-permissions copy")
+    func policyBlockedPendingReviewShowsRealRemediation() throws {
+        let presentation = TaskDecisionDockPresentation.build(context(
+            status: .pendingUser,
+            pendingReviewState: PendingTaskReviewState(isDismissed: false, dismissalReason: .policyBlocked),
+            launchBlock: TaskRunLaunchBlockPayload(
+                kind: .runtimeIncompatible,
+                title: "Selected runtime is incompatible with required ASTRA capabilities",
+                message: "Copilot CLI cannot satisfy: host-control MCP server for github.",
+                remediation: "Switch to Codex CLI, Claude Code, or a Copilot CLI build with MCP config support, or remove the GitHub host-control capability route for this run."
+            )
+        ))
+
+        let dock = try #require(presentation)
+        #expect(dock.title == "Selected runtime is incompatible with required ASTRA capabilities")
+        #expect(dock.summary.contains("Switch to Codex CLI"))
+        #expect(!dock.summary.contains("Retry with broader policy permissions"))
+    }
+
+    @Test("policy-blocked pending review with a suggested runtime offers a one-click switch action")
+    func policyBlockedPendingReviewOffersSwitchRuntimeAction() throws {
+        let presentation = TaskDecisionDockPresentation.build(context(
+            status: .pendingUser,
+            pendingReviewState: PendingTaskReviewState(isDismissed: false, dismissalReason: .policyBlocked),
+            launchBlock: TaskRunLaunchBlockPayload(
+                kind: .runtimeIncompatible,
+                title: "Selected runtime is incompatible with required ASTRA capabilities",
+                message: "Copilot CLI cannot satisfy: host-control MCP server for github.",
+                suggestedRuntimeID: AgentRuntimeID.codexCLI.rawValue
+            )
+        ))
+
+        let dock = try #require(presentation)
+        let switchAction = try #require(dock.secondaryActions.first { $0.kind == .switchRuntime })
+        #expect(switchAction.title == "Switch to Codex CLI")
+        #expect(switchAction.payload == AgentRuntimeID.codexCLI.rawValue)
+    }
+
+    @Test("policy-blocked pending review offers no switch action when there is no retry handler")
+    func policyBlockedPendingReviewWithoutRetryHandlerOffersNoSwitchAction() throws {
+        let presentation = TaskDecisionDockPresentation.build(context(
+            status: .pendingUser,
+            pendingReviewState: PendingTaskReviewState(isDismissed: false, dismissalReason: .policyBlocked),
+            canRetry: false,
+            launchBlock: TaskRunLaunchBlockPayload(
+                kind: .runtimeIncompatible,
+                title: "Selected runtime is incompatible with required ASTRA capabilities",
+                message: "Copilot CLI cannot satisfy: host-control MCP server for github.",
+                suggestedRuntimeID: AgentRuntimeID.codexCLI.rawValue
+            )
+        ))
+
+        let dock = try #require(presentation)
+        #expect(!dock.secondaryActions.contains { $0.kind == .switchRuntime })
+    }
+
+    @Test("policy-blocked pending review without a suggested runtime offers no switch action")
+    func policyBlockedPendingReviewWithoutSuggestionOffersNoSwitchAction() throws {
+        let presentation = TaskDecisionDockPresentation.build(context(
+            status: .pendingUser,
+            pendingReviewState: PendingTaskReviewState(isDismissed: false, dismissalReason: .policyBlocked)
+        ))
+
+        let dock = try #require(presentation)
+        #expect(!dock.secondaryActions.contains { $0.kind == .switchRuntime })
+    }
+
+    @Test("policy-blocked pending review falls back to generic copy when no diagnostic remediation is available")
+    func policyBlockedPendingReviewFallsBackWithoutRemediation() throws {
+        let presentation = TaskDecisionDockPresentation.build(context(
+            status: .pendingUser,
+            pendingReviewState: PendingTaskReviewState(isDismissed: false, dismissalReason: .policyBlocked)
+        ))
+
+        let dock = try #require(presentation)
+        #expect(dock.title == "Policy blocked")
+        #expect(dock.summary.contains("Retry with broader policy permissions"))
+    }
+
     private func context(
         status: TaskStatus,
         mission: MissionControlPresentation? = nil,
         verification: TaskVerificationPresentation? = nil,
         artifactPaths: [String] = [],
         canReportProblem: Bool = false,
-        visibleThreadAffordances: Set<TaskThreadAffordance>? = nil
+        visibleThreadAffordances: Set<TaskThreadAffordance>? = nil,
+        pendingReviewState: PendingTaskReviewState = .none,
+        canRetry: Bool = true,
+        launchBlock: TaskRunLaunchBlockPayload? = nil
     ) -> TaskDecisionDockPresentation.Context {
         let affordances = visibleThreadAffordances ?? defaultVisibleThreadAffordances(
             mission: mission,
@@ -317,7 +403,7 @@ struct TaskDecisionDockPresentationTests {
             review: TaskPresentationState.reviewPresentation(status: status, isClosed: false),
             mission: mission,
             verification: verification,
-            pendingReviewState: .none,
+            pendingReviewState: pendingReviewState,
             hasRuntimePermissionRequest: false,
             runtimePermissionTitle: nil,
             runtimePermissionSummary: nil,
@@ -337,12 +423,13 @@ struct TaskDecisionDockPresentationTests {
             canCancel: true,
             canRun: true,
             canApprove: true,
-            canRetry: true,
+            canRetry: canRetry,
             canResume: false,
             canReportProblem: canReportProblem,
             canToggleDone: true,
             hasProviderSession: false,
             failureReason: nil,
+            launchBlock: launchBlock,
             artifactPaths: artifactPaths,
             visibleThreadAffordances: affordances
         )

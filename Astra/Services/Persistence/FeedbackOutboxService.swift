@@ -678,10 +678,7 @@ public final class FeedbackOutboxService {
         guard let directory = try validatedOwnedPackageURL(for: report, requireExists: true) else {
             throw FeedbackOutboxError.preparedPackageDoesNotMatchDraft
         }
-        let validated = try FeedbackPackageAdoptionValidator.validate(
-            directory: directory,
-            fileManager: fileManager
-        )
+        let validated = try validateOwnedPackage(at: directory)
         try validate(validated.envelope, matches: report)
         guard let storedEnvelope = report.canonicalEnvelopeData,
               storedEnvelope == validated.envelopeData,
@@ -715,14 +712,26 @@ public final class FeedbackOutboxService {
         directory: URL,
         storedEnvelopeData: Data
     ) throws {
-        let validated = try FeedbackPackageAdoptionValidator.validate(
-            directory: directory,
-            fileManager: fileManager
-        )
+        let validated = try validateOwnedPackage(at: directory)
         try validate(validated.envelope, matches: report)
         guard validated.envelopeData == storedEnvelopeData,
               validated.archiveSHA256 == report.evidenceArchiveSHA256
         else { throw FeedbackOutboxError.preparedPackageDoesNotMatchDraft }
+    }
+
+    private func validateOwnedPackage(at directory: URL) throws -> ValidatedFeedbackPackage {
+        do {
+            return try FeedbackPackageAdoptionValidator.validate(
+                directory: directory,
+                fileManager: fileManager
+            )
+        } catch FeedbackPackageValidationError.nonCanonicalEnvelope {
+            throw FeedbackOutboxError.preparedPackageDoesNotMatchDraft
+        } catch FeedbackPackageValidationError.forbiddenContactMember {
+            // Raw envelope violations discovered after ownership are exposed
+            // as durable-package corruption, matching other envelope drift.
+            throw FeedbackOutboxError.preparedPackageDoesNotMatchDraft
+        }
     }
 
     private func validate(

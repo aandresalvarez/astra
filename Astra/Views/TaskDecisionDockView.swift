@@ -383,7 +383,8 @@ struct TaskDecisionDockView<ExtendedDetails: View>: View {
              .retry,
              .resume,
              .openArtifact,
-             .reopenTask:
+             .reopenTask,
+             .switchRuntime:
             false
         }
     }
@@ -435,6 +436,8 @@ struct TaskDecisionDockView<ExtendedDetails: View>: View {
             "CreateCorrectionTaskButton"
         case .dismissCorrection:
             "DismissCorrectionButton"
+        case .switchRuntime:
+            "SwitchRuntimeButton"
         }
     }
 }

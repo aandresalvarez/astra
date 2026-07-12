@@ -94,12 +94,14 @@ struct CapabilityPackageCreationService {
                 baseURLOverrides: baseURLOverrides,
                 allowCredentialUserInteraction: allowCredentialUserInteraction,
                 policyContext: enablePolicyContext,
-                traceID: traceID
+                traceID: traceID,
+                announceCatalogMutation: false
             )
             let approvalRecord = try saveApprovalRecordIfNeeded(
                 pendingApprovalRecord,
                 package: validatedPackage
             )
+            CapabilityCatalogPersistenceEvents.post(.global)
             return CapabilityPackageCreationResult(
                 package: validatedPackage,
                 sourceURL: writtenSourceURL,
@@ -109,6 +111,7 @@ struct CapabilityPackageCreationService {
         }
 
         try library.install(validatedPackage)
+        CapabilityCatalogPersistenceEvents.post(.global)
         return CapabilityPackageCreationResult(
             package: validatedPackage,
             sourceURL: writtenSourceURL,

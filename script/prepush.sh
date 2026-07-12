@@ -57,7 +57,18 @@ run_focused_targets_for_changed_paths() {
   done <<< "$targets"
 }
 
-FOCUSED_SWIFT_TEST_FILTER="ArchitectureFitnessTests.ArchitectureFitnessTests|RuntimeReadinessServiceTests|WorkspacePersistenceTests|AgentRuntimeAdapterTests|TaskContextStateTests|CapsuleSnapshotTests|CapsuleSelectionPressureTests|ExecutionSandboxTests|RuntimePolicyGuardTests|CopilotCLICommandPlanningTests|TaskCapabilityResolverTests|RunPermissionManifestTests"
+# ReleaseBuildNumberDerivationTests/ReleaseUpdateScriptTests/AppBundlePackagingTests
+# are listed here unconditionally, not left to the path-diff-based mapping
+# in focused_test_targets.sh below (PR #253 review comment on
+# script/focused_test_targets.sh:62): the release workflow's "Run release
+# test gate" step runs THIS script against a detached tag checkout, where
+# diff_range() falls back to origin/main...HEAD -- and when the tag points
+# at current origin/main, that diff is empty, so changed_paths() never
+# surfaces .github/workflows/release.yml or script/build_and_run.sh and the
+# path-based mapping is never consulted. Running these here guarantees the
+# release-number regression suite always executes before a tag is signed,
+# regardless of diff state.
+FOCUSED_SWIFT_TEST_FILTER="ArchitectureFitnessTests.ArchitectureFitnessTests|RuntimeReadinessServiceTests|WorkspacePersistenceTests|AgentRuntimeAdapterTests|TaskContextStateTests|CapsuleSnapshotTests|CapsuleSelectionPressureTests|ExecutionSandboxTests|RuntimePolicyGuardTests|CopilotCLICommandPlanningTests|TaskCapabilityResolverTests|RunPermissionManifestTests|ReleaseBuildNumberDerivationTests|ReleaseUpdateScriptTests|AppBundlePackagingTests"
 
 run swift test --filter "$FOCUSED_SWIFT_TEST_FILTER"
 run script/focused_test_targets_tests.sh

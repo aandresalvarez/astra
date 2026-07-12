@@ -546,6 +546,7 @@ struct CapabilityPackageValidatorTests {
 }
 
 @Suite("Capability package importer")
+@MainActor
 struct CapabilityPackageImporterTests {
     @Test("malformed import does not write package file")
     func malformedImportDoesNotWritePackageFile() throws {

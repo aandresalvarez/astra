@@ -1390,7 +1390,7 @@ struct ConnectorsTabContent: View {
         connector.workspace = workspace
         modelContext.insert(connector)
         selectedConnector = connector
-        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
+        CapabilityPersistence.saveResourceMutation(workspace: workspace, modelContext: modelContext)
         AppLogger.audit(.connectorCreated, category: "UI", fields: [
             "connector_id": connector.id.uuidString,
             "workspace_id": workspace.id.uuidString
@@ -1403,7 +1403,8 @@ struct ConnectorsTabContent: View {
         } else {
             CapabilitySharing.enableShared(connector, in: workspace)
         }
-        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
+        CapabilityPersistence.saveResourceMutation(
+            workspace: workspace, isGlobal: connector.isGlobal, modelContext: modelContext)
         AppLogger.audit(.connectorUpdated, category: "UI", fields: [
             "connector_id": connector.id.uuidString,
             "workspace_id": workspace.id.uuidString,
@@ -1415,7 +1416,7 @@ struct ConnectorsTabContent: View {
         let copy = CapabilitySharing.duplicateForWorkspace(connector, in: workspace)
         modelContext.insert(copy)
         selectedConnector = copy
-        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
+        CapabilityPersistence.saveResourceMutation(workspace: workspace, modelContext: modelContext)
     }
 
     private func deleteConnector(_ connector: Connector) {
@@ -1424,8 +1425,10 @@ struct ConnectorsTabContent: View {
         }
         workspace.enabledGlobalConnectorIDs.removeAll { $0 == connector.id.uuidString }
         connector.cleanupKeychain()
+        let wasGlobal = connector.isGlobal
         modelContext.delete(connector)
-        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
+        CapabilityPersistence.saveResourceMutation(
+            workspace: workspace, isGlobal: wasGlobal, modelContext: modelContext)
     }
 }
 
@@ -1652,7 +1655,7 @@ struct ToolsTabContent: View {
         tool.workspace = workspace
         modelContext.insert(tool)
         selectedTool = tool
-        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
+        CapabilityPersistence.saveResourceMutation(workspace: workspace, modelContext: modelContext)
         AppLogger.audit(.localToolCreated, category: "UI", fields: [
             "tool_id": tool.id.uuidString,
             "workspace_id": workspace.id.uuidString
@@ -1664,8 +1667,10 @@ struct ToolsTabContent: View {
             selectedTool = nil
         }
         workspace.enabledGlobalToolIDs.removeAll { $0 == tool.id.uuidString }
+        let wasGlobal = tool.isGlobal
         modelContext.delete(tool)
-        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
+        CapabilityPersistence.saveResourceMutation(
+            workspace: workspace, isGlobal: wasGlobal, modelContext: modelContext)
         AppLogger.audit(.localToolDeleted, category: "UI", fields: [
             "tool_id": tool.id.uuidString,
             "workspace_id": workspace.id.uuidString
@@ -1678,7 +1683,8 @@ struct ToolsTabContent: View {
         } else {
             CapabilitySharing.enableShared(tool, in: workspace)
         }
-        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
+        CapabilityPersistence.saveResourceMutation(
+            workspace: workspace, isGlobal: tool.isGlobal, modelContext: modelContext)
         AppLogger.audit(.localToolUpdated, category: "UI", fields: [
             "tool_id": tool.id.uuidString,
             "workspace_id": workspace.id.uuidString,
@@ -1690,7 +1696,7 @@ struct ToolsTabContent: View {
         let copy = CapabilitySharing.duplicateForWorkspace(tool, in: workspace)
         modelContext.insert(copy)
         selectedTool = copy
-        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
+        CapabilityPersistence.saveResourceMutation(workspace: workspace, modelContext: modelContext)
     }
 }
 
@@ -1923,7 +1929,7 @@ struct SkillsTabContent: View {
         skill.workspace = workspace
         modelContext.insert(skill)
         selectedSkill = skill
-        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
+        CapabilityPersistence.saveResourceMutation(workspace: workspace, modelContext: modelContext)
         AppLogger.audit(.skillCreated, category: "UI", fields: [
             "skill_id": skill.id.uuidString,
             "workspace_id": workspace.id.uuidString,
@@ -1939,7 +1945,7 @@ struct SkillsTabContent: View {
             workspace.enabledGlobalSkillIDs.append(idString)
         }
         workspace.updatedAt = Date()
-        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
+        CapabilityPersistence.saveResourceMutation(workspace: workspace, modelContext: modelContext)
         AppLogger.audit(.skillToolPermissionChanged, category: "UI", fields: [
             "skill_id": skill.id.uuidString,
             "workspace_id": workspace.id.uuidString,
@@ -1952,8 +1958,10 @@ struct SkillsTabContent: View {
             selectedSkill = nil
         }
         skill.cleanupKeychain()
+        let wasGlobal = skill.isGlobal
         modelContext.delete(skill)
-        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
+        CapabilityPersistence.saveResourceMutation(
+            workspace: workspace, isGlobal: wasGlobal, modelContext: modelContext)
     }
 
 }

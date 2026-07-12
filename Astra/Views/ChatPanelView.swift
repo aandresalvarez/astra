@@ -413,6 +413,11 @@ struct ChatPanelView: View {
     @AppStorage(AppStorageKeys.defaultAgentPolicyLevel) private var defaultAgentPolicyLevelRaw = AgentPolicyLevel.review.rawValue
     @State private var chainedGoal = ""
     @State private var draftTask: AgentTask?
+    // True only when the user genuinely touched ComposerToolbar's runtime picker
+    // (never from a stored default) — mirrors TaskComposerCoordinator.applyRuntimeSwitch
+    // / NewTaskView.runtimeIDSelection so the launch resolver blocks instead of
+    // silently rerouting a runtime picked here. Reset per composer session below.
+    @State private var composerRuntimeExplicitlySelected = false
     @State private var composerPolicyLevelRaw = AgentPolicyLevel.review.rawValue
     // Composer-scoped skip-permissions: seeded from the global default but never
     // written back, so picking Auto for one draft does not flip the user's
@@ -1111,6 +1116,7 @@ struct ChatPanelView: View {
                 isApprovedPlanHistoryExpanded = false
                 activeSlashContext = nil
                 isPlanMode = false
+                composerRuntimeExplicitlySelected = false
             } label: {
                 HStack(spacing: 5) {
                     Image(systemName: "arrow.counterclockwise")
@@ -1252,6 +1258,10 @@ struct ChatPanelView: View {
                         let previousRuntime = defaultRuntimeID
                         let previousModel = defaultModel
                         defaultRuntimeID = runtime
+                        composerRuntimeExplicitlySelected = true
+                        // runApprovedPlan() reads draftTask directly with no fresh saveDraft(),
+                        // so a pick landing after the draft exists must land here too.
+                        draftTask?.runtimeExplicitlySelected = true
                         let resolved = AgentRuntimeAdapterRegistry.registeredRuntime(rawValue: runtime)
                         let resolvedModel = RuntimeModelAvailability.modelForRuntimeSwitch(
                             currentModel: defaultModel,
@@ -1632,6 +1642,7 @@ struct ChatPanelView: View {
         TaskCapabilitySnapshotter.capture(for: task)
         task.useAgentTeam = useAgentTeam
         task.teamSize = teamSize
+        task.runtimeExplicitlySelected = composerRuntimeExplicitlySelected
 
         modelContext.insert(task)
         TaskRoleProfileStore.recordSelected(workerSelection, task: task, modelContext: modelContext)
@@ -1754,9 +1765,24 @@ struct ChatPanelView: View {
         guard let task = draftTask,
               task.status != .running else { return }
 
+        // Admission precedes approval/enqueue mutations. If a sibling is
+        // running in this Git worktree, leave the plan and task state intact.
+        if let readOnlyReason = TaskForkPolicyService.readOnlyReason(for: task) {
+            TaskForkPolicyService.recordReadOnlyBlock(
+                readOnlyReason,
+                for: task,
+                modelContext: modelContext
+            )
+            return
+        }
+
         TaskPlanService.recordApproved(plan, task: task, modelContext: modelContext)
         task.title = plan.title
         task.goal = plan.goal.isEmpty ? plan.title : plan.goal
+        task.runtimeExplicitlySelected = TaskComposerCoordinator.explicitRuntimeSelection(
+            existing: task.runtimeExplicitlySelected,
+            composerFlagged: composerRuntimeExplicitlySelected
+        )
         TaskStateMachine.enqueueFromChatSubmission(task, modelContext: modelContext)
         pendingPlan = nil
         isApprovedPlanHistoryExpanded = false
@@ -1817,6 +1843,7 @@ struct ChatPanelView: View {
         task.chainedGoal = chainedGoal
         task.useAgentTeam = useAgentTeam
         task.teamSize = teamSize
+        task.runtimeExplicitlySelected = composerRuntimeExplicitlySelected
 
         modelContext.insert(task)
         TaskRoleProfileStore.recordSelected(workerSelection, task: task, modelContext: modelContext)
@@ -2503,6 +2530,10 @@ struct ChatPanelView: View {
             draft.tokenBudget = workerSelection.profile.tokenBudget
             draft.model = model
             draft.runtimeID = runtime.rawValue
+            draft.runtimeExplicitlySelected = TaskComposerCoordinator.explicitRuntimeSelection(
+                existing: draft.runtimeExplicitlySelected,
+                composerFlagged: composerRuntimeExplicitlySelected
+            )
             draft.inputs = attachedFiles
             draft.skills = scopedSelectedSkills(forTaskText: draft.goal, inputs: attachedFiles)
             TaskCapabilitySnapshotter.capture(for: draft)
@@ -2543,6 +2574,7 @@ struct ChatPanelView: View {
                 model: model,
                 runtime: runtime
             )
+            draft.runtimeExplicitlySelected = composerRuntimeExplicitlySelected
             draft.draftMessages = json
             draft.inputs = attachedFiles
             draft.skills = scopedSelectedSkills(forTaskText: draft.goal, inputs: attachedFiles)
@@ -2627,6 +2659,9 @@ struct ChatPanelView: View {
     }
 
     private func loadDraftMessages(_ task: AgentTask) {
+        // Reflect this draft's own already-persisted pick rather than whatever
+        // this view instance's flag happened to hold before loading it.
+        composerRuntimeExplicitlySelected = task.runtimeExplicitlySelected
         // First try loading from draftMessages JSON
         if !task.draftMessages.isEmpty,
            let data = task.draftMessages.data(using: .utf8),
@@ -2672,6 +2707,9 @@ struct ChatPanelView: View {
             modelContext.delete(draft)
             draftTask = nil
         }
+        // finalTask already captured the flag; reset it so a later, unrelated
+        // task in this same view instance isn't mismarked as explicit.
+        composerRuntimeExplicitlySelected = false
     }
 
 }

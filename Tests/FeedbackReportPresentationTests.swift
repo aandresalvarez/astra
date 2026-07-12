@@ -12,7 +12,7 @@ struct FeedbackReportPresentationTests {
     @Test("Startup removes only canonical abandoned feedback staging packages")
     @MainActor
     func abandonedStagingReconciliationIsContained() throws {
-        let fixture = try makeFixture()
+        let fixture = try makePresentationFixture()
         defer { fixture.cleanup() }
         let fileManager = FileManager.default
         let root = FeedbackReportStoragePaths.preparationRoot(storageRoot: fixture.root)
@@ -84,7 +84,7 @@ struct FeedbackReportPresentationTests {
     @MainActor
     func requiredFieldsFailWithoutSideEffects() async throws {
         for missing in FeedbackReportRequiredField.allTestCases {
-            let fixture = try makeFixture()
+            let fixture = try makePresentationFixture()
             defer { fixture.cleanup() }
             let counter = LockedInt()
             let service = FeedbackReportPreparationService(
@@ -94,14 +94,14 @@ struct FeedbackReportPresentationTests {
                 defaults: fixture.defaults,
                 evidenceSourceProvider: { _, _, _ in counter.increment(); return .empty }
             )
-            var form = validForm()
+            var form = validPresentationForm()
             switch missing {
             case .intendedOutcome: form.intendedOutcome = "  \n"
             case .actualResult: form.actualResult = "\t"
             case .expectedResult: form.expectedResult = ""
             }
             await #expect(throws: FeedbackReportPreparationError.missingRequiredField(missing)) {
-                _ = try await service.preparePreview(launch: launch(), form: form)
+                _ = try await service.preparePreview(launch: presentationLaunch(), form: form)
             }
             #expect(counter.value == 0)
             #expect(try fetchReports(fixture.container).isEmpty)
@@ -118,7 +118,7 @@ struct FeedbackReportPresentationTests {
         selections.includeScreenshots = false
         selections.includeMacOSDiagnostics = false
         let result = try FeedbackReportEvidenceSourceReader.collect(
-            launch: launch(),
+            launch: presentationLaunch(),
             selections: selections,
             interval: DateInterval(start: .distantPast, end: .distantFuture),
             entriesProvider: { [] },
@@ -142,7 +142,7 @@ struct FeedbackReportPresentationTests {
         selections.includeScreenshots = true
         selections.includeMacOSDiagnostics = false
         let result = try FeedbackReportEvidenceSourceReader.collect(
-            launch: launch(),
+            launch: presentationLaunch(),
             selections: selections,
             interval: DateInterval(start: .distantPast, end: .distantFuture),
             entriesProvider: { [] },
@@ -167,7 +167,7 @@ struct FeedbackReportPresentationTests {
         selections.includeBrowserEvidence = false
         selections.includeScreenshots = false
         let result = try FeedbackReportEvidenceSourceReader.collect(
-            launch: launch(),
+            launch: presentationLaunch(),
             selections: selections,
             interval: DateInterval(start: .distantPast, end: .distantFuture),
             entriesProvider: { [] },
@@ -188,7 +188,7 @@ struct FeedbackReportPresentationTests {
         browserSelection.includeScreenshots = false
         browserSelection.includeMacOSDiagnostics = false
         let source = try FeedbackReportEvidenceSourceReader.collect(
-            launch: launch(),
+            launch: presentationLaunch(),
             selections: browserSelection,
             interval: DateInterval(start: .distantPast, end: .distantFuture),
             entriesProvider: { [] },
@@ -277,7 +277,7 @@ struct FeedbackReportPresentationTests {
     @Test("Incomplete progress restores its complete window selections and exact context")
     @MainActor
     func progressRoundTripAndContextIsolation() throws {
-        let fixture = try makeFixture()
+        let fixture = try makePresentationFixture()
         defer { fixture.cleanup() }
         let outbox = try FeedbackOutboxService(modelContainer: fixture.container, storageRoot: fixture.root)
         let taskID = UUID()
@@ -314,7 +314,7 @@ struct FeedbackReportPresentationTests {
     @Test("Preserved draft reopens after relaunch and clearing all fields remains durable")
     @MainActor
     func preserveRelaunchAndClearAll() async throws {
-        let fixture = try makeFixture()
+        let fixture = try makePresentationFixture()
         defer { fixture.cleanup() }
         let reportID = UUID()
         let original = FeedbackReportLaunch(
@@ -328,7 +328,7 @@ struct FeedbackReportPresentationTests {
             storageRoot: fixture.root,
             defaults: fixture.defaults
         )
-        var form = validForm()
+        var form = validPresentationForm()
         form.selections.includeBrowserEvidence = true
         try first.saveProgress(launch: original, form: form)
 
@@ -377,7 +377,7 @@ struct FeedbackReportPresentationTests {
     @Test("Stored draft normalization corruption fails closed")
     @MainActor
     func storedProgressCorruptionFailsClosed() throws {
-        let fixture = try makeFixture()
+        let fixture = try makePresentationFixture()
         defer { fixture.cleanup() }
         let reportID = UUID()
         let outbox = try FeedbackOutboxService(modelContainer: fixture.container, storageRoot: fixture.root)
@@ -400,7 +400,7 @@ struct FeedbackReportPresentationTests {
     @Test("Unrelated corrupt status does not block exact-context recovery")
     @MainActor
     func unrelatedCorruptStatusIsIsolated() throws {
-        let fixture = try makeFixture()
+        let fixture = try makePresentationFixture()
         defer { fixture.cleanup() }
         let outbox = try FeedbackOutboxService(modelContainer: fixture.container, storageRoot: fixture.root)
         let goodID = UUID()
@@ -430,10 +430,10 @@ struct FeedbackReportPresentationTests {
     @Test("Preview bytes equal adopted manifest and queue never claims upload")
     @MainActor
     func previewMatchesQueuedPackage() async throws {
-        let fixture = try makeFixture()
+        let fixture = try makePresentationFixture()
         defer { fixture.cleanup() }
-        let launch = launch()
-        let form = validForm()
+        let launch = presentationLaunch()
+        let form = validPresentationForm()
         let service = FeedbackReportPreparationService(
             modelContainer: fixture.container,
             crashOfferService: fixture.crashService,
@@ -445,7 +445,7 @@ struct FeedbackReportPresentationTests {
         let reviewedManifestBytes = try Data(contentsOf: preview.package.manifestURL)
         try service.confirmAndQueue(preview, launch: launch, form: form)
 
-        let report = try #require(try fetchReport(fixture.container, id: launch.id))
+        let report = try #require(try fetchPresentationReport(fixture.container, id: launch.id))
         #expect(report.localStatus == .queued)
         #expect(report.uploadAttemptCount == 0)
         let envelope = try FeedbackCanonicalJSONV1.decode(
@@ -459,10 +459,10 @@ struct FeedbackReportPresentationTests {
     @Test("Sub-millisecond evidence windows remain identical through adoption")
     @MainActor
     func submillisecondEvidenceWindowQueues() async throws {
-        let fixture = try makeFixture()
+        let fixture = try makePresentationFixture()
         defer { fixture.cleanup() }
-        let launch = launch()
-        var form = validForm()
+        let launch = presentationLaunch()
+        var form = validPresentationForm()
         form.evidenceWindowStart = Date(timeIntervalSince1970: 1_800_000_000.908325)
         form.evidenceWindowEnd = Date(timeIntervalSince1970: 1_800_000_900.908325)
         let collectedInterval = LockedDateInterval()
@@ -480,7 +480,7 @@ struct FeedbackReportPresentationTests {
         let preview = try await service.preparePreview(launch: launch, form: form)
         try service.confirmAndQueue(preview, launch: launch, form: form)
 
-        let report = try #require(try fetchReport(fixture.container, id: launch.id))
+        let report = try #require(try fetchPresentationReport(fixture.container, id: launch.id))
         let canonicalStart = Date(timeIntervalSince1970: 1_800_000_000.908)
         let canonicalEnd = Date(timeIntervalSince1970: 1_800_000_900.908)
         #expect(report.localStatus == .queued)
@@ -498,10 +498,10 @@ struct FeedbackReportPresentationTests {
     @Test("Edited form cannot confirm stale preview and existing preview survives second preparation")
     @MainActor
     func staleAndDuplicatePreviewFailClosed() async throws {
-        let fixture = try makeFixture()
+        let fixture = try makePresentationFixture()
         defer { fixture.cleanup() }
-        let launch = launch()
-        let form = validForm()
+        let launch = presentationLaunch()
+        let form = validPresentationForm()
         let service = FeedbackReportPreparationService(
             modelContainer: fixture.container,
             crashOfferService: fixture.crashService,
@@ -521,17 +521,17 @@ struct FeedbackReportPresentationTests {
         #expect(throws: FeedbackReportPreparationError.stalePreparedPreview) {
             try service.confirmAndQueue(preview, launch: launch, form: edited)
         }
-        #expect(try fetchReport(fixture.container, id: launch.id)?.localStatus == .draft)
+        #expect(try fetchPresentationReport(fixture.container, id: launch.id)?.localStatus == .draft)
         try service.invalidatePreparedPreview(preview)
     }
 
     @Test("Invalid replacement form preserves the previously reviewed staging package")
     @MainActor
     func invalidReplacementPreservesReviewedPackage() async throws {
-        let fixture = try makeFixture()
+        let fixture = try makePresentationFixture()
         defer { fixture.cleanup() }
-        let launch = launch()
-        let originalForm = validForm()
+        let launch = presentationLaunch()
+        let originalForm = validPresentationForm()
         let service = FeedbackReportPreparationService(
             modelContainer: fixture.container,
             crashOfferService: fixture.crashService,
@@ -557,17 +557,17 @@ struct FeedbackReportPresentationTests {
         }
         #expect(FileManager.default.fileExists(atPath: preview.package.directoryURL.path))
         #expect(try Data(contentsOf: preview.package.manifestURL) == manifestBytes)
-        #expect(try fetchReport(fixture.container, id: launch.id)?.actualResult == originalForm.actualResult)
+        #expect(try fetchPresentationReport(fixture.container, id: launch.id)?.actualResult == originalForm.actualResult)
         try service.invalidatePreparedPreview(preview)
     }
 
     @Test("Late cancellation removes only the package returned by its worker")
     @MainActor
     func lateCancellationCleansReturnedPackage() async throws {
-        let fixture = try makeFixture()
+        let fixture = try makePresentationFixture()
         defer { fixture.cleanup() }
-        let launch = launch()
-        let form = validForm()
+        let launch = presentationLaunch()
+        let form = validPresentationForm()
         let ready = LockedInt()
         let release = DispatchSemaphore(value: 0)
         let service = FeedbackReportPreparationService(
@@ -596,16 +596,16 @@ struct FeedbackReportPresentationTests {
         release.signal()
         await #expect(throws: CancellationError.self) { _ = try await task.value }
         #expect(!FileManager.default.fileExists(atPath: expected.path))
-        #expect(try fetchReport(fixture.container, id: launch.id)?.localStatus == .draft)
+        #expect(try fetchPresentationReport(fixture.container, id: launch.id)?.localStatus == .draft)
     }
 
     @Test("Prepared retry queues idempotently without claiming upload")
     @MainActor
     func preparedRetryQueuesWithoutClaim() async throws {
-        let fixture = try makeFixture()
+        let fixture = try makePresentationFixture()
         defer { fixture.cleanup() }
-        let launch = launch()
-        let form = validForm()
+        let launch = presentationLaunch()
+        let form = validPresentationForm()
         let service = FeedbackReportPreparationService(
             modelContainer: fixture.container,
             crashOfferService: fixture.crashService,
@@ -615,10 +615,10 @@ struct FeedbackReportPresentationTests {
         )
         let preview = try await service.preparePreview(launch: launch, form: form)
         try service.confirmPreparedPreview(preview, launch: launch, form: form)
-        #expect(try fetchReport(fixture.container, id: launch.id)?.localStatus == .prepared)
+        #expect(try fetchPresentationReport(fixture.container, id: launch.id)?.localStatus == .prepared)
         try service.confirmAndQueue(preview, launch: launch, form: form)
         try service.confirmAndQueue(preview, launch: launch, form: form)
-        let report = try #require(try fetchReport(fixture.container, id: launch.id))
+        let report = try #require(try fetchPresentationReport(fixture.container, id: launch.id))
         #expect(report.localStatus == .queued)
         #expect(report.uploadAttemptCount == 0)
         #expect(report.activeClaimToken == nil)
@@ -627,10 +627,10 @@ struct FeedbackReportPresentationTests {
     @Test("Draft confirmation rejects a self-consistent package that replaced reviewed bytes")
     @MainActor
     func draftConfirmationRejectsReplacedReviewedPackage() async throws {
-        let fixture = try makeFixture()
+        let fixture = try makePresentationFixture()
         defer { fixture.cleanup() }
-        let launch = launch()
-        let form = validForm()
+        let launch = presentationLaunch()
+        let form = validPresentationForm()
         let original = FeedbackReportPreparationService(
             modelContainer: fixture.container,
             crashOfferService: fixture.crashService,
@@ -669,7 +669,7 @@ struct FeedbackReportPresentationTests {
         #expect(throws: FeedbackReportPreparationError.stagedPackageChangedAfterReview) {
             try original.confirmPreparedPreview(reviewed, launch: launch, form: form)
         }
-        #expect(try fetchReport(fixture.container, id: launch.id)?.localStatus == .draft)
+        #expect(try fetchPresentationReport(fixture.container, id: launch.id)?.localStatus == .draft)
         #expect(FileManager.default.fileExists(atPath: replacement.package.directoryURL.path))
         try replacementService.invalidatePreparedPreview(replacement)
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: displaced.path)
@@ -680,10 +680,10 @@ struct FeedbackReportPresentationTests {
     @MainActor
     func preparedRetryRejectsChangedOrMissingArtifact() async throws {
         for deleteArtifact in [false, true] {
-            let fixture = try makeFixture()
+            let fixture = try makePresentationFixture()
             defer { fixture.cleanup() }
-            let launch = launch()
-            let form = validForm()
+            let launch = presentationLaunch()
+            let form = validPresentationForm()
             let service = FeedbackReportPreparationService(
                 modelContainer: fixture.container,
                 crashOfferService: fixture.crashService,
@@ -730,7 +730,7 @@ struct FeedbackReportPresentationTests {
             #expect(throws: (any Error).self) {
                 try service.confirmAndQueue(preview, launch: launch, form: form)
             }
-            let report = try #require(try fetchReport(fixture.container, id: launch.id))
+            let report = try #require(try fetchPresentationReport(fixture.container, id: launch.id))
             #expect(report.localStatus == .prepared)
             #expect(report.uploadAttemptCount == 0)
             #expect(report.activeClaimToken == nil)
@@ -740,7 +740,7 @@ struct FeedbackReportPresentationTests {
     @Test("Invalid complete form fails before crash fingerprint or evidence I/O")
     @MainActor
     func invalidCompleteFormFailsBeforeCrashIO() async throws {
-        let fixture = try makeFixture()
+        let fixture = try makePresentationFixture()
         defer { fixture.cleanup() }
         let crashURL = fixture.root.appendingPathComponent("invalid-form.crash")
         try Data("Incident Identifier: INVALID-FORM\nException Type: EXC_BAD_ACCESS\n".utf8)
@@ -754,7 +754,7 @@ struct FeedbackReportPresentationTests {
             crashReports: [crash],
             crashFingerprint: fingerprint
         )
-        var form = validForm()
+        var form = validPresentationForm()
         form.evidenceWindowStart = Date(timeIntervalSince1970: 1_800_000_001)
         form.evidenceWindowEnd = Date(timeIntervalSince1970: 1_800_000_000)
         let providerCalls = LockedInt()
@@ -779,14 +779,14 @@ struct FeedbackReportPresentationTests {
     @Test("Prepared package recovers after relaunch and remains queue-only")
     @MainActor
     func preparedRelaunchRecovery() async throws {
-        let fixture = try makeFixture()
+        let fixture = try makePresentationFixture()
         defer { fixture.cleanup() }
         let launch = FeedbackReportLaunch(
             reportID: UUID(),
             hostID: UUID(),
             entryPoint: .help
         )
-        let form = validForm()
+        let form = validPresentationForm()
         let first = FeedbackReportPreparationService(
             modelContainer: fixture.container,
             crashOfferService: fixture.crashService,
@@ -837,7 +837,7 @@ struct FeedbackReportPresentationTests {
             shouldPersist: true
         )
         #expect(FileManager.default.fileExists(atPath: restoredPreview.package.directoryURL.path))
-        #expect(try fetchReport(fixture.container, id: launch.id)?.localStatus == .prepared)
+        #expect(try fetchPresentationReport(fixture.container, id: launch.id)?.localStatus == .prepared)
         let stillRecoverable = try FeedbackOutboxService(
             modelContainer: fixture.container,
             storageRoot: fixture.root
@@ -848,7 +848,7 @@ struct FeedbackReportPresentationTests {
             launch: resumedLaunch,
             form: restoredForm
         )
-        let report = try #require(try fetchReport(fixture.container, id: launch.id))
+        let report = try #require(try fetchPresentationReport(fixture.container, id: launch.id))
         #expect(report.localStatus == .queued)
         #expect(report.uploadAttemptCount == 0)
         #expect(report.activeClaimToken == nil)
@@ -857,7 +857,7 @@ struct FeedbackReportPresentationTests {
     @Test("Crash draft reconciles an interrupted ledger transition on relaunch")
     @MainActor
     func crashDraftLedgerReconciliation() async throws {
-        let fixture = try makeFixture()
+        let fixture = try makePresentationFixture()
         defer { fixture.cleanup() }
         let crashURL = fixture.root.appendingPathComponent("recovery.crash")
         try Data("Incident Identifier: RECOVERY\nException Type: EXC_BAD_ACCESS\n".utf8).write(to: crashURL)
@@ -888,9 +888,9 @@ struct FeedbackReportPresentationTests {
             defaults: fixture.defaults
         )
         #expect(throws: FeedbackCrashOfferError.persistenceFailed) {
-            try preparation.saveProgress(launch: crashLaunch, form: validForm())
+            try preparation.saveProgress(launch: crashLaunch, form: validPresentationForm())
         }
-        #expect(try fetchReport(fixture.container, id: offer.reportID)?.localStatus == .draft)
+        #expect(try fetchPresentationReport(fixture.container, id: offer.reportID)?.localStatus == .draft)
 
         let recoveredLedger = FeedbackCrashOfferService(defaults: fixture.defaults)
         let recoveredOffer = try #require(try await recoveredLedger.claimOffer(
@@ -921,7 +921,7 @@ struct FeedbackReportPresentationTests {
     @Test("Crash routing never treats a corrupt recoverable report as absent")
     @MainActor
     func crashRoutingFailsClosedOnCorruptOutbox() async throws {
-        let fixture = try makeFixture()
+        let fixture = try makePresentationFixture()
         defer { fixture.cleanup() }
         let crashURL = fixture.root.appendingPathComponent("corrupt-outbox.crash")
         try Data("Incident Identifier: CORRUPT-OUTBOX\nException Type: EXC_BAD_ACCESS\n".utf8)
@@ -974,7 +974,7 @@ struct FeedbackReportPresentationTests {
     @Test("Crash replacement fails before draft or evidence side effects")
     @MainActor
     func changedCrashFailsBeforePreparation() async throws {
-        let fixture = try makeFixture()
+        let fixture = try makePresentationFixture()
         defer { fixture.cleanup() }
         let crashURL = fixture.root.appendingPathComponent("changed.crash")
         try Data("Incident Identifier: FIRST\nException Type: EXC_BAD_ACCESS\n".utf8).write(to: crashURL)
@@ -997,16 +997,16 @@ struct FeedbackReportPresentationTests {
             crashFingerprint: offer.fingerprint
         )
         await #expect(throws: FeedbackReportPreparationError.crashEvidenceChanged) {
-            _ = try await service.preparePreview(launch: launch, form: validForm())
+            _ = try await service.preparePreview(launch: launch, form: validPresentationForm())
         }
         #expect(reads.value == 0)
-        #expect(try fetchReport(fixture.container, id: offer.reportID) == nil)
+        #expect(try fetchPresentationReport(fixture.container, id: offer.reportID) == nil)
     }
 
     @Test("Evidence collection and package building execute off the main thread")
     @MainActor
     func preparationWorkerRunsOffMain() async throws {
-        let fixture = try makeFixture()
+        let fixture = try makePresentationFixture()
         defer { fixture.cleanup() }
         let observations = ThreadObservations()
         let service = FeedbackReportPreparationService(
@@ -1027,7 +1027,7 @@ struct FeedbackReportPresentationTests {
                 )
             }
         )
-        let preview = try await service.preparePreview(launch: launch(), form: validForm())
+        let preview = try await service.preparePreview(launch: presentationLaunch(), form: validPresentationForm())
         #expect(observations.providerWasMain == false)
         #expect(observations.builderWasMain == false)
         try service.invalidatePreparedPreview(preview)
@@ -1036,10 +1036,10 @@ struct FeedbackReportPresentationTests {
     @Test("Facade operations reject corrupt status without mutation")
     @MainActor
     func corruptStatusFailsAcrossFacade() async throws {
-        let fixture = try makeFixture()
+        let fixture = try makePresentationFixture()
         defer { fixture.cleanup() }
-        let launch = launch()
-        let form = validForm()
+        let launch = presentationLaunch()
+        let form = validPresentationForm()
         let service = FeedbackReportPreparationService(
             modelContainer: fixture.container,
             crashOfferService: fixture.crashService,
@@ -1062,14 +1062,14 @@ struct FeedbackReportPresentationTests {
         #expect(throws: (any Error).self) { try service.confirmPreparedPreview(preview, launch: launch, form: form) }
         #expect(throws: (any Error).self) { try service.confirmAndQueue(preview, launch: launch, form: form) }
         #expect(throws: (any Error).self) { try service.discard(reportID: launch.id) }
-        #expect(try fetchReport(fixture.container, id: launch.id)?.localStatusRaw == "future_status")
+        #expect(try fetchPresentationReport(fixture.container, id: launch.id)?.localStatusRaw == "future_status")
         try service.invalidatePreparedPreview(preview)
     }
 
     @Test("Router preserves identity only for the same active context and host")
     @MainActor
     func routerAndCoordinatorIdentity() async throws {
-        let fixture = try makeFixture()
+        let fixture = try makePresentationFixture()
         defer { fixture.cleanup() }
         let router = FeedbackReportRouter()
         let ledger = EmptyCrashLedger()
@@ -1163,7 +1163,7 @@ struct FeedbackReportPresentationTests {
     @Test("Host teardown before sheet mount releases the router for another window")
     @MainActor
     func deadHostReleaseAllowsAnotherWindow() async throws {
-        let fixture = try makeFixture()
+        let fixture = try makePresentationFixture()
         defer { fixture.cleanup() }
         let router = FeedbackReportRouter()
         let coordinator = FeedbackReportCoordinator(
@@ -1223,7 +1223,7 @@ struct FeedbackReportPresentationTests {
     @Test("Mounted host teardown blocks a second presentation until durable settlement completes")
     @MainActor
     func mountedHostSettlementBarrier() async throws {
-        let fixture = try makeFixture()
+        let fixture = try makePresentationFixture()
         defer { fixture.cleanup() }
         let router = FeedbackReportRouter()
         let coordinator = FeedbackReportCoordinator(
@@ -1283,7 +1283,7 @@ struct FeedbackReportPresentationTests {
             storageRoot: fixture.root,
             defaults: fixture.defaults
         )
-        try service.saveProgress(launch: firstLaunch, form: validForm())
+        try service.saveProgress(launch: firstLaunch, form: validPresentationForm())
         router.completeHostDeactivation(
             hostID: firstHost, reportID: firstLaunch.id,
             leaseID: firstLease, succeeded: true
@@ -1302,7 +1302,7 @@ struct FeedbackReportPresentationTests {
     @Test("Mounted crash settlement preserves the exact claimed launch payload")
     @MainActor
     func mountedCrashSettlementPreservesPayload() async throws {
-        let fixture = try makeFixture()
+        let fixture = try makePresentationFixture()
         defer { fixture.cleanup() }
         let crashURL = fixture.root.appendingPathComponent("mounted.crash")
         try Data("Incident Identifier: MOUNTED\nException Type: EXC_BAD_ACCESS\n".utf8)
@@ -1349,7 +1349,7 @@ struct FeedbackReportPresentationTests {
             storageRoot: fixture.root,
             defaults: fixture.defaults
         )
-        try service.saveProgress(launch: firstLaunch, form: validForm())
+        try service.saveProgress(launch: firstLaunch, form: validPresentationForm())
         router.completeHostDeactivation(
             hostID: firstHost, reportID: firstLaunch.id,
             leaseID: firstLease, succeeded: true
@@ -1367,7 +1367,7 @@ struct FeedbackReportPresentationTests {
     @Test("Failed mounted settlement blocks duplicate report ownership")
     @MainActor
     func failedMountedSettlementBlocksPresentation() async throws {
-        let fixture = try makeFixture()
+        let fixture = try makePresentationFixture()
         defer { fixture.cleanup() }
         let router = FeedbackReportRouter()
         let coordinator = FeedbackReportCoordinator(
@@ -1401,7 +1401,7 @@ struct FeedbackReportPresentationTests {
     @Test("Cancelled settlement waiter cannot activate after completion")
     @MainActor
     func cancelledMountedSettlementWaiter() async throws {
-        let fixture = try makeFixture()
+        let fixture = try makePresentationFixture()
         defer { fixture.cleanup() }
         let router = FeedbackReportRouter()
         let coordinator = FeedbackReportCoordinator(
@@ -1480,17 +1480,17 @@ struct FeedbackReportPresentationTests {
         }
         #expect(action(false, nil, true) == .offerDraftChoices)
         #expect(action(true, .draft, false) == .offerDraftChoices)
-        #expect(action(true, .prepared, true) == .closePresentation)
+        #expect(action(true, .prepared, true) == .offerPreparedDiscard)
         #expect(action(true, .queued, true) == .closePresentation)
     }
 
-    @Test("Prepared and queued Close are presentation-only and preserve package state")
+    @Test("Prepared Close offers discard while queued Close is presentation-only")
     @MainActor
     func closeAfterPreparationDoesNotMutate() async throws {
-        let fixture = try makeFixture()
+        let fixture = try makePresentationFixture()
         defer { fixture.cleanup() }
-        let launch = launch()
-        let form = validForm()
+        let launch = presentationLaunch()
+        let form = validPresentationForm()
         let service = FeedbackReportPreparationService(
             modelContainer: fixture.container,
             crashOfferService: fixture.crashService,
@@ -1514,8 +1514,8 @@ struct FeedbackReportPresentationTests {
             isPreparing: false,
             hasPreview: true,
             isInvalidatingPreview: false
-        ) == .closePresentation)
-        #expect(try fetchReport(fixture.container, id: launch.id)?.localStatus == .prepared)
+        ) == .offerPreparedDiscard)
+        #expect(try fetchPresentationReport(fixture.container, id: launch.id)?.localStatus == .prepared)
         #expect(try Data(contentsOf: adoptedReportURL) == packageBytes)
 
         let recovered = try service.restoredPreparedPreview(
@@ -1537,13 +1537,14 @@ struct FeedbackReportPresentationTests {
             hasPreview: false,
             isInvalidatingPreview: false,
             offerDraftChoices: { offeredDraftChoices = true },
+            offerPreparedDiscard: { Issue.record("Queued report must not offer discard") },
             closePresentation: {
                 router.dismiss(hostID: launch.hostID, reportID: launch.id, leaseID: leaseID)
             }
         )
         #expect(!offeredDraftChoices)
         #expect(router.launch == nil)
-        let queued = try #require(try fetchReport(fixture.container, id: launch.id))
+        let queued = try #require(try fetchPresentationReport(fixture.container, id: launch.id))
         #expect(queued.localStatus == .queued)
         #expect(queued.uploadAttemptCount == 0)
         #expect(try Data(contentsOf: adoptedReportURL) == packageBytes)
@@ -1874,7 +1875,7 @@ private final class EmptyCrashLedger: FeedbackCrashOfferLedgerReading {
     }
 }
 
-private struct PresentationFixture {
+struct PresentationFixture {
     let container: ModelContainer
     let root: URL
     let defaults: UserDefaults
@@ -1886,7 +1887,7 @@ private struct PresentationFixture {
 }
 
 @MainActor
-private func makeFixture() throws -> PresentationFixture {
+func makePresentationFixture() throws -> PresentationFixture {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("feedback-presentation-\(UUID().uuidString)", isDirectory: true)
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -1910,13 +1911,13 @@ private func defaultsSuiteName(_ defaults: UserDefaults) -> String {
     defaults.string(forKey: "_suiteName") ?? ""
 }
 
-private func launch() -> FeedbackReportLaunch {
+func presentationLaunch() -> FeedbackReportLaunch {
     FeedbackReportLaunch(hostID: UUID(), entryPoint: .help)
 }
 
-private func validForm() -> FeedbackReportFormState {
+func validPresentationForm() -> FeedbackReportFormState {
     var form = FeedbackReportFormState(
-        launch: launch(),
+        launch: presentationLaunch(),
         now: Date(timeIntervalSince1970: 1_800_000_000)
     )
     form.intendedOutcome = "Complete a report"
@@ -1985,7 +1986,7 @@ private func fetchReports(_ container: ModelContainer) throws -> [FeedbackReport
 }
 
 @MainActor
-private func fetchReport(_ container: ModelContainer, id: UUID) throws -> FeedbackReport? {
+func fetchPresentationReport(_ container: ModelContainer, id: UUID) throws -> FeedbackReport? {
     let value = id
     return try ModelContext(container).fetch(FetchDescriptor<FeedbackReport>(
         predicate: #Predicate { $0.id == value }

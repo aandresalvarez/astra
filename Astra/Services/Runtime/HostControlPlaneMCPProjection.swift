@@ -4,6 +4,36 @@ import ASTRAModels
 import ASTRAPersistence
 
 enum HostControlPlaneMCPProjection {
+    struct CapabilitySnapshot: Sendable {
+        struct BehaviorSkill: Sendable {
+            let originPackageID: String?
+        }
+
+        let enabledPackageIDs: Set<String>
+        let behaviorSkills: [BehaviorSkill]
+        let effectiveBehaviorInstructions: [String]
+        let resolutionIsComplete: Bool
+
+        init(capabilityScope: TaskCapabilityPromptScope) {
+            enabledPackageIDs = Set(capabilityScope.enabledPackageIDs)
+            behaviorSkills = capabilityScope.behaviorSkills.map { BehaviorSkill(originPackageID: $0.originPackageID) }
+            effectiveBehaviorInstructions = capabilityScope.resolver.effectiveSnapshots.map(\.behaviorInstructions)
+            resolutionIsComplete = true
+        }
+
+        init(
+            enabledPackageIDs: Set<String>,
+            behaviorSkillOriginPackageIDs: [String?],
+            effectiveBehaviorInstructions: [String],
+            resolutionIsComplete: Bool = true
+        ) {
+            self.enabledPackageIDs = enabledPackageIDs
+            behaviorSkills = behaviorSkillOriginPackageIDs.map { BehaviorSkill(originPackageID: $0) }
+            self.effectiveBehaviorInstructions = effectiveBehaviorInstructions
+            self.resolutionIsComplete = resolutionIsComplete
+        }
+    }
+
     static let serverID = "astra_host"
     static let toolNames = ["github", "gcloud", "bq", "ssh", "jira"]
     static let githubPackageID = "github-workflow"
@@ -16,8 +46,20 @@ enum HostControlPlaneMCPProjection {
         task: AgentTask,
         environment: WorkspaceExecutionEnvironment,
         contextText: String = "",
-        capabilityScope: TaskCapabilityPromptScope? = nil
+        capabilityScope: TaskCapabilityPromptScope? = nil,
+        // When the caller already ran this task through
+        // AgentRuntimeLaunchRuntimeResolver.resolve() (the normal launch path),
+        // pass its TaskRuntimeRequirementSet here so the actual MCP-server
+        // attachment reuses that single derivation instead of independently
+        // re-deriving it from a second, potentially different capability-scope
+        // capture (or a different WorkspaceExecutionEnvironment snapshot). The
+        // two derivations must agree — see
+        // Tests/HostControlRequirementDerivationConsistencyTests.swift.
+        precomputedRuntimeRequirements: TaskRuntimeRequirementSet? = nil
     ) -> [String] {
+        if let precomputedRuntimeRequirements {
+            return precomputedRuntimeRequirements.hostControlTools
+        }
         if isEnabled(for: environment) {
             return toolNames
         }
@@ -29,22 +71,43 @@ enum HostControlPlaneMCPProjection {
     }
 
     static func requiredToolNames(capabilityScope: TaskCapabilityPromptScope) -> [String] {
+        requiredToolNames(capabilitySnapshot: CapabilitySnapshot(capabilityScope: capabilityScope))
+    }
+
+    static func requiredToolNames(capabilitySnapshot: CapabilitySnapshot) -> [String] {
         var required = Set<String>()
-        if githubCapabilityIsInScope(capabilityScope) {
+        if githubCapabilityIsInScope(capabilitySnapshot) {
             required.insert("github")
         }
-        for snapshot in capabilityScope.resolver.effectiveSnapshots {
-            required.formUnion(requiredToolNames(inBehaviorText: snapshot.behaviorInstructions))
+        for instructions in capabilitySnapshot.effectiveBehaviorInstructions {
+            required.formUnion(requiredToolNames(inBehaviorText: instructions))
         }
         return orderedToolNames(required)
+    }
+
+    static func githubIsEnabled(
+        for environment: WorkspaceExecutionEnvironment,
+        capabilitySnapshot: CapabilitySnapshot
+    ) -> Bool {
+        isEnabled(for: environment)
+            || !capabilitySnapshot.resolutionIsComplete
+            || requiredToolNames(capabilitySnapshot: capabilitySnapshot).contains("github")
     }
 
     static func requiresNativeShellDenial(
         task: AgentTask,
         environment: WorkspaceExecutionEnvironment,
-        contextText: String = ""
+        contextText: String = "",
+        capabilityScope: TaskCapabilityPromptScope? = nil,
+        precomputedRuntimeRequirements: TaskRuntimeRequirementSet? = nil
     ) -> Bool {
-        !enabledToolNames(task: task, environment: environment, contextText: contextText).isEmpty
+        !enabledToolNames(
+            task: task,
+            environment: environment,
+            contextText: contextText,
+            capabilityScope: capabilityScope,
+            precomputedRuntimeRequirements: precomputedRuntimeRequirements
+        ).isEmpty
     }
 
     static func packageUsesHostControlRuntime(_ package: PluginPackage) -> Bool {
@@ -123,13 +186,15 @@ enum HostControlPlaneMCPProjection {
         runID: UUID?,
         taskEnvironment: [String: String] = [:],
         contextText: String = "",
-        capabilityScope: TaskCapabilityPromptScope? = nil
+        capabilityScope: TaskCapabilityPromptScope? = nil,
+        precomputedRuntimeRequirements: TaskRuntimeRequirementSet? = nil
     ) -> MCPRuntimeProjection.ResolvedServer? {
         let allowedTools = enabledToolNames(
             task: task,
             environment: environment,
             contextText: contextText,
-            capabilityScope: capabilityScope
+            capabilityScope: capabilityScope,
+            precomputedRuntimeRequirements: precomputedRuntimeRequirements
         )
         guard !allowedTools.isEmpty else { return nil }
         let envKeys = environmentKeys(taskEnvironment: taskEnvironment)
@@ -156,13 +221,15 @@ enum HostControlPlaneMCPProjection {
         runID: UUID?,
         taskEnvironment: [String: String] = [:],
         contextText: String = "",
-        capabilityScope: TaskCapabilityPromptScope? = nil
+        capabilityScope: TaskCapabilityPromptScope? = nil,
+        precomputedRuntimeRequirements: TaskRuntimeRequirementSet? = nil
     ) -> [String: String] {
         let allowedTools = enabledToolNames(
             task: task,
             environment: environment,
             contextText: contextText,
-            capabilityScope: capabilityScope
+            capabilityScope: capabilityScope,
+            precomputedRuntimeRequirements: precomputedRuntimeRequirements
         )
         guard !allowedTools.isEmpty else { return [:] }
         var output: [String: String] = [
@@ -329,11 +396,11 @@ enum HostControlPlaneMCPProjection {
         toolNames.filter { required.contains($0) }
     }
 
-    private static func githubCapabilityIsInScope(_ scope: TaskCapabilityPromptScope) -> Bool {
-        if scope.enabledPackageIDs.contains(githubPackageID) {
+    private static func githubCapabilityIsInScope(_ snapshot: CapabilitySnapshot) -> Bool {
+        if snapshot.enabledPackageIDs.contains(githubPackageID) {
             return true
         }
-        return scope.behaviorSkills.contains { skill in
+        return snapshot.behaviorSkills.contains { skill in
             if skill.originPackageID == githubPackageID {
                 return true
             }

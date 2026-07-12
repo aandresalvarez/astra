@@ -309,7 +309,7 @@ struct TaskMainView: View {
     var onToggleDone: ((AgentTask) -> Void)?
     var sshReloadTrigger: Int = 0
 
-    @Environment(\.modelContext) private var modelContext
+    @Environment(\.modelContext) var modelContext
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var messageText = ""
     @State private var attachedFiles: [String] = []
@@ -354,7 +354,12 @@ struct TaskMainView: View {
     @State private var pendingVerificationPresentationRefreshTask: Task<Void, Never>?
     @State private var cachedVerificationRequest: TaskVerificationLoadRequest?
     @State private var cachedVerificationPresentation: TaskVerificationPresentation?
-    @State private var cachedForkSourceAvailabilityWarning: String?
+    @State var cachedForkSourceAvailabilityWarning: String?
+    @State var cachedForkModeLabel: String?
+    @State var cachedForkRepositorySummary: String?
+    @State var cachedForkSharedWorktreeRoot: String?
+    @State var pendingForkRequest: PendingTaskForkRequest?
+    @State var forkCreationError: String?
     @FocusState private var isComposerFocused: Bool
     @AppStorage(AppStorageKeys.claudePath) private var claudePath = ""
     @AppStorage(AppStorageKeys.copilotPath) private var copilotPath = ""
@@ -595,9 +600,25 @@ struct TaskMainView: View {
             TaskCheckpointBrowserSheet(
                 task: task,
                 snapshot: currentThreadSnapshot,
-                onRestore: forkTask(from:)
+                onRestore: presentForkConfirmation(from:)
             )
             .frame(minWidth: 780, minHeight: 540)
+        }
+        .sheet(item: $pendingForkRequest) { request in
+            TaskForkConfirmationSheet(
+                taskTitle: task.title,
+                checkpointStep: request.checkpointStep,
+                policy: request.policy,
+                onConfirm: { mode in createFork(from: request.run, mode: mode, policy: request.policy) }
+            )
+        }
+        .alert("Couldn’t Fork Conversation", isPresented: Binding(
+            get: { forkCreationError != nil },
+            set: { if !$0 { forkCreationError = nil } }
+        )) {
+            Button("OK", role: .cancel) { forkCreationError = nil }
+        } message: {
+            Text(forkCreationError ?? "The conversation fork could not be created.")
         }
         .task(id: runtimeAvailabilitySignature) {
             await refreshRuntimeAvailability()
@@ -798,10 +819,6 @@ struct TaskMainView: View {
         }
         refreshForkSourceAvailabilityWarning()
         scheduleVerificationPresentationRefresh()
-    }
-
-    private func refreshForkSourceAvailabilityWarning() {
-        cachedForkSourceAvailabilityWarning = TaskForkManifestService.sourceAvailabilityWarning(for: task)
     }
 
     private func scheduleVerificationPresentationRefresh() {
@@ -1740,24 +1757,7 @@ struct TaskMainView: View {
     @ViewBuilder
     private var chatThreadContentBody: some View {
         if task.isForked {
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 6) {
-                    Image(systemName: "arrow.branch")
-                        .font(Stanford.ui(11))
-                    Text("Forked from another task at step \(task.forkedAtRunIndex + 1)")
-                        .font(Stanford.caption(12))
-                }
-                if let warning = cachedForkSourceAvailabilityWarning {
-                    Text(warning)
-                        .font(Stanford.caption(11))
-                        .foregroundStyle(Stanford.coolGrey)
-                }
-            }
-            .foregroundStyle(Stanford.plum)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-            .background(Stanford.plum.opacity(0.08))
-            .clipShape(RoundedRectangle(cornerRadius: 6))
+            forkContextBanner
                 .padding(.horizontal, 14)
         }
 
@@ -2549,14 +2549,14 @@ struct TaskMainView: View {
                         }
 
                         Button {
-                            forkTask(from: run)
+                            presentForkConfirmation(from: run)
                         } label: {
                             Image(systemName: "arrow.branch")
                             .font(Stanford.ui(12))
                         }
                         .buttonStyle(.plain)
                         .foregroundStyle(Stanford.coolGrey.opacity(0.7))
-                        .help("Fork from here")
+                        .help("Fork conversation from here")
                     }
 
                     runFooterSummaryLabel(
@@ -3641,11 +3641,40 @@ struct TaskMainView: View {
         return "\(task.resolvedRuntimeID.displayName) needs one-time permission before it can continue."
     }
 
-    private func forkTask(from run: TaskRunSnapshot) {
-        guard let sourceRun = task.runs.first(where: { $0.id == run.id }) else { return }
-        let forked = AgentTask.fork(from: task, upToRun: sourceRun, in: modelContext)
-        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
-        onForkTask?(forked)
+    private func budgetWarningBody(for payload: String) -> String {
+        let lower = payload.lowercased()
+        if lower.contains("launch estimate") {
+            return "This task may use more budget than expected. ASTRA continued because budget enforcement is set to warning mode."
+        }
+        if lower.contains("warning mode") || lower.contains("warning only") {
+            return "This task has used more budget than expected. ASTRA kept it running because budget enforcement is set to warning mode."
+        }
+        return "This task may use more budget than expected. ASTRA continued because budget enforcement is set to warning mode."
+    }
+
+    private func providerErrorBody(for payload: String) -> String {
+        let lower = payload.lowercased()
+        if lower.contains("exited with code") || lower.contains("failed before astra received") {
+            return "The provider stopped before returning a visible response. Retry the task or open run details for the technical output."
+        }
+        if payload.isEmpty {
+            return "The provider stopped unexpectedly. Retry the task or open run details for diagnostics."
+        }
+        return String(payload.prefix(220))
+    }
+
+    private func runNoticeRawDetail(for notice: TaskRunNotice, body: String) -> String? {
+        guard !notice.payload.isEmpty,
+              notice.payload != body else {
+            return nil
+        }
+
+        switch notice.type {
+        case "budget.warning", "budget.exceeded", "error", "permission.approval.requested":
+            return notice.payload
+        default:
+            return nil
+        }
     }
 
     private func agentPlanPanel(items: [TaskProtocolTodoItem]) -> some View {
@@ -3883,6 +3912,16 @@ struct TaskMainView: View {
         currentThreadSnapshot.latestRun
     }
 
+    /// The structured launch-block payload for the latest run, if any was
+    /// recorded — scoped to that specific run via `TaskEventSnapshot.runID`,
+    /// not the whole thread's error history.
+    private var latestRunLaunchBlock: TaskRunLaunchBlockPayload? {
+        guard let runID = latestRun?.id else { return nil }
+        return sortedEvents
+            .last { $0.runID == runID && $0.type == TaskEventTypes.System.runtimeLaunchBlocked.rawValue }
+            .flatMap { TaskRunLaunchBlockPayload.decode(from: $0.payload) }
+    }
+
     private var taskReviewPresentation: TaskReviewPresentation {
         TaskPresentationState.reviewPresentation(status: task.status, isClosed: task.isDone)
     }
@@ -3913,6 +3952,7 @@ struct TaskMainView: View {
             canToggleDone: canToggleTaskDoneFromDecisionDock,
             hasProviderSession: task.hasProviderSession,
             failureReason: failureReason,
+            launchBlock: latestRunLaunchBlock,
             artifactPaths: taskDecisionArtifactPaths,
             extraDetails: taskDecisionExtraDetails
         ))
@@ -4200,51 +4240,6 @@ struct TaskMainView: View {
         PendingTaskReviewSnapshotInput(task: task, snapshot: currentThreadSnapshot)
     }
 
-    private var pendingDecisionTitle: String {
-        if hasOpenRuntimePermissionApprovalRequest {
-            return pendingRuntimePermissionDecision?.title ?? "Permission needed"
-        }
-        if latestRunHasNoUsableResult {
-            return "No usable result"
-        }
-        return pendingTaskDismissalReason == .policyBlocked ? "Policy blocked" : "Needs your review"
-    }
-
-    private var pendingDecisionDetail: String {
-        if hasOpenRuntimePermissionApprovalRequest {
-            let fallback = "\(task.resolvedRuntimeID.displayName) needs one-time permission before it can continue."
-            return pendingRuntimePermissionDecision?.summary ?? fallback
-        }
-        if pendingTaskDismissalReason == .policyBlocked {
-            return "The run stopped before completion. Retry with broader policy permissions; dismissing will not mark it completed."
-        }
-        if latestRunHasNoUsableResult {
-            return "The task did not create the expected artifact. Retry or dismiss without marking it completed."
-        }
-        return "Review the latest output, then approve it or retry the task."
-    }
-
-    private var pendingDecisionPrimaryLabel: String {
-        if hasOpenRuntimePermissionApprovalRequest {
-            return "Allow once & continue"
-        }
-        return pendingTaskDismissalReason != nil ? "Dismiss" : "Approve result"
-    }
-
-    private var pendingDecisionPrimaryIcon: String {
-        hasOpenRuntimePermissionApprovalRequest ? "lock.open.fill" : "checkmark"
-    }
-
-    private var pendingDecisionIcon: String {
-        if hasOpenRuntimePermissionApprovalRequest {
-            return "hand.raised.fill"
-        }
-        if pendingTaskDismissalReason == .policyBlocked {
-            return "shield.slash.fill"
-        }
-        return latestRunHasNoUsableResult ? "doc.badge.exclamationmark" : "person.crop.circle.badge.questionmark"
-    }
-
     private var composerPlaceholder: String {
         switch task.status {
         case .queued: return "Type to refine this task (moves back to draft)..."
@@ -4373,6 +4368,10 @@ struct TaskMainView: View {
             openGeneratedFile(path: path, destination: TaskGeneratedFiles.shelfDestination(for: path))
         case .closeTask, .closeAnyway, .closeWithoutRunningPlan, .reopenTask:
             toggleTaskDoneFromDecisionDock()
+        case .switchRuntime:
+            guard let runtime = action.payload else { return }
+            TaskComposerCoordinator.applyRuntimeSwitch(to: runtime, task: task, cache: runtimeModelCache, source: "policy_block_switch_action")
+            onRetryTask?(task)
         }
     }
 
@@ -4381,61 +4380,6 @@ struct TaskMainView: View {
         let run = latestRun
         let context = FeedbackTaskFailureSnapshotContextBuilder.make(run: run)
         onReportProblem(context.prefill, run?.id, context.runtimeEvidence, context.taskFailureOccurredAt)
-    }
-
-    private var pendingReviewDecisionDock: some View {
-        let primaryColor = hasOpenRuntimePermissionApprovalRequest ? Stanford.poppy : Stanford.paloAltoGreen
-
-        return taskDecisionSurface(
-            icon: pendingDecisionIcon,
-            color: primaryColor,
-            title: pendingDecisionTitle,
-            detail: pendingDecisionDetail,
-            detailLineLimit: hasOpenRuntimePermissionApprovalRequest ? 2 : 3,
-            scope: hasOpenRuntimePermissionApprovalRequest ? pendingRuntimePermissionDecision?.scope : nil,
-            commandPreview: hasOpenRuntimePermissionApprovalRequest ? pendingRuntimePermissionDecision?.commandPreview : nil
-        ) {
-            VStack(alignment: .trailing, spacing: 8) {
-                if let onRetry = onRetryTask {
-                    Button("Retry") {
-                        onRetry(task)
-                    }
-                    .buttonStyle(StanfordButtonStyle(isPrimary: false))
-                    .controlSize(.small)
-                    .accessibilityLabel("Retry task")
-                }
-
-                if hasOpenRuntimePermissionApprovalRequest,
-                   canApproveSimilarRuntimePermissionForTask {
-                    Button {
-                        approveSimilarRuntimePermissionForTask()
-                    } label: {
-                        Label("Allow similar", systemImage: "checkmark.shield")
-                            .labelStyle(.titleAndIcon)
-                    }
-                    .buttonStyle(StanfordButtonStyle(isPrimary: false))
-                    .controlSize(.small)
-                    .help((pendingRuntimePermissionDecision?.allowSimilarLabel ?? "Allow similar requests") + " for this task.")
-                    .accessibilityIdentifier("ApproveSimilarTaskButton")
-                    .accessibilityLabel("Allow similar for this task")
-                }
-
-                if let onApprove = onApproveTask {
-                    Button {
-                        onApprove(task)
-                    } label: {
-                        Label(pendingDecisionPrimaryLabel, systemImage: pendingDecisionPrimaryIcon)
-                            .labelStyle(.titleAndIcon)
-                    }
-                    .buttonStyle(StanfordButtonStyle(isPrimary: true, color: primaryColor))
-                    .controlSize(.small)
-                    .accessibilityIdentifier("ApproveTaskButton")
-                    .accessibilityLabel(pendingDecisionPrimaryLabel)
-                }
-
-                taskDecisionOverflowMenu(doneLabelOverride: latestRunHasNoUsableResult ? TaskPresentationState.closeAnywayActionTitle : nil)
-            }
-        }
     }
 
     private func approveSimilarRuntimePermissionForTask() {
@@ -4880,6 +4824,83 @@ struct TaskMainView: View {
         isDragOver || isComposerFocused ? 1.5 : 1
     }
 
+    @ViewBuilder
+    private var slashCommandMenuOverlay: some View {
+        if showSlashMenu && !visibleSlashOptions.isEmpty {
+            let opts = visibleSlashOptions
+            VStack(spacing: 0) {
+                ForEach(Array(opts.enumerated()), id: \.element.id) { index, opt in
+                    let isSelected = index == min(slashSelectedIndex, opts.count - 1)
+                    let meta = Self.slashOptionMeta(opt.id)
+                    Button {
+                        selectSlashOption(opt)
+                    } label: {
+                        HStack(spacing: 9) {
+                            Image(systemName: meta.icon)
+                                .font(Stanford.ui(SlashCommandMenuPresentation.iconSize, weight: .semibold))
+                                .foregroundStyle(meta.color)
+                                .frame(width: SlashCommandMenuPresentation.iconFrame)
+                            VStack(alignment: .leading, spacing: 2) {
+                                HStack(spacing: 6) {
+                                    Text(opt.command.trimmingCharacters(in: .whitespaces))
+                                        .font(Stanford.ui(SlashCommandMenuPresentation.commandFontSize, weight: .semibold, design: .monospaced))
+                                    Text(meta.title)
+                                        .font(Stanford.caption(SlashCommandMenuPresentation.titleFontSize))
+                                        .foregroundStyle(Stanford.coolGrey)
+                                        .lineLimit(1)
+                                }
+                                Text(meta.subtitle)
+                                    .font(Stanford.caption(SlashCommandMenuPresentation.descriptionFontSize))
+                                    .foregroundStyle(Stanford.coolGrey)
+                                    .lineLimit(SlashCommandMenuPresentation.descriptionLineLimit)
+                                    .truncationMode(.tail)
+                                    .help(meta.subtitle)
+                            }
+                            Spacer()
+                            if isSelected {
+                                Image(systemName: "return")
+                                    .font(Stanford.ui(SlashCommandMenuPresentation.returnIconSize))
+                                    .foregroundStyle(.tertiary)
+                            }
+                        }
+                        .padding(.horizontal, SlashCommandMenuPresentation.horizontalPadding)
+                        .frame(height: SlashCommandMenuPresentation.rowHeight)
+                        .background {
+                            if isSelected {
+                                RoundedRectangle(cornerRadius: SlashCommandMenuPresentation.rowCornerRadius, style: .continuous)
+                                    .fill(Stanford.lagunita.opacity(SlashCommandMenuPresentation.selectedBackgroundOpacity))
+                            }
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+
+                    if SlashCommandMenuPresentation.usesIconColumnDividers && index < opts.count - 1 {
+                        Divider()
+                            .opacity(SlashCommandMenuPresentation.dividerOpacity)
+                            .padding(.leading, SlashCommandMenuPresentation.dividerLeadingPadding)
+                            .padding(.trailing, SlashCommandMenuPresentation.dividerTrailingPadding)
+                    }
+                }
+            }
+            .padding(.vertical, SlashCommandMenuPresentation.menuVerticalPadding)
+            .frame(maxWidth: SlashCommandMenuPresentation.maxWidth)
+            .background(.regularMaterial)
+            .clipShape(RoundedRectangle(cornerRadius: SlashCommandMenuPresentation.menuCornerRadius, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: SlashCommandMenuPresentation.menuCornerRadius, style: .continuous)
+                    .stroke(Color.primary.opacity(SlashCommandMenuPresentation.borderOpacity), lineWidth: 1)
+            )
+            .shadow(
+                color: .black.opacity(SlashCommandMenuPresentation.shadowOpacity),
+                radius: SlashCommandMenuPresentation.shadowRadius,
+                y: SlashCommandMenuPresentation.shadowYOffset
+            )
+            .offset(y: -SlashCommandMenuPresentation.menuHeight(rowCount: visibleSlashOptions.count) - 8)
+            .padding(.leading, 4)
+        }
+    }
+
     private var composerView: some View {
         let composerShape = RoundedRectangle(cornerRadius: Stanford.radiusLarge, style: .continuous)
 
@@ -4966,24 +4987,12 @@ struct TaskMainView: View {
                     onStop: (shouldShowTaskDecisionDock || onCancelTask == nil) ? nil : { onCancelTask?(task) },
                     onModelChange: { task.model = $0 },
                     onRuntimeChange: { runtime in
-                        let update = TaskComposerCoordinator.runtimeUpdate(
-                            previousRuntime: task.runtimeID,
-                            selectedRuntime: runtime,
-                            currentModel: task.model,
-                            cache: runtimeModelCache
+                        TaskComposerCoordinator.applyRuntimeSwitch(
+                            to: runtime,
+                            task: task,
+                            cache: runtimeModelCache,
+                            source: "task_composer"
                         )
-                        task.runtimeID = runtime
-                        task.model = update.resolvedModel
-                        task.updatedAt = Date()
-                        AppLogger.breadcrumb(action: "task_runtime_changed", category: "UI", taskID: task.id, fields: [
-                            "source": "task_composer",
-                            "previous_runtime": update.previousRuntime ?? "none",
-                            "runtime": update.runtime,
-                            "previous_model": update.previousModel,
-                            "model": update.resolvedModel,
-                            "model_changed": String(update.modelChanged),
-                            "workspace_id": task.workspace?.id.uuidString ?? "none"
-                        ])
                     },
                     onBudgetChange: { task.tokenBudget = $0 },
                     onRemoveSkill: { skill in
@@ -5051,79 +5060,7 @@ struct TaskMainView: View {
             )
             .shadow(color: Color.black.opacity(isComposerFocused ? 0.08 : 0.045), radius: isComposerFocused ? 12 : 8, y: 3)
             .overlay(alignment: .topLeading) {
-                if showSlashMenu && !visibleSlashOptions.isEmpty {
-                    let opts = visibleSlashOptions
-                    VStack(spacing: 0) {
-                        ForEach(Array(opts.enumerated()), id: \.element.id) { index, opt in
-                            let isSelected = index == min(slashSelectedIndex, opts.count - 1)
-                            let meta = Self.slashOptionMeta(opt.id)
-                            Button {
-                                selectSlashOption(opt)
-                            } label: {
-                                HStack(spacing: 9) {
-                                    Image(systemName: meta.icon)
-                                        .font(Stanford.ui(SlashCommandMenuPresentation.iconSize, weight: .semibold))
-                                        .foregroundStyle(meta.color)
-                                        .frame(width: SlashCommandMenuPresentation.iconFrame)
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        HStack(spacing: 6) {
-                                            Text(opt.command.trimmingCharacters(in: .whitespaces))
-                                                .font(Stanford.ui(SlashCommandMenuPresentation.commandFontSize, weight: .semibold, design: .monospaced))
-                                            Text(meta.title)
-                                                .font(Stanford.caption(SlashCommandMenuPresentation.titleFontSize))
-                                                .foregroundStyle(Stanford.coolGrey)
-                                                .lineLimit(1)
-                                        }
-                                        Text(meta.subtitle)
-                                            .font(Stanford.caption(SlashCommandMenuPresentation.descriptionFontSize))
-                                            .foregroundStyle(Stanford.coolGrey)
-                                            .lineLimit(SlashCommandMenuPresentation.descriptionLineLimit)
-                                            .truncationMode(.tail)
-                                            .help(meta.subtitle)
-                                    }
-                                    Spacer()
-                                    if isSelected {
-                                        Image(systemName: "return")
-                                            .font(Stanford.ui(SlashCommandMenuPresentation.returnIconSize))
-                                            .foregroundStyle(.tertiary)
-                                    }
-                                }
-                                .padding(.horizontal, SlashCommandMenuPresentation.horizontalPadding)
-                                .frame(height: SlashCommandMenuPresentation.rowHeight)
-                                .background {
-                                    if isSelected {
-                                        RoundedRectangle(cornerRadius: SlashCommandMenuPresentation.rowCornerRadius, style: .continuous)
-                                            .fill(Stanford.lagunita.opacity(SlashCommandMenuPresentation.selectedBackgroundOpacity))
-                                    }
-                                }
-                                .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
-
-                            if SlashCommandMenuPresentation.usesIconColumnDividers && index < opts.count - 1 {
-                                Divider()
-                                    .opacity(SlashCommandMenuPresentation.dividerOpacity)
-                                    .padding(.leading, SlashCommandMenuPresentation.dividerLeadingPadding)
-                                    .padding(.trailing, SlashCommandMenuPresentation.dividerTrailingPadding)
-                            }
-                        }
-                    }
-                    .padding(.vertical, SlashCommandMenuPresentation.menuVerticalPadding)
-                    .frame(maxWidth: SlashCommandMenuPresentation.maxWidth)
-                    .background(.regularMaterial)
-                    .clipShape(RoundedRectangle(cornerRadius: SlashCommandMenuPresentation.menuCornerRadius, style: .continuous))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: SlashCommandMenuPresentation.menuCornerRadius, style: .continuous)
-                            .stroke(Color.primary.opacity(SlashCommandMenuPresentation.borderOpacity), lineWidth: 1)
-                    )
-                    .shadow(
-                        color: .black.opacity(SlashCommandMenuPresentation.shadowOpacity),
-                        radius: SlashCommandMenuPresentation.shadowRadius,
-                        y: SlashCommandMenuPresentation.shadowYOffset
-                    )
-                    .offset(y: -SlashCommandMenuPresentation.menuHeight(rowCount: visibleSlashOptions.count) - 8)
-                    .padding(.leading, 4)
-                }
+                slashCommandMenuOverlay
             }
             .padding(.horizontal, 20)
             .padding(.vertical, 11)
@@ -5226,6 +5163,12 @@ struct TaskMainView: View {
     /// Ask the selected utility runtime to summarize the task conversation so the user can resume later.
     /// Response is plain markdown (no JSON), inserted as a recap.result event.
     private func generateRecapAgentically() {
+        // Utility-provider work counts as provider work: read-only forks
+        // block it the same way as conversation continuations.
+        if let readOnlyReason = TaskForkPolicyService.readOnlyReason(for: task) {
+            recordForkReadOnlyBlock(readOnlyReason)
+            return
+        }
         let conversationSnapshot = scheduleConversationContext
         guard !conversationSnapshot.isEmpty else {
             recapStatusMessage = "Nothing to recap yet — this task has no conversation."
@@ -5310,6 +5253,10 @@ struct TaskMainView: View {
     }
 
     private func createScheduleAgentically(instruction: String) {
+        if let readOnlyReason = TaskForkPolicyService.readOnlyReason(for: task) {
+            recordForkReadOnlyBlock(readOnlyReason)
+            return
+        }
         guard let ws = task.workspace else {
             setScheduleStatusMessage("No workspace found for this task.")
             return
@@ -5499,6 +5446,14 @@ struct TaskMainView: View {
               task.status != .queued,
               task.status != .running else { return }
 
+        // Check before recording approval or enqueueing. A read-only fork must
+        // preserve its completed/pending state so the general queue cannot
+        // later reinterpret an approved-plan launch as a normal task run.
+        if let readOnlyReason = TaskForkPolicyService.readOnlyReason(for: task) {
+            recordForkReadOnlyBlock(readOnlyReason)
+            return
+        }
+
         recordCurrentTaskPolicyIfNeeded(source: "approved_plan_run")
         TaskPlanService.recordApproved(plan, task: task, modelContext: modelContext)
         showPlanCanvasIfNeeded()
@@ -5527,6 +5482,12 @@ struct TaskMainView: View {
             hasWorkspace: task.workspace != nil
         )
         guard sendAction != .none else { return }
+
+        if let readOnlyReason = TaskForkPolicyService.readOnlyReason(for: task),
+           sendAction.launchesProviderWork {
+            recordForkReadOnlyBlock(readOnlyReason)
+            return
+        }
 
         shouldScrollAfterUserMessage = true
 
@@ -5569,11 +5530,11 @@ struct TaskMainView: View {
         let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
         messageText = ""
         if !trimmed.isEmpty {
-            modelContext.insert(TaskEvent(
+            TaskEventInsertionService.insert(TaskEvent(
                 task: task,
                 eventType: TaskEventTypes.Conversation.userMessage,
                 payload: trimmed
-            ))
+            ), into: modelContext)
         }
         modelContext.insert(TaskEvent(
             task: task,
@@ -5585,7 +5546,26 @@ struct TaskMainView: View {
         threadViewModel.refreshSnapshot(for: task)
     }
 
+    /// Mirrors `TaskQueue.recordForkReadOnlyBlock`: repeated sends while the
+    /// fork stays read-only must not append duplicate system notes.
+    private func recordForkReadOnlyBlock(_ reason: String) {
+        guard !task.events.contains(where: {
+            $0.type == TaskEventTypes.System.info.rawValue && $0.payload == reason
+        }) else { return }
+        modelContext.insert(TaskEvent(
+            task: task,
+            eventType: TaskEventTypes.System.info,
+            payload: reason
+        ))
+        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
+        threadViewModel.refreshSnapshot(for: task)
+    }
+
     private func sendConversationMessage(_ msg: String) {
+        if let readOnlyReason = TaskForkPolicyService.readOnlyReason(for: task) {
+            recordForkReadOnlyBlock(readOnlyReason)
+            return
+        }
         if !attachedFiles.isEmpty { attachedFiles = [] }
         messageText = ""
         let traceID = AuditTrace.make(isPlanMode ? "task-plan-chat" : "task-chat")
@@ -5608,7 +5588,7 @@ struct TaskMainView: View {
             let systemEvent = TaskEvent(task: task, eventType: TaskEventTypes.Task.started, payload: "Moved back to draft for editing.")
             modelContext.insert(systemEvent)
             let userEvent = TaskEvent(task: task, eventType: TaskEventTypes.Conversation.userMessage, payload: msg)
-            modelContext.insert(userEvent)
+            TaskEventInsertionService.insert(userEvent, into: modelContext)
             AppLogger.audit(.taskRetried, category: "UI", taskID: task.id, fields: [
                 "status": "draft",
                 "source": "chat_message"
@@ -5635,16 +5615,20 @@ struct TaskMainView: View {
             }
         } else {
             let event = TaskEvent(task: task, eventType: TaskEventTypes.Conversation.userMessage, payload: msg)
-            modelContext.insert(event)
+            TaskEventInsertionService.insert(event, into: modelContext)
         }
     }
 
     private func sendPlanningMessage(_ msg: String, traceID: String = AuditTrace.make("task-plan-chat")) {
         guard !isPlanning else { return }
+        if let readOnlyReason = TaskForkPolicyService.readOnlyReason(for: task) {
+            recordForkReadOnlyBlock(readOnlyReason)
+            return
+        }
 
         shouldScrollAfterUserMessage = true
         let userEvent = TaskEvent(task: task, type: TaskPlanConversationEventTypes.userMessage, payload: msg)
-        modelContext.insert(userEvent)
+        TaskEventInsertionService.insert(userEvent, into: modelContext)
         task.updatedAt = Date()
         WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: task.workspace, modelContext: modelContext)
         threadViewModel.refreshSnapshot(for: task)

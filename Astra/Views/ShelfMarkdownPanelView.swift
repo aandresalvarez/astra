@@ -290,7 +290,8 @@ struct ShelfMarkdownPanelView: View {
             let layout = ShelfFileNavigatorLayout.resolve(
                 isPresented: isFileNavigatorPresented,
                 isPinned: isFileNavigatorPinned,
-                availableWidth: proxy.size.width
+                availableWidth: proxy.size.width,
+                navigatorWidth: fileNavigatorWidth
             )
 
             switch layout {
@@ -309,8 +310,31 @@ struct ShelfMarkdownPanelView: View {
                         }
                         .accessibilityHidden(true)
 
-                    fileNavigator
-                        .frame(width: floatingFileNavigatorWidth(availableWidth: proxy.size.width))
+                    HStack(spacing: 0) {
+                        fileNavigator
+                            .frame(width: ShelfFileNavigatorResizePolicy.displayedWidth(
+                                layout: layout,
+                                navigatorWidth: fileNavigatorWidth,
+                                availableWidth: proxy.size.width,
+                                reservesResizeHandle: isFileNavigatorPinned
+                            ))
+
+                        if ShelfFileNavigatorResizePolicy.showsResizeHandle(
+                            layout: layout,
+                            isPinned: isFileNavigatorPinned
+                        ) {
+                            FileNavigatorResizeHandle(
+                                isResizing: isResizingFileNavigator,
+                                onChanged: { translation in
+                                    resizeFloatingFileNavigator(
+                                        translation,
+                                        availableWidth: proxy.size.width
+                                    )
+                                },
+                                onEnded: finishResizingFileNavigator
+                            )
+                        }
+                    }
                         .background(.bar)
                         .shadow(color: Color.black.opacity(0.14), radius: 14, x: 3, y: 0)
                         .transition(fileNavigatorTransition)
@@ -331,10 +355,6 @@ struct ShelfMarkdownPanelView: View {
                 }
             }
         }
-    }
-
-    private func floatingFileNavigatorWidth(availableWidth: CGFloat) -> CGFloat {
-        max(0, min(ShelfWidthMetrics.filesNavigatorDefaultWidth, availableWidth))
     }
 
     private var fileNavigatorTransition: AnyTransition {
@@ -1234,6 +1254,20 @@ struct ShelfMarkdownPanelView: View {
     private func resizeFileNavigator(_ translation: CGSize) {
         if !isResizingFileNavigator {
             fileNavigatorResizeStartWidth = fileNavigatorWidth
+            isResizingFileNavigator = true
+        }
+
+        fileNavigatorWidth = clampedFileNavigatorWidth(fileNavigatorResizeStartWidth + translation.width)
+    }
+
+    private func resizeFloatingFileNavigator(_ translation: CGSize, availableWidth: CGFloat) {
+        if !isResizingFileNavigator {
+            fileNavigatorResizeStartWidth = ShelfFileNavigatorResizePolicy.displayedWidth(
+                layout: .floating,
+                navigatorWidth: fileNavigatorWidth,
+                availableWidth: availableWidth,
+                reservesResizeHandle: true
+            )
             isResizingFileNavigator = true
         }
 

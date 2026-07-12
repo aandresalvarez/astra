@@ -1033,7 +1033,7 @@ enum FeedbackReportEvidenceSourceReader {
             } ?? []
             : []
         let applicationEntries = selections.includeApplicationLogs
-            ? windowEntries.filter { $0.taskID == nil }
+            ? windowEntries.filter { !hasTaskBinding($0) }
             : []
         if selections.includeApplicationLogs && applicationEntries.isEmpty {
             appendOmission(.applicationLogs, reason: .unavailable, to: &omissions)
@@ -1141,6 +1141,10 @@ enum FeedbackReportEvidenceSourceReader {
         if entry.taskID == taskID { return true }
         let prefix = String(taskID.uuidString.prefix(8)).uppercased()
         return entry.message.hasPrefix("task_short=\(prefix) ")
+    }
+
+    private static func hasTaskBinding(_ entry: LogEntry) -> Bool {
+        entry.taskID != nil || entry.message.hasPrefix("task_short=")
     }
 
     private static func crashEvidence(

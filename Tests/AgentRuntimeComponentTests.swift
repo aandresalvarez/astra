@@ -889,26 +889,62 @@ struct AgentRuntimeRunPersistenceTests {
     }
 
     @Test("Finalize records terminal completion and unread state")
-    func finalizePersistsTerminalState() throws {
+    func finalizePersistsTerminalState() async throws {
         let container = try makeRuntimeComponentContainer()
         let context = container.mainContext
         let task = AgentTask(title: "Task", goal: "Goal")
         let run = TaskRun(task: task)
         task.status = .completed
         run.status = .completed
+        let oversizedOutputCount = TaskRunOutputCap.headByteLimit + TaskRunOutputCap.tailByteLimit + 128
+        run.output = String(repeating: "x", count: oversizedOutputCount)
         context.insert(task)
         context.insert(run)
 
-        AgentRuntimeRunPersistence.finalizeAndPersist(
+        await AgentRuntimeRunPersistence.finalizeAndPersist(
             task: task,
             run: run,
             modelContext: context,
-            phase: "run"
+            phase: "run",
+            handoffDiscoveredFiles: []
         )
 
         #expect(task.completedAt != nil)
         #expect(task.unreadAt != nil)
         #expect(task.updatedAt <= Date())
+        #expect(run.output.count < oversizedOutputCount)
+        #expect(run.output.contains(TaskRunOutputCap.elisionMarker))
+    }
+
+    @Test("Finalization phase telemetry contains only fixed operational fields")
+    func finalizationPhaseTelemetryIsPrivacySafe() {
+        let task = AgentTask(title: "Sensitive title", goal: "Sensitive goal")
+        let run = TaskRun(task: task)
+        run.output = "Sensitive provider output"
+        task.status = .completed
+        run.status = .completed
+
+        let fields = AgentRuntimeRunPersistence.finalizationPhaseFields(
+            phase: "artifact_reconciliation",
+            task: task,
+            run: run,
+            traceID: "run-finalize-safe-trace"
+        )
+        let parentFields = AgentRuntimeRunPersistence.finalizationParentFields(
+            ["task_id": fields["task_id"]!],
+            traceID: "run-finalize-safe-trace"
+        )
+
+        #expect(fields["phase"] == "artifact_reconciliation")
+        #expect(fields["task_status"] == "completed")
+        #expect(fields["run_status"] == "completed")
+        #expect(fields["task_id"]?.count == 8)
+        #expect(fields["run_id"]?.count == 8)
+        #expect(fields["trace_id"] == "run-finalize-safe-trace")
+        #expect(parentFields["trace_id"] == fields["trace_id"])
+        #expect(fields["title"] == nil)
+        #expect(fields["goal"] == nil)
+        #expect(fields["output"] == nil)
     }
 
     @Test("Record session turn writes session history in task folder")

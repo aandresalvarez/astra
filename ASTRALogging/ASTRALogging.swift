@@ -426,9 +426,26 @@ public struct LogEntry: Identifiable, Codable, Sendable {
         return "[\(ts)] [\(level.uppercased())] [\(category)\(taskStr)] \(message)"
     }
 
+    /// Durable log lines include the calendar date and UTC offset. The compact
+    /// `formatted` representation remains suitable for live UI/console output,
+    /// while persisted evidence must not infer every entry's day from a file's
+    /// modification date after rotation or a midnight boundary.
+    public var persistedFormatted: String {
+        let ts = Self.persistedFormatter.string(from: timestamp)
+        let taskStr = taskID.map { " task:\(String($0.uuidString.prefix(8)))" } ?? ""
+        return "[\(ts)] [\(level.uppercased())] [\(category)\(taskStr)] \(message)"
+    }
+
     private static let formatter: DateFormatter = {
         let f = DateFormatter()
         f.dateFormat = "HH:mm:ss.SSS"
         return f
+    }()
+
+    private static let persistedFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        return formatter
     }()
 }

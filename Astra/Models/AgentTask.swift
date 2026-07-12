@@ -41,6 +41,14 @@ public final class AgentTask {
     public var tokensUsed: Int
     public var model: String
     public var runtimeID: String?
+    /// True when the current `runtimeID` was set by the user explicitly
+    /// picking a runtime in the composer (`task_runtime_changed`), as opposed
+    /// to being assigned by task creation or an automatic compatibility
+    /// reroute. `AgentRuntimeLaunchRuntimeResolver` uses this to decide
+    /// whether an incompatible runtime should be rerouted silently or
+    /// reported as an up-front, actionable block that respects the user's
+    /// choice instead of overriding it.
+    public var runtimeExplicitlySelected: Bool = false
     public var testCommand: String
     public var costUSD: Double
     public var queuePosition: Int
@@ -170,8 +178,13 @@ public final class AgentTask {
     }
 
     @MainActor
-    public static func fork(from source: AgentTask, upToRun targetRun: TaskRun, in context: ModelContext) -> AgentTask {
-        AgentTaskForkService.fork(from: source, upToRun: targetRun, in: context)
+    public static func fork(
+        from source: AgentTask,
+        upToRun targetRun: TaskRun,
+        options: TaskForkOptions = TaskForkOptions(),
+        in context: ModelContext
+    ) throws -> AgentTask {
+        try AgentTaskForkService.fork(from: source, upToRun: targetRun, options: options, in: context)
     }
 
     public var isTerminal: Bool {

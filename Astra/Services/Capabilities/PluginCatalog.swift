@@ -7,11 +7,31 @@ import ASTRACore
 /// approved/built-in package set and exposes the curated definitions.
 @Observable @MainActor
 final class PluginCatalog {
-    var packages: [PluginPackage] = []
+    /// Scalar change token for presentation consumers. Catalog packages are
+    /// value types, so observing the array through a cached projection does not
+    /// reliably register later replacements with Observation.
+    private(set) var revision = 0
+    var packages: [PluginPackage] = [] {
+        didSet { revision &+= 1 }
+    }
+    private var isLoadingApprovedCapabilities = false
 
-    func loadApprovedCapabilities(library: CapabilityLibrary = CapabilityLibrary()) {
-        try? library.syncApprovedPackages(Self.builtInPackages)
+    func loadApprovedCapabilities(
+        library: CapabilityLibrary = CapabilityLibrary(),
+        announceLibraryMutations: Bool = true
+    ) {
+        // A repair can publish a synchronous global persistence event. The
+        // event handler is the sole reload owner, but it may be invoked before
+        // this load returns; ignore that nested request because this load has
+        // already read the repaired library and assigned the current snapshot.
+        guard !isLoadingApprovedCapabilities else { return }
+        isLoadingApprovedCapabilities = true
+        defer { isLoadingApprovedCapabilities = false }
+        let libraryChanged = (try? library.syncApprovedPackages(Self.builtInPackages)) == true
         packages = library.installedPackages()
+        if libraryChanged, announceLibraryMutations {
+            CapabilityCatalogPersistenceEvents.post(.global)
+        }
     }
 
     // MARK: - Built-in Package Definitions (Curated)

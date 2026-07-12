@@ -6,6 +6,47 @@ import ASTRAPersistence
 
 @MainActor
 enum AgentRuntimeRunPersistence {
+    private static func measureFinalizationPhase<T>(
+        _ phase: String,
+        task: AgentTask,
+        run: TaskRun,
+        traceID: String,
+        _ work: () -> T
+    ) -> T {
+        let start = DispatchTime.now().uptimeNanoseconds
+        let result = work()
+        PerformanceTelemetry.logIfNeeded(
+            "run_finalize_phase",
+            start: start,
+            thresholdMilliseconds: PerformanceTelemetry.uiFrameThresholdMilliseconds,
+            fields: finalizationPhaseFields(phase: phase, task: task, run: run, traceID: traceID)
+        )
+        return result
+    }
+
+    static func finalizationPhaseFields(
+        phase: String,
+        task: AgentTask,
+        run: TaskRun,
+        traceID: String
+    ) -> [String: String] {
+        [
+            "phase": phase,
+            "trace_id": traceID,
+            "task_id": PerformanceTelemetryFields.abbreviatedID(task.id),
+            "run_id": PerformanceTelemetryFields.abbreviatedID(run.id),
+            "task_status": task.status.rawValue,
+            "run_status": run.status.rawValue
+        ]
+    }
+
+    static func finalizationParentFields(
+        _ fields: [String: String],
+        traceID: String
+    ) -> [String: String] {
+        fields.merging(["trace_id": traceID], uniquingKeysWith: { _, new in new })
+    }
+
     static func recordSessionTurn(
         task: AgentTask,
         run: TaskRun,
@@ -52,30 +93,51 @@ enum AgentRuntimeRunPersistence {
         modelContext: ModelContext,
         phase: RunPhase,
         handoffDiscoveredFiles: [TaskOutputDiscoveredFile]? = nil
-    ) {
+    ) async {
         let start = DispatchTime.now().uptimeNanoseconds
+        // File discovery is independent of SwiftData. Prepare it asynchronously
+        // before the ordered model commit so directory traversal does not
+        // monopolize the main actor. No SwiftData model crosses actors.
+        let taskFolder = TaskWorkspaceAccess(task: task).taskFolder
+        let discoveredFiles: [TaskOutputDiscoveredFile]
+        if let handoffDiscoveredFiles {
+            discoveredFiles = handoffDiscoveredFiles
+        } else {
+            discoveredFiles = await TaskOutputDiscovery.filesAsync(in: taskFolder)
+        }
+        let traceID = AuditTrace.make("run-finalize")
         // Bound the inline output blob now that the run is finalized. Session
         // history already captured the full output via recordSessionTurn before
         // this call, so nothing the user can re-open is lost. Assign only when it
         // actually changes to avoid a needless SwiftData write.
-        let cappedOutput = TaskRunOutputCap.capped(run.output)
-        if cappedOutput != run.output {
-            run.output = cappedOutput
+        measureFinalizationPhase("output_cap", task: task, run: run, traceID: traceID) {
+            let cappedOutput = TaskRunOutputCap.capped(run.output)
+            if cappedOutput != run.output {
+                run.output = cappedOutput
+            }
         }
 
-        let artifactReconciliation = TaskArtifactPersistenceService.reconcileTaskOutputArtifacts(
-            for: task,
-            modelContext: modelContext
-        )
-        AgentEventCompactor.compactEvents(for: task, modelContext: modelContext)
-        AgentPolicyManifestService.recordPostRunSummary(task: task, run: run, modelContext: modelContext)
-        TaskWorkerHandoffService.recordCreatedIfNeeded(
-            task: task,
-            run: run,
-            modelContext: modelContext,
-            discoveredFiles: handoffDiscoveredFiles
-        )
-        MissionHardeningService.recordCheckpoint(task: task, run: run, modelContext: modelContext)
+        let artifactReconciliation = measureFinalizationPhase("artifact_reconciliation", task: task, run: run, traceID: traceID) {
+            TaskArtifactPersistenceService.reconcileTaskOutputArtifacts(
+                discoveredFiles, for: task, modelContext: modelContext)
+        }
+        measureFinalizationPhase("event_compaction", task: task, run: run, traceID: traceID) {
+            AgentEventCompactor.compactEvents(for: task, modelContext: modelContext)
+        }
+        measureFinalizationPhase("policy_manifest", task: task, run: run, traceID: traceID) {
+            AgentPolicyManifestService.recordPostRunSummary(task: task, run: run, modelContext: modelContext)
+        }
+        _ = measureFinalizationPhase("worker_handoff", task: task, run: run, traceID: traceID) {
+            TaskWorkerHandoffService.recordCreatedIfNeeded(
+                task: task,
+                run: run,
+                modelContext: modelContext,
+                discoveredFiles: discoveredFiles
+            )
+        }
+        _ = measureFinalizationPhase("mission_checkpoint", task: task, run: run, traceID: traceID) {
+            MissionHardeningService.recordCheckpoint(task: task, run: run, modelContext: modelContext)
+        }
 
         let finishedAt = Date()
         task.updatedAt = finishedAt
@@ -90,16 +152,19 @@ enum AgentRuntimeRunPersistence {
             phase: phase,
             persistedArtifactCount: artifactReconciliation.createdArtifacts.count
         )
-        WorkspacePersistenceCoordinator.saveAndAutoExport(
-            workspace: task.workspace,
-            modelContext: modelContext,
-            taskID: task.id,
-            auditFields: auditFields
-        )
+        _ = measureFinalizationPhase("save_and_auto_export", task: task, run: run, traceID: traceID) {
+            WorkspacePersistenceCoordinator.saveAndAutoExport(
+                workspace: task.workspace,
+                modelContext: modelContext,
+                taskID: task.id,
+                auditFields: auditFields
+            )
+        }
 
         var telemetryFields = auditFields
         telemetryFields["task_id"] = PerformanceTelemetryFields.abbreviatedID(task.id)
         telemetryFields["run_id"] = PerformanceTelemetryFields.abbreviatedID(run.id)
+        telemetryFields = finalizationParentFields(telemetryFields, traceID: traceID)
         PerformanceTelemetry.logIfNeeded(
             "run_finalize_persist",
             start: start,

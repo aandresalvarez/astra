@@ -109,7 +109,7 @@ struct ConnectorsManagerView: View {
         connector.workspace = workspace
         modelContext.insert(connector)
         selectedConnector = connector
-        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
+        CapabilityPersistence.saveResourceMutation(workspace: workspace, modelContext: modelContext)
         AppLogger.audit(.connectorCreated, category: "UI", fields: [
             "connector_id": connector.id.uuidString,
             "workspace_id": workspace.id.uuidString
@@ -122,7 +122,7 @@ struct ConnectorsManagerView: View {
         }
         connector.cleanupKeychain()
         modelContext.delete(connector)
-        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
+        CapabilityPersistence.saveResourceMutation(workspace: workspace, modelContext: modelContext)
     }
 }
 
@@ -1173,8 +1173,9 @@ struct ConnectorEditorView: View {
     }
 
     private func saveSharingChange() {
-        WorkspacePersistenceCoordinator.saveAndAutoExport(
+        CapabilityPersistence.saveResourceMutation(
             workspace: workspace ?? connector.workspace,
+            isGlobal: connector.isGlobal,
             modelContext: modelContext
         )
     }

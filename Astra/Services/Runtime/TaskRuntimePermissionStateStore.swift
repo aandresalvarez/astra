@@ -267,8 +267,16 @@ enum TaskRuntimePermissionOpenRequestStore {
         case .credential, .connectorCredentials:
             return "Connector credentials"
         case .sandboxPath(_, _, let toolName):
-            return toolName?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty ?? "Local sandbox"
+            return normalizedToolName(toolName) ?? "Local sandbox"
         }
+    }
+
+    private static func normalizedToolName(_ toolName: String?) -> String? {
+        guard let trimmed = toolName?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmed.isEmpty else {
+            return nil
+        }
+        return trimmed
     }
 
     private static func latestCompatibilityRequestEvent(for task: AgentTask) -> TaskEvent? {

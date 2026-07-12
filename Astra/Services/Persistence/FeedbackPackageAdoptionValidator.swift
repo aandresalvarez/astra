@@ -28,6 +28,8 @@ enum FeedbackPackageValidationError: Error, Equatable {
     case archiveDisclosureMismatch
     case archiveToolUnavailable
     case archiveContentsMismatch(String)
+    case nonCanonicalEnvelope
+    case forbiddenContactMember
 }
 
 enum FeedbackPackageAdoptionValidator {
@@ -56,6 +58,13 @@ enum FeedbackPackageAdoptionValidator {
             relativePath: FeedbackPackageLayout.manifest,
             fileManager: fileManager
         )
+
+        guard FeedbackRawCanonicalJSONVerifier.isCanonicalObject(envelopeData) else {
+            throw FeedbackPackageValidationError.nonCanonicalEnvelope
+        }
+        guard !FeedbackContactMemberPolicy.containsForbiddenMember(in: envelopeData) else {
+            throw FeedbackPackageValidationError.forbiddenContactMember
+        }
 
         let envelope = try FeedbackCanonicalJSONV1.decode(
             FeedbackReportEnvelopeV1.self,

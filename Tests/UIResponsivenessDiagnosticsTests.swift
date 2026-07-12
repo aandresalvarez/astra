@@ -14,6 +14,7 @@ struct UIResponsivenessDiagnosticsTests {
             measurement("task_selection_to_transcript_ready", 500, traceID: "trace-slow", cacheState: "miss", level: .warning),
             LogEntry(level: .debug, category: "Performance", message: "event=task_open_phase trace_id=trace-slow phase=thread_reset duration_ms=72.00"),
             LogEntry(level: .debug, category: "Performance", message: "event=task_open_phase trace_id=trace-slow phase=task_initialization duration_ms=85.00"),
+            LogEntry(level: .debug, category: "Performance", message: "event=task_open_apply_to_ready trace_id=trace-slow phase=snapshot_apply_to_transcript_ready duration_ms=120.00"),
             LogEntry(level: .info, category: "UI", message: "unrelated=true duration_ms=999")
         ]
 
@@ -30,7 +31,7 @@ struct UIResponsivenessDiagnosticsTests {
         #expect(summary.cacheStates == ["hit": 2, "miss": 3])
         #expect(slowTrace.traceID == "trace-slow")
         #expect(slowTrace.durationMilliseconds == 500)
-        #expect(slowTrace.phases == ["task_initialization", "thread_reset"])
+        #expect(slowTrace.phases == ["snapshot_apply_to_transcript_ready", "task_initialization", "thread_reset"])
     }
 
     @Test("Diagnostic report renders the responsiveness summary without raw content")
@@ -43,6 +44,15 @@ struct UIResponsivenessDiagnosticsTests {
         #expect(report.markdown.contains("## UI Responsiveness"))
         #expect(report.markdown.contains("task_selection_to_shell_visible"))
         #expect(!report.markdown.contains("Sensitive task goal"))
+    }
+
+    @Test("Run finalization phases appear in responsiveness diagnostics")
+    func runFinalizationPhasesAreIncluded() {
+        let report = UIResponsivenessDiagnostics.makeReport(entries: [
+            measurement("run_finalize_phase", 42, traceID: "finalize", cacheState: "none", suffix: " phase=event_compaction")
+        ])
+
+        #expect(report.eventSummaries.map(\.event) == ["run_finalize_phase:event_compaction"])
     }
 
     @Test("Separates destinations and retains task-open timeouts")

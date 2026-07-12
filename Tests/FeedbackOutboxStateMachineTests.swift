@@ -284,6 +284,44 @@ struct FeedbackOutboxStateMachineTests {
     }
 
     @MainActor
+    @Test("Adoption rejects non-canonical report envelope bytes before ownership transfer")
+    func nonCanonicalEnvelopeIsRejected() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let source = try writeFeedbackPreparedPackage(parent: fixture.root, envelope: fixture.envelope)
+        let envelopeURL = source.appendingPathComponent(FeedbackPackageLayout.envelope)
+        let canonical = try Data(contentsOf: envelopeURL)
+        try (Data(" \n".utf8) + canonical).write(to: envelopeURL, options: .atomic)
+
+        #expect(throws: FeedbackPackageValidationError.nonCanonicalEnvelope) {
+            try fixture.service.adoptPreparedPackage(reportID: fixture.reportID, from: source)
+        }
+        #expect(FileManager.default.fileExists(atPath: source.path))
+        #expect(try fetchReport(fixture.container, id: fixture.reportID).localStatus == .draft)
+    }
+
+    @MainActor
+    @Test("Adoption rejects additive reporter contact members before ownership transfer")
+    func reporterContactMemberIsRejected() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let source = try writeFeedbackPreparedPackage(parent: fixture.root, envelope: fixture.envelope)
+        let envelopeURL = source.appendingPathComponent(FeedbackPackageLayout.envelope)
+        let withContact = try addingFeedbackMember(
+            "reporterEmail",
+            value: "reporter@example.invalid",
+            to: try Data(contentsOf: envelopeURL)
+        )
+        try withContact.write(to: envelopeURL, options: .atomic)
+
+        #expect(throws: FeedbackPackageValidationError.forbiddenContactMember) {
+            try fixture.service.adoptPreparedPackage(reportID: fixture.reportID, from: source)
+        }
+        #expect(FileManager.default.fileExists(atPath: source.path))
+        #expect(try fetchReport(fixture.container, id: fixture.reportID).localStatus == .draft)
+    }
+
+    @MainActor
     @Test("Illegal state transitions are rejected by the outbox owner")
     func illegalTransitionsAreRejected() throws {
         let fixture = try makeFixture()

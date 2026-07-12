@@ -125,12 +125,33 @@ struct SchemaVersionTests {
         #expect(ASTRASchemaV10.versionIdentifier == Schema.Version(10, 0, 0))
     }
 
-    @MainActor
-    @Test("SchemaV11 declares current model types and typed runtime state fields")
-    func v11ModelCountAndTypedRuntimeStateFields() throws {
+    @Test("SchemaV11 declares 16 model types and keeps typed runtime state fields")
+    func v11ModelCountAndTypedRuntimeStateFields() {
         #expect(ASTRASchemaV11.models.count == 16)
-        #expect(ASTRASchemaV11.models.contains { $0 == AgentTask.self })
-        #expect(ASTRASchemaV11.models.contains { $0 == TaskRun.self })
+        #expect(ASTRASchemaV11.models.contains { $0 == ASTRASchemaV11.AgentTask.self })
+        #expect(ASTRASchemaV11.models.contains { $0 == ASTRASchemaV11.TaskRun.self })
+        #expect(!ASTRASchemaV11.models.contains { $0 == AgentTask.self })
+        #expect(!ASTRASchemaV11.models.contains { $0 == TaskRun.self })
+
+        let task = ASTRASchemaV11.AgentTask()
+        #expect(task.runtimePermissionOpenRequestsJSON == "[]")
+        #expect(task.runtimePermissionGrantsJSON == "[]")
+
+        let run = ASTRASchemaV11.TaskRun()
+        #expect(run.providerLaunchSignatureJSON == nil)
+    }
+
+    @Test("SchemaV11 version identifier is 11.0.0")
+    func v11VersionIdentifier() {
+        #expect(ASTRASchemaV11.versionIdentifier == Schema.Version(11, 0, 0))
+    }
+
+    @MainActor
+    @Test("SchemaV12 declares current model types and explicit-runtime-selection field")
+    func v12ModelCountAndExplicitRuntimeSelectionField() throws {
+        #expect(ASTRASchemaV12.models.count == 17)
+        #expect(ASTRASchemaV12.models.contains { $0 == AgentTask.self })
+        #expect(ASTRASchemaV12.models.contains { $0 == TaskRun.self })
 
         let config = ModelConfiguration(isStoredInMemoryOnly: true)
         let container = try ModelContainer(
@@ -145,14 +166,15 @@ struct SchemaVersionTests {
         context.insert(run)
         try context.save()
 
+        #expect(task.runtimeExplicitlySelected == false)
         #expect(task.runtimePermissionOpenRequestsJSON == "[]")
         #expect(task.runtimePermissionGrantsJSON == "[]")
         #expect(run.providerLaunchSignatureJSON == nil)
     }
 
-    @Test("SchemaV11 version identifier is 11.0.0")
-    func v11VersionIdentifier() {
-        #expect(ASTRASchemaV11.versionIdentifier == Schema.Version(11, 0, 0))
+    @Test("SchemaV12 version identifier is 12.0.0")
+    func v12VersionIdentifier() {
+        #expect(ASTRASchemaV12.versionIdentifier == Schema.Version(12, 0, 0))
     }
 
     @Test("SchemaV12 adds only the durable feedback report entity")
@@ -161,9 +183,10 @@ struct SchemaVersionTests {
         #expect(ASTRASchemaV12.models.contains { $0 == FeedbackReport.self })
     }
 
-    @Test("SchemaV12 version identifier is 12.0.0")
-    func v12VersionIdentifier() {
-        #expect(ASTRASchemaV12.versionIdentifier == Schema.Version(12, 0, 0))
+    @Test("Advertised current schema matches the compiled current model")
+    func advertisedCurrentSchemaMatchesCompiledModel() {
+        #expect(ASTRASchema.currentVersion == 12)
+        #expect(ASTRASchemaV12.versionIdentifier == Schema.Version(ASTRASchema.currentVersion, 0, 0))
     }
 
     @Test("Migration plan lists SchemaV1 through SchemaV12")
@@ -316,6 +339,7 @@ struct SchemaVersionTests {
         #expect(migratedTask.unreadAt == nil)
         #expect((migratedTask.runtimePermissionOpenRequestsJSON ?? "[]") == "[]")
         #expect((migratedTask.runtimePermissionGrantsJSON ?? "[]") == "[]")
+        #expect(migratedTask.runtimeExplicitlySelected == false)
 
         let runs = try context.fetch(FetchDescriptor<TaskRun>())
         let migratedRun = try #require(runs.first)
@@ -343,11 +367,17 @@ struct SchemaVersionTests {
             configurations: [ModelConfiguration(url: storeURL)]
         )
         let oldContext = try #require(oldContainer?.mainContext)
-        let workspace = Workspace(name: "V11 Workspace", primaryPath: "/tmp/v11-feedback")
+        let workspace = ASTRASchemaV11.Workspace()
+        workspace.name = "V11 Workspace"
+        workspace.primaryPath = "/tmp/v11-feedback"
         oldContext.insert(workspace)
-        let task = AgentTask(title: "V11 Task", goal: "Preserve me", workspace: workspace)
+        let task = ASTRASchemaV11.AgentTask()
+        task.title = "V11 Task"
+        task.goal = "Preserve me"
+        task.workspace = workspace
         oldContext.insert(task)
-        let run = TaskRun(task: task)
+        let run = ASTRASchemaV11.TaskRun()
+        run.task = task
         oldContext.insert(run)
         try oldContext.save()
         let workspaceID = workspace.id

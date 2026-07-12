@@ -369,6 +369,13 @@ public struct FeedbackStatusReadRequestV1: Codable, Equatable, Sendable, Feedbac
     }
 
     public func validate() throws {
+        guard formatVersion == Self.supportedFormatVersion else {
+            throw FeedbackContractError.unsupportedVersion(
+                document: "FeedbackStatusReadRequestV1",
+                actual: formatVersion,
+                supported: Self.supportedFormatVersion
+            )
+        }
         try FeedbackContractValidationV1.required(
             installationID.rawValue,
             path: "statusRead.installationID",
@@ -628,7 +635,7 @@ public struct FeedbackIssueReferenceV1: Codable, Equatable, Sendable, FeedbackCo
                 description: "must be positive"
             )
         }
-        guard url.scheme?.lowercased() == "https", url.host != nil else {
+        guard url.scheme == "https", url.host != nil else {
             throw FeedbackContractError.invalidValue(
                 path: "remoteStatus.issue.url",
                 description: "must be an absolute HTTPS URL"

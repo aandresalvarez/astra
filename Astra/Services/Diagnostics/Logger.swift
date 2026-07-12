@@ -251,7 +251,7 @@ enum AppLogger: Sendable {
         }
 
         // File logging — serialized to prevent interleaved writes
-        let line = entry.formatted + "\n"
+        let line = entry.persistedFormatted + "\n"
         fileQueue.async {
             rotateFileIfNeeded(mainLogFile)
             appendToFile(line, at: mainLogFile)

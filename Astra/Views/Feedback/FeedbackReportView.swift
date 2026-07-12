@@ -25,6 +25,7 @@ struct FeedbackReportView: View {
     @State private var progressSaveTask: Task<Void, Never>?
     @State private var errorMessage: String?
     @State private var showDismissChoices = false
+    @State private var showPreparedDiscardChoices = false
     @State private var isRestoring = false
     @State private var explicitDismissalCompleted = false
     @State private var isExporting = false
@@ -92,6 +93,13 @@ struct FeedbackReportView: View {
         } message: {
             Text("Keeping the draft preserves your description. Discarding is permanent.")
         }
+        .confirmationDialog("Discard this prepared report?", isPresented: $showPreparedDiscardChoices) {
+            Button("Close Without Discarding") { onDismiss() }
+            Button("Discard Report", role: .destructive) { finishDismiss(keepingDraft: false) }
+            Button("Continue Reviewing", role: .cancel) {}
+        } message: {
+            Text("Discarding permanently removes the prepared report and its local evidence. Closing keeps it available for later.")
+        }
         .onChange(of: form) { _, _ in
             guard !isRestoring else { return }
             formRevision += 1
@@ -139,6 +147,7 @@ struct FeedbackReportView: View {
         }
         .onDisappear {
             progressSaveTask?.cancel()
+            clearCompletedOwnedWorkBeforeDismissal()
             let ownedWork = [preparationWork, invalidationWork].compactMap { $0 }
             Task { @MainActor in
                 var resolvedCleanupKeys: Set<FeedbackPreparedPreviewCleanupKey> = []
@@ -499,12 +508,14 @@ struct FeedbackReportView: View {
             hasPreview: preview != nil,
             isInvalidatingPreview: invalidatingPreview != nil,
             offerDraftChoices: { showDismissChoices = true },
+            offerPreparedDiscard: { showPreparedDiscardChoices = true },
             closePresentation: onDismiss
         )
     }
 
     private func finishDismiss(keepingDraft: Bool) {
         progressSaveTask?.cancel()
+        clearCompletedOwnedWorkBeforeDismissal()
         let ownedWork = [preparationWork, invalidationWork].compactMap { $0 }
         Task { @MainActor in
             var resolvedCleanupKeys: Set<FeedbackPreparedPreviewCleanupKey> = []
@@ -555,6 +566,11 @@ struct FeedbackReportView: View {
     private func clearTerminalOwnedWork() {
         if preparationWork?.isTerminal == true { preparationWork = nil }
         if invalidationWork?.isTerminal == true { invalidationWork = nil }
+    }
+
+    private func clearCompletedOwnedWorkBeforeDismissal() {
+        if preparationWork?.requiresDismissalSettlement == false { preparationWork = nil }
+        if invalidationWork?.requiresDismissalSettlement == false { invalidationWork = nil }
     }
 
     private func invalidateForLiveClose(

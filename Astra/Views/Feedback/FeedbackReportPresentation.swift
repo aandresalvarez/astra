@@ -64,6 +64,7 @@ enum FeedbackReportDismissChoice: String, CaseIterable, Equatable, Sendable {
 enum FeedbackReportCloseAction: Equatable, Sendable {
     case closePresentation
     case offerDraftChoices
+    case offerPreparedDiscard
 }
 
 enum FeedbackReportDismissPersistenceAction: Equatable, Sendable {
@@ -105,8 +106,14 @@ enum FeedbackReportClosePolicy {
         isInvalidatingPreview: Bool
     ) -> FeedbackReportCloseAction {
         if hasStoredReport {
-            guard storedStatus == .draft else { return .closePresentation }
-            return .offerDraftChoices
+            switch storedStatus {
+            case .draft:
+                return .offerDraftChoices
+            case .prepared:
+                return .offerPreparedDiscard
+            default:
+                return .closePresentation
+            }
         }
         return hasMeaningfulProgress || isPreparing || hasPreview || isInvalidatingPreview
             ? .offerDraftChoices
@@ -121,6 +128,7 @@ enum FeedbackReportClosePolicy {
         hasPreview: Bool,
         isInvalidatingPreview: Bool,
         offerDraftChoices: () -> Void,
+        offerPreparedDiscard: () -> Void,
         closePresentation: () -> Void
     ) {
         switch action(
@@ -133,6 +141,8 @@ enum FeedbackReportClosePolicy {
         ) {
         case .offerDraftChoices:
             offerDraftChoices()
+        case .offerPreparedDiscard:
+            offerPreparedDiscard()
         case .closePresentation:
             closePresentation()
         }
@@ -326,6 +336,14 @@ final class FeedbackReportOwnedWork {
     var lateSettlementObserverCount: Int { receipt.completionObserverCount }
     var isTerminal: Bool { receipt.isComplete }
     var terminalResult: FeedbackReportOwnedWorkResult? { receipt.terminalResult }
+    var requiresDismissalSettlement: Bool {
+        switch terminalResult {
+        case .none, .failed(.retainedCleanup):
+            true
+        case .succeeded, .failed(.generic), .cancelled:
+            false
+        }
+    }
 
     func observeCompletion(
         _ observer: @escaping @MainActor (FeedbackReportOwnedWorkResult) -> Void

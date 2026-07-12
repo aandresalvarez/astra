@@ -17,7 +17,9 @@ struct AppSemanticFitnessTests {
             ("ASTRASchemaV6", ASTRASchemaV6.models),
             ("ASTRASchemaV7", ASTRASchemaV7.models),
             ("ASTRASchemaV8", ASTRASchemaV8.models),
-            ("ASTRASchemaV9", ASTRASchemaV9.models)
+            ("ASTRASchemaV9", ASTRASchemaV9.models),
+            ("ASTRASchemaV10", ASTRASchemaV10.models),
+            ("ASTRASchemaV11", ASTRASchemaV11.models)
         ]
 
         let liveReferences = historicalSchemas.flatMap { schemaName, models in
@@ -102,6 +104,7 @@ struct AppSemanticFitnessTests {
             "resource.lock.waiting": .lifecycle,
             "role.profile.changed": .lifecycle,
             "role.profile.selected": .lifecycle,
+            "runtime.launch_blocked": .system,
             "schedule.result": .system,
             "skill.active": .system,
             "system.info": .system,

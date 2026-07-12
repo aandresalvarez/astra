@@ -110,6 +110,23 @@ target_for_path() {
     Tests/HostControlToolSupportTests.swift|Tools/AstraHostControlTool/*|Tools/HostControlToolSupport/*)
       add_target "HostControlToolSupportTests"
       ;;
+    .github/workflows/release.yml|script/build_and_run.sh|Tests/ReleaseBuildNumberDerivationTests.swift)
+      # These three paths co-derive/co-verify the release build-number
+      # scheme (PR #253 review comment 3549627108): release.yml's
+      # "Determine release version and build" step and
+      # default_app_build() in build_and_run.sh must stay byte-for-byte
+      # in sync, and ReleaseBuildNumberDerivationTests reads both files
+      # fresh from disk to prove it. Both required gates
+      # (script/prepush.sh, which this file feeds, and the release
+      # workflow's own "Run release test gate" step, which also runs
+      # prepush.sh) would otherwise be able to skip this regression suite
+      # entirely on a change to any of the three. AppBundlePackagingTests
+      # also reads build_and_run.sh directly, so pull it in alongside the
+      # other release-path suite for the same reason.
+      add_target "ReleaseBuildNumberDerivationTests"
+      add_target "ReleaseUpdateScriptTests"
+      add_target "AppBundlePackagingTests"
+      ;;
   esac
 }
 

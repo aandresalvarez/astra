@@ -195,7 +195,9 @@ struct CursorCLIRuntimeAdapter: AgentRuntimeAdapter {
         let hostControlTools = HostControlPlaneMCPProjection.enabledToolNames(
             task: context.task,
             environment: executionEnvironment,
-            contextText: context.contextText
+            contextText: context.contextText,
+            capabilityScope: context.capabilityResolutionSnapshot.providerLaunch,
+            precomputedRuntimeRequirements: context.runtimeRequirements
         )
         let plan = CursorCLIRuntime.buildCommand(
             executablePath: executable,
