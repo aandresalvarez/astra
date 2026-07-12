@@ -36,8 +36,8 @@ enum RuntimeSeamRegistration {
         ConnectorSecretSeam.register(ConnectorSecretPersistence.self)
         OutlookMailConnectionSeam.register(OutlookMailConnectionAdapter.self)
         ConnectorEnvironmentProjectionSeam.register(ConnectorEnvironmentProjectionAdapter.self)
-        TaskForkStateInitializingSeam.register(TaskStateMachine.self)
-        TaskSessionStateApplyingSeam.register(TaskStateMachine.self)
+        TaskForkStateInitializingSeam.register(TaskStateTransitionSeamAdapter.self)
+        TaskSessionStateApplyingSeam.register(TaskStateTransitionSeamAdapter.self)
         TaskFolderResolvingSeam.register(TaskFolderResolvingAdapter.self)
         TaskForkManifestWritingSeam.register(TaskForkManifestWritingAdapter.self)
         SecretStoreSeam.register { KeychainSecretStore() }

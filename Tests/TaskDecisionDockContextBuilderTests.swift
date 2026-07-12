@@ -60,6 +60,34 @@ struct TaskDecisionDockContextBuilderTests {
         #expect(task.runtimePermissionOpenRequestsJSON == "[]")
     }
 
+    @Test("sandbox permission tool names are normalized with a local fallback")
+    func sandboxPermissionToolNamesAreNormalizedWithLocalFallback() {
+        let workspace = Workspace(name: "Sandbox Approval", primaryPath: "/tmp/sandbox-approval")
+        let namedTask = AgentTask(title: "Named Tool", goal: "Read a protected path", workspace: workspace)
+        let unnamedTask = AgentTask(title: "Unnamed Tool", goal: "Read a protected path", workspace: workspace)
+
+        let namedPayload = PermissionBroker.approvalPayloadString(
+            providerID: .codexCLI,
+            request: .sandboxPath(path: "/tmp/input", access: "read", toolName: "  Read  "),
+            reason: "The enabled sandbox denied this path.",
+            grants: [.sandboxPath(path: "/tmp/input", access: "read")],
+            requestID: "named-sandbox-request"
+        )
+        let unnamedPayload = PermissionBroker.approvalPayloadString(
+            providerID: .codexCLI,
+            request: .sandboxPath(path: "/tmp/input", access: "read", toolName: "   "),
+            reason: "The enabled sandbox denied this path.",
+            grants: [.sandboxPath(path: "/tmp/input", access: "read")],
+            requestID: "unnamed-sandbox-request"
+        )
+
+        TaskRuntimePermissionOpenRequestStore.recordOpenRequest(payload: namedPayload, task: namedTask)
+        TaskRuntimePermissionOpenRequestStore.recordOpenRequest(payload: unnamedPayload, task: unnamedTask)
+
+        #expect(TaskRuntimePermissionOpenRequestStore.latestRequestedToolName(for: namedTask) == "Read")
+        #expect(TaskRuntimePermissionOpenRequestStore.latestRequestedToolName(for: unnamedTask) == "Local sandbox")
+    }
+
     @Test("explicit empty typed permission state does not resurrect legacy audit requests")
     func explicitEmptyTypedPermissionStateDoesNotResurrectLegacyAuditRequests() {
         let workspace = Workspace(name: "Typed State", primaryPath: "/tmp/typed-state")

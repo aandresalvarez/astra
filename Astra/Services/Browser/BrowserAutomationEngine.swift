@@ -280,11 +280,11 @@ enum BrowserAutomationEngineRequirementBridgePolicy {
 struct ControlledBrowserEngineAdapter: BrowserAutomationEngineOperating {
     let controller: ControlledBrowserController
 
-    var automationDescriptor: BrowserAutomationEngineDescriptor {
+    nonisolated var automationDescriptor: BrowserAutomationEngineDescriptor {
         BrowserAutomationEngineDescriptor(kind: .controlledCDP)
     }
 
-    var bridgeBackendLabel: String { automationDescriptor.bridgeBackendLabel }
+    nonisolated var bridgeBackendLabel: String { automationDescriptor.bridgeBackendLabel }
 
     func snapshot() async throws -> String {
         try await controller.snapshot()
@@ -417,11 +417,11 @@ struct ControlledBrowserEngineAdapter: BrowserAutomationEngineOperating {
 struct EmbeddedWebKitEngine: BrowserAutomationEngineOperating {
     let evaluateJavaScript: (String) async throws -> String
 
-    var automationDescriptor: BrowserAutomationEngineDescriptor {
+    nonisolated var automationDescriptor: BrowserAutomationEngineDescriptor {
         BrowserAutomationEngineDescriptor(kind: .embeddedWebKit)
     }
 
-    var bridgeBackendLabel: String { automationDescriptor.bridgeBackendLabel }
+    nonisolated var bridgeBackendLabel: String { automationDescriptor.bridgeBackendLabel }
 
     func snapshot() async throws -> String {
         try await evaluateJavaScript(BrowserAutomationScripts.snapshotScript)

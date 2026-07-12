@@ -138,13 +138,13 @@ public protocol BinaryRunner: Sendable {
 
 public extension BinaryRunner {
     /// Convenience: run with inherited environment.
-    public func run(path: String, args: [String], timeout: TimeInterval = 3) async -> RunResult {
+    func run(path: String, args: [String], timeout: TimeInterval = 3) async -> RunResult {
         await run(path: path, args: args, timeout: timeout, environment: nil)
     }
 
     /// Default for runners that don't support stdin: the input is dropped.
     /// `ProcessBinaryRunner` overrides this with a real pipe.
-    public func run(
+    func run(
         path: String,
         args: [String],
         timeout: TimeInterval,

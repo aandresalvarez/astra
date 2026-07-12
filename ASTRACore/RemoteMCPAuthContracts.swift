@@ -96,12 +96,12 @@ public struct RemoteMCPContractID: Codable, Equatable, Hashable, Sendable, RawRe
 }
 
 public extension RemoteMCPContractID {
-    public static let googleWorkspaceDriveRead = RemoteMCPContractID(rawValue: "googleWorkspace.drive.read")
-    public static let googleWorkspaceDocsRead = RemoteMCPContractID(rawValue: "googleWorkspace.docs.read")
-    public static let googleWorkspaceGmailRead = RemoteMCPContractID(rawValue: "googleWorkspace.gmail.read")
-    public static let googleWorkspaceGmailSend = RemoteMCPContractID(rawValue: "googleWorkspace.gmail.send")
-    public static let googleWorkspaceCalendarRead = RemoteMCPContractID(rawValue: "googleWorkspace.calendar.read")
-    public static let googleWorkspaceCalendarWrite = RemoteMCPContractID(rawValue: "googleWorkspace.calendar.write")
+    static let googleWorkspaceDriveRead = RemoteMCPContractID(rawValue: "googleWorkspace.drive.read")
+    static let googleWorkspaceDocsRead = RemoteMCPContractID(rawValue: "googleWorkspace.docs.read")
+    static let googleWorkspaceGmailRead = RemoteMCPContractID(rawValue: "googleWorkspace.gmail.read")
+    static let googleWorkspaceGmailSend = RemoteMCPContractID(rawValue: "googleWorkspace.gmail.send")
+    static let googleWorkspaceCalendarRead = RemoteMCPContractID(rawValue: "googleWorkspace.calendar.read")
+    static let googleWorkspaceCalendarWrite = RemoteMCPContractID(rawValue: "googleWorkspace.calendar.write")
 }
 
 public enum GoogleWorkspaceContractID: String, Codable, Equatable, Sendable, CaseIterable {
