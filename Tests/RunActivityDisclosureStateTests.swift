@@ -112,6 +112,48 @@ struct RunActivityDisclosureStateTests {
         #expect(issue.rawPayload?.contains("diagnostic line") == true)
     }
 
+    @Test("pre-launch policy block surfaces the real remediation, not a generic broader-permissions message")
+    func preLaunchPolicyBlockSurfacesRealRemediation() {
+        // Shape produced by AgentRuntimeWorker.shouldStartProvider when a
+        // .blocked PolicyDiagnostic (e.g. cursor_cli.host-control-plane-unsupported)
+        // stops a run before the provider ever launches.
+        let payload = """
+        Provider policy blocked this run before launch.
+        - Host control-plane route is unavailable: Cursor CLI cannot attach ASTRA's host-control MCP route for GitHub metadata/API work, so ASTRA will not fall back to provider-visible native Git or gh credentials. Remediation: Switch to Codex CLI, Claude Code, or a Copilot CLI build with MCP config support, or remove the GitHub host-control capability route for this run.
+        """
+        let issue = RunIssuePresentation(notice: TaskRunNotice(
+            id: UUID(uuidString: "00000000-0000-0000-0000-000000000205")!,
+            type: "error",
+            payload: payload
+        ))
+
+        #expect(issue.title == "Policy blocked this run")
+        // Must not fall back to the generic, actively-wrong-for-this-case copy.
+        #expect(!issue.summary.contains("broader permissions"))
+        #expect(issue.summary.contains("Switch to Codex CLI"))
+    }
+
+    @Test("runtime-compatibility launch block is classified as policy blocked, not a generic run stop")
+    func runtimeCompatibilityLaunchBlockIsClassifiedAsPolicyBlocked() {
+        // Shape produced by AgentRuntimeCapabilityBlockRecorder.apply(_:TaskRuntimeCompatibilityLaunchBlock)
+        // when the compatibility resolver blocks before any launch attempt
+        // (e.g. an explicitly-selected incompatible runtime, Phase 2).
+        let payload = """
+        Selected runtime is incompatible with required ASTRA capabilities.
+        - Selected runtime is incompatible with required ASTRA capabilities: Cursor CLI cannot satisfy: host-control MCP server for github. Remediation: Switch to a compatible runtime such as Codex CLI, Claude Code, or a Copilot CLI build with task-scoped MCP config support.
+        - Runtime: Cursor CLI
+        - Missing capabilities: host-control MCP server for github
+        """
+        let issue = RunIssuePresentation(notice: TaskRunNotice(
+            id: UUID(uuidString: "00000000-0000-0000-0000-000000000206")!,
+            type: "error",
+            payload: payload
+        ))
+
+        #expect(issue.title == "Policy blocked this run")
+        #expect(issue.summary.contains("Switch to a compatible runtime"))
+    }
+
     @Test("run details live in the dock for every finished run while it is visible")
     func runDetailsLiveInTheDockForEveryFinishedRunWhileItIsVisible() {
         // Homogeneous across statuses and multi-run threads: any finished run

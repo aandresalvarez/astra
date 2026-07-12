@@ -65,7 +65,9 @@ struct RunIssuePresentation: Identifiable, Hashable, Sendable {
             severity = .info
         case "error" where Self.looksPolicyBlocked(payload):
             title = "Policy blocked this run"
-            summary = "ASTRA stopped this run because the requested action is outside the current policy. Review the policy or retry with broader permissions."
+            summary = TaskFailureReasonPresentation.policyBlockRemediation(errorPayloads: [payload])
+                .map { "ASTRA stopped this run before it could proceed. \($0)" }
+                ?? "ASTRA stopped this run because the requested action is outside the current policy. Review the policy or retry with broader permissions."
             severity = .error
         case "error":
             title = "Run stopped"
@@ -85,7 +87,13 @@ struct RunIssuePresentation: Identifiable, Hashable, Sendable {
         return lower.contains("violated the run policy") ||
             lower.contains("provider allow-list") ||
             lower.contains("policy violation") ||
-            lower.contains("not in the provider allow-list")
+            lower.contains("not in the provider allow-list") ||
+            // shouldStartProvider's pre-launch policy-diagnostic block
+            // (AgentRuntimeWorker.swift) and the runtime-compatibility
+            // launch block (AgentRuntimeCapabilityBlockRecorder.swift) —
+            // both stop the run before any provider process starts.
+            lower.contains("provider policy blocked this run before launch") ||
+            lower.contains("selected runtime is incompatible with required astra capabilities")
     }
 
     private static func budgetWarningBody(for payload: String) -> String {

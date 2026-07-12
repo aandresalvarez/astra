@@ -69,6 +69,7 @@ enum AgentRuntimeLaunchRuntimeResolver {
             requestedRuntime: requestedRuntime,
             defaultRuntime: runtimeConfiguration.defaultRuntimeID,
             requirements: requirements,
+            respectExplicitRuntimeChoice: task.runtimeExplicitlySelected,
             profile: { runtime in
                 profiles.profile(for: runtime)
             },

@@ -26,6 +26,78 @@ struct TaskRuntimeCompatibilityServiceTests {
         #expect(result.incompatibilities[.cursorCLI]?.contains(.missingHostControlPlane(requiredTools: ["github"])) == true)
     }
 
+    @Test("explicitly-chosen incompatible runtime blocks up front instead of silently rerouting")
+    func explicitlyChosenIncompatibleRuntimeBlocksInsteadOfRerouting() {
+        let requirements = TaskRuntimeRequirementSet(
+            hostControlTools: ["github"],
+            requiresDockerWorkspaceShell: false,
+            requiresBrowserControl: false
+        )
+        let result = TaskRuntimeCompatibilityService.resolve(
+            requestedRuntime: .cursorCLI,
+            defaultRuntime: .cursorCLI,
+            requirements: requirements,
+            candidateRuntimes: [.cursorCLI, .codexCLI, .claudeCode],
+            respectExplicitRuntimeChoice: true,
+            profile: { runtime in AgentRuntimeCapabilityProfile.defaultProfile(for: runtime) },
+            isRuntimeUsable: { $0 == .cursorCLI || $0 == .codexCLI }
+        )
+
+        // Codex is genuinely available and compatible (proven by the sibling
+        // test above rerouting to it under the default, non-explicit path),
+        // but an explicit choice must not be silently overridden. It's still
+        // surfaced as a one-click suggestion instead of just prose, though.
+        #expect(result.selectedRuntime == .cursorCLI)
+        #expect(result.reroutedFrom == nil)
+        #expect(result.launchBlock?.stopReason == TaskRuntimeCompatibilityService.runtimeCapabilityIncompatibleReason)
+        #expect(result.launchBlock?.suggestedRuntime == .codexCLI)
+        #expect(result.launchBlock?.remediation == "Switch to Codex CLI.")
+    }
+
+    @Test("explicit block falls back to generic remediation when no compatible runtime exists at all")
+    func explicitBlockFallsBackToGenericRemediationWithNoCompatibleRuntime() {
+        let requirements = TaskRuntimeRequirementSet(
+            hostControlTools: ["jira"],
+            requiresDockerWorkspaceShell: false,
+            requiresBrowserControl: false
+        )
+        let result = TaskRuntimeCompatibilityService.resolve(
+            requestedRuntime: .cursorCLI,
+            defaultRuntime: .cursorCLI,
+            requirements: requirements,
+            candidateRuntimes: [.cursorCLI, .openCodeCLI],
+            respectExplicitRuntimeChoice: true,
+            profile: { .defaultProfile(for: $0) },
+            isRuntimeUsable: { $0 == .cursorCLI || $0 == .openCodeCLI }
+        )
+
+        #expect(result.selectedRuntime == .cursorCLI)
+        #expect(result.launchBlock?.suggestedRuntime == nil)
+        #expect(result.launchBlock?.remediation.contains("compatible runtime") == true)
+    }
+
+    @Test("default (non-explicit) requested runtime still reroutes silently even when respectExplicitRuntimeChoice is honored elsewhere")
+    func nonExplicitRuntimeStillReroutesByDefault() {
+        let requirements = TaskRuntimeRequirementSet(
+            hostControlTools: ["github"],
+            requiresDockerWorkspaceShell: false,
+            requiresBrowserControl: false
+        )
+        let result = TaskRuntimeCompatibilityService.resolve(
+            requestedRuntime: .cursorCLI,
+            defaultRuntime: .cursorCLI,
+            requirements: requirements,
+            candidateRuntimes: [.cursorCLI, .codexCLI, .claudeCode],
+            respectExplicitRuntimeChoice: false,
+            profile: { runtime in AgentRuntimeCapabilityProfile.defaultProfile(for: runtime) },
+            isRuntimeUsable: { $0 == .cursorCLI || $0 == .codexCLI }
+        )
+
+        #expect(result.selectedRuntime == .codexCLI)
+        #expect(result.reroutedFrom == .cursorCLI)
+        #expect(result.launchBlock == nil)
+    }
+
     @Test("old Copilot is skipped for host-control even when executable exists")
     func oldCopilotIsSkippedForHostControl() {
         let requirements = TaskRuntimeRequirementSet(

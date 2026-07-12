@@ -45,10 +45,18 @@ struct TaskRuntimeRequirementSet: Equatable, Sendable {
         executionEnvironment: WorkspaceExecutionEnvironment,
         browserBridgeAttached: Bool
     ) -> TaskRuntimeRequirementSet {
-        TaskRuntimeRequirementSet(
-            hostControlTools: HostControlPlaneMCPProjection.requiredToolNames(
+        // Docker mode grants the host-control MCP server all 5 tools
+        // unconditionally (HostControlPlaneMCPProjection.enabledToolNames) —
+        // requiredToolNames alone only covers the capability-scope-derived
+        // subset, so it must be skipped in Docker mode or this requirement
+        // set silently disagrees with the actual launch-time tool grant.
+        let hostControlTools = HostControlPlaneMCPProjection.isEnabled(for: executionEnvironment)
+            ? HostControlPlaneMCPProjection.toolNames
+            : HostControlPlaneMCPProjection.requiredToolNames(
                 capabilityScope: capabilityResolutionSnapshot.providerLaunch
-            ),
+            )
+        return TaskRuntimeRequirementSet(
+            hostControlTools: hostControlTools,
             requiresDockerWorkspaceShell: DockerWorkspaceMCPProjection.isEnabled(for: executionEnvironment),
             requiresBrowserControl: browserBridgeAttached
         )

@@ -118,6 +118,7 @@ enum AgentRuntimeLaunchPreflight {
         permissionPolicy: PermissionPolicy = .restricted,
         executionPolicy: AgentRuntimeExecutionPolicy = .default,
         capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot? = nil,
+        precomputedRuntimeRequirements: TaskRuntimeRequirementSet? = nil,
         runtimeConfiguration: AgentRuntimeConfiguration? = nil,
         secretStore: SecretStore = KeychainSecretStore(),
         preflightCache: PreflightCache = PreflightCache(),
@@ -159,6 +160,7 @@ enum AgentRuntimeLaunchPreflight {
             contextText: contextText,
             preflightCache: preflightCache,
             capabilityResolutionSnapshot: resolutionSnapshot,
+            precomputedRuntimeRequirements: precomputedRuntimeRequirements,
             mcpDetectExecutable: mcpDetectExecutable,
             mcpIsExecutableFile: mcpIsExecutableFile,
             runtimeProfile: runtimeProfileProvider(runtimeConfiguration)
@@ -349,6 +351,7 @@ enum AgentRuntimeLaunchPreflight {
         permissionPolicy: PermissionPolicy = .restricted,
         executionPolicy: AgentRuntimeExecutionPolicy = .default,
         capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot? = nil,
+        precomputedRuntimeRequirements: TaskRuntimeRequirementSet? = nil,
         runtimeConfiguration: AgentRuntimeConfiguration? = nil,
         secretStore: SecretStore = KeychainSecretStore(),
         preflightCache: PreflightCache = PreflightCache(),
@@ -364,6 +367,7 @@ enum AgentRuntimeLaunchPreflight {
             permissionPolicy: permissionPolicy,
             executionPolicy: executionPolicy,
             capabilityResolutionSnapshot: capabilityResolutionSnapshot,
+            precomputedRuntimeRequirements: precomputedRuntimeRequirements,
             runtimeConfiguration: runtimeConfiguration,
             secretStore: secretStore,
             preflightCache: preflightCache,
@@ -816,6 +820,13 @@ enum AgentRuntimeLaunchPreflight {
         contextText: String = "",
         prerequisiteStatuses: [String: HealthStatus] = [:],
         capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot? = nil,
+        // When the caller already ran this task through
+        // AgentRuntimeLaunchRuntimeResolver.resolve(), pass its
+        // TaskRuntimeRequirementSet so this preflight's host-control MCP
+        // executable check reuses that single derivation instead of an
+        // independently re-derived tool list. See
+        // Tests/HostControlRequirementDerivationConsistencyTests.swift.
+        precomputedRuntimeRequirements: TaskRuntimeRequirementSet? = nil,
         mcpDetectExecutable: (String) -> String = { RuntimePathResolver.detectExecutablePath(named: $0) },
         mcpIsExecutableFile: (String) -> Bool = { FileManager.default.isExecutableFile(atPath: $0) },
         runtimeProfile: (AgentRuntimeID) -> AgentRuntimeCapabilityProfile = {
@@ -883,7 +894,8 @@ enum AgentRuntimeLaunchPreflight {
                 runID: run.id,
                 taskEnvironment: taskEnv,
                 contextText: contextText,
-                capabilityScope: resolutionSnapshot.providerLaunch
+                capabilityScope: resolutionSnapshot.providerLaunch,
+                precomputedRuntimeRequirements: precomputedRuntimeRequirements
             ) {
                 mcpServers.append(hostControlServer)
             }
@@ -964,6 +976,7 @@ enum AgentRuntimeLaunchPreflight {
         contextText: String = "",
         preflightCache: PreflightCache = PreflightCache(),
         capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot? = nil,
+        precomputedRuntimeRequirements: TaskRuntimeRequirementSet? = nil,
         mcpDetectExecutable: (String) -> String = { RuntimePathResolver.detectExecutablePath(named: $0) },
         mcpIsExecutableFile: (String) -> Bool = { FileManager.default.isExecutableFile(atPath: $0) },
         runtimeProfile: (AgentRuntimeID) -> AgentRuntimeCapabilityProfile = {
@@ -988,6 +1001,7 @@ enum AgentRuntimeLaunchPreflight {
             contextText: contextText,
             prerequisiteStatuses: prerequisiteStatuses,
             capabilityResolutionSnapshot: resolutionSnapshot,
+            precomputedRuntimeRequirements: precomputedRuntimeRequirements,
             mcpDetectExecutable: mcpDetectExecutable,
             mcpIsExecutableFile: mcpIsExecutableFile,
             runtimeProfile: runtimeProfile
