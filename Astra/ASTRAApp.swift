@@ -823,9 +823,8 @@ public struct ASTRAApp: App {
             // Replace SwiftUI's synthesized NewItemCommands. Besides giving
             // ASTRA deterministic ownership of this menu, this avoids a
             // macOS 26.5 restored-window recursion in scene command discovery.
-            // The first item preserves the standard Command-N behavior.
-            // Manual
-            // re-entry for the first-run wizard — the normal path is
+            // The first item preserves the standard Command-N behavior. Manual
+            // re-entry for the first-run wizard remains available; the normal path is
             // automatic (auto-shown once on first launch, then
             // `hasCompletedOnboarding` flips true). This item re-opens
             // the wizard on demand without touching any other app state.

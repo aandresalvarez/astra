@@ -30,10 +30,14 @@ struct AppAccessPresentationTests {
             .appending(path: "Astra/ASTRAApp.swift")
         let source = try String(contentsOf: sourceURL, encoding: .utf8)
 
-        #expect(source.contains("WindowGroup(AppChannel.current.displayName, id: AppWindowIDs.main)"))
-        #expect(source.contains("CommandGroup(replacing: .newItem)"))
-        #expect(!source.contains("CommandGroup(after: .newItem)"))
-        #expect(source.contains("openWindow(id: AppWindowIDs.main)"))
+        func matches(_ pattern: String) -> Bool {
+            source.range(of: pattern, options: .regularExpression) != nil
+        }
+
+        #expect(matches(#"WindowGroup\s*\(\s*AppChannel\.current\.displayName\s*,\s*id:\s*AppWindowIDs\.main\s*\)"#))
+        #expect(matches(#"CommandGroup\s*\(\s*replacing:\s*\.newItem\s*\)"#))
+        #expect(!matches(#"CommandGroup\s*\(\s*after:\s*\.newItem\s*\)"#))
+        #expect(matches(#"openWindow\s*\(\s*id:\s*AppWindowIDs\.main\s*\)"#))
     }
 
     @Test("Sidebar app access footer remains a bottom anchored custom menu")
