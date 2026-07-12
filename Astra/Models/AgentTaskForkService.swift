@@ -88,7 +88,7 @@ public enum AgentTaskForkService {
             throw AgentTaskForkError.fileCopiesRequireWorkspace
         }
 
-        let sortedRuns = source.runs.sorted(by: runOrdering)
+        let sortedRuns = source.runs.sorted(by: TaskRun.isChronologicallyOrdered)
         guard let cutoffIndex = sortedRuns.firstIndex(where: { $0.id == targetRun.id }) else {
             throw AgentTaskForkError.targetRunMissing
         }
@@ -98,7 +98,6 @@ public enum AgentTaskForkService {
         if options.mode == .conversationWithFileCopies, cutoffIndex != sortedRuns.indices.last {
             throw AgentTaskForkError.historicalFileCopyUnavailable
         }
-
         let forked = AgentTask(
             title: "Fork of \(source.title)",
             goal: source.goal,
@@ -215,7 +214,7 @@ public enum AgentTaskForkService {
                 sourceTaskID: source.id,
                 sourceWorkspacePath: source.workspace?.primaryPath ?? "",
                 sourceArtifacts: source.artifacts.map { TaskForkArtifactFacts(createdAt: $0.createdAt, path: $0.path) },
-                sourceInputs: source.inputs.map(normalizedInputPath),
+                sourceInputs: source.inputs,
                 sourceAttachments: attachments,
                 forkedTaskID: forked.id,
                 forkedWorkspacePath: forkedWorkspacePath,
@@ -244,30 +243,35 @@ public enum AgentTaskForkService {
             }
         }
 
-        let rewriteMapping = expandedRewriteMapping(
-            manifest.sourceToLocalPaths,
-            originalSpellings: source.inputs
-        )
+        var manifestPathMapping = manifest.sourceToLocalPaths
         if options.mode == .conversationWithFileCopies {
+            // Covers every spelling of a copied file: the manifest's recorded
+            // paths, their tilde-expanded forms, the raw input strings, and
+            // `~/` spellings of home-directory paths.
+            let pathMapping = TaskForkPathRewriter.expandedMapping(
+                manifest.sourceToLocalPaths,
+                originalSpellings: source.inputs
+            )
             forked.inputs = source.inputs.map {
                 let normalized = normalizedInputPath($0)
-                return manifest.sourceToLocalPaths[normalized] ?? normalized
+                return pathMapping[$0] ?? pathMapping[normalized] ?? normalized
             }
             // Prompt builders replay task text alongside runs/events, so a
             // goal like "edit /tmp/report.md" must also point at the copy.
-            forked.goal = replacingPaths(in: forked.goal, using: rewriteMapping)
-            forked.constraints = forked.constraints.map { replacingPaths(in: $0, using: rewriteMapping) }
-            forked.acceptanceCriteria = forked.acceptanceCriteria.map { replacingPaths(in: $0, using: rewriteMapping) }
-            forked.teamInstructions = replacingPaths(in: forked.teamInstructions, using: rewriteMapping)
+            forked.goal = TaskForkPathRewriter.rewrite(forked.goal, using: pathMapping)
+            forked.constraints = forked.constraints.map { TaskForkPathRewriter.rewrite($0, using: pathMapping) }
+            forked.acceptanceCriteria = forked.acceptanceCriteria.map { TaskForkPathRewriter.rewrite($0, using: pathMapping) }
+            forked.teamInstructions = TaskForkPathRewriter.rewrite(forked.teamInstructions, using: pathMapping)
             for run in copiedRuns {
-                run.output = replacingPaths(in: run.output, using: rewriteMapping)
-                rewriteFileChanges(in: run, using: rewriteMapping)
+                run.output = TaskForkPathRewriter.rewrite(run.output, using: pathMapping)
+                rewriteFileChanges(in: run, using: pathMapping)
             }
+            manifestPathMapping = pathMapping
         }
 
         var copiedEvents: [TaskEvent] = eventsToFork.map { sourceEvent in
             let copiedRun = sourceEvent.run.flatMap { forkedRunsBySourceID[$0.id] }
-            let rewrittenPayload = replacingPaths(in: sourceEvent.payload, using: rewriteMapping)
+            let rewrittenPayload = TaskForkPathRewriter.rewrite(sourceEvent.payload, using: manifestPathMapping)
             let newEvent = TaskEvent(
                 task: forked,
                 type: sourceEvent.type,
@@ -315,11 +319,6 @@ public enum AgentTaskForkService {
         return forked
     }
 
-    private static func runOrdering(_ lhs: TaskRun, _ rhs: TaskRun) -> Bool {
-        if lhs.startedAt != rhs.startedAt { return lhs.startedAt < rhs.startedAt }
-        return lhs.id.uuidString < rhs.id.uuidString
-    }
-
     private static func eventOrdering(_ lhs: TaskEvent, _ rhs: TaskEvent) -> Bool {
         if lhs.timestamp != rhs.timestamp { return lhs.timestamp < rhs.timestamp }
         return lhs.id.uuidString < rhs.id.uuidString
@@ -341,67 +340,8 @@ public enum AgentTaskForkService {
         }
     }
 
-    /// Public (not private): `TaskForkManifestService` (module ASTRA) reuses
-    /// this for rewriting fork-local text files so there is one
-    /// token-boundary implementation.
-    public static func replacingPaths(in payload: String, using mapping: [String: String]) -> String {
-        mapping.keys.sorted { $0.count > $1.count }.reduce(payload) { value, sourcePath in
-            guard let replacement = mapping[sourcePath], !sourcePath.isEmpty else { return value }
-            var result = value
-            var searchStart = result.startIndex
-            while let range = result.range(of: sourcePath, range: searchStart..<result.endIndex) {
-                let beforeIsBoundary = range.lowerBound == result.startIndex
-                    || !isPathTokenCharacter(result[result.index(before: range.lowerBound)])
-                let afterIsBoundary = range.upperBound == result.endIndex
-                    || !isPathTokenCharacter(result[range.upperBound])
-                if beforeIsBoundary && afterIsBoundary {
-                    // Indices are invalidated by the mutation; resume from a
-                    // character offset computed before it.
-                    let resumeOffset = result.distance(from: result.startIndex, to: range.lowerBound)
-                        + replacement.count
-                    result.replaceSubrange(range, with: replacement)
-                    searchStart = result.index(result.startIndex, offsetBy: resumeOffset)
-                } else {
-                    searchStart = range.upperBound
-                }
-            }
-            return result
-        }
-    }
-
-    private static func isPathTokenCharacter(_ character: Character) -> Bool {
-        character.isLetter || character.isNumber || "._-/~".contains(character)
-    }
-
     private static func normalizedInputPath(_ path: String) -> String {
         (path as NSString).expandingTildeInPath
-    }
-
-    /// The manifest maps expanded absolute paths, but copied conversation
-    /// text can spell the same file as the raw input string or with `~`.
-    /// Rewrites must catch those spellings too or they keep pointing at the
-    /// shared original. Public so `TaskForkManifestService` (module ASTRA)
-    /// applies the same expansion to fork-local text files.
-    public static func expandedRewriteMapping(
-        _ mapping: [String: String],
-        originalSpellings: [String]
-    ) -> [String: String] {
-        guard !mapping.isEmpty else { return mapping }
-        var expanded = mapping
-        for raw in originalSpellings {
-            let normalized = normalizedInputPath(raw)
-            if raw != normalized, let local = mapping[normalized] {
-                expanded[raw] = local
-            }
-        }
-        let homePrefix = NSHomeDirectory() + "/"
-        for (sourcePath, local) in mapping where sourcePath.hasPrefix(homePrefix) {
-            let tildeSpelling = "~/" + sourcePath.dropFirst(homePrefix.count)
-            if expanded[tildeSpelling] == nil {
-                expanded[tildeSpelling] = local
-            }
-        }
-        return expanded
     }
 
     private static func rewriteFileChanges(in run: TaskRun, using mapping: [String: String]) {

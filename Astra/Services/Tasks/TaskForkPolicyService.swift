@@ -133,8 +133,15 @@ enum TaskForkPolicyService {
         return activeSharedWorktreeBlocker(for: task, sharedWorktreeRoot: taskRoot)
     }
 
+    /// Containment (not a per-candidate `git rev-parse`): this runs from the
+    /// read-only banner's body evaluation while a sibling is running, so it
+    /// must not spawn subprocesses. A candidate working anywhere inside the
+    /// recorded repository root shares the worktree.
     @MainActor
-    static func activeSharedWorktreeBlocker(for task: AgentTask, sharedWorktreeRoot taskRoot: String) -> AgentTask? {
+    static func activeSharedWorktreeBlocker(
+        for task: AgentTask,
+        sharedWorktreeRoot taskRoot: String
+    ) -> AgentTask? {
         guard !taskRoot.isEmpty, let workspace = task.workspace else { return nil }
         return workspace.tasks.first { candidate in
             candidate.id != task.id

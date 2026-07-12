@@ -1371,18 +1371,22 @@ enum AgentPromptBuilder {
     }
 
     private static func activeFollowUpRuns(for task: AgentTask) -> [TaskRun] {
-        // Same tie-breaker as AgentTaskForkService.runOrdering: forkedAtRunIndex
-        // was computed under it, so the suffix below must slice the same order.
-        let sortedRuns = task.runs.sorted {
-            if $0.startedAt != $1.startedAt { return $0.startedAt < $1.startedAt }
-            return $0.id.uuidString < $1.id.uuidString
-        }
+        let sortedRuns = task.runs.sorted(by: TaskRun.isChronologicallyOrdered)
         guard !sortedRuns.isEmpty else { return [] }
 
+        // Anchor on the checkpoint event's run, not forkedAtRunIndex: copied
+        // runs get fresh UUIDs, so index arithmetic over a re-sorted list
+        // cannot reproduce the source ordering when timestamps tie. A fork of
+        // a fork carries copied checkpoint events too — its own is the latest.
         if task.forkedFromID != nil,
-           task.forkedAtRunIndex > 0,
-           task.forkedAtRunIndex < sortedRuns.count {
-            return Array(sortedRuns.suffix(sortedRuns.count - task.forkedAtRunIndex))
+           let checkpointEvent = task.events
+               .filter({ $0.type == TaskEventTypes.Task.checkpoint.rawValue && $0.run != nil })
+               .max(by: { $0.timestamp < $1.timestamp }),
+           let checkpointRun = checkpointEvent.run {
+            let postForkRuns = sortedRuns.filter {
+                $0.id != checkpointRun.id && $0.startedAt >= checkpointEvent.timestamp
+            }
+            return [checkpointRun] + postForkRuns
         }
         return sortedRuns
     }

@@ -267,8 +267,17 @@ struct AgentTaskForkServiceTests {
         let workspace = Workspace(name: "Independent Files", primaryPath: root)
         let source = AgentTask(title: "Source", goal: "Revise the report", workspace: workspace)
         source.inputs = [inputPath, directoryPath]
+        source.goal = "Revise \(inputPath)"
+        source.constraints = ["Preserve \(inputPath)"]
+        source.acceptanceCriteria = ["Verify \(inputPath)"]
+        source.teamInstructions = "Review \(inputPath)"
         context.insert(workspace)
         context.insert(source)
+        let sourceFolder = try TaskWorkspaceAccess(task: source).ensureTaskFolder()
+        let outputFolder = (sourceFolder as NSString).appendingPathComponent("outputs")
+        try FileManager.default.createDirectory(atPath: outputFolder, withIntermediateDirectories: true)
+        let turnOutput = (outputFolder as NSString).appendingPathComponent("turn_001.md")
+        try "Generated from \(inputPath)".write(toFile: turnOutput, atomically: true, encoding: .utf8)
         let run = TaskRun(task: source)
         run.status = .completed
         run.startedAt = Date(timeIntervalSince1970: 100)
@@ -311,12 +320,18 @@ struct AgentTaskForkServiceTests {
         #expect(manifest.sourceAttachments?.contains { $0.sourcePath == providerSuggestedPath } == false)
         #expect(forked.inputs.contains(copiedInput))
         #expect(forked.inputs.contains(directoryPath))
+        #expect(forked.goal.contains(copiedInput))
+        #expect(forked.constraints.first?.contains(copiedInput) == true)
+        #expect(forked.acceptanceCriteria.first?.contains(copiedInput) == true)
+        #expect(forked.teamInstructions.contains(copiedInput))
         #expect(forked.events.contains { $0.payload.contains(copiedAttachment) && !$0.payload.contains(attachmentPath) })
         let forkedRun = try #require(forked.runs.first)
         #expect(forkedRun.output.contains("Use \(copiedInput)"))
         #expect(forkedRun.output.contains("\(inputPath).bak"))
         #expect(!forkedRun.output.contains("\(copiedInput).bak"))
         #expect(forkedRun.fileChanges.first?.path == copiedInput)
+        let copiedTurnOutput = try #require(manifest.sourceOutputFiles.first?.localCopyPath)
+        #expect(try String(contentsOfFile: copiedTurnOutput, encoding: .utf8).contains(copiedInput))
 
         try "changed source".write(toFile: inputPath, atomically: true, encoding: .utf8)
         try "changed evidence".write(toFile: attachmentPath, atomically: true, encoding: .utf8)
@@ -387,18 +402,27 @@ struct AgentTaskForkServiceTests {
 
         #expect(TaskForkPolicyService.readOnlyReason(for: forked) == nil)
         #expect(forked.isolationStrategy == .sameDirectory)
+        let forkPin = (root as NSString).appendingPathComponent("packages/api")
+        let sourcePin = (root as NSString).appendingPathComponent("packages/web")
+        try FileManager.default.createDirectory(atPath: forkPin, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(atPath: sourcePin, withIntermediateDirectories: true)
+        forked.executionRootPath = forkPin
+        source.executionRootPath = sourcePin
         source.status = .running
-        let reason = try #require(TaskForkPolicyService.readOnlyReason(for: forked))
-        #expect(reason.contains("Original conversation"))
-        #expect(reason.contains("shared Git worktree"))
-
-        // The render path caches the manifest gate and passes the root in;
-        // it must agree with the uncached enforcement path.
         let cachedRoot = try #require(TaskForkPolicyService.sharedWorktreeReadOnlyRoot(
             for: forked,
             manifest: TaskForkManifestService.load(for: forked)
         ))
-        #expect(TaskForkPolicyService.readOnlyReason(for: forked, sharedWorktreeRoot: cachedRoot) == reason)
+        // Different subdirectory pins of the same recorded repository root
+        // still count as the shared worktree.
+        let blocker = TaskForkPolicyService.activeSharedWorktreeBlocker(
+            for: forked,
+            sharedWorktreeRoot: cachedRoot
+        )
+        #expect(blocker?.id == source.id)
+        // The cached render path agrees with the uncached enforcement path.
+        #expect(TaskForkPolicyService.readOnlyReason(for: forked)
+            == TaskForkPolicyService.readOnlyReason(for: forked, sharedWorktreeRoot: cachedRoot))
         source.status = .completed
         #expect(TaskForkPolicyService.readOnlyReason(for: forked, sharedWorktreeRoot: cachedRoot) == nil)
     }
@@ -420,6 +444,14 @@ struct AgentTaskForkServiceTests {
         #expect(forked.runs.first?.output == "Checkpoint answer")
         #expect(forked.events.contains { $0.type == TaskEventTypes.Task.checkpoint.rawValue })
         #expect(!forked.events.contains { $0.type == "task.fork_manifest.created" })
+        #expect(throws: AgentTaskForkError.fileCopiesRequireWorkspace) {
+            try AgentTask.fork(
+                from: source,
+                upToRun: run,
+                options: TaskForkOptions(mode: .conversationWithFileCopies),
+                in: context
+            )
+        }
     }
 
     @Test("workspace-less conversations reject independent copies instead of silently sharing")
@@ -540,7 +572,9 @@ struct AgentTaskForkServiceTests {
         try context.save()
 
         let manifest = try #require(TaskForkManifestService.load(for: forked))
-        let inputCopy = try #require(manifest.sourceInputs?.first { $0.sourcePath == expandedPath }?.localCopyPath)
+        // Inputs record the user's raw spelling; attachments record the
+        // absolute path parsed from the message text.
+        let inputCopy = try #require(manifest.sourceInputs?.first { $0.sourcePath == tildePath }?.localCopyPath)
         let attachmentCopy = try #require(manifest.sourceAttachments?.first { $0.sourcePath == expandedPath }?.localCopyPath)
         // One local copy per distinct source file, shared across classes.
         #expect(inputCopy == attachmentCopy)
@@ -719,7 +753,10 @@ struct AgentTaskForkServiceTests {
         context.insert(source)
         let run = TaskRun(task: source)
         run.status = .completed
+        run.output = "Read \(tildePath)"
         context.insert(run)
+        let event = TaskEvent(task: source, type: "user.message", payload: "Open \(tildePath)", run: run)
+        context.insert(event)
 
         let forked = try AgentTask.fork(
             from: source,
@@ -731,6 +768,38 @@ struct AgentTaskForkServiceTests {
         #expect(copiedPath != tildePath)
         #expect(copiedPath != expandedPath)
         #expect(try String(contentsOfFile: copiedPath, encoding: .utf8) == "home input")
+        #expect(forked.runs.first?.output.contains(copiedPath) == true)
+        #expect(forked.events.contains { $0.payload.contains(copiedPath) })
+        #expect(!forked.events.contains { $0.payload.contains(tildePath) })
+    }
+
+    @Test("tied run timestamps replay the selected checkpoint deterministically")
+    func tiedRunTimestampsReplaySelectedCheckpoint() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let container = try makeAgentTaskForkContainer()
+        let context = ModelContext(container)
+        let workspace = Workspace(name: "Ordering", primaryPath: root)
+        let source = AgentTask(title: "Source", goal: "Compare", workspace: workspace)
+        context.insert(workspace)
+        context.insert(source)
+        let first = TaskRun(task: source)
+        first.id = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
+        first.startedAt = Date(timeIntervalSince1970: 100)
+        first.status = .completed
+        first.output = "FIRST-TIED-RUN"
+        let checkpoint = TaskRun(task: source)
+        checkpoint.id = UUID(uuidString: "00000000-0000-0000-0000-000000000002")!
+        checkpoint.startedAt = first.startedAt
+        checkpoint.status = .completed
+        checkpoint.output = "SELECTED-TIED-CHECKPOINT"
+        context.insert(first)
+        context.insert(checkpoint)
+
+        let forked = try AgentTask.fork(from: source, upToRun: checkpoint, in: context)
+        let prompt = AgentPromptBuilder.buildFreshFollowUpPrompt(message: "Continue", task: forked)
+
+        #expect(prompt.contains("SELECTED-TIED-CHECKPOINT"))
     }
 
     private func temporaryRoot() throws -> String {
