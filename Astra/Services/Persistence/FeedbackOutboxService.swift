@@ -314,7 +314,10 @@ public final class FeedbackOutboxService {
                 applyPreparedPackage(validated, to: report, at: clock.now())
                 recovered += 1
             } catch {
-                try? fileManager.removeItem(at: destination)
+                try? FeedbackPackageRemoval.removeOwnedPackage(
+                    at: destination,
+                    fileManager: fileManager
+                )
                 Self.logger.warning("Discarded invalid interrupted feedback package adoption")
             }
         }
@@ -529,7 +532,10 @@ public final class FeedbackOutboxService {
                   report.artifactsExpireAt.map({ $0 <= cutoff }) == true else { continue }
             if report.packageRelativePath != nil,
                let packageURL = try validatedOwnedPackageURL(for: report, requireExists: false) {
-                try fileManager.removeItem(at: packageURL)
+                try FeedbackPackageRemoval.removeOwnedPackage(
+                    at: packageURL,
+                    fileManager: fileManager
+                )
             }
             minimizeExpiredReport(report, at: cutoff)
             purged += 1

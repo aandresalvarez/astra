@@ -225,8 +225,10 @@ private final class FeedbackReportOwnedWorkReceipt: @unchecked Sendable {
     private let lock = NSLock()
     private var result: FeedbackReportOwnedWorkResult?
     private var waiters: [UUID: CheckedContinuation<FeedbackReportOwnedWorkResult, Never>] = [:]
+    private var completionObservers: [UUID: @Sendable (FeedbackReportOwnedWorkResult) -> Void] = [:]
 
     var waiterCount: Int { lock.withLock { waiters.count } }
+    var completionObserverCount: Int { lock.withLock { completionObservers.count } }
     var isComplete: Bool { lock.withLock { result != nil } }
     var terminalResult: FeedbackReportOwnedWorkResult? { lock.withLock { result } }
 
@@ -252,14 +254,33 @@ private final class FeedbackReportOwnedWorkReceipt: @unchecked Sendable {
     }
 
     func complete(_ result: FeedbackReportOwnedWorkResult) {
-        let continuations: [CheckedContinuation<FeedbackReportOwnedWorkResult, Never>] = lock.withLock {
-            guard self.result == nil else { return [] }
+        let callbacks: (
+            continuations: [CheckedContinuation<FeedbackReportOwnedWorkResult, Never>],
+            observers: [@Sendable (FeedbackReportOwnedWorkResult) -> Void]
+        ) = lock.withLock {
+            guard self.result == nil else { return ([], []) }
             self.result = result
             let continuations = Array(waiters.values)
+            let observers = Array(completionObservers.values)
             waiters.removeAll()
-            return continuations
+            completionObservers.removeAll()
+            return (continuations, observers)
         }
-        continuations.forEach { $0.resume(returning: result) }
+        callbacks.continuations.forEach { $0.resume(returning: result) }
+        callbacks.observers.forEach { $0(result) }
+    }
+
+    func observeCompletion(
+        _ observer: @escaping @Sendable (FeedbackReportOwnedWorkResult) -> Void
+    ) -> Bool {
+        let state = lock.withLock { () -> (accepted: Bool, completed: FeedbackReportOwnedWorkResult?) in
+            if let result { return (true, result) }
+            guard completionObservers.isEmpty else { return (false, nil) }
+            completionObservers[UUID()] = observer
+            return (true, nil)
+        }
+        if let completed = state.completed { observer(completed) }
+        return state.accepted
     }
 
     private func cancel(_ waiterID: UUID) {
@@ -301,8 +322,45 @@ final class FeedbackReportOwnedWork {
     func cancel() { task.cancel() }
     func wait() async -> FeedbackReportOwnedWorkResult { await receipt.wait() }
     var settlementWaiterCount: Int { receipt.waiterCount }
+    var lateSettlementObserverCount: Int { receipt.completionObserverCount }
     var isTerminal: Bool { receipt.isComplete }
     var terminalResult: FeedbackReportOwnedWorkResult? { receipt.terminalResult }
+
+    func observeCompletion(
+        _ observer: @escaping @MainActor (FeedbackReportOwnedWorkResult) -> Void
+    ) -> Bool {
+        receipt.observeCompletion { result in
+            // This task is created only after terminal completion. It never
+            // waits for owned work, so a cancellation-ignoring worker cannot
+            // leave a monitor task alive.
+            Task { @MainActor in observer(result) }
+        }
+    }
+}
+
+enum FeedbackReportLateSettlementRecovery: Equatable {
+    case alreadySucceeded
+    case observing
+    case unrecoverable
+}
+
+@MainActor
+private final class FeedbackReportLateSettlementBarrier {
+    private var remaining: Int
+    private var failed = false
+    private let onSuccess: @MainActor () -> Void
+
+    init(remaining: Int, onSuccess: @escaping @MainActor () -> Void) {
+        self.remaining = remaining
+        self.onSuccess = onSuccess
+    }
+
+    func record(_ result: FeedbackReportOwnedWorkResult) {
+        guard remaining > 0 else { return }
+        if result != .succeeded { failed = true }
+        remaining -= 1
+        if remaining == 0, !failed { onSuccess() }
+    }
 }
 
 @MainActor
@@ -371,6 +429,34 @@ enum FeedbackReportTaskSettlement {
             }
             return false
         }
+    }
+
+    /// Installs completion callbacks rather than a waiting task. A timed-out
+    /// sheet owns at most two operations, so cancellation-ignoring work retains
+    /// a bounded callback and can repair the exact router settlement when every
+    /// operation eventually completes successfully.
+    static func recoverAfterLateSuccess(
+        _ work: [FeedbackReportOwnedWork],
+        onSuccess: @escaping @MainActor () -> Void
+    ) -> FeedbackReportLateSettlementRecovery {
+        guard !work.isEmpty, work.count <= maximumOwnedTasks else { return .unrecoverable }
+        let terminal = work.compactMap(\.terminalResult)
+        guard terminal.allSatisfy({ $0 == .succeeded }) else { return .unrecoverable }
+        let pending = work.filter { !$0.isTerminal }
+        guard !pending.isEmpty else { return .alreadySucceeded }
+        guard pending.allSatisfy({ $0.lateSettlementObserverCount == 0 }) else {
+            return .unrecoverable
+        }
+        let barrier = FeedbackReportLateSettlementBarrier(
+            remaining: pending.count,
+            onSuccess: onSuccess
+        )
+        for item in pending {
+            guard item.observeCompletion({ barrier.record($0) }) else {
+                return .unrecoverable
+            }
+        }
+        return .observing
     }
 }
 

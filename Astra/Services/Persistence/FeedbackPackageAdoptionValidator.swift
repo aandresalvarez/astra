@@ -26,6 +26,8 @@ enum FeedbackPackageValidationError: Error, Equatable {
     case byteCountMismatch(String)
     case hashMismatch(String)
     case archiveDisclosureMismatch
+    case archiveToolUnavailable
+    case archiveContentsMismatch(String)
 }
 
 enum FeedbackPackageAdoptionValidator {
@@ -94,6 +96,7 @@ enum FeedbackPackageAdoptionValidator {
             fileManager: fileManager
         )
 
+        var artifactBytes: [(artifact: FeedbackEvidenceArtifactV1, relativePath: String, data: Data)] = []
         for (artifact, relativePath) in artifactPaths {
             let url = canonicalDirectory.appendingPathComponent(relativePath)
             let data = try requiredData(
@@ -107,6 +110,7 @@ enum FeedbackPackageAdoptionValidator {
             guard FeedbackCanonicalJSONV1.sha256Hex(data) == artifact.sha256 else {
                 throw FeedbackPackageValidationError.hashMismatch(relativePath)
             }
+            artifactBytes.append((artifact, relativePath, data))
         }
 
         var actualArchiveSHA256: String?
@@ -120,6 +124,11 @@ enum FeedbackPackageAdoptionValidator {
             guard archiveSHA256 == expectedArchiveHash else {
                 throw FeedbackPackageValidationError.hashMismatch(FeedbackPackageLayout.archive)
             }
+            try FeedbackEvidenceArchiveValidator.validate(
+                archiveURL: archiveURL,
+                artifacts: artifactBytes,
+                fileManager: fileManager
+            )
             actualArchiveSHA256 = archiveSHA256
         }
         return ValidatedFeedbackPackage(

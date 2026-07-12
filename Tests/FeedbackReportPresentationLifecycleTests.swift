@@ -282,6 +282,55 @@ extension FeedbackReportPresentationTests {
         #expect(!fallbackCleanupCalled)
     }
 
+    @Test("Preview cleanup reopens nested read-only artifact directories")
+    @MainActor
+    func previewCleanupReopensArtifactDirectories() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("feedback-read-only-cleanup-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let reportID = UUID()
+        let packageDirectory = FeedbackReportStoragePaths.preparationRoot(storageRoot: root)
+            .appendingPathComponent("feedback-\(reportID.uuidString.lowercased())", isDirectory: true)
+        let logsDirectory = packageDirectory.appendingPathComponent("logs", isDirectory: true)
+        let artifactURL = logsDirectory.appendingPathComponent("application-log.jsonl")
+        try FileManager.default.createDirectory(at: logsDirectory, withIntermediateDirectories: true)
+        try Data("sanitized log".utf8).write(to: artifactURL)
+        try FileManager.default.setAttributes([.posixPermissions: 0o400], ofItemAtPath: artifactURL.path)
+        try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: logsDirectory.path)
+        let launch = FeedbackReportLaunch(reportID: reportID, hostID: UUID(), entryPoint: .help)
+        let manifest = FeedbackEvidenceManifestV1(
+            artifacts: [], redactionPolicyVersion: "feedback-redaction-v1", totalByteCount: 0
+        )
+        let preview = FeedbackReportPreparedPreview(
+            reportID: reportID,
+            contextIdentity: launch.contextIdentity,
+            form: FeedbackReportFormState(launch: launch),
+            reviewedAt: Date(),
+            package: FeedbackPreparedEvidencePackage(
+                reportID: reportID,
+                reportCreatedAt: Date(),
+                directoryURL: packageDirectory,
+                reportURL: packageDirectory.appendingPathComponent("feedback-report.json"),
+                archiveURL: packageDirectory.appendingPathComponent("evidence.zip"),
+                manifestURL: packageDirectory.appendingPathComponent("manifest.json"),
+                manifest: manifest,
+                manifestSHA256: String(repeating: "a", count: 64),
+                reportSHA256: String(repeating: "b", count: 64),
+                archiveSHA256: String(repeating: "c", count: 64)
+            ),
+            ownership: .trustedStaging
+        )
+        let service = FeedbackReportPreparationService(
+            modelContainer: try makeFeedbackOutboxContainer(),
+            crashOfferService: FeedbackCrashOfferService(),
+            storageRoot: root
+        )
+
+        try service.invalidatePreparedPreview(preview)
+
+        #expect(!FileManager.default.fileExists(atPath: packageDirectory.path))
+    }
+
     @Test("Old crash offers anchor the evidence window to the crash")
     func oldCrashOfferAnchorsEvidenceWindow() {
         let now = Date(timeIntervalSince1970: 1_800_000_000)
@@ -366,6 +415,57 @@ extension FeedbackReportPresentationTests {
         #expect(work.settlementWaiterCount == 0)
         await blocker.release()
         #expect(await FeedbackReportTaskSettlement.wait(for: [work], timeout: .seconds(1)))
+    }
+
+    @Test("Late successful cleanup repairs the exact failed host settlement")
+    @MainActor
+    func lateSuccessRepairsHostSettlementWithoutMonitorTask() async throws {
+        let blocker = LifecycleAsyncBlocker()
+        let work = FeedbackReportOwnedWork.start { await blocker.wait() }
+        let router = FeedbackReportRouter()
+        let hostID = UUID(), leaseID = UUID()
+        let launch = lifecycleLaunch(hostID: hostID)
+        try mountLifecycleLaunch(launch, on: router, hostID: hostID, leaseID: leaseID)
+        router.unregister(hostID: hostID, leaseID: leaseID)
+        let settled = await FeedbackReportTaskSettlement.cancelAndFinalize(
+            [work], timeout: .milliseconds(10)
+        ) {}
+        #expect(!settled)
+
+        var recovered = false
+        let recovery = FeedbackReportTaskSettlement.recoverAfterLateSuccess([work]) {
+            router.completeHostDeactivation(
+                hostID: hostID,
+                reportID: launch.id,
+                leaseID: leaseID,
+                succeeded: true
+            )
+            recovered = true
+        }
+        #expect(recovery == .observing)
+        #expect(work.lateSettlementObserverCount == 1)
+        router.completeHostDeactivation(
+            hostID: hostID,
+            reportID: launch.id,
+            leaseID: leaseID,
+            succeeded: false
+        )
+
+        await blocker.release()
+        for _ in 0..<100 where !recovered { await Task.yield() }
+        #expect(recovered)
+        #expect(work.lateSettlementObserverCount == 0)
+        #expect(!router.isSettlingHostDeactivation)
+
+        let nextHost = UUID(), nextLease = UUID()
+        router.register(hostID: nextHost, leaseID: nextLease)
+        #expect(try router.reactivatePendingLaunch(
+            matching: launch.contextIdentity,
+            explicitReportID: launch.id,
+            hostID: nextHost,
+            hostLeaseID: nextLease
+        ))
+        expectLifecyclePayload(router.launch, equals: launch, hostID: nextHost)
     }
 
     @Test("Failed owned cleanup remains fail-closed and finalization removes staging")

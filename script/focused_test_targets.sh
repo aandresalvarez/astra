@@ -52,6 +52,20 @@ target_for_path() {
       add_target "RuntimeFeedbackSnapshotTests"
       add_target "FeedbackOutboxStateMachineTests"
       ;;
+    Tests/FeedbackReportContractTests.swift|ASTRACore/Feedback/FeedbackReportContract.swift|ASTRACore/Feedback/FeedbackReportStatus.swift|ASTRACore/Feedback/FeedbackContractSupport.swift)
+      add_target "FeedbackReportContractTests"
+      add_target "FeedbackEvidencePrivacyTests"
+      add_target "FeedbackOutboxStateMachineTests"
+      ;;
+    Tests/FeedbackAssessmentPolicyTests.swift|ASTRACore/Feedback/FeedbackAssessmentContract.swift|ASTRACore/FeedbackAssessmentValidation.swift|ASTRACore/FeedbackPriorityPolicy.swift)
+      add_target "FeedbackReportContractTests"
+      add_target "FeedbackAssessmentPolicyTests"
+      ;;
+    Astra/Services/Persistence/FeedbackPackageAdoptionValidator.swift|Astra/Services/Persistence/FeedbackEvidenceArchiveValidator.swift|Astra/Services/Persistence/FeedbackPackageRemoval.swift)
+      add_target "FeedbackOutboxStateMachineTests"
+      add_target "FeedbackEvidencePrivacyTests"
+      add_target "FeedbackReportPresentationTests"
+      ;;
     Astra/Services/Persistence/FeedbackOutboxService.swift|Astra/Services/Persistence/FeedbackOutboxTypes.swift)
       add_target "FeedbackReportPresentationTests"
       add_target "FeedbackOutboxStateMachineTests"

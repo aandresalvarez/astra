@@ -1,4 +1,5 @@
 import Foundation
+import ASTRAPersistence
 
 struct FeedbackPreparationStagingReconciliationResult: Equatable, Sendable {
     let removedPackageCount: Int
@@ -181,7 +182,10 @@ struct FeedbackPreparationStagingReconciler {
                 continue
             }
             do {
-                try fileManager.removeItem(at: supplied)
+                try FeedbackPackageRemoval.removeOwnedPackage(
+                    at: supplied,
+                    fileManager: fileManager
+                )
                 removed += 1
             } catch {
                 failed += 1

@@ -74,6 +74,13 @@ assert_targets $'FeedbackCrashRecoveryTests\nFeedbackReportPresentationTests' \
 assert_targets $'FeedbackReportPresentationTests\nFeedbackOutboxStateMachineTests' \
   "Astra/Services/Persistence/FeedbackOutboxService.swift"
 
+assert_targets $'FeedbackReportContractTests\nFeedbackEvidencePrivacyTests\nFeedbackOutboxStateMachineTests\nFeedbackAssessmentPolicyTests\nFeedbackReportPresentationTests' \
+  "ASTRACore/Feedback/FeedbackReportContract.swift" \
+  "ASTRACore/Feedback/FeedbackAssessmentContract.swift" \
+  "Astra/Services/Persistence/FeedbackPackageAdoptionValidator.swift" \
+  "Astra/Services/Persistence/FeedbackEvidenceArchiveValidator.swift" \
+  "Astra/Services/Persistence/FeedbackPackageRemoval.swift"
+
 assert_targets $'TaskDecisionDockPresentationTests\nFeedbackReportPresentationTests' \
   "Tests/TaskDecisionDockPresentationTests.swift" \
   "Astra/Services/Tasks/TaskDecisionDockPresentation.swift" \

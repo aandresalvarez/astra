@@ -730,7 +730,7 @@ struct FeedbackReportPreparationService {
         try validateStagingURL(url, reportID: reportID)
         guard fileManager.fileExists(atPath: url.path) else { return }
         do {
-            try fileManager.removeItem(at: url)
+            try FeedbackPackageRemoval.removeOwnedPackage(at: url, fileManager: fileManager)
         } catch {
             AppLogger.error("Feedback preview cleanup failed", category: "Diagnostics")
             throw FeedbackReportPreparationError.stagingCleanupFailed(

@@ -156,7 +156,21 @@ struct FeedbackReportView: View {
                         "Feedback host deactivation could not settle owned work",
                         category: "Diagnostics"
                     )
-                    onHostDeactivationSettled(false)
+                    switch FeedbackReportTaskSettlement.recoverAfterLateSuccess(
+                        ownedWork,
+                        onSuccess: {
+                            onHostDeactivationSettled(true)
+                            onDismiss()
+                        }
+                    ) {
+                    case .alreadySucceeded:
+                        onHostDeactivationSettled(true)
+                        onDismiss()
+                    case .observing:
+                        onHostDeactivationSettled(false)
+                    case .unrecoverable:
+                        onHostDeactivationSettled(false)
+                    }
                     return
                 }
                 onHostDeactivationSettled(true)

@@ -140,6 +140,69 @@ struct FeedbackOutboxStateMachineTests {
     }
 
     @MainActor
+    @Test("An archive with an undisclosed entry is rejected before adoption")
+    func archiveInventoryMustMatchManifest() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let evidence = feedbackArtifactData()
+        let artifact = makeFeedbackArtifact(data: evidence)
+        let archiveData = try makeFeedbackArchive(
+            parent: fixture.root,
+            entries: [
+                artifact.relativePath: evidence,
+                "hidden/private.txt": Data("undisclosed evidence".utf8)
+            ]
+        )
+        let package = try makeNonEmptyPackage(
+            fixture: fixture,
+            archiveSHA256: FeedbackCanonicalJSONV1.sha256Hex(archiveData)
+        )
+        let source = try writeFeedbackPreparedPackage(parent: fixture.root, envelope: package.envelope)
+        let evidenceURL = source.appendingPathComponent(package.artifact.relativePath)
+        try FileManager.default.createDirectory(
+            at: evidenceURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try package.evidence.write(to: evidenceURL)
+        try archiveData.write(to: source.appendingPathComponent(FeedbackPackageLayout.archive))
+
+        #expect(throws: FeedbackPackageValidationError.archiveContentsMismatch("inventory")) {
+            try fixture.service.adoptPreparedPackage(reportID: fixture.reportID, from: source)
+        }
+        #expect(FileManager.default.fileExists(atPath: source.path))
+    }
+
+    @MainActor
+    @Test("Archive entry bytes must match the reviewed loose artifact")
+    func archiveEntryBytesMustMatchManifest() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let evidence = feedbackArtifactData()
+        let artifact = makeFeedbackArtifact(data: evidence)
+        let archiveData = try makeFeedbackArchive(
+            parent: fixture.root,
+            entries: [artifact.relativePath: Data(repeating: 0x78, count: evidence.count)]
+        )
+        let package = try makeNonEmptyPackage(
+            fixture: fixture,
+            archiveSHA256: FeedbackCanonicalJSONV1.sha256Hex(archiveData)
+        )
+        let source = try writeFeedbackPreparedPackage(parent: fixture.root, envelope: package.envelope)
+        let evidenceURL = source.appendingPathComponent(package.artifact.relativePath)
+        try FileManager.default.createDirectory(
+            at: evidenceURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try package.evidence.write(to: evidenceURL)
+        try archiveData.write(to: source.appendingPathComponent(FeedbackPackageLayout.archive))
+
+        #expect(throws: FeedbackPackageValidationError.archiveContentsMismatch(artifact.relativePath)) {
+            try fixture.service.adoptPreparedPackage(reportID: fixture.reportID, from: source)
+        }
+        #expect(FileManager.default.fileExists(atPath: source.path))
+    }
+
+    @MainActor
     @Test("A crash after the ownership rename recovers the prepared transition")
     func interruptedPackageAdoptionRecovery() throws {
         let fixture = try makeFixture()
@@ -807,18 +870,24 @@ private func feedbackContents(
 }
 
 private func makeFeedbackArchive(parent: URL, relativePath: String, data: Data) throws -> Data {
+    try makeFeedbackArchive(parent: parent, entries: [relativePath: data])
+}
+
+private func makeFeedbackArchive(parent: URL, entries: [String: Data]) throws -> Data {
     let contents = parent.appendingPathComponent("archive-contents-\(UUID().uuidString)", isDirectory: true)
-    let artifactURL = contents.appendingPathComponent(relativePath)
-    try FileManager.default.createDirectory(
-        at: artifactURL.deletingLastPathComponent(),
-        withIntermediateDirectories: true
-    )
-    try data.write(to: artifactURL)
+    for (relativePath, data) in entries {
+        let artifactURL = contents.appendingPathComponent(relativePath)
+        try FileManager.default.createDirectory(
+            at: artifactURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try data.write(to: artifactURL)
+    }
     let archiveURL = parent.appendingPathComponent("archive-\(UUID().uuidString).zip")
     let process = Process()
     process.executableURL = URL(fileURLWithPath: "/usr/bin/zip")
     process.currentDirectoryURL = contents
-    process.arguments = ["-X", "-q", archiveURL.path, relativePath]
+    process.arguments = ["-X", "-q", archiveURL.path] + entries.keys.sorted()
     try process.run()
     process.waitUntilExit()
     guard process.terminationStatus == 0 else {
