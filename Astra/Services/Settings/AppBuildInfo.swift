@@ -12,6 +12,7 @@ struct AppBuildInfo: Equatable, Sendable {
     var buildDate: String
     var bundlePath: String
     var executablePath: String
+    var schemaVersion: Int
 
     static var current: AppBuildInfo {
         AppBuildInfo(
@@ -36,6 +37,7 @@ struct AppBuildInfo: Equatable, Sendable {
         self.channelRawValue = Self.string(for: "ASTRAChannel", in: infoDictionary, fallback: AppChannel.current.rawValue)
         self.gitCommit = Self.string(for: "ASTRAGitCommit", in: infoDictionary, fallback: "unknown")
         self.buildDate = Self.string(for: "ASTRABuildDate", in: infoDictionary, fallback: "unknown")
+        self.schemaVersion = Self.integer(for: "ASTRASchemaVersion", in: infoDictionary, fallback: ASTRASchema.currentVersion)
         self.bundlePath = Self.normalizedPath(bundlePath)
         self.executablePath = Self.normalizedPath(executablePath)
     }
@@ -60,7 +62,8 @@ struct AppBuildInfo: Equatable, Sendable {
             "app_git_commit": gitCommit,
             "app_build_date": buildDate,
             "app_bundle_path": bundlePath,
-            "app_executable_path": executablePath
+            "app_executable_path": executablePath,
+            "app_schema_version": String(schemaVersion)
         ]
     }
 
@@ -68,6 +71,13 @@ struct AppBuildInfo: Equatable, Sendable {
         guard let value = dictionary[key] as? String else { return fallback }
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? fallback : trimmed
+    }
+
+    private static func integer(for key: String, in dictionary: [String: Any], fallback: Int) -> Int {
+        if let value = dictionary[key] as? Int { return value }
+        if let value = dictionary[key] as? NSNumber { return value.intValue }
+        if let value = dictionary[key] as? String, let parsed = Int(value) { return parsed }
+        return fallback
     }
 
     private static func normalizedPath(_ value: String) -> String {
