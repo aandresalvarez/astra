@@ -1,0 +1,174 @@
+import AppKit
+import SwiftData
+import SwiftUI
+import UniformTypeIdentifiers
+import ASTRAModels
+import ASTRAPersistence
+
+struct StoreStartupBlockedView: View {
+    let blocker: PersistentStoreRecoveryBlocker
+    @ObservedObject var appUpdateController: AppUpdateController
+    @State private var showsTechnicalDetails = false
+    @State private var actionError: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Label(blocker.title, systemImage: "externaldrive.badge.exclamationmark")
+                .font(Stanford.heading(24))
+                .foregroundStyle(Stanford.black)
+
+            Text(blocker.message)
+                .font(Stanford.body(15))
+                .foregroundStyle(Stanford.coolGrey)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Text("ASTRA left the persistent store unchanged. Recovery actions operate on the reader or a verified copy, never by downgrading this store.")
+                .font(Stanford.caption(12))
+                .foregroundStyle(Stanford.coolGrey)
+
+            if showsTechnicalDetails, !blocker.technicalDetail.isEmpty {
+                Text(blocker.technicalDetail)
+                    .font(.system(.caption, design: .monospaced))
+                    .textSelection(.enabled)
+                    .foregroundStyle(Stanford.coolGrey)
+            }
+
+            if blocker.actions.contains(.checkForUpdates),
+               let status = appUpdateController.statusMessage {
+                Text(status)
+                    .font(Stanford.caption(12))
+                    .foregroundStyle(Stanford.coolGrey)
+            }
+
+            if let actionError {
+                Text(actionError)
+                    .font(Stanford.caption(12))
+                    .foregroundStyle(.red)
+            }
+
+            HStack {
+                if !blocker.technicalDetail.isEmpty {
+                    Button(showsTechnicalDetails ? "Hide Details" : "Technical Details") {
+                        showsTechnicalDetails.toggle()
+                    }
+                }
+                Spacer()
+                if blocker.actions.count > 1 {
+                    Menu("Recovery Options") {
+                        ForEach(Array(blocker.actions.dropFirst().enumerated()), id: \.offset) { _, action in
+                            Button(actionTitle(action)) {
+                                perform(action)
+                            }
+                        }
+                    }
+                }
+                if let action = blocker.actions.first {
+                    Button(actionTitle(action)) {
+                        perform(action)
+                    }
+                    .buttonStyle(StanfordButtonStyle())
+                }
+            }
+        }
+        .padding(32)
+        .frame(maxWidth: 640, alignment: .leading)
+        .background(Stanford.panelBackground)
+    }
+
+    private func actionTitle(_ action: PersistentStoreRecoveryAction) -> String {
+        switch action {
+        case .openCompatibleBuild: "Restart with Compatible Build"
+        case .locateCompatibleBuild: "Locate Compatible Build…"
+        case .checkForUpdates: "Update ASTRA"
+        case .chooseStore: "Choose Another Store…"
+        case .revealStore: "Show Store"
+        case .quit: "Quit ASTRA"
+        }
+    }
+
+    private func perform(_ action: PersistentStoreRecoveryAction) {
+        switch action {
+        case .openCompatibleBuild(let bundlePath):
+            relaunch(bundleURL: URL(fileURLWithPath: bundlePath), auditResult: "compatible_build_relaunch_scheduled")
+        case .locateCompatibleBuild(let requiredSchemaVersion):
+            locateCompatibleBuild(requiredSchemaVersion: requiredSchemaVersion)
+        case .checkForUpdates:
+            appUpdateController.checkForUpdatesFromButton()
+        case .chooseStore:
+            chooseStore()
+        case .revealStore:
+            NSWorkspace.shared.activateFileViewerSelecting([WorkspaceRecoveryService.storeURL])
+        case .quit:
+            NSApplication.shared.terminate(nil)
+        }
+    }
+
+    private func locateCompatibleBuild(requiredSchemaVersion: Int) {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [.applicationBundle]
+        panel.message = "Choose an ASTRA Dev build that supports schema V\(requiredSchemaVersion) or newer."
+        guard panel.runModal() == .OK, let bundleURL = panel.url else { return }
+        guard let candidate = CompatibleASTRABuildRegistry.compatibleBuild(
+            at: bundleURL,
+            requiredSchemaVersion: requiredSchemaVersion,
+            channel: AppBuildInfo.current.channelRawValue
+        ) else {
+            actionError = "That app is not a compatible ASTRA Dev build for schema V\(requiredSchemaVersion)."
+            return
+        }
+        relaunch(
+            bundleURL: URL(fileURLWithPath: candidate.bundlePath),
+            auditResult: "located_compatible_build_relaunch_scheduled"
+        )
+    }
+
+    private func chooseStore() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.message = "Choose an ASTRA store. ASTRA will validate and copy it before activation."
+        guard panel.runModal() == .OK, let sourceURL = panel.url else { return }
+        do {
+            let recoveryURL = try WorkspaceRecoveryService.makeRecoveryStoreURL()
+            try WorkspaceRecoveryService.copyStoreSnapshot(from: sourceURL, to: recoveryURL)
+            let assessment = PersistentStoreCompatibilityService.assess(
+                storeURL: recoveryURL,
+                latestSupportedSchemaVersion: ASTRASchema.currentVersion
+            )
+            guard case .compatible = assessment else {
+                throw CocoaError(.fileReadUnsupportedScheme)
+            }
+            _ = try ModelContainer(
+                for: ASTRASchema.current,
+                migrationPlan: ASTRAMigrationPlan.self,
+                configurations: [ModelConfiguration(url: recoveryURL)]
+            )
+            let metadata = AstraStoreStartupCoordinator.compatibilityMetadata(appInfo: .current)
+            try WorkspaceRecoveryService.activateRecoveryStore(at: recoveryURL, compatibility: metadata)
+            relaunch(bundleURL: Bundle.main.bundleURL, auditResult: "selected_store_relaunch_scheduled")
+        } catch {
+            actionError = "The selected store could not be safely activated: \(error.localizedDescription)"
+        }
+    }
+
+    private func relaunch(bundleURL: URL, auditResult: String) {
+        do {
+            let command = ApplicationsFolderMover.relaunchCommand(
+                processID: ProcessInfo.processInfo.processIdentifier,
+                destination: bundleURL
+            )
+            let relauncher = Process()
+            relauncher.executableURL = command.executableURL
+            relauncher.arguments = command.arguments
+            try relauncher.run()
+            AppLogger.audit(.dataStoreRecovered, category: "App", fields: ["result": auditResult])
+            NSApplication.shared.terminate(nil)
+        } catch {
+            actionError = "ASTRA could not relaunch: \(error.localizedDescription)"
+        }
+    }
+}

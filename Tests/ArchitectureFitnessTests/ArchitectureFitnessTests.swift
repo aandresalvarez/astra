@@ -34,6 +34,7 @@ struct ArchitectureFitnessTests {
             "Runtime",
             "Settings",
             "Shelves",
+            "Startup",
             "Tasks",
             "Validation",
             "WorkspaceApps"
@@ -988,6 +989,25 @@ struct ArchitectureFitnessTests {
         }
 
         #expect(matches.isEmpty, "Recovered config loads should preserve implicit scan intent: \(matches)")
+    }
+
+    @Test("Persistent store recovery keeps policy, persistence, and UI boundaries separate")
+    func persistentStoreRecoveryKeepsLayerBoundaries() throws {
+        let root = try repositoryRoot()
+        let policyPath = "Astra/Services/Startup/PersistentStoreRecoveryPolicy.swift"
+        let viewPath = "Astra/Services/Startup/StoreStartupBlockedView.swift"
+        let persistencePath = "Astra/Services/Persistence/PersistentStoreCompatibility.swift"
+        let appPath = "Astra/ASTRAApp.swift"
+        let policy = try String(contentsOf: root.appendingPathComponent(policyPath), encoding: .utf8)
+        let persistence = try String(contentsOf: root.appendingPathComponent(persistencePath), encoding: .utf8)
+        let app = try String(contentsOf: root.appendingPathComponent(appPath), encoding: .utf8)
+
+        #expect(FileManager.default.fileExists(atPath: root.appendingPathComponent(viewPath).path))
+        #expect(!policy.contains("import SwiftUI"))
+        #expect(!policy.contains("NSOpenPanel"))
+        #expect(!persistence.contains("import SwiftUI"))
+        #expect(!persistence.contains("import AppKit"))
+        #expect(!app.contains("struct StoreStartupBlockedView"))
     }
 
     @Test("Git status parsing lives behind its SwiftPM contract target")

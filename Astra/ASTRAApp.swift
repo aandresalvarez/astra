@@ -236,11 +236,6 @@ final class ASTRAAppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
-private struct StoreStartupBlocker {
-    let title: String
-    let message: String
-}
-
 private final class StoreLeaseHolder: ObservableObject {
     let lease: PersistentStoreLease?
 
@@ -249,43 +244,11 @@ private final class StoreLeaseHolder: ObservableObject {
     }
 }
 
-private struct StoreStartupBlockedView: View {
-    let blocker: StoreStartupBlocker
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            Label(blocker.title, systemImage: "externaldrive.badge.exclamationmark")
-                .font(Stanford.heading(24))
-                .foregroundStyle(Stanford.black)
-
-            Text(blocker.message)
-                .font(Stanford.body(15))
-                .foregroundStyle(Stanford.coolGrey)
-                .fixedSize(horizontal: false, vertical: true)
-
-            Text("ASTRA left the persistent store unchanged. Quit the conflicting app or open this store with a compatible ASTRA build, then relaunch.")
-                .font(Stanford.caption(12))
-                .foregroundStyle(Stanford.coolGrey)
-
-            HStack {
-                Spacer()
-                Button("Quit ASTRA") {
-                    NSApplication.shared.terminate(nil)
-                }
-                .buttonStyle(StanfordButtonStyle())
-            }
-        }
-        .padding(32)
-        .frame(maxWidth: 560, alignment: .leading)
-        .background(Stanford.panelBackground)
-    }
-}
-
-private enum AstraStoreStartupCoordinator {
+enum AstraStoreStartupCoordinator {
     struct Result {
         let modelContainer: ModelContainer
         let lease: PersistentStoreLease?
-        let blocker: StoreStartupBlocker?
+        let blocker: PersistentStoreRecoveryBlocker?
     }
 
     static func start(isUITesting: Bool, appInfo: AppBuildInfo) -> Result {
@@ -353,10 +316,48 @@ private enum AstraStoreStartupCoordinator {
             )
         }
         let hasPendingLegacyStoreMigration = WorkspaceRecoveryService.hasPendingLegacyStoreMigration
+        let compatibility = PersistentStoreCompatibilityService.assess(
+            storeURL: storeURL,
+            latestSupportedSchemaVersion: appInfo.schemaVersion
+        )
+        if case .requiresNewerReader(let requiredSchemaVersion) = compatibility {
+            let candidate = appInfo.channelRawValue == "dev" ? CompatibleASTRABuildRegistry.compatibleBuild(
+                requiredSchemaVersion: requiredSchemaVersion,
+                channel: appInfo.channelRawValue,
+                excludingBundlePath: Bundle.main.bundleURL.standardizedFileURL.path
+            ) : nil
+            AppLogger.audit(.dataStoreRecovered, category: "App", fields: [
+                "stage": "compatibility_preflight",
+                "decision": "requires_newer_reader",
+                "required_schema": String(requiredSchemaVersion),
+                "supported_schema": String(appInfo.schemaVersion),
+                "compatible_build_found": String(candidate != nil)
+            ], level: .warning)
+            return Result(
+                modelContainer: inMemoryContainer(),
+                lease: lease,
+                blocker: PersistentStoreRecoveryPolicy.incompatibleBlocker(
+                    requiredSchemaVersion: requiredSchemaVersion,
+                    supportedSchemaVersion: appInfo.schemaVersion,
+                    channel: appInfo.channelRawValue,
+                    compatibleBundlePath: candidate?.bundlePath
+                )
+            )
+        }
         let configuration = ModelConfiguration(url: storeURL)
         do {
-            let container = try makePersistentContainer(configuration: configuration)
+            let container = try makePersistentContainerWithContentionRetry(configuration: configuration)
             repairLegacyValuesIfNeeded(at: storeURL, build: appInfo.build)
+            let metadata = compatibilityMetadata(appInfo: appInfo)
+            do {
+                try PersistentStoreCompatibilityService.writeMetadata(metadata, for: storeURL)
+                try CompatibleASTRABuildRegistry.registerCurrentBuild(appInfo: appInfo)
+            } catch {
+                AppLogger.audit(.dataStoreSelected, category: "App", fields: [
+                    "result": "compatibility_metadata_write_failed",
+                    "error_type": String(describing: type(of: error))
+                ], level: .warning)
+            }
             AppLogger.audit(.dataStoreSelected, category: "App", fields: [
                 "result": "model_container_created",
                 "store_generation": WorkspaceRecoveryService.storeGeneration
@@ -368,7 +369,8 @@ private enum AstraStoreStartupCoordinator {
                 from: error,
                 sourceStoreURL: storeURL,
                 lease: lease,
-                canRecoverLegacyMigration: hasPendingLegacyStoreMigration
+                canRecoverLegacyMigration: hasPendingLegacyStoreMigration,
+                appInfo: appInfo
             )
         }
     }
@@ -385,14 +387,17 @@ private enum AstraStoreStartupCoordinator {
         from error: Error,
         sourceStoreURL: URL,
         lease: PersistentStoreLease,
-        canRecoverLegacyMigration: Bool
+        canRecoverLegacyMigration: Bool,
+        appInfo: AppBuildInfo
     ) -> Result {
         let decision = PersistentStoreOpenFailurePolicy.decision(for: error)
-        AppLogger.audit(.dataStoreRecovered, category: "App", fields: [
+        var failureFields = PersistentStoreOpenFailurePolicy.diagnosticFields(for: error)
+        failureFields.merge([
             "stage": "model_container_failed",
             "decision": String(describing: decision),
             "error_type": String(describing: type(of: error))
-        ], level: .warning)
+        ]) { _, new in new }
+        AppLogger.audit(.dataStoreRecovered, category: "App", fields: failureFields, level: .warning)
 
         if canRecoverLegacyMigration,
            PersistentStoreOpenFailurePolicy.permitsFreshStoreForLegacyMigration(decision) {
@@ -404,20 +409,31 @@ private enum AstraStoreStartupCoordinator {
         }
 
         guard decision == .verifiedCorruption else {
-            let blocker: StoreStartupBlocker
+            let blocker: PersistentStoreRecoveryBlocker
             switch decision {
             case .incompatibleNewerSchema:
-                blocker = StoreStartupBlocker(
-                    title: "This ASTRA build is older than the store",
-                    message: "The store uses a newer schema. ASTRA did not modify it. Open the store with the newer build instead."
+                let requiredSchemaVersion = max(appInfo.schemaVersion + 1, ASTRASchema.currentVersion + 1)
+                let candidate = appInfo.channelRawValue == "dev" ? CompatibleASTRABuildRegistry.compatibleBuild(
+                    requiredSchemaVersion: requiredSchemaVersion,
+                    channel: appInfo.channelRawValue,
+                    excludingBundlePath: Bundle.main.bundleURL.standardizedFileURL.path
+                ) : nil
+                blocker = PersistentStoreRecoveryPolicy.incompatibleBlocker(
+                    requiredSchemaVersion: requiredSchemaVersion,
+                    supportedSchemaVersion: appInfo.schemaVersion,
+                    channel: appInfo.channelRawValue,
+                    compatibleBundlePath: candidate?.bundlePath
                 )
             case .transientContention:
-                blocker = StoreStartupBlocker(
+                blocker = PersistentStoreRecoveryBlocker(
+                    kind: .contention,
                     title: "The ASTRA store is temporarily unavailable",
-                    message: "SQLite reported contention while opening the store. Wait for the other operation to finish, then relaunch."
+                    message: "SQLite remained busy after \(PersistentStoreRetryPolicy.contentionDelays.count) automatic retries. Wait for the other operation to finish, then relaunch.",
+                    technicalDetail: "retry_count=\(PersistentStoreRetryPolicy.contentionDelays.count)",
+                    actions: [.revealStore, .quit]
                 )
             case .blockedUnknown, .verifiedCorruption:
-                blocker = StoreStartupBlocker(
+                blocker = PersistentStoreRecoveryBlocker(
                     title: "ASTRA could not safely open its store",
                     message: "The failure was not proven to be recoverable, so ASTRA left the store unchanged."
                 )
@@ -427,7 +443,7 @@ private enum AstraStoreStartupCoordinator {
 
         do {
             _ = try WorkspaceRecoveryService.preserveReadableStoreBeforeRecovery(at: sourceStoreURL)
-            return createFreshRecoveryStore(lease: lease)
+            return createFreshRecoveryStore(lease: lease, appInfo: appInfo)
         } catch {
             AppLogger.audit(.dataStoreRecovered, category: "App", fields: [
                 "stage": "recovery_store_failed",
@@ -436,7 +452,7 @@ private enum AstraStoreStartupCoordinator {
             return Result(
                 modelContainer: inMemoryContainer(),
                 lease: lease,
-                blocker: StoreStartupBlocker(
+                blocker: PersistentStoreRecoveryBlocker(
                     title: "ASTRA could not recover its store",
                     message: "The original store was left in place. Review the preserved backup before trying recovery again."
                 )
@@ -444,7 +460,7 @@ private enum AstraStoreStartupCoordinator {
         }
     }
 
-    private static func createFreshRecoveryStore(lease: PersistentStoreLease) -> Result {
+    private static func createFreshRecoveryStore(lease: PersistentStoreLease, appInfo: AppBuildInfo) -> Result {
         do {
             let recoveryStoreURL = try WorkspaceRecoveryService.makeRecoveryStoreURL()
             let recoveryContainer = try makePersistentContainer(
@@ -453,7 +469,9 @@ private enum AstraStoreStartupCoordinator {
             guard WorkspaceRecoveryService.sqliteIntegrityIsValid(at: recoveryStoreURL) else {
                 throw CocoaError(.fileReadCorruptFile)
             }
-            try WorkspaceRecoveryService.activateRecoveryStore(at: recoveryStoreURL)
+            let metadata = compatibilityMetadata(appInfo: appInfo)
+            try WorkspaceRecoveryService.activateRecoveryStore(at: recoveryStoreURL, compatibility: metadata)
+            try? CompatibleASTRABuildRegistry.registerCurrentBuild(appInfo: appInfo)
             AppLogger.audit(.dataStoreRecovered, category: "App", fields: [
                 "result": "recovery_store_created",
                 "store_generation": WorkspaceRecoveryService.storeGeneration
@@ -467,7 +485,7 @@ private enum AstraStoreStartupCoordinator {
             return Result(
                 modelContainer: inMemoryContainer(),
                 lease: lease,
-                blocker: StoreStartupBlocker(
+                blocker: PersistentStoreRecoveryBlocker(
                     title: "ASTRA could not recover its store",
                     message: "The original store was left in place. Review the preserved backup before trying recovery again."
                 )
@@ -483,6 +501,42 @@ private enum AstraStoreStartupCoordinator {
         )
     }
 
+    private static func makePersistentContainerWithContentionRetry(
+        configuration: ModelConfiguration
+    ) throws -> ModelContainer {
+        var retryIndex = 0
+        while true {
+            do {
+                return try makePersistentContainer(configuration: configuration)
+            } catch {
+                guard PersistentStoreOpenFailurePolicy.decision(for: error) == .transientContention,
+                      retryIndex < PersistentStoreRetryPolicy.contentionDelays.count else {
+                    throw error
+                }
+                let delay = PersistentStoreRetryPolicy.contentionDelays[retryIndex]
+                retryIndex += 1
+                AppLogger.audit(.dataStoreRecovered, category: "App", fields: [
+                    "stage": "contention_retry",
+                    "attempt": String(retryIndex),
+                    "delay_ms": String(Int(delay * 1_000))
+                ], level: .warning)
+                Thread.sleep(forTimeInterval: delay)
+            }
+        }
+    }
+
+    static func compatibilityMetadata(appInfo: AppBuildInfo) -> PersistentStoreCompatibilityMetadata {
+        PersistentStoreCompatibilityMetadata(
+            schemaVersion: appInfo.schemaVersion,
+            minimumReaderSchemaVersion: appInfo.schemaVersion,
+            channel: appInfo.channelRawValue,
+            appVersion: appInfo.version,
+            appBuild: appInfo.build,
+            gitCommit: appInfo.gitCommit,
+            bundlePath: Bundle.main.bundleURL.standardizedFileURL.path
+        )
+    }
+
     private static func inMemoryContainer() -> ModelContainer {
         do {
             return try ModelContainer(for: ASTRASchema.current, configurations: [ModelConfiguration(isStoredInMemoryOnly: true)])
@@ -495,7 +549,7 @@ private enum AstraStoreStartupCoordinator {
         Result(
             modelContainer: inMemoryContainer(),
             lease: nil,
-            blocker: StoreStartupBlocker(title: title, message: message)
+            blocker: PersistentStoreRecoveryBlocker(title: title, message: message)
         )
     }
 }
@@ -507,7 +561,7 @@ public struct ASTRAApp: App {
     @StateObject private var appUpdateController = AppUpdateController()
     @StateObject private var appSettings = AppSettingsSnapshotStore()
     @State private var runtime = AppRuntimeController()
-    private let startupBlocker: StoreStartupBlocker?
+    private let startupBlocker: PersistentStoreRecoveryBlocker?
 
     public init() {
         // Must run before any code constructs a WorkspaceExecutionEnvironment
@@ -722,7 +776,10 @@ public struct ASTRAApp: App {
     public var body: some Scene {
         WindowGroup(AppChannel.current.displayName) {
             if let startupBlocker {
-                StoreStartupBlockedView(blocker: startupBlocker)
+                StoreStartupBlockedView(
+                    blocker: startupBlocker,
+                    appUpdateController: appUpdateController
+                )
             } else {
                 ContentView(appUpdateController: appUpdateController, runtime: runtime)
                     .frame(minWidth: AppWindowLayout.mainMinimumWidth, minHeight: AppWindowLayout.mainMinimumHeight)
