@@ -51,7 +51,8 @@ struct CapabilityInstaller {
         baseURLOverrides: [String: String] = [:],
         allowCredentialUserInteraction: Bool = false,
         policyContext: CapabilityCatalogPolicyContext? = nil,
-        traceID: String? = nil
+        traceID: String? = nil,
+        announceCatalogMutation: Bool = true
     ) throws -> InstallationResult {
         let effectivePolicyContext = policyContext ?? defaultPolicyContext(for: workspace)
         let blockers = uniqueMessages(
@@ -116,7 +117,9 @@ struct CapabilityInstaller {
         // a lifecycle path that has no catalog view (for example onboarding).
         // Keep this at the complete mutation boundary so callers cannot omit
         // it and failed/rolled-back installs never publish a stale change.
-        CapabilityCatalogPersistenceEvents.post(.global)
+        if announceCatalogMutation {
+            CapabilityCatalogPersistenceEvents.post(.global)
+        }
         return result
     }
 

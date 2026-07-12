@@ -317,6 +317,7 @@ struct SkillEditorView: View {
                                 skill.updatedAt = Date()
                                 CapabilityPersistence.saveResourceMutation(
                                     workspace: workspace ?? skill.workspace,
+                                    isGlobal: skill.isGlobal,
                                     modelContext: modelContext
                                 )
                             }

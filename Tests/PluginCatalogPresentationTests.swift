@@ -34,6 +34,7 @@ struct PluginCatalogPresentationTests {
             makeCatalogPresentationCacheKey(catalogRevision: 1),
             makeCatalogPresentationCacheKey(approvalRevision: 1),
             makeCatalogPresentationCacheKey(persistenceRevision: 1),
+            makeCatalogPresentationCacheKey(packPolicyRevision: "pack-a"),
             makeCatalogPresentationCacheKey(workspaceIdentity: ObjectIdentifier(workspaceReplacement)),
             makeCatalogPresentationCacheKey(catalogIdentity: ObjectIdentifier(catalogReplacement))
         ]
@@ -682,7 +683,8 @@ private func makeCatalogPresentationCacheKey(
     catalogIdentity: ObjectIdentifier = ObjectIdentifier(CatalogPresentationTestIdentity.catalog),
     catalogRevision: Int = 0,
     approvalRevision: Int = 0,
-    persistenceRevision: Int = 0
+    persistenceRevision: Int = 0,
+    packPolicyRevision: String = ""
 ) -> PluginCatalogPresentationCache.Key {
     PluginCatalogPresentationCache.Key(
         focus: focus,
@@ -697,7 +699,8 @@ private func makeCatalogPresentationCacheKey(
             catalogIdentity: catalogIdentity,
             catalogRevision: catalogRevision,
             approvalRevision: approvalRevision,
-            persistenceRevision: persistenceRevision
+            persistenceRevision: persistenceRevision,
+            packPolicyRevision: packPolicyRevision
         )
     )
 }

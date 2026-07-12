@@ -921,8 +921,7 @@ struct PluginCatalogView: View {
             availablePackages: capabilityInventoryPackages
         )
         workspace.updatedAt = Date()
-        WorkspacePersistenceCoordinator.saveAndAutoExport(workspace: workspace, modelContext: modelContext)
-        CapabilityCatalogPersistenceEvents.post(.workspace(workspace.id))
+        CapabilityPersistence.saveResourceMutation(workspace: workspace, modelContext: modelContext)
         AppLogger.audit(.capabilityDisabled, category: "Capabilities", fields: [
             "source": "configure",
             "trace_id": traceID,

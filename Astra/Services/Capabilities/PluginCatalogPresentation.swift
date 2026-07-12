@@ -744,6 +744,7 @@ final class PluginCatalogPresentationCache {
         let catalogRevision: Int
         let approvalRevision: Int
         let persistenceRevision: Int
+        let packPolicyRevision: String
     }
 
     private var cachedKey: Key?
@@ -835,7 +836,8 @@ final class PluginCatalogPresentationSourceRevision {
             catalogIdentity: ObjectIdentifier(catalog),
             catalogRevision: catalog.revision,
             approvalRevision: approvalRevision,
-            persistenceRevision: persistenceRevision
+            persistenceRevision: persistenceRevision,
+            packPolicyRevision: workspace.enabledPackIDs.sorted().joined(separator: "|")
         )
     }
 }

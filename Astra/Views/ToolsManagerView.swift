@@ -358,6 +358,7 @@ struct LocalToolEditorView: View {
     private func saveSharingChange() {
         CapabilityPersistence.saveResourceMutation(
             workspace: workspace ?? tool.workspace,
+            isGlobal: tool.isGlobal,
             modelContext: modelContext
         )
         AppLogger.audit(.localToolUpdated, category: "UI", fields: [
