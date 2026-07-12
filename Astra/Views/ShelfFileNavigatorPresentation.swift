@@ -32,10 +32,12 @@ enum ShelfFileNavigatorResizePolicy {
     static func displayedWidth(
         layout: ShelfFileNavigatorLayout,
         navigatorWidth: CGFloat,
-        availableWidth: CGFloat
+        availableWidth: CGFloat,
+        reservesResizeHandle: Bool
     ) -> CGFloat {
         guard layout == .floating else { return navigatorWidth }
-        return max(0, min(navigatorWidth, availableWidth - ShelfWidthMetrics.filesResizeHandleWidth))
+        let reservedWidth = reservesResizeHandle ? ShelfWidthMetrics.filesResizeHandleWidth : 0
+        return max(0, min(navigatorWidth, availableWidth - reservedWidth))
     }
 }
 

@@ -315,7 +315,8 @@ struct ShelfMarkdownPanelView: View {
                             .frame(width: ShelfFileNavigatorResizePolicy.displayedWidth(
                                 layout: layout,
                                 navigatorWidth: fileNavigatorWidth,
-                                availableWidth: proxy.size.width
+                                availableWidth: proxy.size.width,
+                                reservesResizeHandle: isFileNavigatorPinned
                             ))
 
                         if ShelfFileNavigatorResizePolicy.showsResizeHandle(
@@ -1264,7 +1265,8 @@ struct ShelfMarkdownPanelView: View {
             fileNavigatorResizeStartWidth = ShelfFileNavigatorResizePolicy.displayedWidth(
                 layout: .floating,
                 navigatorWidth: fileNavigatorWidth,
-                availableWidth: availableWidth
+                availableWidth: availableWidth,
+                reservesResizeHandle: true
             )
             isResizingFileNavigator = true
         }

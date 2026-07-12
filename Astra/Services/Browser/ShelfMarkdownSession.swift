@@ -92,6 +92,15 @@ private struct ShelfFileMetadata {
     let modifiedAt: Date?
 }
 
+private enum ShelfMarkdownTaskBinding: Hashable {
+    case task(UUID)
+    case unscoped
+
+    init(taskID: UUID?) {
+        self = taskID.map(Self.task) ?? .unscoped
+    }
+}
+
 @MainActor
 final class ShelfMarkdownSession: ObservableObject {
     static let largeTextPreviewBytes: Int64 = 300_000
@@ -100,7 +109,8 @@ final class ShelfMarkdownSession: ObservableObject {
     @Published private(set) var documents: [ShelfMarkdownDocument] = []
     @Published private(set) var selectedDocumentID: String?
     @Published private(set) var boundTaskID: UUID?
-    private var preferredDocumentAutoLoadSuppressions: Set<UUID?> = []
+    private var preferredDocumentAutoLoadSuppressions: Set<ShelfMarkdownTaskBinding> = []
+    private var selectedDocumentIDsByTask: [ShelfMarkdownTaskBinding: String] = [:]
 
     var selectedDocument: ShelfMarkdownDocument? {
         guard let selectedDocumentID else { return nil }
@@ -154,15 +164,19 @@ final class ShelfMarkdownSession: ObservableObject {
     func bindToTask(_ taskID: UUID?) {
         guard boundTaskID != taskID else { return }
         boundTaskID = taskID
+        let binding = ShelfMarkdownTaskBinding(taskID: taskID)
+        let restoredID = selectedDocumentIDsByTask[binding]
+        selectedDocumentID = documents.contains(where: { $0.id == restoredID }) ? restoredID : nil
     }
 
     func load(_ url: URL) {
-        preferredDocumentAutoLoadSuppressions.remove(boundTaskID)
+        let binding = ShelfMarkdownTaskBinding(taskID: boundTaskID)
+        preferredDocumentAutoLoadSuppressions.remove(binding)
         let documentID = url.path
         if let index = documents.firstIndex(where: { $0.id == documentID }),
            Self.reuseUnchangedImageDocument(documents[index], for: url) {
             if selectedDocumentID != documentID {
-                selectedDocumentID = documentID
+                selectDocumentID(documentID)
             }
             return
         }
@@ -176,13 +190,14 @@ final class ShelfMarkdownSession: ObservableObject {
             documents.append(document)
         }
         if selectedDocumentID != document.id {
-            selectedDocumentID = document.id
+            selectDocumentID(document.id)
         }
     }
 
     @discardableResult
     func loadAutomaticallyIfAllowed(_ url: URL) -> Bool {
-        guard !preferredDocumentAutoLoadSuppressions.contains(boundTaskID),
+        let binding = ShelfMarkdownTaskBinding(taskID: boundTaskID)
+        guard !preferredDocumentAutoLoadSuppressions.contains(binding),
               fileURL?.path != url.path else { return false }
         load(url)
         return true
@@ -190,7 +205,7 @@ final class ShelfMarkdownSession: ObservableObject {
 
     func selectDocument(_ id: String) {
         guard documents.contains(where: { $0.id == id }) else { return }
-        selectedDocumentID = id
+        selectDocumentID(id)
     }
 
     func closeDocument(_ id: String) {
@@ -200,12 +215,18 @@ final class ShelfMarkdownSession: ObservableObject {
 
         guard wasSelected else { return }
         if documents.isEmpty {
-            selectedDocumentID = nil
-            preferredDocumentAutoLoadSuppressions.insert(boundTaskID)
+            selectDocumentID(nil)
+            preferredDocumentAutoLoadSuppressions.insert(ShelfMarkdownTaskBinding(taskID: boundTaskID))
         } else {
             let nextIndex = min(index, documents.count - 1)
-            selectedDocumentID = documents[nextIndex].id
+            selectDocumentID(documents[nextIndex].id)
         }
+    }
+
+    private func selectDocumentID(_ id: String?) {
+        selectedDocumentID = id
+        let binding = ShelfMarkdownTaskBinding(taskID: boundTaskID)
+        selectedDocumentIDsByTask[binding] = id
     }
 
     func closeSelectedDocument() {

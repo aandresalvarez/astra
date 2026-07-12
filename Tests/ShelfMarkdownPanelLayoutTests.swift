@@ -79,8 +79,19 @@ struct ShelfMarkdownPanelLayoutTests {
         #expect(ShelfFileNavigatorResizePolicy.displayedWidth(
             layout: .floating,
             navigatorWidth: resizedWidth,
-            availableWidth: 700
+            availableWidth: 700,
+            reservesResizeHandle: true
         ) == resizedWidth)
+    }
+
+    @Test("unpinned floating navigator uses width not occupied by a resize handle")
+    func unpinnedFloatingNavigatorUsesFullAvailableWidth() {
+        #expect(ShelfFileNavigatorResizePolicy.displayedWidth(
+            layout: .floating,
+            navigatorWidth: 400,
+            availableWidth: 300,
+            reservesResizeHandle: false
+        ) == 300)
     }
 
     @Test("temporary browser closes after selection while pinned browser remains")
