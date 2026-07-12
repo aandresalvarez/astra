@@ -8,6 +8,24 @@ import ASTRACore
 
 @Suite("Execution Environments")
 struct ExecutionEnvironmentTests {
+    @Test("Immutable environment snapshot keeps legacy historical tasks on host")
+    func immutableEnvironmentSnapshotKeepsLegacyHistoryOnHost() {
+        let docker = WorkspaceExecutionEnvironment(
+            id: "image:current", kind: .dockerImage, displayName: "Current", image: "astra/current:latest"
+        )
+        let workspaceJSON = ExecutionEnvironmentStore.encode(docker)
+
+        let nonDraft = DockerExecutionPlanner.EnvironmentSnapshot(
+            taskSnapshotJSON: nil, workspaceEnvironmentJSON: workspaceJSON, isDraft: false, hasRuns: false
+        )
+        let draftWithRun = DockerExecutionPlanner.EnvironmentSnapshot(
+            taskSnapshotJSON: nil, workspaceEnvironmentJSON: workspaceJSON, isDraft: true, hasRuns: true
+        )
+
+        #expect(DockerExecutionPlanner.resolveEnvironment(from: nonDraft).isHost)
+        #expect(DockerExecutionPlanner.resolveEnvironment(from: draftWithRun).isHost)
+    }
+
     @Test("Docker mount plan keeps input directories read-only")
     func dockerMountPlanKeepsInputDirectoriesReadOnly() throws {
         let root = try makeTempDir("docker-input-mount")

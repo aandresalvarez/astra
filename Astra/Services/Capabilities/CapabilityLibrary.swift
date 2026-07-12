@@ -150,6 +150,7 @@ struct CapabilityLibrary {
         let data = try encoder.encode(storedPackage)
         try removeItemIfPresent(at: packageManifestURL(for: storedPackage.id).deletingLastPathComponent())
         try data.write(to: packageURL(for: storedPackage.id), options: [.atomic])
+        NotificationCenter.default.post(name: .capabilityPackagesChanged, object: nil)
     }
 
     func install(_ source: CapabilityPackageSource) throws {
@@ -193,6 +194,7 @@ struct CapabilityLibrary {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let data = try encoder.encode(storedPackage)
         try data.write(to: manifestURL, options: [.atomic])
+        NotificationCenter.default.post(name: .capabilityPackagesChanged, object: nil)
     }
 
     @discardableResult
@@ -226,6 +228,7 @@ struct CapabilityLibrary {
             includingPropertiesForKeys: nil
         ) ?? []
 
+        var removedPackage = false
         for url in files {
             let manifestURL: URL
             let storageURL: URL
@@ -247,6 +250,10 @@ struct CapabilityLibrary {
             }
             try fileManager.removeItem(at: storageURL)
             changed = true
+            removedPackage = true
+        }
+        if removedPackage {
+            NotificationCenter.default.post(name: .capabilityPackagesChanged, object: nil)
         }
         return changed
     }
@@ -280,6 +287,7 @@ struct CapabilityLibrary {
         } else {
             try fileManager.removeItem(at: url)
         }
+        NotificationCenter.default.post(name: .capabilityPackagesChanged, object: nil)
         return package
     }
 

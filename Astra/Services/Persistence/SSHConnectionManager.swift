@@ -2,7 +2,7 @@ import Foundation
 import ASTRACore
 
 /// An SSH connection configuration stored in the workspace folder.
-public struct SSHConnection: Codable, Identifiable, Hashable {
+public struct SSHConnection: Codable, Identifiable, Hashable, Sendable {
     public var id: UUID
     public var name: String           // friendly label, e.g. "dev-server"
     public var host: String           // hostname or IP

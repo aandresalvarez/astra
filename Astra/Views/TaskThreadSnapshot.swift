@@ -44,6 +44,7 @@ struct TaskEventSnapshot: Identifiable, Hashable, Sendable {
 }
 
 struct TaskRunSnapshot: Identifiable, Hashable, Sendable {
+    private static let maximumDecodedFileChangesJSONBytes = 262_144
     let id: UUID
     let status: RunStatus
     let startedAt: Date
@@ -60,15 +61,24 @@ struct TaskRunSnapshot: Identifiable, Hashable, Sendable {
     let costUSD: Double
     let fileChangesJSONLength: Int
     let fileChanges: [StoredFileChange]
+    let hasOmittedFileChanges: Bool
     let stopReason: String
 
     var completedWithoutUserFacingResult: Bool {
         status == .completed &&
             output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
-            fileChanges.isEmpty
+            fileChanges.isEmpty && !hasOmittedFileChanges
     }
 
     init(input: TaskRunSnapshotInput) {
+        self.init(input: input, cancellationCheck: {})
+    }
+
+    fileprivate init(
+        input: TaskRunSnapshotInput,
+        cancellationCheck: () throws -> Void
+    ) rethrows {
+        try cancellationCheck()
         id = input.id
         status = input.status
         startedAt = input.startedAt
@@ -80,11 +90,23 @@ struct TaskRunSnapshot: Identifiable, Hashable, Sendable {
         providerSessionId = input.providerSessionId
         providerVersion = input.providerVersion
         exitCode = input.exitCode
-        output = AstraRunProtocolDisplaySanitizer.clean(input.output)
-        hasVPNWarning = Self.outputContainsVPNWarning(input.output)
+        output = try AstraRunProtocolDisplaySanitizer.clean(
+            input.output,
+            cancellationCheck: cancellationCheck
+        )
+        hasVPNWarning = try Self.outputContainsVPNWarning(
+            input.output,
+            cancellationCheck: cancellationCheck
+        )
         costUSD = input.costUSD
         fileChangesJSONLength = input.fileChangesJSON.count
-        fileChanges = Self.decodeFileChanges(input.fileChangesJSON)
+        try Self.checkpoint(
+            input.fileChangesJSON,
+            cancellationCheck: cancellationCheck
+        )
+        hasOmittedFileChanges = input.fileChangesJSON.utf8.count > Self.maximumDecodedFileChangesJSONBytes
+        fileChanges = hasOmittedFileChanges ? [] : Self.decodeFileChanges(input.fileChangesJSON)
+        try cancellationCheck()
         stopReason = input.stopReason
     }
 
@@ -96,14 +118,42 @@ struct TaskRunSnapshot: Identifiable, Hashable, Sendable {
         return changes
     }
 
-    private static func outputContainsVPNWarning(_ output: String) -> Bool {
-        let normalized = output.lowercased()
-        return output.contains("VPC_SERVICE_CONTROLS") ||
-            output.contains("SECURITY_POLICY_VIOLATED") ||
-            output.contains("Request is prohibited by organization's policy") ||
-            normalized.contains("vpcservicecontrolsuniqueidentifier") ||
-            normalized.contains("request is prohibited by organization's policy") ||
-            normalized.contains("security_policy_violated")
+    private static func outputContainsVPNWarning(
+        _ output: String,
+        cancellationCheck: () throws -> Void
+    ) rethrows -> Bool {
+        let needles = [
+            "vpc_service_controls",
+            "security_policy_violated",
+            "request is prohibited by organization's policy",
+            "vpcservicecontrolsuniqueidentifier",
+        ]
+        let overlapCount = (needles.map(\.count).max() ?? 1) - 1
+        var carry = ""
+        var start = output.startIndex
+        while start < output.endIndex {
+            try cancellationCheck()
+            let end = output.index(start, offsetBy: 16_384, limitedBy: output.endIndex) ?? output.endIndex
+            let candidate = carry + output[start..<end]
+            let lowercasedCandidate = candidate.lowercased()
+            if needles.contains(where: lowercasedCandidate.contains) { return true }
+            carry = String(candidate.suffix(overlapCount))
+            start = end
+        }
+        try cancellationCheck()
+        return false
+    }
+
+    private static func checkpoint(
+        _ text: String,
+        cancellationCheck: () throws -> Void
+    ) rethrows {
+        var index = text.startIndex
+        while index < text.endIndex {
+            try cancellationCheck()
+            index = text.index(index, offsetBy: 16_384, limitedBy: text.endIndex) ?? text.endIndex
+        }
+        try cancellationCheck()
     }
 }
 
@@ -439,6 +489,7 @@ struct TaskRunProgressMessage: Identifiable, Hashable, Sendable {
 }
 
 struct TaskRunOutputPresentation: Hashable, Sendable {
+    private static let maximumFinalAnswerPresentationBytes = 262_144
     let displayText: String
     let progressMessages: [TaskRunProgressMessage]
     let rawText: String
@@ -455,12 +506,21 @@ struct TaskRunOutputPresentation: Hashable, Sendable {
         !displayText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    init(run: TaskRunSnapshot, events: [TaskEventSnapshot]) {
+    init(
+        run: TaskRunSnapshot,
+        events: [TaskEventSnapshot],
+        cancellationCheck: () throws -> Void = {}
+    ) rethrows {
+        try cancellationCheck()
         rawText = run.output
 
-        let responseEvents = events.filter { event in
-            event.type == "agent.response" &&
-                !event.payload.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        var responseEvents: [TaskEventSnapshot] = []
+        for (index, event) in events.enumerated() {
+            if index.isMultiple(of: 16) { try cancellationCheck() }
+            if event.type == "agent.response" &&
+                !event.payload.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                responseEvents.append(event)
+            }
         }
 
         if run.status == .running {
@@ -469,19 +529,29 @@ struct TaskRunOutputPresentation: Hashable, Sendable {
             return
         }
 
-        guard let latestWorkIndex = events.lastIndex(where: Self.isOutputBoundaryEvent) else {
+        var latestWorkIndex: Int?
+        for index in events.indices.reversed() {
+            if index.isMultiple(of: 16) { try cancellationCheck() }
+            if Self.isOutputBoundaryEvent(events[index]) {
+                latestWorkIndex = index
+                break
+            }
+        }
+        guard let latestWorkIndex else {
             let presentation = Self.rawOutputPresentation(for: run)
             displayText = presentation.displayText
             progressMessages = presentation.progressMessages
             return
         }
 
-        let finalResponseEvents = events
-            .dropFirst(latestWorkIndex + 1)
-            .filter { event in
-                event.type == "agent.response" &&
-                    !event.payload.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        var finalResponseEvents: [TaskEventSnapshot] = []
+        for (offset, event) in events.dropFirst(latestWorkIndex + 1).enumerated() {
+            if offset.isMultiple(of: 16) { try cancellationCheck() }
+            if event.type == "agent.response" &&
+                !event.payload.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                finalResponseEvents.append(event)
             }
+        }
 
         guard !finalResponseEvents.isEmpty else {
             let presentation = Self.rawOutputPresentation(for: run)
@@ -490,6 +560,17 @@ struct TaskRunOutputPresentation: Hashable, Sendable {
             return
         }
 
+        if try Self.exceedsFinalAnswerPresentationLimit(
+            finalResponseEvents,
+            cancellationCheck: cancellationCheck
+        ) {
+            displayText = "This run produced a very large final response. Open Diagnostics for the raw output."
+            let finalIDs = Set(finalResponseEvents.map(\.id))
+            progressMessages = Self.progressMessages(from: responseEvents.filter { !finalIDs.contains($0.id) })
+            return
+        }
+
+        try cancellationCheck()
         let finalText = Self.joinResponsePayloads(finalResponseEvents)
         guard !finalText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             let presentation = Self.rawOutputPresentation(for: run)
@@ -498,10 +579,11 @@ struct TaskRunOutputPresentation: Hashable, Sendable {
             return
         }
 
+        try cancellationCheck()
         displayText = TaskRunAnswerPresentationPolicy.presentation(rawText: finalText).answerText
-        progressMessages = Self.progressMessages(from: responseEvents.filter { event in
-            !finalResponseEvents.contains(where: { $0.id == event.id })
-        })
+        let finalIDs = Set(finalResponseEvents.map(\.id))
+        progressMessages = Self.progressMessages(from: responseEvents.filter { !finalIDs.contains($0.id) })
+        try cancellationCheck()
     }
 
     private static func isOutputBoundaryEvent(_ event: TaskEventSnapshot) -> Bool {
@@ -514,6 +596,12 @@ struct TaskRunOutputPresentation: Hashable, Sendable {
     }
 
     private static func rawOutputPresentation(for run: TaskRunSnapshot) -> TaskRunOutputPresentation {
+        guard run.output.utf8.count <= maximumFinalAnswerPresentationBytes else {
+            return TaskRunOutputPresentation(
+                displayText: "This run produced very large raw output. Open Diagnostics for the full output.",
+                progressMessages: [], rawText: run.output
+            )
+        }
         let presentation = TaskRunAnswerPresentationPolicy.presentation(rawText: run.output)
         return TaskRunOutputPresentation(
             displayText: presentation.answerText,
@@ -566,6 +654,28 @@ struct TaskRunOutputPresentation: Hashable, Sendable {
     private static func joinResponsePayloads(_ events: [TaskEventSnapshot]) -> String {
         TaskRunAnswerPresentationPolicy.joinedResponsePayloads(events.map(\.payload))
     }
+
+    private static func exceedsFinalAnswerPresentationLimit(
+        _ events: [TaskEventSnapshot],
+        cancellationCheck: () throws -> Void
+    ) rethrows -> Bool {
+        var byteCount = 0
+        for event in events {
+            var start = event.payload.startIndex
+            while start < event.payload.endIndex {
+                try cancellationCheck()
+                let end = event.payload.index(
+                    start,
+                    offsetBy: 16_384,
+                    limitedBy: event.payload.endIndex
+                ) ?? event.payload.endIndex
+                byteCount += event.payload[start..<end].utf8.count
+                if byteCount > maximumFinalAnswerPresentationBytes { return true }
+                start = end
+            }
+        }
+        return false
+    }
 }
 
 struct TaskRunActivity: Sendable {
@@ -574,12 +684,13 @@ struct TaskRunActivity: Sendable {
     let toolResults: [TaskToolResult]
     let notices: [TaskRunNotice]
     let fileChanges: [StoredFileChange]
+    let hasOmittedFileChanges: Bool
     let permissionManifest: RunPermissionManifest?
 
-    static let empty = TaskRunActivity(tools: [], toolCalls: [], toolResults: [], notices: [], fileChanges: [], permissionManifest: nil)
+    static let empty = TaskRunActivity(tools: [], toolCalls: [], toolResults: [], notices: [], fileChanges: [], hasOmittedFileChanges: false, permissionManifest: nil)
 
     var hasVisibleActivity: Bool {
-        !tools.isEmpty || !toolResults.isEmpty || !notices.isEmpty || !fileChanges.isEmpty || permissionManifest != nil
+        !tools.isEmpty || !toolResults.isEmpty || !notices.isEmpty || !fileChanges.isEmpty || hasOmittedFileChanges || permissionManifest != nil
     }
 }
 
@@ -643,36 +754,21 @@ struct TaskThreadSnapshot: Sendable {
         input: TaskThreadSnapshotInput,
         fields: [String: String],
         responsivenessContext: TaskThreadResponsivenessContext? = nil
-    ) async -> TaskThreadSnapshot {
-        await Task.detached(priority: .userInitiated) {
-            let startedAt = DispatchTime.now().uptimeNanoseconds
-            let snapshot = PerformanceSignposts.buildThreadSnapshot {
-                TaskThreadSnapshot(input: input)
-            }
-            let resultFields = fields.merging([
-                "conversation_item_count": PerformanceTelemetryFields.count(snapshot.conversationItems.count),
-                "snapshot_event_count": PerformanceTelemetryFields.count(snapshot.sortedEvents.count),
-                "snapshot_run_count": PerformanceTelemetryFields.count(snapshot.sortedRuns.count)
-            ], uniquingKeysWith: { _, new in new })
-            if let responsivenessContext {
-                responsivenessContext.performWithCorrelationFields { correlationFields in
-                    PerformanceTelemetry.logIfNeeded(
-                        "thread_snapshot_build",
-                        start: startedAt,
-                        thresholdMilliseconds: 8,
-                        fields: resultFields.merging(correlationFields, uniquingKeysWith: { _, new in new })
-                    )
-                }
-            } else {
-                PerformanceTelemetry.logIfNeeded(
-                    "thread_snapshot_build",
-                    start: startedAt,
-                    thresholdMilliseconds: 8,
-                    fields: resultFields
-                )
-            }
-            return snapshot
-        }.value
+    ) async throws -> TaskThreadSnapshot {
+        try await TaskThreadSnapshotBuildExecutor.testingShared.build(
+            input: input,
+            fields: fields,
+            responsivenessContext: responsivenessContext,
+            admittedAt: DispatchTime.now().uptimeNanoseconds
+        )
+    }
+
+    static func resetBuildConcurrencyStatsForTesting() async {
+        await TaskThreadSnapshotBuildExecutor.testingShared.resetStats()
+    }
+
+    static func buildConcurrencyStatsForTesting() async -> (active: Int, maximum: Int, cancelled: Int) {
+        await TaskThreadSnapshotBuildExecutor.testingShared.stats
     }
 
     init(task: AgentTask) {
@@ -680,7 +776,7 @@ struct TaskThreadSnapshot: Sendable {
     }
 
     init(input: TaskThreadSnapshotInput) {
-        self.init(
+        try! self.init(
             goal: input.goal,
             createdAt: input.createdAt,
             events: input.events,
@@ -688,7 +784,28 @@ struct TaskThreadSnapshot: Sendable {
             totalEventCount: input.totalEventCount,
             omittedEventCount: input.omittedEventCount,
             totalRunCount: input.totalRunCount,
-            omittedRunCount: input.omittedRunCount
+            omittedRunCount: input.omittedRunCount,
+            cancellationCheck: {}
+        )
+    }
+
+    fileprivate init(cancellableInput input: TaskThreadSnapshotInput) throws {
+        var runs: [TaskRunSnapshot] = []
+        runs.reserveCapacity(input.runs.count)
+        for run in input.runs {
+            try Task.checkCancellation()
+            runs.append(try TaskRunSnapshot(input: run, cancellationCheck: { try Task.checkCancellation() }))
+        }
+        try self.init(
+            goal: input.goal,
+            createdAt: input.createdAt,
+            events: input.events,
+            runs: runs,
+            totalEventCount: input.totalEventCount,
+            omittedEventCount: input.omittedEventCount,
+            totalRunCount: input.totalRunCount,
+            omittedRunCount: input.omittedRunCount,
+            cancellationCheck: { try Task.checkCancellation() }
         )
     }
 
@@ -711,8 +828,34 @@ struct TaskThreadSnapshot: Sendable {
         totalRunCount: Int? = nil,
         omittedRunCount: Int = 0
     ) {
+        try! self.init(
+            goal: goal,
+            createdAt: createdAt,
+            events: events,
+            runs: runs,
+            totalEventCount: totalEventCount,
+            omittedEventCount: omittedEventCount,
+            totalRunCount: totalRunCount,
+            omittedRunCount: omittedRunCount,
+            cancellationCheck: {}
+        )
+    }
+
+    private init(
+        goal: String,
+        createdAt: Date,
+        events: [TaskEventSnapshot],
+        runs: [TaskRunSnapshot],
+        totalEventCount: Int?,
+        omittedEventCount: Int,
+        totalRunCount: Int?,
+        omittedRunCount: Int,
+        cancellationCheck: () throws -> Void
+    ) throws {
+        try cancellationCheck()
         sortedEvents = events.sorted { $0.timestamp < $1.timestamp }
         sortedRuns = runs.sorted { $0.startedAt < $1.startedAt }
+        try cancellationCheck()
         latestRun = sortedRuns.last
         self.totalEventCount = totalEventCount ?? events.count
         self.omittedEventCount = omittedEventCount
@@ -727,7 +870,8 @@ struct TaskThreadSnapshot: Sendable {
         var eventsByRunID: [UUID: [TaskEventSnapshot]] = [:]
         var latestPlanItems: [TaskProtocolTodoItem] = []
 
-        for event in sortedEvents {
+        for (eventIndex, event) in sortedEvents.enumerated() {
+            if eventIndex.isMultiple(of: 32) { try cancellationCheck() }
             if let runID = event.runID {
                 eventsByRunID[runID, default: []].append(event)
                 switch event.type {
@@ -778,7 +922,9 @@ struct TaskThreadSnapshot: Sendable {
         }
 
         var activity: [UUID: TaskRunActivity] = [:]
-        for run in sortedRuns {
+        try cancellationCheck()
+        for (runIndex, run) in sortedRuns.enumerated() {
+            if runIndex.isMultiple(of: 16) { try cancellationCheck() }
             let toolCalls = (toolsByRunID[run.id] ?? []).map {
                 TaskToolCall(id: $0.id, payload: $0.payload)
             }
@@ -788,19 +934,27 @@ struct TaskThreadSnapshot: Sendable {
                 toolResults: resultsByRunID[run.id] ?? [],
                 notices: noticesByRunID[run.id] ?? [],
                 fileChanges: run.fileChanges,
+                hasOmittedFileChanges: run.hasOmittedFileChanges,
                 permissionManifest: permissionManifestByRunID[run.id]
             )
         }
         activityByRunID = activity
         protocolByRunID = protocolStatesByRunID
         latestAgentPlanItems = latestPlanItems
-        let outputPresByRunID = sortedRuns.reduce(into: [UUID: TaskRunOutputPresentation]()) { result, run in
-            result[run.id] = TaskRunOutputPresentation(run: run, events: eventsByRunID[run.id] ?? [])
+        var outputPresByRunID: [UUID: TaskRunOutputPresentation] = [:]
+        for (runIndex, run) in sortedRuns.enumerated() {
+            if runIndex.isMultiple(of: 16) { try cancellationCheck() }
+            outputPresByRunID[run.id] = try TaskRunOutputPresentation(
+                run: run,
+                events: eventsByRunID[run.id] ?? [],
+                cancellationCheck: cancellationCheck
+            )
         }
         outputPresentationByRunID = outputPresByRunID
 
         var activityPresentations: [UUID: RunActivityPresentation] = [:]
-        for run in sortedRuns {
+        for (runIndex, run) in sortedRuns.enumerated() {
+            if runIndex.isMultiple(of: 16) { try cancellationCheck() }
             let act = activity[run.id] ?? .empty
             let outputPres = outputPresByRunID[run.id] ?? .empty
 
@@ -817,15 +971,17 @@ struct TaskThreadSnapshot: Sendable {
         }
         activityPresentationByRunID = activityPresentations
 
-        conversationItems = Self.makeConversationItems(
+        try cancellationCheck()
+        conversationItems = try Self.makeConversationItems(
             goal: goal,
             createdAt: createdAt,
             events: sortedEvents,
             runs: sortedRuns,
             activityByRunID: activity,
-            protocolByRunID: protocolStatesByRunID
+            protocolByRunID: protocolStatesByRunID,
+            cancellationCheck: cancellationCheck
         )
-        transcriptMetrics = TaskThreadTranscriptMetrics(items: conversationItems)
+        transcriptMetrics = try TaskThreadTranscriptMetrics(items: conversationItems, cancellationCheck: cancellationCheck)
     }
 
     func activityPresentation(for run: TaskRunSnapshot) -> RunActivityPresentation {
@@ -879,8 +1035,10 @@ struct TaskThreadSnapshot: Sendable {
         events: [TaskEventSnapshot],
         runs: [TaskRunSnapshot],
         activityByRunID: [UUID: TaskRunActivity],
-        protocolByRunID: [UUID: TaskRunProtocolState]
-    ) -> [TaskConversationItem] {
+        protocolByRunID: [UUID: TaskRunProtocolState],
+        cancellationCheck: () throws -> Void = {}
+    ) throws -> [TaskConversationItem] {
+        try cancellationCheck()
         let conversationEvents = events.filter(Self.isVisibleConversationEvent)
         // Plan-created tasks record the user's ask as a plan.user.message
         // event with the same text as the goal; synthesizing the goal bubble
@@ -913,7 +1071,8 @@ struct TaskThreadSnapshot: Sendable {
             }
         }
 
-        for event in conversationEvents {
+        for (eventIndex, event) in conversationEvents.enumerated() {
+            if eventIndex.isMultiple(of: 32) { try cancellationCheck() }
             appendCompletedRuns(upTo: event.timestamp)
 
             switch event.type {
@@ -947,6 +1106,7 @@ struct TaskThreadSnapshot: Sendable {
             nextRunIndex += 1
         }
 
+        try cancellationCheck()
         return coalescedSystemTimelineItems(items)
     }
 
@@ -1111,6 +1271,111 @@ struct TaskThreadSnapshot: Sendable {
     }
 }
 
+/// Serial off-main executor for transcript CPU work. Structured actor calls
+/// inherit cancellation from the coordinator, while serialization prevents a
+/// superseded streaming generation from overlapping its replacement.
+actor TaskThreadSnapshotBuildExecutor {
+    /// Direct builder tests share an executor so they can assert serialization.
+    /// Production view models each own an instance; one window can never queue
+    /// behind CPU work belonging to another window.
+    static let testingShared = TaskThreadSnapshotBuildExecutor()
+    private var activeBuildCount = 0
+    private var maximumBuildCount = 0
+    private var cancelledBuildCount = 0
+#if DEBUG
+    private let buildCheckpointForTesting: (@Sendable () -> Void)?
+
+    init(buildCheckpointForTesting: (@Sendable () -> Void)? = nil) {
+        self.buildCheckpointForTesting = buildCheckpointForTesting
+    }
+#else
+    init() {}
+#endif
+
+    var stats: (active: Int, maximum: Int, cancelled: Int) {
+        (activeBuildCount, maximumBuildCount, cancelledBuildCount)
+    }
+
+    func resetStats() {
+        precondition(activeBuildCount == 0)
+        maximumBuildCount = 0
+        cancelledBuildCount = 0
+    }
+
+#if DEBUG
+    /// Holds the actor synchronously so telemetry tests can prove that the
+    /// admission metric still reports genuine executor contention.
+    func occupyForTelemetryTesting(
+        milliseconds: UInt64,
+        started: @Sendable () -> Void
+    ) {
+        started()
+        Thread.sleep(forTimeInterval: Double(milliseconds) / 1_000)
+    }
+#endif
+
+    func build(
+        input: TaskThreadSnapshotInput,
+        fields: [String: String],
+        responsivenessContext: TaskThreadResponsivenessContext?,
+        admittedAt: UInt64
+    ) throws -> TaskThreadSnapshot {
+        let admissionWait = PerformanceTelemetry.elapsedMilliseconds(since: admittedAt)
+        let admissionFields = fields.merging([
+            "admission_state": Task.isCancelled ? "cancelled" : "entered"
+        ], uniquingKeysWith: { _, new in new })
+        if let responsivenessContext {
+            responsivenessContext.performWithCorrelationFields { correlationFields in
+                PerformanceTelemetry.log(
+                    "thread_snapshot_executor_admission_wait",
+                    durationMilliseconds: admissionWait,
+                    fields: admissionFields.merging(correlationFields, uniquingKeysWith: { _, new in new })
+                )
+                responsivenessContext.telemetryObserver?("thread_snapshot_executor_admission_wait", admissionWait)
+            }
+        }
+        activeBuildCount += 1
+        maximumBuildCount = max(maximumBuildCount, activeBuildCount)
+        defer { activeBuildCount -= 1 }
+        do {
+#if DEBUG
+            buildCheckpointForTesting?()
+#endif
+            try Task.checkCancellation()
+            let startedAt = DispatchTime.now().uptimeNanoseconds
+            let snapshot = try PerformanceSignposts.buildThreadSnapshot {
+                try TaskThreadSnapshot(cancellableInput: input)
+            }
+            let resultFields = fields.merging([
+                "conversation_item_count": PerformanceTelemetryFields.count(snapshot.conversationItems.count),
+                "snapshot_event_count": PerformanceTelemetryFields.count(snapshot.sortedEvents.count),
+                "snapshot_run_count": PerformanceTelemetryFields.count(snapshot.sortedRuns.count)
+            ], uniquingKeysWith: { _, new in new })
+            if let responsivenessContext {
+                responsivenessContext.performWithCorrelationFields { correlationFields in
+                    PerformanceTelemetry.logIfNeeded(
+                        "thread_snapshot_build",
+                        start: startedAt,
+                        thresholdMilliseconds: 8,
+                        fields: resultFields.merging(correlationFields, uniquingKeysWith: { _, new in new })
+                    )
+                }
+            } else {
+                PerformanceTelemetry.logIfNeeded(
+                    "thread_snapshot_build",
+                    start: startedAt,
+                    thresholdMilliseconds: 8,
+                    fields: resultFields
+                )
+            }
+            return snapshot
+        } catch is CancellationError {
+            cancelledBuildCount += 1
+            throw CancellationError()
+        }
+    }
+}
+
 /// Privacy-safe transcript shape counts calculated off the main actor as part
 /// of snapshot construction. The values never retain or emit transcript text.
 struct TaskThreadTranscriptMetrics: Equatable, Sendable {
@@ -1120,12 +1385,17 @@ struct TaskThreadTranscriptMetrics: Equatable, Sendable {
     let tableRowCount: Int
 
     init(items: [TaskConversationItem]) {
+        try! self.init(items: items, cancellationCheck: {})
+    }
+
+    fileprivate init(items: [TaskConversationItem], cancellationCheck: () throws -> Void) throws {
         var textBytes = 0
         var agentResponseCount = 0
         var codeFenceCount = 0
         var tableRowCount = 0
 
-        for item in items {
+        for (itemIndex, item) in items.enumerated() {
+            if itemIndex.isMultiple(of: 16) { try cancellationCheck() }
             let text: String
             switch item {
             case .userMessage(let value, _), .planUserMessage(let value, _), .planAssistantMessage(let value, _), .scheduleResult(let value, _), .systemInfo(let value, _, _), .recapResult(let value, _):
@@ -1134,11 +1404,10 @@ struct TaskThreadTranscriptMetrics: Equatable, Sendable {
                 text = run.output
                 agentResponseCount += 1
             }
-            textBytes += text.utf8.count
-            codeFenceCount += Self.occurrences(of: "```", in: text)
-            tableRowCount += text.split(separator: "\n", omittingEmptySubsequences: false).reduce(into: 0) { count, line in
-                if line.drop(while: { $0 == " " || $0 == "\t" }).first == "|" { count += 1 }
-            }
+            let scan = try Self.scan(text, cancellationCheck: cancellationCheck)
+            textBytes += scan.bytes
+            codeFenceCount += scan.codeFences
+            tableRowCount += scan.tableRows
         }
 
         self.textBytes = textBytes
@@ -1147,15 +1416,35 @@ struct TaskThreadTranscriptMetrics: Equatable, Sendable {
         self.tableRowCount = tableRowCount
     }
 
-    private static func occurrences(of needle: String, in text: String) -> Int {
-        guard !needle.isEmpty else { return 0 }
-        var count = 0
-        var searchStart = text.startIndex
-        while let range = text.range(of: needle, range: searchStart..<text.endIndex) {
-            count += 1
-            searchStart = range.upperBound
+    private static func scan(
+        _ text: String,
+        cancellationCheck: () throws -> Void
+    ) throws -> (bytes: Int, codeFences: Int, tableRows: Int) {
+        var bytes = 0
+        var codeFences = 0
+        var consecutiveBackticks = 0
+        var tableRows = 0
+        var atLineStart = true
+        for byte in text.utf8 {
+            bytes += 1
+            if bytes.isMultiple(of: 16_384) { try cancellationCheck() }
+            if byte == 96 {
+                consecutiveBackticks += 1
+                if consecutiveBackticks == 3 {
+                    codeFences += 1
+                    consecutiveBackticks = 0
+                }
+            } else {
+                consecutiveBackticks = 0
+            }
+            if atLineStart {
+                if byte == 32 || byte == 9 { continue }
+                if byte == 124 { tableRows += 1 }
+                atLineStart = false
+            }
+            if byte == 10 { atLineStart = true }
         }
-        return count
+        return (bytes, codeFences, tableRows)
     }
 }
 

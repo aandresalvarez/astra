@@ -7,7 +7,6 @@ import ASTRAPersistence
 
 // `WorkspaceCanvasItem`, `WorkspaceRightPanel`, and the shelf-boundary metrics live in
 // WorkspaceCanvasItem.swift (extracted to keep this file within its line budget).
-
 // The shelf-boundary overlay views live in WorkspaceCanvasItem.swift (extracted for budget).
 
 private extension View {
@@ -100,6 +99,7 @@ struct ContentView: View {
     // both observe this one session, so a chat turn updates the preview.
     @StateObject private var workspaceAppStudioSession = WorkspaceAppStudioSession()
     @StateObject private var externalRouteStore = AstraExternalRouteStore.shared
+    @State private var browserSessionPolicyTaskProjection = BrowserSessionPolicyTaskProjection()
     @State private var showingNewSchedule = false
     @State private var editingSchedule: TaskSchedule?
     @State private var isSearchActive = false
@@ -172,8 +172,8 @@ struct ContentView: View {
     @State private var cachedShelfAvailabilityPolicy = ShelfAvailabilityPolicy()
     @State private var cachedShelfAvailabilityPolicySignature = ""
     @State private var browserSessionPolicyCache = BrowserSessionPolicyCache()
-    @State private var cachedBrowserSessionPolicy = BrowserSessionPolicy.failClosed
-    @State private var cachedBrowserSessionPolicySignature: BrowserSessionPolicySignature?
+    @State private var browserSessionPolicyRefreshGate = BrowserSessionPolicyRefreshGate()
+    @State private var browserSessionPolicyRefreshTask: Task<Void, Never>?
     /// First-run flag. Flips to true once the user finishes the
     /// onboarding wizard. Exposed via Settings → "Show Onboarding Again"
     /// so users can replay the guide on demand.
@@ -322,7 +322,6 @@ struct ContentView: View {
             githubReadOnlyMode: policy.githubReadOnlyMode
         )
     }
-
     private var currentMarkdownSession: ShelfMarkdownSession {
         markdownSessionStore.session(
             for: selectedTask?.id,
@@ -330,26 +329,30 @@ struct ContentView: View {
             pinnedToTask: isMarkdownPinnedToTask
         )
     }
-
     private var currentBrowserSessionPolicy: BrowserSessionPolicy {
-        let expectedSignature = makeBrowserSessionPolicySignature()
-        guard cachedBrowserSessionPolicySignature == expectedSignature else {
-            return .failClosed
-        }
-        return cachedBrowserSessionPolicy
+        browserSessionPolicyRefreshGate.policy
     }
-
     private var browserSessionPolicyRefreshTriggerSignature: String {
-        makeBrowserSessionPolicySignature().refreshKey
+        let workspace = selectedTask?.workspace ?? effectiveWorkspace
+        let environmentJSON = selectedTask?.executionEnvironmentSnapshotJSON
+            ?? workspace?.activeExecutionEnvironmentJSON
+            ?? "host"
+        return BrowserSessionPolicyRefreshTrigger(
+            taskID: selectedTask?.id, workspaceID: workspace?.id,
+            enabledCapabilityIDs: normalizedEnabledCapabilityIDs(for: selectedTask),
+            taskCanvasRevision: selectedTaskCanvasSignature,
+            taskRevision: String(selectedTask?.updatedAt.timeIntervalSince1970 ?? 0),
+            workspaceRevision: [workspaceSelectionSignature, String(workspace?.updatedAt.timeIntervalSince1970 ?? 0)]
+                .joined(separator: ":"),
+            environmentRevision: environmentJSON
+        ).rawValue
     }
-
     private func normalizedEnabledCapabilityIDs(for task: AgentTask?) -> [String] {
         (task?.workspace?.enabledCapabilityIDs ?? [])
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
             .sorted()
     }
-
     private var browserPinnedToTaskBinding: Binding<Bool> {
         Binding(
             get: { isBrowserPinnedToTask },
@@ -363,7 +366,6 @@ struct ContentView: View {
             set: setMarkdownPinnedToTask
         )
     }
-
     private var selectedTaskUnreadSignature: String {
         guard let selectedTask else { return "" }
         let unread = selectedTask.unreadAt?.timeIntervalSince1970 ?? 0
@@ -979,7 +981,8 @@ struct ContentView: View {
         }
         .modifier(BrowserSessionPolicyObserver(
             signature: browserSessionPolicyRefreshTriggerSignature,
-            onRefresh: refreshBrowserSessionPolicy(source:)
+            onRefresh: refreshBrowserSessionPolicy(source:),
+            onTaskEventInserted: handleBrowserPolicyTaskEventInsertion
         ))
         .onChange(of: activeWorkspaceCanvasItem) {
             syncBrowserPresentation()
@@ -1105,6 +1108,7 @@ struct ContentView: View {
             sidebarTitlebarCommands.clearSidebarToggleHandler()
             TaskOpenResponsivenessTelemetry.cancel(scope: taskOpenResponsivenessScope, reason: "content_view_disappeared")
             screenTransitionCoordinator.cancelForViewDisappearance()
+            browserSessionPolicyRefreshTask?.cancel()
         }
         .onChange(of: executionSettingsSignature) { applySettings() }
         .background {
@@ -1728,7 +1732,6 @@ struct ContentView: View {
         }
         syncBrowserPresentation()
     }
-
     private func logGeneratedHTMLDiscovery(
         taskID: UUID,
         event: String,
@@ -1741,7 +1744,6 @@ struct ContentView: View {
         fields["pinned_to_task"] = String(isBrowserPinnedToTask)
         AppLogger.audit(.shelfBrowserPreview, category: "Browser", taskID: taskID, fields: fields)
     }
-
     @MainActor
     private func refreshShelfAvailabilityPolicy() async {
         let signature = shelfAvailabilityPolicyRefreshSignature
@@ -1757,76 +1759,77 @@ struct ContentView: View {
         )
         cachedShelfAvailabilityPolicySignature = signature
     }
-
     private func refreshBrowserSessionPolicy(source: String) {
-        let signature = makeBrowserSessionPolicySignature()
-        let policy = browserSessionPolicyCache.policy(
-            for: signature,
-            source: makeBrowserSessionPolicySource(for: selectedTask)
-        )
-        cachedBrowserSessionPolicy = policy
-        cachedBrowserSessionPolicySignature = signature
-        syncBrowserPresentation()
-        AppLogger.audit(.shelfBrowserPreview, category: "Browser", taskID: selectedTask?.id, fields: [
-            "event": "browser_session_policy_refreshed",
-            "source": source,
-            "enabled_browser_adapters": policy.enabledBrowserAdapters.joined(separator: ","),
-            "github_read_only_mode": String(policy.githubReadOnlyMode)
-        ])
-    }
-
-    private func makeBrowserSessionPolicySignature() -> BrowserSessionPolicySignature {
-        makeBrowserSessionPolicySignature(for: selectedTask)
-    }
-
-    private func makeBrowserSessionPolicySignature(for task: AgentTask?) -> BrowserSessionPolicySignature {
-        BrowserSessionPolicySignature(
-            taskID: task?.id,
-            enabledCapabilityIDs: normalizedEnabledCapabilityIDs(for: task),
-            approvalRevision: CapabilityApprovalStore().revisionFingerprint(),
-            packageDefinitionFingerprint: CapabilityRuntimeResourceMatcher.packageDefinitionsFingerprint(),
-            taskEventRevision: BrowserSessionPolicyContext.taskEventRevision(for: task)
-        )
-    }
-
-    private func browserSessionPolicy(for task: AgentTask?) -> BrowserSessionPolicy {
-        browserSessionPolicyCache.policy(
-            for: makeBrowserSessionPolicySignature(for: task),
-            source: makeBrowserSessionPolicySource(for: task)
-        )
-    }
-
-    private func makeBrowserSessionPolicySource(for task: AgentTask?) -> BrowserSessionPolicySource {
-        guard let task else {
-            return BrowserSessionPolicySource(
-                packageDefinitions: { [] },
-                approvalRecords: { [] },
-                latestContextText: { "" },
-                environment: { .host }
-            )
-        }
-        return BrowserSessionPolicySource(
-            packageDefinitions: { CapabilityRuntimeResourceMatcher.packageDefinitions() },
-            approvalRecords: { CapabilityApprovalStore().records() },
-            latestContextText: { BrowserSessionPolicyContext.latestContextText(for: task) },
-            environment: { DockerExecutionPlanner.resolveEnvironment(for: task) },
-            enabledBrowserAdapters: { _, packages, approvalRecords in
-                TaskCapabilityResolver.enabledBrowserAdapters(
-                    for: task.workspace,
+        browserSessionPolicyRefreshTask?.cancel()
+        let token = browserSessionPolicyRefreshGate.begin(), task = selectedTask; syncBrowserPresentation()
+        let taskID = task?.id, workspace = task?.workspace ?? effectiveWorkspace
+        let workspaceID = workspace?.id, enabledCapabilityIDs = normalizedEnabledCapabilityIDs(for: task)
+        let taskEventRevision = browserSessionPolicyTaskProjection.revision(for: task)
+        let latestUserMessage = browserSessionPolicyTaskProjection.latestUserMessage(for: taskID, modelContext: modelContext)
+        let contextSnapshot = task.map { BrowserSessionPolicyContext.Snapshot(
+            goal: $0.goal, latestUserMessage: latestUserMessage) }
+        let contextText = contextSnapshot.map(BrowserSessionPolicyContext.latestContextText(in:)) ?? ""
+        let hostControlInput = task.map { BrowserSessionPolicyContext.HostControlInput(task: $0,
+            enabledPackageIDs: enabledCapabilityIDs, contextText: contextText) }
+        let isDraft = task?.status == .draft
+        let hasRuns = isDraft && task.map { BrowserSessionPolicyContext.hasRuns(taskID: $0.id, modelContext: modelContext) } == true
+        let environmentSnapshot = DockerExecutionPlanner.EnvironmentSnapshot(taskSnapshotJSON: task?.executionEnvironmentSnapshotJSON,
+            workspaceEnvironmentJSON: isDraft && !hasRuns ? workspace?.activeExecutionEnvironmentJSON : nil, isDraft: isDraft, hasRuns: hasRuns)
+        let catalogPolicyInput = workspace.map(BrowserSessionPolicyContext.CatalogPolicyInput.init(workspace:))
+        browserSessionPolicyRefreshTask = Task { @MainActor in
+            let diskSnapshot = await Task.detached(priority: .userInitiated) {
+                let packages = CapabilityRuntimeResourceMatcher.packageDefinitions()
+                return (
+                    approvalRevision: CapabilityApprovalStore().revisionFingerprint(),
+                    packageFingerprint: CapabilityRuntimeResourceMatcher.packageDefinitionsFingerprint(),
                     packages: packages,
-                    approvalRecords: approvalRecords
+                    approvals: CapabilityApprovalStore().records(),
+                    contextText: contextText, environment: DockerExecutionPlanner.resolveEnvironment(from: environmentSnapshot),
+                    policyContext: catalogPolicyInput?.resolve(),
+                    hostControlCapabilitySnapshot: hostControlInput?.resolve(packageDefinitions: packages))
+            }.value
+            guard !Task.isCancelled else { return }
+            let environmentRevision = diskSnapshot.environment.signatureFingerprint
+            let signature = BrowserSessionPolicySignature(
+                taskID: taskID, workspaceID: workspaceID, environmentRevision: environmentRevision,
+                enabledCapabilityIDs: enabledCapabilityIDs, approvalRevision: diskSnapshot.approvalRevision,
+                packageDefinitionFingerprint: diskSnapshot.packageFingerprint, taskEventRevision: taskEventRevision,
+                catalogPolicyRevision: catalogPolicyInput?.signature ?? "no-policy")
+            let policy = browserSessionPolicyCache.policy(
+                for: signature,
+                source: BrowserSessionPolicySource(
+                    packageDefinitions: { diskSnapshot.packages },
+                    approvalRecords: { diskSnapshot.approvals },
+                    latestContextText: { diskSnapshot.contextText },
+                    environment: { diskSnapshot.environment },
+                    enabledBrowserAdapters: { signature, packages, approvalRecords in
+                        guard var policyContext = diskSnapshot.policyContext else { return [] }
+                        policyContext.approvalRecords = approvalRecords
+                        return packages.filter {
+                            signature.enabledCapabilityIDs.contains($0.id)
+                                && CapabilityCatalogPolicy.decision(for: $0, context: policyContext).canRun
+                        }
+                            .flatMap(\.browserAdapters)
+                            .compactMap(BrowserSiteAdapterID.normalized)
+                    },
+                    githubReadOnlyMode: { environment, _ in BrowserSessionPolicyContext.githubReadOnlyMode(
+                        environment: environment, capabilitySnapshot: diskSnapshot.hostControlCapabilitySnapshot) }
                 )
-            },
-            githubReadOnlyMode: { environment, contextText in
-                HostControlPlaneMCPProjection.enabledToolNames(
-                    task: task,
-                    environment: environment,
-                    contextText: contextText
-                ).contains("github")
-            }
-        )
+            )
+            guard browserSessionPolicyRefreshGate.accept(policy, for: token) else { return }
+            syncBrowserPresentation()
+            AppLogger.audit(.shelfBrowserPreview, category: "Browser", taskID: taskID, fields: [
+                "event": "browser_session_policy_refreshed",
+                "source": source,
+                "enabled_browser_adapters": policy.enabledBrowserAdapters.joined(separator: ","),
+                "github_read_only_mode": String(policy.githubReadOnlyMode)
+            ])
+        }
     }
-
+    private func handleBrowserPolicyTaskEventInsertion(_ insertion: DurableTaskEventInsertion) {
+        guard browserSessionPolicyTaskProjection.record(insertion, selectedTaskID: selectedTask?.id) else { return }
+        refreshBrowserSessionPolicy(source: "task_event_inserted")
+    }
     private func openGeneratedFile(_ path: String) {
         let url = URL(fileURLWithPath: path)
         switch TaskGeneratedFiles.shelfDestination(for: path) {
@@ -1852,7 +1855,6 @@ struct ContentView: View {
             presentCanvas(.browser)
             syncBrowserPresentation()
             return
-
         case .files?:
             guard canOpenGeneratedFileInShelf(.files) else {
                 NSWorkspace.shared.open(url)
@@ -2291,22 +2293,21 @@ struct ContentView: View {
         )
         applyWorkspaceSelectionUpdate(workspaceSelectionCoordinator.importWorkspace(result.selectedWorkspace))
     }
-
     private func applyWorkspaceSelectionUpdate(_ update: ContentWorkspaceSelectionUpdate) {
         let previousTaskID = selectedTask?.id
         if previousTaskID != update.selectedTask?.id {
-            TaskOpenResponsivenessTelemetry.beginForSelection(
-                task: update.selectedTask,
-                source: "workspace_selection",
-                scope: taskOpenResponsivenessScope
-            )
+            TaskOpenResponsivenessTelemetry.beginForSelection(task: update.selectedTask, source: "workspace_selection", scope: taskOpenResponsivenessScope)
         }
-        updateCanvasForTaskSelectionChange(previousTaskID: previousTaskID, nextTaskID: update.selectedTask?.id)
-        let sceneUpdate = sceneSelection.apply(update)
-        if previousTaskID != update.selectedTask?.id {
-            handleSelectedTaskIdentityChanged(to: update.selectedTask)
+        let transitionTask = TaskOpenResponsivenessTelemetry.shouldMeasureSelectionTransition(previousTaskID: previousTaskID, nextTaskID: update.selectedTask?.id) ? update.selectedTask : nil
+        let sceneUpdate = measurePreShellNavigation(for: transitionTask) {
+            updateCanvasForTaskSelectionChange(previousTaskID: previousTaskID, nextTaskID: update.selectedTask?.id)
+            let sceneUpdate = sceneSelection.apply(update)
+            if previousTaskID != update.selectedTask?.id {
+                handleSelectedTaskIdentityChanged(to: update.selectedTask)
+            }
+            markTaskRead(update.selectedTask)
+            return sceneUpdate
         }
-        markTaskRead(update.selectedTask)
         if sceneUpdate.clearedWorkspaceAppSurface {
             clearWorkspaceAppSurfaceSideEffects(wasComposing: sceneUpdate.cancelledWorkspaceAppComposer)
         }
@@ -2318,15 +2319,13 @@ struct ContentView: View {
     }
 
     private func applySceneSelectionIntent(_ intent: () -> Void) {
+        let selectionStart = TaskOpenResponsivenessTelemetry.captureSelectionStart()
         let previousTaskID = selectedTask?.id
         let isComposingTaskForTransition = isComposingTask
         intent()
         guard previousTaskID != selectedTask?.id else { return }
-        TaskOpenResponsivenessTelemetry.beginForSelection(
-            task: selectedTask,
-            source: "scene_selection",
-            scope: taskOpenResponsivenessScope
-        )
+        TaskOpenResponsivenessTelemetry.beginForSelection(task: selectedTask, source: "scene_selection",
+                                                          scope: taskOpenResponsivenessScope, selectionStart: selectionStart)
         updateCanvasForTaskSelectionChange(
             previousTaskID: previousTaskID,
             nextTaskID: selectedTask?.id,
@@ -2334,35 +2333,41 @@ struct ContentView: View {
         )
         handleSelectedTaskIdentityChanged(to: selectedTask)
         markTaskRead(selectedTask)
+        if let selectedTask {
+            TaskOpenResponsivenessTelemetry.recordPhase("pre_shell_navigation", task: selectedTask,
+                                                        scope: taskOpenResponsivenessScope,
+                                                        startedAtUptimeNanoseconds: selectionStart.uptimeNanoseconds)
+        }
     }
-
     // MARK: - Task Actions
-
     private func setSelectedTask(_ task: AgentTask?, recordsFinalHomeTransition: Bool = true) {
         let previousTaskID = selectedTask?.id
         if previousTaskID != task?.id {
-            TaskOpenResponsivenessTelemetry.beginForSelection(
-                task: task,
-                source: "task_selection",
-                scope: taskOpenResponsivenessScope
-            )
+            TaskOpenResponsivenessTelemetry.beginForSelection(task: task, source: "task_selection", scope: taskOpenResponsivenessScope)
             if task == nil, recordsFinalHomeTransition {
                 beginScreenTransition(destination: "workspace_home", source: "task_selection_cleared",
                                       taskID: nil, usesSelectedTask: false)
             }
         }
-        updateCanvasForTaskSelectionChange(
-            previousTaskID: previousTaskID,
-            nextTaskID: task?.id,
-            recordsTransition: recordsFinalHomeTransition
-        )
-        let wasComposingWorkspaceApp = isComposingWorkspaceApp
-        sceneSelection.openTask(task)
-        clearWorkspaceAppSurfaceSideEffects(wasComposing: wasComposingWorkspaceApp)
-        if previousTaskID != task?.id {
-            handleSelectedTaskIdentityChanged(to: task)
+        let transitionTask = TaskOpenResponsivenessTelemetry.shouldMeasureSelectionTransition(
+            previousTaskID: previousTaskID, nextTaskID: task?.id) ? task : nil
+        measurePreShellNavigation(for: transitionTask) {
+            updateCanvasForTaskSelectionChange(
+                previousTaskID: previousTaskID,
+                nextTaskID: task?.id,
+                recordsTransition: recordsFinalHomeTransition
+            )
+            let wasComposingWorkspaceApp = isComposingWorkspaceApp
+            sceneSelection.openTask(task)
+            clearWorkspaceAppSurfaceSideEffects(wasComposing: wasComposingWorkspaceApp)
+            if previousTaskID != task?.id {
+                handleSelectedTaskIdentityChanged(to: task)
+            }
+            markTaskRead(task)
         }
-        markTaskRead(task)
+    }
+    private func measurePreShellNavigation<T>(for task: AgentTask?, _ work: () -> T) -> T {
+        TaskOpenResponsivenessTelemetry.measurePhase("pre_shell_navigation", task: task, scope: taskOpenResponsivenessScope, work)
     }
 
     private func updateCanvasForTaskSelectionChange(
@@ -2394,6 +2399,7 @@ struct ContentView: View {
 
     private func handleSelectedTaskIdentityChanged(to task: AgentTask?) {
         clearGeneratedHTMLDiscoveryState()
+        browserSessionPolicyRefreshTask?.cancel(); browserSessionPolicyRefreshGate.begin()
         bindTaskScopedSessions(to: task?.id)
         syncBrowserPresentation()
         refreshMarkdownShelfAvailabilityForSelectedTask()
@@ -2401,7 +2407,6 @@ struct ContentView: View {
         refreshGeneratedHTMLAvailabilityForSelectedTask()
         restoreRememberedWorkspaceCanvasItemIfAvailable()
     }
-
     private func bindTaskScopedSessions(to taskID: UUID?) {
         currentBrowserSession.bindToTask(taskID)
         currentMarkdownSession.bindToTask(taskID)

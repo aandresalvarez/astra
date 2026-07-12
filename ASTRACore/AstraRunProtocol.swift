@@ -376,6 +376,7 @@ public struct AstraRunProtocolTextFilter: Sendable {
 }
 
 public enum AstraRunProtocolDisplaySanitizer {
+    private static let maximumSanitizedDisplayBytes = 262_144
     public static func clean(_ text: String) -> String {
         guard text.mayContainRunProtocolLeak else { return text }
 
@@ -383,6 +384,66 @@ public enum AstraRunProtocolDisplaySanitizer {
         var visible = filter.process(text: text).outputs.visibleText
         visible += filter.flush().outputs.visibleText
         return removeOrphanProtocolFragments(from: visible)
+    }
+
+    /// Cancellation-aware equivalent used by background transcript builds.
+    /// Feeding the existing streaming filter bounded chunks preserves the
+    /// exact display result while letting a superseded build stop between
+    /// chunks of a very large run output.
+    public static func clean(
+        _ text: String,
+        cancellationCheck: () throws -> Void
+    ) rethrows -> String {
+        guard try containsProtocolLeak(text, cancellationCheck: cancellationCheck) else { return text }
+        guard text.utf8.count <= maximumSanitizedDisplayBytes else {
+            return "Protocol-bearing output was too large to present safely. Open Diagnostics for the raw output."
+        }
+
+        var filter = AstraRunProtocolTextFilter()
+        var visibleChunks: [String] = []
+        visibleChunks.reserveCapacity(max(1, text.utf8.count / 16_384 + 1))
+        var start = text.startIndex
+        while start < text.endIndex {
+            try cancellationCheck()
+            let end = text.index(start, offsetBy: 16_384, limitedBy: text.endIndex) ?? text.endIndex
+            visibleChunks.append(filter.process(text: String(text[start..<end])).outputs.visibleText)
+            start = end
+        }
+        visibleChunks.append(filter.flush().outputs.visibleText)
+        try cancellationCheck()
+        let visible = visibleChunks.joined()
+        return try removeOrphanProtocolFragments(from: visible, cancellationCheck: cancellationCheck)
+    }
+
+    private static func containsProtocolLeak(
+        _ text: String,
+        cancellationCheck: () throws -> Void
+    ) rethrows -> Bool {
+        try containsAny(
+            ["ASTRA_EVENT", #"tepID":"#, "\"stepID\":", "\"planID\":", "\"verifiedBy\":"],
+            in: text,
+            cancellationCheck: cancellationCheck
+        )
+    }
+
+    private static func containsAny(
+        _ needles: [String],
+        in text: String,
+        cancellationCheck: () throws -> Void
+    ) rethrows -> Bool {
+        let overlapCount = max(0, (needles.map(\.count).max() ?? 1) - 1)
+        var carry = ""
+        var start = text.startIndex
+        while start < text.endIndex {
+            try cancellationCheck()
+            let end = text.index(start, offsetBy: 16_384, limitedBy: text.endIndex) ?? text.endIndex
+            let candidate = carry + text[start..<end]
+            if needles.contains(where: candidate.contains) { return true }
+            carry = String(candidate.suffix(overlapCount))
+            start = end
+        }
+        try cancellationCheck()
+        return false
     }
 
     private static func removeOrphanProtocolFragments(from text: String) -> String {
@@ -417,6 +478,36 @@ public enum AstraRunProtocolDisplaySanitizer {
         if hadTrailingNewline, !cleaned.hasSuffix("\n") {
             cleaned += "\n"
         }
+        return cleaned
+    }
+
+    private static func removeOrphanProtocolFragments(
+        from text: String,
+        cancellationCheck: () throws -> Void
+    ) rethrows -> String {
+        guard try containsProtocolLeak(text, cancellationCheck: cancellationCheck) else { return text }
+
+        let hadTrailingNewline = text.hasSuffix("\n")
+        var kept: [Substring] = []
+        var isDroppingContinuation = false
+        for (index, line) in text.split(separator: "\n", omittingEmptySubsequences: false).enumerated() {
+            if index.isMultiple(of: 64) { try cancellationCheck() }
+            let trimmed = String(line).protocolDisplayCandidate
+            if isDroppingContinuation {
+                if trimmed.contains("}") { isDroppingContinuation = false }
+                continue
+            }
+            let dropReason = orphanProtocolDropReason(for: trimmed)
+            guard dropReason.shouldDrop else {
+                kept.append(line)
+                continue
+            }
+            if !dropReason.isComplete { isDroppingContinuation = true }
+        }
+
+        var cleaned = kept.map(String.init).joined(separator: "\n")
+        if hadTrailingNewline, !cleaned.hasSuffix("\n") { cleaned += "\n" }
+        try cancellationCheck()
         return cleaned
     }
 
@@ -656,7 +747,7 @@ private struct NormalizedInvalid: Encodable {
 }
 
 private extension [AstraRunProtocolTextFilterOutput] {
-    public var visibleText: String {
+    var visibleText: String {
         compactMap { output -> String? in
             guard case .text(let text) = output else { return nil }
             return text
@@ -665,7 +756,7 @@ private extension [AstraRunProtocolTextFilterOutput] {
 }
 
 private extension String {
-    public var mayContainRunProtocolLeak: Bool {
+    var mayContainRunProtocolLeak: Bool {
         contains("ASTRA_EVENT") ||
             contains(#"tepID":"#) ||
             contains("\"stepID\":") ||
@@ -673,7 +764,7 @@ private extension String {
             contains("\"verifiedBy\":")
     }
 
-    public var protocolDisplayCandidate: String {
+    var protocolDisplayCandidate: String {
         var candidate = trimmingCharacters(in: .whitespacesAndNewlines)
         for prefix in ["- ", "* ", "• ", "● ", "◦ ", "▪ ", "> "] {
             if candidate.hasPrefix(prefix) {
@@ -685,11 +776,11 @@ private extension String {
         return candidate
     }
 
-    public var nilIfEmpty: String? {
+    var nilIfEmpty: String? {
         isEmpty ? nil : self
     }
 
-    public var boundedPlanText: String? {
+    var boundedPlanText: String? {
         let trimmed = trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
         return String(trimmed.prefix(AstraRunProtocolLimits.maxPlanStepTextCharacters))

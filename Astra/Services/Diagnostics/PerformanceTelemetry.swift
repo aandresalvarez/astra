@@ -187,8 +187,8 @@ enum PerformanceSignposts {
     }
 
     @discardableResult
-    static func buildThreadSnapshot<T>(_ work: () -> T) -> T {
-        interval("build_thread_snapshot", work)
+    static func buildThreadSnapshot<T>(_ work: () throws -> T) rethrows -> T {
+        try interval("build_thread_snapshot", work)
     }
 
     @discardableResult
@@ -197,10 +197,10 @@ enum PerformanceSignposts {
     }
 
     @discardableResult
-    private static func interval<T>(_ name: StaticString, _ work: () -> T) -> T {
+    private static func interval<T>(_ name: StaticString, _ work: () throws -> T) rethrows -> T {
         let id = signposter.makeSignpostID()
         let state = signposter.beginInterval(name, id: id)
         defer { signposter.endInterval(name, state) }
-        return work()
+        return try work()
     }
 }

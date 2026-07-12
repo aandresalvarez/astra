@@ -242,22 +242,39 @@ enum DockerExecutionPlanningError: LocalizedError, Equatable {
 enum DockerExecutionPlanner {
     static let defaultDockerExecutable = "/usr/bin/env"
 
+    struct EnvironmentSnapshot: Equatable, Sendable {
+        let taskSnapshotJSON: String?
+        let workspaceEnvironmentJSON: String?
+        let isDraft: Bool
+        let hasRuns: Bool
+    }
+
     static func resolveEnvironment(for task: AgentTask) -> WorkspaceExecutionEnvironment {
         if let snapshot = task.executionEnvironmentSnapshotJSON,
            !snapshot.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return ExecutionEnvironmentStore.decode(snapshot)
         }
-        if taskHasHistoricalSnapshotBoundary(task) {
-            return .host
-        }
-        if let workspace = task.workspace {
-            return ExecutionEnvironmentStore.decode(workspace.activeExecutionEnvironmentJSON)
-        }
-        return .host
+        if task.status != .draft || !task.runs.isEmpty { return .host }
+        return resolveEnvironment(from: EnvironmentSnapshot(
+            taskSnapshotJSON: nil,
+            workspaceEnvironmentJSON: task.workspace?.activeExecutionEnvironmentJSON,
+            isDraft: true,
+            hasRuns: false
+        ))
     }
 
-    private static func taskHasHistoricalSnapshotBoundary(_ task: AgentTask) -> Bool {
-        task.status != .draft || !task.runs.isEmpty
+    static func resolveEnvironment(from snapshot: EnvironmentSnapshot) -> WorkspaceExecutionEnvironment {
+        if let snapshot = snapshot.taskSnapshotJSON,
+           !snapshot.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return ExecutionEnvironmentStore.decode(snapshot)
+        }
+        if !snapshot.isDraft || snapshot.hasRuns {
+            return .host
+        }
+        if let workspaceEnvironmentJSON = snapshot.workspaceEnvironmentJSON {
+            return ExecutionEnvironmentStore.decode(workspaceEnvironmentJSON)
+        }
+        return .host
     }
 
     static func plan(
