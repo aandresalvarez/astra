@@ -38,6 +38,29 @@ struct TaskPolicyPrecedenceTests {
         #expect(escalatedResolution.scope == .oneRunEscalation)
     }
 
+    @Test("Worker launch honors task Ask over the legacy skip-permissions flag")
+    func workerLaunchHonorsTaskAskOverLegacySkipPermissions() throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        let task = AgentTask(title: "Policy", goal: "Publish a draft pull request")
+        context.insert(task)
+        TaskPolicyStore.recordSelection(level: .review, task: task, modelContext: context, source: "task_composer")
+        try context.save()
+
+        let worker = AgentRuntimeWorker()
+        worker.skipPermissions = true
+        worker.permissionPolicy = .autonomous
+        worker.defaultAgentPolicyLevelRaw = AgentPolicyLevel.autonomous.rawValue
+
+        let launchPolicy = worker.effectivePermissionPolicy(
+            for: task,
+            selectedRuntime: .codexCLI,
+            executionPolicy: .default
+        )
+
+        #expect(launchPolicy == .restricted)
+    }
+
     @Test("Legacy global Auto fallback remains effective without a narrower selection")
     func legacyGlobalAutoFallbackRemainsEffective() throws {
         let container = try makeContainer()
@@ -55,6 +78,19 @@ struct TaskPolicyPrecedenceTests {
         #expect(resolution.level == .autonomous)
         #expect(resolution.scope == .globalDefault)
         #expect(resolution.policy.level == .autonomous)
+
+        let worker = AgentRuntimeWorker()
+        worker.skipPermissions = true
+        worker.permissionPolicy = .restricted
+        worker.defaultAgentPolicyLevelRaw = AgentPolicyLevel.review.rawValue
+
+        let launchPolicy = worker.effectivePermissionPolicy(
+            for: task,
+            selectedRuntime: .claudeCode,
+            executionPolicy: .default
+        )
+
+        #expect(launchPolicy == .autonomous)
     }
 
     private func makeContainer() throws -> ModelContainer {

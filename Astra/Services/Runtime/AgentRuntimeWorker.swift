@@ -2005,18 +2005,15 @@ final class AgentRuntimeWorker {
     }
 
     @MainActor
-    private func effectivePermissionPolicy(
+    func effectivePermissionPolicy(
         for task: AgentTask,
         selectedRuntime: AgentRuntimeID,
         executionPolicy: AgentRuntimeExecutionPolicy
     ) -> PermissionPolicy {
-        if skipPermissions {
-            return .autonomous
-        }
         let resolution = TaskPolicyStore.resolve(
             for: task,
             globalDefaultLevel: AgentPolicyLevel.normalized(defaultAgentPolicyLevelRaw),
-            fallbackPermissionPolicy: permissionPolicy,
+            fallbackPermissionPolicy: skipPermissions ? .autonomous : permissionPolicy,
             executionPolicy: executionPolicy
         )
         return ProviderPolicyModeResolver.permissionPolicy(
