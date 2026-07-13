@@ -218,6 +218,37 @@ struct PersistentStoreRecoveryTests {
         #expect(panel.message?.contains("schema V15") == true)
     }
 
+    @MainActor
+    @Test("startup blocker keeps its compact frame out of workspace restoration")
+    func startupBlockerPreservesWorkspaceFrameForRestoration() {
+        let workspaceFrame = NSRect(x: 80, y: 60, width: 1_360, height: 900)
+        let workspaceMinimumSize = NSSize(width: 900, height: 600)
+        let window = NSWindow(
+            contentRect: workspaceFrame,
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentMinSize = workspaceMinimumSize
+        window.isRestorable = true
+        let originalFrame = window.frame
+        let coordinator = StoreStartupBlockedWindowConfigurator.Coordinator()
+
+        coordinator.configure(window)
+
+        #expect(window.contentMinSize == StoreStartupBlockedWindowLayout.minimumContentSize)
+        #expect(window.contentRect(forFrameRect: window.frame).size == StoreStartupBlockedWindowLayout.preferredContentSize)
+        #expect(!window.isRestorable)
+        #expect(window.styleMask.contains(.resizable))
+        #expect(StoreStartupBlockedWindowLayout.maximumContentWidth < StoreStartupBlockedWindowLayout.preferredContentSize.width)
+
+        coordinator.restoreWorkspaceLayoutIfNeeded()
+
+        #expect(window.frame == originalFrame)
+        #expect(window.contentMinSize == workspaceMinimumSize)
+        #expect(window.isRestorable)
+    }
+
     @Test("contention retries are bounded")
     func contentionRetriesAreBounded() {
         #expect(PersistentStoreRetryPolicy.contentionDelays == [0.10, 0.25, 0.50])
