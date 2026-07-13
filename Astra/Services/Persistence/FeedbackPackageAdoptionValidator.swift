@@ -78,7 +78,7 @@ enum FeedbackPackageAdoptionValidator {
             from: manifestData
         ).canonicalized()
         try manifest.validate()
-        guard manifestData == (try FeedbackCanonicalJSONV1.encodeValidated(manifest)) else {
+        guard FeedbackRawCanonicalJSONVerifier.isCanonicalObject(manifestData) else {
             throw FeedbackPackageValidationError.nonCanonicalManifest
         }
         guard manifest == envelope.payload.evidence.canonicalized() else {

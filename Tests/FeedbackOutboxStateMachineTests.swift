@@ -277,6 +277,27 @@ struct FeedbackOutboxStateMachineTests {
     }
 
     @MainActor
+    @Test("Additive manifest members remain inert through adoption and recovery")
+    func additiveManifestMembersArePreserved() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let source = try writeFeedbackPreparedPackage(parent: fixture.root, envelope: fixture.envelope)
+        let manifestURL = source.appendingPathComponent(FeedbackPackageLayout.manifest)
+        let extendedManifest = try addingFeedbackMember(
+            "futureManifestMember",
+            value: ["ignored": true],
+            to: try Data(contentsOf: manifestURL)
+        )
+        try extendedManifest.write(to: manifestURL, options: .atomic)
+
+        try fixture.service.adoptPreparedPackage(reportID: fixture.reportID, from: source)
+        let recovery = try fixture.service.recoverablePreparedPackage(reportID: fixture.reportID)
+
+        #expect(recovery.manifest == fixture.envelope.payload.evidence.canonicalized())
+        #expect(recovery.manifestSHA256 == FeedbackCanonicalJSONV1.sha256Hex(extendedManifest))
+    }
+
+    @MainActor
     @Test("Adoption rejects non-canonical manifest bytes before ownership transfer")
     func nonCanonicalManifestIsRejected() throws {
         let fixture = try makeFixture()

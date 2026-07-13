@@ -687,10 +687,9 @@ public final class FeedbackOutboxService {
         else { throw FeedbackOutboxError.preparedPackageDoesNotMatchDraft }
 
         let manifest = validated.envelope.payload.evidence.canonicalized()
-        let canonicalManifest = try FeedbackCanonicalJSONV1.encodeValidated(manifest)
         let manifestURL = directory.appendingPathComponent(FeedbackPackageLayout.manifest)
         guard let manifestData = try? Data(contentsOf: manifestURL),
-              manifestData == canonicalManifest
+              FeedbackRawCanonicalJSONVerifier.isCanonicalObject(manifestData)
         else { throw FeedbackOutboxError.preparedPackageDoesNotMatchDraft }
         return FeedbackPreparedPackageRecovery(
             reportID: report.id,
