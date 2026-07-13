@@ -1,55 +1,39 @@
-# Files Shelf Contained Browser — Design QA
+# Workspace Creation Design QA
 
-- Source visual truth: `/Users/alvaro1/.codex/generated_images/019f4dcd-9544-7670-92b5-7bec867417c4/exec-285b2573-8e22-4b23-aa03-fec5abac9b29.png`
-- Implementation screenshot: `/var/tmp/astra-files-shelf-empty-v2.png`
-- Containment screenshot: `/var/tmp/astra-files-shelf-contained-v2.png`
-- Source viewport: 1536 × 768 concept crop
-- Implementation viewport: 1024 × 768 macOS window capture
-- State: Files shelf open, no file selected, file browser expanded inside the shelf
+## Evidence
 
-## Full-view comparison evidence
-
-The selected concept and the running implementation were inspected together. The implementation preserves the concept's defining relationship: the file browser begins below the Files shelf toolbar, stays clipped to the shelf, and partially covers only the shelf reader. It does not float over the neighboring workspace or task surface.
-
-Both views keep a persistent soft-teal `Browse files` control in the shelf toolbar, expose search and scope inside the browser, and retain the reader as the dominant remaining surface. The implementation capture includes the full 1024-pixel ASTRA window rather than the concept's shelf-focused crop, so the browser and empty state appear smaller in the comparison image without changing their in-app geometry.
-
-## Focused region comparison evidence
-
-- Typography: browser title, search placeholder, scope label, filenames, and empty-state hierarchy use ASTRA's existing type tokens and remain scan-friendly.
-- Layout: the drawer is anchored to the shelf's leading edge, starts beneath the toolbar, and preserves the toolbar and close controls above it.
-- Color: the Browse trigger, selected file treatment, folder icons, borders, and neutral surfaces use the established cyan and neutral tokens.
-- Empty state: `No file selected` and `Browse files` are centered in the unobscured reader, while an empty task scope offers `Browse workspace files` inside the drawer.
-- Assets: SF Symbols remain crisp and aligned at the rendered scale; no raster assets are introduced.
+- Onboarding before: `/Users/alvaro/.codex/visualizations/2026/07/13/019f5d22-ff52-7571-98bd-04ab871e073a/workspace-creation-onboarding-before.png`
+- Onboarding implementation: `/Users/alvaro/.codex/visualizations/2026/07/13/019f5d22-ff52-7571-98bd-04ab871e073a/workspace-creation-onboarding-final.jpeg`
+- Standard sheet before: `/Users/alvaro/.codex/visualizations/2026/07/13/019f5d22-ff52-7571-98bd-04ab871e073a/workspace-creation-standard-before.png`
+- Standard sheet implementation: `/Users/alvaro/.codex/visualizations/2026/07/13/019f5d22-ff52-7571-98bd-04ab871e073a/workspace-creation-standard-final.jpeg`
+- Runtime: ASTRA Dev from `/Users/alvaro/.codex/worktrees/8eb4/astra/dist/ASTRA Dev.app`
+- Onboarding viewport: 920 × 640 macOS setup sheet, step 3 of 4
+- Standard state: New Workspace sheet with name focused and capabilities collapsed
 
 ## Findings
 
-No actionable P0, P1, or P2 differences remain.
+No actionable P0, P1, or P2 issues remain.
 
-- [P3] The implementation uses ASTRA's denser production sizing, so the drawer and empty-state CTA are more compact than the enlarged concept. This is intentional and consistent with the existing shelf toolbar and row density.
+- Hierarchy: both entry points now follow the same scan path—purpose, name, shared guidance, optional capabilities, folder location, action.
+- Density: optional capability configuration is collapsed by default in both flows. The four integration rows remain available through the disclosure and were verified in the running app.
+- Understanding: onboarding adds one compact primer explaining when work belongs together; the standard sheet communicates the same model in one header sentence.
+- Consistency: wording, field sizes, disclosure styling, capability summary, and folder location come from the same shared presentation contract.
+- Validation: the empty required name is expressed as a neutral instruction in onboarding, not a red error before interaction.
+- Accessibility: the live accessibility tree exposes labels for Workspace name, Workspace guidance, Capabilities, each capability toggle, and the disabled primary action with its consequence. Keyboard focus begins in the name field.
+- Reflow: the onboarding form is constrained to a 720-point reading width inside the 920-point sheet, with no clipped fields or hidden primary action at the captured state.
 
-## Interaction evidence
+## Interaction Checks
 
-- First discovery opens the browser automatically; the discovery preference is persisted through a dedicated settings service.
-- A shelf with no selected file also opens the browser, so the user is not left with an undiscoverable blank reader.
-- The persistent `Browse files` trigger includes an up/down disclosure chevron and remains visible after the browser is closed.
-- `Browse workspace files` switches an empty task scope to the workspace scope.
-- Closing the current file leaves the contained browser open and presents the no-file empty state with a second `Browse files` entry point.
-- Pin, refresh, search, scope switching, selection, Escape dismissal, and outside-click dismissal remain available.
-- The isolated `ASTRA Dev.app` build launched successfully and the contained and empty states were verified in the running app.
+- [x] Onboarding advances from runtime to access to workspace setup.
+- [x] Onboarding initial capability disclosure is collapsed.
+- [x] Standard New Workspace initial capability disclosure is collapsed.
+- [x] Capability disclosure expands to Jira, GitHub, Google Cloud, and REDCap rows inside a scrollable form.
+- [x] The neutral name requirement and disabled Create workspace action are visible together.
+- [x] Closing replay restores `astra.hasCompletedOnboarding = 1` and `astra.onboardingReplayRequested.v1 = 0`.
+- [x] ASTRA Dev is running from the intended worktree executable.
 
-## Comparison history
+## Follow-up Polish
 
-The initial implementation used a more globally floating visual treatment. This iteration moved the browser to the selected contained model: it is now visually and geometrically part of the Files shelf, while still temporarily overlaying only the shelf reader.
-
-## Implementation checklist
-
-- [x] Shelf-contained temporary browser
-- [x] Persistent discoverable Browse files trigger
-- [x] First-use automatic presentation
-- [x] No-file automatic presentation
-- [x] Search and full-width scope row
-- [x] Empty task workspace fallback
-- [x] No-file reader CTA
-- [x] Pin, refresh, Escape, and outside-click behavior
+No P3 follow-up is required for acceptance.
 
 final result: passed

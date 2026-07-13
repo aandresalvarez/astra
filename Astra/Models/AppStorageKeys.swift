@@ -4,6 +4,7 @@ import ASTRACore
 public enum AppStorageKeys {
     public static let hasCompletedOnboarding = "astra.hasCompletedOnboarding"
     public static let hasPresentedOnboarding = "astra.hasPresentedOnboarding"
+    public static let onboardingReplayRequested = "astra.onboardingReplayRequested.v1"
     public static let onboardingEnabledCapabilityIDs = "astra.onboardingEnabledCapabilityIDs"
     public static let skipPermissions = "skipPermissions"
     public static let securityGateDefaultedToReview = "astra.securityGateDefaultedToReview.v1"
