@@ -101,6 +101,21 @@ enum SidebarLeanPresentation {
     // does double duty as a collapsed/expanded signal.
     static let workspaceRowsShowRestStateDisclosure = true
     static let workspaceDisclosureChevronWidth: CGFloat = 11
+    static let workspaceSectionHorizontalInset: CGFloat = 10
+    static let workspaceRowContentLeadingPadding: CGFloat = 4
+    static let workspaceRowContentTrailingPadding: CGFloat = 0
+    static let workspaceRowElementSpacing: CGFloat = 7
+    static let workspaceFolderIconWidth: CGFloat = 17
+    static var workspaceTrailingAccessoryInset: CGFloat {
+        workspaceSectionHorizontalInset + workspaceRowContentTrailingPadding
+    }
+    static var workspaceTitleLeadingOffset: CGFloat {
+        workspaceRowContentLeadingPadding
+            + workspaceDisclosureChevronWidth
+            + workspaceRowElementSpacing
+            + workspaceFolderIconWidth
+            + workspaceRowElementSpacing
+    }
     // The pinned drop target is drag-time chrome: it appears while a task
     // drag is in flight and otherwise cedes the space above the fold.
     static let pinnedDropZoneAppearsOnlyDuringDrag = true
@@ -111,9 +126,10 @@ enum SidebarLeanPresentation {
     static let unreadPreviewLimit = sectionPreviewLimit
     // Row surfaces still span the full rail width (childTaskListLeadingPadding
     // stays 0 so hover/selection chrome lines up with the workspace card), but
-    // child content steps in 12pt so containment reads without a guide rail.
+    // child content steps in 20pt so its title clears the workspace title's
+    // leading edge; containment reads without a guide rail.
     static let childTaskListLeadingPadding: CGFloat = 0
-    static let childTaskContentLeadingPadding: CGFloat = 12
+    static let childTaskContentLeadingPadding: CGFloat = 20
     static let workspaceRowTrailingSlotWidth: CGFloat = 58
     static let newTaskVerticalPadding: CGFloat = 7
     static let newTaskRestFillOpacity = 0.045
@@ -967,7 +983,7 @@ struct TaskSidebarView: View {
                     .help("New routine")
                 }
             }
-            .padding(.horizontal, 10)
+            .padding(.horizontal, SidebarLeanPresentation.workspaceSectionHorizontalInset)
             // Extra top padding creates breathing room between the three
             // top-level sections (Pinned / Workspaces / Routines). Cheaper
             // than a divider and lets the eye find the section boundaries.
@@ -1080,15 +1096,10 @@ struct TaskSidebarView: View {
                         showStarredWorkspacesOnly.toggle()
                     }
                 } label: {
-                    Image(systemName: showStarredWorkspacesOnly ? "star.fill" : "star")
-                        .font(Stanford.ui(13, weight: .medium))
-                        .foregroundStyle(showStarredWorkspacesOnly ? Stanford.lagunita : .secondary)
-                        .frame(width: 22, height: 22)
-                        .background(
-                            RoundedRectangle(cornerRadius: 6)
-                                .fill(Stanford.lagunita.opacity(isWorkspacesFilterHovered || showStarredWorkspacesOnly ? 0.10 : 0))
-                        )
-                        .contentShape(Rectangle())
+                    SidebarWorkspaceStarIcon(
+                        role: .filter(isEnabled: showStarredWorkspacesOnly),
+                        isHovered: isWorkspacesFilterHovered
+                    )
                 }
                 .buttonStyle(.plain)
                 .onHover { isWorkspacesFilterHovered = $0 }
@@ -1207,7 +1218,7 @@ struct TaskSidebarView: View {
         // the rounded bg almost touch the sidebar's right border.
         // Matches the inset modern macOS sidebars (Notes, Reminders)
         // use for selection chrome.
-        .padding(.horizontal, 10)
+        .padding(.horizontal, SidebarLeanPresentation.workspaceSectionHorizontalInset)
         .padding(.vertical, 1)
         .animation(accordionAnimation, value: isExpanded)
     }
@@ -1268,7 +1279,7 @@ struct TaskSidebarView: View {
         // task row itself, so the badge would just double the signal there.
         let runningTaskCount = isExpanded ? 0 : taskIndex.runningTaskCount(in: workspace)
 
-        return HStack(alignment: .center, spacing: 7) {
+        return HStack(alignment: .center, spacing: SidebarLeanPresentation.workspaceRowElementSpacing) {
             // One button spanning chevron + folder + title. These used to be
             // two buttons with the identical action, which made VoiceOver
             // announce "Expand <workspace>" twice per row.
@@ -1277,7 +1288,7 @@ struct TaskSidebarView: View {
                     toggleWorkspaceOpenState(workspace, using: taskIndex)
                 }
             } label: {
-                HStack(spacing: 7) {
+                HStack(spacing: SidebarLeanPresentation.workspaceRowElementSpacing) {
                     // Rest-state disclosure: expansion used to be signalled
                     // only by folder-icon fill, which read as two *kinds* of
                     // folder rather than two states. The chevron stays
@@ -1293,7 +1304,7 @@ struct TaskSidebarView: View {
                     Image(systemName: isSelected ? "folder.fill" : "folder")
                         .font(Stanford.ui(13, weight: .medium))
                         .foregroundStyle(isSelected ? Stanford.lagunita : .secondary)
-                        .frame(width: 17, height: 22)
+                        .frame(width: SidebarLeanPresentation.workspaceFolderIconWidth, height: 22)
 
                     Text(workspace.name)
                         .font(Stanford.body(15))
@@ -1317,8 +1328,11 @@ struct TaskSidebarView: View {
                 runningTaskCount: runningTaskCount
             )
         }
-        .padding(.leading, 4)
-        .padding(.trailing, 4)
+        .padding(.leading, SidebarLeanPresentation.workspaceRowContentLeadingPadding)
+        // The outer section inset already supplies the right breathing room.
+        // Adding another row inset here shifts the workspace star left of the
+        // header filter even when both glyphs share the same frame.
+        .padding(.trailing, SidebarLeanPresentation.workspaceRowContentTrailingPadding)
         .padding(.vertical, 6)
         .frame(height: Stanford.sidebarWorkspaceRowHeight, alignment: .leading)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -1997,10 +2011,7 @@ private struct WorkspaceRowActions: View {
             }
 
             if workspace.isStarred {
-                Image(systemName: "star.fill")
-                    .font(Stanford.ui(12, weight: .semibold))
-                    .foregroundStyle(Stanford.lagunita)
-                    .frame(width: 18, height: 22)
+                SidebarWorkspaceStarIcon(role: .workspaceStatus)
                     .accessibilityLabel("Starred")
             }
         }
