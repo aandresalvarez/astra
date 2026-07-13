@@ -219,21 +219,34 @@ struct PersistentStoreRecoveryTests {
     }
 
     @MainActor
-    @Test("startup blocker replaces the restored workspace frame with a compact resizable window")
-    func startupBlockerUsesCompactResizableWindow() {
+    @Test("startup blocker keeps its compact frame out of workspace restoration")
+    func startupBlockerPreservesWorkspaceFrameForRestoration() {
+        let workspaceFrame = NSRect(x: 80, y: 60, width: 1_360, height: 900)
+        let workspaceMinimumSize = NSSize(width: 900, height: 600)
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 1_360, height: 900),
+            contentRect: workspaceFrame,
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
         )
+        window.contentMinSize = workspaceMinimumSize
+        window.isRestorable = true
+        let originalFrame = window.frame
+        let coordinator = StoreStartupBlockedWindowConfigurator.Coordinator()
 
-        StoreStartupBlockedWindowConfigurator.Coordinator.applyRecoveryLayout(to: window)
+        coordinator.configure(window)
 
         #expect(window.contentMinSize == StoreStartupBlockedWindowLayout.minimumContentSize)
         #expect(window.contentRect(forFrameRect: window.frame).size == StoreStartupBlockedWindowLayout.preferredContentSize)
+        #expect(!window.isRestorable)
         #expect(window.styleMask.contains(.resizable))
         #expect(StoreStartupBlockedWindowLayout.maximumContentWidth < StoreStartupBlockedWindowLayout.preferredContentSize.width)
+
+        coordinator.restoreWorkspaceLayoutIfNeeded()
+
+        #expect(window.frame == originalFrame)
+        #expect(window.contentMinSize == workspaceMinimumSize)
+        #expect(window.isRestorable)
     }
 
     @Test("contention retries are bounded")
