@@ -114,7 +114,7 @@ struct GitPullRequestPublishCheckpoint: Equatable, Codable, Sendable {
 
 protocol GitPullRequestPublishCheckpointStoring: Sendable {
     func checkpoint(for proposalID: String) async -> GitPullRequestPublishCheckpoint?
-    func save(_ checkpoint: GitPullRequestPublishCheckpoint) async
+    func save(_ checkpoint: GitPullRequestPublishCheckpoint) async throws
     func removeCheckpoint(for proposalID: String) async
 }
 
@@ -129,7 +129,7 @@ actor InMemoryGitPullRequestPublishCheckpointStore: GitPullRequestPublishCheckpo
         checkpoints[proposalID]
     }
 
-    func save(_ checkpoint: GitPullRequestPublishCheckpoint) {
+    func save(_ checkpoint: GitPullRequestPublishCheckpoint) throws {
         checkpoints[checkpoint.proposalID] = checkpoint
     }
 
@@ -145,6 +145,7 @@ enum GitPullRequestPublishReceiptSource: String, Equatable, Codable, Sendable {
 
 enum GitPullRequestPublishReceiptVerification: String, Equatable, Codable, Sendable {
     case createResponseURL
+    case createdPullRequestLookup
     case existingPullRequestLookup
 }
 
@@ -177,7 +178,10 @@ enum GitPullRequestPublishPhase: String, Equatable, Sendable {
     case stageFiles
     case commit
     case push
+    case verifyRemote
+    case checkpoint
     case createPullRequest
+    case verifyPullRequest
 }
 
 enum GitPullRequestPublishError: LocalizedError, Equatable {
@@ -186,7 +190,10 @@ enum GitPullRequestPublishError: LocalizedError, Equatable {
     case expectedHeadMismatch(expected: String, actual: String)
     case remoteBaseMismatch(expectedHead: String, remoteBase: String)
     case remoteUnavailable(String)
+    case remoteCommitLookupUnavailable(ref: String, reason: String)
+    case remoteCommitMismatch(ref: String, expected: String, actual: String)
     case pullRequestLookupUnavailable(String)
+    case existingPullRequestIsNotDraft(number: Int, url: String)
     case headBranchAlreadyExists(String)
     case selectedChangesMissing([String])
     case selectedChangesConflicted([String])
@@ -211,8 +218,14 @@ enum GitPullRequestPublishError: LocalizedError, Equatable {
             return "The requested starting commit \(expectedHead) is not the remote base commit \(remoteBase). Publishing would include unreviewed commits."
         case let .remoteUnavailable(remote):
             return "Git remote \(remote) is unavailable."
+        case let .remoteCommitLookupUnavailable(ref, reason):
+            return "ASTRA could not resolve the authoritative remote commit for \(ref): \(reason)"
+        case let .remoteCommitMismatch(ref, expected, actual):
+            return "Remote ref \(ref) changed (expected \(expected), found \(actual))."
         case let .pullRequestLookupUnavailable(reason):
             return "ASTRA could not safely check for an existing pull request: \(reason)"
+        case let .existingPullRequestIsNotDraft(number, url):
+            return "Pull request #\(number) is already open but is not a draft: \(url)"
         case let .headBranchAlreadyExists(branch):
             return "Branch \(branch) already exists without an open pull request."
         case let .selectedChangesMissing(paths):

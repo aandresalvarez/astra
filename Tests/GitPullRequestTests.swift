@@ -45,6 +45,8 @@ struct GitPullRequestTests {
         #expect(GitService.normalizeBaseBranch("origin/release/1.0") == "release/1.0")
         #expect(GitService.normalizeBaseBranch("main") == "main")
         #expect(GitService.normalizeBaseBranch("  origin/dev  ") == "dev")
+        #expect(GitService.normalizeBaseBranch("upstream/main", remote: "upstream") == "main")
+        #expect(GitService.normalizeBaseBranch("feature/topic", remote: "upstream") == "feature/topic")
     }
 
     @Test("firstURL extracts an http(s) URL from CLI output")
@@ -462,6 +464,44 @@ struct GitPullRequestTests {
 
         #expect(remote == "upstream")
         #expect(url == "https://github.example.edu/example/repo")
+    }
+
+    @Test("authoritative remote lookup ignores a stale remote-tracking ref")
+    func authoritativeRemoteLookupIgnoresStaleTrackingRef() async throws {
+        let root = try makeTempDir()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let repository = URL(fileURLWithPath: root).appendingPathComponent("work", isDirectory: true)
+        let remote = URL(fileURLWithPath: root).appendingPathComponent("remote.git", isDirectory: true)
+        try FileManager.default.createDirectory(at: repository, withIntermediateDirectories: true)
+
+        #expect(runShell("git init --bare '\(remote.path)'", in: root) == 0)
+        #expect(runShell("git init -b main", in: repository.path) == 0)
+        #expect(runShell("git config user.email astra@example.com", in: repository.path) == 0)
+        #expect(runShell("git config user.name ASTRA", in: repository.path) == 0)
+        #expect(runShell("git remote add upstream '\(remote.path)'", in: repository.path) == 0)
+
+        let file = repository.appendingPathComponent("value.txt")
+        try "one\n".write(to: file, atomically: true, encoding: .utf8)
+        #expect(runShell("git add value.txt && git commit -m one && git push -u upstream main", in: repository.path) == 0)
+        let firstSHA = try #require(await GitService.shared.getCommitSHA("HEAD", at: repository.path))
+
+        try "two\n".write(to: file, atomically: true, encoding: .utf8)
+        #expect(runShell("git add value.txt && git commit -m two && git push upstream main", in: repository.path) == 0)
+        let secondSHA = try #require(await GitService.shared.getCommitSHA("HEAD", at: repository.path))
+        #expect(firstSHA != secondSHA)
+
+        // Deliberately rewind only the local tracking ref after the real remote
+        // advanced. rev-parse is stale; ls-remote must still return commit two.
+        #expect(runShell("git update-ref refs/remotes/upstream/main \(firstSHA)", in: repository.path) == 0)
+        #expect(await GitService.shared.getCommitSHA("upstream/main", at: repository.path) == firstSHA)
+
+        let result = await GitService.shared.lookupRemoteCommitSHA(
+            remote: "upstream",
+            branch: "main",
+            at: repository.path
+        )
+
+        #expect(result == .found(secondSHA))
     }
 
     // MARK: - gh integration (fake CLI)

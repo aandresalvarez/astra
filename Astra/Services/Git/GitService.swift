@@ -550,7 +550,7 @@ class GitService: GitRepositoryOperating {
     /// Default wall-clock budget for local index/read git operations.
     private static let defaultGitTimeout: TimeInterval = 30
     /// Extended budget for network operations (fetch/pull/push) that legitimately run longer.
-    private static let networkGitTimeout: TimeInterval = 300
+    static let networkGitTimeout: TimeInterval = 300
     private static let pullRequestCommentsGraphQLQuery = """
     query($owner: String!, $name: String!, $number: Int!) {
       repository(owner: $owner, name: $name) {
@@ -607,7 +607,7 @@ class GitService: GitRepositoryOperating {
     }
 
     /// Spawns a git subprocess and returns standard output or throws standard error.
-    private func runGit(
+    func runGit(
         at repoPath: String,
         arguments: [String],
         timeout: TimeInterval? = nil
@@ -929,7 +929,10 @@ class GitService: GitRepositoryOperating {
             throw GitHubCLIError.notInstalled
         }
 
-        let normalizedBase = GitService.normalizeBaseBranch(base)
+        let normalizedBase = GitService.normalizeBaseBranch(
+            base,
+            remote: await getDefaultRemote(at: repoPath)
+        )
         var arguments = [
             "pr", "create",
             "--base", normalizedBase,
@@ -1499,15 +1502,25 @@ class GitService: GitRepositoryOperating {
     /// Strips a leading `<remote>/` (e.g. `origin/`) from a base ref so it is a
     /// plain branch name suitable for `gh pr create --base`.
     static func normalizeBaseBranch(_ raw: String) -> String {
+        normalizeBaseBranch(raw, remote: "origin")
+    }
+
+    static func normalizeBaseBranch(_ raw: String, remote: String?) -> String {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.hasPrefix("origin/") {
-            return String(trimmed.dropFirst("origin/".count))
+        let configuredRemote = remote?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let effectiveRemote = configuredRemote.isEmpty ? "origin" : configuredRemote
+        if trimmed.hasPrefix("\(effectiveRemote)/") {
+            return String(trimmed.dropFirst(effectiveRemote.count + 1))
         }
         return trimmed
     }
 
     func normalizeBaseBranch(_ raw: String) -> String {
         Self.normalizeBaseBranch(raw)
+    }
+
+    func normalizeBaseBranch(_ raw: String, remote: String) -> String {
+        Self.normalizeBaseBranch(raw, remote: remote)
     }
 
     /// Returns the first http(s) URL found in arbitrary CLI output.

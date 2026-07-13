@@ -4,6 +4,68 @@ extension GitPullRequestPublishProposal: Identifiable {
     var id: String { proposalID }
 }
 
+struct GitPullRequestPublishReviewField: Equatable, Identifiable {
+    let id: String
+    let label: String
+    let value: String
+    let isMonospaced: Bool
+}
+
+enum GitPullRequestPublishReviewPresentation {
+    static func fields(for proposal: GitPullRequestPublishProposal) -> [GitPullRequestPublishReviewField] {
+        [
+            GitPullRequestPublishReviewField(
+                id: "repository",
+                label: "Repository",
+                value: proposal.repositoryPath,
+                isMonospaced: true
+            ),
+            GitPullRequestPublishReviewField(
+                id: "remote-name",
+                label: "Remote name",
+                value: proposal.remote,
+                isMonospaced: true
+            ),
+            GitPullRequestPublishReviewField(
+                id: "remote-url",
+                label: "Remote URL",
+                value: proposal.remoteURL,
+                isMonospaced: true
+            ),
+            GitPullRequestPublishReviewField(
+                id: "branch",
+                label: "Branch",
+                value: "\(proposal.headBranch) → \(proposal.baseBranch)",
+                isMonospaced: true
+            ),
+            GitPullRequestPublishReviewField(
+                id: "starting-commit",
+                label: "Starting commit",
+                value: proposal.expectedHeadSHA,
+                isMonospaced: true
+            ),
+            GitPullRequestPublishReviewField(
+                id: "commit",
+                label: "Commit",
+                value: proposal.commitMessage,
+                isMonospaced: false
+            ),
+            GitPullRequestPublishReviewField(
+                id: "pull-request-title",
+                label: "Pull request title",
+                value: proposal.pullRequestTitle,
+                isMonospaced: false
+            ),
+            GitPullRequestPublishReviewField(
+                id: "pull-request-body",
+                label: "Pull request body",
+                value: proposal.pullRequestBody,
+                isMonospaced: false
+            )
+        ]
+    }
+}
+
 struct GitPullRequestPublishReviewSheet: View {
     let proposal: GitPullRequestPublishProposal
     let onPublish: () async throws -> GitPullRequestPublishReceipt
@@ -29,12 +91,9 @@ struct GitPullRequestPublishReviewSheet: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
-                    labeledValue("Repository", proposal.repositoryPath, monospaced: true)
-                    labeledValue("Branch", "\(proposal.headBranch) → \(proposal.baseBranch)", monospaced: true)
-                    labeledValue("Starting commit", proposal.expectedHeadSHA, monospaced: true)
-                    labeledValue("Commit", proposal.commitMessage)
-                    labeledValue("Pull request title", proposal.pullRequestTitle)
-                    labeledValue("Pull request body", proposal.pullRequestBody)
+                    ForEach(GitPullRequestPublishReviewPresentation.fields(for: proposal)) { field in
+                        labeledValue(field.label, field.value, monospaced: field.isMonospaced)
+                    }
 
                     VStack(alignment: .leading, spacing: 7) {
                         Text("Files (\(proposal.selectedPaths.count))")

@@ -53,11 +53,66 @@ struct TaskGitPullRequestPublishCoordinatorTests {
         )
 
         let writer = FileGitPullRequestPublishCheckpointStore(directoryURL: root)
-        await writer.save(checkpoint)
+        try await writer.save(checkpoint)
         let reader = FileGitPullRequestPublishCheckpointStore(directoryURL: root)
 
         #expect(await reader.checkpoint(for: proposalID) == checkpoint)
         await reader.removeCheckpoint(for: proposalID)
         #expect(await reader.checkpoint(for: proposalID) == nil)
+    }
+
+    @Test("Restart resumes the persisted proposal only when its checkpoint exists")
+    func persistedProposalRequiresMatchingCheckpoint() async throws {
+        let task = AgentTask(title: "Publish", goal: "Create the pull request")
+        let run = TaskRun(task: task)
+        let proposal = GitPullRequestPublishProposal(
+            proposalID: String(repeating: "a", count: 64),
+            repositoryPath: "/tmp/repo",
+            remote: "origin",
+            remoteURL: "https://github.com/example/repo.git",
+            baseBranch: "main",
+            baseSHA: String(repeating: "b", count: 40),
+            headBranch: "astra/publish",
+            expectedHeadSHA: String(repeating: "c", count: 40),
+            selectedPaths: ["Astra/App.swift"],
+            selectedFileStates: [],
+            commitMessage: "Publish",
+            pullRequestTitle: "Publish",
+            pullRequestBody: "Body",
+            isDraft: true,
+            authorizationRequirement: .explicitApproval,
+            existingPullRequest: nil
+        )
+        let proposedEvent = TaskEvent.structuredPayloadEvent(
+            task: task,
+            type: TaskExternalOutcomeEventTypes.publicationProposed,
+            payload: proposal,
+            run: run
+        )
+        task.runs.append(run)
+        task.events.append(proposedEvent)
+
+        let store = InMemoryGitPullRequestPublishCheckpointStore()
+        #expect(await TaskGitPullRequestPublishCoordinator.persistedProposalForResume(
+            task: task,
+            runID: run.id,
+            checkpointStore: store
+        ) == nil)
+
+        try await store.save(GitPullRequestPublishCheckpoint(
+            proposalID: proposal.proposalID,
+            repositoryPath: proposal.repositoryPath,
+            remote: proposal.remote,
+            baseBranch: proposal.baseBranch,
+            headBranch: proposal.headBranch,
+            commitSHA: String(repeating: "d", count: 40),
+            state: .pushed
+        ))
+
+        #expect(await TaskGitPullRequestPublishCoordinator.persistedProposalForResume(
+            task: task,
+            runID: run.id,
+            checkpointStore: store
+        ) == proposal)
     }
 }

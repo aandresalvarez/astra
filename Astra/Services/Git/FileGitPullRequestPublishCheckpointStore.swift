@@ -27,14 +27,11 @@ actor FileGitPullRequestPublishCheckpointStore: GitPullRequestPublishCheckpointS
         }
     }
 
-    func save(_ checkpoint: GitPullRequestPublishCheckpoint) {
+    func save(_ checkpoint: GitPullRequestPublishCheckpoint) throws {
         guard let fileURL = checkpointURL(for: checkpoint.proposalID) else {
-            logFailure(
-                operation: "save",
-                proposalID: checkpoint.proposalID,
-                error: CheckpointStoreError.invalidProposalID
-            )
-            return
+            let error = CheckpointStoreError.invalidProposalID
+            logFailure(operation: "save", proposalID: checkpoint.proposalID, error: error)
+            throw error
         }
         do {
             try FileManager.default.createDirectory(
@@ -45,6 +42,7 @@ actor FileGitPullRequestPublishCheckpointStore: GitPullRequestPublishCheckpointS
             try data.write(to: fileURL, options: [.atomic])
         } catch {
             logFailure(operation: "save", proposalID: checkpoint.proposalID, error: error)
+            throw error
         }
     }
 

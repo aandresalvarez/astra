@@ -2,12 +2,21 @@ import Foundation
 import ASTRACore
 import ASTRAGitContracts
 
+/// Authoritative remote ref lookup. This is intentionally distinct from
+/// `getCommitSHA`, which may resolve a stale local remote-tracking ref.
+enum GitRemoteCommitLookupResult: Equatable, Sendable {
+    case found(String)
+    case missing
+    case unavailable(String)
+}
+
 protocol GitRepositoryOperating: AnyObject {
     func acquireIndexGuard() -> Bool
     func releaseIndexGuard()
     func scanForGitRepositories(primaryPath: String, additionalPaths: [String]) async -> [GitRepositoryInfo]
     func getCurrentBranch(at repoPath: String) async -> String
     func getCommitSHA(_ ref: String, at repoPath: String) async -> String?
+    func lookupRemoteCommitSHA(remote: String, branch: String, at repoPath: String) async -> GitRemoteCommitLookupResult
     func getLocalBranches(at repoPath: String) async -> [String]
     func checkoutBranch(_ branch: String, at repoPath: String) async throws
     func createBranch(_ branch: String, from base: String?, at repoPath: String) async throws
@@ -65,6 +74,7 @@ protocol GitRepositoryOperating: AnyObject {
         ghPathOverride: String?
     ) async throws -> String
     func normalizeBaseBranch(_ raw: String) -> String
+    func normalizeBaseBranch(_ raw: String, remote: String) -> String
 }
 
 extension GitRepositoryOperating {
@@ -72,6 +82,24 @@ extension GitRepositoryOperating {
     /// ref resolution. The real GitService implementation resolves via
     /// `git rev-parse --verify`.
     func getCommitSHA(_ ref: String, at repoPath: String) async -> String? { nil }
+
+    /// Alternate operators fail closed until they provide an authoritative
+    /// network-backed remote lookup.
+    func lookupRemoteCommitSHA(
+        remote: String,
+        branch: String,
+        at repoPath: String
+    ) async -> GitRemoteCommitLookupResult {
+        .unavailable("Authoritative remote commit lookup is not supported.")
+    }
+
+    func normalizeBaseBranch(_ raw: String, remote: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedRemote = remote.trimmingCharacters(in: .whitespacesAndNewlines)
+        let prefix = normalizedRemote.isEmpty ? "" : "\(normalizedRemote)/"
+        guard !prefix.isEmpty, trimmed.hasPrefix(prefix) else { return trimmed }
+        return String(trimmed.dropFirst(prefix.count))
+    }
 
     /// Source-compatible default for test doubles and alternate repository
     /// operators. GitService overrides this requirement to pass `--draft` to

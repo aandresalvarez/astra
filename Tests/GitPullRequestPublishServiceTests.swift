@@ -9,11 +9,27 @@ struct GitPullRequestPublishServiceTests {
     private static let commitSHA = String(repeating: "b", count: 40)
     private static let repositoryPath = "/Users/test/astra-publish-repo"
 
+    private actor FailingCheckpointStore: GitPullRequestPublishCheckpointStoring {
+        func checkpoint(for proposalID: String) -> GitPullRequestPublishCheckpoint? { nil }
+
+        func save(_ checkpoint: GitPullRequestPublishCheckpoint) throws {
+            throw NSError(domain: "CheckpointStore", code: 1, userInfo: [
+                NSLocalizedDescriptionKey: "checkpoint write failed"
+            ])
+        }
+
+        func removeCheckpoint(for proposalID: String) {}
+    }
+
     private final class FakeGit: GitRepositoryOperating {
         var headSHA = GitPullRequestPublishServiceTests.baseSHA
         var refSHAs: [String: String] = [
             "origin/main": GitPullRequestPublishServiceTests.baseSHA
         ]
+        var remoteRefSHAs: [String: String] = [
+            "origin/main": GitPullRequestPublishServiceTests.baseSHA
+        ]
+        var remoteLookupFailure: String?
         var currentBranch = "main"
         var statusFiles = [
             GitStatusFile(relativePath: "Sources/Feature.swift", status: "M", isStaged: false),
@@ -44,6 +60,17 @@ struct GitPullRequestPublishServiceTests {
         func getCommitSHA(_ ref: String, at repoPath: String) async -> String? {
             if ref == "HEAD" { return headSHA }
             return refSHAs[ref]
+        }
+
+        func lookupRemoteCommitSHA(
+            remote: String,
+            branch: String,
+            at repoPath: String
+        ) async -> GitRemoteCommitLookupResult {
+            calls.append("remote-lookup:\(remote):\(branch)")
+            if let remoteLookupFailure { return .unavailable(remoteLookupFailure) }
+            guard let sha = remoteRefSHAs["\(remote)/\(branch)"] else { return .missing }
+            return .found(sha)
         }
 
         func getLocalBranches(at repoPath: String) async -> [String] { Array(existingBranches) }
@@ -78,7 +105,7 @@ struct GitPullRequestPublishServiceTests {
 
         func pushSetUpstream(branch: String, remote: String, at repoPath: String) async throws {
             calls.append("push:\(remote):\(branch)")
-            refSHAs["\(remote)/\(branch)"] = headSHA
+            remoteRefSHAs["\(remote)/\(branch)"] = refSHAs[branch] ?? headSHA
         }
 
         func hasRemote(at repoPath: String) async -> Bool { remoteURL != nil }
@@ -185,6 +212,15 @@ struct GitPullRequestPublishServiceTests {
                     NSLocalizedDescriptionKey: "temporary GitHub failure"
                 ])
             }
+            if let reference = GitHubPullRequestRef.fromCreatedURL(createPullRequestURL) {
+                lookupResult = .found(GitHubPullRequestRef(
+                    number: reference.number,
+                    url: reference.url,
+                    title: title,
+                    isDraft: isDraft,
+                    state: "OPEN"
+                ))
+            }
             return createPullRequestURL
         }
 
@@ -193,11 +229,14 @@ struct GitPullRequestPublishServiceTests {
 
     private func request(
         authorization: GitPullRequestPublishAuthorizationRequirement = .explicitApproval,
-        paths: [String] = ["Tests/FeatureTests.swift", "Sources/Feature.swift"]
+        paths: [String] = ["Tests/FeatureTests.swift", "Sources/Feature.swift"],
+        remote: String = "origin",
+        baseBranch: String = "origin/main"
     ) -> GitPullRequestPublishRequest {
         GitPullRequestPublishRequest(
             repositoryPath: Self.repositoryPath,
-            baseBranch: "origin/main",
+            remote: remote,
+            baseBranch: baseBranch,
             headBranch: "feature/typed-publish",
             expectedHeadSHA: Self.baseSHA,
             selectedPaths: paths,
@@ -210,7 +249,7 @@ struct GitPullRequestPublishServiceTests {
 
     private func service(
         git: FakeGit,
-        store: InMemoryGitPullRequestPublishCheckpointStore = .init()
+        store: any GitPullRequestPublishCheckpointStoring = InMemoryGitPullRequestPublishCheckpointStore()
     ) -> GitPullRequestPublishService {
         GitPullRequestPublishService(
             git: git,
@@ -277,7 +316,7 @@ struct GitPullRequestPublishServiceTests {
         #expect(receipt.pullRequestURL == "https://github.com/example/repo/pull/42")
         #expect(receipt.isDraft)
         #expect(receipt.source == .created)
-        #expect(receipt.verification == .createResponseURL)
+        #expect(receipt.verification == .createdPullRequestLookup)
         #expect(receipt.completedAt == Date(timeIntervalSince1970: 1234))
         #expect(git.calls.filter { $0.hasPrefix("branch:") }.count == 1)
         #expect(git.calls.filter { $0.hasPrefix("commit:") }.count == 1)
@@ -336,7 +375,7 @@ struct GitPullRequestPublishServiceTests {
             isDraft: true,
             state: "OPEN"
         ))
-        git.refSHAs["origin/feature/typed-publish"] = Self.commitSHA
+        git.remoteRefSHAs["origin/feature/typed-publish"] = Self.commitSHA
         let publisher = service(git: git)
         let proposal = try await publisher.prepare(request())
 
@@ -348,6 +387,67 @@ struct GitPullRequestPublishServiceTests {
         #expect(receipt.source == .existing)
         #expect(receipt.verification == .existingPullRequestLookup)
         #expect(!git.calls.contains("acquire"))
+        #expect(!git.calls.contains { $0.hasPrefix("pr:") })
+    }
+
+    @Test("a non-draft existing PR cannot satisfy a draft publication")
+    func existingReadyPullRequestFailsDraftWorkflow() async throws {
+        let git = FakeGit()
+        git.lookupResult = .found(GitHubPullRequestRef(
+            number: 18,
+            url: "https://github.com/example/repo/pull/18",
+            title: "Ready",
+            isDraft: false,
+            state: "OPEN"
+        ))
+
+        do {
+            _ = try await service(git: git).prepare(request())
+            Issue.record("A ready PR unexpectedly satisfied draft publication")
+        } catch let error as GitPullRequestPublishError {
+            #expect(error == .existingPullRequestIsNotDraft(
+                number: 18,
+                url: "https://github.com/example/repo/pull/18"
+            ))
+        }
+    }
+
+    @Test("the selected non-origin remote is removed from the GitHub base branch")
+    func nonOriginBaseNormalizationUsesSelectedRemote() async throws {
+        let git = FakeGit()
+        git.remoteRefSHAs["upstream/main"] = Self.baseSHA
+
+        let proposal = try await service(git: git).prepare(request(
+            remote: "upstream",
+            baseBranch: "upstream/main"
+        ))
+
+        #expect(proposal.remote == "upstream")
+        #expect(proposal.baseBranch == "main")
+        #expect(git.calls.contains("remote-lookup:upstream:main"))
+    }
+
+    @Test("checkpoint save failure stops before push and pull request creation")
+    func checkpointSaveFailureStopsIrreversibleContinuation() async throws {
+        let git = FakeGit()
+        let publisher = service(git: git, store: FailingCheckpointStore())
+        let proposal = try await publisher.prepare(request())
+
+        do {
+            _ = try await publisher.publish(
+                proposal,
+                approval: GitPullRequestPublishApproval(proposalID: proposal.proposalID)
+            )
+            Issue.record("Publication continued after its checkpoint failed")
+        } catch let error as GitPullRequestPublishError {
+            #expect(error == .operationFailed(
+                phase: .checkpoint,
+                message: "checkpoint write failed"
+            ))
+        }
+
+        #expect(git.calls.filter { $0.hasPrefix("commit:") }.count == 1)
+        #expect(!git.calls.contains { $0.hasPrefix("push:") })
         #expect(!git.calls.contains { $0.hasPrefix("pr:") })
     }
 
@@ -371,6 +471,13 @@ struct GitPullRequestPublishServiceTests {
         }
         #expect(await store.checkpoint(for: proposal.proposalID)?.state == .pushed)
 
+        // Simulate another task checking out a different branch while the
+        // local remote-tracking ref remains stale. The authoritative remote is
+        // already at the checkpointed commit.
+        git.currentBranch = "main"
+        git.headSHA = Self.baseSHA
+        git.refSHAs["origin/feature/typed-publish"] = Self.baseSHA
+
         let receipt = try await publisher.publish(proposal, approval: approval)
 
         #expect(receipt.commitSHA == Self.commitSHA)
@@ -378,6 +485,8 @@ struct GitPullRequestPublishServiceTests {
         #expect(git.calls.filter { $0.hasPrefix("commit:") }.count == 1)
         #expect(git.calls.filter { $0.hasPrefix("push:") }.count == 1)
         #expect(git.calls.filter { $0.hasPrefix("pr:") }.count == 2)
+        #expect(git.currentBranch == "main")
+        #expect(git.calls.filter { $0 == "remote-lookup:origin:feature/typed-publish" }.count >= 2)
         #expect(await store.checkpoint(for: proposal.proposalID) == nil)
     }
 }

@@ -3968,11 +3968,11 @@ struct TaskMainView: View {
     }
 
     private var shouldOfferGitPublishReview: Bool {
-        task.status == .pendingUser
-            && !taskSkipPermissions
-            && TaskExternalOutcomeRequirementResolver.hasPendingGitHubPullRequest(task: task)
+        TaskGitPullRequestPublishReviewPolicy.shouldOffer(
+            taskStatus: task.status,
+            hasPendingPublication: TaskExternalOutcomeRequirementResolver.hasPendingGitHubPullRequest(task: task)
+        )
     }
-
     private var taskDecisionExtraDetails: [TaskDecisionDockDetail] {
         TaskDecisionDockContextBuilder.extraDetails(TaskDecisionDockContextBuilder.ExtraDetailsInput(
             status: task.status,

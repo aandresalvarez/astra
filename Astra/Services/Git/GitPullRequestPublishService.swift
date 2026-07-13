@@ -59,10 +59,11 @@ final class GitPullRequestPublishService {
                 throw GitPullRequestPublishError.remoteUnavailable(scope.remote)
             }
 
-            let remoteBaseRef = "\(scope.remote)/\(scope.baseBranch)"
-            guard let baseSHA = await git.getCommitSHA(remoteBaseRef, at: scope.repositoryPath) else {
-                throw GitPullRequestPublishError.unableToResolveCommit(remoteBaseRef)
-            }
+            let baseSHA = try await authoritativeRemoteCommitSHA(
+                remote: scope.remote,
+                branch: scope.baseBranch,
+                repositoryPath: scope.repositoryPath
+            )
 
             let existingPullRequest: GitHubPullRequestRef?
             switch await git.lookupOpenPullRequest(
@@ -71,6 +72,12 @@ final class GitPullRequestPublishService {
                 ghPathOverride: nil
             ) {
             case let .found(reference):
+                guard reference.isDraft else {
+                    throw GitPullRequestPublishError.existingPullRequestIsNotDraft(
+                        number: reference.number,
+                        url: reference.url
+                    )
+                }
                 existingPullRequest = reference
             case .none:
                 existingPullRequest = nil
@@ -247,7 +254,8 @@ final class GitPullRequestPublishService {
                     message: "Git reported success but HEAD did not advance."
                 )
             }
-            await checkpointStore.save(GitPullRequestPublishCheckpoint(
+            phase = .checkpoint
+            try await checkpointStore.save(GitPullRequestPublishCheckpoint(
                 proposalID: proposal.proposalID,
                 repositoryPath: proposal.repositoryPath,
                 remote: proposal.remote,
@@ -263,7 +271,13 @@ final class GitPullRequestPublishService {
                 remote: proposal.remote,
                 at: proposal.repositoryPath
             )
-            await checkpointStore.save(GitPullRequestPublishCheckpoint(
+            phase = .verifyRemote
+            try await verifyAuthoritativeRemoteCommit(
+                proposal: proposal,
+                expectedSHA: commitSHA
+            )
+            phase = .checkpoint
+            try await checkpointStore.save(GitPullRequestPublishCheckpoint(
                 proposalID: proposal.proposalID,
                 repositoryPath: proposal.repositoryPath,
                 remote: proposal.remote,
@@ -286,19 +300,18 @@ final class GitPullRequestPublishService {
             guard let pullRequest = GitHubPullRequestRef.fromCreatedURL(url) else {
                 throw GitPullRequestPublishError.invalidPullRequestURL(url)
             }
+            phase = .verifyPullRequest
+            let verifiedPullRequest = try await verifyDraftPullRequest(
+                proposal: proposal,
+                expected: pullRequest
+            )
 
             let result = try receipt(
                 proposal: proposal,
-                pullRequest: GitHubPullRequestRef(
-                    number: pullRequest.number,
-                    url: pullRequest.url,
-                    title: proposal.pullRequestTitle,
-                    isDraft: true,
-                    state: "OPEN"
-                ),
+                pullRequest: verifiedPullRequest,
                 commitSHA: commitSHA,
                 source: .created,
-                verification: .createResponseURL
+                verification: .createdPullRequestLookup
             )
             await checkpointStore.removeCheckpoint(for: proposal.proposalID)
             logSuccess(result)
@@ -328,11 +341,17 @@ final class GitPullRequestPublishService {
                 actual: actualHead
             )
         }
-        guard let baseSHA = await git.getCommitSHA(
-            "\(proposal.remote)/\(proposal.baseBranch)",
-            at: proposal.repositoryPath
-        ), baseSHA.caseInsensitiveCompare(proposal.baseSHA) == .orderedSame else {
-            throw GitPullRequestPublishError.proposalChanged
+        let baseSHA = try await authoritativeRemoteCommitSHA(
+            remote: proposal.remote,
+            branch: proposal.baseBranch,
+            repositoryPath: proposal.repositoryPath
+        )
+        guard baseSHA.caseInsensitiveCompare(proposal.baseSHA) == .orderedSame else {
+            throw GitPullRequestPublishError.remoteCommitMismatch(
+                ref: "\(proposal.remote)/\(proposal.baseBranch)",
+                expected: proposal.baseSHA,
+                actual: baseSHA
+            )
         }
         guard let remoteURL = await git.getRemoteURL(
             at: proposal.repositoryPath,
@@ -368,23 +387,45 @@ final class GitPullRequestPublishService {
             throw GitPullRequestPublishError.proposalChanged
         }
 
-        let currentBranch = await git.getCurrentBranch(at: proposal.repositoryPath)
-        guard currentBranch == proposal.headBranch,
-              let headSHA = await git.getCommitSHA("HEAD", at: proposal.repositoryPath),
-              let localBranchSHA = await git.getCommitSHA(proposal.headBranch, at: proposal.repositoryPath),
-              headSHA.caseInsensitiveCompare(checkpoint.commitSHA) == .orderedSame,
-              localBranchSHA.caseInsensitiveCompare(checkpoint.commitSHA) == .orderedSame else {
+        // Resume is bound to the named branch, not the user's current checkout.
+        // Another task may have switched HEAD after the checkpoint was written.
+        guard let localBranchSHA = await git.getCommitSHA(
+            proposal.headBranch,
+            at: proposal.repositoryPath
+        ), localBranchSHA.caseInsensitiveCompare(checkpoint.commitSHA) == .orderedSame else {
             throw GitPullRequestPublishError.proposalChanged
         }
 
         let remoteRef = "\(proposal.remote)/\(proposal.headBranch)"
-        let remoteSHA = await git.getCommitSHA(remoteRef, at: proposal.repositoryPath)
-        if let remoteSHA {
-            guard remoteSHA.caseInsensitiveCompare(checkpoint.commitSHA) == .orderedSame else {
-                throw GitPullRequestPublishError.proposalChanged
+        let remoteSHA: String?
+        switch await git.lookupRemoteCommitSHA(
+            remote: proposal.remote,
+            branch: proposal.headBranch,
+            at: proposal.repositoryPath
+        ) {
+        case let .found(sha):
+            guard sha.caseInsensitiveCompare(checkpoint.commitSHA) == .orderedSame else {
+                throw GitPullRequestPublishError.remoteCommitMismatch(
+                    ref: remoteRef,
+                    expected: checkpoint.commitSHA,
+                    actual: sha
+                )
             }
-        } else if checkpoint.state == .pushed {
-            throw GitPullRequestPublishError.proposalChanged
+            remoteSHA = sha
+        case .missing:
+            guard checkpoint.state == .committed else {
+                throw GitPullRequestPublishError.remoteCommitMismatch(
+                    ref: remoteRef,
+                    expected: checkpoint.commitSHA,
+                    actual: "missing"
+                )
+            }
+            remoteSHA = nil
+        case let .unavailable(reason):
+            throw GitPullRequestPublishError.remoteCommitLookupUnavailable(
+                ref: remoteRef,
+                reason: reason
+            )
         }
 
         if checkpoint.state == .committed && remoteSHA == nil {
@@ -400,16 +441,27 @@ final class GitPullRequestPublishService {
                     message: String(error.localizedDescription.prefix(500))
                 )
             }
+            try await verifyAuthoritativeRemoteCommit(
+                proposal: proposal,
+                expectedSHA: checkpoint.commitSHA
+            )
         }
-        await checkpointStore.save(GitPullRequestPublishCheckpoint(
-            proposalID: checkpoint.proposalID,
-            repositoryPath: checkpoint.repositoryPath,
-            remote: checkpoint.remote,
-            baseBranch: checkpoint.baseBranch,
-            headBranch: checkpoint.headBranch,
-            commitSHA: checkpoint.commitSHA,
-            state: .pushed
-        ))
+        do {
+            try await checkpointStore.save(GitPullRequestPublishCheckpoint(
+                proposalID: checkpoint.proposalID,
+                repositoryPath: checkpoint.repositoryPath,
+                remote: checkpoint.remote,
+                baseBranch: checkpoint.baseBranch,
+                headBranch: checkpoint.headBranch,
+                commitSHA: checkpoint.commitSHA,
+                state: .pushed
+            ))
+        } catch {
+            throw GitPullRequestPublishError.operationFailed(
+                phase: .checkpoint,
+                message: String(error.localizedDescription.prefix(500))
+            )
+        }
 
         let url: String
         do {
@@ -431,21 +483,89 @@ final class GitPullRequestPublishService {
         guard let reference = GitHubPullRequestRef.fromCreatedURL(url) else {
             throw GitPullRequestPublishError.invalidPullRequestURL(url)
         }
+        let verifiedReference = try await verifyDraftPullRequest(
+            proposal: proposal,
+            expected: reference
+        )
         let result = try receipt(
             proposal: proposal,
-            pullRequest: GitHubPullRequestRef(
-                number: reference.number,
-                url: reference.url,
-                title: proposal.pullRequestTitle,
-                isDraft: true,
-                state: "OPEN"
-            ),
+            pullRequest: verifiedReference,
             commitSHA: checkpoint.commitSHA,
             source: .created,
-            verification: .createResponseURL
+            verification: .createdPullRequestLookup
         )
         await checkpointStore.removeCheckpoint(for: proposal.proposalID)
         return result
+    }
+
+    private func authoritativeRemoteCommitSHA(
+        remote: String,
+        branch: String,
+        repositoryPath: String
+    ) async throws -> String {
+        let ref = "\(remote)/\(branch)"
+        switch await git.lookupRemoteCommitSHA(
+            remote: remote,
+            branch: branch,
+            at: repositoryPath
+        ) {
+        case let .found(sha):
+            return sha
+        case .missing:
+            throw GitPullRequestPublishError.unableToResolveCommit(ref)
+        case let .unavailable(reason):
+            throw GitPullRequestPublishError.remoteCommitLookupUnavailable(
+                ref: ref,
+                reason: reason
+            )
+        }
+    }
+
+    private func verifyAuthoritativeRemoteCommit(
+        proposal: GitPullRequestPublishProposal,
+        expectedSHA: String
+    ) async throws {
+        let actualSHA = try await authoritativeRemoteCommitSHA(
+            remote: proposal.remote,
+            branch: proposal.headBranch,
+            repositoryPath: proposal.repositoryPath
+        )
+        guard actualSHA.caseInsensitiveCompare(expectedSHA) == .orderedSame else {
+            throw GitPullRequestPublishError.remoteCommitMismatch(
+                ref: "\(proposal.remote)/\(proposal.headBranch)",
+                expected: expectedSHA,
+                actual: actualSHA
+            )
+        }
+    }
+
+    private func verifyDraftPullRequest(
+        proposal: GitPullRequestPublishProposal,
+        expected: GitHubPullRequestRef
+    ) async throws -> GitHubPullRequestRef {
+        switch await git.lookupOpenPullRequest(
+            repoPath: proposal.repositoryPath,
+            head: proposal.headBranch,
+            ghPathOverride: nil
+        ) {
+        case let .found(reference):
+            guard reference.number == expected.number else {
+                throw GitPullRequestPublishError.proposalChanged
+            }
+            guard reference.isDraft else {
+                throw GitPullRequestPublishError.existingPullRequestIsNotDraft(
+                    number: reference.number,
+                    url: reference.url
+                )
+            }
+            return reference
+        case .none:
+            throw GitPullRequestPublishError.pullRequestLookupUnavailable(
+                "GitHub did not return the pull request after creation."
+            )
+        case let .unavailable(reason):
+            throw GitPullRequestPublishError.pullRequestLookupUnavailable(reason)
+        }
     }
 
     private func captureSelectedFileStates(
@@ -533,7 +653,7 @@ final class GitPullRequestPublishService {
             throw GitPullRequestPublishError.invalidRequest("Remote name is invalid.")
         }
 
-        let baseBranch = git.normalizeBaseBranch(request.baseBranch)
+        let baseBranch = git.normalizeBaseBranch(request.baseBranch, remote: remote)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let headBranch = request.headBranch.trimmingCharacters(in: .whitespacesAndNewlines)
         guard Self.isSafeBranchName(baseBranch) else {
@@ -644,10 +764,17 @@ final class GitPullRequestPublishService {
         proposal: GitPullRequestPublishProposal,
         pullRequest: GitHubPullRequestRef
     ) async throws -> GitPullRequestPublishReceipt {
-        let remoteHeadRef = "\(proposal.remote)/\(proposal.headBranch)"
-        guard let remoteHeadSHA = await git.getCommitSHA(remoteHeadRef, at: proposal.repositoryPath) else {
-            throw GitPullRequestPublishError.unableToResolveCommit(remoteHeadRef)
+        guard pullRequest.isDraft else {
+            throw GitPullRequestPublishError.existingPullRequestIsNotDraft(
+                number: pullRequest.number,
+                url: pullRequest.url
+            )
         }
+        let remoteHeadSHA = try await authoritativeRemoteCommitSHA(
+            remote: proposal.remote,
+            branch: proposal.headBranch,
+            repositoryPath: proposal.repositoryPath
+        )
         if let checkpoint = await checkpointStore.checkpoint(for: proposal.proposalID) {
             guard checkpoint.commitSHA.caseInsensitiveCompare(remoteHeadSHA) == .orderedSame else {
                 throw GitPullRequestPublishError.proposalChanged

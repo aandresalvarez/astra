@@ -43,6 +43,15 @@ final class TaskGitPullRequestPublishCoordinator {
             throw TaskGitPullRequestPublishCoordinatorError.noPendingPublication
         }
 
+        let checkpointStore = checkpointStore(for: task)
+        if let persistedProposal = await Self.persistedProposalForResume(
+            task: task,
+            runID: run.id,
+            checkpointStore: checkpointStore
+        ) {
+            return persistedProposal
+        }
+
         let repositoryPath = TaskWorkspaceAccess(task: task).codeWorkingDirectory
         guard !repositoryPath.isEmpty,
               let remote = await git.getDefaultRemote(at: repositoryPath),
@@ -85,7 +94,7 @@ final class TaskGitPullRequestPublishCoordinator {
             pullRequestBody: body,
             authorizationRequirement: .explicitApproval
         )
-        let proposal = try await service(for: task).prepare(publishRequest)
+        let proposal = try await service(checkpointStore: checkpointStore).prepare(publishRequest)
         modelContext.insert(TaskEvent.structuredPayloadEvent(
             task: task,
             type: TaskExternalOutcomeEventTypes.publicationProposed,
@@ -169,15 +178,57 @@ final class TaskGitPullRequestPublishCoordinator {
     }
 
     private func service(for task: AgentTask) -> GitPullRequestPublishService {
+        service(checkpointStore: checkpointStore(for: task))
+    }
+
+    private func service(
+        checkpointStore: any GitPullRequestPublishCheckpointStoring
+    ) -> GitPullRequestPublishService {
+        GitPullRequestPublishService(git: git, checkpointStore: checkpointStore)
+    }
+
+    private func checkpointStore(
+        for task: AgentTask
+    ) -> FileGitPullRequestPublishCheckpointStore {
         let taskFolder = TaskWorkspaceAccess(task: task).canonicalTaskFolder
         let checkpointDirectory = URL(fileURLWithPath: taskFolder, isDirectory: true)
             .appendingPathComponent("git-publish-checkpoints", isDirectory: true)
-        return GitPullRequestPublishService(
-            git: git,
-            checkpointStore: FileGitPullRequestPublishCheckpointStore(
-                directoryURL: checkpointDirectory
-            )
+        return FileGitPullRequestPublishCheckpointStore(
+            directoryURL: checkpointDirectory
         )
+    }
+
+    /// A proposal becomes resume authority only after the publish service has
+    /// written its matching checkpoint. This avoids reviving an abandoned
+    /// review proposal while preserving the exact pre-commit approval across
+    /// app restarts after commit or push.
+    static func persistedProposalForResume(
+        task: AgentTask,
+        runID: UUID,
+        checkpointStore: any GitPullRequestPublishCheckpointStoring
+    ) async -> GitPullRequestPublishProposal? {
+        let proposedEvents = task.events
+            .filter {
+                $0.type == TaskExternalOutcomeEventTypes.publicationProposed
+                    && $0.run?.id == runID
+            }
+            .sorted { lhs, rhs in
+                if lhs.timestamp != rhs.timestamp { return lhs.timestamp > rhs.timestamp }
+                return lhs.id.uuidString > rhs.id.uuidString
+            }
+
+        for event in proposedEvents {
+            guard let data = event.payload.data(using: .utf8),
+                  let proposal = try? TaskEventPayloadCodec.makeDecoder().decode(
+                    GitPullRequestPublishProposal.self,
+                    from: data
+                  ),
+                  await checkpointStore.checkpoint(for: proposal.proposalID) != nil else {
+                continue
+            }
+            return proposal
+        }
+        return nil
     }
 
     static func taskOwnedRelativePaths(
