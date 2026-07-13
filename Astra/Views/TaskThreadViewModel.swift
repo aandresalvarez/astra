@@ -1,4 +1,5 @@
 import Foundation
+import SwiftData
 import ASTRAModels
 import ASTRAPersistence
 
@@ -76,6 +77,12 @@ struct TaskThreadSnapshotReadiness: Equatable, Sendable {
     }
 }
 
+enum TaskThreadHistoryLoadState: Equatable {
+    case idle
+    case loading
+    case failed(String)
+}
+
 @Observable @MainActor
 final class TaskThreadViewModel {
     typealias SnapshotBuilder = @Sendable (
@@ -134,7 +141,20 @@ final class TaskThreadViewModel {
     /// can no longer apply or disturb the single active worker reference.
     private var pendingSnapshotRequest: SnapshotRequest?
     private var generatedFilesTask: Task<Void, Never>?
+    private var requestedRefreshTask: Task<Void, Never>?
+    private var hasPendingRequestedRefresh = false
+    private var historyTaskID: UUID?
+    private var historyTask: AgentTask?
     private var expansionRunCount: Int = 50
+    private var historyModelContext: ModelContext?
+    private var historyCursor: TaskThreadHistoryCursor?
+    private var loadedHistoryEvents: [UUID: TaskEventSnapshot] = [:]
+    private var loadedHistoryStateAnchors: [UUID: TaskEventSnapshot] = [:]
+    private var loadedHistoryRuns: [UUID: TaskRunSnapshotInput] = [:]
+    private var historyTotalEventCount = 0
+    private var historyTotalRunCount = 0
+    private(set) var historyLoadState: TaskThreadHistoryLoadState = .idle
+    private(set) var hasEarlierHistory = false
     private var lastSnapshotApplyAt: Date = .distantPast
     private(set) var lastSnapshotAppliedUptimeNanoseconds: UInt64?
     /// Trace identity currently attached to the initial snapshot pipeline. This
@@ -146,6 +166,7 @@ final class TaskThreadViewModel {
     private var deferredLiveSnapshotCount = 0
     private var lastLiveSnapshotTelemetryAt: Date = .distantPast
     private(set) var snapshotBuildCountForTesting = 0
+    private(set) var historyReadCountForTesting = 0
     private let snapshotBuilder: SnapshotBuilder?
     private let snapshotBuildExecutor = TaskThreadSnapshotBuildExecutor()
 
@@ -156,16 +177,35 @@ final class TaskThreadViewModel {
         self.snapshotBuilder = snapshotBuilder
     }
 
-    func reset(for task: AgentTask, responsivenessContext: TaskThreadResponsivenessContext? = nil) {
+    func reset(
+        for task: AgentTask,
+        modelContext: ModelContext? = nil,
+        responsivenessContext: TaskThreadResponsivenessContext? = nil
+    ) {
         PerformanceTelemetry.measure(
             "chat_thread_reset",
             thresholdMilliseconds: PerformanceTelemetry.uiFrameThresholdMilliseconds,
             fields: Self.taskFields(task)
         ) {
             expansionRunCount = 50
+            historyModelContext = modelContext
+            historyTaskID = task.id
+            historyTask = task
+            historyCursor = nil
+            loadedHistoryEvents = [:]
+            loadedHistoryStateAnchors = [:]
+            loadedHistoryRuns = [:]
+            historyTotalEventCount = 0
+            historyTotalRunCount = 0
+            historyLoadState = .idle
+            hasEarlierHistory = false
+            historyReadCountForTesting = 0
             snapshotTrigger = nil
             self.responsivenessContext?.cancel()
             pendingSnapshotRequest = nil
+            requestedRefreshTask?.cancel()
+            requestedRefreshTask = nil
+            hasPendingRequestedRefresh = false
             supersedeSnapshotWorker()
             lastSnapshotApplyAt = .distantPast
             lastSnapshotAppliedUptimeNanoseconds = nil
@@ -183,6 +223,40 @@ final class TaskThreadViewModel {
     }
 
     func refreshSnapshot(for task: AgentTask) {
+        refreshSnapshot(for: task, preparedInput: nil, bypassCache: false)
+    }
+
+    /// Coalesces high-frequency typed invalidations before they touch SwiftData.
+    /// Direct user actions still call `refreshSnapshot` when they need an
+    /// immediate projection; streaming changes use this bounded cadence.
+    func requestSnapshotRefresh(for task: AgentTask) {
+        hasPendingRequestedRefresh = true
+        guard requestedRefreshTask == nil else { return }
+        let taskID = task.id
+        requestedRefreshTask = Task.detached { [weak self] in
+            try? await Task.sleep(for: .milliseconds(120))
+            guard !Task.isCancelled else { return }
+            await self?.performRequestedRefresh(taskID: taskID)
+        }
+    }
+
+    private func performRequestedRefresh(taskID: UUID) {
+        requestedRefreshTask = nil
+        guard historyTaskID == taskID,
+              hasPendingRequestedRefresh,
+              let historyTask,
+              historyTask.id == taskID else {
+            return
+        }
+        hasPendingRequestedRefresh = false
+        refreshSnapshot(for: historyTask)
+    }
+
+    private func refreshSnapshot(
+        for task: AgentTask,
+        preparedInput: TaskThreadSnapshotInput?,
+        bypassCache: Bool
+    ) {
         var fields = Self.taskFields(task)
         let responsivenessContext = responsivenessContext
         // A terminal cache key is intentionally built before the reactive
@@ -190,7 +264,8 @@ final class TaskThreadViewModel {
         // keeping repeated opens of long completed histories off the main
         // actor's event scan path.
         let cacheKey = TaskThreadSnapshotCacheKey(task: task, maxRuns: expansionRunCount)
-        if let cacheKey,
+        let applicableCacheKey = bypassCache ? nil : cacheKey
+        if preparedInput == nil, let cacheKey = applicableCacheKey,
            let cachedSnapshot = Self.terminalSnapshotCache.snapshot(for: cacheKey) {
             snapshotRevision += 1
             pendingSnapshotRequest = nil
@@ -202,6 +277,7 @@ final class TaskThreadViewModel {
             lastSnapshotCacheState = "hit"
             lastSnapshotApplyAt = Date()
             lastSnapshotAppliedUptimeNanoseconds = DispatchTime.now().uptimeNanoseconds
+            hasEarlierHistory = cachedSnapshot.omittedRunCount > 0 || cachedSnapshot.omittedEventCount > 0
             if let responsivenessContext {
                 PerformanceTelemetry.log(
                     "task_open_snapshot_cache_apply",
@@ -217,21 +293,50 @@ final class TaskThreadViewModel {
             return
         }
 
-        let trigger = TaskThreadSnapshotTrigger(task: task)
-        guard snapshotTrigger != trigger else { return }
-        snapshotTrigger = trigger
-        fields.merge(Self.triggerFields(trigger), uniquingKeysWith: { _, new in new })
+        let inputStart = DispatchTime.now().uptimeNanoseconds
+        let input: TaskThreadSnapshotInput
+        if let preparedInput {
+            input = preparedInput
+        } else if let historyModelContext {
+            do {
+                let page = try TaskThreadHistoryReader.initialPage(
+                    taskID: task.id,
+                    modelContext: historyModelContext
+                )
+                historyReadCountForTesting += 1
+                mergeLatestHistoryPage(page)
+                input = storageBackedInput(for: task)
+                historyLoadState = .idle
+            } catch {
+                historyLoadState = .failed(error.localizedDescription)
+                PerformanceTelemetry.log(
+                    "thread_history_read_failed",
+                    level: .error,
+                    fields: fields.merging(["operation": "latest"], uniquingKeysWith: { _, new in new }),
+                    taskID: task.id
+                )
+                return
+            }
+        } else {
+            input = TaskThreadSnapshotInput(
+                task: task,
+                maxRuns: expansionRunCount,
+                performanceFields: responsivenessContext?.fields ?? [:]
+            )
+        }
+
+        let trigger = TaskThreadSnapshotTrigger(task: task, input: input)
+        let resolvedTrigger = historyModelContext == nil
+            ? TaskThreadSnapshotTrigger(task: task)
+            : trigger
+        guard snapshotTrigger != resolvedTrigger else { return }
+        snapshotTrigger = resolvedTrigger
+        fields.merge(Self.triggerFields(resolvedTrigger), uniquingKeysWith: { _, new in new })
         fields.merge([
-            "status": trigger.status.rawValue,
-            "latest_run_status": trigger.latestRunStatus?.rawValue ?? "none"
+            "status": resolvedTrigger.status.rawValue,
+            "latest_run_status": resolvedTrigger.latestRunStatus?.rawValue ?? "none"
         ], uniquingKeysWith: { _, new in new })
 
-        let inputStart = DispatchTime.now().uptimeNanoseconds
-        let input = TaskThreadSnapshotInput(
-            task: task,
-            maxRuns: expansionRunCount,
-            performanceFields: responsivenessContext?.fields ?? [:]
-        )
         if let responsivenessContext {
             PerformanceTelemetry.log(
                 "task_open_snapshot_input_capture",
@@ -240,12 +345,12 @@ final class TaskThreadViewModel {
                 taskID: task.id
             )
         }
-        lastSnapshotCacheState = cacheKey == nil ? "not_applicable" : "miss"
+        lastSnapshotCacheState = applicableCacheKey == nil ? "not_applicable" : "miss"
         fields.merge(Self.inputFields(input), uniquingKeysWith: { _, new in new })
 
-        let isLive = trigger.status == .running
-            || trigger.status == .queued
-            || trigger.latestRunStatus == .running
+        let isLive = resolvedTrigger.status == .running
+            || resolvedTrigger.status == .queued
+            || resolvedTrigger.latestRunStatus == .running
         let elapsed = Date().timeIntervalSince(lastSnapshotApplyAt)
         let minimumInterval = Self.liveSnapshotMinimumInterval
         let delay = isLive && elapsed < minimumInterval ? (minimumInterval - elapsed) : 0
@@ -265,8 +370,8 @@ final class TaskThreadViewModel {
         }
         pendingSnapshotRequest = SnapshotRequest(
             input: input,
-            trigger: trigger,
-            cacheKey: cacheKey,
+            trigger: resolvedTrigger,
+            cacheKey: applicableCacheKey,
             taskID: taskID,
             workspaceID: workspaceID,
             revision: revision,
@@ -340,6 +445,9 @@ final class TaskThreadViewModel {
                 } catch is CancellationError {
                     break
                 } catch {
+                    if self.historyLoadState == .loading {
+                        self.historyLoadState = .failed(error.localizedDescription)
+                    }
                     PerformanceTelemetry.log(
                         "thread_snapshot_build_failed",
                         level: .error,
@@ -390,6 +498,9 @@ final class TaskThreadViewModel {
         }
         let applyStartedAt = DispatchTime.now().uptimeNanoseconds
         snapshot = builtSnapshot
+        if historyLoadState == .loading {
+            historyLoadState = .idle
+        }
         appliedSnapshotRevision += 1
         appliedSnapshotTaskID = request.taskID
         if let cacheKey = request.cacheKey {
@@ -492,10 +603,168 @@ final class TaskThreadViewModel {
     }
 
     func expandWindow(for task: AgentTask) {
+        if historyModelContext != nil {
+            loadEarlierHistory(for: task)
+            return
+        }
         guard snapshot?.omittedRunCount ?? 0 > 0 else { return }
         expansionRunCount += 50
         snapshotTrigger = nil
         refreshSnapshot(for: task)
+    }
+
+    func loadEarlierHistory(for task: AgentTask) {
+        guard historyLoadState != .loading else { return }
+        guard let modelContext = historyModelContext else {
+            expandWindow(for: task)
+            return
+        }
+
+        historyLoadState = .loading
+        Task { [weak self] in
+            await Task.yield()
+            self?.performEarlierHistoryLoad(for: task, modelContext: modelContext)
+        }
+    }
+
+    private func performEarlierHistoryLoad(for task: AgentTask, modelContext: ModelContext) {
+        do {
+            var initializedHistory = false
+            if historyCursor == nil {
+                let initialPage = try TaskThreadHistoryReader.initialPage(
+                    taskID: task.id,
+                    modelContext: modelContext
+                )
+                historyReadCountForTesting += 1
+                replaceHistory(with: initialPage)
+                initializedHistory = true
+            }
+            guard let cursor = historyCursor, cursor.hasEarlierHistory else {
+                hasEarlierHistory = false
+                if initializedHistory {
+                    snapshotTrigger = nil
+                    refreshSnapshot(
+                        for: task,
+                        preparedInput: storageBackedInput(for: task),
+                        bypassCache: true
+                    )
+                } else {
+                    historyLoadState = .idle
+                }
+                return
+            }
+            let page = try TaskThreadHistoryReader.previousPage(
+                taskID: task.id,
+                before: cursor,
+                modelContext: modelContext
+            )
+            historyReadCountForTesting += 1
+            mergeEarlierHistoryPage(page)
+            snapshotTrigger = nil
+            refreshSnapshot(
+                for: task,
+                preparedInput: storageBackedInput(for: task),
+                bypassCache: true
+            )
+        } catch {
+            historyLoadState = .failed(error.localizedDescription)
+            AppLogger.error(
+                "Could not load earlier task history: \(error.localizedDescription)",
+                category: "UI"
+            )
+        }
+    }
+
+    func retryEarlierHistory(for task: AgentTask) {
+        guard case .failed = historyLoadState else { return }
+        historyLoadState = .idle
+        loadEarlierHistory(for: task)
+    }
+
+    private func replaceHistory(with page: TaskThreadHistoryPage) {
+        loadedHistoryRuns = Dictionary(uniqueKeysWithValues: page.runs.map { ($0.id, $0) })
+        loadedHistoryEvents = Dictionary(uniqueKeysWithValues: page.events.map { ($0.id, $0) })
+        loadedHistoryStateAnchors = Dictionary(uniqueKeysWithValues: page.stateAnchors.map { ($0.id, $0) })
+        historyTotalRunCount = page.totalRunCount
+        historyTotalEventCount = page.totalEventCount
+        historyCursor = page.cursor
+        hasEarlierHistory = page.cursor.hasEarlierHistory
+    }
+
+    private func mergeLatestHistoryPage(_ page: TaskThreadHistoryPage) {
+        if loadedHistoryRuns.isEmpty && loadedHistoryEvents.isEmpty {
+            replaceHistory(with: page)
+            return
+        }
+        if page.totalRunCount < loadedHistoryRuns.count || page.totalEventCount < loadedHistoryEvents.count {
+            // Compaction or deletion invalidated accumulated pages. Prefer an
+            // accurate latest page over retaining projections of deleted rows.
+            replaceHistory(with: page)
+            return
+        }
+        for run in page.runs { loadedHistoryRuns[run.id] = run }
+        for event in page.events { loadedHistoryEvents[event.id] = event }
+        loadedHistoryStateAnchors = Dictionary(uniqueKeysWithValues: page.stateAnchors.map { ($0.id, $0) })
+        historyTotalRunCount = page.totalRunCount
+        historyTotalEventCount = page.totalEventCount
+        let oldestRun = loadedHistoryRuns.values.min {
+            $0.startedAt == $1.startedAt
+                ? $0.id.uuidString < $1.id.uuidString
+                : $0.startedAt < $1.startedAt
+        }
+        let oldestEvent = loadedHistoryEvents.values.min {
+            $0.timestamp == $1.timestamp
+                ? $0.id.uuidString < $1.id.uuidString
+                : $0.timestamp < $1.timestamp
+        }
+        historyCursor = TaskThreadHistoryCursor(
+            run: oldestRun.map { TaskThreadRunCursor(startedAt: $0.startedAt, id: $0.id) },
+            event: oldestEvent.map { TaskThreadEventCursor(timestamp: $0.timestamp, id: $0.id) },
+            hasEarlierRuns: page.totalRunCount > loadedHistoryRuns.count,
+            hasEarlierEvents: page.totalEventCount > loadedHistoryEvents.count
+        )
+        hasEarlierHistory = historyCursor?.hasEarlierHistory == true
+    }
+
+    private func mergeEarlierHistoryPage(_ page: TaskThreadHistoryPage) {
+        for run in page.runs { loadedHistoryRuns[run.id] = run }
+        for event in page.events { loadedHistoryEvents[event.id] = event }
+        historyTotalRunCount = page.totalRunCount
+        historyTotalEventCount = page.totalEventCount
+        let previousCursor = historyCursor
+        historyCursor = TaskThreadHistoryCursor(
+            run: page.cursor.run ?? previousCursor?.run,
+            event: page.cursor.event ?? previousCursor?.event,
+            hasEarlierRuns: page.cursor.hasEarlierRuns,
+            hasEarlierEvents: page.cursor.hasEarlierEvents
+        )
+        hasEarlierHistory = historyCursor?.hasEarlierHistory == true
+    }
+
+    private func storageBackedInput(for task: AgentTask) -> TaskThreadSnapshotInput {
+        let projectedEvents = loadedHistoryEvents.merging(loadedHistoryStateAnchors) { pageEvent, _ in
+            pageEvent
+        }
+        let events = projectedEvents.values.sorted { lhs, rhs in
+            if lhs.timestamp != rhs.timestamp { return lhs.timestamp < rhs.timestamp }
+            return lhs.id.uuidString < rhs.id.uuidString
+        }
+        let runs = loadedHistoryRuns.values.sorted { lhs, rhs in
+            if lhs.startedAt != rhs.startedAt { return lhs.startedAt < rhs.startedAt }
+            return lhs.id.uuidString < rhs.id.uuidString
+        }
+        let omittedEventCount = max(0, historyTotalEventCount - events.count)
+        let omittedRunCount = max(0, historyTotalRunCount - runs.count)
+        return TaskThreadSnapshotInput(
+            goal: task.goal,
+            createdAt: task.createdAt,
+            events: events,
+            runs: runs,
+            totalEventCount: historyTotalEventCount,
+            omittedEventCount: omittedEventCount,
+            totalRunCount: historyTotalRunCount,
+            omittedRunCount: omittedRunCount
+        )
     }
 
     func refreshGeneratedFiles(folder: String) {

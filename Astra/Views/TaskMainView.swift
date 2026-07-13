@@ -224,72 +224,31 @@ private struct AgentGeneratedFilesListView: View {
 /// callbacks still fire at snapshot granularity. See the UI responsiveness
 /// audit (Cluster 1).
 ///
-/// The snapshot trigger specifically is polled rather than watched reactively
-/// *while live*: `TaskThreadSnapshotTrigger` is O(event count) to build (it
-/// walks `task.events` to exclude high-frequency streaming-delta types from the
-/// count), and reactive `.onChange` would rebuild it on every single streamed
-/// conversation chunk — O(n) work per chunk, compounding to roughly O(n²) over a
-/// long-running task. Polling at `livePollIntervalNanoseconds` while
-/// `TaskLiveness.isLive(task:)` is true (a cheap, O(run count) check, safe to
-/// evaluate every render) bounds that to O(n) per tick instead, matching
-/// `TaskThreadViewModel.liveSnapshotMinimumInterval`'s cadence for the
-/// downstream rebuild it feeds.
-///
-/// A poll-only design has a gap, though: `.task(id:)` is cancelled the instant
-/// `isLive` flips (SwiftUI restarts it for the new id), which can land mid-sleep
-/// and skip the one comparison that would have caught that exact transition —
-/// so a task finishing its last event right as it goes terminal, or a draft
-/// task's first event right as it goes live, can be swallowed. And a task that
-/// stays non-live the whole time (e.g. editing a draft's messages) would never
-/// poll at all, missing its own — infrequent, so individually cheap — mutations
-/// entirely.
-///
-/// `reactiveTriggerWhenNotLive` closes both gaps with one `.onChange`: it's
-/// `nil` while live (so watching it costs only the cheap `isLive` check, no
-/// event scan, during a live session) and a real trigger otherwise, so it fires
-/// exactly once at each live↔non-live transition (nil↔value) *and* stays live
-/// (pun intended) as the reactive path for a task that's never live at all —
-/// this is the same reactive `.onChange` the whole file used before, just
-/// scoped to skip the expensive build while polling already has it covered.
+/// Thread refresh is revision/event driven. `AgentTask.updatedAt` covers durable
+/// lifecycle and ordinary event mutations, while `taskThreadDidChange` covers
+/// coalesced streaming mutations that do not create a new relationship row.
+/// Neither path walks the complete event or run relationships.
 private struct TaskThreadChangeObserver: View {
     let task: AgentTask
     let generatedFilesLatestRun: TaskRunSnapshot?
     let onSnapshotChange: () -> Void
     let onGeneratedFilesChange: () -> Void
 
-    private static let livePollIntervalNanoseconds: UInt64 = 120_000_000
-
-    private var reactiveTriggerWhenNotLive: TaskThreadSnapshotTrigger? {
-        TaskLiveness.isLive(task: task) ? nil : TaskThreadSnapshotTrigger(task: task)
-    }
-
     var body: some View {
         Color.clear
-            .onChange(of: reactiveTriggerWhenNotLive) { _, _ in
+            .onChange(of: task.updatedAt) { _, _ in
                 onSnapshotChange()
             }
-            .task(id: TaskLiveness.isLive(task: task)) {
-                guard TaskLiveness.isLive(task: task) else { return }
-                await pollSnapshotTriggerWhileLive()
+            .onReceive(NotificationCenter.default.publisher(for: .taskThreadDidChange)) { notification in
+                guard let change = notification.object as? TaskThreadChange,
+                      change.taskID == task.id else { return }
+                onSnapshotChange()
             }
             .onChange(of: TaskGeneratedFilesTrigger(task: task, latestRun: generatedFilesLatestRun)) { _, _ in
                 onGeneratedFilesChange()
             }
     }
 
-    @MainActor
-    private func pollSnapshotTriggerWhileLive() async {
-        var lastTrigger = TaskThreadSnapshotTrigger(task: task)
-        while TaskLiveness.isLive(task: task), !Task.isCancelled {
-            try? await Task.sleep(nanoseconds: Self.livePollIntervalNanoseconds)
-            guard !Task.isCancelled else { return }
-            let trigger = TaskThreadSnapshotTrigger(task: task)
-            if trigger != lastTrigger {
-                lastTrigger = trigger
-                onSnapshotChange()
-            }
-        }
-    }
 }
 
 /// Unified main view: compact status bar + chat-style activity thread + composer
@@ -410,8 +369,8 @@ struct TaskMainView: View {
         threadViewModel.snapshot ?? TaskThreadSnapshot.placeholder(goal: task.goal, createdAt: task.createdAt)
     }
 
-    private var planStateCacheRefreshTrigger: TaskPlanStateCacheSignature {
-        TaskPlanStateSnapshot.signature(for: task)
+    private var planStateCacheRefreshTrigger: TaskPlanStateRefreshTrigger {
+        TaskPlanStateRefreshTrigger(task: task)
     }
 
     private var runtimeHealth: TaskRuntimeHealth {
@@ -684,7 +643,7 @@ struct TaskMainView: View {
                 generatedFilesLatestRun: currentThreadSnapshot.latestRun,
                 onSnapshotChange: {
                     deferTaskViewMutation {
-                        threadViewModel.refreshSnapshot(for: task)
+                        threadViewModel.requestSnapshotRefresh(for: task)
                         schedulePlanStateCacheRefresh()
                         runtimeHealthNow = Date()
                         logRuntimeHealthIfNeeded(reason: "snapshot")
@@ -704,6 +663,12 @@ struct TaskMainView: View {
         }
         .onChange(of: runtimeHealth.telemetrySignature) { _, _ in
             logRuntimeHealthIfNeeded(reason: "health")
+        }
+        .onChange(of: threadViewModel.historyLoadState) { _, state in
+            if case .failed = state {
+                isExpandingWindow = false
+                expansionAnchorItemID = nil
+            }
         }
         .onReceive(Timer.publish(every: 30, on: .main, in: .common).autoconnect()) { now in
             guard task.status == .running else {
@@ -761,6 +726,7 @@ struct TaskMainView: View {
             ) {
                 threadViewModel.reset(
                     for: task,
+                    modelContext: modelContext,
                     responsivenessContext: TaskOpenResponsivenessTelemetry.responsivenessContext(
                         task: task,
                         scope: taskOpenResponsivenessScope
@@ -805,7 +771,11 @@ struct TaskMainView: View {
     }
 
     private func refreshPlanStateCache() {
-        guard let snapshot = TaskMainViewPerformanceTelemetry.refreshedPlanStateSnapshot(task: task, cached: cachedPlanStateSnapshot) else { return }
+        guard let snapshot = TaskMainViewPerformanceTelemetry.refreshedPlanStateSnapshot(
+            task: task,
+            modelContext: modelContext,
+            cached: cachedPlanStateSnapshot
+        ) else { return }
         cachedPlanStateSnapshot = snapshot
     }
 
@@ -995,8 +965,8 @@ struct TaskMainView: View {
             task.id.uuidString,
             task.status.rawValue,
             TaskWorkspaceAccess(task: task).taskFolder,
-            "\(task.runs.count)",
-            "\(task.events.count)",
+            "\(currentThreadSnapshot.totalRunCount)",
+            "\(currentThreadSnapshot.totalEventCount)",
             latestRun?.id.uuidString ?? "none",
             latestRun?.status.rawValue ?? "none",
             "\(latestRun?.fileChangesJSONLength ?? 0)"
@@ -1766,21 +1736,13 @@ struct TaskMainView: View {
                 .padding(.horizontal, 14)
         }
 
-        if currentThreadSnapshot.omittedRunCount > 0 {
-            HStack(spacing: 6) {
-                Rectangle()
-                    .fill(Stanford.sandstone.opacity(0.36))
-                    .frame(height: 1)
-                    .frame(maxWidth: 40)
-                Text("Earlier activity")
-                    .font(Stanford.chatMeta(11))
-                    .foregroundStyle(Stanford.coolGrey.opacity(0.6))
-                Rectangle()
-                    .fill(Stanford.sandstone.opacity(0.36))
-                    .frame(height: 1)
-                    .frame(maxWidth: .infinity)
-            }
-            .padding(.horizontal, 14)
+        if threadViewModel.hasEarlierHistory || threadViewModel.historyLoadState != .idle {
+            TaskThreadHistoryControl(
+                state: threadViewModel.historyLoadState,
+                onLoad: requestEarlierHistory,
+                onRetry: retryEarlierHistory
+            )
+                .padding(.horizontal, 14)
         }
 
         ForEach(currentThreadSnapshot.conversationItems) { item in
@@ -2181,11 +2143,27 @@ struct TaskMainView: View {
 
     private func handleChatTopPositionChange(topMinY: CGFloat) {
         guard topMinY > -300 else { return }
-        guard currentThreadSnapshot.omittedRunCount > 0 else { return }
+        guard threadViewModel.hasEarlierHistory else { return }
+        guard !isExpandingWindow else { return }
+        requestEarlierHistory()
+    }
+
+    private func requestEarlierHistory() {
+        guard threadViewModel.hasEarlierHistory else { return }
         guard !isExpandingWindow else { return }
         isExpandingWindow = true
         expansionAnchorItemID = currentThreadSnapshot.conversationItems.first?.id
-        threadViewModel.expandWindow(for: task)
+        threadViewModel.loadEarlierHistory(for: task)
+        if case .failed = threadViewModel.historyLoadState {
+            isExpandingWindow = false
+            expansionAnchorItemID = nil
+        }
+    }
+
+    private func retryEarlierHistory() {
+        isExpandingWindow = false
+        expansionAnchorItemID = nil
+        threadViewModel.retryEarlierHistory(for: task)
     }
 
     @ViewBuilder
@@ -2277,8 +2255,7 @@ struct TaskMainView: View {
     }
 
     private var currentSnapshotMatchesTaskHistory: Bool {
-        currentThreadSnapshot.totalEventCount >= task.events.count
-            && currentThreadSnapshot.totalRunCount >= task.runs.count
+        threadViewModel.appliedSnapshotReadiness.isReady(for: task.id)
     }
 
     private func scrollChatToBottomAfterLayout(_ proxy: ScrollViewProxy, animated: Bool) {

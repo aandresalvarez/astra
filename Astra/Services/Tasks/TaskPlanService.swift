@@ -69,8 +69,12 @@ enum TaskPlanService: Sendable {
     }
 
     static func reconstruct(for task: AgentTask) -> TaskPlanState {
-        var state = reconstruct(from: task.events)
-        applyRecoveredProtocolProgress(from: task.runs, to: &state)
+        reconstruct(from: task.events, recoveryRuns: task.runs)
+    }
+
+    static func reconstruct(from events: [TaskEvent], recoveryRuns: [TaskRun]) -> TaskPlanState {
+        var state = reconstruct(from: events)
+        applyRecoveredProtocolProgress(from: recoveryRuns, to: &state)
         return state
     }
 

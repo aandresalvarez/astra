@@ -1,10 +1,51 @@
 import Foundation
+import SwiftData
 import Testing
 import ASTRAModels
 @testable import ASTRA
 
 @Suite("Task Plan Service")
 struct TaskPlanServiceTests {
+    @MainActor
+    @Test("Storage-backed plan projection ignores ordinary long-thread messages")
+    func storageBackedPlanProjectionFiltersConversationHistory() throws {
+        let container = try ModelContainer(
+            for: Workspace.self, AgentTask.self, TaskEvent.self, TaskRun.self,
+            configurations: ModelConfiguration(isStoredInMemoryOnly: true)
+        )
+        let context = container.mainContext
+        let task = AgentTask(title: "Long plan thread", goal: "Ship the plan")
+        context.insert(task)
+        for index in 0..<2_000 {
+            context.insert(TaskEvent(
+                task: task,
+                type: "agent.response",
+                payload: "ordinary message \(index)"
+            ))
+        }
+        let plan = TaskPlanPayload(
+            title: "Filtered plan",
+            goal: "Ship the plan",
+            steps: [TaskPlanPayloadStep(id: "step-1", title: "Inspect")]
+        )
+        context.insert(TaskEvent(
+            task: task,
+            type: TaskPlanEventTypes.created,
+            payload: TaskPlanService.encodePlanPayload(plan)
+        ))
+        try context.save()
+
+        let input = try TaskPlanStateReader.read(taskID: task.id, modelContext: context)
+        let snapshot = try TaskPlanStateSnapshot.refreshed(
+            for: task,
+            modelContext: context,
+            cached: .empty
+        )
+
+        #expect(input.events.count == 1)
+        #expect(snapshot?.state.plan?.title == "Filtered plan")
+    }
+
     @Test("Structured ASTRA_PLAN payload is parsed and normalized")
     func structuredPlanParses() throws {
         let planID = UUID(uuidString: "6E5D41A5-67DE-43F3-B9FB-3DA6D58D4F87")!

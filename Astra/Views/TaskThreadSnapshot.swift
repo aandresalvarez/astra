@@ -247,7 +247,7 @@ struct TaskThreadSnapshotInput: Sendable {
         )
     }
 
-    private init(
+    init(
         goal: String,
         createdAt: Date,
         events: [TaskEventSnapshot],
@@ -265,6 +265,19 @@ struct TaskThreadSnapshotInput: Sendable {
         self.omittedEventCount = omittedEventCount
         self.totalRunCount = totalRunCount
         self.omittedRunCount = omittedRunCount
+    }
+}
+
+enum TaskThreadStateEventPolicy {
+    static let eventTypes: [String] = [
+        "astra.todo.replace", "astra.complete", "astra.protocol.invalid",
+        "astra.permission_manifest", "astra.permission_summary",
+        "permission.approval.requested", "permission.request.resolved",
+        "task.dismissed"
+    ]
+
+    static func contains(_ type: String) -> Bool {
+        eventTypes.contains(type)
     }
 }
 
@@ -351,15 +364,7 @@ private struct TaskThreadSnapshotWindow {
     }
 
     private static func isStateEvent(_ event: TaskEvent) -> Bool {
-        switch event.type {
-        case "astra.todo.replace", "astra.complete", "astra.protocol.invalid",
-             "astra.permission_manifest", "astra.permission_summary",
-             "permission.approval.requested", "permission.request.resolved",
-             "task.dismissed":
-            return true
-        default:
-            return false
-        }
+        TaskThreadStateEventPolicy.contains(event.type)
     }
 
     private struct StateEventKey: Hashable {
@@ -841,7 +846,7 @@ struct TaskThreadSnapshot: Sendable {
         )
     }
 
-    private init(
+    init(
         goal: String,
         createdAt: Date,
         events: [TaskEventSnapshot],
@@ -1453,6 +1458,8 @@ struct TaskThreadSnapshotTrigger: Equatable {
     private static let highFrequencyEventTypes: Set<String> = ["agent.response", "agent.thinking"]
 
     let taskID: UUID
+    let revision: Date
+    private let usesDurableRevision: Bool
     let eventCount: Int
     let visibleEventCount: Int
     let runCount: Int
@@ -1468,6 +1475,8 @@ struct TaskThreadSnapshotTrigger: Equatable {
         let runs = task.runs
         let latestRun = runs.max { $0.startedAt < $1.startedAt }
         taskID = task.id
+        revision = task.updatedAt
+        usesDurableRevision = false
         eventCount = events.count
         visibleEventCount = events.reduce(0) { count, event in
             Self.highFrequencyEventTypes.contains(event.type) ? count : count + 1
@@ -1496,8 +1505,27 @@ struct TaskThreadSnapshotTrigger: Equatable {
         )
     }
 
+    init(task: AgentTask, input: TaskThreadSnapshotInput) {
+        let latestRun = input.runs.max { $0.startedAt < $1.startedAt }
+        taskID = task.id
+        revision = task.updatedAt
+        usesDurableRevision = true
+        eventCount = input.totalEventCount
+        // Storage-backed refresh is already driven by the durable task revision
+        // and typed insertion notifications. Avoid rescanning loaded events just
+        // to manufacture a second invalidation signature.
+        visibleEventCount = input.totalEventCount
+        runCount = input.totalRunCount
+        status = task.status
+        latestRunID = latestRun?.id
+        latestRunStatus = latestRun?.status
+        latestRunOutputCount = latestRun?.output.utf8.count ?? 0
+        latestRunOutputBucket = Self.outputBucket(for: latestRunOutputCount)
+    }
+
     static func == (lhs: TaskThreadSnapshotTrigger, rhs: TaskThreadSnapshotTrigger) -> Bool {
         lhs.taskID == rhs.taskID &&
+            (!lhs.usesDurableRevision && !rhs.usesDurableRevision || lhs.revision == rhs.revision) &&
             lhs.visibleEventCount == rhs.visibleEventCount &&
             lhs.runCount == rhs.runCount &&
             lhs.status == rhs.status &&
@@ -1512,25 +1540,9 @@ struct TaskThreadSnapshotTrigger: Equatable {
     }
 }
 
-/// Cheap, task-based liveness check used to gate how often the O(event count)
-/// `TaskThreadSnapshotTrigger` gets rebuilt (see `TaskThreadChangeObserver` in
-/// TaskMainView.swift), without needing to build the trigger itself just to find
-/// out. Reads directly off `task`/`task.runs` (O(run count), not O(event count))
-/// instead of via a constructed trigger.
-///
-/// An earlier version tried to make the trigger's `visibleEventCount` itself O(1)
-/// amortized via an incremental scan over `task.events`, trusting that new events
-/// only ever land at the tail. That assumption doesn't hold: `AgentEventRecorder`
-/// inserts new `TaskEvent`s through the model context rather than appending to
-/// `task.events` directly, and SwiftData doesn't guarantee that relationship
-/// array's ordering, so an incremental scan (even with a boundary-identity check)
-/// could silently miss a new event inserted ahead of the previously-scanned
-/// region. Rather than chase a provably-correct-but-intricate incremental scheme,
-/// this keeps `visibleEventCount` a plain, always-correct full scan and instead
-/// bounds how often it runs: `TaskThreadChangeObserver` polls at
-/// `livePollIntervalNanoseconds` while `isLive` is true instead of rebuilding the trigger on
-/// every single SwiftData-observed mutation.
-///
+/// Task-based liveness projection retained for non-transcript consumers. The
+/// production task thread now uses typed change notifications and bounded
+/// SwiftData pages instead of polling or rebuilding relationship-wide triggers.
 /// Deliberately narrower than `TaskThreadViewModel.refreshSnapshot`'s inline
 /// liveness check (`status == .running/.queued || latestRunStatus == .running`),
 /// which also treats `.queued` as live — that's the right call for deciding
@@ -1574,8 +1586,6 @@ struct TaskThreadSnapshotCacheKey: Hashable, Sendable {
     let createdAt: Date
     let completedAt: Date?
     let maxRuns: Int
-    let eventCount: Int
-    let runCount: Int
 
     init?(
         task: AgentTask,
@@ -1588,8 +1598,6 @@ struct TaskThreadSnapshotCacheKey: Hashable, Sendable {
         createdAt = task.createdAt
         completedAt = task.completedAt
         self.maxRuns = maxRuns
-        eventCount = task.events.count
-        runCount = task.runs.count
     }
 
     private static func isCacheable(status: TaskStatus) -> Bool {

@@ -1,9 +1,12 @@
 import Foundation
+import SwiftData
 import ASTRAModels
 
 enum TaskMainViewPerformanceTelemetry {
+    @MainActor
     static func refreshedPlanStateSnapshot(
         task: AgentTask,
+        modelContext: ModelContext,
         cached: TaskPlanStateSnapshot
     ) -> TaskPlanStateSnapshot? {
         PerformanceTelemetry.measure(
@@ -16,21 +19,26 @@ enum TaskMainViewPerformanceTelemetry {
                 ]
             }
         ) {
-            TaskPlanStateSnapshot.refreshed(for: task, cached: cached)
+            do {
+                return try TaskPlanStateSnapshot.refreshed(
+                    for: task,
+                    modelContext: modelContext,
+                    cached: cached
+                )
+            } catch {
+                AppLogger.error(
+                    "Could not refresh task plan state: \(error.localizedDescription)",
+                    category: "UI"
+                )
+                return nil
+            }
         }
     }
 
     private static func planStateFields(task: AgentTask) -> [String: String] {
-        let maxRunOutputBytes = task.runs.reduce(0) { max($0, $1.output.utf8.count) }
-        let planEventCount = task.events.reduce(0) { count, event in
-            TaskPlanService.stateMutationCode(for: event.type) == nil ? count : count + 1
-        }
         return [
             "task_id": PerformanceTelemetryFields.abbreviatedID(task.id),
-            "event_count": PerformanceTelemetryFields.count(task.events.count),
-            "run_count": PerformanceTelemetryFields.count(task.runs.count),
-            "plan_event_count": PerformanceTelemetryFields.count(planEventCount),
-            "max_run_output_bucket": PerformanceTelemetryFields.byteBucket(maxRunOutputBytes)
+            "status": task.status.rawValue
         ]
     }
 }

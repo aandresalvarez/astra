@@ -1,5 +1,18 @@
 import Foundation
+import SwiftData
 import ASTRAModels
+
+struct TaskPlanStateRefreshTrigger: Equatable {
+    let taskID: UUID
+    let status: TaskStatus
+    let revision: Date
+
+    init(task: AgentTask) {
+        taskID = task.id
+        status = task.status
+        revision = task.updatedAt
+    }
+}
 
 struct TaskPlanStateSnapshot: Equatable {
     static let empty = TaskPlanStateSnapshot(
@@ -26,6 +39,29 @@ struct TaskPlanStateSnapshot: Equatable {
         guard cached.signature != signature else { return nil }
         return TaskPlanStateSnapshot(
             state: TaskPlanService.reconstruct(for: task),
+            signature: signature
+        )
+    }
+
+    @MainActor
+    static func refreshed(
+        for task: AgentTask,
+        modelContext: ModelContext,
+        cached: TaskPlanStateSnapshot
+    ) throws -> TaskPlanStateSnapshot? {
+        let input = try TaskPlanStateReader.read(taskID: task.id, modelContext: modelContext)
+        let signature = TaskPlanStateCacheSignature(
+            taskID: task.id,
+            status: task.status,
+            planEvents: input.events,
+            recoveryRuns: input.recoveryRuns
+        )
+        guard cached.signature != signature else { return nil }
+        return TaskPlanStateSnapshot(
+            state: TaskPlanService.reconstruct(
+                from: input.events,
+                recoveryRuns: input.recoveryRuns
+            ),
             signature: signature
         )
     }
