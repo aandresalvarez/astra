@@ -275,17 +275,77 @@ enum TaskThreadStateEventPolicy {
         "permission.approval.requested", "permission.request.resolved",
         "task.dismissed"
     ]
+    private static let eventTypeSet = Set(eventTypes)
 
     static func contains(_ type: String) -> Bool {
-        eventTypes.contains(type)
+        eventTypeSet.contains(type)
     }
+}
+
+struct TaskThreadStateEventKey: Hashable, Sendable {
+    let runID: UUID?
+    let type: String
+
+    init(runID: UUID?, type: String) {
+        self.runID = runID
+        self.type = type
+    }
+
+    init(event: TaskEventSnapshot) {
+        self.init(runID: event.runID, type: event.type)
+    }
+}
+
+enum TaskThreadEventProjectionPolicy {
+    private static let maxToolResultsPerRun = 12
+    private static let runlessToolResultID = UUID(uuidString: "00000000-0000-0000-0000-000000000000")!
+
+    static func storageEvents(
+        _ events: [TaskEventSnapshot],
+        loadedRunIDs: Set<UUID>
+    ) -> [TaskEventSnapshot] {
+        let runFilteredEvents = events.filter { event in
+            guard let runID = event.runID else { return true }
+            return loadedRunIDs.contains(runID)
+        }
+        return capToolResults(
+            runFilteredEvents,
+            type: \TaskEventSnapshot.type,
+            runID: \TaskEventSnapshot.runID,
+            id: \TaskEventSnapshot.id
+        )
+    }
+
+    static func capToolResults<Event>(
+        _ events: [Event],
+        type: KeyPath<Event, String>,
+        runID: KeyPath<Event, UUID?>,
+        id: KeyPath<Event, UUID>
+    ) -> [Event] {
+        var keptToolResultsByRunID: [UUID: Int] = [:]
+        var keepEventIDs = Set<UUID>()
+
+        for event in events.reversed() where event[keyPath: type] == "tool.result" {
+            let eventRunID = event[keyPath: runID] ?? runlessToolResultID
+            let count = keptToolResultsByRunID[eventRunID, default: 0]
+            guard count < maxToolResultsPerRun else { continue }
+            keptToolResultsByRunID[eventRunID] = count + 1
+            keepEventIDs.insert(event[keyPath: id])
+        }
+
+        return events.filter { event in
+            event[keyPath: type] != "tool.result" || keepEventIDs.contains(event[keyPath: id])
+        }
+    }
+}
+
+private extension TaskEvent {
+    var runIDForThreadProjection: UUID? { run?.id }
 }
 
 private struct TaskThreadSnapshotWindow {
     private static let defaultMaxRuns = 50
     private static let maxEvents = 1_200
-    private static let maxToolResultsPerRun = 12
-    private static let runlessToolResultID = UUID(uuidString: "00000000-0000-0000-0000-000000000000")!
 
     let events: [TaskEvent]
     let runs: [TaskRun]
@@ -308,7 +368,12 @@ private struct TaskThreadSnapshotWindow {
             guard let runID = event.run?.id else { return true }
             return keptRunIDs.contains(runID)
         }
-        let cappedToolResults = Self.capToolResults(runFilteredEvents)
+        let cappedToolResults = TaskThreadEventProjectionPolicy.capToolResults(
+            runFilteredEvents,
+            type: \TaskEvent.type,
+            runID: \TaskEvent.runIDForThreadProjection,
+            id: \TaskEvent.id
+        )
         let displayEvents = Array(cappedToolResults.suffix(Self.maxEvents))
         // The transcript window is intentionally bounded, but protocol and
         // permission events also reconstruct durable per-run state. Keep the
@@ -336,23 +401,6 @@ private struct TaskThreadSnapshotWindow {
                 "max_runs": PerformanceTelemetryFields.count(maxRuns)
             ]
         )
-    }
-
-    private static func capToolResults(_ events: [TaskEvent]) -> [TaskEvent] {
-        var keptToolResultsByRunID: [UUID: Int] = [:]
-        var keepEventIDs = Set<UUID>()
-
-        for event in events.reversed() where event.type == "tool.result" {
-            let runID = event.run?.id ?? runlessToolResultID
-            let count = keptToolResultsByRunID[runID, default: 0]
-            guard count < maxToolResultsPerRun else { continue }
-            keptToolResultsByRunID[runID] = count + 1
-            keepEventIDs.insert(event.id)
-        }
-
-        return events.filter { event in
-            event.type != "tool.result" || keepEventIDs.contains(event.id)
-        }
     }
 
     private static func latestStateEvents(from events: [TaskEvent]) -> [TaskEvent] {

@@ -11,8 +11,6 @@ struct TaskPlanStateReadInput {
 /// conversation history never needs to fault into memory to render plan UI.
 @MainActor
 enum TaskPlanStateReader {
-    private static let recoveryRunLimit = 50
-
     static func read(taskID: UUID, modelContext: ModelContext) throws -> TaskPlanStateReadInput {
         let created = TaskPlanEventTypes.created
         let updated = TaskPlanEventTypes.updated
@@ -59,14 +57,16 @@ enum TaskPlanStateReader {
             return $0.id.uuidString < $1.id.uuidString
         }
 
-        var runDescriptor = FetchDescriptor<TaskRun>(
-            predicate: #Predicate<TaskRun> { $0.task?.id == taskID },
+        let protocolMarker = "ASTRA_EVENT"
+        let runDescriptor = FetchDescriptor<TaskRun>(
+            predicate: #Predicate<TaskRun> {
+                $0.task?.id == taskID && $0.output.contains(protocolMarker)
+            },
             sortBy: [
-                SortDescriptor(\TaskRun.startedAt, order: .reverse),
-                SortDescriptor(\TaskRun.id, order: .reverse)
+                SortDescriptor(\TaskRun.startedAt),
+                SortDescriptor(\TaskRun.id)
             ]
         )
-        runDescriptor.fetchLimit = recoveryRunLimit
         let recoveryRuns = try modelContext.fetch(runDescriptor)
 
         return TaskPlanStateReadInput(events: events, recoveryRuns: recoveryRuns)

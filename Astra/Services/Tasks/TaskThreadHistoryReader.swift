@@ -64,7 +64,7 @@ enum TaskThreadHistoryReader {
             hasEarlierRuns: runResult.hasEarlier,
             hasEarlierEvents: eventResult.hasEarlier,
             modelContext: modelContext,
-            includeStateAnchors: true
+            includeRunlessStateAnchors: true
         )
         logRead(operation: "latest", page: page, startedAt: startedAt, taskID: taskID)
         return page
@@ -109,7 +109,7 @@ enum TaskThreadHistoryReader {
             hasEarlierRuns: runResult.hasEarlier,
             hasEarlierEvents: eventResult.hasEarlier,
             modelContext: modelContext,
-            includeStateAnchors: false
+            includeRunlessStateAnchors: false
         )
         logRead(operation: "previous", page: page, startedAt: startedAt, taskID: taskID)
         return page
@@ -127,7 +127,7 @@ enum TaskThreadHistoryReader {
         hasEarlierRuns: Bool,
         hasEarlierEvents: Bool,
         modelContext: ModelContext,
-        includeStateAnchors: Bool
+        includeRunlessStateAnchors: Bool
     ) throws -> TaskThreadHistoryPage {
         let totalRunCount = try modelContext.fetchCount(FetchDescriptor<TaskRun>(
             predicate: #Predicate<TaskRun> { $0.task?.id == taskID }
@@ -137,9 +137,12 @@ enum TaskThreadHistoryReader {
         ))
         let runSnapshots = runs.map(TaskRunSnapshotInput.init)
         let eventSnapshots = events.map(TaskEventSnapshot.init)
-        let stateAnchors = includeStateAnchors
-            ? try latestStateAnchors(taskID: taskID, modelContext: modelContext)
-            : []
+        let stateAnchors = try latestStateAnchors(
+            taskID: taskID,
+            runs: runs,
+            includeRunless: includeRunlessStateAnchors,
+            modelContext: modelContext
+        )
 
         return TaskThreadHistoryPage(
             runs: runSnapshots,
@@ -283,25 +286,54 @@ enum TaskThreadHistoryReader {
 
     private static func latestStateAnchors(
         taskID: UUID,
+        runs: [TaskRun],
+        includeRunless: Bool,
         modelContext: ModelContext
     ) throws -> [TaskEventSnapshot] {
-        var anchors: [TaskEventSnapshot] = []
-        for type in TaskThreadStateEventPolicy.eventTypes {
-            var descriptor = FetchDescriptor<TaskEvent>(
+        let stateEventTypes = TaskThreadStateEventPolicy.eventTypes
+        var events: [TaskEvent] = []
+        for run in runs {
+            let runID = run.id
+            let descriptor = FetchDescriptor<TaskEvent>(
                 predicate: #Predicate<TaskEvent> {
-                    $0.task?.id == taskID && $0.type == type
-                },
-                sortBy: [
-                    SortDescriptor(\TaskEvent.timestamp, order: .reverse),
-                    SortDescriptor(\TaskEvent.id, order: .reverse)
-                ]
+                    $0.task?.id == taskID
+                        && $0.run?.id == runID
+                        && stateEventTypes.contains($0.type)
+                }
             )
-            descriptor.fetchLimit = 1
-            if let event = try modelContext.fetch(descriptor).first {
-                anchors.append(TaskEventSnapshot(event: event))
-            }
+            events.append(contentsOf: try modelContext.fetch(descriptor))
         }
-        return anchors
+        if includeRunless {
+            let descriptor = FetchDescriptor<TaskEvent>(
+                predicate: #Predicate<TaskEvent> {
+                    $0.task?.id == taskID
+                        && $0.run == nil
+                        && stateEventTypes.contains($0.type)
+                }
+            )
+            events.append(contentsOf: try modelContext.fetch(descriptor))
+        }
+
+        var latestByKey: [TaskThreadStateEventKey: TaskEventSnapshot] = [:]
+        for event in events {
+            let snapshot = TaskEventSnapshot(event: event)
+            let key = TaskThreadStateEventKey(event: snapshot)
+            if let current = latestByKey[key], !isLater(snapshot, than: current) {
+                continue
+            }
+            latestByKey[key] = snapshot
+        }
+        return Array(latestByKey.values)
+    }
+
+    private static func isLater(
+        _ candidate: TaskEventSnapshot,
+        than current: TaskEventSnapshot
+    ) -> Bool {
+        if candidate.timestamp != current.timestamp {
+            return candidate.timestamp > current.timestamp
+        }
+        return candidate.id.uuidString > current.id.uuidString
     }
 
     private static func logRead(
@@ -319,6 +351,7 @@ enum TaskThreadHistoryReader {
                 "task_id": PerformanceTelemetryFields.abbreviatedID(taskID),
                 "page_events": PerformanceTelemetryFields.count(page.events.count),
                 "page_runs": PerformanceTelemetryFields.count(page.runs.count),
+                "state_anchors": PerformanceTelemetryFields.count(page.stateAnchors.count),
                 "total_events": PerformanceTelemetryFields.count(page.totalEventCount),
                 "total_runs": PerformanceTelemetryFields.count(page.totalRunCount),
                 "has_earlier_events": PerformanceTelemetryFields.bool(page.cursor.hasEarlierEvents),

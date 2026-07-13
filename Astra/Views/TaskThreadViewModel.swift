@@ -142,6 +142,7 @@ final class TaskThreadViewModel {
     private var pendingSnapshotRequest: SnapshotRequest?
     private var generatedFilesTask: Task<Void, Never>?
     private var requestedRefreshTask: Task<Void, Never>?
+    private var historyLoadTask: Task<Void, Never>?
     private var hasPendingRequestedRefresh = false
     private var historyTaskID: UUID?
     private var historyTask: AgentTask?
@@ -149,7 +150,7 @@ final class TaskThreadViewModel {
     private var historyModelContext: ModelContext?
     private var historyCursor: TaskThreadHistoryCursor?
     private var loadedHistoryEvents: [UUID: TaskEventSnapshot] = [:]
-    private var loadedHistoryStateAnchors: [UUID: TaskEventSnapshot] = [:]
+    private var loadedHistoryStateAnchors: [TaskThreadStateEventKey: TaskEventSnapshot] = [:]
     private var loadedHistoryRuns: [UUID: TaskRunSnapshotInput] = [:]
     private var historyTotalEventCount = 0
     private var historyTotalRunCount = 0
@@ -205,6 +206,8 @@ final class TaskThreadViewModel {
             pendingSnapshotRequest = nil
             requestedRefreshTask?.cancel()
             requestedRefreshTask = nil
+            historyLoadTask?.cancel()
+            historyLoadTask = nil
             hasPendingRequestedRefresh = false
             supersedeSnapshotWorker()
             lastSnapshotApplyAt = .distantPast
@@ -621,13 +624,22 @@ final class TaskThreadViewModel {
         }
 
         historyLoadState = .loading
-        Task { [weak self] in
+        let taskID = task.id
+        historyLoadTask = Task { [weak self] in
             await Task.yield()
+            guard !Task.isCancelled else { return }
+            guard self?.historyTaskID == taskID else { return }
             self?.performEarlierHistoryLoad(for: task, modelContext: modelContext)
         }
     }
 
     private func performEarlierHistoryLoad(for task: AgentTask, modelContext: ModelContext) {
+        guard historyTaskID == task.id, !Task.isCancelled else { return }
+        defer {
+            if historyTaskID == task.id {
+                historyLoadTask = nil
+            }
+        }
         do {
             var initializedHistory = false
             if historyCursor == nil {
@@ -684,7 +696,7 @@ final class TaskThreadViewModel {
     private func replaceHistory(with page: TaskThreadHistoryPage) {
         loadedHistoryRuns = Dictionary(uniqueKeysWithValues: page.runs.map { ($0.id, $0) })
         loadedHistoryEvents = Dictionary(uniqueKeysWithValues: page.events.map { ($0.id, $0) })
-        loadedHistoryStateAnchors = Dictionary(uniqueKeysWithValues: page.stateAnchors.map { ($0.id, $0) })
+        loadedHistoryStateAnchors = Self.stateAnchorDictionary(page.stateAnchors)
         historyTotalRunCount = page.totalRunCount
         historyTotalEventCount = page.totalEventCount
         historyCursor = page.cursor
@@ -702,24 +714,18 @@ final class TaskThreadViewModel {
             replaceHistory(with: page)
             return
         }
+        guard let currentCursor = historyCursor else {
+            replaceHistory(with: page)
+            return
+        }
         for run in page.runs { loadedHistoryRuns[run.id] = run }
         for event in page.events { loadedHistoryEvents[event.id] = event }
-        loadedHistoryStateAnchors = Dictionary(uniqueKeysWithValues: page.stateAnchors.map { ($0.id, $0) })
+        replaceLatestStateAnchors(with: page.stateAnchors, refreshedRuns: page.runs)
         historyTotalRunCount = page.totalRunCount
         historyTotalEventCount = page.totalEventCount
-        let oldestRun = loadedHistoryRuns.values.min {
-            $0.startedAt == $1.startedAt
-                ? $0.id.uuidString < $1.id.uuidString
-                : $0.startedAt < $1.startedAt
-        }
-        let oldestEvent = loadedHistoryEvents.values.min {
-            $0.timestamp == $1.timestamp
-                ? $0.id.uuidString < $1.id.uuidString
-                : $0.timestamp < $1.timestamp
-        }
         historyCursor = TaskThreadHistoryCursor(
-            run: oldestRun.map { TaskThreadRunCursor(startedAt: $0.startedAt, id: $0.id) },
-            event: oldestEvent.map { TaskThreadEventCursor(timestamp: $0.timestamp, id: $0.id) },
+            run: currentCursor.run,
+            event: currentCursor.event,
             hasEarlierRuns: page.totalRunCount > loadedHistoryRuns.count,
             hasEarlierEvents: page.totalEventCount > loadedHistoryEvents.count
         )
@@ -729,6 +735,7 @@ final class TaskThreadViewModel {
     private func mergeEarlierHistoryPage(_ page: TaskThreadHistoryPage) {
         for run in page.runs { loadedHistoryRuns[run.id] = run }
         for event in page.events { loadedHistoryEvents[event.id] = event }
+        mergeStateAnchors(page.stateAnchors)
         historyTotalRunCount = page.totalRunCount
         historyTotalEventCount = page.totalEventCount
         let previousCursor = historyCursor
@@ -742,10 +749,16 @@ final class TaskThreadViewModel {
     }
 
     private func storageBackedInput(for task: AgentTask) -> TaskThreadSnapshotInput {
-        let projectedEvents = loadedHistoryEvents.merging(loadedHistoryStateAnchors) { pageEvent, _ in
+        let anchorEvents = Dictionary(uniqueKeysWithValues: loadedHistoryStateAnchors.values.map { ($0.id, $0) })
+        let accumulatedEvents = loadedHistoryEvents.merging(anchorEvents) { pageEvent, _ in
             pageEvent
         }
-        let events = projectedEvents.values.sorted { lhs, rhs in
+        let loadedRunIDs = Set(loadedHistoryRuns.keys)
+        let projectedEvents = TaskThreadEventProjectionPolicy.storageEvents(
+            Array(accumulatedEvents.values),
+            loadedRunIDs: loadedRunIDs
+        )
+        let events = projectedEvents.sorted { lhs, rhs in
             if lhs.timestamp != rhs.timestamp { return lhs.timestamp < rhs.timestamp }
             return lhs.id.uuidString < rhs.id.uuidString
         }
@@ -765,6 +778,47 @@ final class TaskThreadViewModel {
             totalRunCount: historyTotalRunCount,
             omittedRunCount: omittedRunCount
         )
+    }
+
+    private static func stateAnchorDictionary(
+        _ anchors: [TaskEventSnapshot]
+    ) -> [TaskThreadStateEventKey: TaskEventSnapshot] {
+        Dictionary(anchors.map { (TaskThreadStateEventKey(event: $0), $0) }) { current, candidate in
+            Self.isLaterStateAnchor(candidate, than: current) ? candidate : current
+        }
+    }
+
+    private func replaceLatestStateAnchors(
+        with anchors: [TaskEventSnapshot],
+        refreshedRuns: [TaskRunSnapshotInput]
+    ) {
+        let refreshedRunIDs = Set(refreshedRuns.map(\.id))
+        loadedHistoryStateAnchors = loadedHistoryStateAnchors.filter { key, _ in
+            guard let runID = key.runID else { return false }
+            return !refreshedRunIDs.contains(runID)
+        }
+        mergeStateAnchors(anchors)
+    }
+
+    private func mergeStateAnchors(_ anchors: [TaskEventSnapshot]) {
+        for anchor in anchors {
+            let key = TaskThreadStateEventKey(event: anchor)
+            if let current = loadedHistoryStateAnchors[key],
+               !Self.isLaterStateAnchor(anchor, than: current) {
+                continue
+            }
+            loadedHistoryStateAnchors[key] = anchor
+        }
+    }
+
+    private static func isLaterStateAnchor(
+        _ candidate: TaskEventSnapshot,
+        than current: TaskEventSnapshot
+    ) -> Bool {
+        if candidate.timestamp != current.timestamp {
+            return candidate.timestamp > current.timestamp
+        }
+        return candidate.id.uuidString > current.id.uuidString
     }
 
     func refreshGeneratedFiles(folder: String) {

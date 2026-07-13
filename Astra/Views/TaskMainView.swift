@@ -2154,10 +2154,6 @@ struct TaskMainView: View {
         isExpandingWindow = true
         expansionAnchorItemID = currentThreadSnapshot.conversationItems.first?.id
         threadViewModel.loadEarlierHistory(for: task)
-        if case .failed = threadViewModel.historyLoadState {
-            isExpandingWindow = false
-            expansionAnchorItemID = nil
-        }
     }
 
     private func retryEarlierHistory() {

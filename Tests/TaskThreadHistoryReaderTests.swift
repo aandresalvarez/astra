@@ -184,6 +184,87 @@ struct TaskThreadHistoryReaderTests {
         #expect(page.stateAnchors.contains { $0.id == anchor.id })
     }
 
+    @Test("State anchors are preserved independently for every loaded run")
+    func stateAnchorsAreFetchedPerLoadedRun() throws {
+        let (container, context, task) = try fixture()
+        defer { _ = container }
+        var anchors: [TaskEvent] = []
+        for index in 0..<3 {
+            let run = TaskRun(task: task)
+            run.startedAt = Date(timeIntervalSince1970: Double(index + 1))
+            context.insert(run)
+            let anchor = TaskEvent(
+                task: task,
+                type: "astra.permission_manifest",
+                payload: "manifest \(index)",
+                run: run
+            )
+            anchor.timestamp = Date(timeIntervalSince1970: Double(index + 10))
+            context.insert(anchor)
+            anchors.append(anchor)
+        }
+        for index in 0..<50 {
+            let event = TaskEvent(task: task, type: "agent.response", payload: "later \(index)")
+            event.timestamp = Date(timeIntervalSince1970: Double(index + 100))
+            context.insert(event)
+        }
+        try context.save()
+
+        let latest = try TaskThreadHistoryReader.initialPage(
+            taskID: task.id,
+            modelContext: context,
+            runPageSize: 2,
+            eventPageSize: 10
+        )
+        let previous = try TaskThreadHistoryReader.previousPage(
+            taskID: task.id,
+            before: latest.cursor,
+            modelContext: context,
+            runPageSize: 2,
+            eventPageSize: 10
+        )
+
+        #expect(Set(latest.stateAnchors.map(\.id)) == Set(anchors.suffix(2).map(\.id)))
+        #expect(previous.stateAnchors.map(\.id) == [anchors[0].id])
+    }
+
+    @Test("Storage projection caps tool results and drops events for omitted runs")
+    func storageProjectionMatchesWindowPolicies() throws {
+        let (container, context, task) = try fixture()
+        defer { _ = container }
+        let loadedRun = TaskRun(task: task)
+        let omittedRun = TaskRun(task: task)
+        context.insert(loadedRun)
+        context.insert(omittedRun)
+        var events: [TaskEvent] = []
+        for index in 0..<20 {
+            events.append(TaskEvent(
+                task: task,
+                type: "tool.result",
+                payload: "result \(index)",
+                run: loadedRun
+            ))
+        }
+        let omittedEvent = TaskEvent(
+            task: task,
+            type: "system.info",
+            payload: "belongs to omitted run",
+            run: omittedRun
+        )
+        let runlessEvent = TaskEvent(task: task, type: "user.message", payload: "keep me")
+        events.append(omittedEvent)
+        events.append(runlessEvent)
+
+        let projected = TaskThreadEventProjectionPolicy.storageEvents(
+            events.map(TaskEventSnapshot.init),
+            loadedRunIDs: [loadedRun.id]
+        )
+
+        #expect(projected.filter { $0.type == "tool.result" }.count == 12)
+        #expect(!projected.contains { $0.id == omittedEvent.id })
+        #expect(projected.contains { $0.id == runlessEvent.id })
+    }
+
     @Test("Five-thousand-event initial read stays bounded and fast")
     func scaleReadIsBounded() throws {
         let (container, context, task) = try fixture()
@@ -325,5 +406,38 @@ struct StorageBackedTaskThreadViewModelTests {
         }
 
         #expect(viewModel.historyReadCountForTesting == 2)
+    }
+
+    @Test("Task switch cancels an earlier history load before it can mutate the new transcript")
+    func taskSwitchCancelsStaleHistoryLoad() async throws {
+        let (container, context, firstTask) = try fixture()
+        defer { _ = container }
+        for index in 0..<1_205 {
+            let event = TaskEvent(
+                task: firstTask,
+                type: "user.message",
+                payload: "old task \(index)"
+            )
+            event.timestamp = Date(timeIntervalSince1970: Double(index + 1))
+            context.insert(event)
+        }
+        let secondTask = AgentTask(title: "New selection", goal: "Stay selected")
+        context.insert(secondTask)
+        try context.save()
+
+        let viewModel = TaskThreadViewModel()
+        viewModel.reset(for: firstTask, modelContext: context)
+        _ = await awaitSnapshot(viewModel) { $0.omittedEventCount == 5 }
+
+        viewModel.loadEarlierHistory(for: firstTask)
+        viewModel.reset(for: secondTask, modelContext: context)
+        _ = await awaitSnapshot(viewModel) { _ in
+            viewModel.appliedSnapshotTaskID == secondTask.id
+        }
+        try? await Task.sleep(for: .milliseconds(50))
+
+        #expect(viewModel.appliedSnapshotTaskID == secondTask.id)
+        #expect(viewModel.snapshot?.sortedEvents.isEmpty == true)
+        #expect(viewModel.historyLoadState == .idle)
     }
 }

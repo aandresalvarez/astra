@@ -107,8 +107,9 @@ run—on the same Mac and build.
   page and total counts without message content.
 - Live task invalidations coalesce before the bounded database read and snapshot
   build. They do not poll or scan the complete event relationship.
-- Plan-state UI reads only plan mutation rows plus a bounded recovery-run window;
-  ordinary conversation messages are not faulted through SwiftData relationships.
+- Plan-state UI reads only plan mutation rows plus runs containing persisted
+  protocol markers; ordinary conversation messages and runs are not faulted
+  through SwiftData relationships.
 - `TaskGeneratedFiles.filesAsync` does folder enumeration off the main actor and only refreshes when the task folder or latest-run file-change state changes.
 - `SidebarTaskIndex.init` replaces repeated per-workspace scans during sidebar rendering.
 - `MarkdownLinkifier.markdownAttributed` should appear less often on repeated renders because rendered blocks share a bounded attributed-string cache.
