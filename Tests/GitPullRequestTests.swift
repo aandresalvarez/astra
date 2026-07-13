@@ -502,6 +502,35 @@ struct GitPullRequestTests {
         #expect(recordedArgs.contains("Add login"))
     }
 
+    @Test("draft pull request creation passes the explicit gh draft flag")
+    func createDraftPullRequestRunsGhWithDraftFlag() async throws {
+        let repo = try makeTempDir()
+        defer { try? FileManager.default.removeItem(atPath: repo) }
+
+        let argsFile = URL(fileURLWithPath: repo).appendingPathComponent("gh-draft-args.txt")
+        let fakeGH = URL(fileURLWithPath: repo).appendingPathComponent("gh")
+        try writeExecutable(at: fakeGH, contents: """
+        #!/bin/sh
+        printf '%s\n' "$@" > '\(argsFile.path)'
+        printf '%s\n' 'https://github.com/example/repo/pull/43'
+        exit 0
+        """)
+
+        let url = try await GitService.shared.createPullRequest(
+            repoPath: repo,
+            base: "main",
+            head: "feature/draft",
+            title: "Draft change",
+            body: "Still under review.",
+            isDraft: true,
+            ghPathOverride: fakeGH.path
+        )
+
+        #expect(url == "https://github.com/example/repo/pull/43")
+        let recordedArgs = try String(contentsOf: argsFile, encoding: .utf8)
+        #expect(recordedArgs.split(separator: "\n").contains("--draft"))
+    }
+
     @Test("createPullRequest surfaces an existing PR URL as success")
     func createPullRequestReturnsExistingURL() async throws {
         let repo = try makeTempDir()
