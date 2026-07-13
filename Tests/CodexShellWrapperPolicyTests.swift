@@ -19,7 +19,7 @@ extension RuntimePolicyGuardTests {
             .toolUse(
                 name: "command_execution",
                 id: "t1",
-                input: ["command": "/bin/zsh -lc 'git rev-parse HEAD'"]
+                input: ["summary": "/bin/zsh -lc 'git rev-parse HEAD'"]
             ),
             process: nil
         )
@@ -46,7 +46,7 @@ extension RuntimePolicyGuardTests {
             .toolUse(
                 name: "command_execution",
                 id: "t1",
-                input: ["command": "/bin/zsh -lc 'git rev-parse HEAD && git push origin main'"]
+                input: ["summary": "/bin/zsh -lc 'git rev-parse HEAD && git push origin main'"]
             ),
             process: nil
         )
@@ -74,7 +74,7 @@ extension RuntimePolicyGuardTests {
             .toolUse(
                 name: "command_execution",
                 id: "t1",
-                input: ["command": "/bin/zsh -lc 'git status --short; rm -rf build'"]
+                input: ["summary": "/bin/zsh -lc 'git status --short; rm -rf build'"]
             ),
             process: nil
         )

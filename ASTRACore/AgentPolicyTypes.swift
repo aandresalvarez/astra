@@ -871,7 +871,7 @@ public struct PolicyObservedEvent: Codable, Equatable, Sendable, Identifiable {
     }
 
     private static func isShellTool(_ tool: String) -> Bool {
-        ["bash", "shell"].contains(tool.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+        ProviderToolSemantics.isShellTool(tool)
     }
 
     private static func isFileTool(_ tool: String) -> Bool {
