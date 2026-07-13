@@ -998,9 +998,11 @@ struct ArchitectureFitnessTests {
         let policyPath = "Astra/Services/Startup/PersistentStoreRecoveryPolicy.swift"
         let viewPath = "Astra/Services/Startup/StoreStartupBlockedView.swift"
         let persistencePath = "Astra/Services/Persistence/PersistentStoreCompatibility.swift"
+        let migratorPath = "Astra/Services/Persistence/OrphanedV12StoreMigrator.swift"
         let appPath = "Astra/ASTRAApp.swift"
         let policy = try String(contentsOf: root.appendingPathComponent(policyPath), encoding: .utf8)
         let persistence = try String(contentsOf: root.appendingPathComponent(persistencePath), encoding: .utf8)
+        let migrator = try String(contentsOf: root.appendingPathComponent(migratorPath), encoding: .utf8)
         let app = try String(contentsOf: root.appendingPathComponent(appPath), encoding: .utf8)
 
         #expect(FileManager.default.fileExists(atPath: root.appendingPathComponent(viewPath).path))
@@ -1008,6 +1010,8 @@ struct ArchitectureFitnessTests {
         #expect(!policy.contains("NSOpenPanel"))
         #expect(!persistence.contains("import SwiftUI"))
         #expect(!persistence.contains("import AppKit"))
+        #expect(!migrator.contains("import SwiftUI"))
+        #expect(!migrator.contains("import AppKit"))
         #expect(!app.contains("struct StoreStartupBlockedView"))
     }
 

@@ -1,7 +1,6 @@
 import SwiftUI
 import SwiftData
 import AppKit
-import AppIntents
 import ASTRAModels
 import ASTRAPersistence
 import ASTRACore
@@ -265,7 +264,6 @@ final class ASTRAAppDelegate: NSObject, NSApplicationDelegate {
         // is correctly foregrounded with the app's real icon already set.
         ApplicationsFolderMover.promptAndMoveIfNeeded()
         AppLogger.audit(.appActivated, category: "App")
-        AstraAppShortcuts.updateAppShortcutParameters()
     }
 }
 
@@ -287,6 +285,18 @@ enum AstraStoreStartupCoordinator {
     static func start(isUITesting: Bool, appInfo: AppBuildInfo) -> Result {
         guard !isUITesting else {
             return Result(modelContainer: inMemoryContainer(), lease: nil, blocker: nil)
+        }
+
+        guard LinkedAppChannelIdentity.matches(bundleChannelRawValue: appInfo.channelRawValue) else {
+            AppLogger.audit(.dataStoreSelected, category: "App", fields: [
+                "result": "blocked_linked_channel_mismatch",
+                "bundle_channel": appInfo.channelRawValue,
+                "linked_channel": LinkedAppChannelIdentity.marker
+            ], level: .error)
+            return blocked(
+                title: "ASTRA build channel mismatch",
+                message: "This executable was linked for a different app channel, so ASTRA did not open either channel's data."
+            )
         }
 
         do {
@@ -335,7 +345,7 @@ enum AstraStoreStartupCoordinator {
             )
         }
 
-        let storeURL: URL
+        var storeURL: URL
         do {
             storeURL = try WorkspaceRecoveryService.preparePersistentStoreURL()
         } catch {
@@ -347,6 +357,41 @@ enum AstraStoreStartupCoordinator {
                 title: "ASTRA could not safely prepare its store",
                 message: "The active store pointer or legacy-store migration was invalid, incomplete, or unavailable. ASTRA left existing data unchanged."
             )
+        }
+
+        if FileManager.default.fileExists(atPath: storeURL.path) {
+            do {
+                if try OrphanedV12StoreMigrator.requiresMigration(storeURL: storeURL) {
+                    let recoveryURL = try WorkspaceRecoveryService.makeRecoveryStoreURL()
+                    let report = try OrphanedV12StoreMigrator.migrateCopy(
+                        from: storeURL,
+                        to: recoveryURL
+                    )
+                    let metadata = compatibilityMetadata(appInfo: appInfo)
+                    try WorkspaceRecoveryService.activateRecoveryStore(
+                        at: report.destinationStoreURL,
+                        compatibility: metadata
+                    )
+                    storeURL = report.destinationStoreURL
+                    AppLogger.audit(.dataStoreRecovered, category: "App", fields: [
+                        "result": "orphaned_v12_migrated",
+                        "source_schema": "12",
+                        "destination_schema": String(ASTRASchema.currentVersion),
+                        "preserved_rows": String(report.preservedRowCounts.values.reduce(0, +)),
+                        "store_generation": WorkspaceRecoveryService.storeGeneration
+                    ])
+                }
+            } catch {
+                AppLogger.audit(.dataStoreRecovered, category: "App", fields: [
+                    "result": "orphaned_v12_migration_blocked",
+                    "error_type": String(describing: type(of: error)),
+                    "store_generation": WorkspaceRecoveryService.storeGeneration
+                ], level: .error)
+                return blocked(
+                    title: "ASTRA preserved an incompatible V12 store",
+                    message: "ASTRA could not validate a migrated copy, so it left the original store selected and unchanged."
+                )
+            }
         }
         let hasPendingLegacyStoreMigration = WorkspaceRecoveryService.hasPendingLegacyStoreMigration
         let compatibility = PersistentStoreCompatibilityService.assess(
@@ -627,7 +672,9 @@ public struct ASTRAApp: App {
             "git_commit": appInfo.gitCommit,
             "build_date": appInfo.buildDate,
             "bundle_path": appInfo.bundlePath,
-            "executable_path": appInfo.executablePath
+            "executable_path": appInfo.executablePath,
+            "linked_channel": LinkedAppChannelIdentity.marker,
+            "app_intents": AstraAppShortcutRegistration.binaryMarker
         ], fieldMaxLength: 120)
         // AppKit/NSApplication setup (activation policy, dock icon, foreground
         // activation, App Shortcuts) is deferred to ASTRAAppDelegate's

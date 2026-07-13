@@ -1,6 +1,7 @@
+#if ASTRA_ENABLE_APP_INTENTS
+import ASTRAModels
 import AppIntents
 import Foundation
-import ASTRAModels
 
 struct AstraWorkspaceEntity: AppEntity {
     static var typeDisplayRepresentation: TypeDisplayRepresentation = "Workspace"
@@ -140,3 +141,4 @@ struct AstraTaskEntityQuery: EntityStringQuery, EnumerableEntityQuery {
         }
     }
 }
+#endif
