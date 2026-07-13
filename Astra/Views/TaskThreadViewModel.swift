@@ -754,14 +754,17 @@ final class TaskThreadViewModel {
             pageEvent
         }
         let loadedRunIDs = Set(loadedHistoryRuns.keys)
-        let projectedEvents = TaskThreadEventProjectionPolicy.storageEvents(
-            Array(accumulatedEvents.values),
-            loadedRunIDs: loadedRunIDs
-        )
-        let events = projectedEvents.sorted { lhs, rhs in
+        let chronologicalEvents = accumulatedEvents.values.sorted { lhs, rhs in
             if lhs.timestamp != rhs.timestamp { return lhs.timestamp < rhs.timestamp }
             return lhs.id.uuidString < rhs.id.uuidString
         }
+        // storageEvents caps tool.result events per run by keeping the last
+        // ones it sees, so the input must already be chronological or the cap
+        // keeps arbitrary (dictionary-ordered) results instead of the newest.
+        let events = TaskThreadEventProjectionPolicy.storageEvents(
+            chronologicalEvents,
+            loadedRunIDs: loadedRunIDs
+        )
         let runs = loadedHistoryRuns.values.sorted { lhs, rhs in
             if lhs.startedAt != rhs.startedAt { return lhs.startedAt < rhs.startedAt }
             return lhs.id.uuidString < rhs.id.uuidString
