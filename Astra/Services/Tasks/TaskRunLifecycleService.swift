@@ -138,7 +138,12 @@ enum TaskRunLifecycleService {
 
         for task in tasks {
             let hasRunningRun = task.runs.contains { $0.status == .running }
-            let hasOrphanedTaskStatus = task.status == .running || task.status == .pendingUser
+            // `pendingUser` is also the durable review state for completed
+            // work that is waiting on an ASTRA-owned external outcome. Only
+            // the presence of a running run makes that state orphaned after a
+            // restart; a task that is itself still `running` remains an
+            // orphan even when its run relationship was not persisted.
+            let hasOrphanedTaskStatus = task.status == .running
             guard hasRunningRun || hasOrphanedTaskStatus else { continue }
 
             summary.add(finalizeInterruptedRuns(
@@ -288,13 +293,14 @@ enum TaskRunLifecycleService {
 
     /// Tasks that may need interrupted-run recovery after a restart, narrowed
     /// to the open set so we never materialize and run-fault the entire task
-    /// history. Union of: tasks whose own status is orphaned (running /
-    /// pendingUser), and parents of any run still marked running.
+    /// history. Union of: tasks whose own status is orphaned (`running`), and
+    /// parents of any run still marked running. A `pendingUser` task with no
+    /// running run is durable review state and must survive restart.
     private static func fetchOrphanRecoveryCandidates(modelContext: ModelContext) -> [AgentTask] {
         var candidates: [UUID: AgentTask] = [:]
 
         for task in fetchIncompleteTasks(modelContext: modelContext)
-        where task.status == .running || task.status == .pendingUser {
+        where task.status == .running {
             candidates[task.id] = task
         }
 
