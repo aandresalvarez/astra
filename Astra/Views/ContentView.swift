@@ -512,7 +512,6 @@ struct ContentView: View {
             onDeleteTask: requestDeleteTask,
             onNewWorkspace: createWorkspace,
             onEditWorkspace: beginEditingWorkspace,
-            onImportWorkspace: importWorkspace,
             onShowConfigure: openCapabilitiesManager,
             onDeleteWorkspace: deleteWorkspace,
             onRenameWorkspace: beginRenamingWorkspace,
@@ -853,13 +852,14 @@ struct ContentView: View {
         rootLayout
         .frame(minHeight: 600)
         .accessibilityIdentifier("MainContentView")
-        // Installs the leading titlebar accessory (AstraLeadingCommandBar):
-        // sidebar toggle + search pinned beside the traffic lights in every layout.
+        // Installs the titlebar accessory: leading navigation commands plus the
+        // workspace action aligned to the live sidebar edge when it is visible.
         .astraWindowChrome(
             isSearchActive: $isSearchActive,
             sidebarCommands: sidebarTitlebarCommands,
             isSidebarToggleHovered: $isSidebarToggleHovered,
-            isSidebarHidden: presentation.isSidebarHidden
+            isSidebarHidden: presentation.isSidebarHidden,
+            sidebarWidth: presentation.sidebarWidth
         )
         .background(searchHotkey)
         .background(newWorkspaceAppHotkey)
@@ -1090,13 +1090,13 @@ struct ContentView: View {
         }
         .id(uiScale)
         .onAppear {
-            sidebarTitlebarCommands.installSidebarToggleHandler {
-                handleSidebarToggle()
-            }
+            sidebarTitlebarCommands.installSidebarToggleHandler(handleSidebarToggle)
+            sidebarTitlebarCommands.installNewWorkspaceHandler(createWorkspace)
             handleAppear()
         }
         .onDisappear {
             sidebarTitlebarCommands.clearSidebarToggleHandler()
+            sidebarTitlebarCommands.clearNewWorkspaceHandler()
             TaskOpenResponsivenessTelemetry.cancel(scope: taskOpenResponsivenessScope, reason: "content_view_disappeared")
             screenTransitionCoordinator.cancelForViewDisappearance()
             browserSessionPolicyRefreshTask?.cancel()
