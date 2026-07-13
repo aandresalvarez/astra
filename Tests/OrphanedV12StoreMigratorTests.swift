@@ -85,6 +85,7 @@ struct OrphanedV12StoreMigratorTests {
     #expect(
       try PersistentStoreModelShapeService.shape(ofStoreAt: sourceURL) == .runtimeSelectionOnlyV12)
     #expect(try OrphanedV12StoreMigrator.requiresMigration(storeURL: sourceURL))
+    #expect(OrphanedV12StoreMigrator.migrationProbe(storeURL: sourceURL) == .required)
 
     let report = try OrphanedV12StoreMigrator.migrateCopy(
       from: sourceURL,
@@ -142,6 +143,27 @@ struct OrphanedV12StoreMigratorTests {
 
     #expect(try PersistentStoreModelShapeService.shape(ofStoreAt: storeURL) == .productionV12)
     #expect(try !OrphanedV12StoreMigrator.requiresMigration(storeURL: storeURL))
+    #expect(OrphanedV12StoreMigrator.migrationProbe(storeURL: storeURL) == .notRequired)
+  }
+
+  @Test("an unreadable store probe defers to normal open-failure recovery")
+  func unreadableStoreProbeDoesNotClaimV12Migration() throws {
+    let root = try temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let storeURL = root.appendingPathComponent("corrupt.store")
+    try Data("not a sqlite store".utf8).write(to: storeURL)
+
+    let probe = OrphanedV12StoreMigrator.migrationProbe(storeURL: storeURL)
+    guard case .unavailable = probe else {
+      Issue.record("Expected unreadable metadata to remain unclassified, got \(probe)")
+      return
+    }
+    #expect(
+      PersistentStoreCompatibilityService.assess(
+        storeURL: storeURL,
+        latestSupportedSchemaVersion: ASTRASchema.currentVersion
+      ) == .unknown
+    )
   }
 
   @MainActor

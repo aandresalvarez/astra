@@ -24,6 +24,12 @@ public enum OrphanedV12StoreMigrationError: Error, Equatable {
   case migrationRecordMissing(actual: Int?)
 }
 
+public enum OrphanedV12StoreMigrationProbe: Equatable, Sendable {
+  case required
+  case notRequired
+  case unavailable(errorType: String)
+}
+
 /// Recovers the short-lived runtime-selection-only V12 without touching the
 /// active store. The caller supplies a new recovery URL and atomically selects
 /// it only after this service returns a validated report.
@@ -50,6 +56,17 @@ public enum OrphanedV12StoreMigrator {
 
   public static func requiresMigration(storeURL: URL) throws -> Bool {
     try PersistentStoreModelShapeService.shape(ofStoreAt: storeURL) == .runtimeSelectionOnlyV12
+  }
+
+  /// A read failure is intentionally distinct from a negative shape match.
+  /// Startup can continue into the normal compatibility/open-failure policy,
+  /// which owns corruption and transient-contention recovery decisions.
+  public static func migrationProbe(storeURL: URL) -> OrphanedV12StoreMigrationProbe {
+    do {
+      return try requiresMigration(storeURL: storeURL) ? .required : .notRequired
+    } catch {
+      return .unavailable(errorType: String(describing: type(of: error)))
+    }
   }
 
   public static func migrateCopy(

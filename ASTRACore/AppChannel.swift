@@ -6,12 +6,28 @@ public enum AppChannel: String {
     case beta = "beta"
 
     public static var current: AppChannel {
-        if let env = ProcessInfo.processInfo.environment["ASTRA_CHANNEL"],
-           let channel = AppChannel(rawValue: env.lowercased()) {
+        resolve(
+            bundleChannelRawValue: Bundle.main.object(forInfoDictionaryKey: "ASTRAChannel") as? String,
+            environment: ProcessInfo.processInfo.environment,
+            isPackagedApplication: Bundle.main.bundleURL.pathExtension == "app"
+        )
+    }
+
+    /// Packaged identity owns channel-scoped storage. The environment remains
+    /// available to unbundled SwiftPM tools, but it cannot redirect a packaged
+    /// development executable into production data (or vice versa).
+    public static func resolve(
+        bundleChannelRawValue: String?,
+        environment: [String: String],
+        isPackagedApplication: Bool = false
+    ) -> AppChannel {
+        if let bundleChannelRawValue,
+           let channel = AppChannel(rawValue: bundleChannelRawValue.lowercased()) {
             return channel
         }
-        if let plistValue = Bundle.main.object(forInfoDictionaryKey: "ASTRAChannel") as? String,
-           let channel = AppChannel(rawValue: plistValue.lowercased()) {
+        if !isPackagedApplication,
+           let environmentChannel = environment["ASTRA_CHANNEL"],
+           let channel = AppChannel(rawValue: environmentChannel.lowercased()) {
             return channel
         }
         return .production
