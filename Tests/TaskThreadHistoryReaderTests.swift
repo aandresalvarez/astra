@@ -440,4 +440,33 @@ struct StorageBackedTaskThreadViewModelTests {
         #expect(viewModel.snapshot?.sortedEvents.isEmpty == true)
         #expect(viewModel.historyLoadState == .idle)
     }
+
+    @Test("Storage-backed snapshot caps tool results to the chronologically newest, not dictionary order")
+    func storageBackedSnapshotKeepsNewestToolResults() async throws {
+        let (container, context, task) = try fixture()
+        defer { _ = container }
+        let run = TaskRun(task: task)
+        context.insert(run)
+        for index in 0..<20 {
+            let event = TaskEvent(task: task, type: "tool.result", payload: "result \(index)", run: run)
+            event.timestamp = Date(timeIntervalSince1970: Double(index))
+            context.insert(event)
+        }
+        try context.save()
+
+        let viewModel = TaskThreadViewModel()
+        viewModel.reset(for: task, modelContext: context)
+        let snapshot = await awaitSnapshot(viewModel) {
+            $0.sortedEvents.filter { $0.type == "tool.result" }.count == 12
+        }
+
+        // loadedHistoryEvents is a [UUID: TaskEventSnapshot] dictionary, so the
+        // cap must sort chronologically before trimming or it keeps whatever
+        // 12 events the dictionary's hash order happens to surface instead of
+        // the 12 newest by timestamp.
+        let keptPayloads = Set(
+            snapshot?.sortedEvents.filter { $0.type == "tool.result" }.map(\.payload) ?? []
+        )
+        #expect(keptPayloads == Set((8..<20).map { "result \($0)" }))
+    }
 }
