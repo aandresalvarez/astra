@@ -137,7 +137,7 @@ struct CodexCLIRuntimeTests {
             Issue.record("Expected command execution item start to map to tool use")
         }
 
-        if case .toolResult(let id, let content) = parsedEvents[2].first {
+        if case .toolResult(let id, let content, _) = parsedEvents[2].first {
             #expect(id == "item_1")
             #expect(content.contains("ok"))
             #expect(content.contains("exit_code=0"))

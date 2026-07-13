@@ -69,6 +69,7 @@ public enum TaskEventTypes {
     public enum Tool {
         public static let use: TaskEventType = "tool.use"
         public static let result: TaskEventType = "tool.result"
+        public static let resultFailed: TaskEventType = "tool.result.failed"
         public static let permissionDenied: TaskEventType = "permission.denied"
         public static let permissionApprovalRequested: TaskEventType = "permission.approval.requested"
         /// Emitted when a live in-flight ask is answered (allow or deny) without
@@ -258,6 +259,7 @@ public enum TaskEventTypes {
     private static let toolTypes: Set<TaskEventType> = [
         Tool.use,
         Tool.result,
+        Tool.resultFailed,
         Tool.permissionDenied,
         Plan.stepStarted,
         Plan.stepCompleted,

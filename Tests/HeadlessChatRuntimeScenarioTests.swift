@@ -7,6 +7,79 @@ import ASTRAPersistence
 import ASTRACore
 
 extension HeadlessChatScenarioTests {
+    @Test("Ask routes a requested PR command to typed publication instead of reusable Bash approval")
+    func askPullRequestUsesTypedPublication() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let claudePath = try harness.writeExecutable(
+            named: "claude",
+            script: Self.claudeScript(body: """
+            printf '%s\\n' '{"type":"system","subtype":"init","session_id":"ask-publish-session","model":"claude-sonnet-4-6"}'
+            printf '%s\\n' '{"type":"assistant","message":{"model":"claude-sonnet-4-6","content":[{"type":"tool_use","id":"tool_pr","name":"Bash","input":{"command":"gh pr create --draft --title Test"}}]}}'
+            /bin/sleep 20
+            exit 0
+            """)
+        )
+        let task = harness.makeTask(
+            runtime: .claudeCode,
+            goal: "Implement the fix and create a pull request",
+            model: "claude-sonnet-4-6"
+        )
+        let worker = harness.makeWorker(runtime: .claudeCode, executablePath: claudePath)
+
+        _ = await harness.execute(task: task, worker: worker)
+
+        let run = try #require(task.runs.first)
+        #expect(task.status == .pendingUser)
+        #expect(run.status == .completed)
+        #expect(run.typedStopReason == .externalOutcomePending)
+        #expect(task.events.contains { $0.type == TaskExternalOutcomeEventTypes.publicationFailed })
+        #expect(!task.events.contains {
+            $0.type == TaskEventTypes.Tool.permissionApprovalRequested.rawValue
+        })
+    }
+
+    @Test("Exit zero with a failed requested PR tool remains pending for publication")
+    func failedRequestedPullRequestDoesNotCompleteTask() async throws {
+        let harness = try HeadlessChatHarness()
+        defer { harness.cleanup() }
+
+        let claudePath = try harness.writeExecutable(
+            named: "claude",
+            script: Self.claudeScript(body: """
+            printf '%s\\n' '{"type":"system","subtype":"init","session_id":"publish-session","model":"claude-sonnet-4-6"}'
+            printf '%s\\n' '{"type":"assistant","message":{"model":"claude-sonnet-4-6","content":[{"type":"tool_use","id":"tool_pr","name":"Bash","input":{"command":"gh pr create --draft --title Test"}}]}}'
+            printf '%s\\n' '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tool_pr","is_error":true,"content":"gh pr create failed because the GitHub broker is read-only"}]}}'
+            printf '%s\\n' '{"type":"assistant","message":{"model":"claude-sonnet-4-6","content":[{"type":"text","text":"Local changes are ready, but the pull request was not created."}]}}'
+            printf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"duration_ms":12,"num_turns":1,"result":"Local changes are ready, but the pull request was not created.","usage":{"input_tokens":3,"output_tokens":5}}'
+            exit 0
+            """)
+        )
+
+        let task = harness.makeTask(
+            runtime: .claudeCode,
+            goal: "Implement the fix and create a pull request",
+            model: "claude-sonnet-4-6"
+        )
+        let worker = harness.makeWorker(
+            runtime: .claudeCode,
+            executablePath: claudePath,
+            permissionPolicy: .autonomous
+        )
+
+        _ = await harness.execute(task: task, worker: worker)
+
+        let run = try #require(task.runs.first)
+        #expect(run.exitCode == 0)
+        #expect(run.status == .completed)
+        #expect(run.typedStopReason == .externalOutcomePending)
+        #expect(task.status == .pendingUser)
+        #expect(task.events.contains { $0.type == TaskEventTypes.Tool.resultFailed.rawValue })
+        #expect(task.events.contains { $0.type == TaskExternalOutcomeEventTypes.publicationFailed })
+        #expect(!task.events.contains { $0.type == TaskEventTypes.Task.completed.rawValue })
+    }
+
     @Test("Fake Copilot chat completes through the worker without UI")
     func fakeCopilotChatCompletes() async throws {
         let harness = try HeadlessChatHarness()

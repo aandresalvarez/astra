@@ -96,6 +96,21 @@ struct StreamParserTests {
         #expect(content.id == "tool_123")
     }
 
+    @Test("Failed tool result preserves error metadata")
+    func failedToolResultPreservesErrorMetadata() throws {
+        let json = #"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tool_pr","is_error":true,"content":"gh pr create failed"}]}}"#
+
+        let parsed = StreamEventParser.parse(line: json)
+        guard case .toolResult(let toolID, let content, let isError) = parsed else {
+            Issue.record("Expected a structured tool result, got \(String(describing: parsed))")
+            return
+        }
+
+        #expect(toolID == "tool_pr")
+        #expect(content == "gh pr create failed")
+        #expect(isError)
+    }
+
     @Test("Assistant usage event is emitted with cache tokens")
     func assistantUsageEvent() throws {
         let events = StreamEventParser.parseAll(line: textJSON)

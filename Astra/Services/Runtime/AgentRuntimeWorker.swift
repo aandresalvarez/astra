@@ -1039,18 +1039,12 @@ final class AgentRuntimeWorker {
             run.typedStopReason = .cancelled
             TaskStateMachine.cancelFromRuntime(task, modelContext: modelContext)
         } else if result.policyApprovalRequired {
-            run.status = .failed
-            run.typedStopReason = .permissionApprovalRequired
-            TaskStateMachine.pauseForRuntimePermission(task, modelContext: modelContext)
-            let payload = result.policyApprovalMessage ?? "The provider needs a runtime permission before it can continue."
-            TaskRuntimePermissionOpenRequestStore.recordOpenRequest(payload: payload, task: task)
-            let event = TaskEvent(
+            TaskRuntimeOutcomeTransition.applyPolicyApproval(
                 task: task,
-                eventType: TaskEventTypes.Tool.permissionApprovalRequested,
-                payload: payload,
-                run: run
+                run: run,
+                approvalMessage: result.policyApprovalMessage,
+                modelContext: modelContext
             )
-            modelContext.insert(event)
         } else if result.timedOut {
             run.status = .timeout
             run.typedStopReason = .timeout
@@ -1404,7 +1398,12 @@ final class AgentRuntimeWorker {
             return false
         }
 
-        applyCompletionBlock(decision, task: task, run: run, modelContext: modelContext)
+        TaskRuntimeOutcomeTransition.applyCompletionBlock(
+            decision,
+            task: task,
+            run: run,
+            modelContext: modelContext
+        )
         return true
     }
 
@@ -1435,7 +1434,12 @@ final class AgentRuntimeWorker {
 
         let decision = TaskCompletionPolicy.decide(inferredValidation: result)
         guard decision.canComplete else {
-            applyCompletionBlock(decision, task: task, run: run, modelContext: modelContext)
+            TaskRuntimeOutcomeTransition.applyCompletionBlock(
+                decision,
+                task: task,
+                run: run,
+                modelContext: modelContext
+            )
             return
         }
     }
@@ -1449,7 +1453,12 @@ final class AgentRuntimeWorker {
     ) -> Bool {
         let decision = TaskCompletionPolicy.decideManualCompletion(task: task, run: run)
         if decision.shouldBlockCompletion {
-            applyCompletionBlock(decision, task: task, run: run, modelContext: modelContext)
+            TaskRuntimeOutcomeTransition.applyCompletionBlock(
+                decision,
+                task: task,
+                run: run,
+                modelContext: modelContext
+            )
             return false
         }
 
@@ -1457,24 +1466,6 @@ final class AgentRuntimeWorker {
         let event = TaskEvent(task: task, eventType: TaskEventTypes.Task.completed, payload: successPayload, run: run)
         modelContext.insert(event)
         return true
-    }
-
-    @MainActor
-    private static func applyCompletionBlock(
-        _ decision: TaskCompletionPolicyDecision,
-        task: AgentTask,
-        run: TaskRun,
-        modelContext: ModelContext
-    ) {
-        run.status = .failed
-        run.typedStopReason = decision.typedStopReason ?? TaskRunStopReason.custom(decision.gate.rawValue)
-        TaskStateMachine.pauseForValidationReview(task, modelContext: modelContext)
-        modelContext.insert(TaskEvent(
-            task: task,
-            eventType: TaskEventTypes.System.error,
-            payload: decision.userVisibleMessage ?? "Task completion blocked by \(decision.gate.rawValue).",
-            run: run
-        ))
     }
 
     @MainActor

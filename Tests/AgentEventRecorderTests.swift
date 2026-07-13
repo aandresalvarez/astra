@@ -1,3 +1,4 @@
+import Foundation
 import SwiftData
 import Testing
 import ASTRAModels
@@ -16,6 +17,32 @@ private func makeAgentEventRecorderContainer() throws -> ModelContainer {
 @Suite("Agent Event Recorder")
 @MainActor
 struct AgentEventRecorderTests {
+    @Test("Failed tool results are stored separately from successful output")
+    func failedToolResultIsStructured() throws {
+        let container = try makeAgentEventRecorderContainer()
+        let context = container.mainContext
+        let task = AgentTask(title: "Publish", goal: "Create a pull request")
+        let run = TaskRun(task: task)
+        context.insert(task)
+        context.insert(run)
+
+        AgentEventRecorder.recordClaudeEvent(
+            .toolResult(id: "tool_pr", content: "gh pr create failed", isError: true),
+            to: task,
+            run: run,
+            modelContext: context
+        )
+
+        let event = try #require(task.events.first { $0.type == TaskEventTypes.Tool.resultFailed.rawValue })
+        let payload = try #require(try? TaskEventPayloadCodec.makeDecoder().decode(
+            ToolResultFailurePayload.self,
+            from: Data(event.payload.utf8)
+        ))
+        #expect(payload.toolID == "tool_pr")
+        #expect(payload.message == "gh pr create failed")
+        #expect(!task.events.contains { $0.type == TaskEventTypes.Tool.result.rawValue })
+    }
+
     @Test("Claude cumulative text replay appends only unseen suffix")
     func claudeCumulativeTextReplayAppendsOnlyUnseenSuffix() throws {
         let container = try makeAgentEventRecorderContainer()

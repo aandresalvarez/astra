@@ -268,6 +268,8 @@ enum TaskRuntimePermissionOpenRequestStore {
             return "Connector credentials"
         case .sandboxPath(_, _, let toolName):
             return normalizedToolName(toolName) ?? "Local sandbox"
+        case .gitPublish:
+            return "GitHub draft publication"
         }
     }
 

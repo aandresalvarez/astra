@@ -364,10 +364,17 @@ enum AgentEventRecorder {
             let suffix = inputSummary.map { ": \($0.prefix(300))" } ?? ""
             modelContext.insert(TaskEvent(task: task, eventType: TaskEventTypes.Tool.use, payload: "Using tool: \(name)\(suffix)", run: run))
 
-        case .toolResult(_, let content):
+        case .toolResult(let toolID, let content, let isError):
             recordingState?.breakConversationCoalescing(for: run)
             if !content.isEmpty {
-                modelContext.insert(TaskEvent(task: task, eventType: TaskEventTypes.Tool.result, payload: String(content.prefix(10000)), run: run))
+                let eventType = isError ? TaskEventTypes.Tool.resultFailed : TaskEventTypes.Tool.result
+                let payload = isError
+                    ? TaskEvent.payloadString(ToolResultFailurePayload(
+                        toolID: toolID,
+                        message: String(content.prefix(10_000))
+                    ))
+                    : String(content.prefix(10_000))
+                modelContext.insert(TaskEvent(task: task, eventType: eventType, payload: payload, run: run))
             }
 
         case .fileChange(let path, let kind, let summary, let oldString, let newString):
@@ -478,8 +485,8 @@ enum AgentEventRecorder {
         case .toolUse(let name, let id, let inputSummary):
             let input: [String: Any]? = inputSummary.map { ["summary": $0] }
             return .toolUse(name: name, id: id, input: input)
-        case .toolResult(let id, let content):
-            return .toolResult(toolId: id, content: content)
+        case .toolResult(let id, let content, let isError):
+            return .toolResult(toolId: id, content: content, isError: isError)
         case .permissionRequested(let tool, let reason):
             return .permissionDenied(tool: tool, reason: reason)
         case .stats(let input, let output, let cost, let duration, let turns):
@@ -550,8 +557,8 @@ enum AgentEventRecorder {
                 ]
             }
             return [.toolUse(name: name, id: id, inputSummary: inputSummary)]
-        case .toolResult(let toolId, let content):
-            return [.toolResult(id: toolId, content: content)]
+        case .toolResult(let toolId, let content, let isError):
+            return [.toolResult(id: toolId, content: content, isError: isError)]
         case .usage(let totalInput, let totalOutput):
             return [.stats(inputTokens: totalInput, outputTokens: totalOutput, costUSD: nil, durationMs: nil, turns: nil)]
         case .result(let text, let costUSD, let totalInput, let totalOutput, let durationMs, let numTurns, let isError):

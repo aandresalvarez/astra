@@ -72,7 +72,7 @@ enum PermissionBroker {
     ) -> PermissionApprovalEventPayload {
         let sanitizedGrants: [PermissionGrant]
         switch request {
-        case .sandboxPath, .credential, .connectorCredentials:
+        case .sandboxPath, .credential, .connectorCredentials, .gitPublish:
             sanitizedGrants = approvalGrants(for: request)
         default:
             sanitizedGrants = sanitizeGrants(grants)
@@ -227,6 +227,8 @@ enum PermissionBroker {
                 return shellApprovalGrants(command: command)
             }
             return safeProviderToolGrant(toolName).map { [$0] } ?? []
+        case .gitPublish(let authorization):
+            return [.gitPublish(authorization: authorization)]
         }
     }
 
@@ -237,6 +239,15 @@ enum PermissionBroker {
         providerDetail: String?,
         grants: [PermissionGrant]
     ) -> String {
+        if case .gitPublish(let authorization) = request {
+            return [
+                "Permission requested for tool: GitHub draft publication. ASTRA paused before making this external change.",
+                "What ASTRA will publish: \(authorization.repository): \(authorization.headBranch) -> \(authorization.baseBranch) at \(authorization.expectedHeadSHA).",
+                "Why approval is needed: \(sentence(reason))",
+                "What allowing does: Executes this exact reviewed draft publication once through ASTRA. It does not grant provider shell access, restart the provider, or create a reusable task permission.",
+                "What to check: Confirm the repository, branches, expected HEAD, and reviewed paths, commit message, PR title, and PR body represented by request digest \(authorization.requestDigest)."
+            ].joined(separator: "\n")
+        }
         let tool = toolName(for: request)
         let detail = detail(for: request)
         let providerGrants = providerGrantStrings(for: grants, runtime: providerID)
@@ -275,6 +286,8 @@ enum PermissionBroker {
             safeDisplayField(toolName, limit: 200) ?? "Local sandbox"
         case .providerNativePrompt(let toolName, _):
             toolName
+        case .gitPublish:
+            "GitHub draft publication"
         }
     }
 
@@ -292,6 +305,8 @@ enum PermissionBroker {
             nil
         case .sandboxPath(let path, _, _):
             safeDisplayField(path, limit: 4_096)
+        case .gitPublish(let authorization):
+            "\(authorization.repository): \(authorization.headBranch) -> \(authorization.baseBranch) at \(authorization.expectedHeadSHA)"
         }
     }
 
@@ -318,6 +333,9 @@ enum PermissionBroker {
         grants: [PermissionGrant],
         providerGrants: [String]
     ) -> String {
+        if case .gitPublish = request {
+            return "Executes this exact draft publication once through ASTRA. It does not grant provider shell access, restart the provider, or create a reusable task permission."
+        }
         if isCredentialRequest(request) {
             let count = grants.filter {
                 if case .credential = $0 { return true }
@@ -337,6 +355,9 @@ enum PermissionBroker {
     }
 
     private static func decisionGuidance(request: PermissionRequest, toolName: String, detail: String?) -> String {
+        if case .gitPublish(let authorization) = request {
+            return "Confirm repository \(authorization.repository), base \(authorization.baseBranch), head \(authorization.headBranch), expected HEAD \(authorization.expectedHeadSHA), and the reviewed publication content before allowing."
+        }
         if isCredentialRequest(request) {
             return "Allow only if this task should use this connector's configured credentials."
         }
@@ -433,8 +454,12 @@ enum PermissionBroker {
 
     private static func providerEligibleGrants(_ grants: [PermissionGrant]) -> [PermissionGrant] {
         sanitizeGrants(grants).filter { grant in
-            if case .sandboxPath = grant { return false }
-            return true
+            switch grant {
+            case .sandboxPath, .gitPublish:
+                return false
+            default:
+                return true
+            }
         }
     }
 
@@ -463,6 +488,8 @@ enum PermissionBroker {
             return isSafeCredentialLabel(label)
         case .sandboxPath(let path, let access):
             return isSafeSandboxPath(path) && isSafeSandboxAccess(access)
+        case .gitPublish(let authorization):
+            return isSafeGitPublishAuthorization(authorization)
         }
     }
 
@@ -470,7 +497,7 @@ enum PermissionBroker {
         switch grant {
         case .shellCommand:
             return ShellCommandRiskClassifier.allowsTaskScopedReuse(grant)
-        case .sandboxPath:
+        case .sandboxPath, .gitPublish:
             return false
         default:
             return true
@@ -513,6 +540,38 @@ enum PermissionBroker {
 
     private static func isSafeSandboxAccess(_ access: String) -> Bool {
         access == "read"
+    }
+
+    private static func isSafeGitPublishAuthorization(_ authorization: GitPublishAuthorization) -> Bool {
+        guard authorization.isDraft,
+              isSafeBoundedField(authorization.repository, limit: 4_096),
+              isSafeGitRef(authorization.baseBranch),
+              isSafeGitRef(authorization.headBranch),
+              isHexDigest(authorization.expectedHeadSHA, lengths: 7...64),
+              isHexDigest(authorization.requestDigest, lengths: 64...64) else {
+            return false
+        }
+        return authorization.baseBranch != authorization.headBranch
+    }
+
+    private static func isSafeGitRef(_ value: String) -> Bool {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed == value,
+              isSafeBoundedField(trimmed, limit: 255),
+              !trimmed.hasPrefix("-"),
+              !trimmed.hasPrefix("/"),
+              !trimmed.hasSuffix("/"),
+              !trimmed.contains(".."),
+              !trimmed.contains("@{"),
+              trimmed.rangeOfCharacter(from: CharacterSet(charactersIn: " ~^:?*[\\")) == nil else {
+            return false
+        }
+        return !trimmed.split(separator: "/").contains { $0.isEmpty || $0.hasPrefix(".") || $0.hasSuffix(".") }
+    }
+
+    private static func isHexDigest(_ value: String, lengths: ClosedRange<Int>) -> Bool {
+        lengths.contains(value.count)
+            && value.unicodeScalars.allSatisfy { CharacterSet(charactersIn: "0123456789abcdefABCDEF").contains($0) }
     }
 
     private static func safeDisplayField(_ value: String?, limit: Int) -> String? {

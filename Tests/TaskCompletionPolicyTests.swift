@@ -7,6 +7,36 @@ import ASTRAModels
 @Suite("Task completion policy")
 @MainActor
 struct TaskCompletionPolicyTests {
+    @Test("Requested PR failure blocks task completion but preserves local run completion")
+    func requestedPullRequestFailureBlocksCompletion() throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        let task = AgentTask(title: "Publish", goal: "Implement the fix and create a pull request")
+        let run = TaskRun(task: task)
+        context.insert(task)
+        context.insert(run)
+        context.insert(TaskEvent(
+            task: task,
+            eventType: TaskEventTypes.Tool.use,
+            payload: "Using tool: Bash: gh pr create --draft",
+            run: run
+        ))
+        context.insert(TaskEvent.structuredPayloadEvent(
+            task: task,
+            eventType: TaskEventTypes.Tool.resultFailed,
+            payload: ToolResultFailurePayload(toolID: "tool_pr", message: "GitHub broker is read-only"),
+            run: run
+        ))
+        try context.save()
+
+        let decision = TaskCompletionPolicy.decideManualCompletion(task: task, run: run)
+
+        #expect(decision.shouldBlockCompletion)
+        #expect(decision.gate == .requiredExternalOutcome)
+        #expect(decision.typedStopReason == .externalOutcomePending)
+        #expect(decision.auditFields["outcome_kind"] == "github_pull_request")
+    }
+
     @Test("validation contract policy blocks failed required assertions")
     func validationContractPolicyBlocksFailedRequiredAssertions() {
         let evaluation = TaskValidationContractEvaluation(

@@ -86,7 +86,7 @@ enum BrowserBridgeRuntimeLaunchGuard {
             return text
         case .result(let text, _, _, _, _, _, _):
             return text
-        case .toolResult(_, let text):
+        case .toolResult(_, let text, _):
             return text
         default:
             return nil

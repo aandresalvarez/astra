@@ -40,7 +40,7 @@ extension ProviderPolicyAdapter {
                 return name.trimmingCharacters(in: .whitespacesAndNewlines)
             case .shellCommand(let executable, let pattern):
                 return "shell(\(executable):\(pattern))"
-            case .filePath, .networkPattern, .credential, .sandboxPath:
+            case .filePath, .networkPattern, .credential, .sandboxPath, .gitPublish:
                 return nil
             }
         }
@@ -147,7 +147,7 @@ struct ClaudePolicyAdapter: ProviderPolicyAdapter {
                 return canonicalClaudeToolName(name)
             case .shellCommand(let executable, let pattern):
                 return claudeShellGrant(executable: executable, pattern: pattern)
-            case .filePath, .networkPattern, .credential, .sandboxPath:
+            case .filePath, .networkPattern, .credential, .sandboxPath, .gitPublish:
                 return nil
             }
         })
@@ -339,7 +339,7 @@ struct CopilotPolicyAdapter: ProviderPolicyAdapter {
                 return canonicalCopilotToolName(name)
             case .shellCommand(let executable, let pattern):
                 return "shell(\(executable):\(pattern))"
-            case .filePath, .networkPattern, .credential, .sandboxPath:
+            case .filePath, .networkPattern, .credential, .sandboxPath, .gitPublish:
                 return nil
             }
         })
@@ -708,7 +708,7 @@ private enum BrokeredProviderGrantStrings {
                 return name.trimmingCharacters(in: .whitespacesAndNewlines)
             case .shellCommand(let executable, let pattern):
                 return "shell(\(executable):\(pattern))"
-            case .filePath, .networkPattern, .credential, .sandboxPath:
+            case .filePath, .networkPattern, .credential, .sandboxPath, .gitPublish:
                 return nil
             }
         })
@@ -1219,12 +1219,18 @@ enum AgentPolicyManifestService {
     ) -> ProviderPolicyRender {
         let usesDockerWorkspaceExecutor = DockerWorkspaceMCPProjection.isEnabled(for: executionEnvironment)
             && runtimeCapabilityProfile.canDeliverDockerWorkspaceShellMCP
+        let permissionPolicy = PermissionPolicy(providerMode: render.permissionMode)
+        let deniesNativeShellForHostControl = HostControlPlaneMCPProjection.requiresNativeShellDenial(
+            environment: executionEnvironment,
+            permissionPolicy: permissionPolicy,
+            requiredTools: hostControlTools
+        )
         guard usesDockerWorkspaceExecutor || !hostControlTools.isEmpty else {
             return render
         }
 
         var updated = render
-        if usesDockerWorkspaceExecutor || !hostControlTools.isEmpty {
+        if deniesNativeShellForHostControl {
             updated.allowedTools = DockerWorkspaceMCPProjection.removingNativeShellTools(updated.allowedTools)
             updated.askFirstTools = DockerWorkspaceMCPProjection.removingNativeShellTools(updated.askFirstTools)
         }
@@ -1257,14 +1263,22 @@ enum AgentPolicyManifestService {
                 ))
             }
         }
-        updated.deniedTools = uniqueStrings(updated.deniedTools + ["Bash", "shell"])
+        if deniesNativeShellForHostControl {
+            updated.deniedTools = uniqueStrings(updated.deniedTools + ["Bash", "shell"])
+        }
         updated.diagnostics.append(PolicyDiagnostic(
             id: "container.host-control-plane-routing",
             severity: .info,
-            title: "Host control plane routed through ASTRA",
-            message: "Project shell commands run in Docker through ASTRA's workspace MCP tools. Host services such as GitHub, Jira, Google Cloud, SSH, browser, and Keychain access must use enabled ASTRA capabilities rather than native provider Bash or Docker workspace shell.",
+            title: deniesNativeShellForHostControl
+                ? "Host control plane routed through ASTRA"
+                : "Host inspection available alongside Auto developer tools",
+            message: deniesNativeShellForHostControl
+                ? "Project shell commands run in Docker through ASTRA's workspace MCP tools. Host services such as GitHub, Jira, Google Cloud, SSH, browser, and Keychain access must use enabled ASTRA capabilities rather than native provider Bash or Docker workspace shell."
+                : "ASTRA's host-control tools remain constrained to their declared operations. Auto keeps provider-native developer tools available for explicit user-requested host work.",
             affectedCapability: "control_plane",
-            remediation: "Enable or repair the relevant capability before asking the provider to use host credentials or host services."
+            remediation: deniesNativeShellForHostControl
+                ? "Enable or repair the relevant capability before asking the provider to use host credentials or host services."
+                : "Use Ask when host mutations should require confirmation."
         ))
 
         if usesDockerWorkspaceExecutor {

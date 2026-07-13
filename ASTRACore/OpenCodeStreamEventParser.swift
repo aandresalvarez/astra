@@ -35,8 +35,8 @@ public enum OpenCodeStreamEventParser {
             return [.text(text: text)]
         case .toolUse(let name, let id, let input):
             return [.toolUse(name: name, id: id, inputSummary: inputSummary(input))]
-        case .toolResult(let toolID, let content):
-            return [.toolResult(id: toolID, content: content)]
+        case .toolResult(let toolID, let content, let isError):
+            return [.toolResult(id: toolID, content: content, isError: isError)]
         case .usage(let input, let output):
             return [.stats(inputTokens: input, outputTokens: output, costUSD: nil, durationMs: nil, turns: nil)]
         case .result(let text, let cost, let input, let output, let duration, let turns, let isError):

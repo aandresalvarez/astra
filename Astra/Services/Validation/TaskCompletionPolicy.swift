@@ -6,6 +6,7 @@ enum TaskCompletionPolicyGate: String, Sendable, Equatable {
     case deliverableVerification = "deliverable_verification"
     case inferredValidation = "inferred_validation"
     case manualArtifactRequirement = "manual_artifact_requirement"
+    case requiredExternalOutcome = "required_external_outcome"
 }
 
 struct TaskCompletionPolicyDecision: Sendable, Equatable {
@@ -124,6 +125,22 @@ enum TaskCompletionPolicy {
 
     @MainActor
     static func decideManualCompletion(task: AgentTask, run: TaskRun) -> TaskCompletionPolicyDecision {
+        if let failure = TaskExternalOutcomeFailureClassifier.pendingGitHubPullRequestFailure(
+            task: task,
+            run: run
+        ) {
+            return .block(
+                gate: .requiredExternalOutcome,
+                stopReason: .externalOutcomePending,
+                userVisibleMessage: "The local work finished, but the requested pull request was not created. Review the exact ASTRA publication proposal to finish the task.",
+                auditFields: [
+                    "outcome_kind": failure.kind.rawValue,
+                    "run_id": failure.runID.uuidString,
+                    "source_event_id": failure.sourceEventID?.uuidString ?? "none"
+                ]
+            )
+        }
+
         let requiresArtifact = TaskDeliverableExpectation.requiresDeliverableArtifact(task)
         let hasArtifact = TaskDeliverableExpectation.hasArtifact(for: task, run: run)
         let fields = [

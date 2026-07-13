@@ -137,7 +137,7 @@ struct PluginPackagePrereqTests {
     func builtInGitHubRequiresGhAndRoutesThroughHostControl() {
         let github = PluginCatalog.builtInPackages.first { $0.id == "github-workflow" }
         #expect(github != nil)
-        #expect(github?.version == "2.1.4")
+        #expect(github?.version == "2.1.5")
         #expect(github?.connectors.isEmpty == true)
         #expect(github?.browserAdapters.isEmpty == true)
         #expect(github?.localTools.isEmpty == true)

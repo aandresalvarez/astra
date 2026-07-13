@@ -1329,6 +1329,7 @@ struct ClaudeCodeRuntimeAdapter: AgentRuntimeAdapter {
         let deniesNativeShellForHostControl = HostControlPlaneMCPProjection.requiresNativeShellDenial(
             task: context.task,
             environment: executionEnvironment,
+            permissionPolicy: effectivePermissionPolicy,
             contextText: context.contextText,
             capabilityScope: context.capabilityResolutionSnapshot.providerLaunch,
             precomputedRuntimeRequirements: context.runtimeRequirements
@@ -1885,11 +1886,15 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             runtimeRequirements: context.runtimeRequirements
         )
         let hostControlTools = HostControlPlaneRuntimeLaunchGuard.requiredTools(from: mcpProjection.hostControlEnvironment)
-        let routesControlPlaneThroughMCP = usesDockerWorkspaceExecutor || !hostControlTools.isEmpty
-        let providerAllowed = routesControlPlaneThroughMCP
+        let deniesNativeShellForHostControl = HostControlPlaneMCPProjection.requiresNativeShellDenial(
+            environment: executionEnvironment,
+            permissionPolicy: providerLaunchPermissionPolicy,
+            requiredTools: hostControlTools
+        )
+        let providerAllowed = deniesNativeShellForHostControl
             ? DockerWorkspaceMCPProjection.removingNativeShellTools(baseProviderAllowed)
             : baseProviderAllowed
-        let askFirstTools = routesControlPlaneThroughMCP
+        let askFirstTools = deniesNativeShellForHostControl
             ? DockerWorkspaceMCPProjection.removingNativeShellTools(baseAskFirstTools)
             : baseAskFirstTools
         let artifactBootstrapTools = ProviderArtifactBootstrapPolicy.persistedLaunchTools(
@@ -1904,7 +1909,7 @@ struct CopilotCLIRuntimeAdapter: AgentRuntimeAdapter {
             mcpToolSupported: mcpProjection.browserBridgeMCPToolSupported
         )
         var localToolCommands = AgentRuntimeProcessRunner.copilotLocalToolCommands(for: context.task, contextText: context.contextText)
-        if !hostControlTools.isEmpty {
+        if deniesNativeShellForHostControl {
             localToolCommands = HostControlPlaneRuntimeLaunchGuard.removingNativeLocalToolCommands(
                 localToolCommands,
                 requiredTools: hostControlTools

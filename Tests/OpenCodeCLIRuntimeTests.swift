@@ -227,7 +227,7 @@ struct OpenCodeCLIRuntimeTests {
             return false
         })
         #expect(toolEvents.contains { event in
-            if case .toolResult(let id, let content) = event {
+            if case .toolResult(let id, let content, _) = event {
                 return id == "tool-1" && content == "clean"
             }
             return false
