@@ -13,11 +13,16 @@ final class SidebarTitlebarCommandBridge: ObservableObject {
     static let sidebarToggleRequestedNotification = Notification.Name(
         "SidebarTitlebarCommandBridge.sidebarToggleRequested"
     )
+    static let newWorkspaceRequestedNotification = Notification.Name(
+        "SidebarTitlebarCommandBridge.newWorkspaceRequested"
+    )
 
     @Published private(set) var toggleRequestID = 0
+    @Published private(set) var newWorkspaceRequestID = 0
 
     private let notificationCenter: NotificationCenter
     private var sidebarToggleHandler: (() -> Void)?
+    private var newWorkspaceHandler: (() -> Void)?
 
     init(notificationCenter: NotificationCenter = .default) {
         self.notificationCenter = notificationCenter
@@ -38,5 +43,22 @@ final class SidebarTitlebarCommandBridge: ObservableObject {
             object: self
         )
         sidebarToggleHandler?()
+    }
+
+    func installNewWorkspaceHandler(_ handler: @escaping () -> Void) {
+        newWorkspaceHandler = handler
+    }
+
+    func clearNewWorkspaceHandler() {
+        newWorkspaceHandler = nil
+    }
+
+    func requestNewWorkspace() {
+        newWorkspaceRequestID &+= 1
+        notificationCenter.post(
+            name: Self.newWorkspaceRequestedNotification,
+            object: self
+        )
+        newWorkspaceHandler?()
     }
 }
