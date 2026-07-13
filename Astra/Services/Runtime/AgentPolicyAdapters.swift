@@ -834,12 +834,15 @@ enum TaskPolicyStore {
         fallbackPermissionPolicy: PermissionPolicy,
         executionPolicy: AgentRuntimeExecutionPolicy
     ) -> Resolution {
-        let effectivePermissionPolicy = executionPolicy.permissionPolicy(default: fallbackPermissionPolicy)
-        if effectivePermissionPolicy == .autonomous {
+        // An explicit one-run escalation is launch authority and therefore wins.
+        // The fallback permission policy, however, is the legacy global
+        // `skipPermissions` projection. It must not erase a task or workspace
+        // selection made through the current policy UI.
+        if executionPolicy.permissionPolicyOverride == .autonomous {
             let policy = AgentPolicy.preset(.autonomous)
             return Resolution(
                 level: .autonomous,
-                scope: executionPolicy.permissionPolicyOverride == nil ? .globalDefault : .oneRunEscalation,
+                scope: .oneRunEscalation,
                 policy: policy
             )
         }
@@ -857,6 +860,15 @@ enum TaskPolicyStore {
                 level: effectiveWorkspaceDefault,
                 scope: .workspaceDefault,
                 policy: policy(for: effectiveWorkspaceDefault, workspace: task.workspace)
+            )
+        }
+
+        if fallbackPermissionPolicy == .autonomous {
+            let policy = AgentPolicy.preset(.autonomous)
+            return Resolution(
+                level: .autonomous,
+                scope: .globalDefault,
+                policy: policy
             )
         }
 
