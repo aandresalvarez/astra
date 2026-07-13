@@ -740,6 +740,7 @@ final class AgentRuntimeWorker {
             executionEnvironment: executionEnvironment,
             capabilityResolutionSnapshot: capabilityResolutionSnapshot,
             runtimePermissionGrants: executionPolicy.permissionGrantsOverride ?? [],
+            permissionPolicy: launchPermissionPolicy,
             // appliedRuntime.requirements is already resolved above (~line 528),
             // so no reordering was needed here — closes the last spot that
             // independently re-derived GitHub host-control routing instead of

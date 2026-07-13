@@ -18,6 +18,7 @@ enum TaskLaunchResourceResolver {
         executionEnvironment: WorkspaceExecutionEnvironment? = nil,
         capabilityResolutionSnapshot: TaskCapabilityResolutionSnapshot? = nil,
         runtimePermissionGrants: [PermissionGrant] = [],
+        permissionPolicy: PermissionPolicy = .autonomous,
         homeDirectoryPath: String = FileManager.default.homeDirectoryForCurrentUser.path,
         fileManager: FileManager = .default,
         gcloudExecutablePathProvider: GCloudExecutablePathProvider = defaultGCloudExecutablePath,
@@ -72,7 +73,25 @@ enum TaskLaunchResourceResolver {
             capabilityScope: capabilityScope,
             precomputedRuntimeRequirements: precomputedRuntimeRequirements
         )
-        let gitCredentialContext = routesGitHubMetadataThroughHostControl
+        // Ask keeps GitHub publication behind ASTRA's typed review workflow.
+        // Native Git credentials therefore must not be projected into the
+        // provider merely because the task mentions push or pull requests.
+        // Auto retains the normal developer credential path.
+        let brokersNetworkGitThroughAstra = permissionPolicy != .autonomous
+            && !environment.workspaceCommandsRunInsideContainer
+            && (
+                GitOperationIntentDetector.detectsNetworkGitOperation(
+                    prompt: prompt,
+                    task: task,
+                    contextText: contextText
+                )
+                || GitOperationIntentDetector.detectsGitHubMetadataOrAPIIntent(
+                    prompt: prompt,
+                    task: task,
+                    contextText: contextText
+                )
+            )
+        let gitCredentialContext = routesGitHubMetadataThroughHostControl || brokersNetworkGitThroughAstra
             ? .empty
             : gitCredentialContextProvider(prompt, task, contextText, workspacePath)
         let gitResource = gitCredentialContext.isEmpty ? nil : RuntimeGitCredentialResource(
