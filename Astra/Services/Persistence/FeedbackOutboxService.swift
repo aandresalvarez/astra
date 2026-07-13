@@ -694,7 +694,7 @@ public final class FeedbackOutboxService {
         guard let canonicalKnownManifestMembers = try? FeedbackCanonicalJSONV1.encodeValidated(manifest),
               FeedbackRawCanonicalJSONVerifier.isCanonicalObject(
                   manifestData,
-                  knownMembers: FeedbackEvidenceManifestV1.knownMemberNames,
+                  knownShape: FeedbackEvidenceManifestV1.knownShape,
                   canonicalKnownMembers: canonicalKnownManifestMembers
               )
         else { throw FeedbackOutboxError.preparedPackageDoesNotMatchDraft }

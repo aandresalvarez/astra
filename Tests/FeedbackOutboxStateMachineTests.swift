@@ -298,6 +298,34 @@ struct FeedbackOutboxStateMachineTests {
     }
 
     @MainActor
+    @Test("Additive members nested inside array elements remain inert through adoption and recovery")
+    func nestedAdditiveManifestMembersArePreserved() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let package = try makeNonEmptyPackage(fixture: fixture)
+        let source = try writeFeedbackPreparedPackage(parent: fixture.root, envelope: package.envelope)
+        let evidenceURL = source.appendingPathComponent(package.artifact.relativePath)
+        try FileManager.default.createDirectory(
+            at: evidenceURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try package.evidence.write(to: evidenceURL, options: .atomic)
+
+        let manifestURL = source.appendingPathComponent(FeedbackPackageLayout.manifest)
+        let extendedManifest = try addingFeedbackMember(
+            "futureArtifactField",
+            value: "inert",
+            toFirstElementOf: "artifacts",
+            in: try Data(contentsOf: manifestURL)
+        )
+        try extendedManifest.write(to: manifestURL, options: .atomic)
+
+        try fixture.service.adoptPreparedPackage(reportID: fixture.reportID, from: source)
+        let recovery = try fixture.service.recoverablePreparedPackage(reportID: fixture.reportID)
+        #expect(recovery.manifestSHA256 == FeedbackCanonicalJSONV1.sha256Hex(extendedManifest))
+    }
+
+    @MainActor
     @Test("Adoption rejects non-canonical manifest bytes before ownership transfer")
     func nonCanonicalManifestIsRejected() throws {
         let fixture = try makeFixture()
@@ -1004,14 +1032,29 @@ private func makeQueuedFixture(retention: TimeInterval = 60) throws -> FeedbackO
 private func addingFeedbackMember(_ key: String, value: Any, to data: Data) throws -> Data {
     var object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
     object[key] = value
-    return try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+    return try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys, .withoutEscapingSlashes])
 }
 
 private func reversingFeedbackArrayOrder(_ key: String, in data: Data) throws -> Data {
     var object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
     let array = try #require(object[key] as? [Any])
     object[key] = Array(array.reversed())
-    return try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+    return try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys, .withoutEscapingSlashes])
+}
+
+private func addingFeedbackMember(
+    _ key: String,
+    value: Any,
+    toFirstElementOf arrayKey: String,
+    in data: Data
+) throws -> Data {
+    var object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+    var array = try #require(object[arrayKey] as? [[String: Any]])
+    var first = try #require(array.first)
+    first[key] = value
+    array[0] = first
+    object[arrayKey] = array
+    return try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys, .withoutEscapingSlashes])
 }
 
 private func feedbackArtifactData() -> Data {

@@ -81,7 +81,7 @@ enum FeedbackPackageAdoptionValidator {
         let canonicalKnownManifestMembers = try FeedbackCanonicalJSONV1.encodeValidated(manifest)
         guard FeedbackRawCanonicalJSONVerifier.isCanonicalObject(
             manifestData,
-            knownMembers: FeedbackEvidenceManifestV1.knownMemberNames,
+            knownShape: FeedbackEvidenceManifestV1.knownShape,
             canonicalKnownMembers: canonicalKnownManifestMembers
         ) else {
             throw FeedbackPackageValidationError.nonCanonicalManifest
