@@ -60,6 +60,44 @@ struct AppBundlePackagingTests {
         #expect(!script.contains("ASTRA_SCHEMA_VERSION:-"))
     }
 
+    @Test("each app channel is compiled with a distinct executable identity")
+    func buildScriptLinksChannelIdentityIntoExecutable() throws {
+        let script = try String(contentsOf: repoRoot.appendingPathComponent("script/build_and_run.sh"), encoding: .utf8)
+
+        #expect(script.contains(#"LINKED_CHANNEL_SWIFT_CONDITION="ASTRA_LINKED_CHANNEL_PROD""#))
+        #expect(script.contains(#"LINKED_CHANNEL_SWIFT_CONDITION="ASTRA_LINKED_CHANNEL_DEV""#))
+        #expect(script.contains(#"LINKED_CHANNEL_SWIFT_CONDITION="ASTRA_LINKED_CHANNEL_BETA""#))
+        #expect(script.contains(#"SWIFT_BUILD_ARGS+=(-Xswiftc "-D$LINKED_CHANNEL_SWIFT_CONDITION")"#))
+        #expect(script.contains("astra-linked-channel:$ASTRA_CHANNEL"))
+        #expect(script.contains("<key>ASTRALinkedChannel</key>"))
+    }
+
+    @Test("App Intents compile only for a team-signed bundle")
+    func appIntentsRequireValidatedSigningIdentity() throws {
+        let script = try String(contentsOf: repoRoot.appendingPathComponent("script/build_and_run.sh"), encoding: .utf8)
+        let app = try String(contentsOf: repoRoot.appendingPathComponent("Astra/ASTRAApp.swift"), encoding: .utf8)
+
+        #expect(script.contains(#"APP_INTENTS_REQUEST="${ASTRA_ENABLE_APP_INTENTS:-auto}""#))
+        #expect(script.contains(#"SWIFT_BUILD_ARGS+=(-Xswiftc -DASTRA_ENABLE_APP_INTENTS)"#))
+        #expect(script.contains("ASTRA_ENABLE_APP_INTENTS=1 requires ASTRA_SIGN_IDENTITY with a valid Team ID."))
+        #expect(script.contains("App Intents require a signed bundle with a TeamIdentifier"))
+        #expect(script.contains("<key>ASTRAAppIntentsEnabled</key>"))
+        #expect(script.contains("astra-app-intents:$([["))
+        #expect(!app.contains("updateAppShortcutParameters"))
+    }
+
+    @Test("local launches prefer team signing without changing internal release signing")
+    func localLaunchesAutoSelectTeamIdentity() throws {
+        let script = try String(contentsOf: repoRoot.appendingPathComponent("script/build_and_run.sh"), encoding: .utf8)
+
+        #expect(script.contains("find_local_team_signing_identity()"))
+        #expect(script.contains(#"Developer ID Application: [^"]*"#))
+        #expect(script.contains(#"Apple Development: [^"]*"#))
+        #expect(script.contains(#"elif [[ "$MODE" == "bundle" ]]"#))
+        #expect(script.contains("AUTO_TEAM_SIGNING=0"))
+        #expect(script.contains("AUTO_TEAM_SIGNING=1"))
+    }
+
     @Test("build script can provision managed Google OAuth client in Info.plist")
     func buildScriptCanProvisionManagedGoogleOAuthClient() throws {
         let script = try String(contentsOf: repoRoot.appendingPathComponent("script/build_and_run.sh"), encoding: .utf8)

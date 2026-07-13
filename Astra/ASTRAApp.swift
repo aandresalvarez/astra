@@ -1,7 +1,6 @@
 import SwiftUI
 import SwiftData
 import AppKit
-import AppIntents
 import ASTRAModels
 import ASTRAPersistence
 import ASTRACore
@@ -265,7 +264,6 @@ final class ASTRAAppDelegate: NSObject, NSApplicationDelegate {
         // is correctly foregrounded with the app's real icon already set.
         ApplicationsFolderMover.promptAndMoveIfNeeded()
         AppLogger.audit(.appActivated, category: "App")
-        AstraAppShortcuts.updateAppShortcutParameters()
     }
 }
 
@@ -287,6 +285,18 @@ enum AstraStoreStartupCoordinator {
     static func start(isUITesting: Bool, appInfo: AppBuildInfo) -> Result {
         guard !isUITesting else {
             return Result(modelContainer: inMemoryContainer(), lease: nil, blocker: nil)
+        }
+
+        guard LinkedAppChannelIdentity.matches(bundleChannelRawValue: appInfo.channelRawValue) else {
+            AppLogger.audit(.dataStoreSelected, category: "App", fields: [
+                "result": "blocked_linked_channel_mismatch",
+                "bundle_channel": appInfo.channelRawValue,
+                "linked_channel": LinkedAppChannelIdentity.marker
+            ], level: .error)
+            return blocked(
+                title: "ASTRA build channel mismatch",
+                message: "This executable was linked for a different app channel, so ASTRA did not open either channel's data."
+            )
         }
 
         do {
@@ -662,7 +672,9 @@ public struct ASTRAApp: App {
             "git_commit": appInfo.gitCommit,
             "build_date": appInfo.buildDate,
             "bundle_path": appInfo.bundlePath,
-            "executable_path": appInfo.executablePath
+            "executable_path": appInfo.executablePath,
+            "linked_channel": LinkedAppChannelIdentity.marker,
+            "app_intents": AstraAppShortcutRegistration.binaryMarker
         ], fieldMaxLength: 120)
         // AppKit/NSApplication setup (activation policy, dock icon, foreground
         // activation, App Shortcuts) is deferred to ASTRAAppDelegate's
