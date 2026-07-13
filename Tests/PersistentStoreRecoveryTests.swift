@@ -218,6 +218,24 @@ struct PersistentStoreRecoveryTests {
         #expect(panel.message?.contains("schema V15") == true)
     }
 
+    @MainActor
+    @Test("startup blocker replaces the restored workspace frame with a compact resizable window")
+    func startupBlockerUsesCompactResizableWindow() {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 1_360, height: 900),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+
+        StoreStartupBlockedWindowConfigurator.Coordinator.applyRecoveryLayout(to: window)
+
+        #expect(window.contentMinSize == StoreStartupBlockedWindowLayout.minimumContentSize)
+        #expect(window.contentRect(forFrameRect: window.frame).size == StoreStartupBlockedWindowLayout.preferredContentSize)
+        #expect(window.styleMask.contains(.resizable))
+        #expect(StoreStartupBlockedWindowLayout.maximumContentWidth < StoreStartupBlockedWindowLayout.preferredContentSize.width)
+    }
+
     @Test("contention retries are bounded")
     func contentionRetriesAreBounded() {
         #expect(PersistentStoreRetryPolicy.contentionDelays == [0.10, 0.25, 0.50])

@@ -12,67 +12,78 @@ struct StoreStartupBlockedView: View {
     @State private var actionError: String?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            Label(blocker.title, systemImage: "externaldrive.badge.exclamationmark")
-                .font(Stanford.heading(24))
-                .foregroundStyle(Stanford.black)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                Label(blocker.title, systemImage: "externaldrive.badge.exclamationmark")
+                    .font(Stanford.heading(24))
+                    .foregroundStyle(Stanford.black)
 
-            Text(blocker.message)
-                .font(Stanford.body(15))
-                .foregroundStyle(Stanford.coolGrey)
-                .fixedSize(horizontal: false, vertical: true)
-
-            Text("ASTRA left the persistent store unchanged. Recovery actions operate on the reader or a verified copy, never by downgrading this store.")
-                .font(Stanford.caption(12))
-                .foregroundStyle(Stanford.coolGrey)
-
-            if showsTechnicalDetails, !blocker.technicalDetail.isEmpty {
-                Text(blocker.technicalDetail)
-                    .font(.system(.caption, design: .monospaced))
-                    .textSelection(.enabled)
+                Text(blocker.message)
+                    .font(Stanford.body(15))
                     .foregroundStyle(Stanford.coolGrey)
-            }
+                    .fixedSize(horizontal: false, vertical: true)
 
-            if blocker.actions.contains(.checkForUpdates),
-               let status = appUpdateController.statusMessage {
-                Text(status)
+                Text("ASTRA left the persistent store unchanged. Recovery actions operate on the reader or a verified copy, never by downgrading this store.")
                     .font(Stanford.caption(12))
                     .foregroundStyle(Stanford.coolGrey)
-            }
 
-            if let actionError {
-                Text(actionError)
-                    .font(Stanford.caption(12))
-                    .foregroundStyle(.red)
-            }
-
-            HStack {
-                if !blocker.technicalDetail.isEmpty {
-                    Button(showsTechnicalDetails ? "Hide Details" : "Technical Details") {
-                        showsTechnicalDetails.toggle()
-                    }
+                if showsTechnicalDetails, !blocker.technicalDetail.isEmpty {
+                    Text(blocker.technicalDetail)
+                        .font(.system(.caption, design: .monospaced))
+                        .textSelection(.enabled)
+                        .foregroundStyle(Stanford.coolGrey)
                 }
-                Spacer()
-                if blocker.actions.count > 1 {
-                    Menu("Recovery Options") {
-                        ForEach(Array(blocker.actions.dropFirst().enumerated()), id: \.offset) { _, action in
-                            Button(actionTitle(action)) {
-                                perform(action)
+
+                if blocker.actions.contains(.checkForUpdates),
+                   let status = appUpdateController.statusMessage {
+                    Text(status)
+                        .font(Stanford.caption(12))
+                        .foregroundStyle(Stanford.coolGrey)
+                }
+
+                if let actionError {
+                    Text(actionError)
+                        .font(Stanford.caption(12))
+                        .foregroundStyle(.red)
+                }
+
+                HStack {
+                    if !blocker.technicalDetail.isEmpty {
+                        Button(showsTechnicalDetails ? "Hide Details" : "Technical Details") {
+                            showsTechnicalDetails.toggle()
+                        }
+                    }
+                    Spacer()
+                    if blocker.actions.count > 1 {
+                        Menu("Recovery Options") {
+                            ForEach(Array(blocker.actions.dropFirst().enumerated()), id: \.offset) { _, action in
+                                Button(actionTitle(action)) {
+                                    perform(action)
+                                }
                             }
                         }
                     }
-                }
-                if let action = blocker.actions.first {
-                    Button(actionTitle(action)) {
-                        perform(action)
+                    if let action = blocker.actions.first {
+                        Button(actionTitle(action)) {
+                            perform(action)
+                        }
+                        .buttonStyle(StanfordButtonStyle())
                     }
-                    .buttonStyle(StanfordButtonStyle())
                 }
             }
+            .padding(32)
+            .frame(maxWidth: StoreStartupBlockedWindowLayout.maximumContentWidth, alignment: .leading)
+            .frame(maxWidth: .infinity)
         }
-        .padding(32)
-        .frame(maxWidth: 640, alignment: .leading)
+        .frame(
+            minWidth: StoreStartupBlockedWindowLayout.minimumContentSize.width,
+            minHeight: StoreStartupBlockedWindowLayout.minimumContentSize.height
+        )
         .background(Stanford.panelBackground)
+        .background {
+            StoreStartupBlockedWindowConfigurator()
+                .frame(width: 0, height: 0)
+        }
     }
 
     private func actionTitle(_ action: PersistentStoreRecoveryAction) -> String {
