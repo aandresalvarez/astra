@@ -201,9 +201,20 @@ validate_google_managed_oauth_client_id() {
   [[ "$client_id" =~ ^[A-Za-z0-9._-]+\.apps\.googleusercontent\.com$ ]]
 }
 
+find_local_team_signing_identity() {
+  local identities candidate
+  identities="$(security find-identity -v -p codesigning 2>/dev/null || true)"
+  candidate="$(printf '%s\n' "$identities" | /usr/bin/sed -n 's/.*"\(Developer ID Application: [^"]*\)".*/\1/p' | /usr/bin/head -n 1)"
+  if [[ -z "$candidate" ]]; then
+    candidate="$(printf '%s\n' "$identities" | /usr/bin/sed -n 's/.*"\(Apple Development: [^"]*\)".*/\1/p' | /usr/bin/head -n 1)"
+  fi
+  printf '%s\n' "$candidate"
+}
+
 case "$ASTRA_CHANNEL" in
   prod|production)
     ASTRA_CHANNEL="prod"
+    LINKED_CHANNEL_SWIFT_CONDITION="ASTRA_LINKED_CHANNEL_PROD"
     APP_NAME="ASTRA"
     BUNDLE_ID="com.coral.ASTRA"
     URL_SCHEME="astra"
@@ -211,12 +222,14 @@ case "$ASTRA_CHANNEL" in
     ;;
   dev|development)
     ASTRA_CHANNEL="dev"
+    LINKED_CHANNEL_SWIFT_CONDITION="ASTRA_LINKED_CHANNEL_DEV"
     APP_NAME="ASTRA Dev"
     BUNDLE_ID="com.coral.ASTRA.dev"
     URL_SCHEME="astra-dev"
     DEFAULT_SPARKLE_FEED_URL=""
     ;;
   beta)
+    LINKED_CHANNEL_SWIFT_CONDITION="ASTRA_LINKED_CHANNEL_BETA"
     APP_NAME="ASTRA Beta"
     BUNDLE_ID="com.coral.ASTRA.beta"
     URL_SCHEME="astra-beta"
@@ -227,6 +240,62 @@ case "$ASTRA_CHANNEL" in
     exit 2
     ;;
 esac
+
+# Local run/verify builds prefer an available Apple team identity so AppKit's
+# automatic App Intents registration has the validated bundle identity macOS
+# requires. Packaging mode remains deterministic: internal releases stay
+# ad-hoc unless an identity is explicitly supplied by the release workflow.
+if [[ -n "${ASTRA_AUTO_TEAM_SIGNING:-}" ]]; then
+  AUTO_TEAM_SIGNING="$ASTRA_AUTO_TEAM_SIGNING"
+elif [[ "$MODE" == "bundle" ]]; then
+  AUTO_TEAM_SIGNING=0
+else
+  AUTO_TEAM_SIGNING=1
+fi
+if [[ "$AUTO_TEAM_SIGNING" != "0" && "$AUTO_TEAM_SIGNING" != "1" ]]; then
+  echo "Invalid ASTRA_AUTO_TEAM_SIGNING '$AUTO_TEAM_SIGNING'. Use 0 or 1." >&2
+  exit 2
+fi
+if [[ -z "$SIGN_IDENTITY" && "$AUTO_TEAM_SIGNING" == "1" ]]; then
+  SIGN_IDENTITY="$(find_local_team_signing_identity)"
+  if [[ -n "$SIGN_IDENTITY" ]]; then
+    echo "  signing local $ASTRA_CHANNEL build with team identity '$SIGN_IDENTITY'"
+  fi
+fi
+
+# `linkd` accepts App Intents only from a validated bundle identity with a
+# signing Team ID. Ad-hoc apps can never satisfy that contract, so do not
+# compile an integration into them that the system cannot make available.
+# Developer-ID production/beta builds enable the integration by default. An
+# explicit override remains available, but enabling it without a signing
+# identity is rejected before compiling and the finished bundle's Team ID is
+# verified below.
+APP_INTENTS_REQUEST="${ASTRA_ENABLE_APP_INTENTS:-auto}"
+case "$APP_INTENTS_REQUEST" in
+  auto)
+    if [[ -n "$SIGN_IDENTITY" ]]; then
+      APP_INTENTS_ENABLED=1
+    else
+      APP_INTENTS_ENABLED=0
+    fi
+    ;;
+  0|1)
+    APP_INTENTS_ENABLED="$APP_INTENTS_REQUEST"
+    ;;
+  *)
+    echo "Invalid ASTRA_ENABLE_APP_INTENTS '$APP_INTENTS_REQUEST'. Use 0 or 1." >&2
+    exit 2
+    ;;
+esac
+if [[ "$APP_INTENTS_ENABLED" == "1" && -z "$SIGN_IDENTITY" ]]; then
+  echo "ASTRA_ENABLE_APP_INTENTS=1 requires ASTRA_SIGN_IDENTITY with a valid Team ID." >&2
+  exit 2
+fi
+if [[ "$APP_INTENTS_ENABLED" == "1" ]]; then
+  APP_INTENTS_PLIST_VALUE="<true/>"
+else
+  APP_INTENTS_PLIST_VALUE="<false/>"
+fi
 
 SPARKLE_FEED_URL="${ASTRA_SPARKLE_FEED_URL:-$DEFAULT_SPARKLE_FEED_URL}"
 
@@ -275,6 +344,10 @@ fi
 SWIFT_BUILD_ARGS=(--package-path "$ROOT_DIR")
 if [[ "$BUILD_CONFIGURATION" == "release" ]]; then
   SWIFT_BUILD_ARGS=(-c release "${SWIFT_BUILD_ARGS[@]}")
+fi
+SWIFT_BUILD_ARGS+=(-Xswiftc "-D$LINKED_CHANNEL_SWIFT_CONDITION")
+if [[ "$APP_INTENTS_ENABLED" == "1" ]]; then
+  SWIFT_BUILD_ARGS+=(-Xswiftc -DASTRA_ENABLE_APP_INTENTS)
 fi
 
 swift build "${SWIFT_BUILD_ARGS[@]}"
@@ -384,6 +457,10 @@ cat >"$INFO_PLIST" <<PLIST
   <string>$APP_BUILD</string>
   <key>ASTRAChannel</key>
   <string>$ASTRA_CHANNEL</string>
+  <key>ASTRALinkedChannel</key>
+  <string>$ASTRA_CHANNEL</string>
+  <key>ASTRAAppIntentsEnabled</key>
+  $APP_INTENTS_PLIST_VALUE
   <key>ASTRAGitCommit</key>
   <string>$ASTRA_GIT_COMMIT</string>
   <key>ASTRABuildDate</key>
@@ -568,6 +645,26 @@ verify_app_bundle() {
   if ! /usr/bin/codesign --verify --deep --strict "$APP_BUNDLE" 2>/dev/null; then
     echo "FAIL: code signature verification failed for $APP_BUNDLE" >&2
     errors=$((errors + 1))
+  fi
+
+  if ! /usr/bin/strings "$APP_BINARY" | /usr/bin/grep -F "astra-linked-channel:$ASTRA_CHANNEL" >/dev/null; then
+    echo "FAIL: executable is missing its linked $ASTRA_CHANNEL channel identity." >&2
+    errors=$((errors + 1))
+  fi
+
+  if ! /usr/bin/strings "$APP_BINARY" | /usr/bin/grep -F "astra-app-intents:$([[ "$APP_INTENTS_ENABLED" == "1" ]] && echo enabled || echo disabled)" >/dev/null; then
+    echo "FAIL: executable App Intents capability does not match the packaging decision." >&2
+    errors=$((errors + 1))
+  fi
+
+  if [[ "$APP_INTENTS_ENABLED" == "1" ]]; then
+    local signature_details team_identifier
+    signature_details="$(/usr/bin/codesign -dvv "$APP_BUNDLE" 2>&1 || true)"
+    team_identifier="$(printf '%s\n' "$signature_details" | /usr/bin/sed -n 's/^TeamIdentifier=//p' | /usr/bin/head -n 1)"
+    if [[ -z "$team_identifier" || "$team_identifier" == "not set" ]]; then
+      echo "FAIL: App Intents require a signed bundle with a TeamIdentifier; this signature has none." >&2
+      errors=$((errors + 1))
+    fi
   fi
 
   for tool_product in "${TOOL_PRODUCTS[@]}"; do

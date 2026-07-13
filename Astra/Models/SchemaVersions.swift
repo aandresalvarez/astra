@@ -3962,37 +3962,36 @@ public enum ASTRASchemaV11: VersionedSchema {
     }
 }
 
-/// V12 adds `AgentTask.runtimeExplicitlySelected`.
-///
-/// This schema shipped before the durable feedback outbox was added. Keep its
-/// model list frozen so stores already stamped V12 migrate through V13 before
-/// accessing `FeedbackReport`.
+/// Frozen production V12. This exact 17-entity shape reached disk and must
+/// never follow the live model declarations again.
 public enum ASTRASchemaV12: VersionedSchema {
     public static var versionIdentifier = Schema.Version(12, 0, 0)
 
     public static var models: [any PersistentModel.Type] {
         [
-            Workspace.self,
-            AgentTask.self,
-            TaskRun.self,
-            TaskEvent.self,
-            Artifact.self,
-            Skill.self,
-            Connector.self,
-            LocalTool.self,
-            TaskTemplate.self,
-            TaskSchedule.self,
-            WorkspaceApp.self,
-            WorkspaceAppRun.self,
-            WorkspaceAppRunEvent.self,
-            WorkspaceAppDependencyBinding.self,
-            WorkspaceAppAutomationState.self,
-            GoogleOAuthAccountProfile.self
+            ASTRASchemaV12RuntimeOnly.Workspace.self,
+            ASTRASchemaV12RuntimeOnly.AgentTask.self,
+            ASTRASchemaV12RuntimeOnly.TaskRun.self,
+            ASTRASchemaV12RuntimeOnly.TaskEvent.self,
+            ASTRASchemaV12RuntimeOnly.Artifact.self,
+            ASTRASchemaV12RuntimeOnly.Skill.self,
+            ASTRASchemaV12RuntimeOnly.Connector.self,
+            ASTRASchemaV12RuntimeOnly.LocalTool.self,
+            ASTRASchemaV12RuntimeOnly.TaskTemplate.self,
+            ASTRASchemaV12RuntimeOnly.TaskSchedule.self,
+            ASTRASchemaV12RuntimeOnly.WorkspaceApp.self,
+            ASTRASchemaV12RuntimeOnly.WorkspaceAppRun.self,
+            ASTRASchemaV12RuntimeOnly.WorkspaceAppRunEvent.self,
+            ASTRASchemaV12RuntimeOnly.WorkspaceAppDependencyBinding.self,
+            ASTRASchemaV12RuntimeOnly.WorkspaceAppAutomationState.self,
+            ASTRASchemaV12RuntimeOnly.GoogleOAuthAccountProfile.self,
+            ASTRASchemaV12Models.FeedbackReport.self
         ]
     }
 }
 
-/// V13 adds the durable feedback outbox owner.
+/// Canonical schema after reconciling both V12 branches. New live model
+/// changes must mint a later version rather than mutating V12 or V13.
 public enum ASTRASchemaV13: VersionedSchema {
     public static var versionIdentifier = Schema.Version(13, 0, 0)
 
@@ -4014,7 +4013,8 @@ public enum ASTRASchemaV13: VersionedSchema {
             WorkspaceAppDependencyBinding.self,
             WorkspaceAppAutomationState.self,
             GoogleOAuthAccountProfile.self,
-            FeedbackReport.self
+            FeedbackReport.self,
+            PersistentStoreMigrationRecord.self
         ]
     }
 }
@@ -4062,6 +4062,20 @@ public enum ASTRAMigrationPlan: SchemaMigrationPlan {
             .lightweight(fromVersion: ASTRASchemaV10.self, toVersion: ASTRASchemaV11.self),
             .lightweight(fromVersion: ASTRASchemaV11.self, toVersion: ASTRASchemaV12.self),
             .lightweight(fromVersion: ASTRASchemaV12.self, toVersion: ASTRASchemaV13.self)
+        ]
+    }
+}
+
+/// Dedicated plan for the short-lived runtime-selection-only V12. Keeping it
+/// separate avoids placing two different 12.0.0 shapes in the normal plan.
+public enum ASTRAOrphanedV12MigrationPlan: SchemaMigrationPlan {
+    public static var schemas: [any VersionedSchema.Type] {
+        [ASTRASchemaV12RuntimeOnly.self, ASTRASchemaV13.self]
+    }
+
+    public static var stages: [MigrationStage] {
+        [
+            .lightweight(fromVersion: ASTRASchemaV12RuntimeOnly.self, toVersion: ASTRASchemaV13.self)
         ]
     }
 }
