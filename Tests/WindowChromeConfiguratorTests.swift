@@ -11,11 +11,13 @@ struct WindowChromeConfiguratorTests {
         let current = WindowChromeCommandBarState(
             isSearchActive: false,
             isSidebarHidden: true,
+            sidebarWidth: 320,
             titleBarHeight: 36
         )
         let hoverOnlyUpdate = WindowChromeCommandBarState(
             isSearchActive: false,
             isSidebarHidden: true,
+            sidebarWidth: 320,
             titleBarHeight: 36
         )
 
@@ -30,6 +32,7 @@ struct WindowChromeConfiguratorTests {
         let current = WindowChromeCommandBarState(
             isSearchActive: false,
             isSidebarHidden: true,
+            sidebarWidth: 320,
             titleBarHeight: 36
         )
 
@@ -38,6 +41,7 @@ struct WindowChromeConfiguratorTests {
             next: WindowChromeCommandBarState(
                 isSearchActive: true,
                 isSidebarHidden: true,
+                sidebarWidth: 320,
                 titleBarHeight: 36
             )
         ))
@@ -46,6 +50,7 @@ struct WindowChromeConfiguratorTests {
             next: WindowChromeCommandBarState(
                 isSearchActive: false,
                 isSidebarHidden: false,
+                sidebarWidth: 320,
                 titleBarHeight: 36
             )
         ))
@@ -54,8 +59,32 @@ struct WindowChromeConfiguratorTests {
             next: WindowChromeCommandBarState(
                 isSearchActive: false,
                 isSidebarHidden: true,
+                sidebarWidth: 320,
                 titleBarHeight: 42
             )
+        ))
+    }
+
+    @Test("A measured command-bar width change refreshes the hosted view")
+    func measuredCommandBarWidthChangesRefreshHostedView() {
+        let state = WindowChromeCommandBarState(
+            isSearchActive: false,
+            isSidebarHidden: false,
+            sidebarWidth: 320,
+            titleBarHeight: 36
+        )
+
+        #expect(WindowChromeCommandBarRefreshPolicy.shouldRefresh(
+            previous: state,
+            next: state,
+            previousCommandBarWidth: nil,
+            nextCommandBarWidth: 222
+        ))
+        #expect(!WindowChromeCommandBarRefreshPolicy.shouldRefresh(
+            previous: state,
+            next: state,
+            previousCommandBarWidth: 222,
+            nextCommandBarWidth: 222.2
         ))
     }
 

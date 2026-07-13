@@ -4,15 +4,29 @@ import SwiftUI
 struct WindowChromeCommandBarState: Equatable {
     let isSearchActive: Bool
     let isSidebarHidden: Bool
+    let sidebarWidth: CGFloat
     let titleBarHeight: CGFloat?
 }
 
 enum WindowChromeCommandBarRefreshPolicy {
     static func shouldRefresh(
         previous: WindowChromeCommandBarState?,
-        next: WindowChromeCommandBarState
+        next: WindowChromeCommandBarState,
+        previousCommandBarWidth: CGFloat? = nil,
+        nextCommandBarWidth: CGFloat? = nil
     ) -> Bool {
-        previous != next
+        previous != next || widthsDiffer(previousCommandBarWidth, nextCommandBarWidth)
+    }
+
+    private static func widthsDiffer(_ previous: CGFloat?, _ next: CGFloat?) -> Bool {
+        switch (previous, next) {
+        case let (previous?, next?):
+            return abs(previous - next) >= 0.5
+        case (nil, nil):
+            return false
+        default:
+            return true
+        }
     }
 }
 
@@ -28,6 +42,7 @@ struct WindowChromeConfigurator: NSViewRepresentable {
     let sidebarCommands: SidebarTitlebarCommandBridge
     @Binding var isSidebarToggleHovered: Bool
     var isSidebarHidden: Bool
+    var sidebarWidth: CGFloat
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -45,13 +60,17 @@ struct WindowChromeConfigurator: NSViewRepresentable {
     /// be read once the window exists, so it flows in from the coordinator rather
     /// than being baked in here; the bar uses it to size itself to the title bar
     /// and center its icons on the traffic-light row.
-    private func makeCommandBar(titleBarHeight: CGFloat?) -> AstraLeadingCommandBar {
+    private func makeCommandBar(
+        titleBarHeight: CGFloat?,
+        commandBarWidth: CGFloat?
+    ) -> AstraLeadingCommandBar {
         AstraLeadingCommandBar(
             isSearchActive: $isSearchActive,
             sidebarCommands: sidebarCommands,
             isSidebarToggleHovered: $isSidebarToggleHovered,
             isSidebarHidden: isSidebarHidden,
-            titleBarHeight: titleBarHeight
+            titleBarHeight: titleBarHeight,
+            commandBarWidth: commandBarWidth
         )
     }
 
@@ -59,6 +78,7 @@ struct WindowChromeConfigurator: NSViewRepresentable {
         let makeBar = makeCommandBar
         let isSearchActive = isSearchActive
         let isSidebarHidden = isSidebarHidden
+        let sidebarWidth = sidebarWidth
         let coordinator = context.coordinator
         // Capture view/coordinator weakly: if the representable is torn down (or
         // the window closes) before these blocks run, bail out instead of keeping
@@ -70,7 +90,8 @@ struct WindowChromeConfigurator: NSViewRepresentable {
                 in: window,
                 makeBar: makeBar,
                 isSearchActive: isSearchActive,
-                isSidebarHidden: isSidebarHidden
+                isSidebarHidden: isSidebarHidden,
+                sidebarWidth: sidebarWidth
             )
 
             // SwiftUI can attach the toolbar after the representable first appears.
@@ -111,15 +132,17 @@ struct WindowChromeConfigurator: NSViewRepresentable {
         private var hostingView: FullScreenSafeHostingView<AstraLeadingCommandBar>?
         private var accessory: NSTitlebarAccessoryViewController?
         private weak var hostedWindow: NSWindow?
-        private var makeBar: ((CGFloat?) -> AstraLeadingCommandBar)?
+        private var makeBar: ((CGFloat?, CGFloat?) -> AstraLeadingCommandBar)?
         private var lastCommandBarState: WindowChromeCommandBarState?
+        private var lastCommandBarWidth: CGFloat?
         private var observers: [NSObjectProtocol] = []
 
         func installLeadingCommands(
             in window: NSWindow,
-            makeBar: ((CGFloat?) -> AstraLeadingCommandBar)? = nil,
+            makeBar: ((CGFloat?, CGFloat?) -> AstraLeadingCommandBar)? = nil,
             isSearchActive: Bool? = nil,
-            isSidebarHidden: Bool? = nil
+            isSidebarHidden: Bool? = nil,
+            sidebarWidth: CGFloat? = nil
         ) {
             // Adopt a builder only when a fresh one is supplied. The delayed retry
             // (and the full-screen observer) pass nil and reuse the stored builder,
@@ -130,7 +153,8 @@ struct WindowChromeConfigurator: NSViewRepresentable {
             guard let state = commandBarState(
                 for: window,
                 isSearchActive: isSearchActive,
-                isSidebarHidden: isSidebarHidden
+                isSidebarHidden: isSidebarHidden,
+                sidebarWidth: sidebarWidth
             ) else { return }
 
             // Already installed in this same window → refresh only when visible
@@ -153,7 +177,7 @@ struct WindowChromeConfigurator: NSViewRepresentable {
             // FullScreenSafe: a plain NSHostingView here crashes the app when
             // SwiftUI invalidates constraints during the enter-full-screen
             // display cycle (see FullScreenSafeHostingView).
-            let host = FullScreenSafeHostingView(rootView: builder(state.titleBarHeight))
+            let host = FullScreenSafeHostingView(rootView: builder(state.titleBarHeight, nil))
             host.frame = NSRect(origin: .zero, size: host.fittingSize)
 
             let controller = NSTitlebarAccessoryViewController()
@@ -189,7 +213,9 @@ struct WindowChromeConfigurator: NSViewRepresentable {
         private func refreshBarIfNeeded(state: WindowChromeCommandBarState) {
             guard WindowChromeCommandBarRefreshPolicy.shouldRefresh(
                 previous: lastCommandBarState,
-                next: state
+                next: state,
+                previousCommandBarWidth: lastCommandBarWidth,
+                nextCommandBarWidth: commandBarWidth(for: state)
             ) else {
                 return
             }
@@ -201,14 +227,16 @@ struct WindowChromeConfigurator: NSViewRepresentable {
             guard let state = commandBarState(
                 for: window,
                 isSearchActive: lastCommandBarState.isSearchActive,
-                isSidebarHidden: lastCommandBarState.isSidebarHidden
+                isSidebarHidden: lastCommandBarState.isSidebarHidden,
+                sidebarWidth: lastCommandBarState.sidebarWidth
             ) else { return }
             refreshBarIfNeeded(state: state)
         }
 
         private func refreshBar(state: WindowChromeCommandBarState) {
             guard let host = hostingView, let makeBar else { return }
-            host.rootView = makeBar(state.titleBarHeight)
+            let commandBarWidth = commandBarWidth(for: state)
+            host.rootView = makeBar(state.titleBarHeight, commandBarWidth)
             // Force the layout pass before reading fittingSize, so the size
             // reflects the just-assigned root view rather than a cached one.
             host.performSafeLayoutSubtreeIfNeeded()
@@ -219,20 +247,34 @@ struct WindowChromeConfigurator: NSViewRepresentable {
                 host.frame.size = fitting
             }
             lastCommandBarState = state
+            lastCommandBarWidth = commandBarWidth
         }
 
         private func commandBarState(
             for window: NSWindow,
             isSearchActive: Bool?,
-            isSidebarHidden: Bool?
+            isSidebarHidden: Bool?,
+            sidebarWidth: CGFloat?
         ) -> WindowChromeCommandBarState? {
             let searchActive = isSearchActive ?? lastCommandBarState?.isSearchActive
             let sidebarHidden = isSidebarHidden ?? lastCommandBarState?.isSidebarHidden
-            guard let searchActive, let sidebarHidden else { return nil }
+            let resolvedSidebarWidth = sidebarWidth ?? lastCommandBarState?.sidebarWidth
+            guard let searchActive, let sidebarHidden, let resolvedSidebarWidth else { return nil }
             return WindowChromeCommandBarState(
                 isSearchActive: searchActive,
                 isSidebarHidden: sidebarHidden,
+                sidebarWidth: resolvedSidebarWidth,
                 titleBarHeight: titleBarHeight(of: window)
+            )
+        }
+
+        private func commandBarWidth(for state: WindowChromeCommandBarState) -> CGFloat? {
+            guard let host = hostingView, host.window != nil else { return nil }
+            let accessoryLeadingX = host.convert(.zero, to: nil).x
+            return AstraLeadingCommandBarLayout.commandBarWidth(
+                sidebarWidth: state.sidebarWidth,
+                accessoryLeadingX: accessoryLeadingX,
+                isSidebarHidden: state.isSidebarHidden
             )
         }
 
@@ -289,14 +331,16 @@ extension View {
         isSearchActive: Binding<Bool>,
         sidebarCommands: SidebarTitlebarCommandBridge,
         isSidebarToggleHovered: Binding<Bool>,
-        isSidebarHidden: Bool
+        isSidebarHidden: Bool,
+        sidebarWidth: CGFloat
     ) -> some View {
         background {
             WindowChromeConfigurator(
                 isSearchActive: isSearchActive,
                 sidebarCommands: sidebarCommands,
                 isSidebarToggleHovered: isSidebarToggleHovered,
-                isSidebarHidden: isSidebarHidden
+                isSidebarHidden: isSidebarHidden,
+                sidebarWidth: sidebarWidth
             )
             .frame(width: 0, height: 0)
         }
