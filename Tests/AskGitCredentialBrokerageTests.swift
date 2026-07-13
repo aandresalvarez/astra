@@ -122,7 +122,8 @@ struct AskGitCredentialBrokerageTests {
 
         #expect(askPrompt.contains("ASTRA Ask-mode pull request workflow"))
         #expect(askPrompt.contains("git status"))
-        #expect(askPrompt.contains("gh pr create --draft"))
+        #expect(askPrompt.contains("Do not run `git push`"))
+        #expect(askPrompt.contains("ASTRA will deterministically construct"))
         #expect(autoPrompt == prompt)
         #expect(AskGitPullRequestWorkflowPolicy.allowedLocalInspectionShellPatterns.contains("git rev-parse *"))
         #expect(!AskGitPullRequestWorkflowPolicy.allowedLocalInspectionShellPatterns.contains("git push *"))

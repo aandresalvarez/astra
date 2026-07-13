@@ -16,11 +16,16 @@ enum TaskRuntimeOutcomeTransition {
             task: task,
             run: run,
             evidence: message
+        ), let publicationRequest = TaskExternalOutcomeRequirementResolver.makeGitHubPullRequest(
+            task: task,
+            run: run,
+            message: publicationFailure.message
         ) {
             applyPendingExternalOutcome(
                 task: task,
                 run: run,
-                failure: publicationFailure,
+                request: publicationRequest,
+                legacyFailure: publicationFailure,
                 modelContext: modelContext
             )
             return
@@ -45,16 +50,26 @@ enum TaskRuntimeOutcomeTransition {
         modelContext: ModelContext
     ) {
         if decision.gate == .requiredExternalOutcome {
-            let failure = TaskExternalOutcomeFailureClassifier.pendingGitHubPullRequestFailure(
+            let legacyFailure = TaskExternalOutcomeFailureClassifier.pendingGitHubPullRequestFailure(
                 task: task,
                 run: run
             )
-            applyPendingExternalOutcome(
+            let request = TaskExternalOutcomeRequirementResolver.pendingGitHubPullRequest(
                 task: task,
-                run: run,
-                failure: failure,
-                modelContext: modelContext
-            )
+                run: run
+            ) ?? TaskExternalOutcomeRequirementResolver.makeGitHubPullRequest(task: task, run: run)
+            if let request {
+                applyPendingExternalOutcome(
+                    task: task,
+                    run: run,
+                    request: request,
+                    legacyFailure: legacyFailure,
+                    modelContext: modelContext
+                )
+            } else {
+                run.recordCompletionBlocked(stopReason: .externalOutcomePending)
+                TaskStateMachine.pauseForExternalOutcome(task, modelContext: modelContext)
+            }
         } else {
             run.recordCompletionBlocked(
                 stopReason: decision.typedStopReason ?? TaskRunStopReason.custom(decision.gate.rawValue)
@@ -73,17 +88,33 @@ enum TaskRuntimeOutcomeTransition {
     private static func applyPendingExternalOutcome(
         task: AgentTask,
         run: TaskRun,
-        failure: TaskRequiredExternalOutcomeFailure?,
+        request: TaskRequiredExternalOutcomeRequest,
+        legacyFailure: TaskRequiredExternalOutcomeFailure? = nil,
         modelContext: ModelContext
     ) {
         run.recordExternalOutcomePending()
         TaskStateMachine.pauseForExternalOutcome(task, modelContext: modelContext)
-        guard let failure else { return }
-        modelContext.insert(TaskEvent.structuredPayloadEvent(
-            task: task,
-            type: TaskExternalOutcomeEventTypes.publicationFailed,
-            payload: failure,
-            run: run
-        ))
+        let alreadyRequested = task.events.contains {
+            $0.run?.id == run.id && $0.type == TaskExternalOutcomeEventTypes.publicationRequested
+        }
+        if !alreadyRequested {
+            modelContext.insert(TaskEvent.structuredPayloadEvent(
+                task: task,
+                type: TaskExternalOutcomeEventTypes.publicationRequested,
+                payload: request,
+                run: run
+            ))
+        }
+        let alreadyFailed = task.events.contains {
+            $0.run?.id == run.id && $0.type == TaskExternalOutcomeEventTypes.publicationFailed
+        }
+        if let legacyFailure, !alreadyFailed {
+            modelContext.insert(TaskEvent.structuredPayloadEvent(
+                task: task,
+                type: TaskExternalOutcomeEventTypes.publicationFailed,
+                payload: legacyFailure,
+                run: run
+            ))
+        }
     }
 }

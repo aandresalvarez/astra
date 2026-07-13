@@ -44,8 +44,8 @@ enum AskGitPullRequestWorkflowPolicy {
         ASTRA Ask-mode pull request workflow:
         - ASTRA owns GitHub publication and will require review of an exact typed proposal before it changes Git or GitHub state.
         - You may inspect local repository identity only with `git status`, `git rev-parse`, `git remote -v`, or `git remote get-url`.
-        - Do not run `git push`, `git fetch`, `git pull`, `gh pr view`, or any other network Git/GitHub command.
-        - When local work is ready for publication, issue one `gh pr create --draft` command as the publication request. ASTRA will intercept it before execution and open its typed review workflow.
+        - Do not run `git push`, `git fetch`, `git pull`, `gh pr create`, `gh pr view`, or any other network Git/GitHub command.
+        - When local work is ready, report local completion normally. ASTRA will deterministically construct the exact draft pull request proposal and open its typed review workflow.
         """
     }
 }

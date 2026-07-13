@@ -21,17 +21,6 @@ struct ToolResultFailurePayload: Codable, Sendable, Equatable {
     }
 }
 
-enum TaskExternalOutcomeEventTypes {
-    static let publicationProposed = "git.publish.proposed"
-    static let publicationApproved = "git.publish.approved"
-    static let publicationReceipt = "git.publish.receipt"
-    static let publicationFailed = "git.publish.failed"
-}
-
-enum TaskRequiredExternalOutcomeKind: String, Codable, Sendable, Equatable {
-    case githubPullRequest = "github_pull_request"
-}
-
 struct TaskRequiredExternalOutcomeFailure: Codable, Sendable, Equatable {
     let version: Int
     let kind: TaskRequiredExternalOutcomeKind
@@ -50,7 +39,7 @@ enum TaskExternalOutcomeFailureClassifier {
         task: AgentTask,
         run: TaskRun? = nil
     ) -> TaskRequiredExternalOutcomeFailure? {
-        guard requestsPullRequest(task) else { return nil }
+        guard TaskExternalOutcomeRequirementResolver.requestsGitHubPullRequest(task) else { return nil }
         let targetRun = run ?? task.runs.sorted(by: TaskRun.isChronologicallyOrdered).last
         guard let targetRun else { return nil }
 
@@ -113,7 +102,8 @@ enum TaskExternalOutcomeFailureClassifier {
         evidence: String,
         sourceEventID: UUID? = nil
     ) -> TaskRequiredExternalOutcomeFailure? {
-        guard requestsPullRequest(task), describesPullRequestPublication(evidence.lowercased()) else {
+        guard TaskExternalOutcomeRequirementResolver.requestsGitHubPullRequest(task),
+              describesPullRequestPublication(evidence.lowercased()) else {
             return nil
         }
         return TaskRequiredExternalOutcomeFailure(
@@ -128,14 +118,6 @@ enum TaskExternalOutcomeFailureClassifier {
     @MainActor
     static func hasPendingGitHubPullRequestFailure(task: AgentTask) -> Bool {
         pendingGitHubPullRequestFailure(task: task) != nil
-    }
-
-    private static func requestsPullRequest(_ task: AgentTask) -> Bool {
-        GitOperationIntentDetector.detectsPullRequestPublicationIntent(
-            prompt: task.acceptanceCriteria.joined(separator: "\n"),
-            task: task,
-            contextText: task.constraints.joined(separator: "\n")
-        )
     }
 
     private static func describesPullRequestPublication(_ evidence: String) -> Bool {

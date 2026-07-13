@@ -3970,7 +3970,7 @@ struct TaskMainView: View {
     private var shouldOfferGitPublishReview: Bool {
         task.status == .pendingUser
             && !taskSkipPermissions
-            && TaskExternalOutcomeFailureClassifier.hasPendingGitHubPullRequestFailure(task: task)
+            && TaskExternalOutcomeRequirementResolver.hasPendingGitHubPullRequest(task: task)
     }
 
     private var taskDecisionExtraDetails: [TaskDecisionDockDetail] {

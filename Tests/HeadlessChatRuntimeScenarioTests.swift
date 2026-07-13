@@ -7,7 +7,7 @@ import ASTRAPersistence
 import ASTRACore
 
 extension HeadlessChatScenarioTests {
-    @Test("Ask routes a requested PR command to typed publication instead of reusable Bash approval")
+    @Test("Ask routes successful local PR work to ASTRA typed publication without a sentinel command")
     func askPullRequestUsesTypedPublication() async throws {
         let harness = try HeadlessChatHarness()
         defer { harness.cleanup() }
@@ -16,10 +16,10 @@ extension HeadlessChatScenarioTests {
             named: "claude",
             script: Self.claudeScript(body: """
             printf '%s\\n' '{"type":"system","subtype":"init","session_id":"ask-publish-session","model":"claude-sonnet-4-6"}'
-            printf '%s\\n' '{"type":"assistant","message":{"model":"claude-sonnet-4-6","content":[{"type":"tool_use","id":"tool_status","name":"Bash","input":{"command":"git status --short --branch && git rev-parse HEAD && git remote -v"}}]}}'
+            printf '%s\\n' '{"type":"assistant","message":{"model":"claude-sonnet-4-6","content":[{"type":"tool_use","id":"tool_status","name":"command_execution","input":{"command":"/bin/zsh -lc \\u0027git status --short --branch && git rev-parse HEAD && git remote -v\\u0027"}}]}}'
             printf '%s\\n' '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tool_status","is_error":false,"content":"## feature\\nabc123\\norigin git@github.com:example/repo.git"}]}}'
-            printf '%s\\n' '{"type":"assistant","message":{"model":"claude-sonnet-4-6","content":[{"type":"tool_use","id":"tool_pr","name":"Bash","input":{"command":"gh pr create --draft --title Test"}}]}}'
-            /bin/sleep 20
+            printf '%s\\n' '{"type":"assistant","message":{"model":"claude-sonnet-4-6","content":[{"type":"text","text":"Local work is ready for ASTRA publication review."}]}}'
+            printf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"duration_ms":12,"num_turns":1,"result":"Local work is ready for ASTRA publication review.","usage":{"input_tokens":3,"output_tokens":5}}'
             exit 0
             """)
         )
@@ -36,7 +36,8 @@ extension HeadlessChatScenarioTests {
         #expect(task.status == .pendingUser)
         #expect(run.status == .completed)
         #expect(run.typedStopReason == .externalOutcomePending)
-        #expect(task.events.contains { $0.type == TaskExternalOutcomeEventTypes.publicationFailed })
+        #expect(task.events.contains { $0.type == TaskExternalOutcomeEventTypes.publicationRequested })
+        #expect(!task.events.contains { $0.type == TaskExternalOutcomeEventTypes.publicationFailed })
         #expect(task.events.contains {
             $0.type == TaskEventTypes.Tool.result.rawValue && $0.payload.contains("abc123")
         })

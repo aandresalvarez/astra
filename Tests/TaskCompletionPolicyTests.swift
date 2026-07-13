@@ -29,12 +29,56 @@ struct TaskCompletionPolicyTests {
         ))
         try context.save()
 
-        let decision = TaskCompletionPolicy.decideManualCompletion(task: task, run: run)
+        let decision = TaskCompletionPolicy.decideSuccessfulCompletion(task: task, run: run)
 
         #expect(decision.shouldBlockCompletion)
         #expect(decision.gate == .requiredExternalOutcome)
         #expect(decision.typedStopReason == .externalOutcomePending)
         #expect(decision.auditFields["outcome_kind"] == "github_pull_request")
+    }
+
+    @Test("Ask owns requested PR publication after successful local work")
+    func askOwnsRequestedPullRequestPublication() throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        let task = AgentTask(title: "Publish", goal: "Implement the fix and create a pull request")
+        let run = TaskRun(task: task)
+        context.insert(task)
+        context.insert(run)
+        try context.save()
+
+        let decision = TaskCompletionPolicy.decideSuccessfulCompletion(
+            task: task,
+            run: run,
+            permissionPolicy: .restricted
+        )
+
+        #expect(decision.shouldBlockCompletion)
+        #expect(decision.gate == .requiredExternalOutcome)
+        #expect(decision.typedStopReason == .externalOutcomePending)
+        #expect(decision.auditFields["publication_owner"] == "astra")
+        #expect(decision.auditFields["source_event_id"] == "none")
+    }
+
+    @Test("Auto leaves successful requested PR publication provider-owned")
+    func autoLeavesRequestedPullRequestPublicationProviderOwned() throws {
+        let container = try makeContainer()
+        let context = container.mainContext
+        let task = AgentTask(title: "Publish", goal: "Implement the fix and create a pull request")
+        let run = TaskRun(task: task)
+        context.insert(task)
+        context.insert(run)
+        try context.save()
+
+        let decision = TaskCompletionPolicy.decideSuccessfulCompletion(
+            task: task,
+            run: run,
+            permissionPolicy: .autonomous
+        )
+
+        #expect(decision.canComplete)
+        #expect(decision.gate == .manualArtifactRequirement)
+        #expect(decision.auditFields["publication_owner"] == nil)
     }
 
     @Test("validation contract policy blocks failed required assertions")
@@ -141,7 +185,7 @@ struct TaskCompletionPolicyTests {
         context.insert(run)
         try context.save()
 
-        let decision = TaskCompletionPolicy.decideManualCompletion(task: task, run: run)
+        let decision = TaskCompletionPolicy.decideSuccessfulCompletion(task: task, run: run)
 
         #expect(decision.shouldBlockCompletion)
         #expect(decision.gate == .manualArtifactRequirement)
@@ -174,7 +218,7 @@ struct TaskCompletionPolicyTests {
         context.insert(run)
         try context.save()
 
-        let decision = TaskCompletionPolicy.decideManualCompletion(task: task, run: run)
+        let decision = TaskCompletionPolicy.decideSuccessfulCompletion(task: task, run: run)
 
         #expect(decision.shouldBlockCompletion)
         #expect(decision.gate == .manualArtifactRequirement)

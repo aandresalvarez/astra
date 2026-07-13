@@ -1125,13 +1125,14 @@ final class AgentRuntimeWorker {
                 if runtimeAdapter.shouldValidateSuccessfulRun(phase: auditPhase) {
                     switch task.validationStrategy {
                     case .manual:
-                        let completedManually = Self.applyManualCompletion(
+                        let completed = TaskSuccessfulCompletionService.apply(
                             task: task,
                             run: run,
                             modelContext: modelContext,
-                            successPayload: runtimeAdapter.manualCompletionPayload(phase: auditPhase)
+                            successPayload: runtimeAdapter.manualCompletionPayload(phase: auditPhase),
+                            permissionPolicy: launchPermissionPolicy
                         )
-                        if completedManually {
+                        if completed {
                             await Self.applyAutomaticBaselineVerificationIfNeeded(
                                 task: task,
                                 run: run,
@@ -1144,9 +1145,13 @@ final class AgentRuntimeWorker {
                         let testResult = await ValidationService.runTests(task: task)
                         switch testResult {
                         case .passed(let details):
-                            TaskStateMachine.completeFromRuntime(task, modelContext: modelContext)
-                            let event = TaskEvent(task: task, eventType: TaskEventTypes.Task.completed, payload: "\(ValidationOutcomeMarker.testsPassed.rawValue). \(String(details.prefix(300)))", run: run)
-                            modelContext.insert(event)
+                            _ = TaskSuccessfulCompletionService.apply(
+                                task: task,
+                                run: run,
+                                modelContext: modelContext,
+                                successPayload: "\(ValidationOutcomeMarker.testsPassed.rawValue). \(String(details.prefix(300)))",
+                                permissionPolicy: launchPermissionPolicy
+                            )
                         case .failed(let details):
                             TaskStateMachine.failFromValidation(task, modelContext: modelContext)
                             let event = TaskEvent(task: task, eventType: TaskEventTypes.System.error, payload: "\(ValidationOutcomeMarker.testsFailed.rawValue):\n\(String(details.prefix(500)))", run: run)
@@ -1173,9 +1178,13 @@ final class AgentRuntimeWorker {
                         )
                         switch aiResult {
                         case .passed(let details):
-                            TaskStateMachine.completeFromRuntime(task, modelContext: modelContext)
-                            let event = TaskEvent(task: task, eventType: TaskEventTypes.Task.completed, payload: "\(ValidationOutcomeMarker.aiCheckPassed.rawValue). \(String(details.prefix(300)))", run: run)
-                            modelContext.insert(event)
+                            _ = TaskSuccessfulCompletionService.apply(
+                                task: task,
+                                run: run,
+                                modelContext: modelContext,
+                                successPayload: "\(ValidationOutcomeMarker.aiCheckPassed.rawValue). \(String(details.prefix(300)))",
+                                permissionPolicy: launchPermissionPolicy
+                            )
                         case .failed(let details):
                             TaskStateMachine.pauseForValidationReview(task, modelContext: modelContext)
                             let event = TaskEvent(task: task, eventType: TaskEventTypes.System.error, payload: "\(ValidationOutcomeMarker.aiCheckFlagged.rawValue) issues:\n\(String(details.prefix(500)))", run: run)
@@ -1187,13 +1196,14 @@ final class AgentRuntimeWorker {
                         }
                     }
                 } else {
-                    let completedManually = Self.applyManualCompletion(
+                    let completed = TaskSuccessfulCompletionService.apply(
                         task: task,
                         run: run,
                         modelContext: modelContext,
-                        successPayload: runtimeAdapter.manualCompletionPayload(phase: auditPhase)
+                        successPayload: runtimeAdapter.manualCompletionPayload(phase: auditPhase),
+                        permissionPolicy: launchPermissionPolicy
                     )
-                    if completedManually {
+                    if completed {
                         await Self.applyAutomaticBaselineVerificationIfNeeded(
                             task: task,
                             run: run,
@@ -1449,30 +1459,6 @@ final class AgentRuntimeWorker {
             )
             return
         }
-    }
-
-    @MainActor
-    private static func applyManualCompletion(
-        task: AgentTask,
-        run: TaskRun,
-        modelContext: ModelContext,
-        successPayload: String
-    ) -> Bool {
-        let decision = TaskCompletionPolicy.decideManualCompletion(task: task, run: run)
-        if decision.shouldBlockCompletion {
-            TaskRuntimeOutcomeTransition.applyCompletionBlock(
-                decision,
-                task: task,
-                run: run,
-                modelContext: modelContext
-            )
-            return false
-        }
-
-        TaskStateMachine.completeFromRuntime(task, modelContext: modelContext)
-        let event = TaskEvent(task: task, eventType: TaskEventTypes.Task.completed, payload: successPayload, run: run)
-        modelContext.insert(event)
-        return true
     }
 
     @MainActor

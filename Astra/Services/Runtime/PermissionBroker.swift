@@ -656,7 +656,7 @@ enum PermissionBroker {
             return "bash"
         }
         switch lower {
-        case "shell":
+        case "shell", "command_execution":
             return "bash"
         case "view":
             return "read"

@@ -1135,7 +1135,7 @@ struct AgentRuntimePolicyGuard: Sendable {
             return "bash"
         }
         switch lower {
-        case "shell":
+        case "shell", "command_execution":
             return "bash"
         case "view":
             return "read"
@@ -1227,7 +1227,8 @@ struct AgentRuntimePolicyGuard: Sendable {
     }
 
     private static func shellCommandSegmentVariants(_ command: String) -> [String] {
-        let separatorsNormalized = shellSegmentSeparatorsNormalized(command)
+        let semanticCommand = shellLoginCommandPayload(from: command) ?? command
+        let separatorsNormalized = shellSegmentSeparatorsNormalized(semanticCommand)
         let rawSegments = separatorsNormalized
             .split(whereSeparator: { $0.isNewline || $0 == ";" })
             .map(String.init)
@@ -1243,7 +1244,8 @@ struct AgentRuntimePolicyGuard: Sendable {
     }
 
     private static func actionableShellSegments(_ command: String) -> [String] {
-        let separatorsNormalized = shellSegmentSeparatorsNormalized(command)
+        let semanticCommand = shellLoginCommandPayload(from: command) ?? command
+        let separatorsNormalized = shellSegmentSeparatorsNormalized(semanticCommand)
         let rawSegments = separatorsNormalized
             .split(whereSeparator: { $0.isNewline || $0 == ";" })
             .map(String.init)
@@ -1254,6 +1256,32 @@ struct AgentRuntimePolicyGuard: Sendable {
             appendUnique(normalized, to: &segments)
         }
         return segments
+    }
+
+    /// Codex reports command executions through its concrete shell launcher,
+    /// for example `/bin/zsh -lc 'git rev-parse HEAD'`. Policy matching must
+    /// evaluate the launched payload, not mistake the shell wrapper for the
+    /// requested command. Only the exact single-quoted `-lc` form is unwrapped;
+    /// ambiguous quoting stays fail-closed.
+    private static func shellLoginCommandPayload(from command: String) -> String? {
+        let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let markerRange = trimmed.range(of: " -lc ") else { return nil }
+
+        let executable = String(trimmed[..<markerRange.lowerBound])
+            .trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+        guard ["sh", "bash", "zsh"].contains(URL(fileURLWithPath: executable).lastPathComponent.lowercased()) else {
+            return nil
+        }
+
+        let quotedPayload = String(trimmed[markerRange.upperBound...])
+        guard quotedPayload.count >= 2,
+              quotedPayload.first == "'",
+              quotedPayload.last == "'" else {
+            return nil
+        }
+        let payload = String(quotedPayload.dropFirst().dropLast())
+        guard !payload.contains("'") else { return nil }
+        return payload
     }
 
     private static func shellSegmentSeparatorsNormalized(_ command: String) -> String {

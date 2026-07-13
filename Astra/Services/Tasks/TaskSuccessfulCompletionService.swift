@@ -1,0 +1,39 @@
+import SwiftData
+import ASTRAModels
+
+/// Owns the deterministic transition from successful provider work to either
+/// task completion or a typed ASTRA review gate.
+enum TaskSuccessfulCompletionService {
+    @MainActor
+    static func apply(
+        task: AgentTask,
+        run: TaskRun,
+        modelContext: ModelContext,
+        successPayload: String,
+        permissionPolicy: PermissionPolicy
+    ) -> Bool {
+        let decision = TaskCompletionPolicy.decideSuccessfulCompletion(
+            task: task,
+            run: run,
+            permissionPolicy: permissionPolicy
+        )
+        if decision.shouldBlockCompletion {
+            TaskRuntimeOutcomeTransition.applyCompletionBlock(
+                decision,
+                task: task,
+                run: run,
+                modelContext: modelContext
+            )
+            return false
+        }
+
+        TaskStateMachine.completeFromRuntime(task, modelContext: modelContext)
+        modelContext.insert(TaskEvent(
+            task: task,
+            eventType: TaskEventTypes.Task.completed,
+            payload: successPayload,
+            run: run
+        ))
+        return true
+    }
+}

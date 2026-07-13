@@ -124,19 +124,27 @@ enum TaskCompletionPolicy {
     }
 
     @MainActor
-    static func decideManualCompletion(task: AgentTask, run: TaskRun) -> TaskCompletionPolicyDecision {
-        if let failure = TaskExternalOutcomeFailureClassifier.pendingGitHubPullRequestFailure(
+    static func decideSuccessfulCompletion(
+        task: AgentTask,
+        run: TaskRun,
+        permissionPolicy: PermissionPolicy = .autonomous
+    ) -> TaskCompletionPolicyDecision {
+        let pendingPublication = TaskExternalOutcomeRequirementResolver.pendingGitHubPullRequest(
             task: task,
             run: run
-        ) {
+        ) ?? (permissionPolicy == .autonomous
+            ? nil
+            : TaskExternalOutcomeRequirementResolver.makeGitHubPullRequest(task: task, run: run))
+        if let pendingPublication {
             return .block(
                 gate: .requiredExternalOutcome,
                 stopReason: .externalOutcomePending,
-                userVisibleMessage: "The local work finished, but the requested pull request was not created. Review the exact ASTRA publication proposal to finish the task.",
+                userVisibleMessage: "The local work finished. Review the exact ASTRA draft pull request proposal to finish the task.",
                 auditFields: [
-                    "outcome_kind": failure.kind.rawValue,
-                    "run_id": failure.runID.uuidString,
-                    "source_event_id": failure.sourceEventID?.uuidString ?? "none"
+                    "outcome_kind": pendingPublication.kind.rawValue,
+                    "run_id": pendingPublication.runID.uuidString,
+                    "source_event_id": pendingPublication.sourceEventID?.uuidString ?? "none",
+                    "publication_owner": "astra"
                 ]
             )
         }

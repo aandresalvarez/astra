@@ -38,8 +38,8 @@ final class TaskGitPullRequestPublishCoordinator {
     }
 
     func prepare(task: AgentTask) async throws -> GitPullRequestPublishProposal {
-        guard let failure = TaskExternalOutcomeFailureClassifier.pendingGitHubPullRequestFailure(task: task),
-              let run = task.runs.first(where: { $0.id == failure.runID }) else {
+        guard let requirement = TaskExternalOutcomeRequirementResolver.pendingGitHubPullRequest(task: task),
+              let run = task.runs.first(where: { $0.id == requirement.runID }) else {
             throw TaskGitPullRequestPublishCoordinatorError.noPendingPublication
         }
 
@@ -73,7 +73,7 @@ final class TaskGitPullRequestPublishCoordinator {
         ---
         Published through ASTRA task `\(task.id.uuidString)` after exact user review.
         """
-        let request = GitPullRequestPublishRequest(
+        let publishRequest = GitPullRequestPublishRequest(
             repositoryPath: repositoryPath,
             remote: remote,
             baseBranch: baseBranch,
@@ -85,7 +85,7 @@ final class TaskGitPullRequestPublishCoordinator {
             pullRequestBody: body,
             authorizationRequirement: .explicitApproval
         )
-        let proposal = try await service(for: task).prepare(request)
+        let proposal = try await service(for: task).prepare(publishRequest)
         modelContext.insert(TaskEvent.structuredPayloadEvent(
             task: task,
             type: TaskExternalOutcomeEventTypes.publicationProposed,
@@ -103,7 +103,7 @@ final class TaskGitPullRequestPublishCoordinator {
         task: AgentTask,
         proposal: GitPullRequestPublishProposal
     ) async throws -> GitPullRequestPublishReceipt {
-        guard TaskExternalOutcomeFailureClassifier.hasPendingGitHubPullRequestFailure(task: task) else {
+        guard TaskExternalOutcomeRequirementResolver.hasPendingGitHubPullRequest(task: task) else {
             throw TaskGitPullRequestPublishCoordinatorError.noPendingPublication
         }
         let run = task.runs.sorted(by: TaskRun.isChronologicallyOrdered).last
