@@ -78,7 +78,12 @@ enum FeedbackPackageAdoptionValidator {
             from: manifestData
         ).canonicalized()
         try manifest.validate()
-        guard FeedbackRawCanonicalJSONVerifier.isCanonicalObject(manifestData) else {
+        let canonicalKnownManifestMembers = try FeedbackCanonicalJSONV1.encodeValidated(manifest)
+        guard FeedbackRawCanonicalJSONVerifier.isCanonicalObject(
+            manifestData,
+            knownMembers: FeedbackEvidenceManifestV1.knownMemberNames,
+            canonicalKnownMembers: canonicalKnownManifestMembers
+        ) else {
             throw FeedbackPackageValidationError.nonCanonicalManifest
         }
         guard manifest == envelope.payload.evidence.canonicalized() else {

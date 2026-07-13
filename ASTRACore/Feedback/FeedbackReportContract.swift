@@ -673,7 +673,7 @@ public struct FeedbackEvidenceManifestV1: Codable, Equatable, Sendable, Feedback
         self.archiveSHA256 = archiveSHA256
     }
 
-    private enum CodingKeys: String, CodingKey {
+    private enum CodingKeys: String, CodingKey, CaseIterable {
         case formatVersion
         case artifacts
         case omissions
@@ -682,6 +682,11 @@ public struct FeedbackEvidenceManifestV1: Codable, Equatable, Sendable, Feedback
         case totalByteCount
         case archiveSHA256
     }
+
+    /// The manifest's schema-defined top-level member names. Used to isolate
+    /// known fields from forward-compatible additive members when verifying
+    /// raw manifest bytes are schema-canonical.
+    public static let knownMemberNames: Set<String> = Set(CodingKeys.allCases.map(\.rawValue))
 
     public init(from decoder: Decoder) throws {
         let versionContainer = try decoder.container(keyedBy: FeedbackFormatVersionCodingKey.self)

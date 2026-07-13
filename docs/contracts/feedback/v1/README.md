@@ -142,6 +142,28 @@ Evidence disclosure is fail closed:
 - `explicit_opt_in`: browser evidence, screenshots, and macOS diagnostics;
   excluded by default and requires a per-item review timestamp.
 
+### Consent and evidence must agree
+
+`payload.consent.evidenceSelections` and `payload.evidence.artifacts` are two
+independently-shaped arrays, so JSON Schema's structural validation cannot
+express agreement between them. Every V1 implementation, not only the Swift
+one, must enforce both invariants explicitly when validating a `payload`:
+
+1. The set of `artifactID`s with `included: true` in `evidenceSelections`
+   must equal the set of `artifactID`s in `evidence.artifacts` exactly: every
+   included selection has matching evidence, and no evidence artifact goes
+   unselected.
+2. For every `evidence.artifacts[]` entry, the corresponding included
+   `evidenceSelections[].disclosureClass` must exactly equal
+   `evidence.artifacts[].disclosureClass`. Consent may never understate (or
+   overstate) an artifact's privacy classification; a mismatch fails closed
+   with `payload.consent.evidenceSelections[].disclosureClass is inconsistent`.
+
+These checks apply to the raw `artifactID`/`disclosureClass` values before any
+schema-permitted additive members are considered. See the `$comment` on the
+`payload` definition in `feedback-contract.schema.json` for the
+machine-readable pointer back to this section.
+
 Unknown values are preserved only for explicitly extensible data strings:
 artifact kind, runtime ID, runtime failure category, evidence reason, receipt
 disposition, and remote engineering status. Unknown disclosure classes, local

@@ -72,6 +72,31 @@ public enum FeedbackRawCanonicalJSONVerifier {
         return Data(output.utf8) == data
     }
 
+    /// Verifies `data` is byte-canonical JSON overall (permitting additive,
+    /// schema-unknown members) *and* that its known members exactly match
+    /// `canonicalKnownMembers` once additive members are stripped out.
+    ///
+    /// A plain generic canonical check alone is too weak for schema-defined
+    /// fields: it accepts any byte-canonical rendering of a document,
+    /// including ones where known array members are reordered relative to the
+    /// schema's canonical sort, or where an omitted optional is spelled out as
+    /// explicit `null`. Comparing raw known members against the schema's own
+    /// canonical encoding catches that drift while still treating unknown
+    /// members as inert, forward-compatible additions.
+    public static func isCanonicalObject(
+        _ data: Data,
+        knownMembers: Set<String>,
+        canonicalKnownMembers: Data
+    ) -> Bool {
+        guard isCanonicalObject(data) else { return false }
+        guard let object = try? JSONSerialization.jsonObject(with: data),
+              let dictionary = object as? [String: Any] else { return false }
+        let known = dictionary.filter { knownMembers.contains($0.key) }
+        var output = String()
+        guard appendCanonical(known, to: &output) else { return false }
+        return Data(output.utf8) == canonicalKnownMembers
+    }
+
     private static func appendCanonical(_ value: Any, to output: inout String) -> Bool {
         switch value {
         case is NSNull:

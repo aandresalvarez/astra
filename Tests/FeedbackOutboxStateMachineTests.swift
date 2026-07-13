@@ -315,6 +315,64 @@ struct FeedbackOutboxStateMachineTests {
     }
 
     @MainActor
+    @Test("Adoption rejects a manifest that reorders known array members away from the canonical sort")
+    func nonCanonicalKnownMemberOrderIsRejected() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let manifest = FeedbackEvidenceManifestV1(
+            artifacts: [],
+            omissions: [
+                FeedbackEvidenceOmissionV1(artifactID: "a-item", kind: .applicationLog, reason: .notSelected),
+                FeedbackEvidenceOmissionV1(artifactID: "b-item", kind: .applicationLog, reason: .notSelected)
+            ],
+            redactionPolicyVersion: "redaction-v1",
+            totalByteCount: 0
+        )
+        let envelope = try makeFeedbackEnvelope(
+            reportID: fixture.reportID,
+            installationID: "installation-v1",
+            idempotencyKey: "stable-idempotency-key",
+            contents: fixture.contents,
+            createdAt: fixture.clock.current,
+            evidence: manifest
+        )
+        let source = try writeFeedbackPreparedPackage(parent: fixture.root, envelope: envelope)
+        let manifestURL = source.appendingPathComponent(FeedbackPackageLayout.manifest)
+        let reordered = try reversingFeedbackArrayOrder("omissions", in: try Data(contentsOf: manifestURL))
+        try reordered.write(to: manifestURL, options: .atomic)
+
+        // A generic, schema-agnostic canonical check cannot see that this
+        // reordering violates the manifest's own canonical sort; only the
+        // schema-aware known-member check catches it.
+        #expect(FeedbackRawCanonicalJSONVerifier.isCanonicalObject(reordered))
+        #expect(throws: FeedbackPackageValidationError.nonCanonicalManifest) {
+            try fixture.service.adoptPreparedPackage(reportID: fixture.reportID, from: source)
+        }
+    }
+
+    @MainActor
+    @Test("Adoption rejects a manifest that spells an omitted optional as explicit null")
+    func nonCanonicalExplicitNullOptionalIsRejected() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let source = try writeFeedbackPreparedPackage(parent: fixture.root, envelope: fixture.envelope)
+        let manifestURL = source.appendingPathComponent(FeedbackPackageLayout.manifest)
+        let withExplicitNull = try addingFeedbackMember(
+            "archiveSHA256",
+            value: NSNull(),
+            to: try Data(contentsOf: manifestURL)
+        )
+        try withExplicitNull.write(to: manifestURL, options: .atomic)
+
+        // V1 omits absent optionals rather than encoding null; a generic
+        // canonical check alone cannot know that, so it wrongly accepts this.
+        #expect(FeedbackRawCanonicalJSONVerifier.isCanonicalObject(withExplicitNull))
+        #expect(throws: FeedbackPackageValidationError.nonCanonicalManifest) {
+            try fixture.service.adoptPreparedPackage(reportID: fixture.reportID, from: source)
+        }
+    }
+
+    @MainActor
     @Test("Adoption rejects non-canonical report envelope bytes before ownership transfer")
     func nonCanonicalEnvelopeIsRejected() throws {
         let fixture = try makeFixture()
@@ -946,6 +1004,13 @@ private func makeQueuedFixture(retention: TimeInterval = 60) throws -> FeedbackO
 private func addingFeedbackMember(_ key: String, value: Any, to data: Data) throws -> Data {
     var object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
     object[key] = value
+    return try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+}
+
+private func reversingFeedbackArrayOrder(_ key: String, in data: Data) throws -> Data {
+    var object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+    let array = try #require(object[key] as? [Any])
+    object[key] = Array(array.reversed())
     return try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
 }
 
