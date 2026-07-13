@@ -4,6 +4,7 @@ import ASTRAModels
 
 extension Notification.Name {
     static let durableTaskEventInserted = Notification.Name("astra.durableTaskEventInserted")
+    static let taskThreadDidChange = Notification.Name("astra.taskThreadDidChange")
 }
 
 /// Typed, task-scoped value published at the durable event insertion boundary.
@@ -26,6 +27,22 @@ struct DurableTaskEventInsertion: Equatable, Sendable {
     }
 }
 
+struct TaskThreadChange: Equatable, Sendable {
+    let taskID: UUID
+    let changeID: UUID
+    let source: String
+}
+
+@MainActor
+enum TaskThreadChangeNotifier {
+    static func post(taskID: UUID, source: String) {
+        NotificationCenter.default.post(
+            name: .taskThreadDidChange,
+            object: TaskThreadChange(taskID: taskID, changeID: UUID(), source: source)
+        )
+    }
+}
+
 @MainActor
 enum TaskEventInsertionService {
     static func insert(_ event: TaskEvent, into modelContext: ModelContext) {
@@ -39,5 +56,6 @@ enum TaskEventInsertionService {
             timestamp: event.timestamp
         )
         NotificationCenter.default.post(name: .durableTaskEventInserted, object: insertion)
+        TaskThreadChangeNotifier.post(taskID: taskID, source: "event_inserted")
     }
 }

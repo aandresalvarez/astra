@@ -6,22 +6,22 @@ import Testing
 @Suite("App Binary Identity")
 struct AppBinaryIdentityTests {
   @Test("packaged channel mismatch fails closed while unbundled tests stay neutral")
-  func linkedChannelMustMatchBundle() {
+  func linkedChannelMustMatchEffectiveStorageChannel() {
     #expect(
       LinkedAppChannelIdentity.matches(
-        bundleChannelRawValue: "dev",
+        effectiveChannel: .development,
         linkedChannel: .development
       )
     )
     #expect(
       !LinkedAppChannelIdentity.matches(
-        bundleChannelRawValue: "prod",
+        effectiveChannel: .production,
         linkedChannel: .development
       )
     )
     #expect(
       LinkedAppChannelIdentity.matches(
-        bundleChannelRawValue: "prod",
+        effectiveChannel: .production,
         linkedChannel: nil
       )
     )

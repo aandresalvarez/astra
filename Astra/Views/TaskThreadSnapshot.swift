@@ -247,7 +247,7 @@ struct TaskThreadSnapshotInput: Sendable {
         )
     }
 
-    private init(
+    init(
         goal: String,
         createdAt: Date,
         events: [TaskEventSnapshot],
@@ -268,11 +268,84 @@ struct TaskThreadSnapshotInput: Sendable {
     }
 }
 
+enum TaskThreadStateEventPolicy {
+    static let eventTypes: [String] = [
+        "astra.todo.replace", "astra.complete", "astra.protocol.invalid",
+        "astra.permission_manifest", "astra.permission_summary",
+        "permission.approval.requested", "permission.request.resolved",
+        "task.dismissed"
+    ]
+    private static let eventTypeSet = Set(eventTypes)
+
+    static func contains(_ type: String) -> Bool {
+        eventTypeSet.contains(type)
+    }
+}
+
+struct TaskThreadStateEventKey: Hashable, Sendable {
+    let runID: UUID?
+    let type: String
+
+    init(runID: UUID?, type: String) {
+        self.runID = runID
+        self.type = type
+    }
+
+    init(event: TaskEventSnapshot) {
+        self.init(runID: event.runID, type: event.type)
+    }
+}
+
+enum TaskThreadEventProjectionPolicy {
+    private static let maxToolResultsPerRun = 12
+    private static let runlessToolResultID = UUID(uuidString: "00000000-0000-0000-0000-000000000000")!
+
+    static func storageEvents(
+        _ events: [TaskEventSnapshot],
+        loadedRunIDs: Set<UUID>
+    ) -> [TaskEventSnapshot] {
+        let runFilteredEvents = events.filter { event in
+            guard let runID = event.runID else { return true }
+            return loadedRunIDs.contains(runID)
+        }
+        return capToolResults(
+            runFilteredEvents,
+            type: \TaskEventSnapshot.type,
+            runID: \TaskEventSnapshot.runID,
+            id: \TaskEventSnapshot.id
+        )
+    }
+
+    static func capToolResults<Event>(
+        _ events: [Event],
+        type: KeyPath<Event, String>,
+        runID: KeyPath<Event, UUID?>,
+        id: KeyPath<Event, UUID>
+    ) -> [Event] {
+        var keptToolResultsByRunID: [UUID: Int] = [:]
+        var keepEventIDs = Set<UUID>()
+
+        for event in events.reversed() where event[keyPath: type] == "tool.result" {
+            let eventRunID = event[keyPath: runID] ?? runlessToolResultID
+            let count = keptToolResultsByRunID[eventRunID, default: 0]
+            guard count < maxToolResultsPerRun else { continue }
+            keptToolResultsByRunID[eventRunID] = count + 1
+            keepEventIDs.insert(event[keyPath: id])
+        }
+
+        return events.filter { event in
+            event[keyPath: type] != "tool.result" || keepEventIDs.contains(event[keyPath: id])
+        }
+    }
+}
+
+private extension TaskEvent {
+    var runIDForThreadProjection: UUID? { run?.id }
+}
+
 private struct TaskThreadSnapshotWindow {
     private static let defaultMaxRuns = 50
     private static let maxEvents = 1_200
-    private static let maxToolResultsPerRun = 12
-    private static let runlessToolResultID = UUID(uuidString: "00000000-0000-0000-0000-000000000000")!
 
     let events: [TaskEvent]
     let runs: [TaskRun]
@@ -295,7 +368,12 @@ private struct TaskThreadSnapshotWindow {
             guard let runID = event.run?.id else { return true }
             return keptRunIDs.contains(runID)
         }
-        let cappedToolResults = Self.capToolResults(runFilteredEvents)
+        let cappedToolResults = TaskThreadEventProjectionPolicy.capToolResults(
+            runFilteredEvents,
+            type: \TaskEvent.type,
+            runID: \TaskEvent.runIDForThreadProjection,
+            id: \TaskEvent.id
+        )
         let displayEvents = Array(cappedToolResults.suffix(Self.maxEvents))
         // The transcript window is intentionally bounded, but protocol and
         // permission events also reconstruct durable per-run state. Keep the
@@ -325,23 +403,6 @@ private struct TaskThreadSnapshotWindow {
         )
     }
 
-    private static func capToolResults(_ events: [TaskEvent]) -> [TaskEvent] {
-        var keptToolResultsByRunID: [UUID: Int] = [:]
-        var keepEventIDs = Set<UUID>()
-
-        for event in events.reversed() where event.type == "tool.result" {
-            let runID = event.run?.id ?? runlessToolResultID
-            let count = keptToolResultsByRunID[runID, default: 0]
-            guard count < maxToolResultsPerRun else { continue }
-            keptToolResultsByRunID[runID] = count + 1
-            keepEventIDs.insert(event.id)
-        }
-
-        return events.filter { event in
-            event.type != "tool.result" || keepEventIDs.contains(event.id)
-        }
-    }
-
     private static func latestStateEvents(from events: [TaskEvent]) -> [TaskEvent] {
         var latestEvents: [StateEventKey: TaskEvent] = [:]
         for event in events where isStateEvent(event) {
@@ -351,15 +412,7 @@ private struct TaskThreadSnapshotWindow {
     }
 
     private static func isStateEvent(_ event: TaskEvent) -> Bool {
-        switch event.type {
-        case "astra.todo.replace", "astra.complete", "astra.protocol.invalid",
-             "astra.permission_manifest", "astra.permission_summary",
-             "permission.approval.requested", "permission.request.resolved",
-             "task.dismissed":
-            return true
-        default:
-            return false
-        }
+        TaskThreadStateEventPolicy.contains(event.type)
     }
 
     private struct StateEventKey: Hashable {
@@ -841,7 +894,7 @@ struct TaskThreadSnapshot: Sendable {
         )
     }
 
-    private init(
+    init(
         goal: String,
         createdAt: Date,
         events: [TaskEventSnapshot],
@@ -1453,6 +1506,8 @@ struct TaskThreadSnapshotTrigger: Equatable {
     private static let highFrequencyEventTypes: Set<String> = ["agent.response", "agent.thinking"]
 
     let taskID: UUID
+    let revision: Date
+    private let usesDurableRevision: Bool
     let eventCount: Int
     let visibleEventCount: Int
     let runCount: Int
@@ -1468,6 +1523,8 @@ struct TaskThreadSnapshotTrigger: Equatable {
         let runs = task.runs
         let latestRun = runs.max { $0.startedAt < $1.startedAt }
         taskID = task.id
+        revision = task.updatedAt
+        usesDurableRevision = false
         eventCount = events.count
         visibleEventCount = events.reduce(0) { count, event in
             Self.highFrequencyEventTypes.contains(event.type) ? count : count + 1
@@ -1496,8 +1553,27 @@ struct TaskThreadSnapshotTrigger: Equatable {
         )
     }
 
+    init(task: AgentTask, input: TaskThreadSnapshotInput) {
+        let latestRun = input.runs.max { $0.startedAt < $1.startedAt }
+        taskID = task.id
+        revision = task.updatedAt
+        usesDurableRevision = true
+        eventCount = input.totalEventCount
+        // Storage-backed refresh is already driven by the durable task revision
+        // and typed insertion notifications. Avoid rescanning loaded events just
+        // to manufacture a second invalidation signature.
+        visibleEventCount = input.totalEventCount
+        runCount = input.totalRunCount
+        status = task.status
+        latestRunID = latestRun?.id
+        latestRunStatus = latestRun?.status
+        latestRunOutputCount = latestRun?.output.utf8.count ?? 0
+        latestRunOutputBucket = Self.outputBucket(for: latestRunOutputCount)
+    }
+
     static func == (lhs: TaskThreadSnapshotTrigger, rhs: TaskThreadSnapshotTrigger) -> Bool {
         lhs.taskID == rhs.taskID &&
+            (!lhs.usesDurableRevision && !rhs.usesDurableRevision || lhs.revision == rhs.revision) &&
             lhs.visibleEventCount == rhs.visibleEventCount &&
             lhs.runCount == rhs.runCount &&
             lhs.status == rhs.status &&
@@ -1512,25 +1588,9 @@ struct TaskThreadSnapshotTrigger: Equatable {
     }
 }
 
-/// Cheap, task-based liveness check used to gate how often the O(event count)
-/// `TaskThreadSnapshotTrigger` gets rebuilt (see `TaskThreadChangeObserver` in
-/// TaskMainView.swift), without needing to build the trigger itself just to find
-/// out. Reads directly off `task`/`task.runs` (O(run count), not O(event count))
-/// instead of via a constructed trigger.
-///
-/// An earlier version tried to make the trigger's `visibleEventCount` itself O(1)
-/// amortized via an incremental scan over `task.events`, trusting that new events
-/// only ever land at the tail. That assumption doesn't hold: `AgentEventRecorder`
-/// inserts new `TaskEvent`s through the model context rather than appending to
-/// `task.events` directly, and SwiftData doesn't guarantee that relationship
-/// array's ordering, so an incremental scan (even with a boundary-identity check)
-/// could silently miss a new event inserted ahead of the previously-scanned
-/// region. Rather than chase a provably-correct-but-intricate incremental scheme,
-/// this keeps `visibleEventCount` a plain, always-correct full scan and instead
-/// bounds how often it runs: `TaskThreadChangeObserver` polls at
-/// `livePollIntervalNanoseconds` while `isLive` is true instead of rebuilding the trigger on
-/// every single SwiftData-observed mutation.
-///
+/// Task-based liveness projection retained for non-transcript consumers. The
+/// production task thread now uses typed change notifications and bounded
+/// SwiftData pages instead of polling or rebuilding relationship-wide triggers.
 /// Deliberately narrower than `TaskThreadViewModel.refreshSnapshot`'s inline
 /// liveness check (`status == .running/.queued || latestRunStatus == .running`),
 /// which also treats `.queued` as live — that's the right call for deciding
@@ -1574,8 +1634,6 @@ struct TaskThreadSnapshotCacheKey: Hashable, Sendable {
     let createdAt: Date
     let completedAt: Date?
     let maxRuns: Int
-    let eventCount: Int
-    let runCount: Int
 
     init?(
         task: AgentTask,
@@ -1588,8 +1646,6 @@ struct TaskThreadSnapshotCacheKey: Hashable, Sendable {
         createdAt = task.createdAt
         completedAt = task.completedAt
         self.maxRuns = maxRuns
-        eventCount = task.events.count
-        runCount = task.runs.count
     }
 
     private static func isCacheable(status: TaskStatus) -> Bool {

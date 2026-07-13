@@ -69,6 +69,37 @@ struct AppUpdateSafetyTests {
 
 @Suite("App Channels")
 struct AppChannelTests {
+    @Test("packaged channel owns storage even when the environment disagrees")
+    func bundleChannelTakesPrecedenceOverEnvironment() {
+        #expect(
+            AppChannel.resolve(
+                bundleChannelRawValue: "dev",
+                environment: ["ASTRA_CHANNEL": "prod"]
+            ) == .development
+        )
+    }
+
+    @Test("unbundled tools can select a channel through the environment")
+    func environmentSelectsUnbundledChannel() {
+        #expect(
+            AppChannel.resolve(
+                bundleChannelRawValue: nil,
+                environment: ["ASTRA_CHANNEL": "beta"]
+            ) == .beta
+        )
+    }
+
+    @Test("a packaged app without valid channel metadata ignores environment overrides")
+    func invalidPackagedChannelDoesNotUseEnvironment() {
+        #expect(
+            AppChannel.resolve(
+                bundleChannelRawValue: nil,
+                environment: ["ASTRA_CHANNEL": "dev"],
+                isPackagedApplication: true
+            ) == .production
+        )
+    }
+
     @Test("production keeps stable storage and keychain names")
     func productionKeepsStableNames() {
         #expect(AppChannel.production.displayName == "ASTRA")
