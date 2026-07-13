@@ -32,6 +32,7 @@ event=task_open_snapshot_queue_wait
 event=task_open_snapshot_main_actor_apply_wait
 event=task_open_snapshot_apply
 event=task_open_snapshot_apply_to_transcript_ready
+event=thread_history_page_read
 event=chat_stream_snapshot_cadence
 event=chat_scroll_recovery
 event=task_selection_timeout
@@ -101,7 +102,14 @@ run—on the same Mac and build.
 
 ## Expected shape
 
-- `TaskThreadSnapshot.init` runs when task events or runs change, not once per rendered bubble.
+- Initial and previous transcript history is fetched through bounded SwiftData
+  pages before `TaskThreadSnapshot.init`; `thread_history_page_read` records the
+  page and total counts without message content.
+- Live task invalidations coalesce before the bounded database read and snapshot
+  build. They do not poll or scan the complete event relationship.
+- Plan-state UI reads only plan mutation rows plus runs containing persisted
+  protocol markers; ordinary conversation messages and runs are not faulted
+  through SwiftData relationships.
 - `TaskGeneratedFiles.filesAsync` does folder enumeration off the main actor and only refreshes when the task folder or latest-run file-change state changes.
 - `SidebarTaskIndex.init` replaces repeated per-workspace scans during sidebar rendering.
 - `MarkdownLinkifier.markdownAttributed` should appear less often on repeated renders because rendered blocks share a bounded attributed-string cache.
@@ -117,6 +125,8 @@ swift test --filter UIResponsivenessDiagnosticsTests
 swift test --filter ScreenTransitionTelemetryTests
 swift test --filter TaskThreadViewModelTests
 swift test --filter TaskThreadSnapshotTests
+swift test --filter TaskThreadHistoryReaderTests
+swift test --filter TaskPlanServiceTests
 ./script/build_and_run.sh --verify
 git diff --check
 ```

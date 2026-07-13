@@ -46,12 +46,15 @@ final class AgentEventRecordingState {
         if let existing = lastConversationEventByKey[key],
            existing.payload.count + text.count <= maxCoalescedPayloadLength {
             existing.payload += text
-            existing.timestamp = Date()
+            let changedAt = Date()
+            existing.timestamp = changedAt
+            task.updatedAt = changedAt
+            TaskThreadChangeNotifier.post(taskID: task.id, source: "conversation_chunk_coalesced")
             return
         }
 
         let event = TaskEvent(task: task, eventType: eventType, payload: text, run: run)
-        modelContext.insert(event)
+        TaskEventInsertionService.insert(event, into: modelContext)
         lastConversationEventByKey[key] = event
     }
 
@@ -635,6 +638,10 @@ enum AgentEventRecorder {
             || (recordingState?.outputCameFromCompletedSummary(for: run) ?? false)
         if !visibleText.isEmpty, mayReplace {
             run.output = visibleText
+            if let taskID = run.task?.id {
+                run.task?.updatedAt = Date()
+                TaskThreadChangeNotifier.post(taskID: taskID, source: "completed_output_replaced")
+            }
             recordingState?.markOutputFromCompletedSummary(for: run)
         }
     }
@@ -681,7 +688,10 @@ enum AgentEventRecorder {
                 modelContext: modelContext
             )
         } else {
-            modelContext.insert(TaskEvent(task: task, eventType: eventType, payload: text, run: run))
+            TaskEventInsertionService.insert(
+                TaskEvent(task: task, eventType: eventType, payload: text, run: run),
+                into: modelContext
+            )
         }
     }
 

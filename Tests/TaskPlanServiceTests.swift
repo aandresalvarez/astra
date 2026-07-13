@@ -1,10 +1,97 @@
 import Foundation
+import SwiftData
 import Testing
 import ASTRAModels
 @testable import ASTRA
 
 @Suite("Task Plan Service")
 struct TaskPlanServiceTests {
+    @MainActor
+    @Test("Storage-backed plan projection ignores ordinary long-thread messages")
+    func storageBackedPlanProjectionFiltersConversationHistory() throws {
+        let container = try ModelContainer(
+            for: Workspace.self, AgentTask.self, TaskEvent.self, TaskRun.self,
+            configurations: ModelConfiguration(isStoredInMemoryOnly: true)
+        )
+        let context = container.mainContext
+        let task = AgentTask(title: "Long plan thread", goal: "Ship the plan")
+        context.insert(task)
+        for index in 0..<2_000 {
+            context.insert(TaskEvent(
+                task: task,
+                type: "agent.response",
+                payload: "ordinary message \(index)"
+            ))
+        }
+        let plan = TaskPlanPayload(
+            title: "Filtered plan",
+            goal: "Ship the plan",
+            steps: [TaskPlanPayloadStep(id: "step-1", title: "Inspect")]
+        )
+        context.insert(TaskEvent(
+            task: task,
+            type: TaskPlanEventTypes.created,
+            payload: TaskPlanService.encodePlanPayload(plan)
+        ))
+        try context.save()
+
+        let input = try TaskPlanStateReader.read(taskID: task.id, modelContext: context)
+        let snapshot = try TaskPlanStateSnapshot.refreshed(
+            for: task,
+            modelContext: context,
+            cached: .empty
+        )
+
+        #expect(input.events.count == 1)
+        #expect(snapshot?.state.plan?.title == "Filtered plan")
+    }
+
+    @MainActor
+    @Test("Storage-backed plan projection recovers protocol progress older than fifty runs")
+    func storageBackedPlanProjectionKeepsHistoricalProtocolProgress() throws {
+        let container = try ModelContainer(
+            for: Workspace.self, AgentTask.self, TaskEvent.self, TaskRun.self,
+            configurations: ModelConfiguration(isStoredInMemoryOnly: true)
+        )
+        let context = container.mainContext
+        let task = AgentTask(title: "Historical plan", goal: "Recover progress")
+        context.insert(task)
+        let plan = TaskPlanPayload(
+            title: "Historical plan",
+            goal: "Recover progress",
+            steps: [TaskPlanPayloadStep(id: "step-1", title: "Inspect")]
+        )
+        context.insert(TaskEvent(
+            task: task,
+            type: TaskPlanEventTypes.created,
+            payload: TaskPlanService.encodePlanPayload(plan)
+        ))
+        for index in 0..<60 {
+            let run = TaskRun(task: task)
+            run.startedAt = Date(timeIntervalSince1970: Double(index + 1))
+            if index == 0 {
+                run.output = """
+                ASTRA_EVENT {"v":1,"type":"plan.step.completed","planID":"\(plan.planID.uuidString)","stepID":"step-1","status":"done","summary":"Recovered historical progress"}
+                """
+            } else {
+                run.output = "ordinary run \(index)"
+            }
+            context.insert(run)
+        }
+        try context.save()
+
+        let input = try TaskPlanStateReader.read(taskID: task.id, modelContext: context)
+        let snapshot = try TaskPlanStateSnapshot.refreshed(
+            for: task,
+            modelContext: context,
+            cached: .empty
+        )
+
+        #expect(input.recoveryRuns.count == 1)
+        #expect(snapshot?.state.plan?.steps.first?.status == .done)
+        #expect(snapshot?.state.plan?.steps.first?.doneSignal == "Recovered historical progress")
+    }
+
     @Test("Structured ASTRA_PLAN payload is parsed and normalized")
     func structuredPlanParses() throws {
         let planID = UUID(uuidString: "6E5D41A5-67DE-43F3-B9FB-3DA6D58D4F87")!

@@ -22,6 +22,33 @@ struct TaskPlanStateCacheSignature: Equatable {
         let start = DispatchTime.now().uptimeNanoseconds
         let events = task.events
         let runs = task.runs
+        self.init(
+            taskID: task.id,
+            status: task.status,
+            planEvents: events,
+            recoveryRuns: runs
+        )
+        let maxRunOutputBytes = runs.reduce(0) { max($0, $1.output.utf8.count) }
+        PerformanceTelemetry.logIfNeeded(
+            "plan_state_signature",
+            start: start,
+            thresholdMilliseconds: PerformanceTelemetry.uiFrameThresholdMilliseconds,
+            fields: [
+                "task_id": PerformanceTelemetryFields.abbreviatedID(task.id),
+                "event_count": PerformanceTelemetryFields.count(events.count),
+                "run_count": PerformanceTelemetryFields.count(runs.count),
+                "plan_event_count": PerformanceTelemetryFields.count(planEventCount),
+                "max_run_output_bucket": PerformanceTelemetryFields.byteBucket(maxRunOutputBytes)
+            ]
+        )
+    }
+
+    init(
+        taskID: UUID,
+        status: TaskStatus,
+        planEvents events: [TaskEvent],
+        recoveryRuns runs: [TaskRun]
+    ) {
         var eventAccumulator = FingerprintAccumulator()
         var planEventCount = 0
         for event in events {
@@ -38,9 +65,7 @@ struct TaskPlanStateCacheSignature: Equatable {
         }
 
         var runAccumulator = FingerprintAccumulator()
-        var maxRunOutputBytes = 0
         for (index, run) in runs.enumerated() {
-            maxRunOutputBytes = max(maxRunOutputBytes, run.output.utf8.count)
             runAccumulator.include(index)
             runAccumulator.include(run.id)
             runAccumulator.include(Self.code(for: run.status))
@@ -56,24 +81,12 @@ struct TaskPlanStateCacheSignature: Equatable {
         }
 
         self.init(
-            taskID: task.id,
-            status: task.status,
+            taskID: taskID,
+            status: status,
             planEventCount: planEventCount,
             planEventFingerprint: eventAccumulator.value,
             runCount: runs.count,
             runFingerprint: runAccumulator.value
-        )
-        PerformanceTelemetry.logIfNeeded(
-            "plan_state_signature",
-            start: start,
-            thresholdMilliseconds: PerformanceTelemetry.uiFrameThresholdMilliseconds,
-            fields: [
-                "task_id": PerformanceTelemetryFields.abbreviatedID(task.id),
-                "event_count": PerformanceTelemetryFields.count(events.count),
-                "run_count": PerformanceTelemetryFields.count(runs.count),
-                "plan_event_count": PerformanceTelemetryFields.count(planEventCount),
-                "max_run_output_bucket": PerformanceTelemetryFields.byteBucket(maxRunOutputBytes)
-            ]
         )
     }
 
