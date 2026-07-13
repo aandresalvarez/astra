@@ -461,12 +461,16 @@ public struct FeedbackRedactionSummaryV1: Codable, Equatable, Sendable, Feedback
         self.contactPatterns = contactPatterns
     }
 
-    private enum CodingKeys: String, CodingKey {
+    private enum CodingKeys: String, CodingKey, CaseIterable {
         case replacements
         case secretPatterns
         case pathPatterns
         case contactPatterns
     }
+
+    static let knownShape: FeedbackKnownJSONShape = .object(
+        Dictionary(uniqueKeysWithValues: CodingKeys.allCases.map { ($0.rawValue, .scalar) })
+    )
 
     public func validate() throws {
         for (name, value) in [
@@ -514,7 +518,7 @@ public struct FeedbackEvidenceArtifactV1: Codable, Equatable, Sendable, Feedback
         self.redaction = redaction
     }
 
-    private enum CodingKeys: String, CodingKey {
+    private enum CodingKeys: String, CodingKey, CaseIterable {
         case artifactID
         case kind
         case disclosureClass
@@ -524,6 +528,12 @@ public struct FeedbackEvidenceArtifactV1: Codable, Equatable, Sendable, Feedback
         case sha256
         case redaction
     }
+
+    static let knownShape: FeedbackKnownJSONShape = .object(
+        Dictionary(uniqueKeysWithValues: CodingKeys.allCases.map { key in
+            (key.rawValue, key == .redaction ? FeedbackRedactionSummaryV1.knownShape : .scalar)
+        })
+    )
 
     public func validate() throws {
         try FeedbackContractValidationV1.required(
@@ -577,12 +587,16 @@ public struct FeedbackEvidenceOmissionV1: Codable, Equatable, Sendable, Feedback
         self.detail = detail
     }
 
-    private enum CodingKeys: String, CodingKey {
+    private enum CodingKeys: String, CodingKey, CaseIterable {
         case artifactID
         case kind
         case reason
         case detail
     }
+
+    static let knownShape: FeedbackKnownJSONShape = .object(
+        Dictionary(uniqueKeysWithValues: CodingKeys.allCases.map { ($0.rawValue, .scalar) })
+    )
 
     public func validate() throws {
         try FeedbackContractValidationV1.required(
@@ -619,11 +633,15 @@ public struct FeedbackEvidenceWarningV1: Codable, Equatable, Sendable, FeedbackC
         self.message = message
     }
 
-    private enum CodingKeys: String, CodingKey {
+    private enum CodingKeys: String, CodingKey, CaseIterable {
         case code
         case artifactID
         case message
     }
+
+    static let knownShape: FeedbackKnownJSONShape = .object(
+        Dictionary(uniqueKeysWithValues: CodingKeys.allCases.map { ($0.rawValue, .scalar) })
+    )
 
     public func validate() throws {
         try FeedbackContractValidationV1.required(
@@ -673,7 +691,7 @@ public struct FeedbackEvidenceManifestV1: Codable, Equatable, Sendable, Feedback
         self.archiveSHA256 = archiveSHA256
     }
 
-    private enum CodingKeys: String, CodingKey {
+    private enum CodingKeys: String, CodingKey, CaseIterable {
         case formatVersion
         case artifacts
         case omissions
@@ -682,6 +700,23 @@ public struct FeedbackEvidenceManifestV1: Codable, Equatable, Sendable, Feedback
         case totalByteCount
         case archiveSHA256
     }
+
+    /// The manifest's schema-defined shape, recursively down through array
+    /// elements (artifacts/omissions/warnings) and their own nested objects
+    /// (an artifact's redaction summary). Used to isolate known fields from
+    /// forward-compatible additive members - at every nesting level, not
+    /// only the manifest's own top level - when verifying raw manifest bytes
+    /// are schema-canonical.
+    public static let knownShape: FeedbackKnownJSONShape = .object(
+        Dictionary(uniqueKeysWithValues: CodingKeys.allCases.map { key in
+            switch key {
+            case .artifacts: (key.rawValue, .array(FeedbackEvidenceArtifactV1.knownShape))
+            case .omissions: (key.rawValue, .array(FeedbackEvidenceOmissionV1.knownShape))
+            case .warnings: (key.rawValue, .array(FeedbackEvidenceWarningV1.knownShape))
+            default: (key.rawValue, .scalar)
+            }
+        })
+    )
 
     public init(from decoder: Decoder) throws {
         let versionContainer = try decoder.container(keyedBy: FeedbackFormatVersionCodingKey.self)
@@ -902,6 +937,19 @@ public struct FeedbackReportPayloadV1: Codable, Equatable, Sendable, FeedbackCon
                 path: "payload.consent.evidenceSelections",
                 description: "included selections must match evidence artifacts"
             )
+        }
+        let includedSelections = Dictionary(
+            uniqueKeysWithValues: consent.evidenceSelections
+                .filter(\.included)
+                .map { ($0.artifactID, $0) }
+        )
+        for artifact in evidence.artifacts {
+            guard includedSelections[artifact.artifactID]?.disclosureClass == artifact.disclosureClass else {
+                throw FeedbackContractError.inconsistentValue(
+                    path: "payload.consent.evidenceSelections[].disclosureClass",
+                    description: "must match the corresponding evidence artifact"
+                )
+            }
         }
     }
 }

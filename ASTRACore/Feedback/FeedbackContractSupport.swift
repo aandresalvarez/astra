@@ -60,6 +60,17 @@ public enum FeedbackContactMemberPolicy {
     }
 }
 
+/// Describes which JSON object members are schema-known at each nesting
+/// level of a document, so a raw byte tree can be filtered down to exactly
+/// what a schema-canonical re-encode would produce - additive members stay
+/// inert at every level this shape describes, including inside array
+/// elements, not only at the document root.
+public indirect enum FeedbackKnownJSONShape: Sendable {
+    case scalar
+    case object([String: FeedbackKnownJSONShape])
+    case array(FeedbackKnownJSONShape)
+}
+
 /// Verifies exact canonical JSON bytes without decoding away additive members.
 public enum FeedbackRawCanonicalJSONVerifier {
     private static let maximumInteroperableInteger: Int64 = 9_007_199_254_740_991
@@ -70,6 +81,52 @@ public enum FeedbackRawCanonicalJSONVerifier {
         var output = String()
         guard appendCanonical(object, to: &output) else { return false }
         return Data(output.utf8) == data
+    }
+
+    /// Verifies `data` is byte-canonical JSON overall (permitting additive,
+    /// schema-unknown members at any nesting level) *and* that its known
+    /// members exactly match `canonicalKnownMembers` once additive members
+    /// are stripped out.
+    ///
+    /// A plain generic canonical check alone is too weak for schema-defined
+    /// fields: it accepts any byte-canonical rendering of a document,
+    /// including ones where known array members are reordered relative to the
+    /// schema's canonical sort, or where an omitted optional is spelled out as
+    /// explicit `null`. Comparing raw known members against the schema's own
+    /// canonical encoding catches that drift while still treating unknown
+    /// members as inert, forward-compatible additions - at every nesting
+    /// level `knownShape` describes, not only the top level, since nested
+    /// schema objects (e.g. array elements) can independently carry their
+    /// own additive members.
+    public static func isCanonicalObject(
+        _ data: Data,
+        knownShape: FeedbackKnownJSONShape,
+        canonicalKnownMembers: Data
+    ) -> Bool {
+        guard isCanonicalObject(data) else { return false }
+        guard let object = try? JSONSerialization.jsonObject(with: data) else { return false }
+        let known = filteringToKnownShape(object, knownShape)
+        var output = String()
+        guard appendCanonical(known, to: &output) else { return false }
+        return Data(output.utf8) == canonicalKnownMembers
+    }
+
+    private static func filteringToKnownShape(_ value: Any, _ shape: FeedbackKnownJSONShape) -> Any {
+        switch shape {
+        case .scalar:
+            return value
+        case .object(let members):
+            guard let dictionary = value as? [String: Any] else { return value }
+            var filtered: [String: Any] = [:]
+            for (key, childShape) in members {
+                guard let child = dictionary[key] else { continue }
+                filtered[key] = filteringToKnownShape(child, childShape)
+            }
+            return filtered
+        case .array(let elementShape):
+            guard let array = value as? [Any] else { return value }
+            return array.map { filteringToKnownShape($0, elementShape) }
+        }
     }
 
     private static func appendCanonical(_ value: Any, to output: inout String) -> Bool {

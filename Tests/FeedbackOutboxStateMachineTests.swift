@@ -257,30 +257,147 @@ struct FeedbackOutboxStateMachineTests {
     }
 
     @MainActor
-    @Test("Additive V1 package members remain inert and their original bytes survive adoption")
+    @Test("Additive envelope members remain inert while manifests stay canonical")
     func additivePackageMembersArePreserved() throws {
         let fixture = try makeFixture()
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         let source = try writeFeedbackPreparedPackage(parent: fixture.root, envelope: fixture.envelope)
         let envelopeURL = source.appendingPathComponent(FeedbackPackageLayout.envelope)
-        let manifestURL = source.appendingPathComponent(FeedbackPackageLayout.manifest)
         let extendedEnvelope = try addingFeedbackMember(
             "futureEnvelopeMember",
             value: "inert",
             to: try Data(contentsOf: envelopeURL)
         )
-        let extendedManifest = try addingFeedbackMember(
-            "futureManifestMember",
-            value: ["ignored": true],
-            to: try Data(contentsOf: manifestURL)
-        )
         try extendedEnvelope.write(to: envelopeURL, options: .atomic)
-        try extendedManifest.write(to: manifestURL, options: .atomic)
 
         try fixture.service.adoptPreparedPackage(reportID: fixture.reportID, from: source)
         try fixture.service.queue(reportID: fixture.reportID)
         let claim = try fixture.service.claimUpload(reportID: fixture.reportID)
         #expect(claim.canonicalEnvelopeData == extendedEnvelope)
+    }
+
+    @MainActor
+    @Test("Additive manifest members remain inert through adoption and recovery")
+    func additiveManifestMembersArePreserved() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let source = try writeFeedbackPreparedPackage(parent: fixture.root, envelope: fixture.envelope)
+        let manifestURL = source.appendingPathComponent(FeedbackPackageLayout.manifest)
+        let extendedManifest = try addingFeedbackMember(
+            "futureManifestMember",
+            value: ["ignored": true],
+            to: try Data(contentsOf: manifestURL)
+        )
+        try extendedManifest.write(to: manifestURL, options: .atomic)
+
+        try fixture.service.adoptPreparedPackage(reportID: fixture.reportID, from: source)
+        let recovery = try fixture.service.recoverablePreparedPackage(reportID: fixture.reportID)
+
+        #expect(recovery.manifest == fixture.envelope.payload.evidence.canonicalized())
+        #expect(recovery.manifestSHA256 == FeedbackCanonicalJSONV1.sha256Hex(extendedManifest))
+    }
+
+    @MainActor
+    @Test("Additive members nested inside array elements remain inert through adoption and recovery")
+    func nestedAdditiveManifestMembersArePreserved() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let package = try makeNonEmptyPackage(fixture: fixture)
+        let source = try writeFeedbackPreparedPackage(parent: fixture.root, envelope: package.envelope)
+        let evidenceURL = source.appendingPathComponent(package.artifact.relativePath)
+        try FileManager.default.createDirectory(
+            at: evidenceURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try package.evidence.write(to: evidenceURL, options: .atomic)
+
+        let manifestURL = source.appendingPathComponent(FeedbackPackageLayout.manifest)
+        let extendedManifest = try addingFeedbackMember(
+            "futureArtifactField",
+            value: "inert",
+            toFirstElementOf: "artifacts",
+            in: try Data(contentsOf: manifestURL)
+        )
+        try extendedManifest.write(to: manifestURL, options: .atomic)
+
+        try fixture.service.adoptPreparedPackage(reportID: fixture.reportID, from: source)
+        let recovery = try fixture.service.recoverablePreparedPackage(reportID: fixture.reportID)
+        #expect(recovery.manifestSHA256 == FeedbackCanonicalJSONV1.sha256Hex(extendedManifest))
+    }
+
+    @MainActor
+    @Test("Adoption rejects non-canonical manifest bytes before ownership transfer")
+    func nonCanonicalManifestIsRejected() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let source = try writeFeedbackPreparedPackage(parent: fixture.root, envelope: fixture.envelope)
+        let manifestURL = source.appendingPathComponent(FeedbackPackageLayout.manifest)
+        let canonical = try Data(contentsOf: manifestURL)
+        try (Data(" \n".utf8) + canonical).write(to: manifestURL, options: .atomic)
+
+        #expect(throws: FeedbackPackageValidationError.nonCanonicalManifest) {
+            try fixture.service.adoptPreparedPackage(reportID: fixture.reportID, from: source)
+        }
+        #expect(FileManager.default.fileExists(atPath: source.path))
+        #expect(try fetchReport(fixture.container, id: fixture.reportID).localStatus == .draft)
+    }
+
+    @MainActor
+    @Test("Adoption rejects a manifest that reorders known array members away from the canonical sort")
+    func nonCanonicalKnownMemberOrderIsRejected() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let manifest = FeedbackEvidenceManifestV1(
+            artifacts: [],
+            omissions: [
+                FeedbackEvidenceOmissionV1(artifactID: "a-item", kind: .applicationLog, reason: .notSelected),
+                FeedbackEvidenceOmissionV1(artifactID: "b-item", kind: .applicationLog, reason: .notSelected)
+            ],
+            redactionPolicyVersion: "redaction-v1",
+            totalByteCount: 0
+        )
+        let envelope = try makeFeedbackEnvelope(
+            reportID: fixture.reportID,
+            installationID: "installation-v1",
+            idempotencyKey: "stable-idempotency-key",
+            contents: fixture.contents,
+            createdAt: fixture.clock.current,
+            evidence: manifest
+        )
+        let source = try writeFeedbackPreparedPackage(parent: fixture.root, envelope: envelope)
+        let manifestURL = source.appendingPathComponent(FeedbackPackageLayout.manifest)
+        let reordered = try reversingFeedbackArrayOrder("omissions", in: try Data(contentsOf: manifestURL))
+        try reordered.write(to: manifestURL, options: .atomic)
+
+        // A generic, schema-agnostic canonical check cannot see that this
+        // reordering violates the manifest's own canonical sort; only the
+        // schema-aware known-member check catches it.
+        #expect(FeedbackRawCanonicalJSONVerifier.isCanonicalObject(reordered))
+        #expect(throws: FeedbackPackageValidationError.nonCanonicalManifest) {
+            try fixture.service.adoptPreparedPackage(reportID: fixture.reportID, from: source)
+        }
+    }
+
+    @MainActor
+    @Test("Adoption rejects a manifest that spells an omitted optional as explicit null")
+    func nonCanonicalExplicitNullOptionalIsRejected() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let source = try writeFeedbackPreparedPackage(parent: fixture.root, envelope: fixture.envelope)
+        let manifestURL = source.appendingPathComponent(FeedbackPackageLayout.manifest)
+        let withExplicitNull = try addingFeedbackMember(
+            "archiveSHA256",
+            value: NSNull(),
+            to: try Data(contentsOf: manifestURL)
+        )
+        try withExplicitNull.write(to: manifestURL, options: .atomic)
+
+        // V1 omits absent optionals rather than encoding null; a generic
+        // canonical check alone cannot know that, so it wrongly accepts this.
+        #expect(FeedbackRawCanonicalJSONVerifier.isCanonicalObject(withExplicitNull))
+        #expect(throws: FeedbackPackageValidationError.nonCanonicalManifest) {
+            try fixture.service.adoptPreparedPackage(reportID: fixture.reportID, from: source)
+        }
     }
 
     @MainActor
@@ -915,7 +1032,29 @@ private func makeQueuedFixture(retention: TimeInterval = 60) throws -> FeedbackO
 private func addingFeedbackMember(_ key: String, value: Any, to data: Data) throws -> Data {
     var object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
     object[key] = value
-    return try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+    return try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys, .withoutEscapingSlashes])
+}
+
+private func reversingFeedbackArrayOrder(_ key: String, in data: Data) throws -> Data {
+    var object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+    let array = try #require(object[key] as? [Any])
+    object[key] = Array(array.reversed())
+    return try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys, .withoutEscapingSlashes])
+}
+
+private func addingFeedbackMember(
+    _ key: String,
+    value: Any,
+    toFirstElementOf arrayKey: String,
+    in data: Data
+) throws -> Data {
+    var object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+    var array = try #require(object[arrayKey] as? [[String: Any]])
+    var first = try #require(array.first)
+    first[key] = value
+    array[0] = first
+    object[arrayKey] = array
+    return try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys, .withoutEscapingSlashes])
 }
 
 private func feedbackArtifactData() -> Data {

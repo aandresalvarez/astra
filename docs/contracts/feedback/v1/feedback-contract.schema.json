@@ -216,6 +216,7 @@
     "payload": {
       "type": "object",
       "additionalProperties": true,
+      "$comment": "Beyond this structural shape, consent.evidenceSelections and evidence.artifacts must satisfy two cross-array invariants that JSON Schema cannot express: (1) the set of artifactIDs with included=true in evidenceSelections equals the set of artifactIDs in evidence.artifacts; (2) for each evidence.artifacts[] entry, the corresponding included evidenceSelections[].disclosureClass equals evidence.artifacts[].disclosureClass exactly, so consent can never understate an artifact's privacy classification. Every V1 implementation must enforce both explicitly. See README.md#consent-and-evidence-must-agree.",
       "required": ["build", "consent", "createdAt", "evidence", "evidenceWindow", "formatVersion", "platform", "reportID", "statement"],
       "properties": {
         "build": { "$ref": "#/$defs/build" },
