@@ -1055,6 +1055,11 @@ enum AgentPolicyManifestService {
         render.allowedShellPatterns = uniqueStrings(
             render.allowedShellPatterns
                 + runtimeSupportAllowedShellPatterns(environmentKeyNames: envKeys)
+                + (AskGitPullRequestWorkflowPolicy.isActive(
+                    task: task,
+                    permissionPolicy: permissionPolicy,
+                    contextText: contextText
+                ) ? AskGitPullRequestWorkflowPolicy.allowedLocalInspectionShellPatterns : [])
         )
         render = refreshingCopilotLaunchArgumentEvidence(
             to: render,

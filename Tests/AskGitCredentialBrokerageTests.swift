@@ -97,6 +97,37 @@ struct AskGitCredentialBrokerageTests {
         #expect(plan.credentialGrants.allSatisfy { $0.source != .gitCredential })
     }
 
+    @Test("Ask publication guidance scopes local Git inspection and keeps Auto unchanged")
+    func askPublicationGuidanceScopesLocalGitInspection() {
+        let workspace = Workspace(name: "Ask publish", primaryPath: "/tmp/ask-publish")
+        let task = AgentTask(
+            title: "Create a draft pull request",
+            goal: "Publish the existing changes",
+            workspace: workspace
+        )
+        let prompt = "Work on the task."
+
+        let askPrompt = AskGitPullRequestWorkflowPolicy.appendingProviderGuidance(
+            to: prompt,
+            task: task,
+            permissionPolicy: .restricted,
+            contextText: task.goal
+        )
+        let autoPrompt = AskGitPullRequestWorkflowPolicy.appendingProviderGuidance(
+            to: prompt,
+            task: task,
+            permissionPolicy: .autonomous,
+            contextText: task.goal
+        )
+
+        #expect(askPrompt.contains("ASTRA Ask-mode pull request workflow"))
+        #expect(askPrompt.contains("git status"))
+        #expect(askPrompt.contains("gh pr create --draft"))
+        #expect(autoPrompt == prompt)
+        #expect(AskGitPullRequestWorkflowPolicy.allowedLocalInspectionShellPatterns.contains("git rev-parse *"))
+        #expect(!AskGitPullRequestWorkflowPolicy.allowedLocalInspectionShellPatterns.contains("git push *"))
+    }
+
     private var externalHTTPSCredentialContext: GitCredentialSandboxContext {
         GitCredentialSandboxContext(
             readablePaths: ["/tmp/ask-git-config", "/tmp/ask-git-credentials"],

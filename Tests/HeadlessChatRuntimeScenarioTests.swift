@@ -16,6 +16,8 @@ extension HeadlessChatScenarioTests {
             named: "claude",
             script: Self.claudeScript(body: """
             printf '%s\\n' '{"type":"system","subtype":"init","session_id":"ask-publish-session","model":"claude-sonnet-4-6"}'
+            printf '%s\\n' '{"type":"assistant","message":{"model":"claude-sonnet-4-6","content":[{"type":"tool_use","id":"tool_status","name":"Bash","input":{"command":"git status --short --branch && git rev-parse HEAD && git remote -v"}}]}}'
+            printf '%s\\n' '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tool_status","is_error":false,"content":"## feature\\nabc123\\norigin git@github.com:example/repo.git"}]}}'
             printf '%s\\n' '{"type":"assistant","message":{"model":"claude-sonnet-4-6","content":[{"type":"tool_use","id":"tool_pr","name":"Bash","input":{"command":"gh pr create --draft --title Test"}}]}}'
             /bin/sleep 20
             exit 0
@@ -35,6 +37,9 @@ extension HeadlessChatScenarioTests {
         #expect(run.status == .completed)
         #expect(run.typedStopReason == .externalOutcomePending)
         #expect(task.events.contains { $0.type == TaskExternalOutcomeEventTypes.publicationFailed })
+        #expect(task.events.contains {
+            $0.type == TaskEventTypes.Tool.result.rawValue && $0.payload.contains("abc123")
+        })
         #expect(!task.events.contains {
             $0.type == TaskEventTypes.Tool.permissionApprovalRequested.rawValue
         })

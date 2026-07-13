@@ -80,6 +80,16 @@ enum GitOperationIntentDetector {
         )
     }
 
+    static func detectsPullRequestPublicationIntent(
+        prompt: String,
+        task: AgentTask,
+        contextText: String = ""
+    ) -> Bool {
+        let haystack = networkGitIntentText(prompt: prompt, task: task, contextText: contextText)
+        return ["pull request", "create pr", "open pr", "draft pr", "github pr"]
+            .contains { containsTokenPhrase($0, in: haystack) }
+    }
+
     private static func detectsNativeGitTransportOperation(in haystack: String) -> Bool {
         let exactCommands = [
             "git pull", "git fetch", "git push", "git clone", "git ls-remote",

@@ -131,11 +131,11 @@ enum TaskExternalOutcomeFailureClassifier {
     }
 
     private static func requestsPullRequest(_ task: AgentTask) -> Bool {
-        let request = ([task.title, task.goal] + task.acceptanceCriteria + task.constraints)
-            .joined(separator: "\n")
-            .lowercased()
-        return ["pull request", "create pr", "open pr", "draft pr", "github pr"]
-            .contains { request.contains($0) }
+        GitOperationIntentDetector.detectsPullRequestPublicationIntent(
+            prompt: task.acceptanceCriteria.joined(separator: "\n"),
+            task: task,
+            contextText: task.constraints.joined(separator: "\n")
+        )
     }
 
     private static func describesPullRequestPublication(_ evidence: String) -> Bool {

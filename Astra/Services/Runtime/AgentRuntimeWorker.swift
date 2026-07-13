@@ -724,10 +724,16 @@ final class AgentRuntimeWorker {
         task.executionEnvironmentSnapshotJSON = executionEnvironmentJSON
         run.executionEnvironmentSnapshotJSON = executionEnvironmentJSON
 
-        let prompt = promptOverride ?? buildPrompt(
+        let basePrompt = promptOverride ?? buildPrompt(
             for: task,
             executionPolicy: executionPolicy,
             capabilityResolutionSnapshot: capabilityResolutionSnapshot
+        )
+        let prompt = AskGitPullRequestWorkflowPolicy.appendingProviderGuidance(
+            to: basePrompt,
+            task: task,
+            permissionPolicy: launchPermissionPolicy,
+            contextText: providerLaunchContextText
         )
         let launchResourcePlan = TaskLaunchResourceResolver.resolve(
             task: task,
