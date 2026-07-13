@@ -20,10 +20,10 @@ enum LinkedAppChannelIdentity {
   #endif
 
   static func matches(
-    bundleChannelRawValue: String,
+    effectiveChannel: AppChannel,
     linkedChannel: AppChannel? = channel
   ) -> Bool {
     guard let linkedChannel else { return true }
-    return linkedChannel.rawValue == bundleChannelRawValue.lowercased()
+    return linkedChannel == effectiveChannel
   }
 }

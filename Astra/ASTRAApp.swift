@@ -287,10 +287,12 @@ enum AstraStoreStartupCoordinator {
             return Result(modelContainer: inMemoryContainer(), lease: nil, blocker: nil)
         }
 
-        guard LinkedAppChannelIdentity.matches(bundleChannelRawValue: appInfo.channelRawValue) else {
+        let effectiveChannel = AppChannel.current
+        guard LinkedAppChannelIdentity.matches(effectiveChannel: effectiveChannel) else {
             AppLogger.audit(.dataStoreSelected, category: "App", fields: [
                 "result": "blocked_linked_channel_mismatch",
                 "bundle_channel": appInfo.channelRawValue,
+                "effective_channel": effectiveChannel.rawValue,
                 "linked_channel": LinkedAppChannelIdentity.marker
             ], level: .error)
             return blocked(
@@ -359,39 +361,14 @@ enum AstraStoreStartupCoordinator {
             )
         }
 
-        if FileManager.default.fileExists(atPath: storeURL.path) {
-            do {
-                if try OrphanedV12StoreMigrator.requiresMigration(storeURL: storeURL) {
-                    let recoveryURL = try WorkspaceRecoveryService.makeRecoveryStoreURL()
-                    let report = try OrphanedV12StoreMigrator.migrateCopy(
-                        from: storeURL,
-                        to: recoveryURL
-                    )
-                    let metadata = compatibilityMetadata(appInfo: appInfo)
-                    try WorkspaceRecoveryService.activateRecoveryStore(
-                        at: report.destinationStoreURL,
-                        compatibility: metadata
-                    )
-                    storeURL = report.destinationStoreURL
-                    AppLogger.audit(.dataStoreRecovered, category: "App", fields: [
-                        "result": "orphaned_v12_migrated",
-                        "source_schema": "12",
-                        "destination_schema": String(ASTRASchema.currentVersion),
-                        "preserved_rows": String(report.preservedRowCounts.values.reduce(0, +)),
-                        "store_generation": WorkspaceRecoveryService.storeGeneration
-                    ])
-                }
-            } catch {
-                AppLogger.audit(.dataStoreRecovered, category: "App", fields: [
-                    "result": "orphaned_v12_migration_blocked",
-                    "error_type": String(describing: type(of: error)),
-                    "store_generation": WorkspaceRecoveryService.storeGeneration
-                ], level: .error)
-                return blocked(
-                    title: "ASTRA preserved an incompatible V12 store",
-                    message: "ASTRA could not validate a migrated copy, so it left the original store selected and unchanged."
-                )
-            }
+        switch migrateOrphanedV12IfNeeded(storeURL: storeURL, appInfo: appInfo) {
+        case .continueOpening(let selectedStoreURL):
+            storeURL = selectedStoreURL
+        case .blocked:
+            return blocked(
+                title: "ASTRA preserved an incompatible V12 store",
+                message: "ASTRA could not validate a migrated copy, so it left the original store selected and unchanged."
+            )
         }
         let hasPendingLegacyStoreMigration = WorkspaceRecoveryService.hasPendingLegacyStoreMigration
         let compatibility = PersistentStoreCompatibilityService.assess(
@@ -459,6 +436,63 @@ enum AstraStoreStartupCoordinator {
         }
         WorkspaceRecoveryService.repairLegacyStoreValues(at: storeURL)
         UserDefaults.standard.set(build, forKey: AppStorageKeys.completedLegacyStoreRepairBuild)
+    }
+
+    private enum OrphanedV12StartupOutcome {
+        case continueOpening(URL)
+        case blocked
+    }
+
+    private static func migrateOrphanedV12IfNeeded(
+        storeURL: URL,
+        appInfo: AppBuildInfo,
+        fileManager: FileManager = .default
+    ) -> OrphanedV12StartupOutcome {
+        guard fileManager.fileExists(atPath: storeURL.path) else {
+            return .continueOpening(storeURL)
+        }
+
+        switch OrphanedV12StoreMigrator.migrationProbe(storeURL: storeURL) {
+        case .notRequired:
+            return .continueOpening(storeURL)
+        case .unavailable(let errorType):
+            AppLogger.audit(.dataStoreRecovered, category: "App", fields: [
+                "result": "orphaned_v12_probe_unavailable",
+                "error_type": errorType,
+                "store_generation": WorkspaceRecoveryService.storeGeneration
+            ], level: .warning)
+            return .continueOpening(storeURL)
+        case .required:
+            break
+        }
+
+        do {
+            let recoveryURL = try WorkspaceRecoveryService.makeRecoveryStoreURL()
+            let report = try OrphanedV12StoreMigrator.migrateCopy(
+                from: storeURL,
+                to: recoveryURL
+            )
+            let metadata = compatibilityMetadata(appInfo: appInfo)
+            try WorkspaceRecoveryService.activateRecoveryStore(
+                at: report.destinationStoreURL,
+                compatibility: metadata
+            )
+            AppLogger.audit(.dataStoreRecovered, category: "App", fields: [
+                "result": "orphaned_v12_migrated",
+                "source_schema": "12",
+                "destination_schema": String(ASTRASchema.currentVersion),
+                "preserved_rows": String(report.preservedRowCounts.values.reduce(0, +)),
+                "store_generation": WorkspaceRecoveryService.storeGeneration
+            ])
+            return .continueOpening(report.destinationStoreURL)
+        } catch {
+            AppLogger.audit(.dataStoreRecovered, category: "App", fields: [
+                "result": "orphaned_v12_migration_blocked",
+                "error_type": String(describing: type(of: error)),
+                "store_generation": WorkspaceRecoveryService.storeGeneration
+            ], level: .error)
+            return .blocked
+        }
     }
 
     private static func recoverOrBlock(
