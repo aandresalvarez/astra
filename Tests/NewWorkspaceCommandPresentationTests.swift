@@ -76,4 +76,22 @@ struct NewWorkspaceCommandPresentationTests {
         #expect(commandBarSource.contains("Spacer(minLength: 0)"))
         #expect(commandBarSource.contains("sidebarCommands.requestNewWorkspace()"))
     }
+
+    @Test("The workspace header does not duplicate the titlebar creation command")
+    func workspaceHeaderDoesNotDuplicateCreationCommand() throws {
+        let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        let sidebarSource = try String(
+            contentsOf: root.appendingPathComponent("Astra/Views/TaskSidebarView.swift"),
+            encoding: .utf8
+        )
+        let contentSource = try String(
+            contentsOf: root.appendingPathComponent("Astra/Views/ContentView.swift"),
+            encoding: .utf8
+        )
+
+        #expect(!sidebarSource.contains("onNewWorkspace"))
+        #expect(!sidebarSource.contains("isWorkspacesAddHovered"))
+        #expect(!sidebarSource.contains(".help(\"New Workspace\")"))
+        #expect(!contentSource.contains("onNewWorkspace: createWorkspace"))
+    }
 }

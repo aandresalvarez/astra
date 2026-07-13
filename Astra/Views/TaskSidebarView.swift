@@ -20,7 +20,6 @@ struct TaskSidebarContainerView: View {
     var onCancelTask: ((AgentTask) -> Void)?
     var onRetryTask: ((AgentTask) -> Void)?
     var onDeleteTask: ((AgentTask) -> Void)?
-    var onNewWorkspace: (() -> Void)?
     var onEditWorkspace: ((Workspace) -> Void)?
     var onShowConfigure: (() -> Void)?
     var onDeleteWorkspace: ((Workspace) -> Void)?
@@ -45,7 +44,6 @@ struct TaskSidebarContainerView: View {
             onCancelTask: onCancelTask,
             onRetryTask: onRetryTask,
             onDeleteTask: onDeleteTask,
-            onNewWorkspace: onNewWorkspace,
             onEditWorkspace: onEditWorkspace,
             onShowConfigure: onShowConfigure,
             onDeleteWorkspace: onDeleteWorkspace,
@@ -273,7 +271,6 @@ struct TaskSidebarView: View {
     var onCancelTask: ((AgentTask) -> Void)?
     var onRetryTask: ((AgentTask) -> Void)?
     var onDeleteTask: ((AgentTask) -> Void)?
-    var onNewWorkspace: (() -> Void)?
     var onEditWorkspace: ((Workspace) -> Void)?
     var onShowConfigure: (() -> Void)?
     var onDeleteWorkspace: ((Workspace) -> Void)?
@@ -309,7 +306,6 @@ struct TaskSidebarView: View {
     @State private var taskDragWatchdog: Timer?
     @State private var isPinnedHeaderHovered = false
     @State private var isSchedulesExpanded = true
-    @State private var isWorkspacesAddHovered = false
     @State private var isWorkspacesFilterHovered = false
     @State private var isWorkspacesHeaderHovered = false
     @State private var isSchedulesAddHovered = false
@@ -1099,23 +1095,6 @@ struct TaskSidebarView: View {
                 .help(showStarredWorkspacesOnly ? "Show all workspaces" : "Show starred only")
                 .accessibilityLabel(showStarredWorkspacesOnly ? "Show all workspaces" : "Show starred only")
 
-                // Direct-action Button — identical wrapper and visual
-                // chrome to the Routines header's + button. Previously a
-                // Menu with New / Import choices, but Menu's button style
-                // introduces press-animation chrome that plain Button
-                // doesn't, so the two could never render byte-identical.
-                //
-                // Import Workspace now lives in the File menu
-                // (ASTRAApp.swift) — where macOS users expect to
-                // find import / export anyway.
-                Button {
-                    onNewWorkspace?()
-                } label: {
-                    SectionAddIcon(isHovered: isWorkspacesAddHovered)
-                }
-                .buttonStyle(.plain)
-                .onHover { isWorkspacesAddHovered = $0 }
-                .help("New Workspace")
             }
             .padding(.horizontal, 10)
             // See Routines section — 20pt top creates visual rhythm
@@ -2175,16 +2154,13 @@ private struct SidebarCountBadge: View {
     }
 }
 
-/// Visual used inside every sidebar section-header "+" affordance
-/// (Workspaces, Routines). Calm secondary glyph that lights up lagunita
+/// Visual used by the Routines section-header "+" affordance. Calm
+/// secondary glyph that lights up lagunita
 /// on hover — reserves the cardinal-red brand hue for CTAs like
 /// "+ New task", and avoids the "red filled circle = notification"
 /// confusion we had before.
 ///
-/// Callers wrap this in either `Button` (direct action) or `Menu`
-/// (multi-choice), then attach `.onHover` to drive `isHovered`. Keeping
-/// the hover state outside lets both Button and Menu paths render
-/// byte-identical visuals.
+/// The caller owns hover state so the icon remains a small reusable visual.
 private struct SectionAddIcon: View {
     let isHovered: Bool
 

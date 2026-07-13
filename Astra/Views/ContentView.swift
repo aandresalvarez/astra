@@ -507,7 +507,6 @@ struct ContentView: View {
             onCancelTask: cancelTask,
             onRetryTask: retryTask,
             onDeleteTask: requestDeleteTask,
-            onNewWorkspace: createWorkspace,
             onEditWorkspace: beginEditingWorkspace,
             onShowConfigure: openCapabilitiesManager,
             onDeleteWorkspace: deleteWorkspace,
