@@ -13,13 +13,13 @@ struct NewWorkspaceCommandPresentationTests {
             encoding: .utf8
         )
 
-        #expect(source.contains("Image(systemName: \"folder.badge.plus\")"))
+        #expect(source.contains("systemImage: \"folder.badge.plus\""))
         #expect(source.contains("accessibilityLabel(NewWorkspaceCommandPresentation.title)"))
         #expect(source.contains("accessibilityHint(\"Creates a new workspace\")"))
     }
 
-    @Test("Hover immediately names and highlights the command")
-    func hoverNamesAndHighlightsCommand() throws {
+    @Test("Hover keeps fixed icon geometry and uses shared active chrome")
+    func hoverKeepsFixedIconGeometry() throws {
         let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
         let source = try String(
             contentsOf: root.appendingPathComponent("Astra/Views/Components/NewWorkspaceCommandButton.swift"),
@@ -27,34 +27,37 @@ struct NewWorkspaceCommandPresentationTests {
         )
 
         #expect(NewWorkspaceCommandPresentation.title == "New Workspace")
-        #expect(NewWorkspaceCommandPresentation.hoverFillOpacity > 0)
-        #expect(source.contains("if isHovered"))
-        #expect(source.contains("Text(NewWorkspaceCommandPresentation.title)"))
+        #expect(source.contains("AstraToolbarCommandIcon("))
+        #expect(source.contains("isActive: isHovered"))
         #expect(source.contains(".onHover { isHovered = $0 }"))
+        #expect(!source.contains("Text(NewWorkspaceCommandPresentation.title)"))
     }
 
-    @Test("Expanded command bar reaches the measured sidebar edge")
-    func expandedCommandBarReachesMeasuredSidebarEdge() {
+    @Test("Expanded command bar reaches the edge at minimum sidebar width")
+    func expandedCommandBarReachesEdgeAtMinimumSidebarWidth() {
         let width = AstraLeadingCommandBarLayout.commandBarWidth(
-            sidebarWidth: 320,
-            accessoryLeadingX: 88,
+            sidebarWidth: SidebarColumnLayout.expandedMinimumWidth,
+            accessoryLeadingX: 90,
             isSidebarHidden: false
         )
 
-        #expect(width == 232)
+        #expect(width == 220)
         #expect(AstraLeadingCommandBarMetrics.expandedTrailingPadding == 10)
     }
 
-    @Test("Collapsed command bar keeps New Workspace in the compact leading cluster")
-    func collapsedCommandBarStaysCompact() {
+    @Test("Collapsed command bar reserves only fixed icon geometry")
+    func collapsedCommandBarReservesFixedIconGeometry() {
         let width = AstraLeadingCommandBarLayout.commandBarWidth(
             sidebarWidth: 320,
             accessoryLeadingX: 88,
             isSidebarHidden: true
         )
+        let expectedWidth = (AstraToolbarCommandMetrics.iconWidth * 3)
+            + AstraToolbarCommandMetrics.clusterSpacing
+            + (AstraToolbarCommandMetrics.clusterHorizontalPadding * 3)
+            + AstraLeadingCommandBarMetrics.trailingPadding
 
-        #expect(width == AstraLeadingCommandBarLayout.collapsedCommandBarWidth)
-        #expect(width! >= NewWorkspaceCommandPresentation.hoveredControlWidth)
+        #expect(width == expectedWidth)
     }
 
     @Test("The sidebar no longer contributes a competing window-toolbar item")
