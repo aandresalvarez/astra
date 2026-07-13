@@ -1,3 +1,4 @@
+#if ASTRA_ENABLE_APP_INTENTS
 import AppIntents
 import Foundation
 
@@ -167,3 +168,4 @@ struct AstraAppShortcuts: AppShortcutsProvider {
         )
     }
 }
+#endif

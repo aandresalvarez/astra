@@ -41,6 +41,81 @@ public enum PersistentStoreCompatibilityAssessment: Equatable, Sendable {
     case unknown
 }
 
+public enum PersistentStoreKnownShape: Equatable, Sendable {
+    case runtimeSelectionOnlyV12
+    case productionV12
+    case other
+}
+
+/// Identifies the two V12 shapes that reached disk under the same Core Data
+/// version identifier. Entity names are only a routing hint: the dedicated
+/// migration plan still verifies every model hash before it can open a copy.
+public enum PersistentStoreModelShapeService {
+    private static let v12Identifier = "12.0.0"
+    private static let runtimeSelectionOnlyV12Entities: Set<String> = [
+        "Workspace",
+        "AgentTask",
+        "TaskRun",
+        "TaskEvent",
+        "Artifact",
+        "Skill",
+        "Connector",
+        "LocalTool",
+        "TaskTemplate",
+        "TaskSchedule",
+        "WorkspaceApp",
+        "WorkspaceAppRun",
+        "WorkspaceAppRunEvent",
+        "WorkspaceAppDependencyBinding",
+        "WorkspaceAppAutomationState",
+        "GoogleOAuthAccountProfile"
+    ]
+
+    public static func shape(
+        ofStoreAt storeURL: URL,
+        persistentStoreMetadata: [String: Any]? = nil
+    ) throws -> PersistentStoreKnownShape {
+        let metadata = try persistentStoreMetadata ?? NSPersistentStoreCoordinator.metadataForPersistentStore(
+            type: .sqlite,
+            at: storeURL
+        )
+        return shape(from: metadata)
+    }
+
+    public static func shape(from metadata: [String: Any]) -> PersistentStoreKnownShape {
+        guard versionIdentifiers(from: metadata).contains(v12Identifier),
+              let entities = entityNames(from: metadata) else {
+            return .other
+        }
+        if entities == runtimeSelectionOnlyV12Entities {
+            return .runtimeSelectionOnlyV12
+        }
+        if entities == runtimeSelectionOnlyV12Entities.union(["FeedbackReport"]) {
+            return .productionV12
+        }
+        return .other
+    }
+
+    private static func versionIdentifiers(from metadata: [String: Any]) -> Set<String> {
+        let value = metadata[NSStoreModelVersionIdentifiersKey]
+        if let strings = value as? [String] { return Set(strings) }
+        if let strings = value as? Set<String> { return strings }
+        if let string = value as? String { return [string] }
+        return []
+    }
+
+    private static func entityNames(from metadata: [String: Any]) -> Set<String>? {
+        let value = metadata["NSStoreModelVersionHashes"]
+        if let hashes = value as? [String: Any] {
+            return Set(hashes.keys)
+        }
+        if let hashes = value as? NSDictionary {
+            return Set(hashes.allKeys.compactMap { $0 as? String })
+        }
+        return nil
+    }
+}
+
 public enum PersistentStoreCompatibilityService {
     public static func metadataURL(for storeURL: URL) -> URL {
         URL(fileURLWithPath: storeURL.path + ".astra-compatibility.json")

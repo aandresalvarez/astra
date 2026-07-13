@@ -3962,10 +3962,38 @@ public enum ASTRASchemaV11: VersionedSchema {
     }
 }
 
-/// V12 adds `AgentTask.runtimeExplicitlySelected` and the durable feedback
-/// outbox owner. Both additions migrate from V11 through one schema boundary.
+/// Frozen production V12. This exact 17-entity shape reached disk and must
+/// never follow the live model declarations again.
 public enum ASTRASchemaV12: VersionedSchema {
     public static var versionIdentifier = Schema.Version(12, 0, 0)
+
+    public static var models: [any PersistentModel.Type] {
+        [
+            ASTRASchemaV12RuntimeOnly.Workspace.self,
+            ASTRASchemaV12RuntimeOnly.AgentTask.self,
+            ASTRASchemaV12RuntimeOnly.TaskRun.self,
+            ASTRASchemaV12RuntimeOnly.TaskEvent.self,
+            ASTRASchemaV12RuntimeOnly.Artifact.self,
+            ASTRASchemaV12RuntimeOnly.Skill.self,
+            ASTRASchemaV12RuntimeOnly.Connector.self,
+            ASTRASchemaV12RuntimeOnly.LocalTool.self,
+            ASTRASchemaV12RuntimeOnly.TaskTemplate.self,
+            ASTRASchemaV12RuntimeOnly.TaskSchedule.self,
+            ASTRASchemaV12RuntimeOnly.WorkspaceApp.self,
+            ASTRASchemaV12RuntimeOnly.WorkspaceAppRun.self,
+            ASTRASchemaV12RuntimeOnly.WorkspaceAppRunEvent.self,
+            ASTRASchemaV12RuntimeOnly.WorkspaceAppDependencyBinding.self,
+            ASTRASchemaV12RuntimeOnly.WorkspaceAppAutomationState.self,
+            ASTRASchemaV12RuntimeOnly.GoogleOAuthAccountProfile.self,
+            ASTRASchemaV12Models.FeedbackReport.self
+        ]
+    }
+}
+
+/// Canonical schema after reconciling both V12 branches. New live model
+/// changes must mint a later version rather than mutating V12 or V13.
+public enum ASTRASchemaV13: VersionedSchema {
+    public static var versionIdentifier = Schema.Version(13, 0, 0)
 
     public static var models: [any PersistentModel.Type] {
         [
@@ -3985,7 +4013,8 @@ public enum ASTRASchemaV12: VersionedSchema {
             WorkspaceAppDependencyBinding.self,
             WorkspaceAppAutomationState.self,
             GoogleOAuthAccountProfile.self,
-            FeedbackReport.self
+            FeedbackReport.self,
+            PersistentStoreMigrationRecord.self
         ]
     }
 }
@@ -3993,10 +4022,10 @@ public enum ASTRASchemaV12: VersionedSchema {
 public enum ASTRASchema {
     /// The newest durable store schema this binary can read and write.
     /// Keep startup compatibility checks derived from this single owner.
-    public static let currentVersion = 12
+    public static let currentVersion = 13
 
     public static var current: Schema {
-        Schema(versionedSchema: ASTRASchemaV12.self)
+        Schema(versionedSchema: ASTRASchemaV13.self)
     }
 }
 
@@ -4014,7 +4043,8 @@ public enum ASTRAMigrationPlan: SchemaMigrationPlan {
             ASTRASchemaV9.self,
             ASTRASchemaV10.self,
             ASTRASchemaV11.self,
-            ASTRASchemaV12.self
+            ASTRASchemaV12.self,
+            ASTRASchemaV13.self
         ]
     }
 
@@ -4030,7 +4060,22 @@ public enum ASTRAMigrationPlan: SchemaMigrationPlan {
             .lightweight(fromVersion: ASTRASchemaV8.self, toVersion: ASTRASchemaV9.self),
             .lightweight(fromVersion: ASTRASchemaV9.self, toVersion: ASTRASchemaV10.self),
             .lightweight(fromVersion: ASTRASchemaV10.self, toVersion: ASTRASchemaV11.self),
-            .lightweight(fromVersion: ASTRASchemaV11.self, toVersion: ASTRASchemaV12.self)
+            .lightweight(fromVersion: ASTRASchemaV11.self, toVersion: ASTRASchemaV12.self),
+            .lightweight(fromVersion: ASTRASchemaV12.self, toVersion: ASTRASchemaV13.self)
+        ]
+    }
+}
+
+/// Dedicated plan for the short-lived runtime-selection-only V12. Keeping it
+/// separate avoids placing two different 12.0.0 shapes in the normal plan.
+public enum ASTRAOrphanedV12MigrationPlan: SchemaMigrationPlan {
+    public static var schemas: [any VersionedSchema.Type] {
+        [ASTRASchemaV12RuntimeOnly.self, ASTRASchemaV13.self]
+    }
+
+    public static var stages: [MigrationStage] {
+        [
+            .lightweight(fromVersion: ASTRASchemaV12RuntimeOnly.self, toVersion: ASTRASchemaV13.self)
         ]
     }
 }

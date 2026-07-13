@@ -1,4 +1,5 @@
 import Foundation
+import CoreData
 import SwiftData
 import Testing
 import ASTRAModels
@@ -146,12 +147,33 @@ struct SchemaVersionTests {
         #expect(ASTRASchemaV11.versionIdentifier == Schema.Version(11, 0, 0))
     }
 
-    @MainActor
-    @Test("SchemaV12 declares current model types and explicit-runtime-selection field")
-    func v12ModelCountAndExplicitRuntimeSelectionField() throws {
+    @Test("Runtime-only V12 freezes the orphaned 16-entity shape")
+    func runtimeOnlyV12IsFrozen() {
+        #expect(ASTRASchemaV12RuntimeOnly.models.count == 16)
+        #expect(ASTRASchemaV12RuntimeOnly.models.contains { $0 == ASTRASchemaV12RuntimeOnly.AgentTask.self })
+        #expect(!ASTRASchemaV12RuntimeOnly.models.contains { $0 == AgentTask.self })
+        #expect(!ASTRASchemaV12RuntimeOnly.models.contains { $0 == FeedbackReport.self })
+
+        let task = ASTRASchemaV12RuntimeOnly.AgentTask()
+        #expect(task.runtimeExplicitlySelected == false)
+    }
+
+    @Test("Production V12 freezes the 17-entity feedback shape")
+    func productionV12IsFrozen() {
         #expect(ASTRASchemaV12.models.count == 17)
-        #expect(ASTRASchemaV12.models.contains { $0 == AgentTask.self })
-        #expect(ASTRASchemaV12.models.contains { $0 == TaskRun.self })
+        #expect(ASTRASchemaV12.models.contains { $0 == ASTRASchemaV12RuntimeOnly.AgentTask.self })
+        #expect(ASTRASchemaV12.models.contains { $0 == ASTRASchemaV12Models.FeedbackReport.self })
+        #expect(!ASTRASchemaV12.models.contains { $0 == AgentTask.self })
+        #expect(!ASTRASchemaV12.models.contains { $0 == FeedbackReport.self })
+    }
+
+    @MainActor
+    @Test("SchemaV13 declares current model types and explicit-runtime-selection field")
+    func v13ModelCountAndExplicitRuntimeSelectionField() throws {
+        #expect(ASTRASchemaV13.models.count == 18)
+        #expect(ASTRASchemaV13.models.contains { $0 == AgentTask.self })
+        #expect(ASTRASchemaV13.models.contains { $0 == FeedbackReport.self })
+        #expect(ASTRASchemaV13.models.contains { $0 == PersistentStoreMigrationRecord.self })
 
         let config = ModelConfiguration(isStoredInMemoryOnly: true)
         let container = try ModelContainer(
@@ -177,26 +199,38 @@ struct SchemaVersionTests {
         #expect(ASTRASchemaV12.versionIdentifier == Schema.Version(12, 0, 0))
     }
 
-    @Test("SchemaV12 adds only the durable feedback report entity")
-    func v12ModelCount() {
-        #expect(ASTRASchemaV12.models.count == 17)
-        #expect(ASTRASchemaV12.models.contains { $0 == FeedbackReport.self })
+    @Test("SchemaV13 version identifier is 13.0.0")
+    func v13VersionIdentifier() {
+        #expect(ASTRASchemaV13.versionIdentifier == Schema.Version(13, 0, 0))
     }
 
     @Test("Advertised current schema matches the compiled current model")
     func advertisedCurrentSchemaMatchesCompiledModel() {
-        #expect(ASTRASchema.currentVersion == 12)
-        #expect(ASTRASchemaV12.versionIdentifier == Schema.Version(ASTRASchema.currentVersion, 0, 0))
+        #expect(ASTRASchema.currentVersion == 13)
+        #expect(ASTRASchemaV13.versionIdentifier == Schema.Version(ASTRASchema.currentVersion, 0, 0))
     }
 
-    @Test("Migration plan lists SchemaV1 through SchemaV12")
+    @Test("Migration plan lists SchemaV1 through SchemaV13")
     func migrationPlanHasVersions() {
-        #expect(ASTRAMigrationPlan.schemas.count == 12)
+        #expect(ASTRAMigrationPlan.schemas.count == 13)
     }
 
-    @Test("Migration plan has V1 to V12 lightweight stages")
+    @Test("Migration plan has V1 to V13 lightweight stages")
     func migrationPlanHasStage() {
-        #expect(ASTRAMigrationPlan.stages.count == 11)
+        #expect(ASTRAMigrationPlan.stages.count == 12)
+    }
+
+    @Test("Orphan recovery plan keeps the colliding V12 isolated")
+    func orphanRecoveryPlanIsIsolated() {
+        #expect(ASTRAOrphanedV12MigrationPlan.schemas.count == 2)
+        #expect(ASTRAOrphanedV12MigrationPlan.stages.count == 1)
+    }
+
+    @Test("Frozen V12 schemas match both observed on-disk fingerprints")
+    func frozenV12FingerprintsMatchObservedStores() throws {
+        #expect(try modelDigest(for: ASTRASchemaV12RuntimeOnly.self) == "gOyhETqn0JsdoYEzwTW4HL0JczNjjAZAP1RnTqyP2OVdSMByOnWSLe1yi6MGcwuSHctPUYlM7dhh3FoKv2Xrug==")
+        #expect(try modelDigest(for: ASTRASchemaV12.self) == "8A20+TTf27Ld2ivltxATZ9CEzlihL4bWotqJTiVHIMS+OB7pT8DKDKjw48YapWPv4ZpglJnfTLrpPJ8XZD4bkw==")
+        #expect(try modelDigest(for: ASTRASchemaV13.self) == "F8EAtnO6XEb1sTTzkmpQUCUI4Rhv0yDneoWeElmC/fO2XA9uaRoyDqz1e68zWR6m3tZQ/tFZp3p+95HDlzt+4g==")
     }
 
     @Test("ModelContainer can be created with versioned schema")
@@ -207,7 +241,7 @@ struct SchemaVersionTests {
             migrationPlan: ASTRAMigrationPlan.self,
             configurations: [config]
         )
-        #expect(container.schema.entities.count == 17)
+        #expect(container.schema.entities.count == 18)
     }
 
     @MainActor
@@ -287,6 +321,29 @@ struct SchemaVersionTests {
         #expect(tasks[0].skills.count == 1)
     }
 
+    private func modelDigest(for versionedSchema: any VersionedSchema.Type) throws -> String {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-schema-fingerprint-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let storeURL = root.appendingPathComponent("store.store")
+        var container: ModelContainer? = try ModelContainer(
+          for: Schema(versionedSchema: versionedSchema),
+          configurations: [ModelConfiguration(url: storeURL)]
+        )
+        #expect(container != nil)
+        container = nil
+
+        let metadata = try NSPersistentStoreCoordinator.metadataForPersistentStore(type: .sqlite, at: storeURL)
+        if let digest = metadata["NSStoreModelVersionHashesDigest"] as? String {
+            return digest
+        }
+        if let digest = metadata["NSStoreModelVersionHashesDigest"] as? Data {
+            return digest.base64EncodedString()
+        }
+        throw CocoaError(.coderInvalidValue)
+    }
+
     @MainActor
     @Test("SchemaV1 store migrates to current runtime and unread fields")
     func legacyStoreMigratesToCurrentFields() throws {
@@ -354,7 +411,65 @@ struct SchemaVersionTests {
     }
 
     @MainActor
-    @Test("Populated SchemaV11 store migrates to V12 without disturbing existing relationships")
+    @Test("Production SchemaV12 migrates to V13 with feedback and runtime state intact")
+    func productionV12MigratesToV13() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("astra-schema-v12-production-migration-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let storeURL = root.appendingPathComponent("store.store")
+        let taskID = UUID(uuidString: "00000000-0000-0000-0000-000000000211")!
+        let reportID = UUID(uuidString: "00000000-0000-0000-0000-000000000212")!
+
+        do {
+            var oldContainer: ModelContainer? = try ModelContainer(
+                for: Schema(versionedSchema: ASTRASchemaV12.self),
+                configurations: [ModelConfiguration(url: storeURL)]
+            )
+            let context = try #require(oldContainer?.mainContext)
+            let task = ASTRASchemaV12RuntimeOnly.AgentTask()
+            task.id = taskID
+            task.title = "Production V12 task"
+            task.runtimeID = "cursor_cli"
+            task.runtimeExplicitlySelected = true
+            context.insert(task)
+
+            let report = ASTRASchemaV12Models.FeedbackReport(
+                id: reportID,
+                installationID: "installation-v12",
+                intendedOutcome: "Preserve feedback",
+                actualResult: "Preserved",
+                evidenceWindowStart: Date(timeIntervalSince1970: 100),
+                evidenceWindowEnd: Date(timeIntervalSince1970: 200),
+                consentVersion: "v1"
+            )
+            report.taskID = taskID.uuidString
+            report.localStatusRaw = "queued"
+            context.insert(report)
+            try context.save()
+            oldContainer = nil
+        }
+
+        let migratedContainer = try ModelContainer(
+            for: ASTRASchema.current,
+            migrationPlan: ASTRAMigrationPlan.self,
+            configurations: [ModelConfiguration(url: storeURL)]
+        )
+        let context = migratedContainer.mainContext
+        let migratedTask = try #require(try context.fetch(FetchDescriptor<AgentTask>()).first)
+        let migratedReport = try #require(try context.fetch(FetchDescriptor<FeedbackReport>()).first)
+
+        #expect(migratedTask.id == taskID)
+        #expect(migratedTask.runtimeID == "cursor_cli")
+        #expect(migratedTask.runtimeExplicitlySelected)
+        #expect(migratedReport.id == reportID)
+        #expect(migratedReport.installationID == "installation-v12")
+        #expect(migratedReport.localStatusRaw == "queued")
+        #expect(try context.fetchCount(FetchDescriptor<PersistentStoreMigrationRecord>()) == 0)
+    }
+
+    @MainActor
+    @Test("Populated SchemaV11 store migrates through V12 to V13 without disturbing relationships")
     func v11StoreMigratesToFeedbackReportTable() throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("astra-schema-v11-feedback-migration-\(UUID().uuidString)", isDirectory: true)
