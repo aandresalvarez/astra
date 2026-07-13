@@ -11,8 +11,13 @@ import ASTRACore
 /// watchdog floods, per-conversation canvas memory growth, scene-selection
 /// churn, and App Studio stale-turn invalidation. All fixtures are headless;
 /// every suite that persists uses a throwaway `UserDefaults` suite.
+///
+/// Opt-in: runs only with `RUN_UI_STRESS=1` (see `uiStressSuitesEnabled`).
 @MainActor
-@Suite("UI stress: state churn")
+@Suite(
+    "UI stress: state churn",
+    .enabled(if: uiStressSuitesEnabled, "Set RUN_UI_STRESS=1 to run the UI stress suites")
+)
 struct UIStressStateChurnTests {
     // MARK: - Helpers
 

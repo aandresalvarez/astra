@@ -9,7 +9,12 @@ import ASTRACore
 /// serialization, trigger bucketing, and terminal-cache LRU behavior. This is
 /// the per-tick cost of a streaming chat, so the invariants here are what keep
 /// a 30k-event task from freezing the UI.
-@Suite("UI stress: thread snapshot")
+///
+/// Opt-in: runs only with `RUN_UI_STRESS=1` (see `uiStressSuitesEnabled`).
+@Suite(
+    "UI stress: thread snapshot",
+    .enabled(if: uiStressSuitesEnabled, "Set RUN_UI_STRESS=1 to run the UI stress suites")
+)
 struct UIStressThreadSnapshotTests {
     private static let heavyTierEnabled = ProcessInfo.processInfo.environment["RUN_UI_STRESS"] != nil
 

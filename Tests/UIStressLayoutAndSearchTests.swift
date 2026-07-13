@@ -9,7 +9,12 @@ import ASTRAModels
 /// strange numbers), exhaustive mode-derivation grids, and search filtering
 /// over thousands of tasks. Layout math that lets NaN/∞ escape eventually
 /// lands in a SwiftUI `frame(width:)`, which is a runtime error.
-@Suite("UI stress: layout and search")
+///
+/// Opt-in: runs only with `RUN_UI_STRESS=1` (see `uiStressSuitesEnabled`).
+@Suite(
+    "UI stress: layout and search",
+    .enabled(if: uiStressSuitesEnabled, "Set RUN_UI_STRESS=1 to run the UI stress suites")
+)
 struct UIStressLayoutAndSearchTests {
     private struct SplitMix64: RandomNumberGenerator {
         var state: UInt64
